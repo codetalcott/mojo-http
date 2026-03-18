@@ -1,7 +1,30 @@
-# m0-datastar: Datastar SSE protocol plugin.
-#
-# Depends on: m0-http (SSE format primitives)
-#
-# Planned modules:
-#   consts — Datastar protocol constants
-#   sse    — Datastar SSE generators (patch_elements, patch_signals, execute_script)
+"""m0-datastar: Datastar SSE protocol for Mojo (v1.0.0-RC.8)."""
+
+from .consts import (
+    VERSION,
+    DATASTAR_KEY,
+    DEFAULT_SSE_RETRY_DURATION,
+    DEFAULT_PATCH_MODE,
+    PATCH_MODE_OUTER,
+    PATCH_MODE_INNER,
+    PATCH_MODE_REMOVE,
+    PATCH_MODE_REPLACE,
+    PATCH_MODE_PREPEND,
+    PATCH_MODE_APPEND,
+    PATCH_MODE_BEFORE,
+    PATCH_MODE_AFTER,
+    EVENT_PATCH_ELEMENTS,
+    EVENT_PATCH_SIGNALS,
+    DL_SELECTOR,
+    DL_MODE,
+    DL_NAMESPACE,
+    DL_USE_VIEW_TRANSITION,
+    DL_ELEMENTS,
+    DL_SIGNALS,
+    DL_ONLY_IF_MISSING,
+    NS_HTML,
+    NS_SVG,
+    NS_MATHML,
+    js_bool,
+)
+from .sse import patch_elements, patch_signals, execute_script, redirect
