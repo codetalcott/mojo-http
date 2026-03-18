@@ -23,6 +23,15 @@ fn test_format_sse_heartbeat() raises:
     assert_true(s.find(": heartbeat") >= 0)
 
 
+fn test_format_sse_multiline_data() raises:
+    """Multi-line data should produce multiple data: fields."""
+    var s = format_sse_event(1, "update", "line1\nline2\nline3")
+    assert_true(s.find("data: line1\n") >= 0)
+    assert_true(s.find("data: line2\n") >= 0)
+    assert_true(s.find("data: line3\n") >= 0)
+    assert_true(s.endswith("\n\n"))
+
+
 # --- SSE Registry ---
 
 fn test_registry_subscribe_notify() raises:

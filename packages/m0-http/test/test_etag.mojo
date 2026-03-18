@@ -68,3 +68,14 @@ fn test_etag_matches_in_list() raises:
 fn test_etag_no_match() raises:
     """Non-matching ETag should return False."""
     assert_false(etag_matches('W/"abc"', 'W/"xyz"'))
+
+
+fn test_etag_no_partial_match() raises:
+    """Substring of an ETag should not match."""
+    assert_false(etag_matches('W/"abc"', 'W/"abcdef"'))
+    assert_false(etag_matches('W/"abc"', 'W/"abcdef", W/"xyz"'))
+
+
+fn test_etag_matches_with_spaces() raises:
+    """ETag matching should handle extra whitespace around commas."""
+    assert_true(etag_matches('W/"abc"', 'W/"xyz" , W/"abc" , W/"def"'))

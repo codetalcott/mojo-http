@@ -8,11 +8,14 @@ with no subscriber state — usable by any SSE producer.
 fn format_sse_event(event_id: Int, event_type: String, data: String) -> String:
     """Format a single SSE event as wire-protocol string.
 
-    Output: "id: N\\nevent: type\\ndata: json\\n\\n"
+    Multi-line data is split into separate data: fields per the SSE spec.
+    Output: "id: N\\nevent: type\\ndata: line1\\ndata: line2\\n\\n"
     """
     var out = String("id: ") + String(event_id) + "\n"
     out += "event: " + event_type + "\n"
-    out += "data: " + data + "\n"
+    var parts = data.split("\n")
+    for i in range(len(parts)):
+        out += "data: " + parts[i] + "\n"
     out += "\n"
     return out^
 

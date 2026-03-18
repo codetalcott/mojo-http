@@ -16,13 +16,32 @@ fn compute_etag(buf: List[UInt8]) -> String:
     return String('W/"') + format_hash64(hash) + String('"')
 
 
+fn _trim(s: String) -> String:
+    """Strip leading and trailing ASCII whitespace."""
+    var bytes = s.as_bytes()
+    var start = 0
+    var end = len(s)
+    while start < end and (bytes[start] == 0x20 or bytes[start] == 0x09):
+        start += 1
+    while end > start and (bytes[end - 1] == 0x20 or bytes[end - 1] == 0x09):
+        end -= 1
+    if start == 0 and end == len(s):
+        return s
+    return String(s[byte=start:end])
+
+
 fn etag_matches(etag: String, if_none_match: String) -> Bool:
     """Check if an ETag matches an If-None-Match header value.
 
     Handles comma-separated lists and * wildcard.
+    Performs exact token matching (not substring search).
     """
     if len(if_none_match) == 0:
         return False
     if if_none_match == "*":
         return True
-    return if_none_match.find(etag) != -1
+    var parts = if_none_match.split(",")
+    for i in range(len(parts)):
+        if _trim(String(parts[i])) == etag:
+            return True
+    return False

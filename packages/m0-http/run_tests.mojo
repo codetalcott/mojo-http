@@ -41,6 +41,8 @@ from test.test_etag import (
     test_etag_matches_empty,
     test_etag_matches_in_list,
     test_etag_no_match,
+    test_etag_no_partial_match,
+    test_etag_matches_with_spaces,
 )
 
 from test.test_response_cache import (
@@ -55,6 +57,7 @@ from test.test_response_cache import (
 from test.test_sse import (
     test_format_sse_event,
     test_format_sse_heartbeat,
+    test_format_sse_multiline_data,
     test_registry_subscribe_notify,
     test_registry_filter_by_url,
     test_registry_unsubscribe,
@@ -148,6 +151,10 @@ fn main() raises:
     else: failed += 1
     if _run["etag_no_match", test_etag_no_match](): passed += 1
     else: failed += 1
+    if _run["etag_no_partial_match", test_etag_no_partial_match](): passed += 1
+    else: failed += 1
+    if _run["etag_matches_with_spaces", test_etag_matches_with_spaces](): passed += 1
+    else: failed += 1
 
     print("\n=== Response Cache ===")
     if _run["cache_miss", test_cache_miss](): passed += 1
@@ -167,6 +174,8 @@ fn main() raises:
     if _run["format_sse_event", test_format_sse_event](): passed += 1
     else: failed += 1
     if _run["format_sse_heartbeat", test_format_sse_heartbeat](): passed += 1
+    else: failed += 1
+    if _run["format_sse_multiline_data", test_format_sse_multiline_data](): passed += 1
     else: failed += 1
     if _run["registry_subscribe_notify", test_registry_subscribe_notify](): passed += 1
     else: failed += 1
