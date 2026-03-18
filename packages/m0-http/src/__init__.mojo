@@ -1,14 +1,28 @@
-# m0-http: HTTP framework layer for the M0 framework.
-#
-# Depends on: m0-core (hashing, Result, pipeline)
-#
-# Planned modules:
-#   router              — Path router with :param extraction
-#   content_negotiation — Generalized Accept header parsing (HTML, JSON, links+json)
-#   etag                — Weak ETag computation (wyhash) and matching
-#   response_cache      — URL-keyed response cache (SoA pattern)
-#   sse/format          — SSE wire format (id, event, data fields)
-#   sse/registry        — SSE subscriber slot management with backpressure
-#   sse/journal         — Append-only SSE event log with reconnect replay
-#   multiworker         — Fork-based multi-worker supervisor
-#   lightbug_http/      — Vendored async HTTP server
+"""
+m0-http: HTTP framework components for the M0 framework.
+
+Depends on: m0-core (hashing for ETags)
+
+Provides routing, content negotiation, ETag computation, response caching,
+and SSE (Server-Sent Events) support. Multiworker and shutdown deferred
+until lightbug_http is vendored.
+"""
+
+from .router import Router, MatchResult
+from .content_negotiation import (
+    AcceptResult,
+    parse_accept,
+    wants_siren_bin,
+    wants_patch,
+    wants_html,
+    wants_event_stream,
+)
+from .etag import compute_etag, etag_matches
+from .response_cache import ResponseCache
+from .sse import (
+    format_sse_event,
+    format_sse_heartbeat,
+    SSERegistry,
+    PatchJournal,
+    JournalResult,
+)
