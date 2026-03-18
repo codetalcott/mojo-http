@@ -15,3 +15,4 @@ from .result import Result, Ok, Err, map_result, flat_map_result
 from .aop import identity, constant, fork, hook, atop, over, under
 from .pipeline import compose, compose3, pipe_2, pipe_3, pipe_4, PipelineContext, pipe_ctx_2, pipe_ctx_3
 from .json_escape import escape_json_string, simd_find_escape_char
+from .json_parse import parse_json_field

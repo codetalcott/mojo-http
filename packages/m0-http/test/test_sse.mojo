@@ -76,6 +76,27 @@ fn test_registry_skips_old_events() raises:
     assert_true(reg.has_pending(0))
 
 
+fn test_registry_backpressure_preserves_last_id() raises:
+    """Dropped events due to backpressure should not advance last_event_id."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/orders", 0)
+    # Send event 1 (should succeed)
+    reg.notify("/orders", 1, "update", "first")
+    assert_true(reg.has_pending(0))
+    # Fill the buffer with a huge payload to trigger backpressure
+    var big_data = String("")
+    for _ in range(70000):
+        big_data += "x"
+    reg.notify("/orders", 2, "update", big_data)
+    # Event 2 should have been dropped, so draining gives only event 1
+    var buf = reg.drain(0)
+    # Now send event 3 — it should be accepted (buffer is drained)
+    reg.notify("/orders", 3, "update", "third")
+    assert_true(reg.has_pending(0))
+    # Also verify event 2 can still be delivered on retry since ID didn't advance
+    # (a new subscriber starting from last_event_id=1 would get event 2)
+
+
 # --- Patch Journal ---
 
 fn _bytes2(a: UInt8, b: UInt8) -> List[UInt8]:

@@ -33,6 +33,9 @@ from test.test_result import (
     test_map_result_ok,
     test_map_result_err,
     test_result_copy,
+    test_flat_map_ok_to_ok,
+    test_flat_map_ok_to_err,
+    test_flat_map_err_passthrough,
 )
 
 from test.test_pipeline import (
@@ -66,6 +69,18 @@ from test.test_json_escape import (
     test_escape_newline,
     test_escape_tab,
     test_no_escape_needed,
+)
+
+from test.test_json_parse import (
+    test_parse_simple_field,
+    test_parse_with_whitespace,
+    test_parse_missing_field,
+    test_parse_escaped_quotes,
+    test_parse_escaped_backslash,
+    test_parse_escaped_newline,
+    test_parse_multiple_fields,
+    test_parse_empty_value,
+    test_parse_empty_body,
 )
 
 
@@ -139,6 +154,12 @@ fn main() raises:
     else: failed += 1
     if _run["result_copy", test_result_copy](): passed += 1
     else: failed += 1
+    if _run["flat_map_ok_to_ok", test_flat_map_ok_to_ok](): passed += 1
+    else: failed += 1
+    if _run["flat_map_ok_to_err", test_flat_map_ok_to_err](): passed += 1
+    else: failed += 1
+    if _run["flat_map_err_passthrough", test_flat_map_err_passthrough](): passed += 1
+    else: failed += 1
 
     # --- Pipeline ---
     print("\n=== Pipeline ===")
@@ -195,6 +216,27 @@ fn main() raises:
     if _run["escape_tab", test_escape_tab](): passed += 1
     else: failed += 1
     if _run["no_escape_needed", test_no_escape_needed](): passed += 1
+    else: failed += 1
+
+    # --- JSON Parse ---
+    print("\n=== JSON Parse ===")
+    if _run["parse_simple_field", test_parse_simple_field](): passed += 1
+    else: failed += 1
+    if _run["parse_with_whitespace", test_parse_with_whitespace](): passed += 1
+    else: failed += 1
+    if _run["parse_missing_field", test_parse_missing_field](): passed += 1
+    else: failed += 1
+    if _run["parse_escaped_quotes", test_parse_escaped_quotes](): passed += 1
+    else: failed += 1
+    if _run["parse_escaped_backslash", test_parse_escaped_backslash](): passed += 1
+    else: failed += 1
+    if _run["parse_escaped_newline", test_parse_escaped_newline](): passed += 1
+    else: failed += 1
+    if _run["parse_multiple_fields", test_parse_multiple_fields](): passed += 1
+    else: failed += 1
+    if _run["parse_empty_value", test_parse_empty_value](): passed += 1
+    else: failed += 1
+    if _run["parse_empty_body", test_parse_empty_body](): passed += 1
     else: failed += 1
 
     # --- Summary ---

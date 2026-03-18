@@ -2,7 +2,7 @@
 
 from std.testing import assert_equal, assert_true, assert_false
 
-from src.result import Result, Ok, Err, map_result
+from src.result import Result, Ok, Err, map_result, flat_map_result
 
 
 fn test_ok_creation() raises:
@@ -59,3 +59,35 @@ fn test_result_copy() raises:
     var copy = original.copy()
     assert_true(copy.is_ok())
     assert_equal(copy.get_value(), 42)
+
+
+fn _double_result(x: Int) -> Result[Int]:
+    return Ok[Int](x * 2)
+
+
+fn _fail_result(x: Int) -> Result[Int]:
+    return Err[Int]("forced failure")
+
+
+fn test_flat_map_ok_to_ok() raises:
+    """flat_map on Ok with a function returning Ok should chain."""
+    var result = Ok[Int](21)
+    var bound = flat_map_result[Int, Int, _double_result](result)
+    assert_true(bound.is_ok())
+    assert_equal(bound.get_value(), 42)
+
+
+fn test_flat_map_ok_to_err() raises:
+    """flat_map on Ok with a function returning Err should propagate error."""
+    var result = Ok[Int](21)
+    var bound = flat_map_result[Int, Int, _fail_result](result)
+    assert_true(bound.is_err())
+    assert_equal(bound.get_error(), "forced failure")
+
+
+fn test_flat_map_err_passthrough() raises:
+    """flat_map on Err should pass through without calling the function."""
+    var result = Err[Int]("original error")
+    var bound = flat_map_result[Int, Int, _double_result](result)
+    assert_true(bound.is_err())
+    assert_equal(bound.get_error(), "original error")

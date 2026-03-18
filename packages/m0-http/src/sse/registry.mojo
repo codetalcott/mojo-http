@@ -60,7 +60,7 @@ struct SSERegistry:
                 if event_id > self.last_event_ids[slot]:
                     if len(self.pending_bufs[slot]) + len(event_bytes) <= MAX_PENDING_BYTES:
                         self.pending_bufs[slot].extend(Span(event_bytes))
-                    self.last_event_ids[slot] = event_id
+                        self.last_event_ids[slot] = event_id
 
     fn has_pending(self, slot: Int) -> Bool:
         """Check if a slot has outbound SSE data waiting to be sent."""

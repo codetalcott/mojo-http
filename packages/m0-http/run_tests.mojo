@@ -60,6 +60,7 @@ from test.test_sse import (
     test_registry_unsubscribe,
     test_registry_active_count,
     test_registry_skips_old_events,
+    test_registry_backpressure_preserves_last_id,
     test_journal_append_since,
     test_journal_multiple_returns_snapshot,
     test_journal_no_events,
@@ -176,6 +177,8 @@ fn main() raises:
     if _run["registry_active_count", test_registry_active_count](): passed += 1
     else: failed += 1
     if _run["registry_skips_old_events", test_registry_skips_old_events](): passed += 1
+    else: failed += 1
+    if _run["registry_backpressure_preserves_last_id", test_registry_backpressure_preserves_last_id](): passed += 1
     else: failed += 1
     if _run["journal_append_since", test_journal_append_since](): passed += 1
     else: failed += 1
