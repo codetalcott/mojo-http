@@ -88,3 +88,10 @@ fn test_convenience_wants_event_stream() raises:
     """wants_event_stream convenience should work."""
     assert_true(wants_event_stream("text/event-stream"))
     assert_false(wants_event_stream("text/html"))
+
+
+fn test_problem_json() raises:
+    """application/problem+json should set wants_problem_json."""
+    var r = parse_accept("application/problem+json")
+    assert_true(r.wants_problem_json)
+    assert_false(r.wants_json)

@@ -81,6 +81,16 @@ from test.test_json_parse import (
     test_parse_multiple_fields,
     test_parse_empty_value,
     test_parse_empty_body,
+    test_parse_int_simple,
+    test_parse_int_negative,
+    test_parse_int_missing,
+    test_parse_int_not_numeric,
+    test_parse_number_integer,
+    test_parse_number_decimal,
+    test_parse_number_missing,
+    test_parse_bool_true,
+    test_parse_bool_false,
+    test_parse_bool_missing,
 )
 
 
@@ -237,6 +247,29 @@ fn main() raises:
     if _run["parse_empty_value", test_parse_empty_value](): passed += 1
     else: failed += 1
     if _run["parse_empty_body", test_parse_empty_body](): passed += 1
+    else: failed += 1
+
+    # --- JSON Parse: Typed Extractors ---
+    print("\n=== JSON Parse: Typed ===")
+    if _run["parse_int_simple", test_parse_int_simple](): passed += 1
+    else: failed += 1
+    if _run["parse_int_negative", test_parse_int_negative](): passed += 1
+    else: failed += 1
+    if _run["parse_int_missing", test_parse_int_missing](): passed += 1
+    else: failed += 1
+    if _run["parse_int_not_numeric", test_parse_int_not_numeric](): passed += 1
+    else: failed += 1
+    if _run["parse_number_integer", test_parse_number_integer](): passed += 1
+    else: failed += 1
+    if _run["parse_number_decimal", test_parse_number_decimal](): passed += 1
+    else: failed += 1
+    if _run["parse_number_missing", test_parse_number_missing](): passed += 1
+    else: failed += 1
+    if _run["parse_bool_true", test_parse_bool_true](): passed += 1
+    else: failed += 1
+    if _run["parse_bool_false", test_parse_bool_false](): passed += 1
+    else: failed += 1
+    if _run["parse_bool_missing", test_parse_bool_missing](): passed += 1
     else: failed += 1
 
     # --- Summary ---

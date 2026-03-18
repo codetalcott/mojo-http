@@ -30,6 +30,7 @@ from test.test_content_negotiation import (
     test_empty_accept,
     test_convenience_wants_html,
     test_convenience_wants_event_stream,
+    test_problem_json,
 )
 
 from test.test_etag import (
@@ -132,6 +133,8 @@ fn main() raises:
     if _run["convenience_wants_html", test_convenience_wants_html](): passed += 1
     else: failed += 1
     if _run["convenience_wants_event_stream", test_convenience_wants_event_stream](): passed += 1
+    else: failed += 1
+    if _run["problem_json", test_problem_json](): passed += 1
     else: failed += 1
 
     print("\n=== ETag ===")

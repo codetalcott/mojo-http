@@ -13,6 +13,7 @@ struct AcceptResult(Copyable, Movable):
     var wants_siren_bin: Bool
     var wants_siren_bin_patch: Bool
     var wants_event_stream: Bool
+    var wants_problem_json: Bool
 
     fn __init__(out self):
         self.wants_html = False
@@ -21,6 +22,7 @@ struct AcceptResult(Copyable, Movable):
         self.wants_siren_bin = False
         self.wants_siren_bin_patch = False
         self.wants_event_stream = False
+        self.wants_problem_json = False
 
 
 fn _parse_quality(s: String) -> Float64:
@@ -103,6 +105,8 @@ fn _parse_media_range(part: String, mut result: AcceptResult):
         result.wants_siren_bin_patch = quality > 0
     elif media_type == "text/event-stream":
         result.wants_event_stream = quality > 0
+    elif media_type == "application/problem+json":
+        result.wants_problem_json = quality > 0
     elif media_type == "*/*":
         if not result.wants_json:
             result.wants_json = quality > 0
