@@ -1,0 +1,173 @@
+"""Linux epoll FFI wrappers for non-blocking IO multiplexing.
+
+Provides epoll_create1(), epoll_ctl(), epoll_wait(), timerfd_create(),
+and timerfd_settime() wrappers following the same FFI pattern as kqueue.mojo.
+Used by EpollBackend to implement a single-threaded, non-blocking HTTP server.
+
+Filter constants use kqueue semantics as canonical names (EVFILT_READ etc.)
+so that event_loop.mojo comparisons work on both platforms without changes.
+"""
+
+from std.memory import stack_allocation
+from std.ffi import c_int, external_call, get_errno
+
+from lightbug_http.c.aliases import ExternalMutUnsafePointer
+
+
+# Re-export kqueue canonical filter constants so EpollBackend callers can
+# import everything they need from this module on Linux.
+from lightbug_http.c.kqueue import (
+    EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
+    EV_EOF, EV_ERROR,
+)
+
+# --- epoll event flags ---
+comptime EPOLLIN: UInt32 = 0x001
+comptime EPOLLOUT: UInt32 = 0x004
+comptime EPOLLERR: UInt32 = 0x008
+comptime EPOLLHUP: UInt32 = 0x010
+comptime EPOLLRDHUP: UInt32 = 0x2000
+comptime EPOLLET: UInt32 = 0x80000000   # edge-triggered
+comptime EPOLLONESHOT: UInt32 = 0x40000000
+
+# --- epoll_ctl operations ---
+comptime EPOLL_CTL_ADD: c_int = 1
+comptime EPOLL_CTL_DEL: c_int = 2
+comptime EPOLL_CTL_MOD: c_int = 3
+
+# --- epoll_create1 flags ---
+comptime EPOLL_CLOEXEC: c_int = 0x80000  # O_CLOEXEC on Linux
+
+# --- timerfd constants ---
+comptime CLOCK_MONOTONIC: c_int = 1
+comptime TFD_NONBLOCK: c_int = 0x800    # O_NONBLOCK on Linux
+comptime TFD_CLOEXEC: c_int = 0x80000  # O_CLOEXEC on Linux
+
+
+@fieldwise_init
+struct epoll_event_t(TrivialRegisterPassable):
+    """Linux struct epoll_event (12 bytes, __attribute__((packed))).
+
+    Represented as three UInt32 fields to match the packed C layout:
+      offset  0: events (uint32)
+      offset  4: data low dword (uint32)  ─┐ together form
+      offset  8: data high dword (uint32) ─┘ epoll_data_t u64
+    """
+
+    var events: UInt32    # epoll event mask
+    var data_lo: UInt32   # low 32 bits of epoll_data_t
+    var data_hi: UInt32   # high 32 bits of epoll_data_t
+
+
+@fieldwise_init
+struct itimerspec_t(TrivialRegisterPassable):
+    """POSIX struct itimerspec (32 bytes).
+
+    it_interval = repeat interval (0 → one-shot)
+    it_value    = initial expiration
+    """
+
+    var interval_sec: Int64   # struct timespec it_interval.tv_sec
+    var interval_nsec: Int64  # struct timespec it_interval.tv_nsec
+    var value_sec: Int64      # struct timespec it_value.tv_sec
+    var value_nsec: Int64     # struct timespec it_value.tv_nsec
+
+
+fn epoll_create1(flags: c_int) -> c_int:
+    """Raw epoll_create1(flags) syscall."""
+    return external_call["epoll_create1", c_int, c_int](flags)
+
+
+fn _epoll_ctl(
+    epfd: c_int,
+    op: c_int,
+    fd: c_int,
+    event: ExternalMutUnsafePointer[epoll_event_t],
+) -> c_int:
+    return external_call["epoll_ctl", c_int, c_int, c_int, c_int, ExternalMutUnsafePointer[epoll_event_t]](
+        epfd, op, fd, event,
+    )
+
+
+fn epoll_ctl_add(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
+    """Register fd with epoll (EPOLL_CTL_ADD)."""
+    var ev_stack = stack_allocation[1, epoll_event_t]()
+    ev_stack[] = ev
+    var result = _epoll_ctl(Int32(epfd.value), EPOLL_CTL_ADD, c_int(fd), ev_stack)
+    if result == -1:
+        var errno = get_errno()
+        raise Error("epoll_ctl ADD failed, errno: ", errno)
+
+
+fn epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
+    """Modify fd's epoll registration (EPOLL_CTL_MOD)."""
+    var ev_stack = stack_allocation[1, epoll_event_t]()
+    ev_stack[] = ev
+    var result = _epoll_ctl(Int32(epfd.value), EPOLL_CTL_MOD, c_int(fd), ev_stack)
+    if result == -1:
+        var errno = get_errno()
+        raise Error("epoll_ctl MOD failed, errno: ", errno)
+
+
+fn epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
+    """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored."""
+    var null_ev = ExternalMutUnsafePointer[epoll_event_t]()
+    var result = _epoll_ctl(Int32(epfd.value), EPOLL_CTL_DEL, c_int(fd), null_ev)
+    if result == -1:
+        var errno = get_errno()
+        raise Error("epoll_ctl DEL failed, errno: ", errno)
+
+
+fn epoll_wait(
+    epfd: FileDescriptor,
+    events: ExternalMutUnsafePointer[epoll_event_t],
+    max_events: Int,
+    timeout_ms: Int,
+) raises -> Int:
+    """Wait for events on epfd, returning the number of ready events."""
+    var result = external_call[
+        "epoll_wait", c_int,
+        c_int, ExternalMutUnsafePointer[epoll_event_t], c_int, c_int,
+    ](c_int(epfd.value), events, c_int(max_events), c_int(timeout_ms))
+    if result == -1:
+        var errno = get_errno()
+        if errno == errno.EINTR:
+            return 0
+        raise Error("epoll_wait failed, errno: ", errno)
+    return Int(result)
+
+
+fn timerfd_create(clockid: c_int, flags: c_int) -> c_int:
+    """Raw timerfd_create(2) syscall."""
+    return external_call["timerfd_create", c_int, c_int, c_int](clockid, flags)
+
+
+fn timerfd_settime(
+    fd: c_int,
+    flags: c_int,
+    new_value: ExternalMutUnsafePointer[itimerspec_t],
+    old_value: ExternalMutUnsafePointer[itimerspec_t],
+) -> c_int:
+    """Raw timerfd_settime(2) syscall."""
+    return external_call[
+        "timerfd_settime", c_int,
+        c_int, c_int,
+        ExternalMutUnsafePointer[itimerspec_t],
+        ExternalMutUnsafePointer[itimerspec_t],
+    ](fd, flags, new_value, old_value)
+
+
+fn set_timerfd_ms(fd: Int, timeout_ms: Int) raises:
+    """Arm (or re-arm) a timerfd for a one-shot timeout in milliseconds."""
+    var spec_stack = stack_allocation[1, itimerspec_t]()
+    spec_stack[] = itimerspec_t(
+        interval_sec=0,
+        interval_nsec=0,
+        value_sec=Int64(timeout_ms // 1000),
+        value_nsec=Int64((timeout_ms % 1000) * 1_000_000),
+    )
+    var null_ptr = ExternalMutUnsafePointer[itimerspec_t]()
+    var result = timerfd_settime(c_int(fd), 0, spec_stack, null_ptr)
+    if result == -1:
+        var errno = get_errno()
+        raise Error("timerfd_settime failed, errno: ", errno)

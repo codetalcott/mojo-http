@@ -1,0 +1,176 @@
+from lightbug_http.header import HeaderKey
+from std.utils import Variant
+
+
+@fieldwise_init
+struct InvalidCookieError(Movable, Writable, TrivialRegisterPassable):
+    """Error raised when a cookie is invalid."""
+
+    fn write_to[W: Writer, //](self, mut writer: W):
+        writer.write("InvalidCookieError: Invalid cookie format")
+
+    fn __str__(self) -> String:
+        return String.write(self)
+
+
+struct Cookie(Copyable):
+    comptime EXPIRES = "Expires"
+    comptime MAX_AGE = "Max-Age"
+    comptime DOMAIN = "Domain"
+    comptime PATH = "Path"
+    comptime SECURE = "Secure"
+    comptime HTTP_ONLY = "HttpOnly"
+    comptime SAME_SITE = "SameSite"
+    comptime PARTITIONED = "Partitioned"
+
+    comptime SEPARATOR = "; "
+    comptime EQUAL = "="
+
+    var name: String
+    var value: String
+    var expires: Expiration
+    var secure: Bool
+    var http_only: Bool
+    var partitioned: Bool
+    var same_site: Optional[SameSite]
+    var domain: Optional[String]
+    var path: Optional[String]
+    var max_age: Optional[Duration]
+
+    @staticmethod
+    fn from_set_header(header_str: String) raises InvalidCookieError -> Self:
+        var parts = header_str.split(Cookie.SEPARATOR)
+        if len(parts) < 1:
+            raise InvalidCookieError()
+
+        var cookie = Cookie("", String(parts[0]), path=String("/"))
+        if Cookie.EQUAL in parts[0]:
+            var name_value = parts[0].split(Cookie.EQUAL)
+            cookie.name = String(name_value[0])
+            cookie.value = String(name_value[1])
+
+        for i in range(1, len(parts)):
+            var part = parts[i]
+            if part == Cookie.PARTITIONED:
+                cookie.partitioned = True
+            elif part == Cookie.SECURE:
+                cookie.secure = True
+            elif part == Cookie.HTTP_ONLY:
+                cookie.http_only = True
+            elif part.startswith(Cookie.SAME_SITE):
+                cookie.same_site = SameSite.from_string(String(part.removeprefix(Cookie.SAME_SITE + Cookie.EQUAL)))
+            elif part.startswith(Cookie.DOMAIN):
+                cookie.domain = String(part.removeprefix(Cookie.DOMAIN + Cookie.EQUAL))
+            elif part.startswith(Cookie.PATH):
+                cookie.path = String(part.removeprefix(Cookie.PATH + Cookie.EQUAL))
+            elif part.startswith(Cookie.MAX_AGE):
+                cookie.max_age = Duration.from_string(String(part.removeprefix(Cookie.MAX_AGE + Cookie.EQUAL)))
+            elif part.startswith(Cookie.EXPIRES):
+                var expires = Expiration.from_string(String(part.removeprefix(Cookie.EXPIRES + Cookie.EQUAL)))
+                if expires:
+                    cookie.expires = expires.value().copy()
+
+        return cookie^
+
+    fn __init__(
+        out self,
+        name: String,
+        value: String,
+        expires: Expiration = Expiration.session(),
+        max_age: Optional[Duration] = Optional[Duration](None),
+        domain: Optional[String] = Optional[String](None),
+        path: Optional[String] = Optional[String](None),
+        same_site: Optional[SameSite] = Optional[SameSite](None),
+        secure: Bool = False,
+        http_only: Bool = False,
+        partitioned: Bool = False,
+    ):
+        self.name = name
+        self.value = value
+        self.expires = expires.copy()
+        self.max_age = max_age
+        self.domain = domain
+        self.path = path
+        self.secure = secure
+        self.http_only = http_only
+        self.same_site = same_site
+        self.partitioned = partitioned
+
+    fn __str__(self) -> String:
+        return String.write("Name: ", self.name, " Value: ", self.value)
+
+    fn __copyinit__(out self: Cookie, copy: Cookie):
+        self.name = copy.name
+        self.value = copy.value
+        self.max_age = copy.max_age
+        self.expires = copy.expires.copy()
+        self.domain = copy.domain
+        self.path = copy.path
+        self.secure = copy.secure
+        self.http_only = copy.http_only
+        self.same_site = copy.same_site
+        self.partitioned = copy.partitioned
+
+    fn __moveinit__(out self: Cookie, deinit take: Cookie):
+        self.name = take.name^
+        self.value = take.value^
+        self.max_age = take.max_age^
+        self.expires = take.expires.copy()
+        self.domain = take.domain^
+        self.path = take.path^
+        self.secure = take.secure
+        self.http_only = take.http_only
+        self.same_site = take.same_site^
+        self.partitioned = take.partitioned
+
+    fn clear_cookie(mut self):
+        self.max_age = Optional[Duration](None)
+        self.expires = Expiration.invalidate()
+
+    fn to_header(self) raises -> Header:
+        return Header(HeaderKey.SET_COOKIE, self.build_header_value())
+
+    fn build_header_value(self) -> String:
+        var header_value = String.write(self.name, Cookie.EQUAL, self.value)
+        if self.expires.is_datetime():
+            var v: Optional[String]
+            try:
+                v = self.expires.http_date_timestamp()
+            except:
+                v = None
+                # TODO: This should be a hardfail however Writeable trait write_to method does not raise
+                # the call flow needs to be refactored
+                pass
+
+            if v:
+                header_value.write(Cookie.SEPARATOR, Cookie.EXPIRES, Cookie.EQUAL, v.value())
+        if self.max_age:
+            header_value.write(
+                Cookie.SEPARATOR,
+                Cookie.MAX_AGE,
+                Cookie.EQUAL,
+                String(self.max_age.value().total_seconds),
+            )
+        if self.domain:
+            header_value.write(
+                Cookie.SEPARATOR,
+                Cookie.DOMAIN,
+                Cookie.EQUAL,
+                self.domain.value(),
+            )
+        if self.path:
+            header_value.write(Cookie.SEPARATOR, Cookie.PATH, Cookie.EQUAL, self.path.value())
+        if self.secure:
+            header_value.write(Cookie.SEPARATOR, Cookie.SECURE)
+        if self.http_only:
+            header_value.write(Cookie.SEPARATOR, Cookie.HTTP_ONLY)
+        if self.same_site:
+            header_value.write(
+                Cookie.SEPARATOR,
+                Cookie.SAME_SITE,
+                Cookie.EQUAL,
+                String(self.same_site.value()),
+            )
+        if self.partitioned:
+            header_value.write(Cookie.SEPARATOR, Cookie.PARTITIONED)
+        return header_value
