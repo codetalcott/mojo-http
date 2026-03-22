@@ -4,8 +4,7 @@ m0-http: HTTP framework components for the M0 framework.
 Depends on: m0-core (hashing for ETags)
 
 Provides routing, content negotiation, ETag computation, response caching,
-and SSE (Server-Sent Events) support. Multiworker and shutdown deferred
-until lightbug_http is vendored.
+SSE (Server-Sent Events) support, and multi-worker fork supervision.
 """
 
 from .router import Router, MatchResult
@@ -26,3 +25,4 @@ from .sse import (
     PatchJournal,
     JournalResult,
 )
+from .multiworker import WorkerSupervisor
