@@ -81,3 +81,44 @@ fn test_cache_lru_eviction() raises:
     assert_equal(cache.size(), 3)
     assert_equal(cache.get_etag("/b"), "")
     assert_equal(cache.get_etag("/a"), "e1")
+
+
+fn test_cache_lru_fills_to_max() raises:
+    """Cache should never exceed max_entries when filling beyond capacity."""
+    var cache = ResponseCache(max_entries=4)
+    for i in range(8):
+        cache.put("/" + String(i), _b(UInt8(i)), "e" + String(i))
+    assert_true(cache.size() <= 4, "cache should not exceed max_entries")
+    # The most recent entries should survive
+    assert_true(len(cache.get_etag("/7")) > 0, "most recent entry should exist")
+
+
+fn test_cache_lru_access_pattern() raises:
+    """Accessing an entry should protect it from eviction."""
+    var cache = ResponseCache(max_entries=3)
+    cache.put("/a", _b(1), "e1")
+    cache.put("/b", _b(2), "e2")
+    cache.put("/c", _b(3), "e3")
+    # Access /a to make it recently used — /b is now LRU
+    _ = cache.get_etag("/a")
+    # Inserting /d should evict /b (the least recently accessed)
+    cache.put("/d", _b(4), "e4")
+    assert_equal(cache.size(), 3)
+    assert_equal(cache.get_etag("/b"), "", "/b should have been evicted")
+    assert_equal(cache.get_etag("/a"), "e1", "/a should survive (recently accessed)")
+    assert_equal(cache.get_etag("/d"), "e4", "/d should exist")
+
+
+fn test_cache_lru_put_resets_access() raises:
+    """Updating an entry via put should reset its access time."""
+    var cache = ResponseCache(max_entries=3)
+    cache.put("/a", _b(1), "e1")
+    cache.put("/b", _b(2), "e2")
+    cache.put("/c", _b(3), "e3")
+    # Re-put /a to refresh it — /b is now LRU
+    cache.put("/a", _b(10), "e1-updated")
+    # Insert /d — should evict /b
+    cache.put("/d", _b(4), "e4")
+    assert_equal(cache.size(), 3)
+    assert_equal(cache.get_etag("/b"), "", "/b should have been evicted")
+    assert_equal(cache.get_etag("/a"), "e1-updated", "/a should survive (refreshed by put)")

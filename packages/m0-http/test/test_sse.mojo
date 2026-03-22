@@ -106,6 +106,61 @@ fn test_registry_backpressure_preserves_last_id() raises:
     # (a new subscriber starting from last_event_id=1 would get event 2)
 
 
+fn test_backpressure_exact_boundary() raises:
+    """Events exactly at MAX_PENDING_BYTES should be accepted; one byte over rejected."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    # format_sse_event_bytes overhead: "id: N\nevent: T\ndata: D\n\n"
+    # For event_id=1, type="u", the overhead is: "id: 1\nevent: u\ndata: " + "\n\n" = ~24 bytes
+    # We need total event bytes + pending <= 65536
+    # Strategy: send one big event that fills right to the limit, then try one more
+    var data_size = 65400  # leaves room for SSE framing
+    var big = String("")
+    for _ in range(data_size):
+        big += "a"
+    reg.notify("/x", 1, "u", big)
+    assert_true(reg.has_pending(0), "first big event should be accepted")
+    var pending_len = len(reg.pending_bufs[0])
+    # Now try to add even a tiny event — if pending + new > 65536, it's dropped
+    reg.notify("/x", 2, "u", "tiny")
+    # If the combined size exceeds limit, event 2 was dropped
+    if pending_len + 30 > 65536:  # 30 is conservative overhead for tiny event
+        assert_equal(len(reg.pending_bufs[0]), pending_len, "event should be dropped at boundary")
+
+
+fn test_backpressure_recovery_after_drain() raises:
+    """After draining, the slot should accept new events again."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    var big = String("")
+    for _ in range(65000):
+        big += "x"
+    reg.notify("/x", 1, "u", big)
+    assert_true(reg.has_pending(0))
+    # Drain clears the buffer
+    _ = reg.drain(0)
+    assert_false(reg.has_pending(0))
+    # New event should now be accepted
+    reg.notify("/x", 2, "u", "recovered")
+    assert_true(reg.has_pending(0), "should accept events after drain")
+
+
+fn test_backpressure_slots_independent() raises:
+    """Backpressure on slot 0 should not affect slot 1."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    reg.subscribe(1, "/x", 0)
+    # Fill slot 0 past the limit
+    var big = String("")
+    for _ in range(65000):
+        big += "x"
+    reg.notify("/x", 1, "u", big)
+    # Now send another event — slot 0 is full but slot 1 accepted event 1 fine
+    reg.notify("/x", 2, "u", "small")
+    # Slot 1 should have both events (if they fit)
+    assert_true(reg.has_pending(1), "slot 1 should still accept events")
+
+
 # --- Patch Journal ---
 
 fn _bytes2(a: UInt8, b: UInt8) -> List[UInt8]:

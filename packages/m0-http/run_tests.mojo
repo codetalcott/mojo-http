@@ -53,6 +53,9 @@ from test.test_response_cache import (
     test_cache_invalidate,
     test_cache_invalidate_prefix,
     test_cache_lru_eviction,
+    test_cache_lru_fills_to_max,
+    test_cache_lru_access_pattern,
+    test_cache_lru_put_resets_access,
 )
 
 from test.test_sse import (
@@ -65,6 +68,9 @@ from test.test_sse import (
     test_registry_active_count,
     test_registry_skips_old_events,
     test_registry_backpressure_preserves_last_id,
+    test_backpressure_exact_boundary,
+    test_backpressure_recovery_after_drain,
+    test_backpressure_slots_independent,
     test_journal_append_since,
     test_journal_multiple_returns_snapshot,
     test_journal_no_events,
@@ -172,6 +178,12 @@ fn main() raises:
     else: failed += 1
     if _run["cache_lru_eviction", test_cache_lru_eviction](): passed += 1
     else: failed += 1
+    if _run["cache_lru_fills_to_max", test_cache_lru_fills_to_max](): passed += 1
+    else: failed += 1
+    if _run["cache_lru_access_pattern", test_cache_lru_access_pattern](): passed += 1
+    else: failed += 1
+    if _run["cache_lru_put_resets_access", test_cache_lru_put_resets_access](): passed += 1
+    else: failed += 1
 
     print("\n=== SSE ===")
     if _run["format_sse_event", test_format_sse_event](): passed += 1
@@ -191,6 +203,12 @@ fn main() raises:
     if _run["registry_skips_old_events", test_registry_skips_old_events](): passed += 1
     else: failed += 1
     if _run["registry_backpressure_preserves_last_id", test_registry_backpressure_preserves_last_id](): passed += 1
+    else: failed += 1
+    if _run["backpressure_exact_boundary", test_backpressure_exact_boundary](): passed += 1
+    else: failed += 1
+    if _run["backpressure_recovery_after_drain", test_backpressure_recovery_after_drain](): passed += 1
+    else: failed += 1
+    if _run["backpressure_slots_independent", test_backpressure_slots_independent](): passed += 1
     else: failed += 1
     if _run["journal_append_since", test_journal_append_since](): passed += 1
     else: failed += 1
