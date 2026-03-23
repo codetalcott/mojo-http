@@ -14,10 +14,10 @@ struct ShutdownOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     comptime SHUT_WR = Self(1)
     comptime SHUT_RDWR = Self(2)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         if self == Self.SHUT_RD:
             writer.write("SHUT_RD")
         elif self == Self.SHUT_WR:
@@ -25,7 +25,7 @@ struct ShutdownOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
         else:
             writer.write("SHUT_RDWR")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -66,10 +66,10 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     comptime SO_DOMAIN = Self(0x1024)
     comptime SO_PROTOCOL = Self(0x1025)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         if self == Self.SO_DEBUG:
             writer.write("SO_DEBUG")
         elif self == Self.SO_ACCEPTCONN:
@@ -127,7 +127,7 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
         else:
             writer.write("SocketOption(", self.value, ")")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -151,10 +151,10 @@ struct SocketType(Copyable, Equatable, Writable, TrivialRegisterPassable):
     comptime SOCK_CLOEXEC = Self(c_int(O_CLOEXEC))
     comptime SOCK_NONBLOCK = Self(c_int(O_NONBLOCK))
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         if self == Self.SOCK_STREAM:
             writer.write("SOCK_STREAM")
         elif self == Self.SOCK_DGRAM:
@@ -176,11 +176,11 @@ struct SocketType(Copyable, Equatable, Writable, TrivialRegisterPassable):
         else:
             writer.write("SocketType(", self.value, ")")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
-fn _socket(domain: c_int, type: c_int, protocol: c_int) -> c_int:
+def _socket(domain: c_int, type: c_int, protocol: c_int) -> c_int:
     """Libc POSIX `socket` function.
 
     Args:
@@ -202,7 +202,7 @@ fn _socket(domain: c_int, type: c_int, protocol: c_int) -> c_int:
     return external_call["socket", c_int, type_of(domain), type_of(type), type_of(protocol)](domain, type, protocol)
 
 
-fn socket(domain: c_int, type: c_int, protocol: c_int) raises SocketError -> c_int:
+def socket(domain: c_int, type: c_int, protocol: c_int) raises SocketError -> c_int:
     """Libc POSIX `socket` function.
 
     Args:
@@ -252,7 +252,7 @@ fn socket(domain: c_int, type: c_int, protocol: c_int) raises SocketError -> c_i
     return fd
 
 
-fn _setsockopt[
+def _setsockopt[
     origin: ImmutOrigin
 ](
     socket: c_int,
@@ -292,7 +292,7 @@ fn _setsockopt[
     ](socket, level, option_name, option_value, option_len)
 
 
-fn setsockopt(
+def setsockopt(
     socket: FileDescriptor,
     level: c_int,
     option_name: c_int,
@@ -348,7 +348,7 @@ fn setsockopt(
             )
 
 
-fn _getsockopt[
+def _getsockopt[
     origin: MutOrigin
 ](
     socket: c_int,
@@ -388,7 +388,7 @@ fn _getsockopt[
     ](socket, level, option_name, option_value, option_len)
 
 
-fn getsockopt(
+def getsockopt(
     socket: FileDescriptor,
     level: c_int,
     option_name: c_int,
@@ -445,7 +445,7 @@ fn getsockopt(
     return option_value.bitcast[Int]().take_pointee()
 
 
-fn _getsockname[
+def _getsockname[
     origin: MutOrigin
 ](socket: c_int, address: UnsafePointer[sockaddr, _], address_len: Pointer[socklen_t, origin],) -> c_int:
     """Libc POSIX `getsockname` function.
@@ -475,7 +475,7 @@ fn _getsockname[
     ](socket, address, address_len)
 
 
-fn getsockname(socket: FileDescriptor, mut address: SocketAddress) raises GetsocknameError:
+def getsockname(socket: FileDescriptor, mut address: SocketAddress) raises GetsocknameError:
     """Libc POSIX `getsockname` function.
 
     Args:
@@ -514,7 +514,7 @@ fn getsockname(socket: FileDescriptor, mut address: SocketAddress) raises Getsoc
             raise GetsocknameENOTSOCKError()
 
 
-fn _getpeername[
+def _getpeername[
     origin: MutOrigin
 ](sockfd: c_int, addr: UnsafePointer[sockaddr, _], address_len: Pointer[socklen_t, origin],) -> c_int:
     """Libc POSIX `getpeername` function.
@@ -544,7 +544,7 @@ fn _getpeername[
     ](sockfd, addr, address_len)
 
 
-fn getpeername(file_descriptor: FileDescriptor) raises GetpeernameError -> SocketAddress:
+def getpeername(file_descriptor: FileDescriptor) raises GetpeernameError -> SocketAddress:
     """Libc POSIX `getpeername` function.
 
     Args:
@@ -592,7 +592,7 @@ fn getpeername(file_descriptor: FileDescriptor) raises GetpeernameError -> Socke
     return remote_address^
 
 
-fn _bind[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
+def _bind[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
     """Libc POSIX `bind` function. Assigns the address specified by `address` to the socket referred to by
        the file descriptor `socket`.
 
@@ -617,7 +617,7 @@ fn _bind[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, origi
     )
 
 
-fn bind(socket: FileDescriptor, mut address: SocketAddress) raises BindError:
+def bind(socket: FileDescriptor, mut address: SocketAddress) raises BindError:
     """Libc POSIX `bind` function.
 
     Args:
@@ -677,7 +677,7 @@ fn bind(socket: FileDescriptor, mut address: SocketAddress) raises BindError:
         )
 
 
-fn _listen(socket: c_int, backlog: c_int) -> c_int:
+def _listen(socket: c_int, backlog: c_int) -> c_int:
     """Libc POSIX `listen` function.
 
     Args:
@@ -698,7 +698,7 @@ fn _listen(socket: c_int, backlog: c_int) -> c_int:
     return external_call["listen", c_int, type_of(socket), type_of(backlog)](socket, backlog)
 
 
-fn listen(socket: FileDescriptor, backlog: c_int) raises ListenError:
+def listen(socket: FileDescriptor, backlog: c_int) raises ListenError:
     """Libc POSIX `listen` function.
 
     Args:
@@ -733,7 +733,7 @@ fn listen(socket: FileDescriptor, backlog: c_int) raises ListenError:
             raise ListenEOPNOTSUPPError()
 
 
-fn _accept[
+def _accept[
     address_origin: MutOrigin, len_origin: MutOrigin
 ](socket: c_int, address: Pointer[sockaddr, address_origin], address_len: Pointer[socklen_t, len_origin],) -> c_int:
     """Libc POSIX `accept` function.
@@ -759,7 +759,7 @@ fn _accept[
     )
 
 
-fn accept(socket: FileDescriptor) raises AcceptError -> FileDescriptor:
+def accept(socket: FileDescriptor) raises AcceptError -> FileDescriptor:
     """Libc POSIX `accept` function.
 
     Args:
@@ -829,7 +829,7 @@ fn accept(socket: FileDescriptor) raises AcceptError -> FileDescriptor:
     return FileDescriptor(Int(result))
 
 
-fn _connect[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
+def _connect[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
     """Libc POSIX `connect` function.
 
     Args:
@@ -857,7 +857,7 @@ fn _connect[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, or
     ](socket, address, address_len)
 
 
-fn connect(socket: FileDescriptor, mut address: SocketAddress) raises ConnectError:
+def connect(socket: FileDescriptor, mut address: SocketAddress) raises ConnectError:
     """Libc POSIX `connect` function.
 
     Args:
@@ -922,7 +922,7 @@ fn connect(socket: FileDescriptor, mut address: SocketAddress) raises ConnectErr
             raise ConnectETIMEDOUTError()
 
 
-fn _recv(
+def _recv(
     socket: c_int,
     buffer: UnsafePointer[c_void, _],
     length: c_size_t,
@@ -957,7 +957,7 @@ fn _recv(
     ](socket, buffer, length, flags)
 
 
-fn recv[
+def recv[
     origin: MutOrigin
 ](socket: FileDescriptor, buffer: Span[c_uchar, origin], length: c_size_t, flags: c_int,) raises RecvError -> c_size_t:
     """Libc POSIX `recv` function.
@@ -1008,7 +1008,7 @@ fn recv[
     return UInt(result)
 
 
-fn _recvfrom[
+def _recvfrom[
     origin: MutOrigin
 ](
     socket: c_int,
@@ -1058,7 +1058,7 @@ fn _recvfrom[
     ](socket, buffer, length, flags, address, address_len)
 
 
-fn recvfrom[
+def recvfrom[
     origin: MutOrigin
 ](
     socket: FileDescriptor,
@@ -1140,7 +1140,7 @@ fn recvfrom[
     return UInt(result)
 
 
-fn _send(
+def _send(
     socket: c_int,
     buffer: UnsafePointer[c_void, _],
     length: c_size_t,
@@ -1175,7 +1175,7 @@ fn _send(
     ](socket, buffer, length, flags)
 
 
-fn send[
+def send[
     origin: ImmutOrigin
 ](socket: FileDescriptor, buffer: Span[c_uchar, origin], length: c_size_t, flags: c_int,) raises SendError -> c_size_t:
     """Libc POSIX `send` function.
@@ -1270,7 +1270,7 @@ struct iovec_t(TrivialRegisterPassable):
     var iov_len: UInt
 
 
-fn _writev(
+def _writev(
     fd: c_int,
     iov: UnsafePointer[iovec_t, ...],
     iovcnt: c_int,
@@ -1299,7 +1299,7 @@ fn _writev(
     ](fd, iov, iovcnt)
 
 
-fn try_writev(
+def try_writev(
     fd: FileDescriptor,
     iov: UnsafePointer[iovec_t, ...],
     iovcnt: Int,
@@ -1319,7 +1319,7 @@ fn try_writev(
     return Int(result)
 
 
-fn _sendto(
+def _sendto(
     socket: c_int,
     message: UnsafePointer[c_void, _],
     length: c_size_t,
@@ -1366,7 +1366,7 @@ fn _sendto(
     ](socket, message, length, flags, dest_addr, dest_len)
 
 
-fn sendto[
+def sendto[
     origin: ImmutOrigin
 ](
     socket: FileDescriptor,
@@ -1463,7 +1463,7 @@ fn sendto[
     return UInt(result)
 
 
-fn _shutdown(socket: c_int, how: c_int) -> c_int:
+def _shutdown(socket: c_int, how: c_int) -> c_int:
     """Libc POSIX `shutdown` function.
 
     Args:
@@ -1484,7 +1484,7 @@ fn _shutdown(socket: c_int, how: c_int) -> c_int:
     return external_call["shutdown", c_int, type_of(socket), type_of(how)](socket, how)
 
 
-fn shutdown(socket: FileDescriptor, how: ShutdownOption) raises ShutdownError:
+def shutdown(socket: FileDescriptor, how: ShutdownOption) raises ShutdownError:
     """Libc POSIX `shutdown` function.
 
     Args:
@@ -1519,7 +1519,7 @@ fn shutdown(socket: FileDescriptor, how: ShutdownOption) raises ShutdownError:
             raise ShutdownENOTSOCKError()
 
 
-fn _close(fildes: c_int) -> c_int:
+def _close(fildes: c_int) -> c_int:
     """Libc POSIX `close` function.
 
     Args:
@@ -1540,7 +1540,7 @@ fn _close(fildes: c_int) -> c_int:
     return external_call["close", c_int, type_of(fildes)](fildes)
 
 
-fn close(file_descriptor: FileDescriptor) raises CloseError:
+def close(file_descriptor: FileDescriptor) raises CloseError:
     """Libc POSIX `close` function.
 
     Args:

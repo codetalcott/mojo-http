@@ -43,7 +43,7 @@ comptime NS_SVG = "svg"
 comptime NS_MATHML = "mathml"
 
 
-fn js_bool(value: Bool) -> String:
+def js_bool(value: Bool) -> String:
     """Convert a Bool to a JavaScript boolean string."""
     if value:
         return "true"

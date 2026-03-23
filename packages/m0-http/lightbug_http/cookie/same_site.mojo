@@ -11,7 +11,7 @@ struct SameSite(Copyable, ImplicitlyCopyable, Writable):
     comptime STRICT = "strict"
 
     @staticmethod
-    fn from_string(str: String) -> Optional[Self]:
+    def from_string(str: String) -> Optional[Self]:
         if str == SameSite.NONE:
             return materialize[SameSite.none]()
         elif str == SameSite.LAX:
@@ -20,10 +20,10 @@ struct SameSite(Copyable, ImplicitlyCopyable, Writable):
             return materialize[SameSite.strict]()
         return None
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         if self.value == 0:
             return materialize[SameSite.NONE]()
         elif self.value == 1:
@@ -31,5 +31,5 @@ struct SameSite(Copyable, ImplicitlyCopyable, Writable):
         else:
             return materialize[SameSite.STRICT]()
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write(self.__str__())

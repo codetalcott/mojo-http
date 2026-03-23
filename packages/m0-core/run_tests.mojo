@@ -94,7 +94,7 @@ from test.test_json_parse import (
 )
 
 
-fn _run[name: StringLiteral, f: fn () raises -> None]() -> Bool:
+def _run[name: StringLiteral, f: def () raises -> None]() -> Bool:
     """Run a single test, print result, return success."""
     try:
         f()
@@ -105,7 +105,7 @@ fn _run[name: StringLiteral, f: fn () raises -> None]() -> Bool:
         return False
 
 
-fn main() raises:
+def main() raises:
     var passed = 0
     var failed = 0
 

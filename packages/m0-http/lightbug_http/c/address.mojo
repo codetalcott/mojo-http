@@ -14,10 +14,10 @@ struct AddressInformation(Copyable, Equatable, Writable, TrivialRegisterPassable
     comptime AI_ADDRCONFIG = Self(32)
     comptime AI_IDN = Self(64)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         if self == Self.AI_PASSIVE:
             writer.write("AI_PASSIVE")
         elif self == Self.AI_CANONNAME:
@@ -35,7 +35,7 @@ struct AddressInformation(Copyable, Equatable, Writable, TrivialRegisterPassable
         else:
             writer.write("ShutdownOption(", self.value, ")")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -48,10 +48,10 @@ struct AddressFamily(Copyable, Equatable, Writable, TrivialRegisterPassable):
     comptime AF_INET = Self(2)
     comptime AF_INET6 = Self(24)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         # TODO: Only writing the important AF for now.
         if self == Self.AF_UNSPEC:
             writer.write("AF_UNSPEC")
@@ -62,11 +62,11 @@ struct AddressFamily(Copyable, Equatable, Writable, TrivialRegisterPassable):
         else:
             writer.write("AddressFamily(", self.value, ")")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
     @always_inline("nodebug")
-    fn is_inet(self) -> Bool:
+    def is_inet(self) -> Bool:
         return self == Self.AF_INET or self == Self.AF_INET6
 
 
@@ -76,10 +76,10 @@ struct AddressLength(Copyable, Equatable, Writable, TrivialRegisterPassable):
     comptime INET_ADDRSTRLEN = Self(16)
     comptime INET6_ADDRSTRLEN = Self(46)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         var value: StaticString
         if self == Self.INET_ADDRSTRLEN:
             value = "INET_ADDRSTRLEN"
@@ -87,5 +87,5 @@ struct AddressLength(Copyable, Equatable, Writable, TrivialRegisterPassable):
             value = "INET6_ADDRSTRLEN"
         writer.write(value)
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)

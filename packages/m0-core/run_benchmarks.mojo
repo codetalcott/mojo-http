@@ -13,41 +13,41 @@ from src.json_escape import escape_json_string
 
 # --- Test data generators ---
 
-fn _short_string() -> String:
+def _short_string() -> String:
     return String("hello_mojo")
 
-fn _medium_string() -> String:
+def _medium_string() -> String:
     var s = String("")
     for _ in range(10):
         s += "abcdefghij"  # 100 chars
     return s^
 
-fn _long_string() -> String:
+def _long_string() -> String:
     var s = String("")
     for _ in range(100):
         s += "abcdefghij"  # 1000 chars
     return s^
 
-fn _escape_heavy_string() -> String:
+def _escape_heavy_string() -> String:
     var s = String("")
     for _ in range(50):
         s += 'key:"val"\tnew\n'  # lots of escapes
     return s^
 
-fn _long_clean_string() -> String:
+def _long_clean_string() -> String:
     var s = String("")
     for _ in range(1000):
         s += "abcdefghij"  # 10KB clean ASCII
     return s^
 
-fn _batch_strings() -> List[String]:
+def _batch_strings() -> List[String]:
     var strings = List[String]()
     for i in range(100):
         strings.append(String("effect.dom.query.") + String(i))
     return strings^
 
 
-fn main() raises:
+def main() raises:
     var bench = Bench(BenchConfig())
 
     # --- FNV-1a ---
@@ -56,69 +56,69 @@ fn main() raises:
     var long = _long_string()
 
     @parameter
-    fn bench_fnv1a_short(mut b: Bencher) raises:
+    def bench_fnv1a_short(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = fnv1a(short)
         b.iter[kernel]()
 
     @parameter
-    fn bench_fnv1a_medium(mut b: Bencher) raises:
+    def bench_fnv1a_medium(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = fnv1a(medium)
         b.iter[kernel]()
 
     @parameter
-    fn bench_fnv1a_long(mut b: Bencher) raises:
+    def bench_fnv1a_long(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = fnv1a(long)
         b.iter[kernel]()
 
     # --- xxHash32 ---
 
     @parameter
-    fn bench_xxhash32_short(mut b: Bencher) raises:
+    def bench_xxhash32_short(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = xxhash32(short)
         b.iter[kernel]()
 
     @parameter
-    fn bench_xxhash32_medium(mut b: Bencher) raises:
+    def bench_xxhash32_medium(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = xxhash32(medium)
         b.iter[kernel]()
 
     @parameter
-    fn bench_xxhash32_long(mut b: Bencher) raises:
+    def bench_xxhash32_long(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = xxhash32(long)
         b.iter[kernel]()
 
     # --- wyhash64 ---
 
     @parameter
-    fn bench_wyhash64_short(mut b: Bencher) raises:
+    def bench_wyhash64_short(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = wyhash64_string(short)
         b.iter[kernel]()
 
     @parameter
-    fn bench_wyhash64_medium(mut b: Bencher) raises:
+    def bench_wyhash64_medium(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = wyhash64_string(medium)
         b.iter[kernel]()
 
     @parameter
-    fn bench_wyhash64_long(mut b: Bencher) raises:
+    def bench_wyhash64_long(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = wyhash64_string(long)
         b.iter[kernel]()
 
@@ -126,32 +126,32 @@ fn main() raises:
     var batch = _batch_strings()
 
     @parameter
-    fn bench_fnv1a_batch_100(mut b: Bencher) raises:
+    def bench_fnv1a_batch_100(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = fnv1a_batch(batch)
         b.iter[kernel]()
 
     @parameter
-    fn bench_xxhash32_batch_100(mut b: Bencher) raises:
+    def bench_xxhash32_batch_100(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = xxhash32_batch(batch)
         b.iter[kernel]()
 
     # --- Hex formatting ---
 
     @parameter
-    fn bench_format_hash32(mut b: Bencher) raises:
+    def bench_format_hash32(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = format_hash32(UInt32(0xDEADBEEF))
         b.iter[kernel]()
 
     @parameter
-    fn bench_format_hash64(mut b: Bencher) raises:
+    def bench_format_hash64(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = format_hash64(UInt64(0xDEADBEEFCAFEBABE))
         b.iter[kernel]()
 
@@ -160,23 +160,23 @@ fn main() raises:
     var heavy = _escape_heavy_string()
 
     @parameter
-    fn bench_json_escape_clean(mut b: Bencher) raises:
+    def bench_json_escape_clean(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = escape_json_string(short)
         b.iter[kernel]()
 
     @parameter
-    fn bench_json_escape_heavy(mut b: Bencher) raises:
+    def bench_json_escape_heavy(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = escape_json_string(heavy)
         b.iter[kernel]()
 
     @parameter
-    fn bench_json_escape_long(mut b: Bencher) raises:
+    def bench_json_escape_long(mut b: Bencher) raises:
         @parameter
-        fn kernel():
+        def kernel():
             _ = escape_json_string(clean)
         b.iter[kernel]()
 

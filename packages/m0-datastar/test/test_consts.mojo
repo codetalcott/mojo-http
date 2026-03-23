@@ -30,18 +30,18 @@ from src.consts import (
 )
 
 
-fn test_version() raises:
+def test_version() raises:
     """Version should be RC.8."""
     assert_true(VERSION.find("1.0.0") >= 0)
 
 
-fn test_event_types() raises:
+def test_event_types() raises:
     """Event types should follow datastar- prefix convention."""
     assert_equal(EVENT_PATCH_ELEMENTS, "datastar-patch-elements")
     assert_equal(EVENT_PATCH_SIGNALS, "datastar-patch-signals")
 
 
-fn test_patch_modes() raises:
+def test_patch_modes() raises:
     """All 8 patch modes should be defined."""
     assert_equal(PATCH_MODE_OUTER, "outer")
     assert_equal(PATCH_MODE_INNER, "inner")
@@ -54,7 +54,7 @@ fn test_patch_modes() raises:
     assert_equal(DEFAULT_PATCH_MODE, "outer")
 
 
-fn test_dataline_literals_have_trailing_space() raises:
+def test_dataline_literals_have_trailing_space() raises:
     """Dataline literals should include trailing space per protocol spec."""
     assert_true(DL_SELECTOR.endswith(" "))
     assert_true(DL_MODE.endswith(" "))
@@ -65,18 +65,18 @@ fn test_dataline_literals_have_trailing_space() raises:
     assert_true(DL_USE_VIEW_TRANSITION.endswith(" "))
 
 
-fn test_namespaces() raises:
+def test_namespaces() raises:
     """SVG and MathML namespaces should be defined."""
     assert_equal(NS_SVG, "svg")
     assert_equal(NS_MATHML, "mathml")
 
 
-fn test_js_bool() raises:
+def test_js_bool() raises:
     """js_bool should convert Bool to JavaScript string."""
     assert_equal(js_bool(True), "true")
     assert_equal(js_bool(False), "false")
 
 
-fn test_retry_duration() raises:
+def test_retry_duration() raises:
     """Default retry duration should be 1000ms."""
     assert_equal(DEFAULT_SSE_RETRY_DURATION, 1000)

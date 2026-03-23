@@ -5,7 +5,7 @@ with no subscriber state — usable by any SSE producer.
 """
 
 
-fn format_sse_event(event_id: Int, event_type: String, data: String) -> String:
+def format_sse_event(event_id: Int, event_type: String, data: String) -> String:
     """Format a single SSE event as wire-protocol string.
 
     Multi-line data is split into separate data: fields per the SSE spec.
@@ -20,7 +20,7 @@ fn format_sse_event(event_id: Int, event_type: String, data: String) -> String:
     return out^
 
 
-fn format_sse_heartbeat() -> String:
+def format_sse_heartbeat() -> String:
     """Format an SSE heartbeat comment.
 
     Output: ": heartbeat\\n\\n"
@@ -28,13 +28,13 @@ fn format_sse_heartbeat() -> String:
     return ": heartbeat\n\n"
 
 
-fn format_sse_event_bytes(event_id: Int, event_type: String, data: String) -> List[UInt8]:
+def format_sse_event_bytes(event_id: Int, event_type: String, data: String) -> List[UInt8]:
     """Format a single SSE event as wire-protocol bytes."""
     var s = format_sse_event(event_id, event_type, data)
     return List[UInt8](s.as_bytes())
 
 
-fn format_sse_heartbeat_bytes() -> List[UInt8]:
+def format_sse_heartbeat_bytes() -> List[UInt8]:
     """Format an SSE heartbeat comment as bytes."""
     var s = format_sse_heartbeat()
     return List[UInt8](s.as_bytes())

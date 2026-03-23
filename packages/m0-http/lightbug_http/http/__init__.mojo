@@ -4,10 +4,10 @@ from .response import *
 
 
 trait Encodable:
-    fn encode(var self) -> Bytes:
+    def encode(var self) -> Bytes:
         ...
 
 
 @always_inline
-fn encode[T: Encodable](var data: T) -> Bytes:
+def encode[T: Encodable](var data: T) -> Bytes:
     return data^.encode()

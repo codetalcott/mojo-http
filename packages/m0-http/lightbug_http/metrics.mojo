@@ -41,7 +41,7 @@ struct ServerMetrics(Movable):
     var pool_capacity: Int
     """Total connection pool capacity (constant gauge)."""
 
-    fn __init__(out self):
+    def __init__(out self):
         self.requests_total = 0
         self.responses_2xx = 0
         self.responses_3xx = 0
@@ -54,7 +54,7 @@ struct ServerMetrics(Movable):
         self.pool_available = 0
         self.pool_capacity = 0
 
-    fn record_response(mut self, status_code: Int, bytes_sent: Int):
+    def record_response(mut self, status_code: Int, bytes_sent: Int):
         """Record a completed response."""
         self.requests_total += 1
         self.bytes_sent_total += bytes_sent
@@ -68,7 +68,7 @@ struct ServerMetrics(Movable):
         elif bucket == 5:
             self.responses_5xx += 1
 
-    fn to_text(self) -> String:
+    def to_text(self) -> String:
         """Prometheus text exposition format (text/plain; version=0.0.4)."""
         return String(
             "# HELP http_requests_total Total HTTP requests received\n",

@@ -19,7 +19,7 @@ struct DecoderState(Equatable, ImplicitlyCopyable):
     comptime IN_TRAILERS_LINE_HEAD = Self(6)
     comptime IN_TRAILERS_LINE_MIDDLE = Self(7)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
 
@@ -32,7 +32,7 @@ struct HTTPChunkedDecoder(Defaultable):
     var _total_read: Int
     var _total_overhead: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.bytes_left_in_chunk = 0
         self.consume_trailer = False
         self._hex_count = 0
@@ -41,7 +41,7 @@ struct HTTPChunkedDecoder(Defaultable):
         self._total_read = 0
         self._total_overhead = 0
 
-    fn decode[origin: MutOrigin](mut self, buf: Span[Byte, origin]) -> Tuple[Int, Int]:
+    def decode[origin: MutOrigin](mut self, buf: Span[Byte, origin]) -> Tuple[Int, Int]:
         """Decode chunked transfer encoding.
 
         Parameters:
@@ -225,12 +225,12 @@ struct HTTPChunkedDecoder(Defaultable):
 
         return (ret, new_bufsz)
 
-    fn is_in_chunk_data(self) -> Bool:
+    def is_in_chunk_data(self) -> Bool:
         """Check if decoder is currently in chunk data state."""
         return self._state == DecoderState.IN_CHUNK_DATA
 
 
-fn decode_hex(ch: Byte) -> Int:
+def decode_hex(ch: Byte) -> Int:
     """Decode hexadecimal character."""
     if ch >= BytesConstant.ZERO and ch <= BytesConstant.NINE:
         return Int(ch - BytesConstant.ZERO)

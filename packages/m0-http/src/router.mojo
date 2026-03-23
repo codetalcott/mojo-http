@@ -12,13 +12,13 @@ struct MatchResult(Copyable, Movable):
     var handler_id: Int
     var params: List[String]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.matched = False
         self.method_not_allowed = False
         self.handler_id = -1
         self.params = List[String]()
 
-    fn __init__(out self, handler_id: Int, var params: List[String]):
+    def __init__(out self, handler_id: Int, var params: List[String]):
         self.matched = True
         self.method_not_allowed = False
         self.handler_id = handler_id
@@ -31,7 +31,7 @@ struct Route(Copyable, Movable):
     var handler_id: Int
     var param_count: Int
 
-    fn __init__(out self, method: String, pattern: String, handler_id: Int):
+    def __init__(out self, method: String, pattern: String, handler_id: Int):
         self.method = method
         self.handler_id = handler_id
         self.param_count = 0
@@ -49,14 +49,14 @@ struct Router:
     """HTTP router with parameterized path matching."""
     var routes: List[Route]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.routes = List[Route]()
 
-    fn add(mut self, method: String, pattern: String, handler_id: Int):
+    def add(mut self, method: String, pattern: String, handler_id: Int):
         """Register a route. Pattern uses :param for captures."""
         self.routes.append(Route(method, pattern, handler_id))
 
-    fn match(self, method: String, path: String) -> MatchResult:
+    def match(self, method: String, path: String) -> MatchResult:
         """Match method + path against registered routes.
 
         Distinguishes 404 (no path match) from 405 (path matched,

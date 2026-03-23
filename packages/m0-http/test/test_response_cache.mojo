@@ -5,26 +5,26 @@ from std.testing import assert_equal, assert_true
 from src.response_cache import ResponseCache
 
 
-fn _b(v: UInt8) -> List[UInt8]:
+def _b(v: UInt8) -> List[UInt8]:
     var b = List[UInt8]()
     b.append(v)
     return b^
 
 
-fn _b3() -> List[UInt8]:
+def _b3() -> List[UInt8]:
     var b = List[UInt8]()
     b.append(1); b.append(2); b.append(3)
     return b^
 
 
-fn test_cache_miss() raises:
+def test_cache_miss() raises:
     """Unknown URL should return empty."""
     var cache = ResponseCache()
     assert_equal(cache.get_etag("/missing"), "")
     assert_equal(len(cache.get_buffer("/missing")), 0)
 
 
-fn test_cache_put_get() raises:
+def test_cache_put_get() raises:
     """Put and get should round-trip."""
     var cache = ResponseCache()
     var buf = _b3()
@@ -35,7 +35,7 @@ fn test_cache_put_get() raises:
     assert_equal(len(got), 3)
 
 
-fn test_cache_update() raises:
+def test_cache_update() raises:
     """Putting same URL should update the entry."""
     var cache = ResponseCache()
     cache.put("/a", _b(1), "e1")
@@ -47,7 +47,7 @@ fn test_cache_update() raises:
     assert_equal(cache.size(), 1)
 
 
-fn test_cache_invalidate() raises:
+def test_cache_invalidate() raises:
     """Invalidate should remove the entry."""
     var cache = ResponseCache()
     cache.put("/a", _b(1), "e1")
@@ -56,7 +56,7 @@ fn test_cache_invalidate() raises:
     assert_equal(cache.size(), 0)
 
 
-fn test_cache_invalidate_prefix() raises:
+def test_cache_invalidate_prefix() raises:
     """Invalidate prefix should remove matching entries."""
     var cache = ResponseCache()
     cache.put("/orders/1", _b(1), "e1")
@@ -67,7 +67,7 @@ fn test_cache_invalidate_prefix() raises:
     assert_equal(cache.get_etag("/users/1"), "e3")
 
 
-fn test_cache_lru_eviction() raises:
+def test_cache_lru_eviction() raises:
     """Cache should evict LRU entries when at capacity."""
     var cache = ResponseCache(max_entries=3)
     cache.put("/a", _b(1), "e1")
@@ -83,7 +83,7 @@ fn test_cache_lru_eviction() raises:
     assert_equal(cache.get_etag("/a"), "e1")
 
 
-fn test_cache_lru_fills_to_max() raises:
+def test_cache_lru_fills_to_max() raises:
     """Cache should never exceed max_entries when filling beyond capacity."""
     var cache = ResponseCache(max_entries=4)
     for i in range(8):
@@ -93,7 +93,7 @@ fn test_cache_lru_fills_to_max() raises:
     assert_true(len(cache.get_etag("/7")) > 0, "most recent entry should exist")
 
 
-fn test_cache_lru_access_pattern() raises:
+def test_cache_lru_access_pattern() raises:
     """Accessing an entry should protect it from eviction."""
     var cache = ResponseCache(max_entries=3)
     cache.put("/a", _b(1), "e1")
@@ -109,7 +109,7 @@ fn test_cache_lru_access_pattern() raises:
     assert_equal(cache.get_etag("/d"), "e4", "/d should exist")
 
 
-fn test_cache_lru_put_resets_access() raises:
+def test_cache_lru_put_resets_access() raises:
     """Updating an entry via put should reset its access time."""
     var cache = ResponseCache(max_entries=3)
     cache.put("/a", _b(1), "e1")

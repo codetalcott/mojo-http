@@ -23,7 +23,7 @@ struct KqueueBackend(EventLoopBackend):
     var _events: UnsafePointer[kevent_t, MutExternalOrigin]
     var _n_ready: Int
 
-    fn __init__(out self) raises:
+    def __init__(out self) raises:
         self.kq = kqueue()
         self._events = alloc[kevent_t](count=_MAX_EVENTS)
         for i in range(_MAX_EVENTS):
@@ -34,56 +34,56 @@ struct KqueueBackend(EventLoopBackend):
 
     # --- EventLoopBackend methods ---
 
-    fn wait(mut self, timeout_ms: Int) raises -> Int:
+    def wait(mut self, timeout_ms: Int) raises -> Int:
         self._n_ready = kevent_poll(self.kq, self._events, _MAX_EVENTS, timeout_ms)
         return self._n_ready
 
-    fn event_ident(self, i: Int) -> UInt:
+    def event_ident(self, i: Int) -> UInt:
         return self._events[i].ident
 
-    fn event_filter(self, i: Int) -> Int16:
+    def event_filter(self, i: Int) -> Int16:
         return self._events[i].filter
 
-    fn event_flags(self, i: Int) -> UInt16:
+    def event_flags(self, i: Int) -> UInt16:
         return self._events[i].flags
 
-    fn event_data(self, i: Int) -> Int:
+    def event_data(self, i: Int) -> Int:
         return self._events[i].data
 
-    fn add_read_listen(mut self, fd: Int) raises:
+    def add_read_listen(mut self, fd: Int) raises:
         kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_READ, EV_ADD | EV_CLEAR))
 
-    fn add_read(mut self, fd: Int) raises:
+    def add_read(mut self, fd: Int) raises:
         kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_READ, EV_ADD))
 
-    fn try_add_read(mut self, fd: Int):
+    def try_add_read(mut self, fd: Int):
         try:
             self.add_read(fd)
         except:
             pass
 
-    fn add_write_oneshot(mut self, fd: Int) raises:
+    def add_write_oneshot(mut self, fd: Int) raises:
         kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_WRITE, EV_ADD | EV_ONESHOT))
 
-    fn try_add_write_oneshot(mut self, fd: Int):
+    def try_add_write_oneshot(mut self, fd: Int):
         try:
             self.add_write_oneshot(fd)
         except:
             pass
 
-    fn try_delete_read(mut self, fd: Int):
+    def try_delete_read(mut self, fd: Int):
         try:
             kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_READ, EV_DELETE))
         except:
             pass
 
-    fn try_delete_write(mut self, fd: Int):
+    def try_delete_write(mut self, fd: Int):
         try:
             kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_WRITE, EV_DELETE))
         except:
             pass
 
-    fn try_add_timer(mut self, ident: UInt, timeout_ms: Int):
+    def try_add_timer(mut self, ident: UInt, timeout_ms: Int):
         try:
             kevent_register_one(
                 self.kq,
@@ -92,7 +92,7 @@ struct KqueueBackend(EventLoopBackend):
         except:
             pass
 
-    fn try_delete_timer(mut self, ident: UInt):
+    def try_delete_timer(mut self, ident: UInt):
         try:
             kevent_register_one(self.kq, ev_set(ident, EVFILT_TIMER, EV_DELETE))
         except:

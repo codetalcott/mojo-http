@@ -9,7 +9,7 @@ from .hashing import (
     fnv1a, fnv1a_step, format_hash, format_hash32, format_hash64,
     xxhash32, format_xxhash, fnv1a_batch, xxhash32_batch,
     wyhash64, wyhash64_string, hex_nibble,
-    _fnv1a_ptr, _xxhash32_ptr, _read_u32_ptr,
+    _fnv1a_ptr, _xxhash32_ptr, _read_u32_le,
 )
 from .result import Result, Ok, Err, map_result, flat_map_result
 from .aop import identity, constant, fork, hook, atop, over, under

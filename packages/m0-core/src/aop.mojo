@@ -18,15 +18,15 @@ Notation:
 # ============================================================================
 
 
-fn identity[T: Copyable & Movable & ImplicitlyDestructible](input: T) -> T:
+def identity[T: Copyable & Movable & ImplicitlyDestructible](input: T) -> T:
     """Identity combinator (I combinator). Returns input unchanged."""
     return input.copy()
 
 
-fn constant[
+def constant[
     T: Copyable & Movable & ImplicitlyDestructible,
     U: Copyable & Movable & ImplicitlyDestructible,
-    val_fn: fn () -> T,
+    val_fn: def () -> T,
 ](ignored: U) -> T:
     """Constant combinator (K combinator).
 
@@ -42,14 +42,14 @@ fn constant[
 # ============================================================================
 
 
-fn fork[
+def fork[
     T: Copyable & Movable & ImplicitlyDestructible,
     L: Copyable & Movable & ImplicitlyDestructible,
     R: Copyable & Movable & ImplicitlyDestructible,
     O: Copyable & Movable & ImplicitlyDestructible,
-    left_fn: fn (T) -> L,
-    middle_fn: fn (L, R) -> O,
-    right_fn: fn (T) -> R,
+    left_fn: def (T) -> L,
+    middle_fn: def (L, R) -> O,
+    right_fn: def (T) -> R,
 ](input: T) -> O:
     """Fork combinator — parallel execution with merge.
 
@@ -66,12 +66,12 @@ fn fork[
 # ============================================================================
 
 
-fn hook[
+def hook[
     T: Copyable & Movable & ImplicitlyDestructible,
     R: Copyable & Movable & ImplicitlyDestructible,
     O: Copyable & Movable & ImplicitlyDestructible,
-    left_fn: fn (T, R) -> O,
-    right_fn: fn (T) -> R,
+    left_fn: def (T, R) -> O,
+    right_fn: def (T) -> R,
 ](input: T) -> O:
     """Hook combinator — monadic hook.
 
@@ -87,12 +87,12 @@ fn hook[
 # ============================================================================
 
 
-fn atop[
+def atop[
     T: Copyable & Movable & ImplicitlyDestructible,
     U: Copyable & Movable & ImplicitlyDestructible,
     V: Copyable & Movable & ImplicitlyDestructible,
-    f: fn (U) -> V,
-    g: fn (T) -> U,
+    f: def (U) -> V,
+    g: def (T) -> U,
 ](input: T) -> V:
     """Atop combinator — two-function composition.
 
@@ -106,12 +106,12 @@ fn atop[
 # ============================================================================
 
 
-fn over[
+def over[
     T: Copyable & Movable & ImplicitlyDestructible,
     U: Copyable & Movable & ImplicitlyDestructible,
     O: Copyable & Movable & ImplicitlyDestructible,
-    combine_fn: fn (U, U) -> O,
-    transform_fn: fn (T) -> U,
+    combine_fn: def (U, U) -> O,
+    transform_fn: def (T) -> U,
 ](a: T, b: T) -> O:
     """Over combinator — apply same transform to both args, then combine.
 
@@ -125,12 +125,12 @@ fn over[
 # ============================================================================
 
 
-fn under[
+def under[
     T: Copyable & Movable & ImplicitlyDestructible,
     U: Copyable & Movable & ImplicitlyDestructible,
-    transform_fn: fn (T) -> U,
-    operation_fn: fn (U) -> U,
-    untransform_fn: fn (U) -> T,
+    transform_fn: def (T) -> U,
+    operation_fn: def (U) -> U,
+    untransform_fn: def (U) -> T,
 ](input: T) -> T:
     """Under combinator — transform, apply, untransform.
 

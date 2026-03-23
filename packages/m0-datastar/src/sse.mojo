@@ -21,7 +21,7 @@ from .consts import (
 )
 
 
-fn _build_sse(
+def _build_sse(
     event_type: String,
     data_lines: List[String],
     event_id: String = "",
@@ -49,7 +49,7 @@ fn _build_sse(
     return s^
 
 
-fn patch_elements(
+def patch_elements(
     elements: String,
     selector: String = "",
     mode: String = DEFAULT_PATCH_MODE,
@@ -87,7 +87,7 @@ fn patch_elements(
     return _build_sse(EVENT_PATCH_ELEMENTS, lines, event_id, retry_duration)
 
 
-fn patch_signals(
+def patch_signals(
     signals: String,
     event_id: String = "",
     only_if_missing: Bool = False,
@@ -108,7 +108,7 @@ fn patch_signals(
     return _build_sse(EVENT_PATCH_SIGNALS, lines, event_id, retry_duration)
 
 
-fn execute_script(
+def execute_script(
     script: String,
     auto_remove: Bool = True,
     event_id: String = "",
@@ -135,7 +135,7 @@ fn execute_script(
     )
 
 
-fn redirect(location: String) -> String:
+def redirect(location: String) -> String:
     """Generate a redirect event that navigates to a new URL.
 
     Args:

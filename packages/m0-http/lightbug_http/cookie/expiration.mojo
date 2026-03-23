@@ -10,28 +10,28 @@ struct Expiration(Copyable):
     var variant: UInt8
 
     @staticmethod
-    fn session() -> Self:
+    def session() -> Self:
         return Self(variant=0)
 
     @staticmethod
-    fn from_string(str: String) -> Optional[Expiration]:
+    def from_string(str: String) -> Optional[Expiration]:
         return None
 
     @staticmethod
-    fn invalidate() -> Self:
+    def invalidate() -> Self:
         return Self(variant=1)
 
-    fn is_session(self) -> Bool:
+    def is_session(self) -> Bool:
         return self.variant == 0
 
-    fn is_datetime(self) -> Bool:
+    def is_datetime(self) -> Bool:
         return False
 
-    fn http_date_timestamp(self) raises -> Optional[String]:
+    def http_date_timestamp(self) raises -> Optional[String]:
         return Optional[String](None)
 
-    fn copy(self) -> Self:
+    def copy(self) -> Self:
         return Self(variant=self.variant)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.variant == other.variant

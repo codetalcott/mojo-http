@@ -11,6 +11,7 @@ Internal _*_ptr functions operate on raw byte pointers and are shared
 by both the String-based API and C-ABI FFI exports.
 """
 
+from std.bit import rotate_bits_left
 from std.memory import UnsafePointer, memcpy
 
 
@@ -19,7 +20,7 @@ from std.memory import UnsafePointer, memcpy
 # ============================================================================
 
 
-fn format_hash32(hash: UInt32) -> String:
+def format_hash32(hash: UInt32) -> String:
     """Format a 32-bit hash as an 8-character zero-padded hex string."""
     comptime hex_chars = "0123456789abcdef"
     var hex_ptr = hex_chars.as_bytes().unsafe_ptr()
@@ -32,7 +33,7 @@ fn format_hash32(hash: UInt32) -> String:
     return String(unsafe_from_utf8=Span(ptr=out.unsafe_ptr(), length=8))
 
 
-fn format_hash64(val: UInt64) -> String:
+def format_hash64(val: UInt64) -> String:
     """Format a 64-bit hash as a 16-character zero-padded hex string."""
     comptime hex_chars = "0123456789abcdef"
     var hex_ptr = hex_chars.as_bytes().unsafe_ptr()
@@ -45,7 +46,7 @@ fn format_hash64(val: UInt64) -> String:
     return String(unsafe_from_utf8=Span(ptr=out.unsafe_ptr(), length=16))
 
 
-fn hex_nibble(val: Int) -> UInt8:
+def hex_nibble(val: Int) -> UInt8:
     """Convert a nibble (0-15) to its ASCII hex character."""
     if val < 10:
         return UInt8(ord('0') + val)
@@ -53,12 +54,12 @@ fn hex_nibble(val: Int) -> UInt8:
 
 
 # Legacy aliases
-fn format_hash(hash: UInt32) -> String:
+def format_hash(hash: UInt32) -> String:
     """Format a 32-bit hash as 8-char hex. Alias for format_hash32."""
     return format_hash32(hash)
 
 
-fn format_xxhash(hash: UInt32) -> String:
+def format_xxhash(hash: UInt32) -> String:
     """Format xxHash32 result as 8-char hex. Alias for format_hash32."""
     return format_hash32(hash)
 
@@ -71,14 +72,14 @@ comptime FNV_OFFSET_BASIS: UInt32 = 2166136261
 comptime FNV_PRIME: UInt32 = 16777619
 
 
-fn fnv1a_step(hash: UInt32, char_code: UInt32) -> UInt32:
+def fnv1a_step(hash: UInt32, char_code: UInt32) -> UInt32:
     """Perform a single FNV-1a hash step for one character code."""
     var h = hash ^ char_code
     h = h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)
     return h
 
 
-fn _fnv1a_ptr(data: UnsafePointer[UInt8, _], length: Int) -> UInt32:
+def _fnv1a_ptr(data: UnsafePointer[UInt8, _], length: Int) -> UInt32:
     """Compute FNV-1a 32-bit hash over a raw byte buffer.
 
     Shared implementation used by both the String API and C-ABI exports.
@@ -89,7 +90,7 @@ fn _fnv1a_ptr(data: UnsafePointer[UInt8, _], length: Int) -> UInt32:
     return hash
 
 
-fn fnv1a(s: String) -> UInt32:
+def fnv1a(s: String) -> UInt32:
     """Compute FNV-1a 32-bit hash for a string.
 
     Non-cryptographic hash with excellent distribution. Used for generating
@@ -110,29 +111,23 @@ comptime PRIME32_4: UInt32 = 0x27D4EB2F
 comptime PRIME32_5: UInt32 = 0x165667B1
 
 
-fn rotl32(x: UInt32, r: Int) -> UInt32:
-    """Perform a 32-bit left rotation."""
-    return (x << UInt32(r)) | (x >> UInt32(32 - r))
+def _read_u32_le(data: UnsafePointer[UInt8, _], offset: Int) -> UInt32:
+    """Read a little-endian UInt32 from a byte pointer via bitcast.
+
+    All target platforms (osx-arm64) are little-endian,
+    so a direct bitcast load produces the correct value.
+    """
+    return (data + offset).bitcast[UInt32]()[]
 
 
-fn _read_u32_ptr(data: UnsafePointer[UInt8, _], offset: Int) -> UInt32:
-    """Read a little-endian UInt32 from 4 consecutive bytes."""
-    return (
-        UInt32(data[offset])
-        | (UInt32(data[offset + 1]) << 8)
-        | (UInt32(data[offset + 2]) << 16)
-        | (UInt32(data[offset + 3]) << 24)
-    )
-
-
-fn _xxhash32_round(acc: UInt32, input: UInt32) -> UInt32:
+def _xxhash32_round(acc: UInt32, input: UInt32) -> UInt32:
     """Perform a single xxHash32 accumulation round."""
     var a = acc + input * PRIME32_2
-    a = rotl32(a, 13)
+    a = rotate_bits_left[shift=13](a)
     return a * PRIME32_1
 
 
-fn _xxhash32_ptr(data: UnsafePointer[UInt8, _], length: Int, seed: UInt32) -> UInt32:
+def _xxhash32_ptr(data: UnsafePointer[UInt8, _], length: Int, seed: UInt32) -> UInt32:
     """Compute xxHash32 over a raw byte buffer.
 
     Shared implementation used by both the String API and C-ABI exports.
@@ -148,25 +143,30 @@ fn _xxhash32_ptr(data: UnsafePointer[UInt8, _], length: Int, seed: UInt32) -> UI
 
         var limit = length - 16
         while i <= limit:
-            v1 = _xxhash32_round(v1, _read_u32_ptr(data, i))
-            v2 = _xxhash32_round(v2, _read_u32_ptr(data, i + 4))
-            v3 = _xxhash32_round(v3, _read_u32_ptr(data, i + 8))
-            v4 = _xxhash32_round(v4, _read_u32_ptr(data, i + 12))
+            v1 = _xxhash32_round(v1, _read_u32_le(data, i))
+            v2 = _xxhash32_round(v2, _read_u32_le(data, i + 4))
+            v3 = _xxhash32_round(v3, _read_u32_le(data, i + 8))
+            v4 = _xxhash32_round(v4, _read_u32_le(data, i + 12))
             i += 16
 
-        h32 = rotl32(v1, 1) + rotl32(v2, 7) + rotl32(v3, 12) + rotl32(v4, 18)
+        h32 = (
+            rotate_bits_left[shift=1](v1)
+            + rotate_bits_left[shift=7](v2)
+            + rotate_bits_left[shift=12](v3)
+            + rotate_bits_left[shift=18](v4)
+        )
     else:
         h32 = seed + PRIME32_5
 
     h32 = h32 + UInt32(length)
 
     while i <= length - 4:
-        var k = _read_u32_ptr(data, i)
-        h32 = rotl32(h32 + k * PRIME32_3, 17) * PRIME32_4
+        var k = _read_u32_le(data, i)
+        h32 = rotate_bits_left[shift=17](h32 + k * PRIME32_3) * PRIME32_4
         i += 4
 
     while i < length:
-        h32 = rotl32(h32 + UInt32(data[i]) * PRIME32_5, 11) * PRIME32_1
+        h32 = rotate_bits_left[shift=11](h32 + UInt32(data[i]) * PRIME32_5) * PRIME32_1
         i += 1
 
     h32 ^= h32 >> 15
@@ -178,7 +178,7 @@ fn _xxhash32_ptr(data: UnsafePointer[UInt8, _], length: Int, seed: UInt32) -> UI
     return h32
 
 
-fn xxhash32(input: String, seed: UInt32 = 0) -> UInt32:
+def xxhash32(input: String, seed: UInt32 = 0) -> UInt32:
     """Compute xxHash32 for a string input.
 
     Faster than JSON-based hashing with fewer collisions. Used for effect
@@ -198,14 +198,14 @@ comptime _SECRET2: UInt64 = 0x8EBC6AF09C88C6E3
 comptime _SECRET3: UInt64 = 0x589965CC75374CC3
 
 
-fn _wymix(a: UInt64, b: UInt64) -> UInt64:
+def _wymix(a: UInt64, b: UInt64) -> UInt64:
     """wyhash-style mixing: multiply and fold upper/lower halves."""
     var lo = a * b
     var hi = (a >> 32) * (b >> 32)
     return lo ^ hi
 
 
-fn wyhash64(buf: List[UInt8]) -> UInt64:
+def wyhash64(buf: List[UInt8]) -> UInt64:
     """Compute wyhash64 over a byte buffer.
 
     Fast non-cryptographic 64-bit hash. Processes 32 bytes per iteration
@@ -250,7 +250,7 @@ fn wyhash64(buf: List[UInt8]) -> UInt64:
     return h
 
 
-fn wyhash64_string(s: String) -> UInt64:
+def wyhash64_string(s: String) -> UInt64:
     """Compute wyhash64 for a string."""
     var bytes = s.as_bytes()
     var buf = List[UInt8](capacity=len(bytes))
@@ -264,7 +264,7 @@ fn wyhash64_string(s: String) -> UInt64:
 # ============================================================================
 
 
-fn fnv1a_batch(strings: List[String]) -> List[UInt32]:
+def fnv1a_batch(strings: List[String]) -> List[UInt32]:
     """Compute FNV-1a for multiple strings using SIMD parallelism.
 
     Processes 4 strings simultaneously using SIMD lanes. Each lane
@@ -326,7 +326,7 @@ fn fnv1a_batch(strings: List[String]) -> List[UInt32]:
     return results^
 
 
-fn xxhash32_batch(strings: List[String], seed: UInt32 = 0) -> List[UInt32]:
+def xxhash32_batch(strings: List[String], seed: UInt32 = 0) -> List[UInt32]:
     """Compute xxHash32 for multiple strings.
 
     Uses scalar xxhash32 per string. The primary win comes from batching

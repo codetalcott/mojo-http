@@ -9,7 +9,7 @@ from src.sse.journal import PatchJournal
 
 # --- SSE Format ---
 
-fn test_format_sse_event() raises:
+def test_format_sse_event() raises:
     """SSE event should have id, event, data fields."""
     var s = format_sse_event(1, "update", '{"id":1}')
     assert_true(s.find("id: 1") >= 0)
@@ -17,13 +17,13 @@ fn test_format_sse_event() raises:
     assert_true(s.find('data: {"id":1}') >= 0)
 
 
-fn test_format_sse_heartbeat() raises:
+def test_format_sse_heartbeat() raises:
     """Heartbeat should be a comment line."""
     var s = format_sse_heartbeat()
     assert_true(s.find(": heartbeat") >= 0)
 
 
-fn test_format_sse_multiline_data() raises:
+def test_format_sse_multiline_data() raises:
     """Multi-line data should produce multiple data: fields."""
     var s = format_sse_event(1, "update", "line1\nline2\nline3")
     assert_true(s.find("data: line1\n") >= 0)
@@ -34,7 +34,7 @@ fn test_format_sse_multiline_data() raises:
 
 # --- SSE Registry ---
 
-fn test_registry_subscribe_notify() raises:
+def test_registry_subscribe_notify() raises:
     """Subscribed slot should receive events."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
@@ -45,7 +45,7 @@ fn test_registry_subscribe_notify() raises:
     assert_false(reg.has_pending(0))
 
 
-fn test_registry_filter_by_url() raises:
+def test_registry_filter_by_url() raises:
     """Slot should only receive events for its subscribed URL."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
@@ -55,7 +55,7 @@ fn test_registry_filter_by_url() raises:
     assert_false(reg.has_pending(1))
 
 
-fn test_registry_unsubscribe() raises:
+def test_registry_unsubscribe() raises:
     """Unsubscribed slot should not receive events."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
@@ -64,7 +64,7 @@ fn test_registry_unsubscribe() raises:
     assert_false(reg.has_pending(0))
 
 
-fn test_registry_active_count() raises:
+def test_registry_active_count() raises:
     """active_count should track subscribed slots."""
     var reg = SSERegistry(4)
     assert_equal(reg.active_count(), 0)
@@ -75,7 +75,7 @@ fn test_registry_active_count() raises:
     assert_equal(reg.active_count(), 1)
 
 
-fn test_registry_skips_old_events() raises:
+def test_registry_skips_old_events() raises:
     """Events with id <= last_event_id should be skipped."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 5)
@@ -85,7 +85,7 @@ fn test_registry_skips_old_events() raises:
     assert_true(reg.has_pending(0))
 
 
-fn test_registry_backpressure_preserves_last_id() raises:
+def test_registry_backpressure_preserves_last_id() raises:
     """Dropped events due to backpressure should not advance last_event_id."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
@@ -106,7 +106,7 @@ fn test_registry_backpressure_preserves_last_id() raises:
     # (a new subscriber starting from last_event_id=1 would get event 2)
 
 
-fn test_backpressure_exact_boundary() raises:
+def test_backpressure_exact_boundary() raises:
     """Events exactly at MAX_PENDING_BYTES should be accepted; one byte over rejected."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
@@ -128,7 +128,7 @@ fn test_backpressure_exact_boundary() raises:
         assert_equal(len(reg.pending_bufs[0]), pending_len, "event should be dropped at boundary")
 
 
-fn test_backpressure_recovery_after_drain() raises:
+def test_backpressure_recovery_after_drain() raises:
     """After draining, the slot should accept new events again."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
@@ -145,7 +145,7 @@ fn test_backpressure_recovery_after_drain() raises:
     assert_true(reg.has_pending(0), "should accept events after drain")
 
 
-fn test_backpressure_slots_independent() raises:
+def test_backpressure_slots_independent() raises:
     """Backpressure on slot 0 should not affect slot 1."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
@@ -163,19 +163,19 @@ fn test_backpressure_slots_independent() raises:
 
 # --- Patch Journal ---
 
-fn _bytes2(a: UInt8, b: UInt8) -> List[UInt8]:
+def _bytes2(a: UInt8, b: UInt8) -> List[UInt8]:
     var v = List[UInt8]()
     v.append(a); v.append(b)
     return v^
 
 
-fn _byte(a: UInt8) -> List[UInt8]:
+def _byte(a: UInt8) -> List[UInt8]:
     var v = List[UInt8]()
     v.append(a)
     return v^
 
 
-fn test_journal_append_since() raises:
+def test_journal_append_since() raises:
     """Single event since lastEventId should return patch."""
     var j = PatchJournal()
     var eid = j.append("/orders/1", "e0", "e1", _bytes2(1, 2), _bytes2(10, 20))
@@ -186,7 +186,7 @@ fn test_journal_append_since() raises:
     assert_equal(len(r.data), 2)
 
 
-fn test_journal_multiple_returns_snapshot() raises:
+def test_journal_multiple_returns_snapshot() raises:
     """Multiple events since lastEventId should return snapshot."""
     var j = PatchJournal()
     _ = j.append("/orders/1", "e0", "e1", _byte(1), _byte(10))
@@ -198,7 +198,7 @@ fn test_journal_multiple_returns_snapshot() raises:
     assert_equal(len(r.data), 2)  # latest snapshot
 
 
-fn test_journal_no_events() raises:
+def test_journal_no_events() raises:
     """No events since lastEventId should return none."""
     var j = PatchJournal()
     _ = j.append("/orders/1", "e0", "e1", _byte(1), _byte(10))
@@ -206,7 +206,7 @@ fn test_journal_no_events() raises:
     assert_equal(r.type, "none")
 
 
-fn test_journal_filters_by_url() raises:
+def test_journal_filters_by_url() raises:
     """since() should only return events for the requested URL."""
     var j = PatchJournal()
     _ = j.append("/orders/1", "e0", "e1", _byte(1), _byte(10))
@@ -216,7 +216,7 @@ fn test_journal_filters_by_url() raises:
     assert_equal(r.data[0], 2)
 
 
-fn test_journal_latest_id() raises:
+def test_journal_latest_id() raises:
     """latest_id should return the most recent event ID."""
     var j = PatchJournal()
     assert_equal(j.latest_id(), 0)
@@ -226,7 +226,7 @@ fn test_journal_latest_id() raises:
     assert_equal(j.latest_id(), 2)
 
 
-fn test_journal_has_etag() raises:
+def test_journal_has_etag() raises:
     """has_etag should find matching entries."""
     var j = PatchJournal()
     _ = j.append("/orders/1", "e0", "e1", List[UInt8](), List[UInt8]())
@@ -234,7 +234,7 @@ fn test_journal_has_etag() raises:
     assert_equal(j.has_etag("/orders/1", "e0"), 0)
 
 
-fn test_journal_compact() raises:
+def test_journal_compact() raises:
     """compact should remove all entries for a URL."""
     var j = PatchJournal()
     _ = j.append("/a", "", "", List[UInt8](), List[UInt8]())

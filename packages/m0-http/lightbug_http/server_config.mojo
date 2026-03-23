@@ -46,7 +46,7 @@ struct ServerConfig(Copyable, Movable):
     var sse_heartbeat_ms: Int
     """Milliseconds between SSE heartbeat comments (default: 15000)."""
 
-    fn __init__(out self):
+    def __init__(out self):
         self.max_connections = 1024
         self.max_keepalive_requests = 100
 
@@ -65,7 +65,7 @@ struct ServerConfig(Copyable, Movable):
         self.enable_metrics = False
         self.sse_heartbeat_ms = 15000
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.max_connections = copy.max_connections
         self.max_keepalive_requests = copy.max_keepalive_requests
         self.socket_buffer_size = copy.socket_buffer_size
@@ -80,7 +80,7 @@ struct ServerConfig(Copyable, Movable):
         self.enable_metrics = copy.enable_metrics
         self.sse_heartbeat_ms = copy.sse_heartbeat_ms
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.max_connections = take.max_connections
         self.max_keepalive_requests = take.max_keepalive_requests
         self.socket_buffer_size = take.socket_buffer_size

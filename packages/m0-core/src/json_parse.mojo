@@ -6,12 +6,12 @@ numeric parsing, and boolean literals.
 """
 
 
-fn _is_ws(b: UInt8) -> Bool:
+def _is_ws(b: UInt8) -> Bool:
     """Check if byte is JSON whitespace (space, tab, newline, carriage return)."""
     return b == 0x20 or b == 0x09 or b == 0x0A or b == 0x0D
 
 
-fn _find_value_start(body: String, field: String) -> Int:
+def _find_value_start(body: String, field: String) -> Int:
     """Locate the byte offset of the value for `field` in a JSON object.
 
     Returns the index of the first non-whitespace byte after `"field":`,
@@ -38,7 +38,7 @@ fn _find_value_start(body: String, field: String) -> Int:
     return i
 
 
-fn parse_json_field(body: String, field: String) -> String:
+def parse_json_field(body: String, field: String) -> String:
     """Extract a string value for `field` from a JSON object body.
 
     Handles escaped quotes and backslashes inside values.
@@ -88,7 +88,7 @@ fn parse_json_field(body: String, field: String) -> String:
     return String("")
 
 
-fn parse_json_int(body: String, field: String) -> Int:
+def parse_json_int(body: String, field: String) -> Int:
     """Extract an integer value for `field` from a JSON object body.
 
     Returns -1 if the field is not found or the value is not a valid integer.
@@ -124,7 +124,7 @@ fn parse_json_int(body: String, field: String) -> Int:
     return result
 
 
-fn parse_json_number(body: String, field: String) -> Float64:
+def parse_json_number(body: String, field: String) -> Float64:
     """Extract a numeric value (int or float) for `field` from a JSON object body.
 
     Returns 0.0 if the field is not found or the value is not numeric.
@@ -169,7 +169,7 @@ fn parse_json_number(body: String, field: String) -> Float64:
         return 0.0
 
 
-fn parse_json_bool(body: String, field: String) -> Int:
+def parse_json_bool(body: String, field: String) -> Int:
     """Extract a boolean value for `field` from a JSON object body.
 
     Returns 1 for true, 0 for false, -1 if not found or not a boolean.

@@ -12,12 +12,12 @@ from std.ffi import c_int, external_call, get_errno
 from lightbug_http.c.aliases import ExternalMutUnsafePointer
 
 
-fn _pipe(fds: ExternalMutUnsafePointer[c_int]) -> c_int:
+def _pipe(fds: ExternalMutUnsafePointer[c_int]) -> c_int:
     """Raw pipe() syscall."""
     return external_call["pipe", c_int](fds)
 
 
-fn _close(fd: c_int) -> c_int:
+def _close(fd: c_int) -> c_int:
     """Raw close() syscall."""
     return external_call["close", c_int, c_int](fd)
 
@@ -32,10 +32,10 @@ struct ShutdownHandle(Movable):
 
     var fd: Int
 
-    fn __init__(out self, fd: Int):
+    def __init__(out self, fd: Int):
         self.fd = fd
 
-    fn signal(self):
+    def signal(self):
         """Trigger graceful shutdown by closing the write end of the pipe.
 
         Safe to call at any time — including from a POSIX signal handler, since
@@ -45,7 +45,7 @@ struct ShutdownHandle(Movable):
         _ = _close(c_int(self.fd))
 
 
-fn create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
+def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
     """Create a pipe pair for graceful event-loop shutdown.
 
     Returns:

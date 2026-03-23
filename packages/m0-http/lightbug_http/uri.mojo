@@ -4,7 +4,7 @@ from lightbug_http.io.bytes import ByteReader, Bytes, ByteView
 from lightbug_http.strings import find_all, http, https, strHttp10, strHttp11
 
 
-fn unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: List[String] = List[String]()) -> String:
+def unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: List[String] = List[String]()) -> String:
     var encoded_str = input_str.replace(QueryDelimiters.PLUS_ESCAPED_SPACE, " ") if expand_plus else input_str
 
     var percent_idxs: List[Int] = find_all(encoded_str, URIDelimiters.CHAR_ESCAPE)
@@ -89,35 +89,35 @@ struct Scheme(Equatable, Hashable, ImplicitlyCopyable, Writable):
     comptime HTTP = Self(0)
     comptime HTTPS = Self(1)
 
-    fn __hash__[H: Hasher](self, mut hasher: H):
+    def __hash__[H: Hasher](self, mut hasher: H):
         hasher.update(self.value)
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         if self == Self.HTTP:
             writer.write("HTTP")
         else:
             writer.write("HTTPS")
 
-    fn __repr__(self) -> String:
+    def __repr__(self) -> String:
         return String.write("Scheme(", self, ")")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
 struct URIParseError(Writable):
     var message: String
 
-    fn __init__(out self, var message: String):
+    def __init__(out self, var message: String):
         self.message = message^
 
-    fn write_to[W: Writer, //](self, mut writer: W) -> None:
+    def write_to[W: Writer, //](self, mut writer: W) -> None:
         writer.write(self.message)
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return self.message.copy()
 
 
@@ -139,7 +139,7 @@ struct URI(Copyable, Writable):
     var password: String
 
     @staticmethod
-    fn parse(var uri: String) raises URIParseError -> URI:
+    def parse(var uri: String) raises URIParseError -> URI:
         """Parses a URI which is defined using the following format.
 
         `[scheme:][//[user_info@]host][/]path[?query][#fragment]`
@@ -279,16 +279,16 @@ struct URI(Copyable, Writable):
         result.query_string = query^
         return result^
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         var result = String.write(self.scheme, URIDelimiters.SCHEMA, self.host, self.path)
         if len(self.query_string) > 0:
             result.write(QueryDelimiters.STRING_START, self.query_string)
         return result^
 
-    fn __repr__(self) -> String:
+    def __repr__(self) -> String:
         return String.write(self)
 
-    fn __eq__(self, other: URI) -> Bool:
+    def __eq__(self, other: URI) -> Bool:
         return (
             self.scheme == other.scheme
             and self.host == other.host
@@ -299,7 +299,7 @@ struct URI(Copyable, Writable):
             and self.request_uri == other.request_uri
         )
 
-    fn write_to[T: Writer](self, mut writer: T):
+    def write_to[T: Writer](self, mut writer: T):
         writer.write(
             "URI(",
             "scheme=",
@@ -319,8 +319,8 @@ struct URI(Copyable, Writable):
             ")",
         )
 
-    fn is_https(self) -> Bool:
+    def is_https(self) -> Bool:
         return self.scheme == https
 
-    fn is_http(self) -> Bool:
+    def is_http(self) -> Bool:
         return self.scheme == http or len(self.scheme) == 0

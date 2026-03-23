@@ -34,7 +34,7 @@ from test.test_sse import (
 )
 
 
-fn _run(name: String, func: fn () raises -> None, mut passed: Int, mut failed: Int):
+def _run(name: String, func: def () raises -> None, mut passed: Int, mut failed: Int):
     try:
         func()
         print("  PASS:", name)
@@ -44,7 +44,7 @@ fn _run(name: String, func: fn () raises -> None, mut passed: Int, mut failed: I
         failed += 1
 
 
-fn main() raises:
+def main() raises:
     var passed = 0
     var failed = 0
 

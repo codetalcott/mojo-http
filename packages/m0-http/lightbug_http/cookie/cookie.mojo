@@ -6,10 +6,10 @@ from std.utils import Variant
 struct InvalidCookieError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when a cookie is invalid."""
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write("InvalidCookieError: Invalid cookie format")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -38,7 +38,7 @@ struct Cookie(Copyable):
     var max_age: Optional[Duration]
 
     @staticmethod
-    fn from_set_header(header_str: String) raises InvalidCookieError -> Self:
+    def from_set_header(header_str: String) raises InvalidCookieError -> Self:
         var parts = header_str.split(Cookie.SEPARATOR)
         if len(parts) < 1:
             raise InvalidCookieError()
@@ -72,7 +72,7 @@ struct Cookie(Copyable):
 
         return cookie^
 
-    fn __init__(
+    def __init__(
         out self,
         name: String,
         value: String,
@@ -96,10 +96,10 @@ struct Cookie(Copyable):
         self.same_site = same_site
         self.partitioned = partitioned
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write("Name: ", self.name, " Value: ", self.value)
 
-    fn __copyinit__(out self: Cookie, copy: Cookie):
+    def __copyinit__(out self: Cookie, copy: Cookie):
         self.name = copy.name
         self.value = copy.value
         self.max_age = copy.max_age
@@ -111,7 +111,7 @@ struct Cookie(Copyable):
         self.same_site = copy.same_site
         self.partitioned = copy.partitioned
 
-    fn __moveinit__(out self: Cookie, deinit take: Cookie):
+    def __moveinit__(out self: Cookie, deinit take: Cookie):
         self.name = take.name^
         self.value = take.value^
         self.max_age = take.max_age^
@@ -123,14 +123,14 @@ struct Cookie(Copyable):
         self.same_site = take.same_site^
         self.partitioned = take.partitioned
 
-    fn clear_cookie(mut self):
+    def clear_cookie(mut self):
         self.max_age = Optional[Duration](None)
         self.expires = Expiration.invalidate()
 
-    fn to_header(self) raises -> Header:
+    def to_header(self) raises -> Header:
         return Header(HeaderKey.SET_COOKIE, self.build_header_value())
 
-    fn build_header_value(self) -> String:
+    def build_header_value(self) -> String:
         var header_value = String.write(self.name, Cookie.EQUAL, self.value)
         if self.expires.is_datetime():
             var v: Optional[String]

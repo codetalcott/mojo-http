@@ -17,19 +17,19 @@ from ..hashing import _fnv1a_ptr, _xxhash32_ptr
 
 
 @export("m0_fnv1a", ABI="C")
-fn m0_fnv1a(data: UnsafePointer[UInt8, _], length: UInt32) -> UInt32:
+def m0_fnv1a(data: UnsafePointer[UInt8, _], length: UInt32) -> UInt32:
     """Compute FNV-1a 32-bit hash over a byte buffer."""
     return _fnv1a_ptr(data, Int(length))
 
 
 @export("m0_xxhash32", ABI="C")
-fn m0_xxhash32(data: UnsafePointer[UInt8, _], length: UInt32, seed: UInt32) -> UInt32:
+def m0_xxhash32(data: UnsafePointer[UInt8, _], length: UInt32, seed: UInt32) -> UInt32:
     """Compute xxHash32 over a byte buffer."""
     return _xxhash32_ptr(data, Int(length), seed)
 
 
 @export("m0_format_hash", ABI="C")
-fn m0_format_hash(hash: UInt32, out_buf: UnsafePointer[UInt8, _], buf_len: UInt32) -> UInt32:
+def m0_format_hash(hash: UInt32, out_buf: UnsafePointer[UInt8, _], buf_len: UInt32) -> UInt32:
     """Format a 32-bit hash as 8-character hex string into a caller-provided buffer.
 
     Returns number of bytes written (8 on success, 0 if buffer too small).

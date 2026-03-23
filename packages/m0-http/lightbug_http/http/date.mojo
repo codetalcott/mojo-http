@@ -6,7 +6,7 @@ Uses POSIX time/gmtime instead of small_time dependency.
 from std.ffi import external_call
 
 
-fn http_date_now() -> String:
+def http_date_now() -> String:
     """Get current time formatted as HTTP date.
 
     Returns:

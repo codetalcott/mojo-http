@@ -12,7 +12,7 @@ from std.memory import memcpy
 from .hashing import hex_nibble
 
 
-fn simd_find_escape_char(ptr: UnsafePointer[UInt8, _], length: Int) -> Int:
+def simd_find_escape_char(ptr: UnsafePointer[UInt8, _], length: Int) -> Int:
     """Find first byte needing JSON escape using 64-byte SIMD.
 
     Detects: " (0x22), \\ (0x5C), or any control char < 0x20.
@@ -36,7 +36,7 @@ fn simd_find_escape_char(ptr: UnsafePointer[UInt8, _], length: Int) -> Int:
     return -1
 
 
-fn escape_json_string(s: String) -> String:
+def escape_json_string(s: String) -> String:
     """Escape a string for JSON output, wrapping in double quotes.
 
     Uses SIMD scan for bulk safe-range detection + memcpy.

@@ -15,12 +15,12 @@ from std.ffi import c_int, c_ssize_t, external_call, get_errno
 from lightbug_http.c.aliases import ExternalMutUnsafePointer
 
 
-fn _fork() -> c_int:
+def _fork() -> c_int:
     """Raw fork() syscall."""
     return external_call["fork", c_int]()
 
 
-fn _waitpid(
+def _waitpid(
     pid: c_int, status: ExternalMutUnsafePointer[c_int], options: c_int,
 ) -> c_int:
     """Raw waitpid() syscall."""
@@ -29,17 +29,17 @@ fn _waitpid(
     ](pid, status, options)
 
 
-fn _exit_raw(status: c_int):
+def _exit_raw(status: c_int):
     """Raw _exit() syscall — immediate process termination, no atexit handlers."""
     external_call["_exit", NoneType, c_int](status)
 
 
-fn _getpid() -> c_int:
+def _getpid() -> c_int:
     """Raw getpid() syscall."""
     return external_call["getpid", c_int]()
 
 
-fn fork() raises -> Int:
+def fork() raises -> Int:
     """Fork the current process.
 
     Returns:
@@ -55,7 +55,7 @@ fn fork() raises -> Int:
     return Int(pid)
 
 
-fn waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
+def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
     """Wait for a specific child process to exit (blocking).
 
     Args:
@@ -78,7 +78,7 @@ fn waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
     return (Int(result), status_val)
 
 
-fn process_exit(status: Int):
+def process_exit(status: Int):
     """Immediately terminate the current process.
 
     Uses _exit() (not exit()) to avoid flushing stdio buffers that
@@ -87,7 +87,7 @@ fn process_exit(status: Int):
     _exit_raw(c_int(status))
 
 
-fn getpid() -> Int:
+def getpid() -> Int:
     """Return the PID of the current process."""
     return Int(_getpid())
 
@@ -98,26 +98,26 @@ comptime SIGTERM = 15
 comptime SIGINT = 2
 
 
-fn _kill(pid: c_int, sig: c_int) -> c_int:
+def _kill(pid: c_int, sig: c_int) -> c_int:
     """Raw kill() syscall."""
     return external_call["kill", c_int, c_int, c_int](pid, sig)
 
 
-fn kill_process(pid: Int, signal: Int) -> Bool:
+def kill_process(pid: Int, signal: Int) -> Bool:
     """Send a signal to a process. Returns True on success."""
     return Int(_kill(c_int(pid), c_int(signal))) == 0
 
 
-fn was_signaled(status: Int) -> Bool:
+def was_signaled(status: Int) -> Bool:
     """Check if a child process was terminated by a signal (from waitpid status)."""
     return (status & 0x7F) != 0
 
 
-fn term_signal(status: Int) -> Int:
+def term_signal(status: Int) -> Int:
     """Extract the signal number from a waitpid status."""
     return status & 0x7F
 
 
-fn exit_code(status: Int) -> Int:
+def exit_code(status: Int) -> Int:
     """Extract the exit code from a waitpid status (valid only if not signaled)."""
     return (status >> 8) & 0xFF

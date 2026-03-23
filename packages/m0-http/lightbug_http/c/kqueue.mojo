@@ -65,7 +65,7 @@ struct timespec_t(TrivialRegisterPassable):
     var tv_nsec: Int64
 
 
-fn ev_set(
+def ev_set(
     ident: UInt,
     filter: Int16,
     flags: UInt16,
@@ -77,12 +77,12 @@ fn ev_set(
     return kevent_t(ident, filter, flags, fflags, data, udata)
 
 
-fn _kqueue() -> c_int:
+def _kqueue() -> c_int:
     """Raw kqueue() syscall."""
     return external_call["kqueue", c_int]()
 
 
-fn kqueue() raises -> FileDescriptor:
+def kqueue() raises -> FileDescriptor:
     """Create a new kqueue file descriptor."""
     var result = _kqueue()
     if result == -1:
@@ -91,7 +91,7 @@ fn kqueue() raises -> FileDescriptor:
     return FileDescriptor(Int(result))
 
 
-fn _kevent(
+def _kevent(
     kq: c_int,
     changelist: ExternalMutUnsafePointer[kevent_t],
     nchanges: c_int,
@@ -105,7 +105,7 @@ fn _kevent(
     )
 
 
-fn kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
+def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
     """Submit a single kevent change using stack allocation (zero heap)."""
     var cl = stack_allocation[1, kevent_t]()
     cl[] = ev
@@ -117,7 +117,7 @@ fn kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
         raise Error("kevent_register_one failed, errno: " + String(errno))
 
 
-fn kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
+def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
     """Submit kevent changes without polling for events."""
     var n = len(changes)
     var cl = alloc[kevent_t](count=n)
@@ -134,7 +134,7 @@ fn kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
         raise Error("kevent_register failed, errno: " + String(errno))
 
 
-fn kevent_poll(
+def kevent_poll(
     kq: FileDescriptor,
     eventlist: ExternalMutUnsafePointer[kevent_t],
     max_events: Int,
@@ -160,7 +160,7 @@ fn kevent_poll(
     return Int(result)
 
 
-fn _fcntl(fd: c_int, cmd: c_int, arg: c_int = 0) -> c_int:
+def _fcntl(fd: c_int, cmd: c_int, arg: c_int = 0) -> c_int:
     """Raw fcntl(fd, cmd, arg) — single signature to avoid conflicting declarations.
 
     WARNING: fcntl is variadic (int fcntl(int, int, ...)). On ARM64 macOS,
@@ -173,7 +173,7 @@ fn _fcntl(fd: c_int, cmd: c_int, arg: c_int = 0) -> c_int:
     return external_call["fcntl", c_int, c_int, c_int, c_int](fd, cmd, arg)
 
 
-fn set_nonblocking(fd: FileDescriptor) raises:
+def set_nonblocking(fd: FileDescriptor) raises:
     """Set a file descriptor to non-blocking mode via fcntl().
 
     NOTE: This is currently a no-op on ARM64 macOS due to fcntl's variadic

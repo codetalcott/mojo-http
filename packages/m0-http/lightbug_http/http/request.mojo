@@ -12,7 +12,7 @@ from lightbug_http.cookie import RequestCookieJar
 struct URITooLongError(ImplicitlyCopyable):
     """Request URI exceeded maximum length."""
 
-    fn message(self) -> String:
+    def message(self) -> String:
         return "Request URI exceeds maximum allowed length"
 
 
@@ -20,7 +20,7 @@ struct URITooLongError(ImplicitlyCopyable):
 struct RequestBodyTooLargeError(ImplicitlyCopyable):
     """Request body exceeded maximum size."""
 
-    fn message(self) -> String:
+    def message(self) -> String:
         return "Request body exceeds maximum allowed size"
 
 
@@ -28,7 +28,7 @@ struct RequestBodyTooLargeError(ImplicitlyCopyable):
 struct URIParseError(ImplicitlyCopyable):
     """Failed to parse request URI."""
 
-    fn message(self) -> String:
+    def message(self) -> String:
         return "Malformed request URI"
 
 
@@ -38,7 +38,7 @@ struct CookieParseError(ImplicitlyCopyable):
 
     var detail: String
 
-    fn message(self) -> String:
+    def message(self) -> String:
         return String("Invalid cookies: ", self.detail)
 
 
@@ -90,7 +90,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
     var slot_id: Int
 
     @staticmethod
-    fn from_parsed(
+    def from_parsed(
         server_addr: String,
         parsed: ParsedRequestHeaders,
         var body: Bytes,
@@ -145,7 +145,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
         return request^
 
-    fn __init__(
+    def __init__(
         out self,
         var uri: URI,
         var headers: Headers = Headers(),
@@ -184,19 +184,19 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             else:
                 self.headers[HeaderKey.HOST] = self.uri.host
 
-    fn get_body(self) -> StringSlice[origin_of(self.body_raw)]:
+    def get_body(self) -> StringSlice[origin_of(self.body_raw)]:
         """Get the request body as a string slice."""
         return StringSlice(unsafe_from_utf8=Span(self.body_raw))
 
-    fn set_connection_close(mut self):
+    def set_connection_close(mut self):
         """Set the Connection header to 'close'."""
         self.headers[HeaderKey.CONNECTION] = "close"
 
-    fn set_content_length(mut self, length: Int):
+    def set_content_length(mut self, length: Int):
         """Set the Content-Length header."""
         self.headers[HeaderKey.CONTENT_LENGTH] = String(length)
 
-    fn connection_close(self) -> Bool:
+    def connection_close(self) -> Bool:
         """Check if the Connection header is set to 'close'.
 
         RFC 9110 §7.6.1: Connection option tokens are case-insensitive.
@@ -206,7 +206,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             return False
         return result.value().lower() == "close"
 
-    fn write_to[T: Writer, //](self, mut writer: T):
+    def write_to[T: Writer, //](self, mut writer: T):
         """Write the request in HTTP format to a writer."""
         path = self.uri.path if len(self.uri.path) > 1 else strSlash
         if len(self.uri.query_string) > 0:
@@ -225,7 +225,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             StringSlice(unsafe_from_utf8=Span(self.body_raw)),
         )
 
-    fn encode(deinit self) -> Bytes:
+    def encode(deinit self) -> Bytes:
         """Encode request as bytes, consuming the request."""
         var path = self.uri.path if len(self.uri.path) > 1 else strSlash
         if len(self.uri.query_string) > 0:
@@ -245,10 +245,10 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
-    fn __eq__(self, other: HTTPRequest) -> Bool:
+    def __eq__(self, other: HTTPRequest) -> Bool:
         return (
             self.method == other.method
             and self.protocol == other.protocol
@@ -258,5 +258,5 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             and len(self.body_raw) == len(other.body_raw)
         )
 
-    fn __isnot__(self, other: HTTPRequest) -> Bool:
+    def __isnot__(self, other: HTTPRequest) -> Bool:
         return not self.__eq__(other)

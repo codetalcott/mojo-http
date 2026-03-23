@@ -15,7 +15,7 @@ struct AcceptResult(Copyable, Movable):
     var wants_event_stream: Bool
     var wants_problem_json: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         self.wants_html = False
         self.wants_json = False
         self.wants_links_json = False
@@ -25,7 +25,7 @@ struct AcceptResult(Copyable, Movable):
         self.wants_problem_json = False
 
 
-fn _parse_quality(s: String) -> Float64:
+def _parse_quality(s: String) -> Float64:
     """Parse a quality factor value (0.0-1.0) from a string."""
     if len(s) == 0:
         return 1.0
@@ -48,7 +48,7 @@ fn _parse_quality(s: String) -> Float64:
     return result
 
 
-fn parse_accept(accept: String) -> AcceptResult:
+def parse_accept(accept: String) -> AcceptResult:
     """Parse Accept header with quality factors per RFC 7231.
 
     Splits on comma, extracts media type and q= parameter.
@@ -76,7 +76,7 @@ fn parse_accept(accept: String) -> AcceptResult:
     return result^
 
 
-fn _parse_media_range(part: String, mut result: AcceptResult):
+def _parse_media_range(part: String, mut result: AcceptResult):
     """Parse a single media range entry like 'application/json;q=0.8'."""
     var semi_pos = part.find(";")
     var media_type: String
@@ -112,7 +112,7 @@ fn _parse_media_range(part: String, mut result: AcceptResult):
             result.wants_json = quality > 0
 
 
-fn _trim(s: String) -> String:
+def _trim(s: String) -> String:
     """Trim leading and trailing whitespace."""
     var bytes = s.as_bytes()
     var start = 0
@@ -127,17 +127,17 @@ fn _trim(s: String) -> String:
 
 
 # Convenience predicates
-fn wants_siren_bin(accept: String) -> Bool:
+def wants_siren_bin(accept: String) -> Bool:
     return parse_accept(accept).wants_siren_bin
 
 
-fn wants_patch(accept: String) -> Bool:
+def wants_patch(accept: String) -> Bool:
     return parse_accept(accept).wants_siren_bin_patch
 
 
-fn wants_html(accept: String) -> Bool:
+def wants_html(accept: String) -> Bool:
     return parse_accept(accept).wants_html
 
 
-fn wants_event_stream(accept: String) -> Bool:
+def wants_event_stream(accept: String) -> Bool:
     return parse_accept(accept).wants_event_stream

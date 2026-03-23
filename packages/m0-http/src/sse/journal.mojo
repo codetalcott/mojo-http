@@ -17,7 +17,7 @@ struct JournalResult:
     var base_etag: String
     var event_id: Int
 
-    fn __init__(out self, type: String, data: List[UInt8], etag: String, base_etag: String, event_id: Int):
+    def __init__(out self, type: String, data: List[UInt8], etag: String, base_etag: String, event_id: Int):
         self.type = type
         self.data = data.copy()
         self.etag = etag
@@ -37,7 +37,7 @@ struct PatchJournal:
     var next_id: Int
     var max_entries: Int
 
-    fn __init__(out self, max_entries: Int = 100):
+    def __init__(out self, max_entries: Int = 100):
         self.urls = List[String]()
         self.event_ids = List[Int]()
         self.base_etags = List[String]()
@@ -47,7 +47,7 @@ struct PatchJournal:
         self.next_id = 1
         self.max_entries = max_entries
 
-    fn append(
+    def append(
         mut self,
         url: String,
         base_etag: String,
@@ -71,7 +71,7 @@ struct PatchJournal:
 
         return eid
 
-    fn since(self, url: String, last_event_id: Int) -> JournalResult:
+    def since(self, url: String, last_event_id: Int) -> JournalResult:
         """Get events since last_event_id for a URL.
 
         Returns:
@@ -109,7 +109,7 @@ struct PatchJournal:
             self.event_ids[last_idx],
         )
 
-    fn latest_snapshot(self, url: String) -> JournalResult:
+    def latest_snapshot(self, url: String) -> JournalResult:
         """Get the latest snapshot for a URL."""
         var latest_idx = -1
         var latest_eid = -1
@@ -129,11 +129,11 @@ struct PatchJournal:
             self.event_ids[latest_idx],
         )
 
-    fn latest_id(self) -> Int:
+    def latest_id(self) -> Int:
         """Return the most recent event ID, or 0 if empty."""
         return self.next_id - 1
 
-    fn has_etag(self, url: String, etag: String) -> Int:
+    def has_etag(self, url: String, etag: String) -> Int:
         """Check if journal has an entry for URL with matching etag.
         Returns the event_id if found, 0 if not."""
         for i in range(len(self.urls) - 1, -1, -1):
@@ -141,7 +141,7 @@ struct PatchJournal:
                 return self.event_ids[i]
         return 0
 
-    fn compact(mut self, url: String):
+    def compact(mut self, url: String):
         """Remove all entries for a URL."""
         var i = 0
         while i < len(self.urls):
@@ -150,7 +150,7 @@ struct PatchJournal:
             else:
                 i += 1
 
-    fn _compact_oldest(mut self):
+    def _compact_oldest(mut self):
         """Remove oldest entries when over max_entries."""
         var to_remove = len(self.urls) // 4
         if to_remove < 1:
@@ -164,7 +164,7 @@ struct PatchJournal:
                     min_idx = i
             self._remove_at(min_idx)
 
-    fn _remove_at(mut self, idx: Int):
+    def _remove_at(mut self, idx: Int):
         """Remove entry at index using swap-with-last."""
         var last = len(self.urls) - 1
         if idx != last:

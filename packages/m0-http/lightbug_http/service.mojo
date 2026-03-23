@@ -5,25 +5,25 @@ from lightbug_http.http import OK, HTTPRequest, HTTPResponse, NotFound
 
 
 trait HTTPService:
-    fn func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         ...
 
-    fn sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         """Return and clear pending SSE outbound data for a slot."""
         ...
 
-    fn sse_is_streaming(self, slot: Int) -> Bool:
+    def sse_is_streaming(self, slot: Int) -> Bool:
         """Check if a slot is in SSE streaming mode."""
         ...
 
-    fn sse_slot_disconnected(mut self, slot: Int):
+    def sse_slot_disconnected(mut self, slot: Int):
         """Notify the service that an SSE client disconnected."""
         ...
 
 
 @fieldwise_init
 struct Printer(HTTPService):
-    fn func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         print("Request URI:", req.uri.request_uri)
         print("Request protocol:", req.protocol)
         print("Request method:", req.method)
@@ -34,19 +34,19 @@ struct Printer(HTTPService):
 
         return OK(req.body_raw)
 
-    fn sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
 
-    fn sse_is_streaming(self, slot: Int) -> Bool:
+    def sse_is_streaming(self, slot: Int) -> Bool:
         return False
 
-    fn sse_slot_disconnected(mut self, slot: Int):
+    def sse_slot_disconnected(mut self, slot: Int):
         pass
 
 
 @fieldwise_init
 struct Welcome(HTTPService):
-    fn func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         if req.uri.path == "/":
             with open("static/lightbug_welcome.html", "r") as f:
                 return OK(Bytes(f.read_bytes()), "text/html; charset=utf-8")
@@ -57,19 +57,19 @@ struct Welcome(HTTPService):
 
         return NotFound(req.uri.path)
 
-    fn sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
 
-    fn sse_is_streaming(self, slot: Int) -> Bool:
+    def sse_is_streaming(self, slot: Int) -> Bool:
         return False
 
-    fn sse_slot_disconnected(mut self, slot: Int):
+    def sse_slot_disconnected(mut self, slot: Int):
         pass
 
 
 @fieldwise_init
 struct ExampleRouter(HTTPService):
-    fn func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         if req.uri.path == "/":
             print("I'm on the index path!")
         if req.uri.path == "/first":
@@ -81,19 +81,19 @@ struct ExampleRouter(HTTPService):
 
         return OK(req.body_raw)
 
-    fn sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
 
-    fn sse_is_streaming(self, slot: Int) -> Bool:
+    def sse_is_streaming(self, slot: Int) -> Bool:
         return False
 
-    fn sse_slot_disconnected(mut self, slot: Int):
+    def sse_slot_disconnected(mut self, slot: Int):
         pass
 
 
 @fieldwise_init
 struct TechEmpowerRouter(HTTPService):
-    fn func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         if req.uri.path == "/plaintext":
             return OK("Hello, World!", "text/plain")
         elif req.uri.path == "/json":
@@ -101,13 +101,13 @@ struct TechEmpowerRouter(HTTPService):
 
         return OK("Hello world!")  # text/plain is the default
 
-    fn sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
 
-    fn sse_is_streaming(self, slot: Int) -> Bool:
+    def sse_is_streaming(self, slot: Int) -> Bool:
         return False
 
-    fn sse_slot_disconnected(mut self, slot: Int):
+    def sse_slot_disconnected(mut self, slot: Int):
         pass
 
 
@@ -115,18 +115,18 @@ struct TechEmpowerRouter(HTTPService):
 struct Counter(HTTPService):
     var counter: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.counter = 0
 
-    fn func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         self.counter += 1
         return OK("I have been called: " + String(self.counter) + " times")
 
-    fn sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
 
-    fn sse_is_streaming(self, slot: Int) -> Bool:
+    def sse_is_streaming(self, slot: Int) -> Bool:
         return False
 
-    fn sse_slot_disconnected(mut self, slot: Int):
+    def sse_slot_disconnected(mut self, slot: Int):
         pass

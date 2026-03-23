@@ -73,12 +73,12 @@ struct itimerspec_t(TrivialRegisterPassable):
     var value_nsec: Int64     # struct timespec it_value.tv_nsec
 
 
-fn epoll_create1(flags: c_int) -> c_int:
+def epoll_create1(flags: c_int) -> c_int:
     """Raw epoll_create1(flags) syscall."""
     return external_call["epoll_create1", c_int, c_int](flags)
 
 
-fn _epoll_ctl(
+def _epoll_ctl(
     epfd: c_int,
     op: c_int,
     fd: c_int,
@@ -89,7 +89,7 @@ fn _epoll_ctl(
     )
 
 
-fn epoll_ctl_add(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
+def epoll_ctl_add(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
     """Register fd with epoll (EPOLL_CTL_ADD)."""
     var ev_stack = stack_allocation[1, epoll_event_t]()
     ev_stack[] = ev
@@ -99,7 +99,7 @@ fn epoll_ctl_add(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
         raise Error("epoll_ctl ADD failed, errno: ", errno)
 
 
-fn epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
+def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
     """Modify fd's epoll registration (EPOLL_CTL_MOD)."""
     var ev_stack = stack_allocation[1, epoll_event_t]()
     ev_stack[] = ev
@@ -109,7 +109,7 @@ fn epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
         raise Error("epoll_ctl MOD failed, errno: ", errno)
 
 
-fn epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
+def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
     """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored."""
     var null_ev = ExternalMutUnsafePointer[epoll_event_t]()
     var result = _epoll_ctl(Int32(epfd.value), EPOLL_CTL_DEL, c_int(fd), null_ev)
@@ -118,7 +118,7 @@ fn epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
         raise Error("epoll_ctl DEL failed, errno: ", errno)
 
 
-fn epoll_wait(
+def epoll_wait(
     epfd: FileDescriptor,
     events: ExternalMutUnsafePointer[epoll_event_t],
     max_events: Int,
@@ -137,12 +137,12 @@ fn epoll_wait(
     return Int(result)
 
 
-fn timerfd_create(clockid: c_int, flags: c_int) -> c_int:
+def timerfd_create(clockid: c_int, flags: c_int) -> c_int:
     """Raw timerfd_create(2) syscall."""
     return external_call["timerfd_create", c_int, c_int, c_int](clockid, flags)
 
 
-fn timerfd_settime(
+def timerfd_settime(
     fd: c_int,
     flags: c_int,
     new_value: ExternalMutUnsafePointer[itimerspec_t],
@@ -157,7 +157,7 @@ fn timerfd_settime(
     ](fd, flags, new_value, old_value)
 
 
-fn set_timerfd_ms(fd: Int, timeout_ms: Int) raises:
+def set_timerfd_ms(fd: Int, timeout_ms: Int) raises:
     """Arm (or re-arm) a timerfd for a one-shot timeout in milliseconds."""
     var spec_stack = stack_allocation[1, itimerspec_t]()
     spec_stack[] = itimerspec_t(

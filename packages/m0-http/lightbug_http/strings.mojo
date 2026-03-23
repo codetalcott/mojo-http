@@ -55,7 +55,7 @@ struct BytesConstant:
     comptime TILDE = byte["~"]()
 
 
-fn find_all(s: String, sub_str: String) -> List[Int]:
+def find_all(s: String, sub_str: String) -> List[Int]:
     match_idxs = List[Int]()
     var current_idx: Int = s.find(sub_str)
     while current_idx > -1:
@@ -67,7 +67,7 @@ fn find_all(s: String, sub_str: String) -> List[Int]:
 comptime IS_PRINTABLE_ASCII_MASK = 0o137
 
 
-fn is_printable_ascii(c: UInt8) -> Bool:
+def is_printable_ascii(c: UInt8) -> Bool:
     return (c - 0x20) < IS_PRINTABLE_ASCII_MASK
 
 
@@ -76,7 +76,7 @@ fn is_printable_ascii(c: UInt8) -> Bool:
 # tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
 #         "0"-"9" / "A"-"Z" / "^" / "_" / "`" / "a"-"z" / "|" / "~"
 @always_inline
-fn is_token_char(c: UInt8) -> Bool:
+def is_token_char(c: UInt8) -> Bool:
     """Check if character is a valid token character.
 
     Optimized to be inlined and extremely fast - compiles to simple range checks.

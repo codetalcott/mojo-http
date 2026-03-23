@@ -29,7 +29,7 @@ struct WorkerSupervisor:
     var rapid_crash_count: Int
     var last_fork_ns: UInt
 
-    fn __init__(out self, num_workers: Int):
+    def __init__(out self, num_workers: Int):
         self.child_pids = List[Int]()
         self.num_workers = num_workers
         self.max_respawns = num_workers * 10
@@ -37,7 +37,7 @@ struct WorkerSupervisor:
         self.rapid_crash_count = 0
         self.last_fork_ns = 0
 
-    fn fork_all(mut self) raises:
+    def fork_all(mut self) raises:
         """Fork all workers. Children return. Parent enters supervise loop and exits."""
         for i in range(self.num_workers):
             self.last_fork_ns = perf_counter_ns()
@@ -53,7 +53,7 @@ struct WorkerSupervisor:
         self._supervise()
         process_exit(0)
 
-    fn _supervise(mut self) raises:
+    def _supervise(mut self) raises:
         """Parent supervision loop: respawn crashes, propagate signals."""
         var remaining = self.num_workers
         while remaining > 0:
@@ -91,7 +91,7 @@ struct WorkerSupervisor:
                     print("[parent] worker pid={} exited cleanly".format(child_pid))
                 remaining -= 1
 
-    fn _try_respawn(mut self) raises -> Bool:
+    def _try_respawn(mut self) raises -> Bool:
         """Attempt to respawn a worker. Returns True if successful."""
         if self.respawn_count >= self.max_respawns:
             print("[parent] max respawns ({}) reached, not respawning".format(self.max_respawns))
@@ -120,7 +120,7 @@ struct WorkerSupervisor:
         print("[parent] respawned worker as pid={}".format(new_pid))
         return True
 
-    fn _remove_pid(mut self, pid: Int):
+    def _remove_pid(mut self, pid: Int):
         """Remove a PID from the tracked list."""
         for i in range(len(self.child_pids)):
             if self.child_pids[i] == pid:
@@ -131,7 +131,7 @@ struct WorkerSupervisor:
                 _ = self.child_pids.pop()
                 return
 
-    fn _kill_all(self, signal: Int):
+    def _kill_all(self, signal: Int):
         """Send a signal to all tracked child processes."""
         for i in range(len(self.child_pids)):
             _ = kill_process(self.child_pids[i], signal)

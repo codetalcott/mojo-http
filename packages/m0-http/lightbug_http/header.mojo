@@ -112,10 +112,10 @@ struct HeaderKey:
 struct HeaderKeyNotFoundError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when a header key is not found."""
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write("HeaderKeyNotFoundError: Key not found in headers")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -123,10 +123,10 @@ struct HeaderKeyNotFoundError(Movable, Writable, TrivialRegisterPassable):
 struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP request is malformed."""
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write("InvalidHTTPRequestError: Not a valid HTTP request")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -134,10 +134,10 @@ struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
 struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP request is incomplete (need more data)."""
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write("IncompleteHTTPRequestError: Incomplete HTTP request")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -145,10 +145,10 @@ struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
 struct InvalidHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP response is malformed."""
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write("InvalidHTTPResponseError: Not a valid HTTP response")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -156,10 +156,10 @@ struct InvalidHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
 struct IncompleteHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP response is incomplete."""
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write("IncompleteHTTPResponseError: Incomplete HTTP response")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -167,10 +167,10 @@ struct IncompleteHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
 struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when buffer has no data available."""
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         writer.write("EmptyBufferError: No data available in buffer")
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -185,22 +185,22 @@ struct RequestParseError(Movable, Writable):
     var value: Self.type
 
     @implicit
-    fn __init__(out self, value: InvalidHTTPRequestError):
+    def __init__(out self, value: InvalidHTTPRequestError):
         self.value = value
 
     @implicit
-    fn __init__(out self, value: IncompleteHTTPRequestError):
+    def __init__(out self, value: IncompleteHTTPRequestError):
         self.value = value
 
     @implicit
-    fn __init__(out self, value: EmptyBufferError):
+    def __init__(out self, value: EmptyBufferError):
         self.value = value
 
-    fn is_incomplete(self) -> Bool:
+    def is_incomplete(self) -> Bool:
         """Returns True if this error indicates we need more data."""
         return self.value.isa[IncompleteHTTPRequestError]()
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[InvalidHTTPRequestError]():
             writer.write(self.value[InvalidHTTPRequestError])
         elif self.value.isa[IncompleteHTTPRequestError]():
@@ -208,13 +208,13 @@ struct RequestParseError(Movable, Writable):
         elif self.value.isa[EmptyBufferError]():
             writer.write(self.value[EmptyBufferError])
 
-    fn isa[T: AnyType](self) -> Bool:
+    def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    fn __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [self.value] T:
         return self.value[T]
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -226,22 +226,22 @@ struct ResponseParseError(Movable, Writable):
     var value: Self.type
 
     @implicit
-    fn __init__(out self, value: InvalidHTTPResponseError):
+    def __init__(out self, value: InvalidHTTPResponseError):
         self.value = value
 
     @implicit
-    fn __init__(out self, value: IncompleteHTTPResponseError):
+    def __init__(out self, value: IncompleteHTTPResponseError):
         self.value = value
 
     @implicit
-    fn __init__(out self, value: EmptyBufferError):
+    def __init__(out self, value: EmptyBufferError):
         self.value = value
 
-    fn is_incomplete(self) -> Bool:
+    def is_incomplete(self) -> Bool:
         """Returns True if this error indicates we need more data."""
         return self.value.isa[IncompleteHTTPResponseError]()
 
-    fn write_to[W: Writer, //](self, mut writer: W):
+    def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[InvalidHTTPResponseError]():
             writer.write(self.value[InvalidHTTPResponseError])
         elif self.value.isa[IncompleteHTTPResponseError]():
@@ -249,13 +249,13 @@ struct ResponseParseError(Movable, Writable):
         elif self.value.isa[EmptyBufferError]():
             writer.write(self.value[EmptyBufferError])
 
-    fn isa[T: AnyType](self) -> Bool:
+    def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    fn __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [self.value] T:
         return self.value[T]
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
 
@@ -275,11 +275,11 @@ struct ParsedRequestHeaders(Movable):
     var bytes_consumed: Int
     """Number of bytes consumed from the input buffer (includes the final \\r\\n\\r\\n)."""
 
-    fn content_length(self) -> Int:
+    def content_length(self) -> Int:
         """Get the Content-Length header value, or 0 if not present."""
         return self.headers.content_length()
 
-    fn is_chunked_body(self) -> Bool:
+    def is_chunked_body(self) -> Bool:
         """Return True if Transfer-Encoding: chunked is present.
 
         Phase 1b: used by the server loops to distinguish chunked bodies
@@ -290,7 +290,7 @@ struct ParsedRequestHeaders(Movable):
             return "chunked" in te.value()
         return False
 
-    fn expects_body(self) -> Bool:
+    def expects_body(self) -> Bool:
         """Check if this request expects a body based on method and Content-Length."""
         var cl = self.content_length()
         if cl > 0:
@@ -320,20 +320,20 @@ struct Header(Copyable, Writable):
     var key: String
     var value: String
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
-    fn write_to[T: Writer, //](self, mut writer: T):
+    def write_to[T: Writer, //](self, mut writer: T):
         writer.write(self.key, ": ", self.value, lineBreak)
 
 
 @always_inline
-fn write_header[T: Writer](mut writer: T, key: String, value: String):
+def write_header[T: Writer](mut writer: T, key: String, value: String):
     """Write a header in HTTP format to a writer."""
     writer.write(key, ": ", value, lineBreak)
 
 
-fn encode_latin1_header_value(value: String) -> List[UInt8]:
+def encode_latin1_header_value(value: String) -> List[UInt8]:
     """Transcode a header value from UTF-8 to ISO-8859-1 bytes.
 
     HTTP/1.1 header field values must be representable in ISO-8859-1 (RFC 7230 §3.2).
@@ -386,7 +386,7 @@ fn encode_latin1_header_value(value: String) -> List[UInt8]:
     return out^
 
 
-fn write_header_latin1(mut writer: ByteWriter, key: String, value: String):
+def write_header_latin1(mut writer: ByteWriter, key: String, value: String):
     """Write a header with the value transcoded to ISO-8859-1."""
     writer.write(key, ": ")
     writer.consuming_write(encode_latin1_header_value(value))
@@ -402,45 +402,45 @@ struct Headers(Copyable, Writable):
 
     var _inner: Dict[String, String]
 
-    fn __init__(out self):
+    def __init__(out self):
         self._inner = Dict[String, String]()
 
-    fn __init__(out self, var *headers: Header):
+    def __init__(out self, var *headers: Header):
         self._inner = Dict[String, String]()
         for header in headers:
             self[header.key.lower()] = header.value
 
     @always_inline
-    fn empty(self) -> Bool:
+    def empty(self) -> Bool:
         return len(self._inner) == 0
 
     @always_inline
-    fn __contains__(self, key: String) -> Bool:
+    def __contains__(self, key: String) -> Bool:
         return key.lower() in self._inner
 
     @always_inline
-    fn __getitem__(self, key: String) raises HeaderKeyNotFoundError -> String:
+    def __getitem__(self, key: String) raises HeaderKeyNotFoundError -> String:
         try:
             return self._inner[key.lower()]
         except:
             raise HeaderKeyNotFoundError()
 
     @always_inline
-    fn get(self, key: String) -> Optional[String]:
+    def get(self, key: String) -> Optional[String]:
         return self._inner.get(key.lower())
 
     @always_inline
-    fn __setitem__(mut self, key: String, value: String):
+    def __setitem__(mut self, key: String, value: String):
         self._inner[key.lower()] = value
 
-    fn pop(mut self, key: String):
+    def pop(mut self, key: String):
         """Remove a header by key (no-op if not present)."""
         try:
             _ = self._inner.pop(key.lower())
         except:
             pass
 
-    fn content_length(self) -> Int:
+    def content_length(self) -> Int:
         """Get Content-Length header value, or 0 if not present/invalid."""
         var value = self._inner.get(HeaderKey.CONTENT_LENGTH)
         if not value:
@@ -450,19 +450,19 @@ struct Headers(Copyable, Writable):
         except:
             return 0
 
-    fn write_to[T: Writer, //](self, mut writer: T):
+    def write_to[T: Writer, //](self, mut writer: T):
         for header in self._inner.items():
             write_header(writer, header.key, header.value)
 
-    fn write_latin1_to(self, mut writer: ByteWriter):
+    def write_latin1_to(self, mut writer: ByteWriter):
         """Write headers with values transcoded to ISO-8859-1 for HTTP wire format."""
         for header in self._inner.items():
             write_header_latin1(writer, header.key, header.value)
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)
 
-    fn __eq__(self, other: Headers) -> Bool:
+    def __eq__(self, other: Headers) -> Bool:
         if len(self._inner) != len(other._inner):
             return False
         for item in self._inner.items():
@@ -472,7 +472,7 @@ struct Headers(Copyable, Writable):
         return True
 
 
-fn parse_request_headers(
+def parse_request_headers(
     buffer: Span[Byte, _],
     last_len: Int = 0,
 ) raises RequestParseError -> ParsedRequestHeaders:
@@ -590,7 +590,7 @@ fn parse_request_headers(
     )
 
 
-fn parse_response_headers(
+def parse_response_headers(
     buffer: Span[Byte, _],
     last_len: Int = 0,
 ) raises ResponseParseError -> ParsedResponseHeaders:
@@ -670,7 +670,7 @@ fn parse_response_headers(
     )
 
 
-fn find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[Int]:
+def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[Int]:
     """Find the end of HTTP headers in a buffer.
 
     Searches for the \\r\\n\\r\\n sequence that marks the end of headers.

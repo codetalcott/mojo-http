@@ -14,7 +14,7 @@ struct ResponseHeaderParseError(ImplicitlyCopyable):
 
     var detail: String
 
-    fn message(self) -> String:
+    def message(self) -> String:
         return String("Failed to parse response headers: ", self.detail)
 
 
@@ -24,7 +24,7 @@ struct ResponseBodyReadError(ImplicitlyCopyable):
 
     var detail: String
 
-    fn message(self) -> String:
+    def message(self) -> String:
         return String("Failed to read response body: ", self.detail)
 
 
@@ -34,7 +34,7 @@ struct ChunkedEncodingError(ImplicitlyCopyable):
 
     var detail: String
 
-    fn message(self) -> String:
+    def message(self) -> String:
         return String("Invalid chunked encoding: ", self.detail)
 
 
@@ -134,7 +134,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     var sse_streaming: Bool
 
     @staticmethod
-    fn from_bytes(b: Span[Byte, _]) raises ResponseParseError -> HTTPResponse:
+    def from_bytes(b: Span[Byte, _]) raises ResponseParseError -> HTTPResponse:
         var cookies = ResponseCookieJar()
 
         var properties: ParsedResponseHeaders
@@ -168,7 +168,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             raise ResponseParseError(ResponseBodyReadError(detail=String(body_err)))
 
     @staticmethod
-    fn from_bytes(b: Span[Byte, _], conn: TCPConnection) raises ResponseParseError -> HTTPResponse:
+    def from_bytes(b: Span[Byte, _], conn: TCPConnection) raises ResponseParseError -> HTTPResponse:
         var cookies = ResponseCookieJar()
 
         var properties: ParsedResponseHeaders
@@ -234,7 +234,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         except body_err:
             raise ResponseParseError(ResponseBodyReadError(detail=String(body_err)))
 
-    fn _decode_chunks(mut self, mut decoder: HTTPChunkedDecoder, var chunks: Bytes) raises ResponseParseError:
+    def _decode_chunks(mut self, mut decoder: HTTPChunkedDecoder, var chunks: Bytes) raises ResponseParseError:
         """Decode chunked transfer encoding.
         Args:
             decoder: The chunked decoder state machine.
@@ -266,7 +266,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.set_content_length(len(self.body_raw))
         # buf_ptr.free()
 
-    fn __init__(
+    def __init__(
         out self,
         body_bytes: Span[Byte, _],
         headers: Headers = Headers(),
@@ -291,7 +291,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         if HeaderKey.DATE not in self.headers:
             self.headers[HeaderKey.DATE] = http_date_now()
 
-    fn __init__(
+    def __init__(
         out self,
         var owned_body: Bytes,
         headers: Headers = Headers(),
@@ -318,7 +318,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         if HeaderKey.DATE not in self.headers:
             self.headers[HeaderKey.DATE] = http_date_now()
 
-    fn __init__(
+    def __init__(
         out self,
         mut reader: ByteReader,
         headers: Headers = Headers(),
@@ -344,17 +344,17 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         if HeaderKey.DATE not in self.headers:
             self.headers[HeaderKey.DATE] = http_date_now()
 
-    fn __len__(self) -> Int:
+    def __len__(self) -> Int:
         return len(self.body_raw)
 
-    fn get_body(self) -> StringSlice[origin_of(self.body_raw)]:
+    def get_body(self) -> StringSlice[origin_of(self.body_raw)]:
         return StringSlice(unsafe_from_utf8=Span(self.body_raw))
 
     @always_inline
-    fn set_connection_close(mut self):
+    def set_connection_close(mut self):
         self.headers[HeaderKey.CONNECTION] = "close"
 
-    fn connection_close(self) -> Bool:
+    def connection_close(self) -> Bool:
         """RFC 9110 §7.6.1: Connection option tokens are case-insensitive."""
         var result = self.headers.get(HeaderKey.CONNECTION)
         if not result:
@@ -362,15 +362,15 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         return result.value().lower() == "close"
 
     @always_inline
-    fn set_connection_keep_alive(mut self):
+    def set_connection_keep_alive(mut self):
         self.headers[HeaderKey.CONNECTION] = "keep-alive"
 
     @always_inline
-    fn set_content_length(mut self, l: Int):
+    def set_content_length(mut self, l: Int):
         self.headers[HeaderKey.CONTENT_LENGTH] = String(l)
 
     @always_inline
-    fn content_length(self) -> Int:
+    def content_length(self) -> Int:
         var header_val = self.headers.get(HeaderKey.CONTENT_LENGTH)
         if not header_val:
             return 0
@@ -380,7 +380,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             return 0
 
     @always_inline
-    fn is_redirect(self) -> Bool:
+    def is_redirect(self) -> Bool:
         return (
             self.status_code == StatusCode.MOVED_PERMANENTLY
             or self.status_code == StatusCode.FOUND
@@ -389,14 +389,14 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         )
 
     @always_inline
-    fn read_body(mut self, mut r: ByteReader) raises:
+    def read_body(mut self, mut r: ByteReader) raises:
         try:
             self.body_raw = Bytes(r.read_bytes(self.content_length()).as_bytes())
             self.set_content_length(len(self.body_raw))
         except e:
             raise Error(String(e))
 
-    fn read_chunks(mut self, chunks: Span[Byte, _]) raises:
+    def read_chunks(mut self, chunks: Span[Byte, _]) raises:
         var reader = ByteReader(chunks)
         while True:
             var size = atol(String(reader.read_line()), 16)
@@ -410,7 +410,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             except e:
                 raise Error(String(e))
 
-    fn write_to[T: Writer](self, mut writer: T):
+    def write_to[T: Writer](self, mut writer: T):
         writer.write(
             self.protocol,
             whitespace,
@@ -430,7 +430,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             StringSlice(unsafe_from_utf8=Span(self.body_raw)),
         )
 
-    fn encode(deinit self) -> Bytes:
+    def encode(deinit self) -> Bytes:
         """Encodes response as bytes.
 
         This method consumes the data in this request and it should
@@ -454,7 +454,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
-    fn encode_into(deinit self, var buf: Bytes) -> Bytes:
+    def encode_into(deinit self, var buf: Bytes) -> Bytes:
         """Encode response into a pre-allocated buffer (zero new-alloc hot path).
 
         Takes ownership of `buf`, clears it, writes the response into it, and
@@ -480,5 +480,5 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return String.write(self)

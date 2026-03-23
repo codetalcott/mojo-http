@@ -47,7 +47,7 @@ comptime MAX_EVENTS = 64
 comptime UNUSED: Int = -1
 
 
-fn run_event_loop[T: HTTPService, B: EventLoopBackend](
+def run_event_loop[T: HTTPService, B: EventLoopBackend](
     listen_fd: FileDescriptor,
     mut handler: T,
     mut backend: B,
@@ -490,7 +490,7 @@ fn run_event_loop[T: HTTPService, B: EventLoopBackend](
             break
 
 
-fn _handle_read_headers[T: HTTPService, B: EventLoopBackend](
+def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
     fd_val: Int,
@@ -712,7 +712,7 @@ fn _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     provision_pool.provisions[slot].last_parse_len = len(provision_pool.provisions[slot].recv_buffer)
 
 
-fn _process_request[T: HTTPService, B: EventLoopBackend](
+def _process_request[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
     fd_val: Int,
@@ -869,7 +869,7 @@ fn _process_request[T: HTTPService, B: EventLoopBackend](
         )
 
 
-fn _after_send[T: HTTPService, B: EventLoopBackend](
+def _after_send[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
     fd_val: Int,
@@ -964,7 +964,7 @@ fn _after_send[T: HTTPService, B: EventLoopBackend](
     backend.try_add_read(fd_val)
 
 
-fn _close_slot[B: EventLoopBackend](
+def _close_slot[B: EventLoopBackend](
     mut backend: B,
     slot: Int,
     fd_val: Int,
@@ -999,7 +999,7 @@ fn _close_slot[B: EventLoopBackend](
     metrics.closes_total += 1
 
 
-fn _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
+def _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
     """Best-effort send an error response on a raw fd."""
     var encoded = encode(response^)
     try:
@@ -1013,7 +1013,7 @@ fn _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
         pass
 
 
-fn _send_raw_to_fd(fd_val: Int, data: Span[Byte, _]):
+def _send_raw_to_fd(fd_val: Int, data: Span[Byte, _]):
     """Best-effort send raw bytes on a fd."""
     try:
         _ = send(

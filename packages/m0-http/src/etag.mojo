@@ -7,7 +7,7 @@ Thin wrapper over m0-core's wyhash64 hashing. Produces weak ETags
 from m0_core.hashing import wyhash64, format_hash64
 
 
-fn compute_etag(buf: List[UInt8]) -> String:
+def compute_etag(buf: List[UInt8]) -> String:
     """Compute a weak ETag from a byte buffer using wyhash64.
 
     Returns: W/"<16-char-hex>"
@@ -16,7 +16,7 @@ fn compute_etag(buf: List[UInt8]) -> String:
     return String('W/"') + format_hash64(hash) + String('"')
 
 
-fn _trim(s: String) -> String:
+def _trim(s: String) -> String:
     """Strip leading and trailing ASCII whitespace."""
     var bytes = s.as_bytes()
     var start = 0
@@ -30,7 +30,7 @@ fn _trim(s: String) -> String:
     return String(s[byte=start:end])
 
 
-fn etag_matches(etag: String, if_none_match: String) -> Bool:
+def etag_matches(etag: String, if_none_match: String) -> Bool:
     """Check if an ETag matches an If-None-Match header value.
 
     Handles comma-separated lists and * wildcard.

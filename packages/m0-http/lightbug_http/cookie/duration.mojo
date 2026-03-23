@@ -2,7 +2,7 @@
 struct Duration(Copyable, ImplicitlyCopyable):
     var total_seconds: Int
 
-    fn __init__(
+    def __init__(
         out self,
         seconds: Int = 0,
         minutes: Int = 0,
@@ -15,7 +15,7 @@ struct Duration(Copyable, ImplicitlyCopyable):
         self.total_seconds += days * 24 * 60 * 60
 
     @staticmethod
-    fn from_string(str: String) -> Optional[Self]:
+    def from_string(str: String) -> Optional[Self]:
         try:
             return Duration(seconds=Int(str))
         except:

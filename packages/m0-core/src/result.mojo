@@ -17,12 +17,12 @@ struct Result[T: Copyable & Movable & ImplicitlyDestructible & Writable](Copyabl
     var _value: Optional[Self.T]
     var _error: String
 
-    fn __init__(out self, *, ok: Bool, val: Optional[Self.T], error: String = ""):
+    def __init__(out self, *, ok: Bool, val: Optional[Self.T], error: String = ""):
         self.ok = ok
         self._value = val.copy()
         self._error = error
 
-    fn write_to[W: Writer](self, mut writer: W):
+    def write_to[W: Writer](self, mut writer: W):
         """Write Result as Ok(...) or Err(...) for debugging."""
         if self.ok:
             writer.write("Ok(")
@@ -32,37 +32,37 @@ struct Result[T: Copyable & Movable & ImplicitlyDestructible & Writable](Copyabl
         else:
             writer.write("Err(", self._error, ")")
 
-    fn is_ok(self) -> Bool:
+    def is_ok(self) -> Bool:
         return self.ok
 
-    fn is_err(self) -> Bool:
+    def is_err(self) -> Bool:
         return not self.ok
 
-    fn get_value(self) raises -> Self.T:
+    def get_value(self) raises -> Self.T:
         """Get the success value. Raises if error."""
         if not self.ok:
             raise Error("Called get_value() on an Err Result: " + self._error)
         return self._value.value().copy()
 
-    fn get_error(self) raises -> String:
+    def get_error(self) raises -> String:
         """Get the error message. Raises if Ok."""
         if self.ok:
             raise Error("Called get_error() on an Ok Result")
         return self._error
 
-    fn value_or(self, default: Self.T) -> Self.T:
+    def value_or(self, default: Self.T) -> Self.T:
         """Get the value or a default if error."""
         if self.ok:
             return self._value.value().copy()
         return default.copy()
 
 
-fn Ok[T: Copyable & Movable & ImplicitlyDestructible & Writable](val: T) -> Result[T]:
+def Ok[T: Copyable & Movable & ImplicitlyDestructible & Writable](val: T) -> Result[T]:
     """Construct a successful Result."""
     return Result[T](ok=True, val=Optional[T](val.copy()))
 
 
-fn Err[T: Copyable & Movable & ImplicitlyDestructible & Writable](error: String) -> Result[T]:
+def Err[T: Copyable & Movable & ImplicitlyDestructible & Writable](error: String) -> Result[T]:
     """Construct an error Result. No phantom default value needed."""
     return Result[T](ok=False, val=Optional[T](), error=error)
 
@@ -72,10 +72,10 @@ fn Err[T: Copyable & Movable & ImplicitlyDestructible & Writable](error: String)
 # ============================================================================
 
 
-fn map_result[
+def map_result[
     T: Copyable & Movable & ImplicitlyDestructible & Writable,
     U: Copyable & Movable & ImplicitlyDestructible & Writable,
-    f: fn (T) -> U,
+    f: def (T) -> U,
 ](result: Result[T]) -> Result[U]:
     """Map over a successful Result, leaving errors untouched."""
     if result.is_ok():
@@ -89,10 +89,10 @@ fn map_result[
         return Err[U]("unknown error")
 
 
-fn flat_map_result[
+def flat_map_result[
     T: Copyable & Movable & ImplicitlyDestructible & Writable,
     U: Copyable & Movable & ImplicitlyDestructible & Writable,
-    f: fn (T) -> Result[U],
+    f: def (T) -> Result[U],
 ](result: Result[T]) -> Result[U]:
     """FlatMap (bind) over a Result — monadic bind for chained operations."""
     if result.is_ok():

@@ -81,7 +81,7 @@ from test.test_sse import (
 )
 
 
-fn _run[name: StringLiteral, f: fn () raises -> None]() -> Bool:
+def _run[name: StringLiteral, f: def () raises -> None]() -> Bool:
     try:
         f()
         print("  PASS:", name)
@@ -91,7 +91,7 @@ fn _run[name: StringLiteral, f: fn () raises -> None]() -> Bool:
         return False
 
 
-fn main() raises:
+def main() raises:
     var passed = 0
     var failed = 0
 

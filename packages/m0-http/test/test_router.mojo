@@ -5,7 +5,7 @@ from std.testing import assert_equal, assert_true, assert_false
 from src.router import Router, MatchResult
 
 
-fn test_exact_match() raises:
+def test_exact_match() raises:
     """Exact path should match."""
     var r = Router()
     r.add("GET", "/orders", 1)
@@ -15,7 +15,7 @@ fn test_exact_match() raises:
     assert_equal(len(m.params), 0)
 
 
-fn test_param_extraction() raises:
+def test_param_extraction() raises:
     """Route with :param should extract the value."""
     var r = Router()
     r.add("GET", "/orders/:id", 2)
@@ -26,7 +26,7 @@ fn test_param_extraction() raises:
     assert_equal(m.params[0], "42")
 
 
-fn test_multi_param() raises:
+def test_multi_param() raises:
     """Multiple :param segments should all be extracted."""
     var r = Router()
     r.add("GET", "/users/:uid/orders/:oid", 3)
@@ -37,7 +37,7 @@ fn test_multi_param() raises:
     assert_equal(m.params[1], "99")
 
 
-fn test_no_match_404() raises:
+def test_no_match_404() raises:
     """Unregistered path should not match (404)."""
     var r = Router()
     r.add("GET", "/orders", 1)
@@ -46,7 +46,7 @@ fn test_no_match_404() raises:
     assert_false(m.method_not_allowed)
 
 
-fn test_method_not_allowed_405() raises:
+def test_method_not_allowed_405() raises:
     """Path match with wrong method should signal 405."""
     var r = Router()
     r.add("GET", "/orders", 1)
@@ -55,7 +55,7 @@ fn test_method_not_allowed_405() raises:
     assert_true(m.method_not_allowed)
 
 
-fn test_multiple_methods() raises:
+def test_multiple_methods() raises:
     """Same path with different methods should route correctly."""
     var r = Router()
     r.add("GET", "/orders", 1)
@@ -66,7 +66,7 @@ fn test_multiple_methods() raises:
     assert_equal(p.handler_id, 2)
 
 
-fn test_segment_count_mismatch() raises:
+def test_segment_count_mismatch() raises:
     """Paths with different segment counts should not match."""
     var r = Router()
     r.add("GET", "/orders/:id", 1)
@@ -74,7 +74,7 @@ fn test_segment_count_mismatch() raises:
     assert_false(m.matched)
 
 
-fn test_trailing_slash() raises:
+def test_trailing_slash() raises:
     """Trailing slash should still match (empty segments filtered)."""
     var r = Router()
     r.add("GET", "/orders", 1)
