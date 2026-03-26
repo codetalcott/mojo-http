@@ -1,9 +1,11 @@
-"""m0-datastar: Datastar SSE protocol for Mojo (v1.0.0-RC.8)."""
+"""m0-datastar: Datastar SSE protocol for Mojo (v1.0.0-RC.13)."""
 
 from .consts import (
     VERSION,
     DATASTAR_KEY,
     DEFAULT_SSE_RETRY_DURATION,
+    DEFAULT_ELEMENTS_USE_VIEW_TRANSITIONS,
+    DEFAULT_PATCH_SIGNALS_ONLY_IF_MISSING,
     DEFAULT_PATCH_MODE,
     PATCH_MODE_OUTER,
     PATCH_MODE_INNER,

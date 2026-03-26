@@ -31,7 +31,7 @@ from src.consts import (
 
 
 def test_version() raises:
-    """Version should be RC.8."""
+    """Version should be RC.13."""
     assert_true(VERSION.find("1.0.0") >= 0)
 
 

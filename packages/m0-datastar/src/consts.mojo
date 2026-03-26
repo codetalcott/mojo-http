@@ -1,15 +1,19 @@
-"""Datastar protocol constants (targeting v1.0.0-RC.8).
+"""Datastar protocol constants (targeting v1.0.0-RC.13).
 
-Constants follow the official Go SDK naming conventions.
+Constants follow the official SDK naming conventions.
 Dataline literals include trailing space per protocol spec.
 """
 
 # Version
-comptime VERSION = "1.0.0-RC.8"
+comptime VERSION = "1.0.0-RC.13"
 comptime DATASTAR_KEY = "datastar"
 
 # Default timing
 comptime DEFAULT_SSE_RETRY_DURATION = 1000  # milliseconds
+
+# Default booleans
+comptime DEFAULT_ELEMENTS_USE_VIEW_TRANSITIONS = False
+comptime DEFAULT_PATCH_SIGNALS_ONLY_IF_MISSING = False
 
 # Element patch modes
 comptime PATCH_MODE_OUTER = "outer"
