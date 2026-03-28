@@ -98,7 +98,7 @@ def test_registry_backpressure_preserves_last_id() raises:
         big_data += "x"
     reg.notify("/orders", 2, "update", big_data)
     # Event 2 should have been dropped, so draining gives only event 1
-    var buf = reg.drain(0)
+    _ = reg.drain(0)
     # Now send event 3 — it should be accepted (buffer is drained)
     reg.notify("/orders", 3, "update", "third")
     assert_true(reg.has_pending(0))

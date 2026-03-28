@@ -77,7 +77,7 @@ struct PatchJournal:
         Returns:
         - type="patch" when exactly 1 event since lastEventId
         - type="snapshot" when >1 events (merge fallback)
-        - type="none" when no new events
+        - type="none" when no new events.
         """
         var matching = List[Int]()
         for i in range(len(self.urls)):
