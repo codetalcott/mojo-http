@@ -809,7 +809,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     request.slot_id = slot
     provision_pool.provisions[slot].should_close = (not tcp_keep_alive) or request.connection_close()
     var request_method = request.method
-    var request_path = request.uri.path if (config.access_log or config.enable_metrics) else String()
+    var request_path = request.uri.path
 
     var response: HTTPResponse
 

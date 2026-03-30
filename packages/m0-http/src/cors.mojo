@@ -19,7 +19,7 @@ struct CorsConfig(Copyable, Movable):
         """Default CORS config matching existing demo server patterns."""
         self.allow_origin = "*"
         self.allow_methods = "GET,POST,PUT,DELETE,OPTIONS"
-        self.allow_headers = "Content-Type,Accept,If-None-Match"
+        self.allow_headers = "Content-Type,Accept,If-None-Match,X-API-Key"
         self.expose_headers = "ETag,X-Request-Id"
         self.max_age = "3600"
 
