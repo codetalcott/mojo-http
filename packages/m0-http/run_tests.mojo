@@ -58,6 +58,36 @@ from test.test_response_cache import (
     test_cache_lru_put_resets_access,
 )
 
+from test.test_auth import (
+    test_auth_disabled,
+    test_auth_no_header,
+    test_auth_correct_key,
+    test_auth_wrong_key,
+    test_auth_length_mismatch,
+    test_auth_empty_provided,
+    test_auth_case_sensitive,
+)
+
+from test.test_health import (
+    test_health_empty_ready,
+    test_health_register_healthy,
+    test_health_register_unhealthy,
+    test_health_set_update,
+    test_health_shutting_down,
+    test_health_ready_status_code_200,
+    test_health_ready_status_code_503,
+    test_health_to_json_ok,
+    test_health_to_json_degraded,
+    test_health_to_json_shutting_down,
+)
+
+from test.test_cors import (
+    test_cors_default_config,
+    test_cors_apply_headers,
+    test_cors_custom_config,
+    test_cors_empty_expose_headers,
+)
+
 from test.test_sse import (
     test_format_sse_event,
     test_format_sse_heartbeat,
@@ -223,6 +253,54 @@ def main() raises:
     if _run["journal_has_etag", test_journal_has_etag](): passed += 1
     else: failed += 1
     if _run["journal_compact", test_journal_compact](): passed += 1
+    else: failed += 1
+
+    print("\n=== Auth ===")
+    if _run["auth_disabled", test_auth_disabled](): passed += 1
+    else: failed += 1
+    if _run["auth_no_header", test_auth_no_header](): passed += 1
+    else: failed += 1
+    if _run["auth_correct_key", test_auth_correct_key](): passed += 1
+    else: failed += 1
+    if _run["auth_wrong_key", test_auth_wrong_key](): passed += 1
+    else: failed += 1
+    if _run["auth_length_mismatch", test_auth_length_mismatch](): passed += 1
+    else: failed += 1
+    if _run["auth_empty_provided", test_auth_empty_provided](): passed += 1
+    else: failed += 1
+    if _run["auth_case_sensitive", test_auth_case_sensitive](): passed += 1
+    else: failed += 1
+
+    print("\n=== Health ===")
+    if _run["health_empty_ready", test_health_empty_ready](): passed += 1
+    else: failed += 1
+    if _run["health_register_healthy", test_health_register_healthy](): passed += 1
+    else: failed += 1
+    if _run["health_register_unhealthy", test_health_register_unhealthy](): passed += 1
+    else: failed += 1
+    if _run["health_set_update", test_health_set_update](): passed += 1
+    else: failed += 1
+    if _run["health_shutting_down", test_health_shutting_down](): passed += 1
+    else: failed += 1
+    if _run["health_ready_status_code_200", test_health_ready_status_code_200](): passed += 1
+    else: failed += 1
+    if _run["health_ready_status_code_503", test_health_ready_status_code_503](): passed += 1
+    else: failed += 1
+    if _run["health_to_json_ok", test_health_to_json_ok](): passed += 1
+    else: failed += 1
+    if _run["health_to_json_degraded", test_health_to_json_degraded](): passed += 1
+    else: failed += 1
+    if _run["health_to_json_shutting_down", test_health_to_json_shutting_down](): passed += 1
+    else: failed += 1
+
+    print("\n=== CORS ===")
+    if _run["cors_default_config", test_cors_default_config](): passed += 1
+    else: failed += 1
+    if _run["cors_apply_headers", test_cors_apply_headers](): passed += 1
+    else: failed += 1
+    if _run["cors_custom_config", test_cors_custom_config](): passed += 1
+    else: failed += 1
+    if _run["cors_empty_expose_headers", test_cors_empty_expose_headers](): passed += 1
     else: failed += 1
 
     var total = passed + failed
