@@ -34,6 +34,7 @@ from lightbug_http.server_config import ServerConfig
 from lightbug_http.service import HTTPService
 from lightbug_http.utils.owning_list import OwningList
 from std.time import perf_counter_ns
+from m0_http.log import log_access
 
 
 # Timer ident offsets to distinguish timeout types from fd-based events.
@@ -487,6 +488,47 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         backend.try_add_write_oneshot(slot_fds[s])
 
         if should_shutdown:
+            # Graceful shutdown: close listener, drain in-flight, close SSE
+            try:
+                close(listen_fd)
+            except:
+                pass
+
+            # Send SSE close comment to all streaming slots
+            for s in range(max_conns):
+                if slot_sse[s] and slot_fds[s] != UNUSED:
+                    var close_comment = String(": close\n\n").as_bytes()
+                    try:
+                        _ = send(FileDescriptor(slot_fds[s]), Span(close_comment), UInt(len(close_comment)), 0)
+                    except:
+                        pass
+                    _close_slot(
+                        backend, s, slot_fds[s],
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse,
+                    )
+
+            # Drain in-flight: wait for active non-SSE connections (max 5s)
+            var drain_start = perf_counter_ns()
+            comptime DRAIN_TIMEOUT_NS: UInt = 5_000_000_000
+            while active_count > 0:
+                if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
+                    break
+                var drain_events = backend.wait(100)
+                for di in range(drain_events):
+                    if (backend.event_flags(di) & EV_ERROR) != 0:
+                        continue
+                    var drain_ident = Int(backend.event_ident(di))
+                    var drain_filter = backend.event_filter(di)
+                    # Handle write completions during drain
+                    if drain_filter == EVFILT_WRITE:
+                        var drain_slot = fd_to_slot[drain_ident] if drain_ident < len(fd_to_slot) else UNUSED
+                        if drain_slot != UNUSED:
+                            _close_slot(
+                                backend, drain_slot, drain_ident,
+                                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                                slot_sse,
+                            )
             break
 
 
@@ -784,11 +826,20 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         response.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
         provision_pool.provisions[slot].should_close = False
     else:
-        try:
-            response = handler.func(request^)
-        except:
-            response = InternalError()
-            provision_pool.provisions[slot].should_close = True
+        # Before hook: short-circuit if it returns a response
+        var early = handler.before_request(request)
+        if early:
+            var early_resp = early.take()
+            response = early_resp^
+        else:
+            try:
+                response = handler.func(request^)
+            except:
+                response = InternalError()
+                provision_pool.provisions[slot].should_close = True
+
+        # After hook: add headers, log, etc.
+        handler.after_response(request_method, request_path, response)
 
     if response.sse_streaming:
         slot_sse[slot] = True
@@ -820,11 +871,13 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     slot_response[slot] = encode(response^)
     slot_send_offset[slot] = 0
 
-    # Phase 4d: populate access log summary (emitted after send)
+    # Phase 4d: populate access log fields (emitted after send)
     if config.access_log:
         provision_pool.provisions[slot].log_summary = String(
             '"', request_method, ' ', request_path, ' HTTP/1.1" ', String(response_status),
         )
+        provision_pool.provisions[slot].log_method = request_method
+        provision_pool.provisions[slot].log_path = request_path
     provision_pool.provisions[slot].state = ConnectionState.responding()
 
     var response_len = len(slot_response[slot])
@@ -896,12 +949,14 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         )
         metrics.active_connections = active_count
     if provision_pool.provisions[slot].should_close:
-        if config.access_log and len(provision_pool.provisions[slot].log_summary) > 0:
-            var elapsed_us = (perf_counter_ns() - slot_header_start[slot]) / 1000
-            print(
-                provision_pool.provisions[slot].log_summary,
+        if config.access_log and len(provision_pool.provisions[slot].log_method) > 0:
+            var elapsed_us = Int((perf_counter_ns() - slot_header_start[slot]) / 1000)
+            log_access(
+                provision_pool.provisions[slot].log_method,
+                provision_pool.provisions[slot].log_path,
+                provision_pool.provisions[slot].response_status,
+                elapsed_us,
                 slot_send_offset[slot],
-                String(elapsed_us) + "us",
             )
         _close_slot(
             backend, slot, fd_val,
@@ -911,12 +966,14 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         return
 
     if (config.max_keepalive_requests > 0) and (provision_pool.provisions[slot].keepalive_count >= config.max_keepalive_requests):
-        if config.access_log and len(provision_pool.provisions[slot].log_summary) > 0:
-            var elapsed_us = (perf_counter_ns() - slot_header_start[slot]) / 1000
-            print(
-                provision_pool.provisions[slot].log_summary,
+        if config.access_log and len(provision_pool.provisions[slot].log_method) > 0:
+            var elapsed_us = Int((perf_counter_ns() - slot_header_start[slot]) / 1000)
+            log_access(
+                provision_pool.provisions[slot].log_method,
+                provision_pool.provisions[slot].log_path,
+                provision_pool.provisions[slot].response_status,
+                elapsed_us,
                 slot_send_offset[slot],
-                String(elapsed_us) + "us",
             )
         _close_slot(
             backend, slot, fd_val,
@@ -925,13 +982,15 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         )
         return
 
-    # Phase 4d: emit access log line before resetting provision state
-    if config.access_log and len(provision_pool.provisions[slot].log_summary) > 0:
-        var elapsed_us = (perf_counter_ns() - slot_header_start[slot]) / 1000
-        print(
-            provision_pool.provisions[slot].log_summary,
+    # Phase 4d: emit structured access log before resetting provision state
+    if config.access_log and len(provision_pool.provisions[slot].log_method) > 0:
+        var elapsed_us = Int((perf_counter_ns() - slot_header_start[slot]) / 1000)
+        log_access(
+            provision_pool.provisions[slot].log_method,
+            provision_pool.provisions[slot].log_path,
+            provision_pool.provisions[slot].response_status,
+            elapsed_us,
             slot_send_offset[slot],
-            String(elapsed_us) + "us",
         )
 
     # SSE streaming: after initial response (or a pushed event) is sent,

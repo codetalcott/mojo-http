@@ -8,6 +8,16 @@ trait HTTPService:
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         ...
 
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        """Called before func(). Return a response to short-circuit (e.g. CORS preflight, auth).
+        Return None to continue to func().
+        """
+        ...
+
+    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
+        """Called after func() with the response. Add headers, log, etc."""
+        ...
+
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         """Return and clear pending SSE outbound data for a slot."""
         ...
@@ -34,6 +44,12 @@ struct Printer(HTTPService):
 
         return OK(req.body_raw)
 
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        return None
+
+    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
+        pass
+
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
 
@@ -56,6 +72,12 @@ struct Welcome(HTTPService):
                 return OK(Bytes(f.read_bytes()), "image/png")
 
         return NotFound(req.uri.path)
+
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        return None
+
+    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
+        pass
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
@@ -81,6 +103,12 @@ struct ExampleRouter(HTTPService):
 
         return OK(req.body_raw)
 
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        return None
+
+    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
+        pass
+
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
 
@@ -100,6 +128,12 @@ struct TechEmpowerRouter(HTTPService):
             return OK('{"message": "Hello, World!"}', "application/json")
 
         return OK("Hello world!")  # text/plain is the default
+
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        return None
+
+    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
+        pass
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
@@ -121,6 +155,12 @@ struct Counter(HTTPService):
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         self.counter += 1
         return OK("I have been called: " + String(self.counter) + " times")
+
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        return None
+
+    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
+        pass
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()

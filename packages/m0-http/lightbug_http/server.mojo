@@ -155,6 +155,12 @@ struct ConnectionProvision(Movable):
     var log_summary: String
     """Partial access log entry populated in _process_request, emitted in _after_send."""
 
+    var log_method: String
+    """HTTP method for structured access log."""
+
+    var log_path: String
+    """Request path for structured access log."""
+
     var response_status: Int
     """HTTP status code of the last response (for metrics); 0 if not yet set."""
 
@@ -173,6 +179,8 @@ struct ConnectionProvision(Movable):
         self.keepalive_count = 0
         self.should_close = False
         self.log_summary = String()
+        self.log_method = String()
+        self.log_path = String()
         self.response_status = 0
         self.encoding_buffer = Bytes(capacity=config.socket_buffer_size)
 
@@ -188,6 +196,8 @@ struct ConnectionProvision(Movable):
         self.last_parse_len = 0
         self.should_close = False
         self.log_summary = String()
+        self.log_method = String()
+        self.log_path = String()
         self.response_status = 0
         # encoding_buffer is NOT cleared here — it's already been moved out and replaced.
 
@@ -582,13 +592,23 @@ def handle_connection[
 
             provision.should_close = (not tcp_keep_alive) or request.connection_close()
             var request_method = request.method
+            var request_path = request.uri.path
 
             var response: HTTPResponse
-            try:
-                response = handler.func(request^)
-            except handler_err:
-                response = InternalError()
-                provision.should_close = True
+            # Before hook: short-circuit if it returns a response
+            var early = handler.before_request(request)
+            if early:
+                var early_resp = early.take()
+                response = early_resp^
+            else:
+                try:
+                    response = handler.func(request^)
+                except handler_err:
+                    response = InternalError()
+                    provision.should_close = True
+
+            # After hook: add headers, log, etc.
+            handler.after_response(request_method, request_path, response)
 
             if (not provision.should_close) and (config.max_keepalive_requests > 0):
                 if (provision.keepalive_count + 1) >= config.max_keepalive_requests:
