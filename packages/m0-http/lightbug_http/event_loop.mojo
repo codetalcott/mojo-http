@@ -34,6 +34,7 @@ from lightbug_http.server_config import ServerConfig
 from lightbug_http.service import HTTPService
 from lightbug_http.utils.owning_list import OwningList
 from std.time import perf_counter_ns
+from std.sys.info import CompilationTarget
 from m0_http.log import log_access
 
 
@@ -105,7 +106,10 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     var metrics = ServerMetrics()
     metrics.pool_capacity = max_conns
 
-    print("Event loop started (kqueue, max_connections=" + String(max_conns) + ")")
+    comptime if CompilationTarget.is_macos():
+        print("Event loop started (kqueue, max_connections=" + String(max_conns) + ")")
+    else:
+        print("Event loop started (epoll, max_connections=" + String(max_conns) + ")")
 
     var should_shutdown = False
     while True:

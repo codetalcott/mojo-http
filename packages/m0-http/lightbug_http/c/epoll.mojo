@@ -93,7 +93,7 @@ def epoll_ctl_add(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
     """Register fd with epoll (EPOLL_CTL_ADD)."""
     var ev_stack = stack_allocation[1, epoll_event_t]()
     ev_stack[] = ev
-    var result = _epoll_ctl(Int32(epfd.value), EPOLL_CTL_ADD, c_int(fd), ev_stack)
+    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_ADD, c_int(fd), ev_stack)
     if result == -1:
         var errno = get_errno()
         raise Error("epoll_ctl ADD failed, errno: ", errno)
@@ -103,7 +103,7 @@ def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
     """Modify fd's epoll registration (EPOLL_CTL_MOD)."""
     var ev_stack = stack_allocation[1, epoll_event_t]()
     ev_stack[] = ev
-    var result = _epoll_ctl(Int32(epfd.value), EPOLL_CTL_MOD, c_int(fd), ev_stack)
+    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_MOD, c_int(fd), ev_stack)
     if result == -1:
         var errno = get_errno()
         raise Error("epoll_ctl MOD failed, errno: ", errno)
@@ -112,7 +112,7 @@ def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
 def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
     """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored."""
     var null_ev = ExternalMutUnsafePointer[epoll_event_t]()
-    var result = _epoll_ctl(Int32(epfd.value), EPOLL_CTL_DEL, c_int(fd), null_ev)
+    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_DEL, c_int(fd), null_ev)
     if result == -1:
         var errno = get_errno()
         raise Error("epoll_ctl DEL failed, errno: ", errno)

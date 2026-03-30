@@ -8,10 +8,11 @@ On Linux, timers are implemented via timerfd + epoll. The high bit (bit 63)
 of the epoll data field marks a timerfd event so event_filter() can return
 EVFILT_TIMER; bits 0–62 carry the original ident for event_ident().
 
-_timer_fds layout (3 * 65536 entries, value = timerfd or -1):
-  slot 0: header timers  ident in [0x100000, 0x10FFFF]  → index = ident - 0x100000
-  slot 1: body   timers  ident in [0x200000, 0x20FFFF]  → index = 65536 + ident - 0x200000
-  slot 2: idle   timers  ident in [0x300000, 0x30FFFF]  → index = 2*65536 + ident - 0x300000
+_timer_fds layout (4 * 65536 entries, value = timerfd or -1):
+  slot 0: header     ident in [0x100000, 0x10FFFF]  → index = ident - 0x100000
+  slot 1: body       ident in [0x200000, 0x20FFFF]  → index = 65536 + ident - 0x200000
+  slot 2: idle       ident in [0x300000, 0x30FFFF]  → index = 2*65536 + ident - 0x300000
+  slot 3: heartbeat  ident in [0x400000, 0x40FFFF]  → index = 3*65536 + ident - 0x400000
 """
 
 from lightbug_http.c.epoll import (
@@ -34,17 +35,27 @@ comptime _MAX_EVENTS = 64
 # The remaining 63 bits carry the original ident value.
 comptime _TIMER_FLAG: UInt64 = 1 << 63
 
-# Timer slot bases — must match event_loop.mojo TIMER_HEADER/BODY/IDLE.
+# Timer slot bases — must match event_loop.mojo TIMER_HEADER/BODY/IDLE/SSE_HEARTBEAT.
 comptime _TIMER_HEADER: UInt = 0x100000
 comptime _TIMER_BODY: UInt = 0x200000
 comptime _TIMER_IDLE: UInt = 0x300000
-comptime _TIMER_FD_MAP_SIZE: Int = 3 * 65536
+comptime _TIMER_SSE_HEARTBEAT: UInt = 0x400000
+comptime _TIMER_FD_MAP_SIZE: Int = 4 * 65536
 
 
 @always_inline
 def _timer_slot(ident: UInt) -> Int:
-    """Map a timer ident to an index in the _timer_fds flat array."""
-    if ident >= _TIMER_IDLE:
+    """Map a timer ident to an index in the _timer_fds flat array.
+
+    Layout (4 * 65536 entries):
+      slot 0: header     ident in [0x100000, 0x10FFFF]  → index = ident - 0x100000
+      slot 1: body       ident in [0x200000, 0x20FFFF]  → index = 65536 + ident - 0x200000
+      slot 2: idle       ident in [0x300000, 0x30FFFF]  → index = 2*65536 + ident - 0x300000
+      slot 3: heartbeat  ident in [0x400000, 0x40FFFF]  → index = 3*65536 + ident - 0x400000
+    """
+    if ident >= _TIMER_SSE_HEARTBEAT:
+        return 3 * 65536 + Int(ident - _TIMER_SSE_HEARTBEAT)
+    elif ident >= _TIMER_IDLE:
         return 2 * 65536 + Int(ident - _TIMER_IDLE)
     elif ident >= _TIMER_BODY:
         return 65536 + Int(ident - _TIMER_BODY)
@@ -129,9 +140,16 @@ struct EpollBackend(EventLoopBackend):
         epoll_ctl_add(self.epfd, fd, ev)
 
     def add_read(mut self, fd: Int) raises:
-        """Edge-triggered read (connection socket)."""
+        """Edge-triggered read (connection socket).
+
+        Tries ADD first (new fd); falls back to MOD (re-arm after
+        EPOLLONESHOT disarmed the fd — still registered but inactive).
+        """
         var ev = _make_event(EPOLLIN | EPOLLET, UInt64(fd))
-        epoll_ctl_add(self.epfd, fd, ev)
+        try:
+            epoll_ctl_add(self.epfd, fd, ev)
+        except:
+            epoll_ctl_mod(self.epfd, fd, ev)
 
     def try_add_read(mut self, fd: Int):
         try:
@@ -140,7 +158,12 @@ struct EpollBackend(EventLoopBackend):
             pass
 
     def add_write_oneshot(mut self, fd: Int) raises:
-        """One-shot write-ready event."""
+        """One-shot write-ready event.
+
+        EPOLLONESHOT disarms the fd after any event fires. After send
+        completes, add_read() re-arms with MOD (not ADD) to restore
+        read events for keep-alive.
+        """
         var ev = _make_event(EPOLLOUT | EPOLLET | EPOLLONESHOT, UInt64(fd))
         # Try MOD first (fd already registered for reads); fall back to ADD.
         try:
@@ -166,6 +189,8 @@ struct EpollBackend(EventLoopBackend):
 
     def try_add_timer(mut self, ident: UInt, timeout_ms: Int):
         var slot = _timer_slot(ident)
+        if slot < 0 or slot >= _TIMER_FD_MAP_SIZE:
+            return
         var existing_tfd = Int(self._timer_fds[slot])
         if existing_tfd >= 0:
             # Re-arm the existing timerfd (avoids epoll re-registration).
@@ -198,6 +223,8 @@ struct EpollBackend(EventLoopBackend):
 
     def try_delete_timer(mut self, ident: UInt):
         var slot = _timer_slot(ident)
+        if slot < 0 or slot >= _TIMER_FD_MAP_SIZE:
+            return
         var tfd = Int(self._timer_fds[slot])
         if tfd < 0:
             return
