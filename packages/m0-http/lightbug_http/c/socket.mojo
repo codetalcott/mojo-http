@@ -29,36 +29,38 @@ struct ShutdownOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
         return String.write(self)
 
 
-comptime SOL_SOCKET = 0xFFFF
+# Platform-specific socket constants.
+# macOS uses BSD values (from sys/socket.h), Linux uses different numbering.
+comptime _IS_MACOS = CompilationTarget.is_macos()
+comptime SOL_SOCKET = 0xFFFF if _IS_MACOS else 1
 
 
-# Socket option flags
-# TODO: These are probably platform specific, on MacOS I have these values, but we should check on Linux.
-# Taken from: https://github.com/openbsd/src/blob/master/sys/sys/socket.h
+# Socket option flags — platform-specific values resolved at compile time.
 @fieldwise_init
 struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     var value: c_int
-    comptime SO_DEBUG = Self(0x0001)
-    comptime SO_ACCEPTCONN = Self(0x0002)
-    comptime SO_REUSEADDR = Self(0x0004)
-    comptime SO_KEEPALIVE = Self(0x0008)
-    comptime SO_DONTROUTE = Self(0x0010)
-    comptime SO_BROADCAST = Self(0x0020)
-    comptime SO_USELOOPBACK = Self(0x0040)
-    comptime SO_LINGER = Self(0x0080)
-    comptime SO_OOBINLINE = Self(0x0100)
-    comptime SO_REUSEPORT = Self(0x0200)
-    comptime SO_TIMESTAMP = Self(0x0800)
+    comptime SO_DEBUG = Self(c_int(1))
+    comptime SO_REUSEADDR = Self(c_int(0x0004 if _IS_MACOS else 2))
+    comptime SO_KEEPALIVE = Self(c_int(0x0008 if _IS_MACOS else 9))
+    comptime SO_DONTROUTE = Self(c_int(0x0010 if _IS_MACOS else 5))
+    comptime SO_BROADCAST = Self(c_int(0x0020 if _IS_MACOS else 6))
+    comptime SO_OOBINLINE = Self(c_int(0x0100 if _IS_MACOS else 10))
+    comptime SO_ACCEPTCONN = Self(c_int(0x0002 if _IS_MACOS else 30))
+    comptime SO_USELOOPBACK = Self(c_int(0x0040 if _IS_MACOS else 0))
+    comptime SO_LINGER = Self(c_int(0x0080 if _IS_MACOS else 13))
+    comptime SO_REUSEPORT = Self(c_int(0x0200 if _IS_MACOS else 15))
+    comptime SO_TIMESTAMP = Self(c_int(0x0800 if _IS_MACOS else 29))
+    comptime SO_SNDBUF = Self(c_int(0x1001 if _IS_MACOS else 7))
+    comptime SO_RCVBUF = Self(c_int(0x1002 if _IS_MACOS else 8))
+    comptime SO_SNDLOWAT = Self(c_int(0x1003 if _IS_MACOS else 19))
+    comptime SO_RCVLOWAT = Self(c_int(0x1004 if _IS_MACOS else 18))
+    comptime SO_SNDTIMEO = Self(c_int(0x1005 if _IS_MACOS else 21))
+    comptime SO_RCVTIMEO = Self(c_int(0x1006 if _IS_MACOS else 20))
+    comptime SO_ERROR = Self(c_int(0x1007 if _IS_MACOS else 4))
+    comptime SO_TYPE = Self(c_int(0x1008 if _IS_MACOS else 3))
+    # BSD-only options (unused on Linux, kept for API compatibility)
     comptime SO_BINDANY = Self(0x1000)
     comptime SO_ZEROIZE = Self(0x2000)
-    comptime SO_SNDBUF = Self(0x1001)
-    comptime SO_RCVBUF = Self(0x1002)
-    comptime SO_SNDLOWAT = Self(0x1003)
-    comptime SO_RCVLOWAT = Self(0x1004)
-    comptime SO_SNDTIMEO = Self(0x1005)
-    comptime SO_RCVTIMEO = Self(0x1006)
-    comptime SO_ERROR = Self(0x1007)
-    comptime SO_TYPE = Self(0x1008)
     comptime SO_NETPROC = Self(0x1020)
     comptime SO_RTABLE = Self(0x1021)
     comptime SO_PEERCRED = Self(0x1022)
