@@ -1,4 +1,4 @@
-"""m0-datastar: Datastar SSE protocol for Mojo (v1.0.0-RC.13)."""
+"""m0-datastar: Datastar SSE protocol for Mojo (v1.0.1)."""
 
 from .consts import (
     VERSION,

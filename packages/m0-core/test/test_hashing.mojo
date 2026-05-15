@@ -3,8 +3,8 @@
 from std.testing import assert_equal, assert_not_equal, assert_true, TestSuite
 
 from src.hashing import (
-    fnv1a, fnv1a_step, format_hash, format_hash32, format_hash64,
-    xxhash32, format_xxhash, wyhash64, wyhash64_string,
+    fnv1a, fnv1a_step, format_hash32, format_hash64,
+    xxhash32, wyhash64, wyhash64_string,
 )
 
 
@@ -12,6 +12,16 @@ def test_fnv1a_empty_string() raises:
     """FNV-1a of empty string should return the offset basis."""
     var result = fnv1a("")
     assert_equal(result, UInt32(2166136261))
+
+
+def test_fnv1a_known_vector_a() raises:
+    """Standard FNV-1a 32-bit test vector for 'a'."""
+    assert_equal(fnv1a("a"), UInt32(0xE40C292C))
+
+
+def test_fnv1a_known_vector_foobar() raises:
+    """Standard FNV-1a 32-bit test vector for 'foobar'."""
+    assert_equal(fnv1a("foobar"), UInt32(0xBF9CF968))
 
 
 def test_fnv1a_hello() raises:
@@ -37,26 +47,25 @@ def test_fnv1a_dom_path() raises:
     assert_not_equal(hash1, hash2)
 
 
-def test_format_hash_zero() raises:
+def test_format_hash32_zero() raises:
     """Zero hash should format as 8 zeros."""
-    assert_equal(format_hash(UInt32(0)), "00000000")
+    assert_equal(format_hash32(UInt32(0)), "00000000")
 
 
-def test_format_hash_max() raises:
+def test_format_hash32_max() raises:
     """Max UInt32 should format as 8 f's."""
-    assert_equal(format_hash(UInt32(0xFFFFFFFF)), "ffffffff")
+    assert_equal(format_hash32(UInt32(0xFFFFFFFF)), "ffffffff")
 
 
-def test_format_hash_length() raises:
+def test_format_hash32_length() raises:
     """Formatted hash should always be 8 characters."""
-    var formatted = format_hash(fnv1a("test"))
-    assert_equal(len(formatted), 8)
+    var formatted = format_hash32(fnv1a("test"))
+    assert_equal(formatted.byte_length(), 8)
 
 
 def test_xxhash32_empty() raises:
-    """xxHash32 of empty string with seed 0."""
-    var result = xxhash32("")
-    assert_true(result > 0)
+    """xxHash32 of empty string with seed 0 is a known constant."""
+    assert_equal(xxhash32(""), UInt32(0x02CC5D05))
 
 
 def test_xxhash32_consistency() raises:
@@ -97,21 +106,14 @@ def test_xxhash32_effect_like() raises:
     assert_not_equal(hash1, hash2)
 
 
-def test_format_xxhash() raises:
-    """format_xxhash should produce 8-char hex strings."""
-    var hash = xxhash32("test")
-    var formatted = format_xxhash(hash)
-    assert_equal(len(formatted), 8)
-
-
 def test_format_hash64() raises:
     """format_hash64 should produce 16-char hex strings."""
     var formatted = format_hash64(UInt64(0))
-    assert_equal(len(formatted), 16)
+    assert_equal(formatted.byte_length(), 16)
     assert_equal(formatted, "0000000000000000")
 
     var formatted_max = format_hash64(UInt64(0xFFFFFFFFFFFFFFFF))
-    assert_equal(len(formatted_max), 16)
+    assert_equal(formatted_max.byte_length(), 16)
     assert_equal(formatted_max, "ffffffffffffffff")
 
 
@@ -135,6 +137,27 @@ def test_wyhash64_long_string() raises:
     var hash = wyhash64_string(long_input)
     assert_true(hash > 0)
     assert_equal(hash, wyhash64_string(long_input))
+
+
+# --- Pinned wyhash64 outputs ---
+# These vectors are not standard wyhash test vectors; they capture the M0
+# `_wymix`-based fold so future changes to the mix function are caught.
+# If any of these need to be updated, every served ETag changes on deploy.
+
+def test_wyhash64_pinned_empty() raises:
+    """Pinned: wyhash64_string('') — change here means ETag churn for clients."""
+    assert_equal(wyhash64_string(""), UInt64(0x83F76D8D51E39EF9))
+
+
+def test_wyhash64_pinned_a() raises:
+    """Pinned: wyhash64_string('a') — short-tail path."""
+    assert_equal(wyhash64_string("a"), UInt64(0x3CF845EB0C3F00C0))
+
+
+def test_wyhash64_pinned_64byte() raises:
+    """Pinned: wyhash64 on a 64-byte input crossing the 32-byte block boundary."""
+    var s = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    assert_equal(wyhash64_string(s), UInt64(0xA83D130D54B64584))
 
 
 def main() raises:

@@ -1,11 +1,11 @@
-"""Datastar protocol constants (targeting v1.0.0-RC.13).
+"""Datastar protocol constants (targeting v1.0.1).
 
 Constants follow the official SDK naming conventions.
 Dataline literals include trailing space per protocol spec.
 """
 
 # Version
-comptime VERSION = "1.0.0-RC.13"
+comptime VERSION = "1.0.1"
 comptime DATASTAR_KEY = "datastar"
 
 # Default timing

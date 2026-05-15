@@ -24,7 +24,7 @@ def test_etag_format() raises:
     assert_true(etag.startswith('W/"'))
     assert_true(etag.endswith('"'))
     # W/" (3) + 16 hex chars + " (1) = 20 chars
-    assert_equal(len(etag), 20)
+    assert_equal(etag.byte_length(), 20)
 
 
 def test_etag_consistency() raises:

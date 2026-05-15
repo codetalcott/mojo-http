@@ -31,7 +31,7 @@ struct AppConfig(Copyable, Movable):
         self.access_log = access_log_str == "true" or access_log_str == "1"
 
         var base_url_env = getenv("M0_BASE_URL", "")
-        if len(base_url_env) > 0:
+        if base_url_env.byte_length() > 0:
             self.base_url = base_url_env
         else:
             self.base_url = "http://localhost:" + String(self.port)
@@ -58,11 +58,11 @@ struct AppConfig(Copyable, Movable):
 def _parse_int_env(name: String, default: Int) -> Int:
     """Parse integer from env var, returning default on empty/invalid."""
     var val = getenv(name, "")
-    if len(val) == 0:
+    if val.byte_length() == 0:
         return default
     var result = 0
     var bytes = val.as_bytes()
-    for i in range(len(val)):
+    for i in range(val.byte_length()):
         var c = Int(bytes[i])
         if c < ord("0") or c > ord("9"):
             return default

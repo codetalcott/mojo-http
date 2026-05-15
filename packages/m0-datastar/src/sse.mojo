@@ -1,4 +1,4 @@
-"""Datastar SSE event generation (v1.0.0-RC.13).
+"""Datastar SSE event generation (v1.0.1).
 
 Functions for generating Server-Sent Events following the Datastar protocol.
 Each function returns a formatted SSE string ready for wire transmission.
@@ -55,7 +55,7 @@ def _build_sse(
         <blank line>
     """
     var buf = List[UInt8](capacity=256)
-    if len(event_id) > 0:
+    if event_id.byte_length() > 0:
         _buf_write(buf, "id: ")
         _buf_write(buf, event_id)
         _buf_write(buf, "\n")
@@ -95,11 +95,11 @@ def patch_elements(
         retry_duration: Optional SSE retry duration in ms.
     """
     var lines = List[String]()
-    if len(mode) > 0:
+    if mode.byte_length() > 0:
         lines.append(DL_MODE + mode)
-    if len(selector) > 0:
+    if selector.byte_length() > 0:
         lines.append(DL_SELECTOR + selector)
-    if len(namespace) > 0:
+    if namespace.byte_length() > 0:
         lines.append(DL_NAMESPACE + namespace)
     if use_view_transition:
         lines.append(DL_USE_VIEW_TRANSITION + "true")

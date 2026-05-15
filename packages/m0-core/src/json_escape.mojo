@@ -42,7 +42,7 @@ def escape_json_string(s: String) -> String:
     Uses SIMD scan for bulk safe-range detection + memcpy.
     """
     var bytes = s.as_bytes()
-    var slen = len(s)
+    var slen = s.byte_length()
     var out = List[UInt8](capacity=slen + 18)
     out.append(UInt8(ord('"')))
 

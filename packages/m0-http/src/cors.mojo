@@ -43,7 +43,7 @@ def apply_cors_headers(mut resp: HTTPResponse, config: CorsConfig):
     resp.headers[HeaderKey.ACCESS_CONTROL_ALLOW_ORIGIN] = config.allow_origin
     resp.headers[HeaderKey.ACCESS_CONTROL_ALLOW_METHODS] = config.allow_methods
     resp.headers[HeaderKey.ACCESS_CONTROL_ALLOW_HEADERS] = config.allow_headers
-    if len(config.expose_headers) > 0:
+    if config.expose_headers.byte_length() > 0:
         resp.headers[HeaderKey.ACCESS_CONTROL_EXPOSE_HEADERS] = config.expose_headers
-    if len(config.max_age) > 0:
+    if config.max_age.byte_length() > 0:
         resp.headers[HeaderKey.ACCESS_CONTROL_MAX_AGE] = config.max_age

@@ -19,33 +19,6 @@ from std.memory import UnsafePointer, memcpy
 # Hex Formatting (shared by all hash algorithms)
 # ============================================================================
 
-
-def format_hash32(hash: UInt32) -> String:
-    """Format a 32-bit hash as an 8-character zero-padded hex string."""
-    comptime hex_chars = "0123456789abcdef"
-    var hex_ptr = hex_chars.as_bytes().unsafe_ptr()
-    var out = List[UInt8](capacity=9)
-    for i in range(8):
-        var shift = (7 - i) * 4
-        var nibble = Int((hash >> UInt32(shift)) & 0xF)
-        out.append(hex_ptr[nibble])
-    out.append(0)
-    return String(unsafe_from_utf8=Span(ptr=out.unsafe_ptr(), length=8))
-
-
-def format_hash64(val: UInt64) -> String:
-    """Format a 64-bit hash as a 16-character zero-padded hex string."""
-    comptime hex_chars = "0123456789abcdef"
-    var hex_ptr = hex_chars.as_bytes().unsafe_ptr()
-    var out = List[UInt8](capacity=17)
-    for i in range(16):
-        var shift = (15 - i) * 4
-        var nibble = Int((val >> UInt64(shift)) & 0x0F)
-        out.append(hex_ptr[nibble])
-    out.append(0)
-    return String(unsafe_from_utf8=Span(ptr=out.unsafe_ptr(), length=16))
-
-
 def hex_nibble(val: Int) -> UInt8:
     """Convert a nibble (0-15) to its ASCII hex character."""
     if val < 10:
@@ -53,15 +26,33 @@ def hex_nibble(val: Int) -> UInt8:
     return UInt8(ord('a') + val - 10)
 
 
-# Legacy aliases
-def format_hash(hash: UInt32) -> String:
-    """Format a 32-bit hash as 8-char hex. Alias for format_hash32."""
-    return format_hash32(hash)
+def _format_hex(val: UInt64, nibbles: Int) -> String:
+    """Format the low `nibbles` nibbles of `val` as a lowercase hex string.
+
+    Builds the byte buffer via hex_nibble() rather than indexing into a
+    comptime string lookup. The previous `_HEX_CHARS.as_bytes().unsafe_ptr()`
+    pattern crashed Mojo nightly's Linux x86_64 JIT runtime — the temporary
+    Span returned by .as_bytes() is dropped immediately, and on Linux the
+    pointer extracted from it does not survive (macOS arm64 happens to
+    tolerate it). Avoiding the unsafe-pointer-from-comptime-string pattern
+    entirely is the robust fix.
+    """
+    var out = List[UInt8](capacity=nibbles + 1)
+    for i in range(nibbles):
+        var shift = UInt64((nibbles - 1 - i) * 4)
+        out.append(hex_nibble(Int((val >> shift) & 0xF)))
+    out.append(0)
+    return String(unsafe_from_utf8=Span(ptr=out.unsafe_ptr(), length=nibbles))
 
 
-def format_xxhash(hash: UInt32) -> String:
-    """Format xxHash32 result as 8-char hex. Alias for format_hash32."""
-    return format_hash32(hash)
+def format_hash32(hash: UInt32) -> String:
+    """Format a 32-bit hash as an 8-character zero-padded hex string."""
+    return _format_hex(UInt64(hash), 8)
+
+
+def format_hash64(val: UInt64) -> String:
+    """Format a 64-bit hash as a 16-character zero-padded hex string."""
+    return _format_hex(val, 16)
 
 
 # ============================================================================
@@ -199,13 +190,31 @@ comptime _SECRET3: UInt64 = 0x589965CC75374CC3
 
 
 def _wymix(a: UInt64, b: UInt64) -> UInt64:
-    """wyhash-style mixing: multiply and fold upper/lower halves."""
-    var lo = a * b
-    var hi = (a >> 32) * (b >> 32)
+    """wyhash-style mixing: fold the high and low 64 bits of the 128-bit product `a * b`.
+
+    Mojo does not currently expose UInt128, so this assembles the 128-bit
+    product schoolbook-style from four 32x32 -> 64 partial products.
+    """
+    var a_lo: UInt64 = a & 0xFFFFFFFF
+    var a_hi: UInt64 = a >> 32
+    var b_lo: UInt64 = b & 0xFFFFFFFF
+    var b_hi: UInt64 = b >> 32
+
+    var ll = a_lo * b_lo
+    var lh = a_lo * b_hi
+    var hl = a_hi * b_lo
+    var hh = a_hi * b_hi
+
+    # mid = lh + hl, propagating carry into the high half
+    var mid_lo = (lh & 0xFFFFFFFF) + (hl & 0xFFFFFFFF) + (ll >> 32)
+    var mid_hi = (lh >> 32) + (hl >> 32) + (mid_lo >> 32)
+
+    var lo = (ll & 0xFFFFFFFF) | (mid_lo << 32)
+    var hi = hh + mid_hi
     return lo ^ hi
 
 
-def wyhash64(buf: List[UInt8]) -> UInt64:
+def wyhash64(buf: Span[UInt8, _]) -> UInt64:
     """Compute wyhash64 over a byte buffer.
 
     Fast non-cryptographic 64-bit hash. Processes 32 bytes per iteration
@@ -213,6 +222,9 @@ def wyhash64(buf: List[UInt8]) -> UInt64:
 
     Uses secret constants as second args to _wymix to prevent
     zero-annihilation (since _wymix(anything, 0) == 0).
+
+    Targets little-endian, unaligned-load-tolerant architectures
+    (osx-arm64, linux x86_64).
     """
     var ptr = buf.unsafe_ptr()
     var length = len(buf)
@@ -220,18 +232,22 @@ def wyhash64(buf: List[UInt8]) -> UInt64:
     var h: UInt64 = 0x2D358DCCAA6C78A5 ^ UInt64(length)
     var i = 0
 
-    # Process 32 bytes at a time (4x UInt64 words)
+    # Process 32 bytes at a time (4x UInt64 words).
+    # alignment=1: the buffer is byte-aligned (e.g. String.as_bytes() into
+    # small-string storage), so request unaligned loads. x86_64 tolerates them
+    # at the hardware level, but the Linux Mojo nightly traps aligned loads on
+    # misaligned addresses via alignment sanitization.
     while i + 32 <= length:
-        var a = (ptr + i).bitcast[UInt64]().load()
-        var b = (ptr + i + 8).bitcast[UInt64]().load()
-        var c = (ptr + i + 16).bitcast[UInt64]().load()
-        var d = (ptr + i + 24).bitcast[UInt64]().load()
+        var a = (ptr + i).bitcast[UInt64]().load[alignment=1]()
+        var b = (ptr + i + 8).bitcast[UInt64]().load[alignment=1]()
+        var c = (ptr + i + 16).bitcast[UInt64]().load[alignment=1]()
+        var d = (ptr + i + 24).bitcast[UInt64]().load[alignment=1]()
         h = _wymix(h ^ a, b ^ _SECRET0) ^ _wymix(c ^ _SECRET1, d ^ _SECRET2)
         i += 32
 
     # Process remaining 8-byte words
     while i + 8 <= length:
-        var word = (ptr + i).bitcast[UInt64]().load()
+        var word = (ptr + i).bitcast[UInt64]().load[alignment=1]()
         h = _wymix(h ^ word, _SECRET3)
         i += 8
 
@@ -252,11 +268,7 @@ def wyhash64(buf: List[UInt8]) -> UInt64:
 
 def wyhash64_string(s: String) -> UInt64:
     """Compute wyhash64 for a string."""
-    var bytes = s.as_bytes()
-    var buf = List[UInt8](capacity=len(bytes))
-    for i in range(len(bytes)):
-        buf.append(bytes[i])
-    return wyhash64(buf)
+    return wyhash64(s.as_bytes())
 
 
 # ============================================================================

@@ -39,7 +39,7 @@ struct Route(Copyable, Movable):
         var parts = pattern.split("/")
         for i in range(len(parts)):
             var p = String(parts[i])
-            if len(p) > 0:
+            if p.byte_length() > 0:
                 self.segments.append(p)
                 if p.startswith(":"):
                     self.param_count += 1
@@ -66,7 +66,7 @@ struct Router:
         var parts = path.split("/")
         for i in range(len(parts)):
             var p = String(parts[i])
-            if len(p) > 0:
+            if p.byte_length() > 0:
                 req_segments.append(p)
 
         var req_count = len(req_segments)
@@ -80,7 +80,7 @@ struct Router:
             var matched = True
             for j in range(req_count):
                 var rs = String(self.routes[i].segments[j])
-                if len(rs) > 0 and rs.startswith(":"):
+                if rs.byte_length() > 0 and rs.startswith(":"):
                     params.append(req_segments[j])
                 elif rs != req_segments[j]:
                     matched = False

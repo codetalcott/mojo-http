@@ -7,8 +7,8 @@ C-ABI FFI exports live in ffi/ (outside src/, build target only).
 """
 
 from .hashing import (
-    fnv1a, fnv1a_step, format_hash, format_hash32, format_hash64,
-    xxhash32, format_xxhash, fnv1a_batch, xxhash32_batch,
+    fnv1a, fnv1a_step, format_hash32, format_hash64,
+    xxhash32, fnv1a_batch, xxhash32_batch,
     wyhash64, wyhash64_string, hex_nibble,
     _fnv1a_ptr, _xxhash32_ptr, _read_u32_le,
 )

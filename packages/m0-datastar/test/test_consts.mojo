@@ -31,8 +31,8 @@ from src.consts import (
 
 
 def test_version() raises:
-    """Version should be RC.13."""
-    assert_true(VERSION.find("1.0.0") >= 0)
+    """Version should be 1.0.1."""
+    assert_equal(VERSION, "1.0.1")
 
 
 def test_event_types() raises:

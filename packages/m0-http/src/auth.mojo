@@ -14,7 +14,7 @@ def check_api_key(headers: Headers, expected_key: String) -> Bool:
     accumulator to avoid timing side-channels from early exit.
     Returns False immediately only if no key is provided (not secret).
     """
-    if len(expected_key) == 0:
+    if expected_key.byte_length() == 0:
         return True  # auth disabled
 
     var key_hdr = headers.get("x-api-key")

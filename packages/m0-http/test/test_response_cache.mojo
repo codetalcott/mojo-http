@@ -90,7 +90,7 @@ def test_cache_lru_fills_to_max() raises:
         cache.put("/" + String(i), _b(UInt8(i)), "e" + String(i))
     assert_true(cache.size() <= 4, "cache should not exceed max_entries")
     # The most recent entries should survive
-    assert_true(len(cache.get_etag("/7")) > 0, "most recent entry should exist")
+    assert_true(cache.get_etag("/7").byte_length() > 0, "most recent entry should exist")
 
 
 def test_cache_lru_access_pattern() raises:

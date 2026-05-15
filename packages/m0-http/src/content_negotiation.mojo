@@ -27,12 +27,12 @@ struct AcceptResult(Copyable, Movable):
 
 def _parse_quality(s: String) -> Float64:
     """Parse a quality factor value (0.0-1.0) from a string."""
-    if len(s) == 0:
+    if s.byte_length() == 0:
         return 1.0
     var result: Float64 = 0.0
     var decimal_place: Float64 = 0.0
     var bytes = s.as_bytes()
-    for i in range(len(s)):
+    for i in range(s.byte_length()):
         var c = Int(bytes[i])
         if c == ord("."):
             decimal_place = 0.1
@@ -55,13 +55,13 @@ def parse_accept(accept: String) -> AcceptResult:
     Quality of 0 disables a type.
     """
     var result = AcceptResult()
-    if len(accept) == 0:
+    if accept.byte_length() == 0:
         return result^
 
     var start = 0
     var i = 0
-    while i <= len(accept):
-        var at_end = i == len(accept)
+    while i <= accept.byte_length():
+        var at_end = i == accept.byte_length()
         var at_comma = False
         if not at_end:
             at_comma = accept.as_bytes()[i] == UInt8(ord(","))
@@ -116,12 +116,12 @@ def _trim(s: String) -> String:
     """Trim leading and trailing whitespace."""
     var bytes = s.as_bytes()
     var start = 0
-    var end = len(s)
+    var end = s.byte_length()
     while start < end and (bytes[start] == UInt8(ord(" ")) or bytes[start] == UInt8(ord("\t"))):
         start += 1
     while end > start and (bytes[end - 1] == UInt8(ord(" ")) or bytes[end - 1] == UInt8(ord("\t"))):
         end -= 1
-    if start == 0 and end == len(s):
+    if start == 0 and end == s.byte_length():
         return s
     return String(StringSlice(s)[byte=start:end])
 
