@@ -100,7 +100,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
 
     def __init__(out self):
         """Constructs an empty list."""
-        self.data = UnsafePointer[Self.T, MutExternalOrigin]()
+        self.data = UnsafePointer[Self.T, MutExternalOrigin](unsafe_from_address=0)
         self.size = 0
         self.capacity = 0
 
@@ -463,7 +463,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
             The underlying data.
         """
         var ptr = self.data
-        self.data = UnsafePointer[Self.T, MutExternalOrigin]()
+        self.data = UnsafePointer[Self.T, MutExternalOrigin](unsafe_from_address=0)
         self.size = 0
         self.capacity = 0
         return ptr

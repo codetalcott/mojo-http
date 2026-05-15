@@ -1039,7 +1039,7 @@ def getaddrinfo[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/getaddrinfo.3p.html.
     """
-    var ptr = ExternalMutUnsafePointer[T]()
+    var ptr = ExternalMutUnsafePointer[T](unsafe_from_address=0)
     var result = _getaddrinfo(
         node.as_c_string_slice().unsafe_ptr(),
         service.as_c_string_slice().unsafe_ptr(),

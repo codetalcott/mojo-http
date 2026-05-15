@@ -109,8 +109,8 @@ def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
     """Submit a single kevent change using stack allocation (zero heap)."""
     var cl = stack_allocation[1, kevent_t]()
     cl[] = ev
-    var null_ev = ExternalMutUnsafePointer[kevent_t]()
-    var null_ts = ExternalMutUnsafePointer[timespec_t]()
+    var null_ev = ExternalMutUnsafePointer[kevent_t](unsafe_from_address=0)
+    var null_ts = ExternalMutUnsafePointer[timespec_t](unsafe_from_address=0)
     var result = _kevent(Int32(kq.value), cl, c_int(1), null_ev, c_int(0), null_ts)
     if result == -1:
         var errno = get_errno()
@@ -124,8 +124,8 @@ def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
     for i in range(n):
         cl[i] = changes[i]
 
-    var null_ev = ExternalMutUnsafePointer[kevent_t]()
-    var null_ts = ExternalMutUnsafePointer[timespec_t]()
+    var null_ev = ExternalMutUnsafePointer[kevent_t](unsafe_from_address=0)
+    var null_ts = ExternalMutUnsafePointer[timespec_t](unsafe_from_address=0)
     var result = _kevent(kq.value, cl, c_int(n), null_ev, c_int(0), null_ts)
     cl.free()
 
@@ -146,7 +146,7 @@ def kevent_poll(
         Int64(timeout_ms // 1000),
         Int64((timeout_ms % 1000) * 1_000_000),
     )
-    var null_cl = ExternalMutUnsafePointer[kevent_t]()
+    var null_cl = ExternalMutUnsafePointer[kevent_t](unsafe_from_address=0)
     var result = _kevent(
         Int32(kq.value), null_cl, c_int(0), eventlist, c_int(max_events), ts,
     )

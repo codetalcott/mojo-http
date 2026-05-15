@@ -111,7 +111,7 @@ def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
 
 def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
     """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored."""
-    var null_ev = ExternalMutUnsafePointer[epoll_event_t]()
+    var null_ev = ExternalMutUnsafePointer[epoll_event_t](unsafe_from_address=0)
     var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_DEL, c_int(fd), null_ev)
     if result == -1:
         var errno = get_errno()
@@ -166,7 +166,7 @@ def set_timerfd_ms(fd: Int, timeout_ms: Int) raises:
         value_sec=Int64(timeout_ms // 1000),
         value_nsec=Int64((timeout_ms % 1000) * 1_000_000),
     )
-    var null_ptr = ExternalMutUnsafePointer[itimerspec_t]()
+    var null_ptr = ExternalMutUnsafePointer[itimerspec_t](unsafe_from_address=0)
     var result = timerfd_settime(c_int(fd), 0, spec_stack, null_ptr)
     if result == -1:
         var errno = get_errno()

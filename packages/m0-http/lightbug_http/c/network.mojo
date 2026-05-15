@@ -315,9 +315,9 @@ struct addrinfo(TrivialRegisterPassable):
         self.ai_socktype = 0
         self.ai_protocol = 0
         self.ai_addrlen = 0
-        self.ai_addr = ExternalMutUnsafePointer[sockaddr]()
-        self.ai_canonname = ExternalMutUnsafePointer[c_char]()
-        self.ai_next = ExternalMutUnsafePointer[c_void]()
+        self.ai_addr = ExternalMutUnsafePointer[sockaddr](unsafe_from_address=0)
+        self.ai_canonname = ExternalMutUnsafePointer[c_char](unsafe_from_address=0)
+        self.ai_next = ExternalMutUnsafePointer[c_void](unsafe_from_address=0)
 
 
 def _inet_ntop(
