@@ -1,6 +1,6 @@
 """Tests for content negotiation."""
 
-from std.testing import assert_true, assert_false
+from std.testing import assert_true, assert_false, TestSuite
 
 from src.content_negotiation import parse_accept, wants_html, wants_event_stream
 
@@ -95,3 +95,6 @@ def test_problem_json() raises:
     var r = parse_accept("application/problem+json")
     assert_true(r.wants_problem_json)
     assert_false(r.wants_json)
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

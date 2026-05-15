@@ -1,6 +1,6 @@
 """Tests for the HTTP router."""
 
-from std.testing import assert_equal, assert_true, assert_false
+from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src.router import Router, MatchResult
 
@@ -80,3 +80,6 @@ def test_trailing_slash() raises:
     r.add("GET", "/orders", 1)
     var m = r.match("GET", "/orders/")
     assert_true(m.matched)
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

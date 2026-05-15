@@ -1,7 +1,7 @@
 """Tests for m0-http health module."""
 
 from m0_http.health import HealthRegistry
-from std.testing import assert_true, assert_false, assert_equal
+from std.testing import assert_true, assert_false, assert_equal, TestSuite
 
 
 def test_health_empty_ready() raises:
@@ -79,3 +79,6 @@ def test_health_to_json_shutting_down() raises:
     h.shutting_down = True
     var json = h.to_json()
     assert_true('"status":"shutting_down"' in json)
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

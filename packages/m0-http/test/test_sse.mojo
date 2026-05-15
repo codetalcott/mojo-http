@@ -1,6 +1,6 @@
 """Tests for SSE format, registry, and journal."""
 
-from std.testing import assert_equal, assert_true, assert_false
+from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src.sse.format import format_sse_event, format_sse_heartbeat
 from src.sse.registry import SSERegistry
@@ -243,3 +243,6 @@ def test_journal_compact() raises:
     j.compact("/a")
     assert_equal(j.since("/a", 0).type, "none")
     assert_equal(j.since("/b", 0).type, "patch")
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

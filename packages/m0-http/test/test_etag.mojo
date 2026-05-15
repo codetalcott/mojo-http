@@ -1,6 +1,6 @@
 """Tests for ETag computation and matching."""
 
-from std.testing import assert_equal, assert_true, assert_false, assert_not_equal
+from std.testing import assert_equal, assert_true, assert_false, assert_not_equal, TestSuite
 
 from src.etag import compute_etag, etag_matches
 
@@ -79,3 +79,6 @@ def test_etag_no_partial_match() raises:
 def test_etag_matches_with_spaces() raises:
     """ETag matching should handle extra whitespace around commas."""
     assert_true(etag_matches('W/"abc"', 'W/"xyz" , W/"abc" , W/"def"'))
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

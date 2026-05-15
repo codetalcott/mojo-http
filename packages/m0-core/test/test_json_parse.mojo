@@ -1,6 +1,6 @@
 """Tests for the JSON field extraction parser."""
 
-from std.testing import assert_equal, assert_true
+from std.testing import assert_equal, assert_true, TestSuite
 
 from src.json_parse import parse_json_field, parse_json_int, parse_json_number, parse_json_bool
 
@@ -118,3 +118,7 @@ def test_parse_bool_false() raises:
 def test_parse_bool_missing() raises:
     """Should return -1 for missing field."""
     assert_equal(parse_json_bool('{"active":true}', "enabled"), -1)
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

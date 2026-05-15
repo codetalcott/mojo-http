@@ -1,6 +1,6 @@
 """Tests for FNV-1a, xxHash32, wyhash64, and hex formatting."""
 
-from std.testing import assert_equal, assert_not_equal, assert_true
+from std.testing import assert_equal, assert_not_equal, assert_true, TestSuite
 
 from src.hashing import (
     fnv1a, fnv1a_step, format_hash, format_hash32, format_hash64,
@@ -135,3 +135,7 @@ def test_wyhash64_long_string() raises:
     var hash = wyhash64_string(long_input)
     assert_true(hash > 0)
     assert_equal(hash, wyhash64_string(long_input))
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

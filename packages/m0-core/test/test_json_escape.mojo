@@ -1,6 +1,6 @@
 """Tests for JSON string escape."""
 
-from std.testing import assert_equal, assert_true
+from std.testing import assert_equal, assert_true, TestSuite
 
 from src.json_escape import escape_json_string
 
@@ -42,3 +42,7 @@ def test_escape_tab() raises:
 def test_no_escape_needed() raises:
     """Strings without special chars should pass through unchanged."""
     assert_equal(escape_json_string("abc123"), '"abc123"')
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

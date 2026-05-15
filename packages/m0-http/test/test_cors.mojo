@@ -3,7 +3,7 @@
 from m0_http.cors import CorsConfig, apply_cors_headers
 from lightbug_http import HTTPResponse, HeaderKey
 from lightbug_http.io.bytes import Bytes
-from std.testing import assert_equal, assert_true
+from std.testing import assert_equal, assert_true, TestSuite
 
 
 def test_cors_default_config() raises:
@@ -45,3 +45,6 @@ def test_cors_empty_expose_headers() raises:
     apply_cors_headers(resp, config)
     var expose = resp.headers.get(HeaderKey.ACCESS_CONTROL_EXPOSE_HEADERS)
     assert_true(not expose)
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

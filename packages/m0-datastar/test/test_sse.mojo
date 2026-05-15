@@ -1,6 +1,6 @@
 """Tests for Datastar SSE event generation."""
 
-from std.testing import assert_equal, assert_true, assert_false
+from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src.sse import patch_elements, patch_signals, execute_script, redirect
 
@@ -121,3 +121,6 @@ def test_sse_ends_with_double_newline() raises:
     """SSE events must end with double newline."""
     var s = patch_elements("<div/>")
     assert_true(s.endswith("\n\n"))
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

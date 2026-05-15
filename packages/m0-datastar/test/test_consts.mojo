@@ -1,6 +1,6 @@
 """Tests for Datastar protocol constants."""
 
-from std.testing import assert_equal, assert_true
+from std.testing import assert_equal, assert_true, TestSuite
 
 from src.consts import (
     VERSION,
@@ -80,3 +80,6 @@ def test_js_bool() raises:
 def test_retry_duration() raises:
     """Default retry duration should be 1000ms."""
     assert_equal(DEFAULT_SSE_RETRY_DURATION, 1000)
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

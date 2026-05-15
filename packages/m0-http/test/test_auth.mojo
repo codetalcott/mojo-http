@@ -2,7 +2,7 @@
 
 from m0_http.auth import check_api_key
 from lightbug_http.header import Headers
-from std.testing import assert_true, assert_false
+from std.testing import assert_true, assert_false, TestSuite
 
 
 def test_auth_disabled() raises:
@@ -50,3 +50,6 @@ def test_auth_case_sensitive() raises:
     var headers = Headers()
     headers["X-API-Key"] = "Secret"
     assert_false(check_api_key(headers, String("secret")))
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

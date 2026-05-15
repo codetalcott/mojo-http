@@ -1,6 +1,6 @@
 """Tests for the response cache."""
 
-from std.testing import assert_equal, assert_true
+from std.testing import assert_equal, assert_true, TestSuite
 
 from src.response_cache import ResponseCache
 
@@ -122,3 +122,6 @@ def test_cache_lru_put_resets_access() raises:
     assert_equal(cache.size(), 3)
     assert_equal(cache.get_etag("/b"), "", "/b should have been evicted")
     assert_equal(cache.get_etag("/a"), "e1-updated", "/a should survive (refreshed by put)")
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()
