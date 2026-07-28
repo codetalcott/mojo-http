@@ -1566,7 +1566,7 @@ struct AcceptError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -1656,7 +1656,7 @@ struct BindError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -1699,7 +1699,7 @@ struct CloseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -1824,7 +1824,7 @@ struct ConnectError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -1886,7 +1886,7 @@ struct GetpeernameError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -1941,7 +1941,7 @@ struct GetsocknameError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2003,7 +2003,7 @@ struct GetsockoptError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2046,7 +2046,7 @@ struct ListenError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2122,7 +2122,7 @@ struct RecvError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2233,7 +2233,7 @@ struct RecvfromError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2358,7 +2358,7 @@ struct SendError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2532,7 +2532,7 @@ struct SendtoError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2594,7 +2594,7 @@ struct SetsockoptError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2637,7 +2637,7 @@ struct ShutdownError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -2713,7 +2713,7 @@ struct SocketError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def get[T: AnyType](self) -> ref [self.value] T:
+    def get[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:

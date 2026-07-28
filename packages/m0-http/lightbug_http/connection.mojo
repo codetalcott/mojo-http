@@ -1,4 +1,4 @@
-from sys.info import CompilationTarget
+from std.sys.info import CompilationTarget
 from std.time import sleep
 
 from lightbug_http.address import HostPort, NetworkType, ParseError, TCPAddr, UDPAddr, parse_address
@@ -145,7 +145,7 @@ struct ListenerError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -287,7 +287,7 @@ struct ListenConfig:
                     socket.shutdown()
                 except shutdown_err:
                     pass
-                sleep(UInt(1))
+                sleep(1)
 
         try:
             socket.listen(128)
@@ -586,7 +586,7 @@ struct CreateConnectionError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:

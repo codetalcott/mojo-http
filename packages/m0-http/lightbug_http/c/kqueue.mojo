@@ -7,7 +7,7 @@ single-threaded, non-blocking HTTP server.
 
 from std.memory import stack_allocation
 from std.ffi import c_int, external_call, get_errno
-from sys.info import size_of
+from std.sys.info import size_of
 
 from lightbug_http.c.aliases import ExternalMutUnsafePointer
 from lightbug_http.c.socket import O_NONBLOCK
@@ -93,13 +93,19 @@ def kqueue() raises -> FileDescriptor:
 
 def _kevent(
     kq: c_int,
-    changelist: ExternalMutUnsafePointer[kevent_t],
+    changelist: OptionalUnsafePointer[kevent_t, MutExternalOrigin],
     nchanges: c_int,
-    eventlist: ExternalMutUnsafePointer[kevent_t],
+    eventlist: OptionalUnsafePointer[kevent_t, MutExternalOrigin],
     nevents: c_int,
-    timeout: ExternalMutUnsafePointer[timespec_t],
+    timeout: OptionalUnsafePointer[timespec_t, MutExternalOrigin],
 ) -> c_int:
-    """Raw kevent() syscall — single FFI signature using ExternalMut pointers."""
+    """Raw kevent() syscall — single FFI signature using ExternalMut pointers.
+
+    kevent() accepts NULL for changelist/eventlist/timeout, so those are
+    modelled as `Optional`: UnsafePointer is non-null by design and a literal
+    null address is now rejected outright. Optional[UnsafePointer] has the same
+    layout with None as the null niche, so the ABI is unchanged.
+    """
     return external_call["kevent", c_int](
         kq, changelist, nchanges, eventlist, nevents, timeout,
     )
@@ -109,9 +115,7 @@ def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
     """Submit a single kevent change using stack allocation (zero heap)."""
     var cl = stack_allocation[1, kevent_t]()
     cl[] = ev
-    var null_ev = ExternalMutUnsafePointer[kevent_t](unsafe_from_address=0)
-    var null_ts = ExternalMutUnsafePointer[timespec_t](unsafe_from_address=0)
-    var result = _kevent(Int32(kq.value), cl, c_int(1), null_ev, c_int(0), null_ts)
+    var result = _kevent(Int32(kq.value), cl, c_int(1), None, c_int(0), None)
     if result == -1:
         var errno = get_errno()
         raise Error("kevent_register_one failed, errno: " + String(errno))
@@ -124,9 +128,7 @@ def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
     for i in range(n):
         cl[i] = changes[i]
 
-    var null_ev = ExternalMutUnsafePointer[kevent_t](unsafe_from_address=0)
-    var null_ts = ExternalMutUnsafePointer[timespec_t](unsafe_from_address=0)
-    var result = _kevent(kq.value, cl, c_int(n), null_ev, c_int(0), null_ts)
+    var result = _kevent(kq.value, cl, c_int(n), None, c_int(0), None)
     cl.free()
 
     if result == -1:
@@ -146,9 +148,8 @@ def kevent_poll(
         Int64(timeout_ms // 1000),
         Int64((timeout_ms % 1000) * 1_000_000),
     )
-    var null_cl = ExternalMutUnsafePointer[kevent_t](unsafe_from_address=0)
     var result = _kevent(
-        Int32(kq.value), null_cl, c_int(0), eventlist, c_int(max_events), ts,
+        Int32(kq.value), None, c_int(0), eventlist, c_int(max_events), ts,
     )
     ts.free()
 

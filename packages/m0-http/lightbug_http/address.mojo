@@ -1,5 +1,5 @@
 from std.ffi import c_char, c_int, c_uchar, external_call
-from sys.info import CompilationTarget
+from std.sys.info import CompilationTarget
 
 from lightbug_http.c.address import AddressFamily, AddressLength
 from lightbug_http.c.aliases import ExternalImmutUnsafePointer, ExternalMutUnsafePointer, c_void
@@ -38,6 +38,7 @@ trait Addr(
     Defaultable,
     Equatable,
     ImplicitlyCopyable,
+    ImplicitlyDeletable,
     Writable,
 ):
     comptime _type: StaticString
@@ -583,7 +584,7 @@ struct GetIPAddressError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -673,7 +674,7 @@ struct ParseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -688,14 +689,14 @@ def parse_ipv6_bracketed_address[
     Returns:
         Tuple of (host, colon_index_offset).
     """
-    if len(address) == 0 or address.as_bytes()[0] != UInt8(ord("[")):
+    if address.byte_length() == 0 or address.as_bytes()[0] != UInt8(ord("[")):
         return address, UInt16(0)
 
     var end_bracket_index = address.find("]")
     if end_bracket_index == -1:
         raise ParseMissingClosingBracketError()
 
-    if end_bracket_index + 1 == len(address):
+    if end_bracket_index + 1 == address.byte_length():
         raise ParseMissingPortError()
 
     var colon_index = end_bracket_index + 1
@@ -791,7 +792,7 @@ def parse_address[
     # TODO (Mikhail): StringSlice does byte level slicing, so this can be
     # invalid for multi-byte UTF-8 characters. Perhaps we instead assert that it's
     # an ascii string instead.
-    if len(address) > 0 and address.as_bytes()[0] == UInt8(ord("[")):
+    if address.byte_length() > 0 and address.as_bytes()[0] == UInt8(ord("[")):
         var bracket_offset: UInt16
         (host, bracket_offset) = parse_ipv6_bracketed_address(address)
         validate_no_brackets(address, bracket_offset)

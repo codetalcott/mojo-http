@@ -3,7 +3,7 @@ from std.sys import size_of
 from lightbug_http.connection import default_buffer_size
 from lightbug_http.strings import BytesConstant
 from std.memory import memcpy
-from std.memory.span import ContiguousSlice, _SpanIter
+from std.collections.span import ContiguousSlice, _SpanIter
 
 
 comptime Bytes = List[Byte]
@@ -11,7 +11,7 @@ comptime Bytes = List[Byte]
 
 @always_inline
 def byte[s: StringSlice]() -> Byte:
-    comptime assert len(s) == 1, "StringSlice must be of length 1 to convert to Byte."
+    comptime assert s.byte_length() == 1, "StringSlice must be of length 1 to convert to Byte."
     return s.as_bytes()[0]
 
 
@@ -361,7 +361,7 @@ def create_string_from_ptr[origin: ImmutOrigin](ptr: UnsafePointer[UInt8, origin
         return String()
 
     # Copy raw bytes directly - this preserves the exact bytes from HTTP messages
-    return String(unsafe_from_utf8=Span(ptr=ptr, length=length))
+    return String(unsafe_from_utf8=Span(unsafe_ptr=ptr, length=length))
 
 
 def bufis(s: String, t: String) -> Bool:

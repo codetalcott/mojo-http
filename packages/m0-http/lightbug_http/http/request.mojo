@@ -114,7 +114,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         Raises:
             RequestBuildError: If URI is too long, URI parsing fails, or cookie parsing fails.
         """
-        if len(parsed.path) > max_uri_length:
+        if parsed.path.byte_length() > max_uri_length:
             raise RequestBuildError(URITooLongError())
 
         var cookies = RequestCookieJar()
@@ -208,8 +208,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     def write_to[T: Writer, //](self, mut writer: T):
         """Write the request in HTTP format to a writer."""
-        path = self.uri.path if len(self.uri.path) > 1 else strSlash
-        if len(self.uri.query_string) > 0:
+        path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
+        if self.uri.query_string.byte_length() > 0:
             path.write("?", self.uri.query_string)
 
         writer.write(
@@ -227,8 +227,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     def encode(deinit self) -> Bytes:
         """Encode request as bytes, consuming the request."""
-        var path = self.uri.path if len(self.uri.path) > 1 else strSlash
-        if len(self.uri.query_string) > 0:
+        var path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
+        if self.uri.query_string.byte_length() > 0:
             path.write("?", self.uri.query_string)
 
         var writer = ByteWriter()

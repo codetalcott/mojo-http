@@ -54,7 +54,7 @@ def escape_json_string(s: String) -> String:
         var found = -1
 
         if remaining >= 64:
-            found = simd_find_escape_char(ptr + pos, remaining)
+            found = simd_find_escape_char(ptr.unsafe_offset(pos), remaining)
 
         if found == -1:
             var scan_start = pos + ((remaining // 64) * 64) if remaining >= 64 else pos
@@ -68,13 +68,21 @@ def escape_json_string(s: String) -> String:
             var count = slen - pos
             var old_len = len(out)
             out.resize(old_len + count, 0)
-            memcpy(dest=out.unsafe_ptr() + old_len, src=ptr + pos, count=count)
+            memcpy(
+                dest=out.unsafe_ptr().unsafe_offset(old_len),
+                src=ptr.unsafe_offset(pos),
+                count=count,
+            )
             pos = slen
         else:
             if found > 0:
                 var old_len = len(out)
                 out.resize(old_len + found, 0)
-                memcpy(dest=out.unsafe_ptr() + old_len, src=ptr + pos, count=found)
+                memcpy(
+                    dest=out.unsafe_ptr().unsafe_offset(old_len),
+                    src=ptr.unsafe_offset(pos),
+                    count=found,
+                )
             pos += found
             var c = bytes[pos]
             if c == 0x22:
@@ -102,4 +110,4 @@ def escape_json_string(s: String) -> String:
             pos += 1
 
     out.append(UInt8(ord('"')))
-    return String(unsafe_from_utf8=Span(ptr=out.unsafe_ptr(), length=len(out)))
+    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=len(out)))

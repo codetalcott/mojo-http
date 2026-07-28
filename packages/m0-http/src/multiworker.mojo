@@ -27,7 +27,7 @@ struct WorkerSupervisor:
     var max_respawns: Int
     var respawn_count: Int
     var rapid_crash_count: Int
-    var last_fork_ns: UInt
+    var last_fork_ns: Int
 
     def __init__(out self, num_workers: Int):
         self.child_pids = List[Int]()

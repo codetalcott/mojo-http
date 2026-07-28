@@ -12,7 +12,7 @@ def compute_etag(buf: List[UInt8]) -> String:
 
     Returns: W/"<16-char-hex>"
     """
-    var hash = wyhash64(Span(ptr=buf.unsafe_ptr(), length=len(buf)))
+    var hash = wyhash64(Span(unsafe_ptr=buf.unsafe_ptr(), length=len(buf)))
     return String('W/"') + format_hash64(hash) + String('"')
 
 

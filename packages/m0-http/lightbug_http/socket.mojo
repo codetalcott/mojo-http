@@ -1,5 +1,5 @@
 from std.ffi import c_uint, get_errno
-from sys.info import CompilationTarget
+from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import c_void
 
@@ -112,7 +112,7 @@ struct SocketRecvError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -145,7 +145,7 @@ struct SocketRecvfromError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -190,7 +190,7 @@ struct SocketAcceptError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -229,7 +229,7 @@ struct SocketBindError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -262,7 +262,7 @@ struct SocketConnectError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -301,7 +301,7 @@ struct SocketGetsocknameError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -354,7 +354,7 @@ struct FatalCloseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -610,7 +610,7 @@ struct Socket[
         Raises:
             SetsockoptError: If setting the socket option fails.
         """
-        setsockopt(self.fd, SOL_SOCKET, option_name.value, Int32(option_value))
+        setsockopt(self.fd, Int32(SOL_SOCKET), option_name.value, Int32(option_value))
 
     def connect(mut self, mut ip_address: String, port: UInt16) raises -> None:
         """Connect to a remote socket at address.
@@ -669,7 +669,7 @@ struct Socket[
         bytes_received = recv(
             self.fd,
             Span(buffer)[size:],
-            UInt(buffer.capacity - len(buffer)),
+            UInt(buffer.capacity() - len(buffer)),
             0,
         )
         buffer._len += Int(bytes_received)
@@ -726,7 +726,7 @@ struct Socket[
         bytes_received = recvfrom(
             self.fd,
             Span(buffer)[size:],
-            UInt(buffer.capacity - len(buffer)),
+            UInt(buffer.capacity() - len(buffer)),
             0,
             remote_address,
         )
@@ -826,7 +826,7 @@ struct Socket[
         var timeval: InlineArray[Int64, 2] = [Int64(seconds), Int64(0)]
         var result = _setsockopt(
             Int32(self.fd.value),
-            SOL_SOCKET,
+            Int32(SOL_SOCKET),
             SocketOption.SO_RCVTIMEO.value,
             UnsafePointer(to=timeval).bitcast[c_void](),
             16,

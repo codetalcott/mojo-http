@@ -86,7 +86,7 @@ struct ServerError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -230,7 +230,7 @@ struct ProvisionError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -372,7 +372,7 @@ def handle_connection[
             # Wall-clock deadline for total header parsing (slowloris protection)
             if config.header_read_timeout > 0:
                 var elapsed_s = (perf_counter_ns() - header_start_ns) / 1_000_000_000
-                if elapsed_s >= UInt(config.header_read_timeout):
+                if elapsed_s >= Int(config.header_read_timeout):
                     _send_error_response(conn, RequestTimeout())
                     provision.state = ConnectionState.closed()
                     break
@@ -439,7 +439,7 @@ def handle_connection[
                     provision.state = ConnectionState.closed()
                     break
 
-                if len(parsed.path) > config.max_request_uri_length:
+                if parsed.path.byte_length() > config.max_request_uri_length:
                     _send_error_response(conn, URITooLong())
                     provision.state = ConnectionState.closed()
                     break
@@ -572,7 +572,7 @@ def handle_connection[
                     body = Bytes(capacity=body_st.content_length)
                     memcpy(
                         dest=body.unsafe_ptr(),
-                        src=provision.recv_buffer.unsafe_ptr() + body_start,
+                        src=provision.recv_buffer.unsafe_ptr().unsafe_offset(body_start),
                         count=body_st.content_length,
                     )
                     body._len = body_st.content_length

@@ -4,7 +4,8 @@ from std.os import abort
 from std.sys import size_of
 from std.sys.intrinsics import _type_is_eq
 
-from std.memory import Pointer, Span, memcpy
+from std.collections.span import Span
+from std.memory import Pointer, memcpy
 
 
 # ===-----------------------------------------------------------------------===#
@@ -253,7 +254,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
         for i in range(len(self)):
             (new_data + i).init_pointee_move_from(self.data + i)
 
-        if self.data:
+        if Int(self.data) != 0:
             self._annotate_delete()
             self.data.free()
         self.data = new_data
