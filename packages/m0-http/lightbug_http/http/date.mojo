@@ -21,16 +21,21 @@ def http_date_now() -> String:
     t_ptr[] = t
 
     # gmtime returns a pointer to struct tm
-    var tm_ptr = external_call[
+    # gmtime() returns NULL on failure, so bind the result as an
+    # OptionalUnsafePointer — UnsafePointer is non-null by design and Bool(ptr)
+    # is no longer meaningful. Optional has the same layout, with None as the
+    # null niche, so this stays ABI-compatible with the C signature.
+    var tm_opt = external_call[
         "gmtime",
-        UnsafePointer[Int32, MutExternalOrigin],
+        OptionalUnsafePointer[Int32, MutExternalOrigin],
         UnsafePointer[Int64, MutExternalOrigin],
     ](t_ptr)
 
     t_ptr.free()
 
-    if not tm_ptr:
+    if tm_opt is None:
         return "Thu, 01 Jan 1970 00:00:00 GMT"
+    var tm_ptr = tm_opt.value()
 
     # struct tm fields (all Int32):
     # [0] tm_sec, [1] tm_min, [2] tm_hour, [3] tm_mday,

@@ -4,7 +4,8 @@ from std.os import abort
 from std.sys import size_of
 from std.sys.intrinsics import _type_is_eq
 
-from std.memory import Pointer, Span, memcpy
+from std.collections.span import Span
+from std.memory import Pointer, memcpy
 
 
 # ===-----------------------------------------------------------------------===#

@@ -6,7 +6,7 @@ from lightbug_http.http.parsing import (
 )
 from lightbug_http.io.bytes import ByteReader, Bytes, ByteWriter, byte, is_newline, is_space
 from lightbug_http.strings import CR, LF, BytesConstant, lineBreak
-from std.memory import Span
+from std.collections.span import Span
 from std.utils import Variant
 
 
@@ -211,7 +211,7 @@ struct RequestParseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -252,7 +252,7 @@ struct ResponseParseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -530,7 +530,11 @@ def parse_request_headers(
         var found_slash = False
         for i in range(sep, len(path_bytes)):
             if path_bytes[i] == 47:  # ASCII '/'
-                path = String(path[byte=i:])
+                # Materialize into a temp first: constructing directly into
+                # `path` while `path_bytes` still borrows it now trips the
+                # aliasing check.
+                var trimmed = String(path[byte=i:])
+                path = trimmed^
                 found_slash = True
                 break
         if not found_slash:
@@ -565,7 +569,7 @@ def parse_request_headers(
     # by the parser's OWS skip and must be rejected as invalid.
     if minor_version == 1:
         var host_opt = headers.get(HeaderKey.HOST)
-        if host_opt and len(host_opt.value()) == 0:
+        if host_opt and host_opt.value().byte_length() == 0:
             raise RequestParseError(InvalidHTTPRequestError())
 
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
@@ -707,10 +711,10 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
     #   buffer[i+j]==CR, [i+j+1]==LF, [i+j+2]==CR, [i+j+3]==LF
     # Needs 64+3 = 67 bytes readable from position i.
     while i + 67 <= buf_len:
-        var v0 = (ptr + i).load[width=64]()
-        var v1 = (ptr + i + 1).load[width=64]()
-        var v2 = (ptr + i + 2).load[width=64]()
-        var v3 = (ptr + i + 3).load[width=64]()
+        var v0 = ptr.unsafe_offset(i).unsafe_load[width=64]()
+        var v1 = ptr.unsafe_offset(i + 1).unsafe_load[width=64]()
+        var v2 = ptr.unsafe_offset(i + 2).unsafe_load[width=64]()
+        var v3 = ptr.unsafe_offset(i + 3).unsafe_load[width=64]()
 
         # XOR each shifted window with expected byte — zero lanes = match.
         # OR all four: lane j is zero iff \r\n\r\n starts at i+j.

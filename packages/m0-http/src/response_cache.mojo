@@ -107,7 +107,10 @@ struct ResponseCache:
         if idx != last:
             self.urls[idx] = self.urls[last]
             self.etags[idx] = self.etags[last]
-            self.buffers[idx] = self.buffers.pop()
+            # Hoisted: passing `self.buffers` mutably to pop() while also
+            # writing into `self.buffers[idx]` now trips the aliasing check.
+            var last_buffer = self.buffers.pop()
+            self.buffers[idx] = last_buffer^
             self.json_strings[idx] = self.json_strings[last]
             self.last_access[idx] = self.last_access[last]
             _ = self.urls.pop()

@@ -7,7 +7,7 @@ single-threaded, non-blocking HTTP server.
 
 from std.memory import stack_allocation
 from std.ffi import c_int, external_call, get_errno
-from sys.info import size_of
+from std.sys.info import size_of
 
 from lightbug_http.c.aliases import ExternalMutUnsafePointer
 from lightbug_http.c.socket import O_NONBLOCK

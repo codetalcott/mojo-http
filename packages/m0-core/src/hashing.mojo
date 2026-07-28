@@ -42,7 +42,7 @@ def _format_hex(val: UInt64, nibbles: Int) -> String:
         var shift = UInt64((nibbles - 1 - i) * 4)
         out.append(hex_nibble(Int((val >> shift) & 0xF)))
     out.append(0)
-    return String(unsafe_from_utf8=Span(ptr=out.unsafe_ptr(), length=nibbles))
+    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=nibbles))
 
 
 def format_hash32(hash: UInt32) -> String:
@@ -214,6 +214,22 @@ def _wymix(a: UInt64, b: UInt64) -> UInt64:
     return lo ^ hi
 
 
+def _load_u64(ptr: Pointer[UInt8, _], offset: Int) -> UInt64:
+    """Load an unaligned little-endian UInt64 at `offset` bytes past `ptr`.
+
+    Uses the ungated `unsafe_*` pointer spellings: as of nightly
+    26.5.0.dev2026072806 `Span.unsafe_ptr()` returns a safe `Pointer`, and the
+    `+`, `bitcast`, and `load` operators are gated on `not _safe`. The
+    `unsafe_offset` / `unsafe_bitcast` / `unsafe_load` twins are ungated and
+    preserve the pointer's origin (unlike casting to `UnsafeAnyOrigin`).
+
+    alignment=1: the buffer is byte-aligned, so request unaligned loads.
+    """
+    return ptr.unsafe_offset(offset).unsafe_bitcast[UInt64]().unsafe_load[
+        alignment=1
+    ]()
+
+
 def wyhash64(buf: Span[UInt8, _]) -> UInt64:
     """Compute wyhash64 over a byte buffer.
 
@@ -238,16 +254,16 @@ def wyhash64(buf: Span[UInt8, _]) -> UInt64:
     # at the hardware level, but the Linux Mojo nightly traps aligned loads on
     # misaligned addresses via alignment sanitization.
     while i + 32 <= length:
-        var a = (ptr + i).bitcast[UInt64]().load[alignment=1]()
-        var b = (ptr + i + 8).bitcast[UInt64]().load[alignment=1]()
-        var c = (ptr + i + 16).bitcast[UInt64]().load[alignment=1]()
-        var d = (ptr + i + 24).bitcast[UInt64]().load[alignment=1]()
+        var a = _load_u64(ptr, i)
+        var b = _load_u64(ptr, i + 8)
+        var c = _load_u64(ptr, i + 16)
+        var d = _load_u64(ptr, i + 24)
         h = _wymix(h ^ a, b ^ _SECRET0) ^ _wymix(c ^ _SECRET1, d ^ _SECRET2)
         i += 32
 
     # Process remaining 8-byte words
     while i + 8 <= length:
-        var word = (ptr + i).bitcast[UInt64]().load[alignment=1]()
+        var word = _load_u64(ptr, i)
         h = _wymix(h ^ word, _SECRET3)
         i += 8
 

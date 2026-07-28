@@ -1,4 +1,4 @@
-import sys
+import std.sys as sys
 from std.sys import size_of
 
 from lightbug_http.io.bytes import Bytes

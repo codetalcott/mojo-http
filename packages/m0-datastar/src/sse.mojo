@@ -30,12 +30,16 @@ def _buf_write(mut buf: List[UInt8], s: String):
     var old_len = len(buf)
     var count = len(bytes)
     buf.resize(old_len + count, 0)
-    memcpy(dest=buf.unsafe_ptr() + old_len, src=bytes.unsafe_ptr(), count=count)
+    memcpy(
+        dest=buf.unsafe_ptr().unsafe_offset(old_len),
+        src=bytes.unsafe_ptr(),
+        count=count,
+    )
 
 
 def _buf_to_string(var buf: List[UInt8]) -> String:
     """Convert a byte buffer to a String (takes ownership)."""
-    return String(unsafe_from_utf8=Span(ptr=buf.unsafe_ptr(), length=len(buf)))
+    return String(unsafe_from_utf8=Span(unsafe_ptr=buf.unsafe_ptr(), length=len(buf)))
 
 
 def _build_sse(

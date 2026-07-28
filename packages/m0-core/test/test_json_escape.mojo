@@ -52,7 +52,7 @@ def test_control_char_u_escape() raises:
     buf.append(0x01)
     buf.append(UInt8(ord("b")))
     buf.append(0)
-    var s = String(unsafe_from_utf8=Span(ptr=buf.unsafe_ptr(), length=3))
+    var s = String(unsafe_from_utf8=Span(unsafe_ptr=buf.unsafe_ptr(), length=3))
     assert_equal(escape_json_string(s), '"a\\u0001b"')
 
 
@@ -65,7 +65,7 @@ def test_simd_boundary() raises:
     buf.append(0x5C)  # backslash — must be escaped
     buf.append(UInt8(ord("z")))
     buf.append(0)
-    var s = String(unsafe_from_utf8=Span(ptr=buf.unsafe_ptr(), length=72))
+    var s = String(unsafe_from_utf8=Span(unsafe_ptr=buf.unsafe_ptr(), length=72))
     var out = escape_json_string(s)
     # Expected: opening quote, 70 a's, "\\\\" (escaped backslash), "z", closing quote.
     var expected = String('"')

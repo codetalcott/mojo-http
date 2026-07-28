@@ -121,7 +121,7 @@ struct HTTPParseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [self.value] T:
+    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
         return self.value[T]
 
     def __str__(self) -> String:
@@ -158,7 +158,7 @@ def try_get_byte[origin: ImmutOrigin](mut reader: ByteReader[origin]) -> Optiona
 def create_string_from_reader[origin: ImmutOrigin](reader: ByteReader[origin], start_offset: Int, length: Int) -> String:
     """Create a string from a range in the reader."""
     if start_offset >= 0 and start_offset + length <= len(reader._inner):
-        var ptr = reader._inner.unsafe_ptr() + start_offset
+        var ptr = reader._inner.unsafe_ptr().unsafe_offset(start_offset)
         return create_string_from_ptr(ptr, length)
     return String()
 
@@ -173,7 +173,7 @@ def get_token_to_eol[
     var total_len = len(buf._inner)
     var remaining = total_len - buf.read_pos
     if remaining >= 64:
-        var found = _simd_find_cr_or_control(ptr + buf.read_pos, remaining)
+        var found = _simd_find_cr_or_control(ptr.unsafe_offset(buf.read_pos), remaining)
         if found >= 0:
             buf.read_pos += found
         else:
@@ -258,7 +258,7 @@ def parse_token[
     var ptr = buf._inner.unsafe_ptr()
     var remaining = len(buf._inner) - buf.read_pos
     if remaining >= 64:
-        var found = _simd_find_byte(ptr + buf.read_pos, remaining, next_char)
+        var found = _simd_find_byte(ptr.unsafe_offset(buf.read_pos), remaining, next_char)
         if found >= 0:
             # Validate all bytes before the match are valid token chars
             for j in range(found):
@@ -377,7 +377,7 @@ def parse_headers[
                 break
             value_len -= 1
 
-        headers[num_headers].value = String(value[byte=:value_len]) if value_len < len(value) else value
+        headers[num_headers].value = String(value[byte=:value_len]) if value_len < value.byte_length() else value
         headers[num_headers].value_len = value_len
         num_headers += 1
 
@@ -405,7 +405,7 @@ def http_parse_request_headers[
     minor_version = -1
     num_headers = 0
 
-    var buf_span = Span[UInt8, buf_origin](ptr=buf_start, length=len)
+    var buf_span = Span[UInt8, buf_origin](unsafe_ptr=buf_start, length=len)
     var buf = ByteReader(buf_span)
 
     try:
@@ -445,7 +445,7 @@ def http_parse_request_headers[
         var path_ptr = buf._inner.unsafe_ptr()
         var path_remaining = buf._inner.__len__() - buf.read_pos
         if path_remaining >= 64:
-            var path_found = _simd_find_byte(path_ptr + buf.read_pos, path_remaining, BytesConstant.whitespace)
+            var path_found = _simd_find_byte(path_ptr.unsafe_offset(buf.read_pos), path_remaining, BytesConstant.whitespace)
             if path_found >= 0:
                 # Validate printable ASCII in the path range
                 for j in range(path_found):
@@ -540,7 +540,7 @@ def http_parse_response_headers[
     var msg_len = 0
     num_headers = 0
 
-    var buf_span = Span[UInt8, buf_origin](ptr=buf_start, length=len)
+    var buf_span = Span[UInt8, buf_origin](unsafe_ptr=buf_start, length=len)
     var buf = ByteReader(buf_span)
 
     try:
@@ -577,7 +577,10 @@ def http_parse_response_headers[
             var i = 0
             while i < msg_len and msg[byte=i : i + 1] == " ":
                 i += 1
-            msg = String(msg[byte=i:])
+            # Materialize into a temp first — constructing directly into `msg`
+            # while the slice still borrows it now trips the aliasing check.
+            var trimmed = String(msg[byte=i:])
+            msg = trimmed^
             msg_len -= i
         elif msg_len > 0 and msg[byte=0:1] != String(" "):
             return -1
@@ -605,7 +608,7 @@ def http_parse_headers[
     var max_headers = num_headers
     num_headers = 0
 
-    var buf_span = Span[UInt8, buf_origin](ptr=buf_start, length=len)
+    var buf_span = Span[UInt8, buf_origin](unsafe_ptr=buf_start, length=len)
     var buf = ByteReader(buf_span)
 
     try:
