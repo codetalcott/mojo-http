@@ -287,7 +287,7 @@ struct ListenConfig:
                     socket.shutdown()
                 except shutdown_err:
                     pass
-                sleep(UInt(1))
+                sleep(1)
 
         try:
             socket.listen(128)

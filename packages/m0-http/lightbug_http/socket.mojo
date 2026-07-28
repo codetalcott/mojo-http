@@ -610,7 +610,7 @@ struct Socket[
         Raises:
             SetsockoptError: If setting the socket option fails.
         """
-        setsockopt(self.fd, SOL_SOCKET, option_name.value, Int32(option_value))
+        setsockopt(self.fd, Int32(SOL_SOCKET), option_name.value, Int32(option_value))
 
     def connect(mut self, mut ip_address: String, port: UInt16) raises -> None:
         """Connect to a remote socket at address.
@@ -669,7 +669,7 @@ struct Socket[
         bytes_received = recv(
             self.fd,
             Span(buffer)[size:],
-            UInt(buffer.capacity - len(buffer)),
+            UInt(buffer.capacity() - len(buffer)),
             0,
         )
         buffer._len += Int(bytes_received)
@@ -726,7 +726,7 @@ struct Socket[
         bytes_received = recvfrom(
             self.fd,
             Span(buffer)[size:],
-            UInt(buffer.capacity - len(buffer)),
+            UInt(buffer.capacity() - len(buffer)),
             0,
             remote_address,
         )
@@ -826,7 +826,7 @@ struct Socket[
         var timeval: InlineArray[Int64, 2] = [Int64(seconds), Int64(0)]
         var result = _setsockopt(
             Int32(self.fd.value),
-            SOL_SOCKET,
+            Int32(SOL_SOCKET),
             SocketOption.SO_RCVTIMEO.value,
             UnsafePointer(to=timeval).bitcast[c_void](),
             16,

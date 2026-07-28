@@ -85,7 +85,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     var slot_fds = List[Int](capacity=max_conns)
     var slot_response = OwningList[Bytes](capacity=max_conns)
     var slot_send_offset = List[Int](capacity=max_conns)
-    var slot_header_start = List[UInt](capacity=max_conns)
+    var slot_header_start = List[Int](capacity=max_conns)
     var slot_sse = List[Bool](capacity=max_conns)
 
     for _ in range(max_conns):
@@ -310,7 +310,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         bytes_read = recv(
                             fd_desc,
                             Span(provision_pool.provisions[slot].recv_staging),
-                            UInt(provision_pool.provisions[slot].recv_staging.capacity),
+                            UInt(provision_pool.provisions[slot].recv_staging.capacity()),
                             0,
                         )
                     except recv_err:
@@ -514,7 +514,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
 
             # Drain in-flight: wait for active non-SSE connections (max 5s)
             var drain_start = perf_counter_ns()
-            comptime DRAIN_TIMEOUT_NS: UInt = 5_000_000_000
+            comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
             while active_count > 0:
                 if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
                     break
@@ -547,7 +547,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut slot_fds: List[Int],
     mut slot_response: OwningList[Bytes],
     mut slot_send_offset: List[Int],
-    mut slot_header_start: List[UInt],
+    mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
     mut provision_pool: ProvisionPool,
     mut active_count: Int,
@@ -561,7 +561,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     """
     if config.header_read_timeout > 0:
         var elapsed_s = (perf_counter_ns() - slot_header_start[slot]) / 1_000_000_000
-        if elapsed_s >= UInt(config.header_read_timeout):
+        if elapsed_s >= Int(config.header_read_timeout):
             _send_error_to_fd(fd_val, RequestTimeout())
             _close_slot(
                 backend, slot, fd_val,
@@ -578,7 +578,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         bytes_read = recv(
             fd_desc,
             Span(provision_pool.provisions[slot].recv_staging),
-            UInt(provision_pool.provisions[slot].recv_staging.capacity),
+            UInt(provision_pool.provisions[slot].recv_staging.capacity()),
             0,
         )
     except recv_err:
@@ -654,7 +654,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             )
             return
 
-        if len(parsed.path) > config.max_request_uri_length:
+        if parsed.path.byte_length() > config.max_request_uri_length:
             _send_error_to_fd(fd_val, URITooLong())
             _close_slot(
                 backend, slot, fd_val,
@@ -769,7 +769,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     mut slot_fds: List[Int],
     mut slot_response: OwningList[Bytes],
     mut slot_send_offset: List[Int],
-    mut slot_header_start: List[UInt],
+    mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
     mut provision_pool: ProvisionPool,
     mut active_count: Int,
@@ -788,7 +788,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             body = Bytes(capacity=body_st.content_length)
             memcpy(
                 dest=body.unsafe_ptr(),
-                src=provision_pool.provisions[slot].recv_buffer.unsafe_ptr() + body_start,
+                src=provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(body_start),
                 count=body_st.content_length,
             )
             body._len = body_st.content_length
@@ -937,7 +937,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     mut slot_fds: List[Int],
     mut slot_response: OwningList[Bytes],
     mut slot_send_offset: List[Int],
-    mut slot_header_start: List[UInt],
+    mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
     mut provision_pool: ProvisionPool,
     mut active_count: Int,
@@ -953,7 +953,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         )
         metrics.active_connections = active_count
     if provision_pool.provisions[slot].should_close:
-        if config.access_log and len(provision_pool.provisions[slot].log_method) > 0:
+        if config.access_log and provision_pool.provisions[slot].log_method.byte_length() > 0:
             var elapsed_us = Int((perf_counter_ns() - slot_header_start[slot]) / 1000)
             log_access(
                 provision_pool.provisions[slot].log_method,
@@ -970,7 +970,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         return
 
     if (config.max_keepalive_requests > 0) and (provision_pool.provisions[slot].keepalive_count >= config.max_keepalive_requests):
-        if config.access_log and len(provision_pool.provisions[slot].log_method) > 0:
+        if config.access_log and provision_pool.provisions[slot].log_method.byte_length() > 0:
             var elapsed_us = Int((perf_counter_ns() - slot_header_start[slot]) / 1000)
             log_access(
                 provision_pool.provisions[slot].log_method,
@@ -987,7 +987,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         return
 
     # Phase 4d: emit structured access log before resetting provision state
-    if config.access_log and len(provision_pool.provisions[slot].log_method) > 0:
+    if config.access_log and provision_pool.provisions[slot].log_method.byte_length() > 0:
         var elapsed_us = Int((perf_counter_ns() - slot_header_start[slot]) / 1000)
         log_access(
             provision_pool.provisions[slot].log_method,

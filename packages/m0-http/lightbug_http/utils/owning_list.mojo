@@ -254,7 +254,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
         for i in range(len(self)):
             (new_data + i).init_pointee_move_from(self.data + i)
 
-        if self.data:
+        if Int(self.data) != 0:
             self._annotate_delete()
             self.data.free()
         self.data = new_data

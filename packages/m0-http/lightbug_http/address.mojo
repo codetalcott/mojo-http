@@ -38,6 +38,7 @@ trait Addr(
     Defaultable,
     Equatable,
     ImplicitlyCopyable,
+    ImplicitlyDeletable,
     Writable,
 ):
     comptime _type: StaticString
@@ -688,14 +689,14 @@ def parse_ipv6_bracketed_address[
     Returns:
         Tuple of (host, colon_index_offset).
     """
-    if len(address) == 0 or address.as_bytes()[0] != UInt8(ord("[")):
+    if address.byte_length() == 0 or address.as_bytes()[0] != UInt8(ord("[")):
         return address, UInt16(0)
 
     var end_bracket_index = address.find("]")
     if end_bracket_index == -1:
         raise ParseMissingClosingBracketError()
 
-    if end_bracket_index + 1 == len(address):
+    if end_bracket_index + 1 == address.byte_length():
         raise ParseMissingPortError()
 
     var colon_index = end_bracket_index + 1
@@ -791,7 +792,7 @@ def parse_address[
     # TODO (Mikhail): StringSlice does byte level slicing, so this can be
     # invalid for multi-byte UTF-8 characters. Perhaps we instead assert that it's
     # an ascii string instead.
-    if len(address) > 0 and address.as_bytes()[0] == UInt8(ord("[")):
+    if address.byte_length() > 0 and address.as_bytes()[0] == UInt8(ord("[")):
         var bracket_offset: UInt16
         (host, bracket_offset) = parse_ipv6_bracketed_address(address)
         validate_no_brackets(address, bracket_offset)

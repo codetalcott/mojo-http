@@ -23,7 +23,7 @@ def unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: Li
 
         var current_offset = slice_end
         while current_idx < len(percent_idxs):
-            if (current_offset + 3) > len(encoded_str):
+            if (current_offset + 3) > encoded_str.byte_length():
                 # If the percent escape is not followed by two hex digits, we stop processing.
                 break
 
@@ -151,7 +151,12 @@ struct URI(Copyable, Writable):
         var scheme: String = "http"
         if "://" in uri:
             scheme = String(reader.read_until(UInt8(ord(URIDelimiters.SCHEME))))
-            var scheme_delimiter: ByteView[origin_of(uri)]
+            # `uri.as_bytes()` is now bound to an interior origin of `uri`,
+            # so the reader's slices carry that origin rather than the whole
+            # string's.
+            var scheme_delimiter: ByteView[
+                origin_of(uri)._get_owned_interior["bytes"]
+            ]
             try:
                 scheme_delimiter = reader.read_bytes(3)
             except EndOfReaderError:

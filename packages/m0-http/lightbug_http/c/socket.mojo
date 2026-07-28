@@ -984,7 +984,7 @@ def recv[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/recv.3p.html .
     """
-    var result = _recv(Int32(socket.value), buffer.unsafe_ptr().bitcast[c_void](), length, flags)
+    var result = _recv(Int32(socket.value), buffer.unsafe_ptr().unsafe_bitcast[c_void](), length, flags)
     if result == -1:
         var errno = get_errno()
         if errno in [errno.EAGAIN, errno.EWOULDBLOCK]:
@@ -1101,7 +1101,7 @@ def recvfrom[
     var address_buffer_size = address.SIZE
     var result = _recvfrom(
         socket.value,
-        buffer.unsafe_ptr().bitcast[c_void](),
+        buffer.unsafe_ptr().unsafe_bitcast[c_void](),
         length,
         flags,
         address.unsafe_ptr(),
@@ -1218,7 +1218,7 @@ def send[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/send.3p.html .
     """
-    var result = _send(Int32(socket.value), buffer.unsafe_ptr().bitcast[c_void](), length, flags)
+    var result = _send(Int32(socket.value), buffer.unsafe_ptr().unsafe_bitcast[c_void](), length, flags)
     if result == -1:
         var errno = get_errno()
         if errno in [errno.EAGAIN, errno.EWOULDBLOCK]:

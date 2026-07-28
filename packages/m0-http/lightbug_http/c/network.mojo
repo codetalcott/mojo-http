@@ -286,7 +286,7 @@ struct SocketAddress(Movable):
         self.addr = sockaddr_in_ptr.bitcast[sockaddr]()
 
     def __del__(deinit self):
-        if self.addr:
+        if Int(self.addr) != 0:
             self.addr.free()
 
     def unsafe_ptr[
@@ -388,10 +388,10 @@ def inet_ntop[
     var result = _inet_ntop(
         address_family.value,
         UnsafePointer(to=ip_address).bitcast[c_void](),
-        dst.unsafe_ptr().bitcast[c_char](),
+        dst.unsafe_ptr().unsafe_bitcast[c_char](),
         UInt32(address_length.value),
     )
-    if not result:
+    if Int(result) == 0:
         var errno = get_errno()
         if errno == errno.EAFNOSUPPORT:
             raise InetNtopEAFNOSUPPORTError()

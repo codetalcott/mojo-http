@@ -144,7 +144,7 @@ struct HTTPChunkedDecoder(Defaultable):
                     if dst != src:
                         var _bp = buf.unsafe_ptr()
                         for _k in range(avail):
-                            (_bp + dst + _k)[] = (_bp + src + _k)[]
+                            _bp[unsafe_offset = dst + _k] = _bp[unsafe_offset = src + _k]
                     src += avail
                     dst += avail
                     self.bytes_left_in_chunk -= avail
@@ -153,7 +153,7 @@ struct HTTPChunkedDecoder(Defaultable):
                 if dst != src:
                     var _bp = buf.unsafe_ptr()
                     for _k in range(self.bytes_left_in_chunk):
-                        (_bp + dst + _k)[] = (_bp + src + _k)[]
+                        _bp[unsafe_offset = dst + _k] = _bp[unsafe_offset = src + _k]
 
                 src += self.bytes_left_in_chunk
                 dst += self.bytes_left_in_chunk
@@ -213,7 +213,7 @@ struct HTTPChunkedDecoder(Defaultable):
             var _bp = buf.unsafe_ptr()
             var _rem = buffer_len - src
             for _k in range(_rem):
-                (_bp + dst + _k)[] = (_bp + src + _k)[]
+                _bp[unsafe_offset = dst + _k] = _bp[unsafe_offset = src + _k]
 
         var new_bufsz = dst
 
