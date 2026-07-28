@@ -82,9 +82,19 @@ def _epoll_ctl(
     epfd: c_int,
     op: c_int,
     fd: c_int,
-    event: ExternalMutUnsafePointer[epoll_event_t],
+    event: OptionalUnsafePointer[epoll_event_t, MutExternalOrigin],
 ) -> c_int:
-    return external_call["epoll_ctl", c_int, c_int, c_int, c_int, ExternalMutUnsafePointer[epoll_event_t]](
+    """Raw epoll_ctl(2) syscall.
+
+    `event` is ignored (and conventionally NULL) for EPOLL_CTL_DEL, so it is
+    modelled as `Optional`: UnsafePointer is non-null by design and a literal
+    null address is now rejected outright. Optional[UnsafePointer] has the same
+    layout with None as the null niche, so the ABI is unchanged.
+    """
+    return external_call[
+        "epoll_ctl", c_int, c_int, c_int, c_int,
+        OptionalUnsafePointer[epoll_event_t, MutExternalOrigin],
+    ](
         epfd, op, fd, event,
     )
 
@@ -111,8 +121,7 @@ def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
 
 def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
     """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored."""
-    var null_ev = ExternalMutUnsafePointer[epoll_event_t](unsafe_from_address=0)
-    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_DEL, c_int(fd), null_ev)
+    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_DEL, c_int(fd), None)
     if result == -1:
         var errno = get_errno()
         raise Error("epoll_ctl DEL failed, errno: ", errno)
@@ -146,14 +155,18 @@ def timerfd_settime(
     fd: c_int,
     flags: c_int,
     new_value: ExternalMutUnsafePointer[itimerspec_t],
-    old_value: ExternalMutUnsafePointer[itimerspec_t],
+    old_value: OptionalUnsafePointer[itimerspec_t, MutExternalOrigin],
 ) -> c_int:
-    """Raw timerfd_settime(2) syscall."""
+    """Raw timerfd_settime(2) syscall.
+
+    `old_value` is NULL when the caller doesn't want the previous setting back,
+    so it is modelled as `Optional` — see _epoll_ctl above.
+    """
     return external_call[
         "timerfd_settime", c_int,
         c_int, c_int,
         ExternalMutUnsafePointer[itimerspec_t],
-        ExternalMutUnsafePointer[itimerspec_t],
+        OptionalUnsafePointer[itimerspec_t, MutExternalOrigin],
     ](fd, flags, new_value, old_value)
 
 
@@ -166,8 +179,7 @@ def set_timerfd_ms(fd: Int, timeout_ms: Int) raises:
         value_sec=Int64(timeout_ms // 1000),
         value_nsec=Int64((timeout_ms % 1000) * 1_000_000),
     )
-    var null_ptr = ExternalMutUnsafePointer[itimerspec_t](unsafe_from_address=0)
-    var result = timerfd_settime(c_int(fd), 0, spec_stack, null_ptr)
+    var result = timerfd_settime(c_int(fd), 0, spec_stack, None)
     if result == -1:
         var errno = get_errno()
         raise Error("timerfd_settime failed, errno: ", errno)
