@@ -90,7 +90,7 @@ struct ServerError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 
@@ -210,7 +210,7 @@ struct ProvisionPoolExhaustedError(CustomError, ImplicitlyCopyable):
         writer.write(self.message)
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -234,7 +234,7 @@ struct ProvisionError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 struct ProvisionPool(Movable):

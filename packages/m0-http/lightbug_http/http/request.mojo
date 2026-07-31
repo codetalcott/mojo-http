@@ -246,7 +246,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         return writer^.consume()
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def __eq__(self, other: HTTPRequest) -> Bool:
         return (

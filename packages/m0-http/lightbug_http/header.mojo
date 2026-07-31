@@ -116,7 +116,7 @@ struct HeaderKeyNotFoundError(Movable, Writable, TrivialRegisterPassable):
         writer.write("HeaderKeyNotFoundError: Key not found in headers")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -127,7 +127,7 @@ struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
         writer.write("InvalidHTTPRequestError: Not a valid HTTP request")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -138,7 +138,7 @@ struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
         writer.write("IncompleteHTTPRequestError: Incomplete HTTP request")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -149,7 +149,7 @@ struct InvalidHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
         writer.write("InvalidHTTPResponseError: Not a valid HTTP response")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -160,7 +160,7 @@ struct IncompleteHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
         writer.write("IncompleteHTTPResponseError: Incomplete HTTP response")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -171,7 +171,7 @@ struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
         writer.write("EmptyBufferError: No data available in buffer")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -215,7 +215,7 @@ struct RequestParseError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -256,7 +256,7 @@ struct ResponseParseError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -321,7 +321,7 @@ struct Header(Copyable, Writable):
     var value: String
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def write_to[T: Writer, //](self, mut writer: T):
         writer.write(self.key, ": ", self.value, lineBreak)
@@ -460,7 +460,7 @@ struct Headers(Copyable, Writable):
             write_header_latin1(writer, header.key, header.value)
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def __eq__(self, other: Headers) -> Bool:
         if len(self._inner) != len(other._inner):

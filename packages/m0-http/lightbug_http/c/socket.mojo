@@ -26,7 +26,7 @@ struct ShutdownOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
             writer.write("SHUT_RDWR")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 # Platform-specific socket constants.
@@ -130,7 +130,7 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
             writer.write("SocketOption(", self.value, ")")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 # File open option flags (platform-specific)
@@ -179,7 +179,7 @@ struct SocketType(Copyable, Equatable, Writable, TrivialRegisterPassable):
             writer.write("SocketType(", self.value, ")")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 def _socket(domain: c_int, type: c_int, protocol: c_int) -> c_int:

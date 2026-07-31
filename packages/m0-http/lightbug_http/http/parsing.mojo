@@ -83,7 +83,7 @@ struct ParseError(Movable, Writable, TrivialRegisterPassable):
         writer.write("ParseError: Invalid HTTP syntax")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -94,7 +94,7 @@ struct IncompleteError(Movable, Writable, TrivialRegisterPassable):
         writer.write("IncompleteError: Need more data")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -125,7 +125,7 @@ struct HTTPParseError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 def try_peek[origin: ImmutOrigin](reader: ByteReader[origin]) -> Optional[UInt8]:

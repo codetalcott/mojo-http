@@ -185,7 +185,7 @@ struct TCPAddr[network: NetworkType = NetworkType.tcp4](Addr, ImplicitlyCopyable
         return join_host_port(self.ip, String(self.port))
 
     def __repr__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(
@@ -250,7 +250,7 @@ struct UDPAddr[network: NetworkType = NetworkType.udp4](Addr, ImplicitlyCopyable
         return join_host_port(self.ip, String(self.port))
 
     def __repr__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(
@@ -588,7 +588,7 @@ struct GetIPAddressError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -678,7 +678,7 @@ struct ParseError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 def parse_ipv6_bracketed_address[

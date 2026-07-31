@@ -83,7 +83,7 @@ struct InvalidCloseErrorConversionError(Movable, Writable, TrivialRegisterPassab
         writer.write("InvalidCloseErrorConversionError: Cannot convert EBADF to FatalCloseError")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -116,7 +116,7 @@ struct SocketRecvError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -149,7 +149,7 @@ struct SocketRecvfromError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -194,7 +194,7 @@ struct SocketAcceptError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -233,7 +233,7 @@ struct SocketBindError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -266,7 +266,7 @@ struct SocketConnectError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -305,7 +305,7 @@ struct SocketGetsocknameError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -358,7 +358,7 @@ struct FatalCloseError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -454,10 +454,10 @@ struct Socket[
             pass
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def __repr__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(
