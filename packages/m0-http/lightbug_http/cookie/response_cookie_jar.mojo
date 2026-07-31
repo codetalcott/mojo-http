@@ -16,7 +16,7 @@ struct CookieParseError(Movable, Writable, TrivialRegisterPassable):
         writer.write("CookieParseError: Failed to parse cookie header string")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -94,7 +94,7 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
         return ResponseCookieKey(key.name, key.domain, key.path) in self
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def __len__(self) -> Int:
         return len(self._inner)

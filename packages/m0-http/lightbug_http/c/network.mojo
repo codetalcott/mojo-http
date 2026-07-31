@@ -75,7 +75,7 @@ struct InetNtopError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 @fieldwise_init
@@ -106,7 +106,7 @@ struct InetPtonError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 def htonl(hostlong: c_uint) -> c_uint:

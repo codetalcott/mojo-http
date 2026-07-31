@@ -10,7 +10,7 @@ struct InvalidCookieError(Movable, Writable, TrivialRegisterPassable):
         writer.write("InvalidCookieError: Invalid cookie format")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 struct Cookie(Copyable):
@@ -97,7 +97,7 @@ struct Cookie(Copyable):
         self.partitioned = partitioned
 
     def __str__(self) -> String:
-        return String.write("Name: ", self.name, " Value: ", self.value)
+        return String("Name: ", self.name, " Value: ", self.value)
 
     def __copyinit__(out self: Cookie, copy: Cookie):
         self.name = copy.name
@@ -131,7 +131,7 @@ struct Cookie(Copyable):
         return Header(HeaderKey.SET_COOKIE, self.build_header_value())
 
     def build_header_value(self) -> String:
-        var header_value = String.write(self.name, Cookie.EQUAL, self.value)
+        var header_value = String(self.name, Cookie.EQUAL, self.value)
         if self.expires.is_datetime():
             var v: Optional[String]
             try:

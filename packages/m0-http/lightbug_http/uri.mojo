@@ -102,10 +102,10 @@ struct Scheme(Equatable, Hashable, ImplicitlyCopyable, Writable):
             writer.write("HTTPS")
 
     def __repr__(self) -> String:
-        return String.write("Scheme(", self, ")")
+        return String("Scheme(", self, ")")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 struct URIParseError(Writable):
@@ -285,13 +285,13 @@ struct URI(Copyable, Writable):
         return result^
 
     def __str__(self) -> String:
-        var result = String.write(self.scheme, URIDelimiters.SCHEMA, self.host, self.path)
+        var result = String(self.scheme, URIDelimiters.SCHEMA, self.host, self.path)
         if len(self.query_string) > 0:
             result.write(QueryDelimiters.STRING_START, self.query_string)
         return result^
 
     def __repr__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def __eq__(self, other: URI) -> Bool:
         return (

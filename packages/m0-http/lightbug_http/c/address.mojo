@@ -36,7 +36,7 @@ struct AddressInformation(Copyable, Equatable, Writable, TrivialRegisterPassable
             writer.write("ShutdownOption(", self.value, ")")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 # TODO: These might vary on each platform...we should confirm this.
@@ -63,7 +63,7 @@ struct AddressFamily(Copyable, Equatable, Writable, TrivialRegisterPassable):
             writer.write("AddressFamily(", self.value, ")")
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     @always_inline("nodebug")
     def is_inet(self) -> Bool:
@@ -88,4 +88,4 @@ struct AddressLength(Copyable, Equatable, Writable, TrivialRegisterPassable):
         writer.write(value)
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)

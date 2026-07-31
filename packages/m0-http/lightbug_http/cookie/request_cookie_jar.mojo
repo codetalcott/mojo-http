@@ -75,7 +75,7 @@ struct RequestCookieJar(Copyable, Writable):
             write_header(writer, header.value().key, header.value().value)
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
     def __eq__(self, other: RequestCookieJar) -> Bool:
         if len(self._inner) != len(other._inner):

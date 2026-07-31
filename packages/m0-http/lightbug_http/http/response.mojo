@@ -482,4 +482,4 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         return writer^.consume()
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)

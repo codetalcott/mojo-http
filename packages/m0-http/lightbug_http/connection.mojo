@@ -149,7 +149,7 @@ struct ListenerError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
@@ -590,7 +590,7 @@ struct CreateConnectionError(Movable, Writable):
         return self.value[T]
 
     def __str__(self) -> String:
-        return String.write(self)
+        return String(self)
 
 
 def create_connection(mut host: String, port: UInt16) raises CreateConnectionError -> TCPConnection[NetworkType.tcp4]:
