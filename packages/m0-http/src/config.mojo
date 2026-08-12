@@ -43,12 +43,12 @@ struct AppConfig(Copyable, Movable):
         self.workers = copy.workers
         self.access_log = copy.access_log
 
-    def __init__(out self, *, deinit take: Self):
-        self.port = take.port
-        self.base_url = take.base_url^
-        self.api_key = take.api_key^
-        self.workers = take.workers
-        self.access_log = take.access_log
+    def __init__(out self, *, deinit move: Self):
+        self.port = move.port
+        self.base_url = move.base_url^
+        self.api_key = move.api_key^
+        self.workers = move.workers
+        self.access_log = move.access_log
 
     def address(self) -> String:
         """Return listen address string (e.g. '0.0.0.0:8080')."""

@@ -26,8 +26,8 @@ struct RequestContext(Copyable, Movable):
         self.start_ns = copy.start_ns
         self.response_status = copy.response_status
 
-    def __init__(out self, *, deinit take: Self):
-        self.request_id = take.request_id
-        self.accept = take.accept^
-        self.start_ns = take.start_ns
-        self.response_status = take.response_status
+    def __init__(out self, *, deinit move: Self):
+        self.request_id = move.request_id
+        self.accept = move.accept^
+        self.start_ns = move.start_ns
+        self.response_status = move.response_status
