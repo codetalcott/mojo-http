@@ -1,0 +1,40 @@
+M0 — Modular Mojo Hypermedia Framework
+Copyright (c) 2025-2026 Wm Talcott
+
+This product includes third-party software. The components listed below are
+distributed under their own licenses, reproduced in full at the paths given.
+M0's own source is licensed under the MIT License; see LICENSE.
+
+--------------------------------------------------------------------------------
+
+lightbug_http
+    Path        packages/m0-http/lightbug_http/
+    Upstream    https://github.com/Lightbug-HQ/lightbug_http
+    License     MIT — packages/m0-http/lightbug_http/LICENSE
+    Copyright   (c) 2023 Valentin Erokhin
+
+    Forked from upstream release v26.1.2 (commit 3aae65f46a72, tagged
+    2026-02-22). Upstream was archived on 2026-05-12 and is no longer
+    maintained; the copy in this repository is a permanent hard fork, not a
+    vendored snapshot tracking an upstream branch.
+
+    MODIFIED. This copy diverges substantially from upstream v26.1.2 and must
+    not be assumed interchangeable with it. Changes were made first in the
+    mojo-siren-grail repository (28 commits, from 2026-02-26) and continued
+    here (14 commits, from 2026-03-18), and include:
+
+      - Security hardening against request smuggling, slowloris, and integer
+        overflow in request parsing
+      - Production hardening: connection timeouts, observability hooks,
+        response caching, concurrency limits
+      - epoll_event struct layout corrected on non-x86_64 targets; accept
+        queue drain fix
+      - Nullable epoll/timerfd FFI parameters modeled as Optional
+      - Null UnsafePointer construction via unsafe_from_address=0
+      - Forward compatibility with Mojo 1.1; migration off deprecated
+        memory/origin APIs
+
+    For the full modification history:
+        git log -- packages/m0-http/lightbug_http
+
+--------------------------------------------------------------------------------
