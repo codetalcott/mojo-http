@@ -73,7 +73,7 @@ struct ByteWriter(Writer):
         return self._inner^
 
 
-struct ByteView[origin: ImmutOrigin](Boolable, Copyable, Equatable, Sized, Writable):
+struct ByteView[origin: ImmOrigin](Boolable, Copyable, Equatable, Sized, Writable):
     """Convenience wrapper around a Span of Bytes."""
 
     var _inner: Span[Byte, Self.origin]
@@ -208,7 +208,7 @@ struct EndOfReaderError(Writable):
         return self.message.copy()
 
 
-struct ByteReader[origin: ImmutOrigin](Copyable, Sized):
+struct ByteReader[origin: ImmOrigin](Copyable, Sized):
     var _inner: Span[Byte, Self.origin]
     var read_pos: Int
 
@@ -352,7 +352,7 @@ def memmove[
             i -= 1
 
 
-def create_string_from_ptr[origin: ImmutOrigin](ptr: UnsafePointer[UInt8, origin], length: Int) -> String:
+def create_string_from_ptr[origin: ImmOrigin](ptr: Pointer[UInt8, origin], length: Int) -> String:
     """Create a String from a pointer and length.
 
     Copies raw bytes directly into the String. NOTE: may result in invalid UTF-8 for bytes >= 0x80.

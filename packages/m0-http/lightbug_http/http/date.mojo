@@ -17,21 +17,24 @@ def http_date_now() -> String:
     var t = external_call["time", Int64, Int64](0)
 
     # Allocate space for the time value
+    # NOTE: `alloc` without a Layout is deprecated, but the Layout form returns
+    # an owning Allocation[T] (not subscriptable, no unsafe_free) and
+    # `unsafe_alloc` does not exist in Mojo 1.0. Revisit when either lands.
     var t_ptr = alloc[Int64](count=1)
     t_ptr[] = t
 
     # gmtime returns a pointer to struct tm
     # gmtime() returns NULL on failure, so bind the result as an
-    # OptionalUnsafePointer — UnsafePointer is non-null by design and Bool(ptr)
+    # OptionalPointer — Pointer is non-null by design and Bool(ptr)
     # is no longer meaningful. Optional has the same layout, with None as the
     # null niche, so this stays ABI-compatible with the C signature.
     var tm_opt = external_call[
         "gmtime",
-        OptionalUnsafePointer[Int32, MutExternalOrigin],
-        UnsafePointer[Int64, MutExternalOrigin],
+        OptionalPointer[Int32, MutUntrackedOrigin],
+        Pointer[Int64, MutUntrackedOrigin],
     ](t_ptr)
 
-    t_ptr.free()
+    t_ptr.unsafe_free()
 
     if tm_opt is None:
         return "Thu, 01 Jan 1970 00:00:00 GMT"
@@ -41,13 +44,13 @@ def http_date_now() -> String:
     # [0] tm_sec, [1] tm_min, [2] tm_hour, [3] tm_mday,
     # [4] tm_mon (0-11), [5] tm_year (years since 1900),
     # [6] tm_wday (0=Sunday)
-    var sec = Int(tm_ptr[0])
-    var minute = Int(tm_ptr[1])
-    var hour = Int(tm_ptr[2])
-    var day = Int(tm_ptr[3])
-    var mon = Int(tm_ptr[4])  # 0-based
-    var year = Int(tm_ptr[5]) + 1900
-    var wday = Int(tm_ptr[6])
+    var sec = Int(tm_ptr[unsafe_offset=0])
+    var minute = Int(tm_ptr[unsafe_offset=1])
+    var hour = Int(tm_ptr[unsafe_offset=2])
+    var day = Int(tm_ptr[unsafe_offset=3])
+    var mon = Int(tm_ptr[unsafe_offset=4])  # 0-based
+    var year = Int(tm_ptr[unsafe_offset=5]) + 1900
+    var wday = Int(tm_ptr[unsafe_offset=6])
 
     # Day-of-week names
     var wday_str: String

@@ -67,14 +67,17 @@ def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
     Raises:
         Error: If waitpid() fails.
     """
+    # NOTE: `alloc` without a Layout is deprecated, but the Layout form returns
+    # an owning Allocation[T] (not subscriptable, no unsafe_free) and
+    # `unsafe_alloc` does not exist in Mojo 1.0. Revisit when either lands.
     var status = alloc[c_int](count=1)
     var result = _waitpid(c_int(pid), status, c_int(0))
     if result == -1:
         var errno = get_errno()
-        status.free()
+        status.unsafe_free()
         raise Error("waitpid() failed, errno: ", errno)
-    var status_val = Int(status[0])
-    status.free()
+    var status_val = Int(status[unsafe_offset=0])
+    status.unsafe_free()
     return (Int(result), status_val)
 
 

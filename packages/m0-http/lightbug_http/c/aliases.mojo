@@ -1,4 +1,4 @@
-comptime ExternalMutUnsafePointer = UnsafePointer[_, origin=MutExternalOrigin]
-comptime ExternalImmutUnsafePointer = UnsafePointer[_, origin=ImmutExternalOrigin]
+comptime ExternalMutUnsafePointer = Pointer[_, origin=MutUntrackedOrigin]
+comptime ExternalImmutUnsafePointer = Pointer[_, origin=ImmutExternalOrigin]
 
 comptime c_void = NoneType
