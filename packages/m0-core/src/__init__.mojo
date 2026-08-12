@@ -1,5 +1,5 @@
 """
-m0-core: Zero-dependency foundation for the M0 framework.
+`m0-core`: Zero-dependency foundation for the M0 framework.
 
 Provides hashing (FNV-1a, xxHash32, wyhash64), SIMD-accelerated JSON
 string escaping, and lightweight JSON field parsing.

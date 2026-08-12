@@ -1,5 +1,5 @@
 """
-m0-http: HTTP framework components for the M0 framework.
+`m0-http`: HTTP framework components for the M0 framework.
 
 Depends on: m0-core (hashing for ETags)
 
