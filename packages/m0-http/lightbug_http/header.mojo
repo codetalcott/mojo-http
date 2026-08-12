@@ -501,7 +501,7 @@ def parse_request_headers(
     var path = String()
     var minor_version = -1
     var max_headers = 100
-    var headers_array = InlineArray[HTTPHeader, 100](fill=HTTPHeader())
+    var headers_array = Array[HTTPHeader, 100](fill=HTTPHeader())
     var num_headers = max_headers
 
     var ret = http_parse_request_headers(
@@ -629,7 +629,7 @@ def parse_response_headers(
     var status = 0
     var msg = String()
     var max_headers = 100
-    var headers_array = InlineArray[HTTPHeader, 100](fill=HTTPHeader())
+    var headers_array = Array[HTTPHeader, 100](fill=HTTPHeader())
     var num_headers = max_headers
 
     var ret = http_parse_response_headers(

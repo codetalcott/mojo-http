@@ -5,7 +5,7 @@ from lightbug_http.header import HeaderKey, write_header
 from lightbug_http.io.bytes import ByteWriter
 from std.utils import Variant
 
-from lightbug_http.cookie.cookie import InvalidCookieError
+from lightbug_http.cookie.cookie import Cookie, InvalidCookieError
 
 
 @fieldwise_init
