@@ -126,13 +126,20 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
 
             # --- Listen socket: accept new connections ---
             if Int(backend.event_ident(i)) == listen_fd.value and backend.event_filter(i) == EVFILT_READ:
-                # Use kqueue event data field: number of pending connections.
-                # This avoids relying on EAGAIN from accept(), which requires
-                # a non-blocking listen socket. fcntl F_SETFL is broken in Mojo
-                # on ARM64 macOS because fcntl is variadic and external_call
-                # passes all args as fixed (registers instead of stack).
+                # kqueue reports the pending backlog depth in the event data
+                # field; epoll has no equivalent and returns 0 for "unknown".
+                #
+                # Both backends arm the listen socket edge-triggered, so a
+                # burst of simultaneous connections produces exactly ONE
+                # readiness event. Accepting a single connection per event
+                # would strand the rest in the backlog until some later
+                # connection happened to trigger a fresh edge. When the depth
+                # is unknown, drain until accept() raises EAGAIN instead — the
+                # listen socket is non-blocking (set above) and the loop below
+                # breaks on the first failed accept.
                 var pending = backend.event_data(i)
-                for _accept_idx in range(max(1, pending)):
+                var accept_budget = pending if pending > 0 else max_conns
+                for _accept_idx in range(accept_budget):
                     var new_fd: FileDescriptor
                     try:
                         new_fd = accept(listen_fd)

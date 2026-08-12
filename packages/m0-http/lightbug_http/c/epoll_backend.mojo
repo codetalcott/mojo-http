@@ -16,12 +16,13 @@ _timer_fds layout (4 * 65536 entries, value = timerfd or -1):
 """
 
 from lightbug_http.c.epoll import (
-    epoll_event_t, itimerspec_t,
+    itimerspec_t,
     EPOLLIN, EPOLLOUT, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP, EPOLLRDHUP,
     EPOLL_CLOEXEC,
     CLOCK_MONOTONIC, TFD_NONBLOCK, TFD_CLOEXEC,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_EOF, EV_ERROR,
+    EPOLL_EVENT_WORDS, epoll_event_mask, epoll_event_data,
     epoll_create1, epoll_ctl_add, epoll_ctl_mod, epoll_ctl_del, epoll_wait,
     timerfd_create, set_timerfd_ms,
 )
@@ -63,25 +64,15 @@ def _timer_slot(ident: UInt) -> Int:
         return Int(ident - _TIMER_HEADER)
 
 
-@always_inline
-def _make_event(events: UInt32, data_u64: UInt64) -> epoll_event_t:
-    return epoll_event_t(
-        events,
-        UInt32(data_u64 & 0xFFFFFFFF),
-        UInt32(data_u64 >> 32),
-    )
-
-
-@always_inline
-def _event_data(ev: epoll_event_t) -> UInt64:
-    return UInt64(ev.data_lo) | (UInt64(ev.data_hi) << 32)
 
 
 struct EpollBackend(EventLoopBackend):
     """epoll-based IO backend for Linux."""
 
     var epfd: FileDescriptor
-    var _events: UnsafePointer[epoll_event_t, MutExternalOrigin]
+    # Flat word buffer of _MAX_EVENTS structs; stride is EPOLL_EVENT_WORDS,
+    # which differs by architecture (see c/epoll.mojo).
+    var _events: UnsafePointer[UInt32, MutExternalOrigin]
     var _n_ready: Int
     # _timer_fds[_timer_slot(ident)] = timerfd value, or -1 if no timer.
     var _timer_fds: UnsafePointer[Int32, MutExternalOrigin]
@@ -91,9 +82,9 @@ struct EpollBackend(EventLoopBackend):
         if epfd_raw == -1:
             raise Error("epoll_create1 failed")
         self.epfd = FileDescriptor(Int(epfd_raw))
-        self._events = alloc[epoll_event_t](count=_MAX_EVENTS)
-        for i in range(_MAX_EVENTS):
-            self._events[i] = epoll_event_t(0, 0, 0)
+        self._events = alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
+        for i in range(_MAX_EVENTS * EPOLL_EVENT_WORDS):
+            self._events[i] = 0
         self._timer_fds = alloc[Int32](count=_TIMER_FD_MAP_SIZE)
         for i in range(_TIMER_FD_MAP_SIZE):
             self._timer_fds[i] = -1
@@ -108,36 +99,35 @@ struct EpollBackend(EventLoopBackend):
         return self._n_ready
 
     def event_ident(self, i: Int) -> UInt:
-        var data = _event_data(self._events[i])
+        var data = epoll_event_data(self._events, i)
         # Strip the timer flag to recover the original ident (or plain fd).
         return UInt(data & ~_TIMER_FLAG)
 
     def event_filter(self, i: Int) -> Int16:
-        var ev = self._events[i]
-        var data = _event_data(ev)
-        if (data & _TIMER_FLAG) != 0:
+        if (epoll_event_data(self._events, i) & _TIMER_FLAG) != 0:
             return EVFILT_TIMER
-        if (ev.events & EPOLLOUT) != 0:
+        if (epoll_event_mask(self._events, i) & EPOLLOUT) != 0:
             return EVFILT_WRITE
         return EVFILT_READ
 
     def event_flags(self, i: Int) -> UInt16:
-        var ev = self._events[i]
+        var mask = epoll_event_mask(self._events, i)
         var flags: UInt16 = 0
-        if (ev.events & (EPOLLHUP | EPOLLRDHUP)) != 0:
+        if (mask & (EPOLLHUP | EPOLLRDHUP)) != 0:
             flags |= EV_EOF
-        if (ev.events & EPOLLERR) != 0:
+        if (mask & EPOLLERR) != 0:
             flags |= EV_ERROR
         return flags
 
     def event_data(self, i: Int) -> Int:
-        # epoll doesn't carry a data payload separate from data.fd; return 0.
+        # kqueue reports the listen backlog depth here; epoll has no
+        # equivalent. Returning 0 tells the accept loop "unknown" so it
+        # drains until accept() reports EAGAIN — see run_event_loop.
         return 0
 
     def add_read_listen(mut self, fd: Int) raises:
         """Persistent edge-triggered read (listen socket)."""
-        var ev = _make_event(EPOLLIN | EPOLLET, UInt64(fd))
-        epoll_ctl_add(self.epfd, fd, ev)
+        epoll_ctl_add(self.epfd, fd, EPOLLIN | EPOLLET, UInt64(fd))
 
     def add_read(mut self, fd: Int) raises:
         """Edge-triggered read (connection socket).
@@ -145,11 +135,10 @@ struct EpollBackend(EventLoopBackend):
         Tries ADD first (new fd); falls back to MOD (re-arm after
         EPOLLONESHOT disarmed the fd — still registered but inactive).
         """
-        var ev = _make_event(EPOLLIN | EPOLLET, UInt64(fd))
         try:
-            epoll_ctl_add(self.epfd, fd, ev)
+            epoll_ctl_add(self.epfd, fd, EPOLLIN | EPOLLET, UInt64(fd))
         except:
-            epoll_ctl_mod(self.epfd, fd, ev)
+            epoll_ctl_mod(self.epfd, fd, EPOLLIN | EPOLLET, UInt64(fd))
 
     def try_add_read(mut self, fd: Int):
         try:
@@ -164,12 +153,12 @@ struct EpollBackend(EventLoopBackend):
         completes, add_read() re-arms with MOD (not ADD) to restore
         read events for keep-alive.
         """
-        var ev = _make_event(EPOLLOUT | EPOLLET | EPOLLONESHOT, UInt64(fd))
+        comptime _W = EPOLLOUT | EPOLLET | EPOLLONESHOT
         # Try MOD first (fd already registered for reads); fall back to ADD.
         try:
-            epoll_ctl_mod(self.epfd, fd, ev)
+            epoll_ctl_mod(self.epfd, fd, _W, UInt64(fd))
         except:
-            epoll_ctl_add(self.epfd, fd, ev)
+            epoll_ctl_add(self.epfd, fd, _W, UInt64(fd))
 
     def try_add_write_oneshot(mut self, fd: Int):
         try:
@@ -212,9 +201,8 @@ struct EpollBackend(EventLoopBackend):
             return
 
         # Encode original ident in epoll data (high bit set → timer event).
-        var ev = _make_event(EPOLLIN, _TIMER_FLAG | UInt64(ident))
         try:
-            epoll_ctl_add(self.epfd, tfd, ev)
+            epoll_ctl_add(self.epfd, tfd, EPOLLIN, _TIMER_FLAG | UInt64(ident))
         except:
             _ = external_call["close", c_int, c_int](c_int(tfd))
             return

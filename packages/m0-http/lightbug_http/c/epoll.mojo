@@ -10,6 +10,7 @@ so that event_loop.mojo comparisons work on both platforms without changes.
 
 from std.memory import stack_allocation
 from std.ffi import c_int, external_call, get_errno
+from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import ExternalMutUnsafePointer
 
@@ -44,19 +45,42 @@ comptime TFD_NONBLOCK: c_int = 0x800    # O_NONBLOCK on Linux
 comptime TFD_CLOEXEC: c_int = 0x80000  # O_CLOEXEC on Linux
 
 
-@fieldwise_init
-struct epoll_event_t(TrivialRegisterPassable):
-    """Linux struct epoll_event (12 bytes, __attribute__((packed))).
+# glibc packs `struct epoll_event` ONLY on x86_64:
+#
+#   #ifdef __x86_64__
+#   # define __EPOLL_PACKED __attribute__ ((__packed__))
+#   #else
+#   # define __EPOLL_PACKED          /* empty */
+#   #endif
+#
+# so the layout is architecture-dependent:
+#
+#   x86_64 (packed, 12 bytes)     other (natural align, 16 bytes)
+#     0: events (u32)               0: events (u32)
+#     4: data   (u64)               4: <4 bytes padding>
+#                                   8: data   (u64)
+#
+# Hardcoding the 12-byte form makes epoll_wait() return garbage idents on
+# aarch64 (the kernel writes 16-byte records while we stride 12), so the
+# listen fd never matches and no connection is ever accepted.
+# Events are therefore handled as a flat UInt32 word buffer rather than a
+# struct: Mojo cannot vary a struct's field list by target, and a struct whose
+# size is wrong by 4 bytes silently corrupts every event after the first.
+comptime EPOLL_EVENT_WORDS: Int = 3 if CompilationTarget.is_x86() else 4
+comptime EPOLL_DATA_WORD: Int = 1 if CompilationTarget.is_x86() else 2
 
-    Represented as three UInt32 fields to match the packed C layout:
-      offset  0: events (uint32)
-      offset  4: data low dword (uint32)  ─┐ together form
-      offset  8: data high dword (uint32) ─┘ epoll_data_t u64
-    """
 
-    var events: UInt32    # epoll event mask
-    var data_lo: UInt32   # low 32 bits of epoll_data_t
-    var data_hi: UInt32   # high 32 bits of epoll_data_t
+@always_inline
+def epoll_event_mask(events: ExternalMutUnsafePointer[UInt32], i: Int) -> UInt32:
+    """Read the events bitmask of the i-th event in a buffer."""
+    return events[i * EPOLL_EVENT_WORDS]
+
+
+@always_inline
+def epoll_event_data(events: ExternalMutUnsafePointer[UInt32], i: Int) -> UInt64:
+    """Read the 64-bit epoll_data_t of the i-th event in a buffer."""
+    var base = i * EPOLL_EVENT_WORDS + EPOLL_DATA_WORD
+    return UInt64(events[base]) | (UInt64(events[base + 1]) << 32)
 
 
 @fieldwise_init
@@ -82,7 +106,7 @@ def _epoll_ctl(
     epfd: c_int,
     op: c_int,
     fd: c_int,
-    event: OptionalUnsafePointer[epoll_event_t, MutExternalOrigin],
+    event: OptionalUnsafePointer[UInt32, MutExternalOrigin],
 ) -> c_int:
     """Raw epoll_ctl(2) syscall.
 
@@ -93,27 +117,37 @@ def _epoll_ctl(
     """
     return external_call[
         "epoll_ctl", c_int, c_int, c_int, c_int,
-        OptionalUnsafePointer[epoll_event_t, MutExternalOrigin],
+        OptionalUnsafePointer[UInt32, MutExternalOrigin],
     ](
         epfd, op, fd, event,
     )
 
 
-def epoll_ctl_add(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
+@always_inline
+def _fill_event(ev: ExternalMutUnsafePointer[UInt32], events: UInt32, data: UInt64):
+    """Write one struct epoll_event into a caller-provided word buffer."""
+    for w in range(EPOLL_EVENT_WORDS):
+        ev[w] = 0
+    ev[0] = events
+    ev[EPOLL_DATA_WORD] = UInt32(data & 0xFFFFFFFF)
+    ev[EPOLL_DATA_WORD + 1] = UInt32(data >> 32)
+
+
+def epoll_ctl_add(epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64) raises:
     """Register fd with epoll (EPOLL_CTL_ADD)."""
-    var ev_stack = stack_allocation[1, epoll_event_t]()
-    ev_stack[] = ev
-    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_ADD, c_int(fd), ev_stack)
+    var ev = stack_allocation[EPOLL_EVENT_WORDS, UInt32]()
+    _fill_event(ev, events, data)
+    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_ADD, c_int(fd), ev)
     if result == -1:
         var errno = get_errno()
         raise Error("epoll_ctl ADD failed, errno: ", errno)
 
 
-def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, ev: epoll_event_t) raises:
+def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64) raises:
     """Modify fd's epoll registration (EPOLL_CTL_MOD)."""
-    var ev_stack = stack_allocation[1, epoll_event_t]()
-    ev_stack[] = ev
-    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_MOD, c_int(fd), ev_stack)
+    var ev = stack_allocation[EPOLL_EVENT_WORDS, UInt32]()
+    _fill_event(ev, events, data)
+    var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_MOD, c_int(fd), ev)
     if result == -1:
         var errno = get_errno()
         raise Error("epoll_ctl MOD failed, errno: ", errno)
@@ -129,14 +163,17 @@ def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
 
 def epoll_wait(
     epfd: FileDescriptor,
-    events: ExternalMutUnsafePointer[epoll_event_t],
+    events: ExternalMutUnsafePointer[UInt32],
     max_events: Int,
     timeout_ms: Int,
 ) raises -> Int:
-    """Wait for events on epfd, returning the number of ready events."""
+    """Wait for events on epfd, returning the number of ready events.
+
+    `events` must have room for max_events * EPOLL_EVENT_WORDS UInt32 words.
+    """
     var result = external_call[
         "epoll_wait", c_int,
-        c_int, ExternalMutUnsafePointer[epoll_event_t], c_int, c_int,
+        c_int, ExternalMutUnsafePointer[UInt32], c_int, c_int,
     ](c_int(epfd.value), events, c_int(max_events), c_int(timeout_ms))
     if result == -1:
         var errno = get_errno()
