@@ -12,7 +12,7 @@ by both the String-based API and C-ABI FFI exports.
 """
 
 from std.bit import rotate_bits_left
-from std.memory import UnsafePointer, memcpy
+from std.memory import Pointer
 
 
 # ============================================================================
@@ -70,7 +70,7 @@ def fnv1a_step(hash: UInt32, char_code: UInt32) -> UInt32:
     return h
 
 
-def _fnv1a_ptr(data: UnsafePointer[UInt8, _], length: Int) -> UInt32:
+def _fnv1a_ptr(data: Pointer[UInt8, _], length: Int) -> UInt32:
     """Compute FNV-1a 32-bit hash over a raw byte buffer.
 
     Shared implementation used by both the String API and C-ABI exports.
@@ -102,13 +102,13 @@ comptime PRIME32_4: UInt32 = 0x27D4EB2F
 comptime PRIME32_5: UInt32 = 0x165667B1
 
 
-def _read_u32_le(data: UnsafePointer[UInt8, _], offset: Int) -> UInt32:
+def _read_u32_le(data: Pointer[UInt8, _], offset: Int) -> UInt32:
     """Read a little-endian UInt32 from a byte pointer via bitcast.
 
     All target platforms (osx-arm64) are little-endian,
     so a direct bitcast load produces the correct value.
     """
-    return (data + offset).bitcast[UInt32]()[]
+    return data.unsafe_offset(offset).unsafe_bitcast[UInt32]()[]
 
 
 def _xxhash32_round(acc: UInt32, input: UInt32) -> UInt32:
@@ -118,7 +118,7 @@ def _xxhash32_round(acc: UInt32, input: UInt32) -> UInt32:
     return a * PRIME32_1
 
 
-def _xxhash32_ptr(data: UnsafePointer[UInt8, _], length: Int, seed: UInt32) -> UInt32:
+def _xxhash32_ptr(data: Pointer[UInt8, _], length: Int, seed: UInt32) -> UInt32:
     """Compute xxHash32 over a raw byte buffer.
 
     Shared implementation used by both the String API and C-ABI exports.

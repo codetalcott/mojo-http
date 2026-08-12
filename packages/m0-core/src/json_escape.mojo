@@ -8,11 +8,11 @@ Uses 64-byte SIMD scan for bulk safe-range detection + memcpy, falling
 back to scalar scan for the tail.
 """
 
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from .hashing import hex_nibble
 
 
-def simd_find_escape_char(ptr: UnsafePointer[UInt8, _], length: Int) -> Int:
+def simd_find_escape_char(ptr: Pointer[UInt8, _], length: Int) -> Int:
     """Find first byte needing JSON escape using 64-byte SIMD.
 
     Detects: " (0x22), \\ (0x5C), or any control char < 0x20.
@@ -23,7 +23,7 @@ def simd_find_escape_char(ptr: UnsafePointer[UInt8, _], length: Int) -> Int:
     var mask_e0 = SIMD[DType.uint8, 64](0xE0)
     var i = 0
     while i + 64 <= length:
-        var chunk = (ptr + i).load[width=64]()
+        var chunk = ptr.unsafe_offset(i).unsafe_load[width=64]()
         var has_quote = (chunk ^ quote_vec).reduce_min() == 0
         var has_bslash = (chunk ^ bslash_vec).reduce_min() == 0
         var has_ctrl = (chunk & mask_e0).reduce_min() == 0
@@ -68,7 +68,7 @@ def escape_json_string(s: String) -> String:
             var count = slen - pos
             var old_len = len(out)
             out.resize(old_len + count, 0)
-            memcpy(
+            unsafe_memcpy(
                 dest=out.unsafe_ptr().unsafe_offset(old_len),
                 src=ptr.unsafe_offset(pos),
                 count=count,
@@ -78,7 +78,7 @@ def escape_json_string(s: String) -> String:
             if found > 0:
                 var old_len = len(out)
                 out.resize(old_len + found, 0)
-                memcpy(
+                unsafe_memcpy(
                     dest=out.unsafe_ptr().unsafe_offset(old_len),
                     src=ptr.unsafe_offset(pos),
                     count=found,

@@ -5,7 +5,7 @@ Each function returns a formatted SSE string ready for wire transmission.
 Uses List[UInt8] buffer for efficient string building.
 """
 
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 
 from .consts import (
     EVENT_PATCH_ELEMENTS,
@@ -30,7 +30,7 @@ def _buf_write(mut buf: List[UInt8], s: String):
     var old_len = len(buf)
     var count = len(bytes)
     buf.resize(old_len + count, 0)
-    memcpy(
+    unsafe_memcpy(
         dest=buf.unsafe_ptr().unsafe_offset(old_len),
         src=bytes.unsafe_ptr(),
         count=count,
