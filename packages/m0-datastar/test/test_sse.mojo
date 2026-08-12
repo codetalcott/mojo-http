@@ -24,6 +24,33 @@ def test_patch_elements_inner_mode() raises:
     assert_true(s.find("data: mode inner") >= 0)
 
 
+def test_patch_elements_default_mode_omitted() raises:
+    """The default `outer` mode must not be emitted (SDK spec: non-defaults only)."""
+    var s = patch_elements("<div>Merge</div>")
+    assert_true(s.find("mode") == -1)
+
+
+def test_patch_elements_default_namespace_omitted() raises:
+    """The default `html` namespace must not be emitted."""
+    var s = patch_elements("<div/>", namespace="html")
+    assert_true(s.find("namespace") == -1)
+
+
+def test_patch_elements_view_transition_selector() raises:
+    """The viewTransitionSelector line is emitted when view transitions are on."""
+    var s = patch_elements(
+        "<div/>", use_view_transition=True, view_transition_selector="#main"
+    )
+    assert_true(s.find("data: useViewTransition true") >= 0)
+    assert_true(s.find("data: viewTransitionSelector #main") >= 0)
+
+
+def test_view_transition_selector_requires_view_transition() raises:
+    """Without useViewTransition the selector is meaningless, so it is dropped."""
+    var s = patch_elements("<div/>", view_transition_selector="#main")
+    assert_true(s.find("viewTransitionSelector") == -1)
+
+
 def test_patch_elements_with_namespace() raises:
     """patch_elements with SVG namespace should include namespace dataline."""
     var s = patch_elements("<circle/>", namespace="svg")
@@ -86,7 +113,7 @@ def test_execute_script_basic() raises:
     """execute_script should wrap in script element with auto-remove."""
     var s = execute_script("console.log('hi')")
     assert_true(s.find("event: datastar-patch-elements") >= 0)
-    assert_true(s.find("data-effect='el.remove()'") >= 0)
+    assert_true(s.find('data-effect="el.remove()"') >= 0)
     assert_true(s.find("console.log('hi')") >= 0)
     assert_true(s.find("</script>") >= 0)
 
@@ -121,6 +148,100 @@ def test_sse_ends_with_double_newline() raises:
     """SSE events must end with double newline."""
     var s = patch_elements("<div/>")
     assert_true(s.endswith("\n\n"))
+
+
+def test_field_order_event_before_id() raises:
+    """The SDK spec mandates event, then id, then retry, then data lines."""
+    var s = patch_signals("{}", event_id="e1", retry_duration=2000)
+    var event_at = s.find("event: ")
+    var id_at = s.find("id: ")
+    var retry_at = s.find("retry: ")
+    var data_at = s.find("data: ")
+    assert_true(event_at < id_at)
+    assert_true(id_at < retry_at)
+    assert_true(retry_at < data_at)
+
+
+# --- Conformance cases -------------------------------------------------------
+# Byte-exact expectations copied from the official SDK test suite at v1.0.2:
+# https://github.com/starfederation/datastar/tree/v1.0.2/sdk/test/get-cases
+
+
+def test_conformance_patch_elements_with_defaults() raises:
+    """Matches sdk/test/get-cases/patchElementsWithDefaults/output.txt."""
+    var s = patch_elements("<div>Merge</div>", mode="outer", use_view_transition=False)
+    assert_equal(
+        s, "event: datastar-patch-elements\ndata: elements <div>Merge</div>\n\n"
+    )
+
+
+def test_conformance_patch_elements_with_all_options() raises:
+    """Matches sdk/test/get-cases/patchElementsWithAllOptions/output.txt."""
+    var s = patch_elements(
+        "<div>Merge</div>",
+        selector="div",
+        mode="append",
+        use_view_transition=True,
+        event_id="event1",
+        retry_duration=2000,
+    )
+    assert_equal(
+        s,
+        "event: datastar-patch-elements\n"
+        "id: event1\n"
+        "retry: 2000\n"
+        "data: selector div\n"
+        "data: mode append\n"
+        "data: useViewTransition true\n"
+        "data: elements <div>Merge</div>\n"
+        "\n",
+    )
+
+
+def test_conformance_patch_signals_with_defaults() raises:
+    """Matches sdk/test/get-cases/patchSignalsWithDefaults/output.txt."""
+    var s = patch_signals('{"one":1,"two":2}', only_if_missing=False)
+    assert_equal(
+        s, 'event: datastar-patch-signals\ndata: signals {"one":1,"two":2}\n\n'
+    )
+
+
+def test_conformance_patch_signals_with_all_options() raises:
+    """Matches sdk/test/get-cases/patchSignalsWithAllOptions/output.txt."""
+    var s = patch_signals(
+        '{"one":1,"two":2}',
+        event_id="event1",
+        only_if_missing=True,
+        retry_duration=2000,
+    )
+    assert_equal(
+        s,
+        "event: datastar-patch-signals\n"
+        "id: event1\n"
+        "retry: 2000\n"
+        "data: onlyIfMissing true\n"
+        'data: signals {"one":1,"two":2}\n'
+        "\n",
+    )
+
+
+def test_conformance_execute_script_with_defaults() raises:
+    """Matches sdk/test/get-cases/executeScriptWithDefaults/output.txt.
+
+    The reference fixture emits `mode` before `selector`; datalines are parsed
+    into a key/value map client-side, so this asserts content, not byte order.
+    """
+    var s = execute_script("console.log('hello');")
+    assert_true(s.find("event: datastar-patch-elements") >= 0)
+    assert_true(s.find("data: mode append") >= 0)
+    assert_true(s.find("data: selector body") >= 0)
+    assert_true(
+        s.find(
+            "data: elements <script"
+            ' data-effect="el.remove()">console.log(\'hello\');</script>'
+        )
+        >= 0
+    )
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

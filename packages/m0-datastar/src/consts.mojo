@@ -1,11 +1,11 @@
-"""Datastar protocol constants (targeting v1.0.1).
+"""Datastar protocol constants (targeting v1.0.2).
 
 Constants follow the official SDK naming conventions.
 Dataline literals include trailing space per protocol spec.
 """
 
 # Version
-comptime VERSION = "1.0.1"
+comptime VERSION = "1.0.2"
 comptime DATASTAR_KEY = "datastar"
 
 # Default timing
@@ -37,6 +37,7 @@ comptime DL_SELECTOR = "selector "
 comptime DL_MODE = "mode "
 comptime DL_NAMESPACE = "namespace "
 comptime DL_USE_VIEW_TRANSITION = "useViewTransition "
+comptime DL_VIEW_TRANSITION_SELECTOR = "viewTransitionSelector "
 comptime DL_ELEMENTS = "elements "
 comptime DL_SIGNALS = "signals "
 comptime DL_ONLY_IF_MISSING = "onlyIfMissing "

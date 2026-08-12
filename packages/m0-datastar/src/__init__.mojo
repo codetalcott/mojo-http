@@ -1,4 +1,4 @@
-"""`m0-datastar`: Datastar SSE protocol for Mojo (v1.0.1)."""
+"""`m0-datastar`: Datastar SSE protocol for Mojo (v1.0.2)."""
 
 from .consts import (
     VERSION,
@@ -21,6 +21,7 @@ from .consts import (
     DL_MODE,
     DL_NAMESPACE,
     DL_USE_VIEW_TRANSITION,
+    DL_VIEW_TRANSITION_SELECTOR,
     DL_ELEMENTS,
     DL_SIGNALS,
     DL_ONLY_IF_MISSING,

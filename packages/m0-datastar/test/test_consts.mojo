@@ -24,6 +24,7 @@ from src.consts import (
     DL_NAMESPACE,
     DL_ONLY_IF_MISSING,
     DL_USE_VIEW_TRANSITION,
+    DL_VIEW_TRANSITION_SELECTOR,
     NS_SVG,
     NS_MATHML,
     js_bool,
@@ -31,8 +32,8 @@ from src.consts import (
 
 
 def test_version() raises:
-    """Version should be 1.0.1."""
-    assert_equal(VERSION, "1.0.1")
+    """Version should be 1.0.2."""
+    assert_equal(VERSION, "1.0.2")
 
 
 def test_event_types() raises:
@@ -63,6 +64,12 @@ def test_dataline_literals_have_trailing_space() raises:
     assert_true(DL_NAMESPACE.endswith(" "))
     assert_true(DL_ONLY_IF_MISSING.endswith(" "))
     assert_true(DL_USE_VIEW_TRANSITION.endswith(" "))
+    assert_true(DL_VIEW_TRANSITION_SELECTOR.endswith(" "))
+
+
+def test_view_transition_selector_literal() raises:
+    """The viewTransitionSelector dataline was added to the protocol in v1.0.2."""
+    assert_equal(DL_VIEW_TRANSITION_SELECTOR, "viewTransitionSelector ")
 
 
 def test_namespaces() raises:

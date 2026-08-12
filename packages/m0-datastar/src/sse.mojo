@@ -1,4 +1,4 @@
-"""Datastar SSE event generation (v1.0.1).
+"""Datastar SSE event generation (v1.0.2).
 
 Functions for generating Server-Sent Events following the Datastar protocol.
 Each function returns a formatted SSE string ready for wire transmission.
@@ -17,9 +17,11 @@ from .consts import (
     DL_SELECTOR,
     DL_NAMESPACE,
     DL_USE_VIEW_TRANSITION,
+    DL_VIEW_TRANSITION_SELECTOR,
     DL_ELEMENTS,
     DL_SIGNALS,
     DL_ONLY_IF_MISSING,
+    NS_HTML,
     js_bool,
 )
 
@@ -50,22 +52,25 @@ def _build_sse(
 ) -> String:
     """Build a raw SSE event string with multi-line data support.
 
+    Field order is mandated by the Datastar SDK spec (ADR "Implementation
+    Requirements"): event, then id, then retry, then the data lines.
+
     Output format:
-        id: <event_id>
         event: <event_type>
+        id: <event_id>
         retry: <duration>
         data: <line1>
         data: <line2>
         <blank line>
     """
     var buf = List[UInt8](capacity=256)
+    _buf_write(buf, "event: ")
+    _buf_write(buf, event_type)
+    _buf_write(buf, "\n")
     if event_id.byte_length() > 0:
         _buf_write(buf, "id: ")
         _buf_write(buf, event_id)
         _buf_write(buf, "\n")
-    _buf_write(buf, "event: ")
-    _buf_write(buf, event_type)
-    _buf_write(buf, "\n")
     if retry_duration != -1 and retry_duration != DEFAULT_SSE_RETRY_DURATION:
         _buf_write(buf, "retry: ")
         _buf_write(buf, String(retry_duration))
@@ -84,10 +89,13 @@ def patch_elements(
     mode: String = DEFAULT_PATCH_MODE,
     namespace: String = "",
     use_view_transition: Bool = False,
+    view_transition_selector: String = "",
     event_id: String = "",
     retry_duration: Int = -1,
 ) -> String:
     """Generate a Datastar patch-elements SSE event.
+
+    Only non-default datalines are emitted, per the SDK spec.
 
     Args:
         elements: HTML content to patch into the DOM.
@@ -95,18 +103,22 @@ def patch_elements(
         mode: Patch mode (outer, inner, replace, prepend, append, before, after, remove).
         namespace: XML namespace (svg, mathml) if applicable.
         use_view_transition: Whether to use the View Transition API.
+        view_transition_selector: CSS selector for the element to run the view
+            transition on. Only emitted when use_view_transition is True.
         event_id: Optional SSE event ID.
         retry_duration: Optional SSE retry duration in ms.
     """
     var lines = List[String]()
-    if mode.byte_length() > 0:
-        lines.append(DL_MODE + mode)
     if selector.byte_length() > 0:
         lines.append(DL_SELECTOR + selector)
-    if namespace.byte_length() > 0:
-        lines.append(DL_NAMESPACE + namespace)
+    if mode.byte_length() > 0 and mode != DEFAULT_PATCH_MODE:
+        lines.append(DL_MODE + mode)
     if use_view_transition:
         lines.append(DL_USE_VIEW_TRANSITION + "true")
+        if view_transition_selector.byte_length() > 0:
+            lines.append(DL_VIEW_TRANSITION_SELECTOR + view_transition_selector)
+    if namespace.byte_length() > 0 and namespace != NS_HTML:
+        lines.append(DL_NAMESPACE + namespace)
 
     # Split multi-line elements into separate data lines
     var parts = elements.split("\n")
@@ -154,7 +166,8 @@ def execute_script(
     var buf = List[UInt8](capacity=128)
     _buf_write(buf, "<script")
     if auto_remove:
-        _buf_write(buf, " data-effect='el.remove()'")
+        # Double quotes are mandated by the SDK spec.
+        _buf_write(buf, ' data-effect="el.remove()"')
     _buf_write(buf, ">")
     _buf_write(buf, script)
     _buf_write(buf, "</script>")
