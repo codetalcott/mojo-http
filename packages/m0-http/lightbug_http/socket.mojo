@@ -823,7 +823,7 @@ struct Socket[
         """
         # SO_RCVTIMEO requires a timeval struct: {tv_sec: Int64, tv_usec: Int64}
         # (16 bytes on both macOS and Linux 64-bit).
-        var timeval: InlineArray[Int64, 2] = [Int64(seconds), Int64(0)]
+        var timeval: Array[Int64, 2] = [Int64(seconds), Int64(0)]
         var result = _setsockopt(
             Int32(self.fd.value),
             Int32(SOL_SOCKET),

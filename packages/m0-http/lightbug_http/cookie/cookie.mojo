@@ -1,4 +1,7 @@
-from lightbug_http.header import HeaderKey
+from lightbug_http.cookie.duration import Duration
+from lightbug_http.cookie.expiration import Expiration
+from lightbug_http.cookie.same_site import SameSite
+from lightbug_http.header import Header, HeaderKey
 from std.utils import Variant
 
 

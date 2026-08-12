@@ -1,4 +1,5 @@
 from lightbug_http.header import Header, HeaderKey, Headers, ParsedRequestHeaders, write_header
+from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
 from lightbug_http.io.sync import Duration
 from lightbug_http.strings import lineBreak, strHttp11, whitespace
