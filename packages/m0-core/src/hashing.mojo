@@ -77,7 +77,7 @@ def _fnv1a_ptr(data: Pointer[UInt8, _], length: Int) -> UInt32:
     """
     var hash = FNV_OFFSET_BASIS
     for i in range(length):
-        hash = fnv1a_step(hash, UInt32(data[i]))
+        hash = fnv1a_step(hash, UInt32(data[unsafe_offset=i]))
     return hash
 
 
@@ -157,7 +157,7 @@ def _xxhash32_ptr(data: Pointer[UInt8, _], length: Int, seed: UInt32) -> UInt32:
         i += 4
 
     while i < length:
-        h32 = rotate_bits_left[shift=11](h32 + UInt32(data[i]) * PRIME32_5) * PRIME32_1
+        h32 = rotate_bits_left[shift=11](h32 + UInt32(data[unsafe_offset=i]) * PRIME32_5) * PRIME32_1
         i += 1
 
     h32 ^= h32 >> 15
