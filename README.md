@@ -61,12 +61,13 @@ The four `sse_*` hooks are the streaming interface; a handler that does not stre
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser | 59 |
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor | 107 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
+| `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 7 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 68 |
-| **Total** | | **290** |
+| **Total** | | **297** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
-Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`.
+Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · SSE with backpressure and `Last-Event-ID` reconnect replay.
 
@@ -111,6 +112,56 @@ it in two tabs; pressing a button in one updates the other.
 **SSE needs `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only the non-blocking
 event loop assigns `req.slot_id` and drains the outbox; the plain accept loop leaves
 `slot_id` at `-1` and every stream open answers `409`.
+
+## Django, and anything else that speaks WSGI
+
+`m0-wsgi` embeds CPython and runs a WSGI application, so mojo-http can stand in
+for gunicorn. The whole integration is one field and one call:
+
+```mojo
+from m0_wsgi import WSGIApp
+
+struct DjangoHandler(HTTPService):
+    var app: WSGIApp
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return self.app.serve(req)
+    ...
+
+def main() raises:
+    var app = WSGIApp(
+        "djangoproj.wsgi", server_name="0.0.0.0", server_port="8080",
+        project_path="apps/django_wsgi",
+    )
+    Server().listen_and_serve("0.0.0.0:8080", DjangoHandler(app^))
+```
+
+Run [apps/django_wsgi/](apps/django_wsgi/) with `uv run poe serve-django`.
+
+**Why the boundary looks the way it does.** WSGI hands the application a
+`start_response` callable that the *server* supplies, and building a Python
+callable that closes over Mojo state is the hardest thing at this boundary — so
+a small Python shim does it instead, and each request costs exactly one call
+into the interpreter. The shim is a string `exec`'d at startup, not a file, so
+there is nothing to locate at run time. Bodies cross as raw addresses via
+`ctypes`: Mojo 1.0's `std.python` binds no `bytes` API at all, and a `String`
+round trip would corrupt any byte above 0x7F. `poe smoke-django` asserts a body
+of all 256 byte values comes back unchanged.
+
+**Limits**, all inherited from the server rather than the bridge:
+
+- **One request at a time per process.** `HTTPService.func` is called
+  synchronously on the event loop, so a slow view blocks every other connection.
+  Concurrency means more processes — and `WorkerSupervisor` must fork *before*
+  the first Python call, never after.
+- **Responses are fully buffered.** There is no chunked encoding, so
+  `StreamingHttpResponse` and `FileResponse` are materialized in memory.
+- **Request bodies are fully buffered too**, capped by
+  `ServerConfig.max_request_body_size` (4 MB default). Raise it for uploads.
+- **No TLS.** `wsgi.url_scheme` is always `http`; terminate at a proxy and set
+  Django's `SECURE_PROXY_SSL_HEADER`.
+- Django is a **dev dependency** here, for the example and its smoke test. The
+  package itself has no opinion about which WSGI framework you run.
 
 ## SQLite
 
@@ -189,6 +240,7 @@ so it is not worth the ownership complexity yet.
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
 - Linux (`epoll`) and macOS (`kqueue`).
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
+- `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - Pre-1.0: the API will break.
 - **SSE fan-out is single-process.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry, so a push on one worker never reaches subscribers on another.
 - **No server-side timer hook.** Every push must be triggered by an inbound request.
@@ -200,11 +252,14 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 252 unit tests, then compiles every example
+uv run poe test-all         # 297 unit tests, then compiles every example
 uv run poe serve-counter    # the Datastar demo on :8080
+uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
+uv run poe smoke-django     # assert a Django request/response cycle end to end
 uv run poe bench-core       # benchmark m0-core hot paths
+uv run poe bench-sqlite     # benchmark m0-sqlite blob reads and bulk ingest
 ```
 
 Cross-package imports resolve through the `.mojoc` files, so run `build-all` after changing a package's sources — including for the editor, or the LSP reports phantom unresolved imports. Copy `.vscode/settings.example.json` to `.vscode/settings.json` and fill in your absolute path.

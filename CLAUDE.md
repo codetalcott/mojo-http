@@ -12,6 +12,7 @@ m0-core     (zero deps)   hashing, JSON escape, JSON parse
 └── m0-http               router, negotiation, ETag, cache, SSE, auth, CORS, health
     └── lightbug_http     the forked HTTP server (vendored inside m0-http)
 m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
+m0-wsgi                   WSGI host — embeds CPython, layers on m0-http
 m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 ```
 
@@ -21,6 +22,23 @@ three functions from `m0-core` (`wyhash64`, `format_hash64`,
 `sse.mojo` import nothing outside themselves so the wire format is usable
 without the framework — do not add an `m0_http` import to either — while
 `stream.mojo` and `signals.mojo` are the server glue and may.
+
+`m0-wsgi` is the **only** package that embeds CPython. Keep it that way: a
+Python import in `m0-http` or `m0-core` would put libpython on the link line of
+every build in the repo. Everything touching the interpreter lives in
+`src/bridge.mojo`; the rest of the package works in Mojo types. Two rules the
+Mojo 1.0 interop imposes and that the code depends on:
+
+- **`std.python` has no `bytes` bindings at all** — no `PyBytes_*`, no buffer
+  protocol, and `PythonObject` has no `Span[Byte]` constructor. Bodies cross as
+  raw addresses through `ctypes` (see `bridge.mojo`). Do not "simplify" this to
+  a `String` round trip; Mojo strings are UTF-8 and it corrupts every byte above
+  0x7F.
+- **Mojo never acquires the GIL** except when destroying a `PythonObject`. Every
+  other call assumes the calling thread holds it, which is true only because
+  `Py_Initialize` leaves it held on the thread that ran `main()`. This is safe
+  today purely because the server is single-threaded. If `WorkerSupervisor` is
+  ever wired in, **fork before the first Python call, never after.**
 
 `m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
 flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
