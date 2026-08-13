@@ -1,7 +1,13 @@
-"""Content negotiation with quality-factor parsing per RFC 7231.
+"""Accept-header content negotiation per RFC 9110 §12.5.1.
 
-Parses Accept headers and determines which media types the client
-prefers. Supports the M0 framework media types plus standard types.
+Parses Accept headers and determines which media types the client prefers.
+Four standard types are recognised directly; anything else — vendor types such
+as `application/vnd.siren+bin` — is supplied by the caller as a list of extra
+media types, so this layer stays independent of any representation format.
+
+Supports quality factors, case-insensitive media ranges, subtype wildcards
+(`text/*`), and `*/*`, with more specific ranges taking precedence over less
+specific ones regardless of the order they appear in the header.
 """
 
 
@@ -9,20 +15,25 @@ struct AcceptResult(Copyable, Movable):
     """Parsed Accept header negotiation result."""
     var wants_html: Bool
     var wants_json: Bool
-    var wants_links_json: Bool
-    var wants_siren_bin: Bool
-    var wants_siren_bin_patch: Bool
     var wants_event_stream: Bool
     var wants_problem_json: Bool
+    var extra_types: List[String]
+    """Caller-registered media types the client accepted, case-folded."""
 
     def __init__(out self):
         self.wants_html = False
         self.wants_json = False
-        self.wants_links_json = False
-        self.wants_siren_bin = False
-        self.wants_siren_bin_patch = False
         self.wants_event_stream = False
         self.wants_problem_json = False
+        self.extra_types = List[String]()
+
+    def accepts(self, media_type: String) -> Bool:
+        """Whether a caller-registered media type was accepted with q > 0.
+
+        Only matches types passed to `parse_accept` as extra types; the four
+        standard types have their own fields. Comparison is case-insensitive.
+        """
+        return _contains(self.extra_types, media_type.lower())
 
 
 def _parse_quality(s: String) -> Float64:
@@ -51,13 +62,28 @@ def _parse_quality(s: String) -> Float64:
 def parse_accept(accept: String) -> AcceptResult:
     """Parse Accept header with quality factors per RFC 7231.
 
+    Recognises the four standard types only. To match vendor types, pass them
+    via the two-argument overload.
+    """
+    return parse_accept(accept, List[String]())
+
+
+def parse_accept(accept: String, extra: List[String]) -> AcceptResult:
+    """Parse Accept header with quality factors per RFC 7231.
+
     Splits on comma, extracts media type and q= parameter.
     Quality of 0 disables a type.
+
+    Any media type in `extra` that the client accepts with q > 0 is recorded in
+    `AcceptResult.extra_types`, queryable with `AcceptResult.accepts()`.
     """
     var result = AcceptResult()
     if accept.byte_length() == 0:
         return result^
 
+    # Pass 1 — split into (media range, quality) pairs, case-folded.
+    var ranges = List[String]()
+    var qualities = List[Float64]()
     var start = 0
     var i = 0
     while i <= accept.byte_length():
@@ -69,15 +95,47 @@ def parse_accept(accept: String) -> AcceptResult:
         if at_comma or at_end:
             if i > start:
                 var part = String(StringSlice(accept)[byte=start:i])
-                _parse_media_range(part, result)
+                _split_media_range(part, ranges, qualities)
             start = i + 1
         i += 1
+
+    # Pass 2 — resolve each type independently, most specific range first. Doing
+    # this after the whole header is parsed is what keeps a trailing `*/*` from
+    # reviving a type that was explicitly refused with q=0.
+    result.wants_html = _resolve(ranges, qualities, "text/html")
+    result.wants_json = _resolve(ranges, qualities, "application/json")
+    result.wants_event_stream = _resolve(ranges, qualities, "text/event-stream")
+    result.wants_problem_json = _resolve(ranges, qualities, "application/problem+json")
+
+    # `*/*` is deliberately a JSON-only fallback. A client that says it will
+    # take anything should not be handed HTML, an event stream, or an opaque
+    # vendor binary on that basis — JSON is the safe default representation.
+    # An explicit `application/json;q=0` still wins, hence the absence check.
+    if not result.wants_json:
+        if _last_quality(ranges, qualities, "application/json") < 0.0:
+            if _last_quality(ranges, qualities, "*/*") > 0.0:
+                result.wants_json = True
+
+    # Vendor types must be named exactly. They are never selected by a wildcard:
+    # a caller registering `application/vnd.acme+cbor` wants clients to ask for
+    # it, not to receive it because they sent `Accept: */*`.
+    for j in range(len(extra)):
+        var vendor = extra[j].lower()
+        if _last_quality(ranges, qualities, vendor) > 0.0:
+            if not _contains(result.extra_types, vendor):
+                result.extra_types.append(vendor^)
 
     return result^
 
 
-def _parse_media_range(part: String, mut result: AcceptResult):
-    """Parse a single media range entry like 'application/json;q=0.8'."""
+def _split_media_range(
+    part: String, mut ranges: List[String], mut qualities: List[Float64]
+):
+    """Split one entry like 'application/json;q=0.8' into range and quality.
+
+    The media range is case-folded: RFC 9110 §8.3.1 makes type and subtype
+    case-insensitive, so `Text/HTML` and `text/html` are the same range.
+    """
     var semi_pos = part.find(";")
     var media_type: String
     var quality: Float64 = 1.0
@@ -92,24 +150,50 @@ def _parse_media_range(part: String, mut result: AcceptResult):
     else:
         media_type = _trim(part)
 
-    # Match against known media types
-    if media_type == "text/html":
-        result.wants_html = quality > 0
-    elif media_type == "application/json":
-        result.wants_json = quality > 0
-    elif media_type == "application/links+json":
-        result.wants_links_json = quality > 0
-    elif media_type == "application/vnd.siren+bin":
-        result.wants_siren_bin = quality > 0
-    elif media_type == "application/vnd.siren+bin-patch":
-        result.wants_siren_bin_patch = quality > 0
-    elif media_type == "text/event-stream":
-        result.wants_event_stream = quality > 0
-    elif media_type == "application/problem+json":
-        result.wants_problem_json = quality > 0
-    elif media_type == "*/*":
-        if not result.wants_json:
-            result.wants_json = quality > 0
+    ranges.append(media_type.lower())
+    qualities.append(quality)
+
+
+def _resolve(
+    ranges: List[String], qualities: List[Float64], target: String
+) -> Bool:
+    """Whether `target` is acceptable, checking ranges most specific first.
+
+    Precedence follows RFC 9110 §12.5.1: an exact `type/subtype` beats a
+    `type/*` subtype wildcard. A more specific range settles the question
+    outright, so `text/*;q=0, text/html` still accepts HTML regardless of the
+    order the two appear in.
+
+    `*/*` is not consulted here — the caller applies it, because which
+    representation a "will take anything" client should get is a policy
+    decision, not a parsing one.
+    """
+    var q = _last_quality(ranges, qualities, target)
+    if q >= 0.0:
+        return q > 0.0
+
+    var slash = target.find("/")
+    if slash != -1:
+        var subtype_wildcard = String(StringSlice(target)[byte=0:slash]) + "/*"
+        q = _last_quality(ranges, qualities, subtype_wildcard)
+        if q >= 0.0:
+            return q > 0.0
+
+    return False
+
+
+def _last_quality(
+    ranges: List[String], qualities: List[Float64], target: String
+) -> Float64:
+    """Quality of the last occurrence of `target`, or -1.0 when absent.
+
+    Last occurrence wins so a repeated range behaves like an overwrite.
+    """
+    var found: Float64 = -1.0
+    for i in range(len(ranges)):
+        if ranges[i] == target:
+            found = qualities[i]
+    return found
 
 
 def _trim(s: String) -> String:
@@ -126,15 +210,15 @@ def _trim(s: String) -> String:
     return String(StringSlice(s)[byte=start:end])
 
 
+def _contains(types: List[String], media_type: String) -> Bool:
+    """Whether a media type appears in a list."""
+    for i in range(len(types)):
+        if types[i] == media_type:
+            return True
+    return False
+
+
 # Convenience predicates
-def wants_siren_bin(accept: String) -> Bool:
-    return parse_accept(accept).wants_siren_bin
-
-
-def wants_patch(accept: String) -> Bool:
-    return parse_accept(accept).wants_siren_bin_patch
-
-
 def wants_html(accept: String) -> Bool:
     return parse_accept(accept).wants_html
 

@@ -4,8 +4,6 @@ Forks N child processes. Children return to the caller to run the
 normal server startup path. The parent supervises: respawns crashed
 children, propagates SIGTERM/SIGINT to all children.
 
-Consolidated from mojo-siren-grail/siren_server/multiworker.mojo.
-
 Usage:
     var supervisor = WorkerSupervisor(num_workers)
     supervisor.fork_all()

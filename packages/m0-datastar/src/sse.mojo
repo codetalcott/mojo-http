@@ -39,6 +39,36 @@ def _buf_write(mut buf: List[UInt8], s: String):
     )
 
 
+def split_data_lines(data: String) -> List[String]:
+    """Split a payload on CRLF, CR, or LF.
+
+    The SSE spec treats all three as line terminators, so splitting on LF alone
+    would let a bare CR — routine in HTML from a Windows-authored template —
+    reach a `data:` field, where the client reads it as a line break and the
+    remainder as a new, malformed field.
+
+    Deliberately duplicated from `m0_http.sse.format.split_sse_lines` rather
+    than imported: `consts.mojo` and `sse.mojo` stay dependency-free so the
+    Datastar wire format is usable without the rest of the framework.
+    """
+    var lines = List[String]()
+    var bytes = data.as_bytes()
+    var n = data.byte_length()
+    var start = 0
+    var i = 0
+    while i < n:
+        var c = bytes[i]
+        if c == UInt8(ord("\r")) or c == UInt8(ord("\n")):
+            lines.append(String(StringSlice(data)[byte=start:i]))
+            if c == UInt8(ord("\r")):
+                if i + 1 < n and bytes[i + 1] == UInt8(ord("\n")):
+                    i += 1
+            start = i + 1
+        i += 1
+    lines.append(String(StringSlice(data)[byte=start:n]))
+    return lines^
+
+
 def _buf_to_string(var buf: List[UInt8]) -> String:
     """Convert a byte buffer to a String (takes ownership)."""
     return String(unsafe_from_utf8=Span(unsafe_ptr=buf.unsafe_ptr(), length=len(buf)))
@@ -121,7 +151,7 @@ def patch_elements(
         lines.append(DL_NAMESPACE + namespace)
 
     # Split multi-line elements into separate data lines
-    var parts = elements.split("\n")
+    var parts = split_data_lines(elements)
     for i in range(len(parts)):
         lines.append(DL_ELEMENTS + parts[i])
 

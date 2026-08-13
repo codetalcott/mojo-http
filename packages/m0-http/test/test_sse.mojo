@@ -2,7 +2,12 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.sse.format import format_sse_event, format_sse_heartbeat
+from src.sse.format import (
+    format_sse_event,
+    format_sse_heartbeat,
+    split_sse_lines,
+    NO_EVENT_ID,
+)
 from src.sse.registry import SSERegistry
 from src.sse.journal import PatchJournal
 
@@ -30,6 +35,63 @@ def test_format_sse_multiline_data() raises:
     assert_true(s.find("data: line2\n") >= 0)
     assert_true(s.find("data: line3\n") >= 0)
     assert_true(s.endswith("\n\n"))
+
+
+def test_split_lines_lf() raises:
+    """LF is a line terminator."""
+    var parts = split_sse_lines("a\nb")
+    assert_equal(len(parts), 2)
+    assert_equal(parts[0], "a")
+    assert_equal(parts[1], "b")
+
+
+def test_split_lines_crlf_is_one_break() raises:
+    """CRLF is a single terminator, not two."""
+    var parts = split_sse_lines("a\r\nb")
+    assert_equal(len(parts), 2)
+    assert_equal(parts[0], "a")
+    assert_equal(parts[1], "b")
+
+
+def test_split_lines_bare_cr() raises:
+    """A lone CR terminates a line per the SSE spec."""
+    var parts = split_sse_lines("a\rb")
+    assert_equal(len(parts), 2)
+    assert_equal(parts[0], "a")
+    assert_equal(parts[1], "b")
+
+
+def test_bare_cr_does_not_escape_the_data_field() raises:
+    """A CR in the payload must not inject a raw break into the frame.
+
+    Splitting on LF alone would emit "data: a\\rb\\n", which a client reads as
+    a `data: a` field followed by a malformed `b` field.
+    """
+    var s = format_sse_event(1, "update", "a\rb")
+    assert_true(s.find("data: a\n") >= 0)
+    assert_true(s.find("data: b\n") >= 0)
+    assert_false(s.find("data: a\rb") >= 0)
+
+
+def test_crlf_payload_splits_cleanly() raises:
+    """Windows-style payloads produce clean data fields with no stray CR."""
+    var s = format_sse_event(1, "update", "<div>\r\n  <p>hi</p>\r\n</div>")
+    assert_true(s.find("data: <div>\n") >= 0)
+    assert_true(s.find("data:   <p>hi</p>\n") >= 0)
+    assert_false(s.find("\r") >= 0)
+
+
+def test_no_event_id_omits_id_field() raises:
+    """NO_EVENT_ID emits no id: line at all."""
+    var s = format_sse_event(NO_EVENT_ID, "update", "x")
+    assert_false(s.find("id:") >= 0)
+    assert_true(s.startswith("event: update\n"))
+
+
+def test_zero_event_id_is_still_emitted() raises:
+    """Zero is a real id and must survive; only NO_EVENT_ID suppresses it."""
+    var s = format_sse_event(0, "update", "x")
+    assert_true(s.startswith("id: 0\n"))
 
 
 # --- SSE Registry ---

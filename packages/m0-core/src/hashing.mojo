@@ -1,7 +1,7 @@
 """
 Hash Algorithms — FNV-1a, xxHash32, wyhash64, and hex formatting.
 
-Consolidated from modfixi/mojo (FNV-1a, xxHash32) and mojo-siren-grail (wyhash64).
+Three non-cryptographic hashes. None are suitable for security decisions.
 
 - FNV-1a 32-bit: Element ID generation from DOM paths.
 - xxHash32: Fast effect deduplication in runtime queues.

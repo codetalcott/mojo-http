@@ -1,8 +1,7 @@
 """
 JSON String Escape — SIMD-accelerated JSON string escaping.
 
-Extracted from mojo-siren-grail's json_writer.mojo. This module provides
-the generic escape logic without any SirenBin dependency.
+Generic escape logic with no dependency on any serialization format.
 
 Uses 64-byte SIMD scan for bulk safe-range detection + memcpy, falling
 back to scalar scan for the tail.

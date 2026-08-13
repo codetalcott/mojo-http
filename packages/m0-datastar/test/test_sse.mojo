@@ -2,7 +2,13 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.sse import patch_elements, patch_signals, execute_script, redirect
+from src.sse import (
+    patch_elements,
+    patch_signals,
+    execute_script,
+    redirect,
+    split_data_lines,
+)
 
 
 def test_patch_elements_basic() raises:
@@ -242,6 +248,28 @@ def test_conformance_execute_script_with_defaults() raises:
         )
         >= 0
     )
+
+def test_split_data_lines_handles_all_terminators() raises:
+    """CRLF, bare CR, and LF all terminate a line per the SSE spec."""
+    assert_equal(len(split_data_lines("a\r\nb")), 2)
+    assert_equal(len(split_data_lines("a\rb")), 2)
+    assert_equal(len(split_data_lines("a\nb")), 2)
+
+
+def test_patch_elements_bare_cr_does_not_escape_data_field() raises:
+    """A CR inside elements must not inject a raw break into the frame."""
+    var s = patch_elements("<p>a</p>\r<p>b</p>")
+    assert_true(s.find("data: elements <p>a</p>\n") >= 0)
+    assert_true(s.find("data: elements <p>b</p>\n") >= 0)
+
+
+def test_patch_elements_crlf_leaves_no_stray_cr() raises:
+    """Windows-authored templates must not leak CR onto the wire."""
+    var s = patch_elements("<div>\r\n  <p>hi</p>\r\n</div>")
+    assert_false(s.find("\r") >= 0)
+    assert_true(s.find("data: elements <div>\n") >= 0)
+    assert_true(s.find("data: elements   <p>hi</p>\n") >= 0)
+
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
