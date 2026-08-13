@@ -7,32 +7,19 @@
   backpressure and Last-Event-ID replay, auth, CORS, config, health, JSON-lines
   access logging, graceful shutdown, multi-worker fork supervisor
 - `lightbug_http` — maintained hard fork (see [NOTICE](../NOTICE))
-- `m0-datastar` — Datastar v1.0.2 SSE wire format
+- `m0-datastar` — Datastar v1.0.2 wire format, plus `DatastarStream` and
+  `read_signals` to drive it from the server
+
+### Datastar is wired (done)
+
+`SSERegistry.notify_frame` queues a pre-formatted frame verbatim (with
+`NO_EVENT_ID` for unnumbered frames), `sse_response()` builds the stream-opening
+response with the `Cache-Control` header everyone forgets, `DatastarStream`
+owns subscriptions and broadcasts, and `read_signals()` covers the request half.
+`apps/datastar_counter` demonstrates multi-tab sync and is asserted in CI by
+`poe smoke-counter`, which fails if a frame is ever double-framed again.
 
 ## v0.2 (planned)
-
-### Wire Datastar to the server
-
-`m0-datastar` ships the wire format but nothing drives it. It cannot currently
-be connected to `SSERegistry` at all: `patch_elements()` returns a **complete**
-SSE frame, while `SSERegistry.notify()` takes a payload and does its own
-framing, so feeding one to the other double-frames the event. The two framers
-also disagree on field order — `format_sse_event` emits `id:` before `event:`,
-which is legal SSE, while the Datastar SDK spec mandates the reverse.
-
-Needed:
-
-- `SSERegistry.notify_frame(url, event_id, frame)` — queue a pre-formatted frame
-  verbatim, still applying dedupe and `MAX_PENDING_BYTES` backpressure. Refactor
-  `notify()` to delegate to it so backpressure lives in one place.
-- `sse_response()` in `m0-http` — every SSE endpoint hand-rolls the same
-  `HTTPResponse`, and they all omit `Cache-Control: no-cache`.
-- `DatastarStream` in `m0-datastar` — owns a registry, wires the four
-  `HTTPService` SSE hooks, exposes `patch_elements`/`patch_signals`/
-  `execute_script`/`redirect_to`. Keep `consts.mojo` and `sse.mojo`
-  dependency-free so the wire format stays standalone.
-- `read_signals(req)` — Datastar's request half is entirely absent. Signals
-  arrive as a `datastar` query parameter on GET and as the JSON body otherwise.
 
 ### `m0-sqlite`
 

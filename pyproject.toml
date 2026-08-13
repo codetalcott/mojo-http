@@ -46,11 +46,31 @@ shell = "cd packages/m0-core && mojo precompile src -o m0_core.mojoc"
 help = "Build m0-http package (includes the lightbug_http fork)"
 shell = "cd packages/m0-http && mojo precompile src -I ../m0-core/ -o m0_http.mojoc"
 
-# m0-datastar imports nothing outside itself — the wire format is usable
-# without the rest of the framework. No -I flags on purpose.
+# consts.mojo and sse.mojo import nothing outside themselves, so the wire
+# format stays usable standalone. stream.mojo and signals.mojo are the server
+# glue and do depend on m0-http (which transitively needs m0-core), hence both
+# -I flags. A .mojoc does not bundle its dependencies, so anything importing
+# m0_datastar must pass all three -I paths.
 [tool.poe.tasks.build-datastar]
 help = "Build m0-datastar package"
-shell = "cd packages/m0-datastar && mojo precompile src -o m0_datastar.mojoc"
+shell = "cd packages/m0-datastar && mojo precompile src -I ../m0-http/ -I ../m0-core/ -o m0_datastar.mojoc"
+
+# apps/ is the only place the packages get composed, and a broken example is
+# the most visible kind of breakage this repo can ship. Compiles every app to a
+# temp dir and throws the binaries away.
+[tool.poe.tasks.build-apps]
+help = "Compile every example app (catches broken examples in CI)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+for app in apps/*/server.mojo; do
+  name=$(basename "$(dirname "$app")")
+  echo "building $name"
+  mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
+    -I apps/ "$app" -o "$out/$name" || exit 1
+done
+echo "all apps built"
+"""
 
 [tool.poe.tasks.build-all]
 help = "Build all packages in dependency order"
@@ -73,11 +93,11 @@ shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-
 
 [tool.poe.tasks.test-datastar]
 help = "Test m0-datastar"
-shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-datastar \"$f\" || exit 1; done"
+shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar \"$f\" || exit 1; done"
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "build-apps"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -89,6 +109,10 @@ default_item_type = "ref"
 help = "Run hello server on :8080"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo"
 
+[tool.poe.tasks.serve-counter]
+help = "Run the Datastar counter demo on :8080"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/datastar_counter/server.mojo"
+
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
 shell = """
@@ -99,6 +123,30 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== hello.log ==='; cat hello.log; exit 1; }
 echo
 echo "smoke-hello OK"
+"""
+
+[tool.poe.tasks.smoke-counter]
+help = "Start the counter demo, assert an SSE broadcast reaches a client, stop"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+  apps/datastar_counter/server.mojo > counter.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== counter.log ==='; cat counter.log; exit 1; }
+curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > sse.txt &
+sse=$!
+sleep 2
+curl -s -X POST http://localhost:8080/increment -o /dev/null
+sleep 2
+kill $sse 2>/dev/null
+grep -q 'event: datastar-patch-signals' sse.txt \
+  || { echo 'no Datastar frame reached the client'; cat sse.txt; exit 1; }
+grep -q 'data: signals {"count":1}' sse.txt \
+  || { echo 'broadcast did not carry the new count'; cat sse.txt; exit 1; }
+grep -q 'data: event:' sse.txt && { echo 'frame was double-framed'; exit 1; }
+rm -f sse.txt
+echo "smoke-counter OK"
 """
 
 # --- Benchmarks ------------------------------------------------------------

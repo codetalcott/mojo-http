@@ -8,7 +8,7 @@ from src.sse.format import (
     split_sse_lines,
     NO_EVENT_ID,
 )
-from src.sse.registry import SSERegistry
+from src.sse.registry import SSERegistry, MAX_PENDING_BYTES
 from src.sse.journal import PatchJournal
 
 
@@ -92,6 +92,112 @@ def test_zero_event_id_is_still_emitted() raises:
     """Zero is a real id and must survive; only NO_EVENT_ID suppresses it."""
     var s = format_sse_event(0, "update", "x")
     assert_true(s.startswith("id: 0\n"))
+
+
+# --- notify_frame: verbatim delivery for producers with their own framing ---
+
+def _as_text(buf: List[UInt8]) -> String:
+    return String(StringSlice(unsafe_from_utf8=Span(buf)))
+
+
+def test_notify_frame_delivers_verbatim() raises:
+    """Pre-formatted frames must reach the wire byte-for-byte, unframed."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    var frame = String("event: datastar-patch-signals\nid: 7\ndata: signals {}\n\n")
+    reg.notify_frame("/x", 7, List[UInt8](frame.as_bytes()))
+    assert_equal(_as_text(reg.drain(0)), frame)
+
+
+def test_notify_frame_respects_url_filter() raises:
+    """Frames go only to slots subscribed to that URL."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/a", 0)
+    reg.subscribe(1, "/b", 0)
+    reg.notify_frame("/a", 1, List[UInt8](String("f\n\n").as_bytes()))
+    assert_true(reg.has_pending(0))
+    assert_false(reg.has_pending(1))
+
+
+def test_notify_frame_suppresses_replay() raises:
+    """Ids at or below the slot's last-seen id are not redelivered."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 5)
+    reg.notify_frame("/x", 5, List[UInt8](String("old\n\n").as_bytes()))
+    assert_false(reg.has_pending(0))
+    reg.notify_frame("/x", 6, List[UInt8](String("new\n\n").as_bytes()))
+    assert_true(reg.has_pending(0))
+
+
+def test_no_event_id_bypasses_dedupe() raises:
+    """Unnumbered frames always deliver, however many times."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 100)
+    reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
+    reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
+    assert_equal(_as_text(reg.drain(0)), ": hb\n\n: hb\n\n")
+
+
+def test_no_event_id_does_not_advance_last_seen() raises:
+    """Unnumbered frames must not mask a later real event.
+
+    If NO_EVENT_ID advanced the slot's last-seen id, a heartbeat would suppress
+    every subsequent numbered event.
+    """
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
+    _ = reg.drain(0)
+    reg.notify_frame("/x", 1, List[UInt8](String("real\n\n").as_bytes()))
+    assert_equal(_as_text(reg.drain(0)), "real\n\n")
+
+
+def test_notify_frame_backpressure_drops() raises:
+    """Frames exceeding MAX_PENDING_BYTES are dropped for that slot."""
+    var reg = SSERegistry(2)
+    reg.subscribe(0, "/x", 0)
+    var big = List[UInt8]()
+    for _ in range(MAX_PENDING_BYTES):
+        big.append(UInt8(ord("x")))
+    reg.notify_frame("/x", 1, big)
+    var before = len(reg.drain(0))
+    reg.subscribe(0, "/x", 0)
+    reg.notify_frame("/x", 1, big)
+    reg.notify_frame("/x", 2, List[UInt8](String("tiny\n\n").as_bytes()))
+    assert_equal(len(reg.drain(0)), before)
+
+
+def test_notify_delegates_to_notify_frame() raises:
+    """`notify()` still frames and delivers; backpressure lives in one place."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    reg.notify("/x", 1, "update", "hello")
+    var out = _as_text(reg.drain(0))
+    assert_true(out.find("event: update") >= 0)
+    assert_true(out.find("data: hello") >= 0)
+
+
+def test_subscriber_introspection() raises:
+    """`has_subscribers` / `subscriber_count` let a handler skip a render."""
+    var reg = SSERegistry(4)
+    assert_false(reg.has_subscribers("/x"))
+    reg.subscribe(0, "/x", 0)
+    reg.subscribe(1, "/x", 0)
+    reg.subscribe(2, "/y", 0)
+    assert_true(reg.has_subscribers("/x"))
+    assert_equal(reg.subscriber_count("/x"), 2)
+    assert_equal(reg.subscriber_count("/y"), 1)
+    assert_equal(reg.subscriber_count("/none"), 0)
+
+
+def test_is_slot_streaming_is_bounds_safe() raises:
+    """Out-of-range slots answer False rather than trapping."""
+    var reg = SSERegistry(2)
+    reg.subscribe(0, "/x", 0)
+    assert_true(reg.is_slot_streaming(0))
+    assert_false(reg.is_slot_streaming(1))
+    assert_false(reg.is_slot_streaming(-1))
+    assert_false(reg.is_slot_streaming(99))
 
 
 # --- SSE Registry ---

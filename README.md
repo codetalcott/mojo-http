@@ -59,18 +59,58 @@ The four `sse_*` hooks are the streaming interface; a handler that does not stre
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser | 59 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor | 98 |
-| `m0-datastar` | Datastar v1.0.2 SSE wire format (`patch_elements`, `patch_signals`) | 39 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor | 107 |
+| `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
 | `m0-sqlite` | Storage adapter — *planned, v0.2* | — |
-| **Total** | | **196** |
+| **Total** | | **222** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
-Strict layering, no upward imports: `m0-core` has zero dependencies, `m0-http` uses three functions from it, and `m0-datastar` imports nothing outside itself so the wire format stays usable on its own.
+Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`.
 
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · SSE with backpressure and `Last-Event-ID` reconnect replay.
 
 **Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor with `SO_REUSEPORT` (`M0_WORKERS=4`).
+
+## Datastar
+
+`m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.2 wire format, and
+`DatastarStream` connects it to the server. A handler holds one, wires the four SSE hooks
+through it, and broadcasts after a mutation:
+
+```mojo
+struct CounterHandler(HTTPService):
+    var count: Int
+    var stream: DatastarStream
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        if req.uri.path == "/events":
+            return self.stream.open(req, "/events")       # opens the SSE stream
+        if req.uri.path == "/increment":
+            self.count += 1
+            _ = self.stream.patch_signals(                 # reaches every open tab
+                "/events", '{"count":' + String(self.count) + "}"
+            )
+            return HTTPResponse(body_bytes=String("").as_bytes(), status_code=204)
+        ...
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        return self.stream.drain(slot)
+    def sse_is_streaming(self, slot: Int) -> Bool:
+        return self.stream.is_streaming(slot)
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.stream.closed(slot)
+```
+
+`read_signals(req)` is the other direction — the browser posts its whole signal store, as a
+`datastar` query parameter on GET and as the body otherwise.
+
+Run [apps/datastar_counter/](apps/datastar_counter/) with `uv run poe serve-counter` and open
+it in two tabs; pressing a button in one updates the other.
+
+**SSE needs `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only the non-blocking
+event loop assigns `req.slot_id` and drains the outbox; the plain accept loop leaves
+`slot_id` at `-1` and every stream open answers `409`.
 
 ## Status and limits
 
@@ -80,15 +120,17 @@ Strict layering, no upward imports: `m0-core` has zero dependencies, `m0-http` u
 - Pre-1.0: the API will break.
 - **SSE fan-out is single-process.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry, so a push on one worker never reaches subscribers on another.
 - **No server-side timer hook.** Every push must be triggered by an inbound request.
-- `m0-datastar` currently ships the wire format only; the glue that drives it from `SSERegistry` is not written yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+- No SSE replay across restarts. `DatastarStream` ignores `Last-Event-ID` because event ids restart per process; `PatchJournal` is the building block if you need it.
 
 ## Development
 
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 196 unit tests
+uv run poe test-all         # 222 unit tests, then compiles every example
+uv run poe serve-counter    # the Datastar demo on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
+uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe bench-core       # benchmark m0-core hot paths
 ```
 

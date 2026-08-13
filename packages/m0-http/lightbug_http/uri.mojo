@@ -1,4 +1,4 @@
-from hashlib.hash import Hasher
+from std.hashlib.hash import Hasher
 
 from lightbug_http.io.bytes import ByteReader, Bytes, ByteView
 from lightbug_http.strings import find_all, http, https, strHttp10, strHttp11

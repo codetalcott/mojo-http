@@ -210,14 +210,24 @@ def execute_script(
     )
 
 
-def redirect(location: String) -> String:
+def redirect(
+    location: String,
+    event_id: String = "",
+    retry_duration: Int = -1,
+) -> String:
     """Generate a redirect event that navigates to a new URL.
 
     Args:
         location: URL or path to redirect the client to.
+        event_id: Optional SSE event ID.
+        retry_duration: Optional SSE retry duration in ms.
     """
     var buf = List[UInt8](capacity=64)
     _buf_write(buf, "setTimeout(() => window.location = '")
     _buf_write(buf, location)
     _buf_write(buf, "')")
-    return execute_script(_buf_to_string(buf^))
+    return execute_script(
+        _buf_to_string(buf^),
+        event_id=event_id,
+        retry_duration=retry_duration,
+    )

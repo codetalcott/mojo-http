@@ -1,4 +1,10 @@
-"""`m0-datastar`: Datastar SSE protocol for Mojo (v1.0.2)."""
+"""`m0-datastar`: Datastar SSE protocol for Mojo (v1.0.2).
+
+Two layers. `consts` and `sse` are the pure wire format with no dependencies —
+usable on their own to generate Datastar frames for any transport. `stream` and
+`signals` connect that format to this framework's HTTP server, and are the only
+parts that depend on `m0_http` and `lightbug_http`.
+"""
 
 from .consts import (
     VERSION,
@@ -30,4 +36,12 @@ from .consts import (
     NS_MATHML,
     js_bool,
 )
-from .sse import patch_elements, patch_signals, execute_script, redirect
+from .sse import (
+    patch_elements,
+    patch_signals,
+    execute_script,
+    redirect,
+    split_data_lines,
+)
+from .stream import DatastarStream
+from .signals import read_signals, SIGNALS_QUERY_PARAM, EMPTY_SIGNALS

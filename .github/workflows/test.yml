@@ -51,12 +51,20 @@ jobs:
       # Exercises the m0-http <-> lightbug_http cycle end to end: the binary
       # only runs if lightbug_http/event_loop.mojo's `from m0_http.log import
       # log_access` resolves against m0_http.mojoc at run time.
+      - name: Compile every example app
+        run: uv run poe build-apps
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
+      # Proves the Datastar path end to end: a POST on one connection reaches a
+      # different client's open SSE stream, single-framed and in spec order.
+      - name: Smoke test the Datastar counter
+        run: uv run poe smoke-counter
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: hello-log-${{ matrix.os }}
-          path: hello.log
+          name: server-logs-${{ matrix.os }}
+          path: |
+            hello.log
+            counter.log
           if-no-files-found: ignore

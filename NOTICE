@@ -35,6 +35,8 @@ lightbug_http
       - Null UnsafePointer construction via unsafe_from_address=0
       - Forward compatibility with Mojo 1.1; migration off deprecated
         memory/origin APIs
+      - uri.mojo: implicit `hashlib` stdlib import corrected to `std.hashlib`,
+        which any consumer importing the compiled package needed
 
     For the modification history carried into this repository (15 commits):
         git log -- packages/m0-http/lightbug_http

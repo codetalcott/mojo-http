@@ -5,7 +5,7 @@ queues outbound data for the event loop to drain.
 Parallel arrays indexed by slot_id (SoA pattern).
 """
 
-from .format import format_sse_event_bytes
+from .format import format_sse_event_bytes, NO_EVENT_ID
 
 # Backpressure: drop events if a slot's pending buffer exceeds this size.
 comptime MAX_PENDING_BYTES = 65536
@@ -52,15 +52,62 @@ struct SSERegistry:
     def notify(mut self, url: String, event_id: Int, event_type: String, data: String):
         """Push an SSE event to all slots subscribed to the given URL.
 
+        Frames the event in this module's wire format. Producers with their own
+        framing rules should use `notify_frame` instead.
+
         Drops events if the pending buffer exceeds MAX_PENDING_BYTES.
         """
-        var event_bytes = format_sse_event_bytes(event_id, event_type, data)
+        self.notify_frame(url, event_id, format_sse_event_bytes(event_id, event_type, data))
+
+    def notify_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        """Queue a pre-formatted SSE frame verbatim for every slot on `url`.
+
+        Unlike `notify`, the caller owns the wire format: `frame` must already
+        be a complete SSE frame including the terminating blank line. This is
+        what producers with their own framing rules need — Datastar, for one,
+        mandates `event:` before `id:`, the opposite of `format_sse_event`.
+
+        `event_id` still drives redelivery suppression exactly as `notify` does,
+        so a reconnecting client does not replay what it already has. Pass
+        `NO_EVENT_ID` for frames carrying no `id:` line: those always deliver
+        and never advance the slot's last-seen id, which keeps an unnumbered
+        heartbeat or comment from masking a real event.
+
+        Backpressure applies either way — a frame that would push a slot past
+        MAX_PENDING_BYTES is dropped for that slot alone.
+        """
         for slot in range(self._capacity):
             if self.is_streaming[slot] and self.filter_urls[slot] == url:
-                if event_id > self.last_event_ids[slot]:
-                    if len(self.pending_bufs[slot]) + len(event_bytes) <= MAX_PENDING_BYTES:
-                        self.pending_bufs[slot].extend(Span(event_bytes))
-                        self.last_event_ids[slot] = event_id
+                var deliver = event_id == NO_EVENT_ID or event_id > self.last_event_ids[slot]
+                if deliver:
+                    if len(self.pending_bufs[slot]) + len(frame) <= MAX_PENDING_BYTES:
+                        self.pending_bufs[slot].extend(Span(frame))
+                        if event_id != NO_EVENT_ID:
+                            self.last_event_ids[slot] = event_id
+
+    def has_subscribers(self, url: String) -> Bool:
+        """Whether any slot is streaming for `url`.
+
+        Lets a handler skip an expensive render when nobody is listening.
+        """
+        for slot in range(self._capacity):
+            if self.is_streaming[slot] and self.filter_urls[slot] == url:
+                return True
+        return False
+
+    def subscriber_count(self, url: String) -> Int:
+        """Number of slots streaming for `url`."""
+        var count = 0
+        for slot in range(self._capacity):
+            if self.is_streaming[slot] and self.filter_urls[slot] == url:
+                count += 1
+        return count
+
+    def is_slot_streaming(self, slot: Int) -> Bool:
+        """Whether a slot is in SSE streaming mode. Bounds-safe."""
+        if slot < 0 or slot >= self._capacity:
+            return False
+        return self.is_streaming[slot]
 
     def has_pending(self, slot: Int) -> Bool:
         """Check if a slot has outbound SSE data waiting to be sent."""
