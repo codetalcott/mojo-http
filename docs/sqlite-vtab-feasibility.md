@@ -81,13 +81,51 @@ type system enforces — not a documented convention — before it ships.** That
 the open design question, and it is the reason the spike lives in
 `experiments/` rather than `packages/`.
 
-## Also unverified
+## Portability of the struct offsets — checked
 
-Everything above is x86-64 Linux. The struct offsets are LP64 assumptions
-(`sqlite3_index_info` word indices, a 12-byte `sqlite3_index_constraint`, an
-8-byte `sqlite3_index_constraint_usage`). They need checking on macOS/aarch64
-before anyone trusts them — this repo has already been bitten once by an
-x86-64-only struct layout (`lightbug_http/c/epoll.mojo:48-70`).
+The spike treats four SQLite structs as flat word buffers, so its correctness
+rests on offsets the Mojo compiler cannot see. Those are now re-derived from the
+real headers via `offsetof` and asserted at compile time in
+[`experiments/sqlite-vtab/verify_layout.c`](../experiments/sqlite-vtab/verify_layout.c):
+
+| Target | Result |
+|---|---|
+| `x86_64-linux-gnu` | pass |
+| `aarch64-linux-gnu` | pass |
+| `arm64-apple-macos` | pass |
+| `aarch64-unknown-linux-musl` | pass |
+| `i386-linux-gnu` | **fails, as intended** |
+
+Every offset is identical across the three 64-bit targets — `sqlite3_module`
+slots, the `sqlite3_index_info` word indices, the 12-byte
+`sqlite3_index_constraint`, the 8-byte `sqlite3_index_constraint_usage`, and the
+one-word `sqlite3_vtab_cursor`. That is the expected outcome (all the fields are
+naturally aligned and LP64 is LP64), but it is the kind of thing this repo has
+been burned assuming: `lightbug_http/c/epoll.mojo:48-70` documents a layout that
+was right on x86-64 and silently corrupted every event on aarch64.
+
+Two controls establish the check is not vacuous. The i386 build fails on the
+pointer-width and module-slot assertions, and `long double` measures 16 bytes on
+`x86_64-linux-gnu` but 8 on `arm64-apple-macos` — so clang really is applying
+per-target ABI rules during semantic analysis, not reusing the host's.
+
+The Mojo side also cross-compiles: `mojo build --target-triple
+aarch64-unknown-linux-gnu --emit object` on `spike_s2.mojo` produces a valid
+aarch64 ELF object.
+
+## Still unverified
+
+- **Execution on aarch64.** No qemu-user and no aarch64 runner here, so the
+  layout is proven but the runtime is not. Specifically untested: whether Mojo's
+  `abi("C")` lowering is correct under AAPCS, and how the vtab interacts with
+  macOS's system SQLite (which already diverges from Linux's on
+  `sqlite3_step` past `SQLITE_DONE` — see `stmt.mojo`). The related open Mojo
+  bug modular/modular#6567 is SysV-specific and concerns by-value aggregates;
+  every callback here passes only pointers and ints, so it should not apply, but
+  the AAPCS equivalent has not been exercised.
+- **macOS's own `sqlite3.h`.** The `arm64-apple-macos` check compiled against
+  the Linux SQLite 3.45.1 headers installed here, since no macOS SDK is present.
+  It validates the ABI rules, not Apple's header text.
 
 ## Scope note
 

@@ -57,6 +57,25 @@ The `sqlite3_module`, `sqlite3_vtab`, `sqlite3_vtab_cursor`, and
 Mojo structs, following `lightbug_http/c/epoll.mojo` — a struct whose size is
 wrong by four bytes corrupts everything downstream in silence.
 
+## Checking the offsets
+
+Because those buffers encode offsets the Mojo compiler cannot see,
+`verify_layout.c` re-derives every one of them from the real headers and fails
+the build on any mismatch. It needs no linker, sysroot, or runner:
+
+```bash
+for t in x86_64-linux-gnu aarch64-linux-gnu arm64-apple-macos; do
+  clang -fsyntax-only -target $t experiments/sqlite-vtab/verify_layout.c && echo "$t OK"
+done
+clang -fsyntax-only -target i386-linux-gnu experiments/sqlite-vtab/verify_layout.c \
+  && echo "BUG: i386 should have failed"
+```
+
+All three 64-bit targets pass with identical offsets; i386 fails, which is what
+shows the assertions are live. Add a triple there rather than assuming that
+"64-bit is 64-bit" — see `docs/sqlite-vtab-feasibility.md` for what this does
+and does not establish.
+
 ## The hazard these spikes exposed
 
 `sqlite3_bind_pointer` lends SQLite raw Mojo memory for the life of the
