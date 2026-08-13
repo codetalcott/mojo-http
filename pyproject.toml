@@ -180,6 +180,18 @@ echo "smoke-counter OK"
 help = "Benchmark m0-core hot paths"
 cmd = "mojo packages/m0-core/run_benchmarks.mojo"
 
+# Built and run rather than `mojo run`, for the same libsqlite3 linking reason
+# as test-sqlite above. Not part of test-all — neither is bench-core.
+[tool.poe.tasks.bench-sqlite]
+help = "Benchmark m0-sqlite read-out (links libsqlite3)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 \
+  packages/m0-sqlite/bench_sqlite.mojo -o "$out/bench_sqlite" || exit 1
+"$out/bench_sqlite"
+"""
+
 # --- Toolchain -------------------------------------------------------------
 
 [tool.poe.tasks.mojo-pin]
