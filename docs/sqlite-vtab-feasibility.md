@@ -58,7 +58,7 @@ The ingest win is real because it collapses 3N `sqlite3_bind_*`/`step`/`reset`
 calls plus N statement resets into a single `step` that pulls rows through
 `xColumn`. The ratio holds flat across a 20x change in row count.
 
-## The blocker
+## The blocker, and how it was resolved
 
 `sqlite3_bind_pointer` lends SQLite raw Mojo memory for the life of the
 statement, and Mojo frees a value at its **last syntactic use** — which is
@@ -74,12 +74,31 @@ This does not crash. The allocator writes a freelist pointer into the block's
 first word, so element 0 returns a heap address and every other element is
 fine — it surfaced as a wrong `sum` beside a correct `count(*)`.
 
-Every binder in `m0-sqlite` today passes `SQLITE_TRANSIENT` precisely so no
-Mojo buffer has to outlive a call (`ffi.mojo:44-47`). A pointer-binding API
-breaks that invariant, and the failure is silent. **This needs a borrow the
-type system enforces — not a documented convention — before it ships.** That is
-the open design question, and it is the reason the spike lives in
-`experiments/` rather than `packages/`.
+**A guard object does not fix this.** The guard would itself be destroyed at
+its own last use, still before the step. Its destructor could unbind, turning
+freed memory into an empty result — safe, but silently wrong, which is barely
+an improvement.
+
+What does fix it is shape. The array is passed as an **argument to the call
+that also finishes the statement**, so it is alive for the whole call by
+construction and there is nothing for a caller to hold correctly:
+
+```mojo
+db.register_array_module()
+var ins = db.prepare("INSERT INTO t SELECT value FROM m0_array(?1)")
+ins.execute_over(1, values)     # binds, steps to completion, unbinds
+```
+
+The binding is dropped before returning, so a later `step` on the same
+statement sees an empty table rather than a stale pointer. The cost is that
+these calls do not compose with incremental stepping — the right way round for
+bulk ingest, which was the case worth having.
+
+Shipped in `packages/m0-sqlite/src/vtab.mojo` with `Statement.execute_over` and
+`Statement.fetch_ints_over`, opt-in per connection via
+`Connection.register_array_module`, covered by 20 tests. The single-column
+`IN`-clause path came along for free, as predicted; it is still not the reason
+to use this.
 
 ## Portability of the struct offsets — checked
 

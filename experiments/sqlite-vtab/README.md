@@ -1,8 +1,15 @@
 # SQLite virtual tables in pure Mojo — feasibility spike
 
-Working code, not shipped code. Nothing here is built by `build-all` or picked
-up by any `test-*` glob; `packages/` does not import it. Findings and the
-verdict live in [docs/sqlite-vtab-feasibility.md](../../docs/sqlite-vtab-feasibility.md).
+**These are the spikes that led to the shipped implementation, kept for the
+record. For working code, use `packages/m0-sqlite/src/vtab.mojo`** —
+`m0_array(?)`, with the borrow enforced by `Statement.execute_over` and
+`Statement.fetch_ints_over`. The spikes here bind arrays unsafely on purpose
+(each carries an explicit `_ = len(data)` keep-alive, which is a demonstration
+crutch rather than an API) and should not be copied.
+
+Nothing here is built by `build-all` or picked up by any `test-*` glob;
+`packages/` does not import it. Findings and the verdict live in
+[docs/sqlite-vtab-feasibility.md](../../docs/sqlite-vtab-feasibility.md).
 
 The question was whether to port SQLite's `ext/misc/carray.c` and modify it to
 read Mojo struct memory. The answer turned out to be that no C is needed at
@@ -95,6 +102,10 @@ reads correctly — which is exactly how it presented: `sum` was garbage while
 after the step, which is a demonstration crutch, not an API.
 
 Every existing binder in `m0-sqlite` passes `SQLITE_TRANSIENT` so that no Mojo
-buffer ever has to outlive a call. A pointer-binding API breaks that invariant
-and needs a real answer — a borrow that the type system enforces — before any
-of this belongs in `packages/`.
+buffer ever has to outlive a call. A pointer-binding API breaks that invariant.
+
+The shipped answer is not a guard object — a guard dies at its own last use,
+still before the step, and unbinding from its destructor would trade freed
+memory for a silently empty result. Instead the array is an argument to the
+call that also finishes the statement, so it cannot be dead while bound. See
+`packages/m0-sqlite/src/stmt.mojo`.

@@ -28,6 +28,7 @@ from .ffi import (
     errstr,
 )
 from .stmt import Statement
+from .vtab import _register
 
 
 comptime MEMORY = ":memory:"
@@ -161,6 +162,22 @@ struct Connection(Movable):
         """Text of the most recent error on this connection."""
         var p = external_call["sqlite3_errmsg", CharPtr](self._handle)
         return cstr_to_string(p, cstr_len(p))
+
+    def register_array_module(mut self) raises:
+        """Make `m0_array(?)` available on this connection.
+
+        A table-valued function that streams a Mojo `List` without copying it,
+        so N rows can be inserted with one `sqlite3_step`:
+
+            db.register_array_module()
+            var ins = db.prepare("INSERT INTO t SELECT value FROM m0_array(?1)")
+            ins.execute_over(1, values)
+
+        Per connection, not per process, and not done by default — it is only
+        worth its cost if you use it. Arrays may only be bound through the
+        `Statement.*_over` helpers; see the note above them for why.
+        """
+        _register(self._handle)
 
     def close(mut self) raises:
         """Close early. Idempotent; `__deinit__` also closes.
