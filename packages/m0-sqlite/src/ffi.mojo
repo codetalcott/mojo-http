@@ -51,6 +51,31 @@ comptime SQLITE_TRANSIENT: Int = -1
 
 comptime CharPtr = UnsafePointer[UInt8, MutAnyOrigin]
 
+comptime MAX_C_INT: Int = 2147483647
+"""Largest length expressible in the `int` parameters SQLite takes.
+
+Lengths are passed to `sqlite3_bind_text`, `sqlite3_bind_blob` and
+`sqlite3_prepare_v2` as C `int`. Past this, the cast wraps negative — and a
+negative length is not merely wrong, it is *meaningful*: `sqlite3_bind_text`
+reads it as "scan to the first NUL", on a Mojo `String` that has no guaranteed
+NUL. The read then runs off the end of the buffer. Callers get an error
+instead.
+"""
+
+
+def check_c_int_length(what: String, length: Int) raises:
+    """Reject a length that would wrap when narrowed to C `int`."""
+    if length > MAX_C_INT:
+        raise Error(
+            "sqlite3_"
+            + what
+            + ": "
+            + String(length)
+            + " bytes exceeds the "
+            + String(MAX_C_INT)
+            + "-byte limit of SQLite's int length parameter"
+        )
+
 
 def cstr_to_string(p: CharPtr, length: Int) -> String:
     """Build a String from a pointer plus an explicit length.
@@ -92,8 +117,7 @@ def c_string(s: String) -> List[UInt8]:
     """
     var b = s.as_bytes()
     var out = List[UInt8](capacity=len(b) + 1)
-    for i in range(len(b)):
-        out.append(b[i])
+    out.extend(b)  # bulk copy: a byte-at-a-time loop here cost 40x at 4 KB
     out.append(0)
     return out^
 
@@ -121,3 +145,60 @@ def errstr(code: Int) -> String:
     """English text for a primary result code, independent of any connection."""
     var p = external_call["sqlite3_errstr", CharPtr](c_int(code))
     return cstr_to_string(p, cstr_len(p))
+
+
+def db_errmsg(db_handle: Int) -> String:
+    """Text of the most recent error on a connection handle.
+
+    Far more specific than `errstr`, which only knows the result code:
+    "UNIQUE constraint failed: users.name" versus "constraint failed".
+    """
+    if db_handle == 0:
+        return String("")
+    var p = external_call["sqlite3_errmsg", CharPtr](db_handle)
+    return cstr_to_string(p, cstr_len(p))
+
+
+def db_errcode(db_handle: Int) -> Int:
+    """Result code of the most recent failed API call on a connection."""
+    if db_handle == 0:
+        return SQLITE_OK
+    return Int(external_call["sqlite3_errcode", c_int](db_handle))
+
+
+def stmt_errmsg(stmt_handle: Int, rc: Int) -> String:
+    """Message for `rc` from the connection owning a statement, or "" if unsure.
+
+    `sqlite3_db_handle` recovers the owning `sqlite3*` from the statement, so
+    `Statement` gets SQLite's real message without storing a connection handle
+    and without any question about which of the two owns the other.
+
+    The corroboration check is not paranoia. Mojo destroys a value at its last
+    use, so a `Connection` whose last mention was `prepare()` is already closed
+    by the time the statement fails — the statement keeps working (close_v2
+    leaves the connection alive until its statements finalize) but the closed
+    connection answers SQLITE_MISUSE to every question. Reporting that would
+    turn a true "UNIQUE constraint failed: u.name" into a false "bad parameter
+    or other API misuse". So the message is used only when the connection's own
+    error code agrees with the code being described; otherwise the caller falls
+    back to `errstr`, which is less specific but always true.
+    """
+    if stmt_handle == 0:
+        return String("")
+    var db = external_call["sqlite3_db_handle", Int](stmt_handle)
+    if db_errcode(db) != rc:
+        return String("")
+    return db_errmsg(db)
+
+
+def describe(what: String, rc: Int, detail: String) -> String:
+    """Uniform error text: SQLite's own message when it has one, else the code.
+
+    `sqlite3_errmsg` reports "not an error" when nothing failed on the
+    connection, which is worse than useless in an error message, so that case
+    falls back to `errstr` too.
+    """
+    var msg = detail
+    if len(msg.as_bytes()) == 0 or msg == "not an error":
+        msg = errstr(rc)
+    return "sqlite3_" + what + " failed: " + msg + " (rc=" + String(rc) + ")"

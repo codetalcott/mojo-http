@@ -8,8 +8,15 @@ an in-memory-only suite would never have caught it.
 
 from std.os import remove, mkdir, path
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
+from std.time import perf_counter_ns
 
-from src import Connection, open, open_readonly, open_memory
+from src import (
+    Connection,
+    open,
+    open_readonly,
+    open_memory,
+    DEFAULT_BUSY_TIMEOUT_MS,
+)
 
 
 comptime DIR = "/tmp/m0-sqlite-test"
@@ -140,6 +147,116 @@ def test_two_connections_see_each_other() raises:
 
     r.close()
     w.close()
+    _cleanup(p)
+
+
+# --- Busy handling -----------------------------------------------------------
+#
+# Without a busy handler SQLite fails a contended write instantly. These pin
+# down that a handler is installed and that it actually waits.
+
+def test_open_installs_the_default_busy_timeout() raises:
+    var p = _fresh("busydefault")
+    var db = open(p)
+    var q = db.prepare("PRAGMA busy_timeout")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), DEFAULT_BUSY_TIMEOUT_MS)
+    q.finalize()
+
+    var ro = open_readonly(p)
+    var q2 = ro.prepare("PRAGMA busy_timeout")
+    assert_true(q2.step())
+    assert_equal(q2.column_int(0), DEFAULT_BUSY_TIMEOUT_MS)
+    q2.finalize()
+
+    ro.close()
+    db.close()
+    _cleanup(p)
+
+
+def test_busy_timeout_waits_before_giving_up() raises:
+    """A contended write must wait out the timeout, not fail on contact."""
+    var p = _fresh("busywait")
+    var writer = open(p)
+    writer.execute("CREATE TABLE t (v INTEGER)")
+
+    var other = open(p)
+    other.busy_timeout(300)
+
+    writer.begin_immediate()
+    writer.execute("INSERT INTO t VALUES (1)")
+
+    var t0 = perf_counter_ns()
+    with assert_raises():
+        other.execute("INSERT INTO t VALUES (2)")
+    var waited_ms = (perf_counter_ns() - t0) // 1_000_000
+
+    writer.rollback()
+    assert_true(
+        waited_ms >= 250,
+        "expected a wait of about 300ms, waited " + String(waited_ms) + "ms",
+    )
+
+    # And the write succeeds once the lock is released.
+    other.execute("INSERT INTO t VALUES (2)")
+    var q = other.prepare("SELECT COUNT(*) FROM t")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 1)
+    q.finalize()
+
+    other.close()
+    writer.close()
+    _cleanup(p)
+
+
+def test_busy_timeout_can_be_cleared() raises:
+    """A non-positive value restores SQLite's fail-immediately default."""
+    var p = _fresh("busyclear")
+    var writer = open(p)
+    writer.execute("CREATE TABLE t (v INTEGER)")
+
+    var other = open(p)
+    other.busy_timeout(0)
+    writer.begin_immediate()
+    writer.execute("INSERT INTO t VALUES (1)")
+
+    var t0 = perf_counter_ns()
+    with assert_raises():
+        other.execute("INSERT INTO t VALUES (2)")
+    var waited_ms = (perf_counter_ns() - t0) // 1_000_000
+
+    writer.rollback()
+    assert_true(
+        waited_ms < 100, "expected no wait, waited " + String(waited_ms) + "ms"
+    )
+    other.close()
+    writer.close()
+    _cleanup(p)
+
+
+def test_mmap_size_is_opt_in() raises:
+    """open() must not enable mmap; asking for it must work.
+
+    Not a default because mmap turns a disk error into a SIGBUS — see
+    docs/SQLITE_PERFORMANCE.md.
+    """
+    var p = _fresh("mmap")
+    var db = open(p)
+    assert_equal(db.query_scalar("PRAGMA mmap_size"), "0")
+
+    db.mmap_size(67108864)
+    var got = Int(db.query_scalar("PRAGMA mmap_size"))
+    assert_true(got > 0, "mmap_size did not take")
+    db.close()
+    _cleanup(p)
+
+
+def test_open_reports_wal_it_could_not_apply() raises:
+    """open() promises WAL; if SQLite disagrees it must say so, not proceed."""
+    var p = _fresh("walok")
+    var db = open(p)
+    assert_equal(db.query_scalar("PRAGMA journal_mode"), "wal")
+    db.close()
     _cleanup(p)
 
 

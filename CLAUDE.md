@@ -10,7 +10,7 @@ private monorepo; see [PROVENANCE.md](PROVENANCE.md).
 ```
 m0-core     (zero deps)   hashing, JSON escape, JSON parse
 └── m0-http               router, negotiation, ETag, cache, SSE, auth, CORS, health
-    └── lightbug_http     the forked HTTP server (vendored inside m0-http)
+    └── lightbug_http     the forked HTTP server (lives inside m0-http)
 m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
 m0-wsgi                   WSGI host — embeds CPython, layers on m0-http
 m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
@@ -45,10 +45,34 @@ flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
 `Movable` but not `Copyable` on purpose: copying would duplicate a handle and
 the second destructor would double-free. Do not add `Copyable`.
 
+Three m0-sqlite invariants that look like bugs and are not:
+
+- **`reset` and `finalize` discard their result code.** SQLite returns the
+  *previous* evaluation's error there, so raising on it makes recovery after a
+  failed `step` impossible and turns cleanup into a second exception.
+- **Every close path uses `close_v2`.** That is what lets a `Statement` outlive
+  the `Connection` that made it, which Mojo's destroy-at-last-use makes routine.
+  `sqlite3_close` would break it silently.
+- **Error text is only trusted when `sqlite3_errcode` corroborates the code.**
+  A closed connection answers `SQLITE_MISUSE` to everything, and reporting that
+  would replace a true constraint error with a false one.
+
+Performance findings, with numbers, are in
+[docs/SQLITE_PERFORMANCE.md](docs/SQLITE_PERFORMANCE.md) — batch writes in a
+transaction (46x), `mmap_size` (40% on large random reads), `json_each` for
+variable-length `IN` lists, and why `carray()` is unavailable and would not take
+a `List[Struct]` anyway.
+
 There is one cycle, and it is intentional: `m0-http/src/{cors,signal,auth,
 multiworker}.mojo` import from `lightbug_http`, and `lightbug_http/event_loop.mojo`
 imports `m0_http.log`. Both sides live inside `packages/m0-http/`, so the cycle
 never crosses a package boundary.
+
+`m0-core/src/ffi/` holds C-ABI exports for foreign callers (Bun `dlopen`,
+N-API). `@export` cannot be applied to a parametric function, so those entry
+points name a concrete pointer origin rather than inferring one, and Mojo-side
+callers must erase the origin explicitly — see `test_ffi_exports.mojo`. No task
+emits the shared object yet ([docs/ROADMAP.md](docs/ROADMAP.md)).
 
 ## The lightbug fork
 
@@ -72,6 +96,23 @@ uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe test-sqlite      # needs libsqlite3 on the system
 ```
 
+One test file, without going through poe — the `-I` chain mirrors the package's
+dependencies. `mojo` lives in `.venv`, so every invocation needs `uv run`
+(or an activated venv):
+
+```bash
+uv run mojo run -I packages/m0-core -I packages/m0-http \
+  packages/m0-http/test/test_router.mojo
+
+# m0-sqlite is the exception: build, then run. Never `mojo run` — see below.
+uv run mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 \
+  packages/m0-sqlite/test/test_sqlite.mojo -o /tmp/t && /tmp/t
+```
+
+Tests are `std.testing`: `test_*` functions in a `test_*.mojo`, dispatched by
+`TestSuite.discover_tests[__functions_in_module()]().run()` in `main()`. Adding
+a test means adding a function — there is no registration list to update.
+
 A `.mojoc` is locked to the exact compiler version that produced it. After any
 toolchain change run `build-all`, or you get:
 
@@ -84,6 +125,61 @@ stale artifacts appear as unresolved imports in the editor. If *every* prelude
 type (`String`, `List`, …) reports "unable to locate module 'std'", the LSP is
 running a different Mojo than `uv.lock` pins — that is an editor problem, not a
 code problem; check with the compiler before believing it.
+
+**On a nightly, every task needs `--no-sync`.** `poe nightly-try` swaps the
+venv's toolchain without touching `uv.lock`; a plain `uv run` re-syncs the venv
+and silently puts you back on stable, so `uv run poe test-all` after
+`nightly-try` reports a green *stable* run and the canary means nothing. Use
+`uv run --no-sync poe <task>` until `poe nightly-restore`.
+
+CI lives in `.github/workflows/test.yml` and is named `Tests`;
+`dependabot-automerge.yml` triggers on that exact name, so renaming the workflow
+silently disables auto-merge. Both ignore `*.md` and `docs/**` — a doc-only
+change runs nothing.
+
+## Imports resolve two ways
+
+Inside a package's own `test/`, imports are `src.*`: `-I packages/m0-http` puts
+the package directory on the path, so `from src.router import Router` compiles
+that source directly and the package under test needs no rebuild.
+
+Everywhere else — across packages, and from `apps/` — imports are `m0_*` and
+resolve through the `.mojoc`. A change to `m0-core` is therefore invisible to
+`m0-http` until `build-core` runs.
+
+A `.mojoc` does not bundle its dependencies, so a consumer passes every `-I` in
+the chain, and apps add `-I apps/` for their own sibling modules
+(`datastar_counter.page`). The non-obvious case: `apps/hello/server.mojo`
+imports only `lightbug_http` yet still needs `-I packages/m0-core`, because the
+back-edge pulls it in — `event_loop.mojo` → `m0_http.log` →
+`m0_core.json_escape`.
+
+## The handler contract
+
+`HTTPService` (`lightbug_http/service.mojo`) has six methods and no defaults:
+`func`, `before_request`, `after_response`, and three SSE hooks —
+`sse_drain_slot`, `sse_is_streaming`, `sse_slot_disconnected`. A handler that
+does not stream returns the empty defaults. Adding a method to the trait breaks
+every handler in the repo at once: both apps, plus the five demo services inside
+`service.mojo` itself.
+
+**SSE requires `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only
+the non-blocking event loop assigns `req.slot_id` and drains the outbox; the
+plain accept loop leaves `slot_id` at `-1` and every stream open answers `409`.
+Slots index the registry directly, so a stream's capacity
+(`DatastarStream(1024)`) must be at least the server's max connections.
+
+## Runtime constraints
+
+Properties of the design, not defects to fix in passing:
+
+- **SSE fan-out is per-process.** `M0_WORKERS>1` forks, and each worker gets its
+  own subscriber registry, so a broadcast never reaches another worker's
+  subscribers.
+- **No server-side timer hook.** Every push must be triggered by an inbound
+  request.
+- Configuration is env vars, all `M0_`-prefixed: `M0_PORT`, `M0_BASE_URL`,
+  `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`.
 
 ## Mojo 1.0 patterns
 
