@@ -108,6 +108,15 @@ def libversion() -> String:
     return cstr_to_string(p, cstr_len(p))
 
 
+def libversion_number() -> Int:
+    """SQLite library version as an integer, e.g. 3045001 for "3.45.1".
+
+    Encoded by SQLite as major*1000000 + minor*1000 + patch, which is what
+    makes it comparable — the string form is not.
+    """
+    return Int(external_call["sqlite3_libversion_number", c_int]())
+
+
 def errstr(code: Int) -> String:
     """English text for a primary result code, independent of any connection."""
     var p = external_call["sqlite3_errstr", CharPtr](c_int(code))

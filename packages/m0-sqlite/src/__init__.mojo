@@ -18,6 +18,19 @@ be duplicated into a second owner.
     while q.step():
         print(q.column_int(0), q.column_text(1))   # columns are 0-based
 
+For bulk work there is `m0_array(?)`, an opt-in virtual table that streams a
+Mojo `List` into SQL without copying it, so N rows insert in one step rather
+than N (~3x on 10k and 200k rows):
+
+    db.register_array_module()
+    var ins = db.prepare("INSERT INTO t (name) SELECT value FROM m0_array(?1)")
+    ins.execute_over(1, values)
+
+Arrays are only bindable through `Statement.execute_over` / `fetch_ints_over`,
+which take the array as an argument and finish the statement before returning.
+That is not a convenience — it is what keeps the borrow safe; see the note
+above those methods in `stmt.mojo`.
+
 Depends on nothing else in this repo — it is a sibling of `m0-core` and
 `m0-http`, not a layer on top of them.
 """

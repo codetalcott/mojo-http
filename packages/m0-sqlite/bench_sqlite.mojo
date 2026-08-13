@@ -171,8 +171,48 @@ def bench_blob_scan(mut db: Connection, size: Int) raises:
     _report("column_blob_into (reused)  ", best_into)
 
 
+def bench_ingest(n: Int) raises:
+    """The per-row loop against one `INSERT ... SELECT` over `m0_array`."""
+    print("\n--- bulk ingest,", n, "rows ---")
+    var data = List[Int](length=n, fill=0)
+    for i in range(n):
+        data[i] = i * 3
+
+    var best_loop = 0
+    for r in range(5):
+        var db = open_memory()
+        db.execute("CREATE TABLE t (v INTEGER)")
+        var t0 = perf_counter_ns()
+        db.begin()
+        var ins = db.prepare("INSERT INTO t VALUES (?)")
+        for i in range(n):
+            ins.reset()
+            ins.bind_int(1, data[i])
+            _ = ins.step()
+        _ = ins^
+        db.commit()
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_loop:
+            best_loop = dt
+    print("  bind/step/reset loop      ", Float64(best_loop) / 1.0e6, "ms")
+
+    var best_vt = 0
+    for r in range(5):
+        var db = open_memory()
+        db.register_array_module()
+        db.execute("CREATE TABLE t (v INTEGER)")
+        var t0 = perf_counter_ns()
+        var ins = db.prepare("INSERT INTO t SELECT value FROM m0_array(?1)")
+        ins.execute_over(1, data)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_vt:
+            best_vt = dt
+    print("  INSERT..SELECT m0_array   ", Float64(best_vt) / 1.0e6, "ms")
+    print("  speedup                   ", Float64(best_loop) / Float64(best_vt), "x")
+
+
 def main() raises:
-    print("=== m0-sqlite read-out benchmarks (best of", REPS, ") ===")
+    print("=== m0-sqlite benchmarks (best of", REPS, ") ===")
 
     for size in [64, 4096]:
         var db = open_memory()
@@ -181,3 +221,6 @@ def main() raises:
             bench_int_scan(db)
             bench_float_scan(db)
         bench_blob_scan(db, size)
+
+    bench_ingest(10_000)
+    bench_ingest(200_000)
