@@ -132,10 +132,22 @@ and silently puts you back on stable, so `uv run poe test-all` after
 `nightly-try` reports a green *stable* run and the canary means nothing. Use
 `uv run --no-sync poe <task>` until `poe nightly-restore`.
 
-CI lives in `.github/workflows/test.yml` and is named `Tests`;
-`dependabot-automerge.yml` triggers on that exact name, so renaming the workflow
-silently disables auto-merge. Both ignore `*.md` and `docs/**` — a doc-only
-change runs nothing.
+CI lives in `.github/workflows/test.yml` and is named `Tests`. Both
+`dependabot-automerge.yml` and `label-automerge.yml` trigger on that exact
+name, so renaming the workflow silently disables both. `test.yml` ignores
+`*.md`, `docs/**` and `.claude/**` — a doc-only change runs nothing, and
+therefore never reaches the auto-merge workflows either.
+
+**`automerge` is a standing order.** A PR carrying that label merges itself as
+soon as `Tests` passes for its current head commit. The label is the gate and
+it is deliberately not a branch namespace: applying it needs write access, so
+a session can open work autonomously but cannot land it. Add the label when
+the work is meant to go in unattended; leave it off and the PR waits.
+
+Never reach for `gh pr merge --auto` here. GitHub's auto-merge only waits when
+a branch protection rule declares required status checks, and `main` is
+unprotected — so `--auto` merges immediately, before CI runs, while looking
+like it gated on CI.
 
 ## Imports resolve two ways
 

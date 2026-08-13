@@ -6,7 +6,8 @@ only ever manifested on a *path* argument, and only for some path lengths, so
 an in-memory-only suite would never have caught it.
 """
 
-from std.os import remove, mkdir, path
+from std.ffi import external_call, c_int
+from std.os import remove, mkdir, rmdir, path
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 from std.time import perf_counter_ns
 
@@ -19,7 +20,19 @@ from src import (
 )
 
 
-comptime DIR = "/tmp/m0-sqlite-test"
+def _dir() -> String:
+    """A scratch directory private to this test process.
+
+    Keyed to the pid rather than fixed, because a fixed path is shared state
+    that no amount of git isolation reaches: two sessions running `test-sqlite`
+    from separate worktrees still meet in the same `/tmp` directory, and the
+    second one's `_fresh` deletes databases the first is holding open. That is
+    a real configuration here — remote sessions spawn into their own worktrees
+    and can run concurrently.
+    """
+    return String("/tmp/m0-sqlite-test-") + String(
+        Int(external_call["getpid", c_int]())
+    )
 
 
 def _cleanup(db_path: String):
@@ -35,9 +48,10 @@ def _cleanup(db_path: String):
 
 def _fresh(name: String) raises -> String:
     """A clean database path under a directory that already exists."""
-    if not path.exists(DIR):
-        mkdir(DIR)
-    var p = String(DIR) + "/" + name + ".db"
+    var dir = _dir()
+    if not path.exists(dir):
+        mkdir(dir)
+    var p = dir + "/" + name + ".db"
     _cleanup(p)
     return p^
 
@@ -281,3 +295,11 @@ def test_transaction_rollback_survives_reopen() raises:
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
+    # Remove the per-process scratch directory. Deliberately after run(), so a
+    # failing suite leaves its databases behind to inspect.
+    var dir = _dir()
+    if path.exists(dir):
+        try:
+            rmdir(dir)
+        except:
+            pass
