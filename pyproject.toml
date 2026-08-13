@@ -72,9 +72,16 @@ done
 echo "all apps built"
 """
 
+# m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
+# m0-http, not a layer on them — so it needs no -I at build time, and consumers
+# need only -I packages/m0-sqlite. It links against the system libsqlite3.
+[tool.poe.tasks.build-sqlite]
+help = "Build m0-sqlite package"
+shell = "cd packages/m0-sqlite && mojo precompile src -o m0_sqlite.mojoc"
+
 [tool.poe.tasks.build-all]
 help = "Build all packages in dependency order"
-sequence = ["build-core", "build-http", "build-datastar"]
+sequence = ["build-core", "build-http", "build-datastar", "build-sqlite"]
 default_item_type = "ref"
 
 [tool.poe.tasks.clean]
@@ -95,9 +102,13 @@ shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-
 help = "Test m0-datastar"
 shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar \"$f\" || exit 1; done"
 
+[tool.poe.tasks.test-sqlite]
+help = "Test m0-sqlite (requires libsqlite3)"
+shell = "for f in packages/m0-sqlite/test/test_*.mojo; do mojo run -I packages/m0-sqlite \"$f\" || exit 1; done"
+
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "build-apps"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-sqlite", "build-apps"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

@@ -1,6 +1,6 @@
 # mojo-http
 
-`mojo-http` is an HTTP/1.1 server and a small web framework for [Mojo](https://docs.modular.com/mojo/): routing, content negotiation, ETags, response caching, and Server-Sent Events, with a [Datastar](https://data-star.dev/) adapter for hypermedia UIs.
+`mojo-http` is an HTTP/1.1 server and a small web framework for [Mojo](https://docs.modular.com/mojo/): routing, content negotiation, ETags, response caching, and Server-Sent Events, with a [Datastar](https://data-star.dev/) adapter for hypermedia UIs and SQLite bindings for storage.
 
 The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
 
@@ -61,8 +61,8 @@ The four `sse_*` hooks are the streaming interface; a handler that does not stre
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser | 59 |
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor | 107 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
-| `m0-sqlite` | Storage adapter — *planned, v0.2* | — |
-| **Total** | | **222** |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions | 30 |
+| **Total** | | **252** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -112,6 +112,44 @@ it in two tabs; pressing a button in one updates the other.
 event loop assigns `req.slot_id` and drains the outbox; the plain accept loop leaves
 `slot_id` at `-1` and every stream open answers `409`.
 
+## SQLite
+
+`m0-sqlite` is a thin, honest layer over the SQLite C API — no ORM, no query
+builder, no connection pool. It is a **sibling** of the HTTP packages, not a
+layer on them, and imports nothing else in this repo.
+
+```mojo
+from m0_sqlite import open_memory
+
+var db = open_memory()
+db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+
+var ins = db.prepare("INSERT INTO users (name) VALUES (?)")
+ins.bind_text(1, "ada")        # parameters are 1-based
+_ = ins.step()
+
+var q = db.prepare("SELECT id, name FROM users")
+while q.step():                # columns are 0-based
+    print(q.column_int(0), q.column_text(1))
+```
+
+`Connection` and `Statement` own their handles and release them on destruction.
+Both are `Movable` but **not** `Copyable`, so a handle cannot be duplicated into
+a second owner that would close it twice — move with `^` to transfer ownership.
+`open()` applies the pragmas a server actually wants: `journal_mode=WAL`,
+`synchronous=NORMAL`, `foreign_keys=ON`. Transactions are explicit
+(`begin` / `commit` / `rollback`); there is no scope guard, because Mojo has no
+`defer` and a destructor that rolled back would make correctness depend on drop
+order.
+
+**Linking.** libsqlite3 resolves with no link flags on macOS, where it lives in
+the dyld shared cache. On Linux the library must be installed — CI covers
+`ubuntu-latest`, so the matrix is the contract.
+
+**Not implemented:** statement caching. It was measured in the benchmark that
+chose SQLite and came out within noise at realistic row counts (~10% at N=50),
+so it is not worth the ownership complexity yet.
+
 ## Status and limits
 
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
@@ -120,6 +158,7 @@ event loop assigns `req.slot_id` and drains the outbox; the plain accept loop le
 - Pre-1.0: the API will break.
 - **SSE fan-out is single-process.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry, so a push on one worker never reaches subscribers on another.
 - **No server-side timer hook.** Every push must be triggered by an inbound request.
+- `m0-sqlite` has no statement cache and no connection pool; see above.
 - No SSE replay across restarts. `DatastarStream` ignores `Last-Event-ID` because event ids restart per process; `PatchJournal` is the building block if you need it.
 
 ## Development
@@ -127,7 +166,7 @@ event loop assigns `req.slot_id` and drains the outbox; the plain accept loop le
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 222 unit tests, then compiles every example
+uv run poe test-all         # 252 unit tests, then compiles every example
 uv run poe serve-counter    # the Datastar demo on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client

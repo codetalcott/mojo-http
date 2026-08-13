@@ -11,15 +11,21 @@ private monorepo; see [PROVENANCE.md](PROVENANCE.md).
 m0-core     (zero deps)   hashing, JSON escape, JSON parse
 └── m0-http               router, negotiation, ETag, cache, SSE, auth, CORS, health
     └── lightbug_http     the forked HTTP server (vendored inside m0-http)
-m0-datastar (zero deps)   Datastar SSE wire format
-m0-sqlite                 planned v0.2 — a SIBLING, never nested
+m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
+m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 ```
 
 **Zero upward imports.** `m0-core` depends on nothing. `m0-http` uses exactly
 three functions from `m0-core` (`wyhash64`, `format_hash64`,
-`escape_json_string`). `m0-datastar` imports nothing outside itself, on purpose,
-so the wire format is usable without the framework — do not add an `m0_http`
-import to `consts.mojo` or `sse.mojo`.
+`escape_json_string`). `m0-datastar` splits deliberately: `consts.mojo` and
+`sse.mojo` import nothing outside themselves so the wire format is usable
+without the framework — do not add an `m0_http` import to either — while
+`stream.mojo` and `signals.mojo` are the server glue and may.
+
+`m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
+flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
+`Movable` but not `Copyable` on purpose: copying would duplicate a handle and
+the second destructor would double-free. Do not add `Copyable`.
 
 There is one cycle, and it is intentional: `m0-http/src/{cors,signal,auth,
 multiworker}.mojo` import from `lightbug_http`, and `lightbug_http/event_loop.mojo`
@@ -44,6 +50,8 @@ uv run poe                  # list every task
 uv run poe build-all        # each package -> .mojoc, in dependency order
 uv run poe test-all         # builds first, then runs all tests
 uv run poe smoke-hello      # start hello, assert /health, stop
+uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
+uv run poe test-sqlite      # needs libsqlite3 on the system
 ```
 
 A `.mojoc` is locked to the exact compiler version that produced it. After any

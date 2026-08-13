@@ -9,6 +9,20 @@
 - `lightbug_http` — maintained hard fork (see [NOTICE](../NOTICE))
 - `m0-datastar` — Datastar v1.0.2 wire format, plus `DatastarStream` and
   `read_signals` to drive it from the server
+- `m0-sqlite` — SQLite bindings: connections, statements, typed columns,
+  transactions. A sibling package; imports nothing else here.
+
+### SQLite landed (done)
+
+Chosen over a bespoke store by a benchmark with byte-parity enforced before
+timing: marginally faster on JSON and HTML, 50x faster on point lookup, slower
+only on `vnd.siren+bin` where the incumbent read a pre-serialized file.
+
+Deliberately **not** built: a statement cache (measured within noise at
+realistic row counts, ~10% at N=50 — not worth the ownership complexity), and a
+materialized `+bin` cache (the only design that introduces a staleness failure
+mode, and the 76x it chases is serve-path only, with the rebuild cost simply
+moving to every write). Revisit either if a profile ever demands it.
 
 ### Datastar is wired (done)
 
@@ -20,21 +34,6 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
 `poe smoke-counter`, which fails if a frame is ever double-framed again.
 
 ## v0.2 (planned)
-
-### `m0-sqlite`
-
-A SQLite storage adapter, as a **sibling** package — never nested under
-`m0-http` or `m0-datastar`. Each package precompiles to its own `.mojoc` and
-resolves siblings by `-I ../m0-xxx/`, so nesting would break the convention, and
-coupling a database to a wire-format adapter is the kind of entanglement this
-repo was split out to avoid.
-
-Not started here. Prototype C-API bindings exist in the private monorepo
-(`external_call` against libsqlite3, opaque `Int` handles because Mojo 1.0
-pointers are non-null, explicit close/finalize with no `__del__` to avoid
-double-free on copy). Open questions: Linux linking (`-Xlinker -lsqlite3`;
-macOS resolves through the dyld shared cache with no link flags), and the
-threading model against `WorkerSupervisor`'s fork model.
 
 ### Examples
 
