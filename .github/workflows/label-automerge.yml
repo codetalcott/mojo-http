@@ -1,0 +1,84 @@
+name: Label auto-merge
+
+# Merges any PR labelled `automerge` once the Tests workflow has actually
+# passed for its head commit.
+#
+# Like dependabot-automerge.yml, this deliberately does NOT use
+# `gh pr merge --auto`. GitHub's auto-merge only waits when a branch protection
+# rule declares required status checks, and `main` here is unprotected — so
+# `--auto` would merge immediately, before CI had run, while *looking* like it
+# gated on CI. Triggering on workflow_run instead means this only fires after
+# Tests has reported success for the PR's head commit.
+#
+# The label is the authorization gate, and it is a real one: applying a label
+# requires triage or write access to this repository, so a PR author cannot
+# self-authorize a merge by pushing a branch. Nothing merges here that a human
+# with write access did not explicitly mark.
+#
+# Overlaps harmlessly with dependabot-automerge.yml: a Dependabot PR that also
+# carried the label would be merged by whichever job got there first, and the
+# other would find nothing to do.
+
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    steps:
+      - name: Resolve the PR and check for the label
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # workflow_run.pull_requests is unreliable, so resolve by head branch.
+          pr=$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" --state open \
+                 --json number,labels,headRefOid --jq '.[0]')
+          if [ -z "$pr" ]; then
+            echo "No open PR for $HEAD_BRANCH; nothing to do."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          number=$(printf '%s' "$pr" | jq -r '.number')
+          labelled=$(printf '%s' "$pr" | jq -r '[.labels[].name] | index("automerge") != null')
+          head=$(printf '%s' "$pr" | jq -r '.headRefOid')
+
+          if [ "$labelled" != "true" ]; then
+            echo "PR #$number is not labelled automerge; leaving it alone."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The run that just passed must describe the PR's current head.
+          # Without this, pushing a commit while CI ran on the previous one
+          # would merge code that was never tested.
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "PR #$number moved on ($head != $HEAD_SHA); waiting for the new run."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "PR #$number is green, labelled and current."
+          echo "merge=true" >> "$GITHUB_OUTPUT"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Merge
+        if: steps.pr.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: gh pr merge --repo "$REPO" "$NUMBER" --merge --delete-branch
