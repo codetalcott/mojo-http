@@ -266,13 +266,19 @@ struct Statement(Movable):
     # calling again. `max_rows < 0` means "until SQLITE_DONE".
     #
     # Exhaustion is signalled by a **short read**: a call that returns fewer
-    # than `max_rows` has hit the end of the result set. Do not probe for it by
-    # calling again — `sqlite3_step` auto-resets after SQLITE_DONE under
-    # `prepare_v2`, so the next call silently restarts the query from the top
-    # and `while fetch(...) > 0` never terminates. That is SQLite's behaviour,
-    # shared with the plain `while stmt.step():` loop; it is surfaced rather
-    # than hidden because hiding it would mean holding state that could
-    # disagree with the statement's own.
+    # than `max_rows` has hit the end of the result set. Never probe for it by
+    # calling again and expecting 0 — what happens when you step past
+    # SQLITE_DONE is not portable, and both outcomes are bad:
+    #
+    #   Linux (libsqlite3 3.45)  auto-resets and silently re-runs the query,
+    #                            so `while fetch(...) > 0` never terminates.
+    #   macOS (system SQLite)    returns SQLITE_MISUSE, which `step` raises.
+    #
+    # Measured, not assumed — CI caught the divergence. It is inherited from
+    # `sqlite3_step` and is equally present in the plain `while stmt.step():`
+    # loop. It is surfaced rather than papered over: hiding it would mean
+    # holding a "done" flag that could disagree with the statement's own state.
+    # Stop on the short read and this never arises.
 
     def fetch_ints(
         mut self, col: Int, mut out: List[Int], max_rows: Int = -1

@@ -217,12 +217,13 @@ def test_fetch_respects_max_rows_and_resumes() raises:
     assert_equal(out[9], 9)
 
 
-def test_fetching_past_exhaustion_restarts_the_query() raises:
-    """Pins SQLite's auto-reset so nobody writes `while fetch(...) > 0`.
+def test_fetching_past_exhaustion_is_never_a_quiet_zero() raises:
+    """Nobody may write `while fetch(...) > 0` — stop on the short read.
 
-    Under `prepare_v2`, stepping after SQLITE_DONE resets the statement and
-    runs the query again, so a fetch past the end returns rows rather than 0.
-    Callers must stop on a short read instead of probing for an empty one.
+    Stepping past SQLITE_DONE is not portable, and CI proved it: Linux's
+    libsqlite3 auto-resets and re-runs the query, while macOS's returns
+    SQLITE_MISUSE, which `step` raises. So this asserts only what holds on
+    both — it is never the quiet 0 that would make a `> 0` loop look correct.
     """
     var db = _numbers(3)
     var q = db.prepare("SELECT i FROM n ORDER BY i")
@@ -231,17 +232,27 @@ def test_fetching_past_exhaustion_restarts_the_query() raises:
     # A short read: 3 < 4, so this call consumed SQLITE_DONE.
     assert_equal(q.fetch_ints(0, out, max_rows=4), 3)
 
-    # Not 0 — the query has restarted from the top.
-    assert_equal(q.fetch_ints(0, out, max_rows=4), 3)
-    assert_equal(len(out), 6)
-    assert_equal(out[3], 0)
+    var again = 0
+    var raised = False
+    try:
+        again = q.fetch_ints(0, out, max_rows=4)
+    except:
+        raised = True  # SQLITE_MISUSE on this platform
 
-    # A call that stops on the cap has *not* seen DONE, so it resumes normally
-    # and the next call reports the genuine end.
-    q.reset()
-    var tail = List[Int]()
-    assert_equal(q.fetch_ints(0, tail, max_rows=3), 3)
-    assert_equal(q.fetch_ints(0, tail, max_rows=3), 0)
+    if not raised:
+        # Restarted from the top rather than reporting the end.
+        assert_equal(again, 3)
+        assert_equal(out[3], 0)
+
+
+def test_capped_fetch_resumes_and_then_reports_the_end() raises:
+    """A call that stops on the cap has not seen DONE, so this stays portable."""
+    var db = _numbers(3)
+    var q = db.prepare("SELECT i FROM n ORDER BY i")
+    var out = List[Int]()
+    assert_equal(q.fetch_ints(0, out, max_rows=3), 3)
+    assert_equal(q.fetch_ints(0, out, max_rows=3), 0)
+    assert_equal(len(out), 3)
 
 
 def test_fetch_on_empty_result_appends_nothing() raises:
