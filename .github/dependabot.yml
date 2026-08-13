@@ -1,0 +1,48 @@
+version: 2
+
+updates:
+  # Mojo toolchain + Python deps. Dependabot reads pyproject.toml and updates
+  # uv.lock natively. Note it only bumps direct dependencies declared in
+  # pyproject.toml — transitive pins in uv.lock ride along with those.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # One PR for the whole toolchain rather than one per package: `mojo` pulls
+    # mojo-compiler, mojo-lldb-libs and mblack in lockstep, and they must move
+    # together anyway.
+    groups:
+      mojo-toolchain:
+        patterns:
+          - "mojo"
+          - "mojo-*"
+          - "mblack"
+      python-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "mojo"
+          - "mojo-*"
+          - "mblack"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Keeps the workflow actions current. These had drifted three majors behind
+  # and onto the deprecated Node 20 runtime before being bumped by hand.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 2
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "ci(deps)"

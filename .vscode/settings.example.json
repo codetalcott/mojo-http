@@ -1,0 +1,22 @@
+{
+  // Copy to .vscode/settings.json and replace <ABS_REPO_ROOT> with the absolute
+  // path to your checkout.
+  //
+  // The extension passes each entry verbatim as `-I <dir>` to mojo-lsp-server.
+  // It does NOT expand ${workspaceFolder}, and the server inherits VS Code's
+  // cwd (not the workspace root), so these must be absolute paths.
+  //
+  // Each package root holds the compiled `<pkg>.mojoc` that `from m0_*.…`
+  // imports resolve against, so run `uv run poe build-all` after changing a
+  // package's sources or the LSP will report stale or unknown symbols.
+  // `packages/m0-http` doubles as the root for the vendored `lightbug_http`
+  // source tree.
+  //
+  // If every prelude type (`String`, `List`, …) reports "unable to locate
+  // module 'std'", the LSP is running a different Mojo than uv.lock pins.
+  "mojo.lsp.includeDirs": [
+    "<ABS_REPO_ROOT>/packages/m0-core",
+    "<ABS_REPO_ROOT>/packages/m0-http",
+    "<ABS_REPO_ROOT>/packages/m0-datastar"
+  ]
+}

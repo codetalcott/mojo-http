@@ -1,0 +1,63 @@
+name: Nightly Canary
+
+on:
+  schedule:
+    # Weekly. Mojo is on stable releases now, so this is an early-warning
+    # signal for the *next* release rather than something acted on per-nightly:
+    # a nightly break today is a stable break in a few weeks. Dependabot lands
+    # the actual version bumps on Mondays.
+    - cron: '0 22 * * 2'  # Tuesday 10pm UTC
+  workflow_dispatch:  # Allow manual trigger
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install pinned dependencies
+        run: uv sync
+
+      # Swap the venv's toolchain for the latest nightly without touching
+      # uv.lock, so the repo stays pinned to stable while this job probes ahead.
+      - name: Override toolchain with latest Mojo nightly
+        run: uv pip install --index https://whl.modular.com/nightly/simple/ --prerelease allow --upgrade mojo
+
+      # --no-sync on every step below: a plain `uv run` would re-sync the venv
+      # to uv.lock and silently revert the nightly, making this job a no-op.
+      - name: Build all packages
+        run: uv run --no-sync poe build-all
+
+      - name: Run all tests
+        run: uv run --no-sync poe test-all
+
+      - name: Get Mojo version on failure
+        if: failure()
+        id: mojo-version
+        run: echo "version=$(uv run --no-sync mojo --version 2>/dev/null || echo 'unknown')" >> "$GITHUB_OUTPUT"
+
+      - name: Create issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Nightly canary failed (${{ matrix.os }}) — Mojo ${{ steps.mojo-version.outputs.version }}" \
+            --label "nightly-breakage" \
+            --body "The nightly canary build failed with Mojo **${{ steps.mojo-version.outputs.version }}**.
+
+          [View failed run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          This likely means a Mojo nightly introduced a breaking change. Check the build/test logs and update mojo-http accordingly."

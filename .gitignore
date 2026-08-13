@@ -1,0 +1,25 @@
+# Mojo build artifacts
+*.mojoc
+*.mojopkg
+*.o
+*.so
+*.dylib
+
+# uv (uv.lock IS tracked — it pins the Mojo toolchain)
+.venv/
+
+# IDE — the example is tracked; real settings hold machine-absolute paths.
+.vscode/*
+!.vscode/settings.example.json
+.idea/
+
+# OS
+.DS_Store
+
+__pycache__/
+
+# Compiled app binaries (rebuild with `mojo build`)
+apps/hello/hello
+
+# smoke-hello output
+hello.log

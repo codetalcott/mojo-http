@@ -1,0 +1,135 @@
+[project]
+name = "mojo-http"
+version = "0.1.0"
+description = "HTTP server and web framework for Mojo — routing, content negotiation, SSE, and a maintained lightbug_http fork"
+authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.github.com" }]
+requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+
+# `mojo` brings the whole toolchain: mojo, mojo-lsp-server, mojo-lldb, mblack.
+# MAX is deliberately not a dependency — nothing in packages/ or apps/ imports it.
+dependencies = [
+    "mojo==1.0.0",
+]
+
+[dependency-groups]
+dev = ["poethepoet>=0.30"]
+
+# No [build-system]: this is a virtual project. uv manages the environment but
+# does not install the repo itself.
+
+# ---------------------------------------------------------------------------
+# Tasks — `uv run poe <task>`
+# ---------------------------------------------------------------------------
+
+# Tasks run from the repo root (poe resolves cwd to the pyproject.toml
+# directory), so the relative -I paths below are stable regardless of where
+# `uv run poe` is invoked from.
+#
+# Run tasks against .venv directly. poe would otherwise auto-detect uv and wrap
+# every task in `uv run`, which re-syncs the venv to uv.lock — that silently
+# reverts a `nightly-try` toolchain override and makes the canary a no-op.
+[tool.poe.executor]
+type = "virtualenv"
+
+# --- Build -----------------------------------------------------------------
+# Each package precompiles to a .mojoc that downstream packages import via -I.
+# .mojoc files are locked to the exact compiler version that produced them, so
+# a toolchain change requires a full rebuild.
+
+[tool.poe.tasks.build-core]
+help = "Build m0-core package"
+shell = "cd packages/m0-core && mojo precompile src -o m0_core.mojoc"
+
+[tool.poe.tasks.build-http]
+help = "Build m0-http package (includes the lightbug_http fork)"
+shell = "cd packages/m0-http && mojo precompile src -I ../m0-core/ -o m0_http.mojoc"
+
+# m0-datastar imports nothing outside itself — the wire format is usable
+# without the rest of the framework. No -I flags on purpose.
+[tool.poe.tasks.build-datastar]
+help = "Build m0-datastar package"
+shell = "cd packages/m0-datastar && mojo precompile src -o m0_datastar.mojoc"
+
+[tool.poe.tasks.build-all]
+help = "Build all packages in dependency order"
+sequence = ["build-core", "build-http", "build-datastar"]
+default_item_type = "ref"
+
+[tool.poe.tasks.clean]
+help = "Remove build artifacts"
+shell = "find packages \\( -name '*.mojoc' -o -name '*.mojopkg' \\) -delete"
+
+# --- Test ------------------------------------------------------------------
+
+[tool.poe.tasks.test-core]
+help = "Test m0-core"
+shell = "for f in packages/m0-core/test/test_*.mojo; do mojo run -I packages/m0-core \"$f\" || exit 1; done"
+
+[tool.poe.tasks.test-http]
+help = "Test m0-http"
+shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
+
+[tool.poe.tasks.test-datastar]
+help = "Test m0-datastar"
+shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-datastar \"$f\" || exit 1; done"
+
+[tool.poe.tasks.test-all]
+help = "Run all package tests (builds .mojoc files first)"
+sequence = ["build-all", "test-core", "test-http", "test-datastar"]
+default_item_type = "ref"
+
+# --- Serve -----------------------------------------------------------------
+# apps/hello imports only lightbug_http, but lightbug_http/event_loop.mojo
+# imports m0_http.log, which was built against m0-core — so both -I paths are
+# required even though server.mojo names neither.
+
+[tool.poe.tasks.serve-hello]
+help = "Run hello server on :8080"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo"
+
+[tool.poe.tasks.smoke-hello]
+help = "Start serve-hello, assert /health, stop"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > hello.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== hello.log ==='; cat hello.log; exit 1; }
+echo
+echo "smoke-hello OK"
+"""
+
+# --- Benchmarks ------------------------------------------------------------
+
+[tool.poe.tasks.bench-core]
+help = "Benchmark m0-core hot paths"
+cmd = "mojo packages/m0-core/run_benchmarks.mojo"
+
+# --- Toolchain -------------------------------------------------------------
+
+[tool.poe.tasks.mojo-pin]
+help = "Print the Mojo version pinned in uv.lock"
+shell = "awk '/^name = \"mojo\"$/{f=1;next} f&&/^version = /{gsub(/[\",]/,\"\",$3);print $3;exit}' uv.lock"
+
+# --- Nightly canary --------------------------------------------------------
+# The pinned toolchain stays on stable in uv.lock. These swap the venv's mojo
+# for a nightly to check for upcoming breakage, without touching the lockfile.
+#
+# IMPORTANT: plain `uv run` re-syncs the venv to uv.lock first, which silently
+# reverts the nightly. While on a nightly, invoke every task as
+#   uv run --no-sync poe <task>
+# `nightly-restore` (or any plain `uv run`) puts you back on stable.
+
+[tool.poe.tasks.nightly-try]
+help = "Swap the venv onto the latest Mojo nightly (then use: uv run --no-sync poe ...)"
+shell = """
+uv pip install --index https://whl.modular.com/nightly/simple/ --prerelease allow --upgrade mojo
+mojo --version
+echo 'Now on a nightly. Run tasks as: uv run --no-sync poe <task>'
+"""
+
+[tool.poe.tasks.nightly-restore]
+help = "Restore the pinned stable toolchain from uv.lock"
+shell = "uv sync --reinstall-package mojo && mojo --version"

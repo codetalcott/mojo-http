@@ -1,9 +1,9 @@
-M0 — Modular Mojo Hypermedia Framework
+mojo-http — An HTTP server and web framework for Mojo
 Copyright (c) 2025-2026 Wm Talcott
 
 This product includes third-party software. The components listed below are
 distributed under their own licenses, reproduced in full at the paths given.
-M0's own source is licensed under the MIT License; see LICENSE.
+This project's own source is licensed under the MIT License; see LICENSE.
 
 --------------------------------------------------------------------------------
 
@@ -20,8 +20,10 @@ lightbug_http
 
     MODIFIED. This copy diverges substantially from upstream v26.1.2 and must
     not be assumed interchangeable with it. Changes were made first in the
-    mojo-siren-grail repository (28 commits, from 2026-02-26) and continued
-    here (14 commits, from 2026-03-18), and include:
+    private mojo-siren-grail repository (28 commits, from 2026-02-26) and
+    continued in the private mojo-framework monorepo (15 commits, from
+    2026-03-18), from which this repository was extracted. The modifications
+    include:
 
       - Security hardening against request smuggling, slowloris, and integer
         overflow in request parsing
@@ -34,7 +36,11 @@ lightbug_http
       - Forward compatibility with Mojo 1.1; migration off deprecated
         memory/origin APIs
 
-    For the full modification history:
+    For the modification history carried into this repository (15 commits):
         git log -- packages/m0-http/lightbug_http
+
+    The 28 earlier commits predating 2026-03-18 were made in the private
+    mojo-siren-grail repository and are not reachable from this history. The
+    list above is the authoritative record of what they changed.
 
 --------------------------------------------------------------------------------
