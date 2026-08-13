@@ -62,7 +62,7 @@ The three `sse_*` hooks are the streaming interface; a handler that does not str
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, request-parsing hardening | 169 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 7 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 73 |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 88 |
 | **Total** | | **385** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.

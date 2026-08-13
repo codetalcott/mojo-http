@@ -14,7 +14,15 @@ The short version:
 | `json_each(?)` for variable-length `IN` lists | **6.7x** over a per-id loop at N=1000 | Use above N≈10 |
 | `PRAGMA cache_size` | ~5%, inside noise | Skip |
 | Statement cache | ~650 ns per prepare | Confirms the existing decision not to build one |
-| `carray()` | Unavailable, and unusable from Mojo structs anyway | Don't pursue |
+| `carray()` | Unavailable, and unusable from Mojo structs anyway | Superseded by `m0_array` — see below |
+
+> **Written in parallel with `m0_array`.** This study and the `m0_array`
+> virtual table landed from two separate sessions that did not see each other's
+> work. They agree on the facts and answer the same question differently: this
+> document establishes that the *carray extension* cannot be reached from here,
+> and `m0_array` supplies the capability anyway by registering a Mojo-side
+> virtual table instead of loading a C one. Where they overlap, `m0_array` is
+> the answer; the analysis below is why it had to be built rather than borrowed.
 
 ## What the library we link actually has
 
@@ -195,7 +203,9 @@ is what the benchmark's fastest column does.
    every call site invites an injection-shaped mistake that `?` normally
    prevents.
 4. **Do not pursue carray.** Unavailable on macOS, unusable with structs, and
-   `json_each` already covers the case that motivates it.
+   both `m0_array` and `json_each` already cover what motivates it — `m0_array`
+   for binding a Mojo `List` directly (~3x on bulk inserts), `json_each` for an
+   id-set that arrives as data rather than as a live buffer.
 5. **Revisit if the toolchain ever links its own SQLite.** Building the
    amalgamation with `-DSQLITE_ENABLE_CARRAY -DSQLITE_ENABLE_MATH_FUNCTIONS`
    and a controlled version would make several of these questions moot — at the
