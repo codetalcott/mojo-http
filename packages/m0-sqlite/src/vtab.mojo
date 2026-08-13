@@ -53,6 +53,9 @@ comptime SQLITE_NOMEM: Int = 7
 comptime SQLITE_CONSTRAINT: Int = 19
 comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
 
+# sqlite3_bind_pointer, and so this whole module, arrived in SQLite 3.20.0.
+comptime SQLITE_MIN_POINTER_VERSION: Int = 3_020_000
+
 # Static storage: sqlite3_bind_pointer retains this pointer, so it cannot be a
 # transient buffer. A comptime literal is NUL-terminated with a stable address.
 comptime ARRAY_TAG = "m0-sqlite-array"

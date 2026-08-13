@@ -26,9 +26,11 @@ from .ffi import (
     cstr_to_string,
     cstr_len,
     errstr,
+    libversion,
+    libversion_number,
 )
 from .stmt import Statement
-from .vtab import _register
+from .vtab import _register, SQLITE_MIN_POINTER_VERSION
 
 
 comptime MEMORY = ":memory:"
@@ -176,7 +178,23 @@ struct Connection(Movable):
         Per connection, not per process, and not done by default — it is only
         worth its cost if you use it. Arrays may only be bound through the
         `Statement.*_over` helpers; see the note above them for why.
+
+        Raises on SQLite older than 3.20.0, which predates
+        `sqlite3_bind_pointer`. That is already a hard failure — a missing
+        symbol at link time on Linux, at load time on macOS — but an unresolved
+        symbol names neither the feature that wanted it nor the version that
+        would provide it, so it is worth saying plainly here.
         """
+        var have = libversion_number()
+        if have < SQLITE_MIN_POINTER_VERSION:
+            raise Error(
+                "m0_array needs SQLite 3.20.0 or newer for sqlite3_bind_pointer,"
+                " but this build links "
+                + libversion()
+                + " ("
+                + String(have)
+                + ")"
+            )
         _register(self._handle)
 
     def close(mut self) raises:

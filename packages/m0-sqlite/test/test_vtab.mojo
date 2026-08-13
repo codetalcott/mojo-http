@@ -16,7 +16,8 @@ from std.testing import (
     TestSuite,
 )
 
-from src import Connection, Statement, open_memory
+from src import Connection, Statement, open_memory, libversion
+from src.ffi import libversion_number
 
 
 def _db() raises -> Connection:
@@ -54,6 +55,25 @@ def test_module_is_not_registered_by_default() raises:
     var db = open_memory()
     with assert_raises():
         _ = db.prepare("SELECT value FROM m0_array(?1)")
+
+
+def test_version_guard_admits_this_build() raises:
+    """The guard must pass on any SQLite new enough to run these tests.
+
+    Asserts a floor rather than an exact version: pinning one would turn a
+    contributor's newer (or older-but-adequate) libsqlite3 into a spurious
+    failure, which is the opposite of what the guard is for. The interesting
+    case — an actual pre-3.20 build — cannot be exercised here without a
+    second libsqlite3 to link against.
+    """
+    var n = libversion_number()
+    assert_true(n >= 3_020_000)
+    # Sanity-check the encoding itself, so a bogus reading cannot satisfy the
+    # floor by accident: major*1000000 + minor*1000 + patch.
+    var major = n // 1_000_000
+    assert_true(major >= 3)
+    assert_true((n // 1000) % 1000 < 1000)
+    assert_equal(String(major) + ".", libversion()[byte=0:2])
 
 
 def test_register_is_idempotent() raises:

@@ -61,8 +61,8 @@ The four `sse_*` hooks are the streaming interface; a handler that does not stre
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser | 59 |
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor | 107 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out | 47 |
-| **Total** | | **269** |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 68 |
+| **Total** | | **290** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -157,6 +157,28 @@ on macOS libsqlite3 lives in the dyld shared cache so `mojo run` happens to
 work, but on Linux it fails with `JIT session error: Symbols not found:
 [sqlite3_open_v2, ...]`. Linking explicitly behaves the same on both. Linux also
 needs `libsqlite3-dev` present at link time; CI installs it.
+
+**Bulk arrays.** `m0_array(?)` is an opt-in virtual table that streams a Mojo
+`List` into SQL without copying it, so N rows insert in one `sqlite3_step`
+instead of N — measured at ~3x against the per-row bind/step/reset loop at both
+10k and 200k rows (`uv run poe bench-sqlite`).
+
+```mojo
+db.register_array_module()          # per connection, not per process
+var ins = db.prepare("INSERT INTO t (v) SELECT value FROM m0_array(?1)")
+ins.execute_over(1, values)         # binds, runs to completion, unbinds
+```
+
+Arrays bind **only** through `execute_over` and `fetch_ints_over`, and that is
+a safety property rather than a style preference. Binding a raw pointer lends
+SQLite the buffer for the statement's life, but Mojo frees a value at its last
+syntactic use — which would be before `step()` runs. Taking the array as an
+argument to the call that also finishes the statement is what keeps it alive;
+there is no `bind_array` to get wrong. The trade is that these do not compose
+with incremental stepping. See
+[docs/sqlite-vtab-feasibility.md](docs/sqlite-vtab-feasibility.md) for the
+measurements and the reasoning, including why this is worth it for ingest and
+not for `IN` clauses. Needs SQLite 3.20+; `register_array_module` says so if not.
 
 **Not implemented:** statement caching. It was measured in the benchmark that
 chose SQLite and came out within noise at realistic row counts (~10% at N=50),
