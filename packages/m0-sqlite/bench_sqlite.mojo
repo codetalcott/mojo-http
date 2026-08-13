@@ -1,0 +1,183 @@
+"""Read-out benchmarks for m0-sqlite.
+
+Measures the two things the bulk read-out API changed: the `unsafe_memcpy`
+rewrite of `column_blob`, and the SoA `fetch_*` loops against the per-row
+`while stmt.step():` idiom they are shorthand for.
+
+Deliberately hand-timed rather than built on `std.benchmark` like
+`m0-core/run_benchmarks.mojo`: these are millisecond-scale scans over a fixed
+row count, so a wall-clock total per scan is the number worth reading, and an
+autotuned per-op figure would hide how much of it is SQLite's own floor.
+
+Usage:  uv run poe bench-sqlite
+"""
+
+from std.ffi import external_call, c_int
+from std.time import perf_counter_ns
+
+from src import Connection, Statement, open_memory
+from src.ffi import CharPtr
+
+comptime ROWS: Int = 100_000
+comptime REPS: Int = 5
+
+
+# --- The pre-memcpy implementation, kept here for the A/B ---------------------
+
+
+def _column_blob_byteloop(stmt: Statement, index: Int) -> List[UInt8]:
+    """`column_blob` as it was written before the memcpy rewrite."""
+    var n = Int(
+        external_call["sqlite3_column_bytes", c_int](stmt._handle, c_int(index))
+    )
+    var out = List[UInt8](capacity=n if n > 0 else 1)
+    if n <= 0:
+        return out^
+    var p = external_call["sqlite3_column_blob", CharPtr](
+        stmt._handle, c_int(index)
+    )
+    for i in range(n):
+        out.append(p[unsafe_offset=i])
+    return out^
+
+
+# --- Fixtures -----------------------------------------------------------------
+
+
+def _seed(mut db: Connection, blob_size: Int) raises:
+    db.execute(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, f REAL, v BLOB)"
+    )
+    var payload = List[UInt8](capacity=blob_size)
+    for i in range(blob_size):
+        payload.append(UInt8(i & 0xFF))
+
+    db.begin()
+    var ins = db.prepare("INSERT INTO t (id, n, f, v) VALUES (?, ?, ?, ?)")
+    for i in range(ROWS):
+        ins.reset()
+        ins.bind_int(1, i)
+        ins.bind_int(2, i * 3)
+        ins.bind_float(3, Float64(i) * 1.5)
+        ins.bind_blob(4, payload)
+        _ = ins.step()
+    _ = ins^
+    db.commit()
+
+
+def _report(label: String, ns: Int):
+    var ms = Float64(ns) / 1.0e6
+    var per_row = Float64(ns) / Float64(ROWS)
+    print(label, "\t", ms, "ms\t", per_row, "ns/row")
+
+
+# --- Benchmarks ---------------------------------------------------------------
+
+
+def bench_int_scan(mut db: Connection) raises:
+    print("\n--- 1 INTEGER column,", ROWS, "rows ---")
+
+    var best_manual = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT n FROM t")
+        var out = List[Int](capacity=ROWS)
+        var t0 = perf_counter_ns()
+        while q.step():
+            out.append(q.column_int(0))
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_manual:
+            best_manual = dt
+    _report("while step() + column_int ", best_manual)
+
+    var best_bulk = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT n FROM t")
+        var out = List[Int](capacity=ROWS)
+        var t0 = perf_counter_ns()
+        _ = q.fetch_ints(0, out)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_bulk:
+            best_bulk = dt
+    _report("fetch_ints                ", best_bulk)
+
+
+def bench_float_scan(mut db: Connection) raises:
+    print("\n--- 1 REAL column,", ROWS, "rows ---")
+
+    var best_manual = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT f FROM t")
+        var out = List[Float64](capacity=ROWS)
+        var t0 = perf_counter_ns()
+        while q.step():
+            out.append(q.column_float(0))
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_manual:
+            best_manual = dt
+    _report("while step() + column_float", best_manual)
+
+    var best_bulk = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT f FROM t")
+        var out = List[Float64](capacity=ROWS)
+        var t0 = perf_counter_ns()
+        _ = q.fetch_floats(0, out)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_bulk:
+            best_bulk = dt
+    _report("fetch_floats               ", best_bulk)
+
+
+def bench_blob_scan(mut db: Connection, size: Int) raises:
+    print("\n---", size, "-byte BLOB column,", ROWS, "rows ---")
+
+    var best_old = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT v FROM t")
+        var t0 = perf_counter_ns()
+        var acc = 0
+        while q.step():
+            var b = _column_blob_byteloop(q, 0)
+            acc += len(b)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_old:
+            best_old = dt
+    _report("column_blob (per-byte loop)", best_old)
+
+    var best_new = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT v FROM t")
+        var t0 = perf_counter_ns()
+        var acc = 0
+        while q.step():
+            var b = q.column_blob(0)
+            acc += len(b)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_new:
+            best_new = dt
+    _report("column_blob (memcpy)       ", best_new)
+
+    var best_into = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT v FROM t")
+        var buf = List[UInt8]()
+        var t0 = perf_counter_ns()
+        var acc = 0
+        while q.step():
+            acc += q.column_blob_into(0, buf)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_into:
+            best_into = dt
+    _report("column_blob_into (reused)  ", best_into)
+
+
+def main() raises:
+    print("=== m0-sqlite read-out benchmarks (best of", REPS, ") ===")
+
+    for size in [64, 4096]:
+        var db = open_memory()
+        _seed(db, size)
+        if size == 64:
+            bench_int_scan(db)
+            bench_float_scan(db)
+        bench_blob_scan(db, size)

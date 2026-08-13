@@ -12,7 +12,7 @@ reads across directly.
 
 from std.collections.span import Span
 from std.ffi import external_call, c_int
-from std.memory import UnsafePointer
+from std.memory import UnsafePointer, unsafe_memcpy
 
 from .ffi import (
     CharPtr,
@@ -195,21 +195,48 @@ struct Statement(Movable):
         return cstr_to_string(p, n)
 
     def column_blob(self, index: Int) -> List[UInt8]:
-        """Read as raw bytes. Returns an empty list for NULL — see `is_null`."""
+        """Read as raw bytes. Returns an empty list for NULL — see `is_null`.
+
+        One `unsafe_memcpy` rather than a per-byte loop: SQLite hands back a
+        contiguous buffer whose length it already told us, so there is nothing
+        to scan for.
+        """
         var n = Int(
             external_call["sqlite3_column_bytes", c_int](
                 self._handle, c_int(index)
             )
         )
-        var out = List[UInt8](capacity=n if n > 0 else 1)
         if n <= 0:
-            return out^
+            return List[UInt8]()
         var p = external_call["sqlite3_column_blob", CharPtr](
             self._handle, c_int(index)
         )
-        for i in range(n):
-            out.append(p[unsafe_offset=i])
+        var out = List[UInt8](unsafe_uninit_length=n)
+        unsafe_memcpy(dest=out.unsafe_ptr(), src=p, count=n)
         return out^
+
+    def column_blob_into(self, index: Int, mut buf: List[UInt8]) -> Int:
+        """Read raw bytes into a caller-owned buffer; returns the byte count.
+
+        `buf` is resized to exactly the blob's length and fully overwritten, so
+        one buffer can be reused across every row of a scan instead of
+        allocating a fresh `List` per row. Returns 0 for NULL and for a
+        zero-length blob alike — see `is_null` to tell them apart.
+        """
+        var n = Int(
+            external_call["sqlite3_column_bytes", c_int](
+                self._handle, c_int(index)
+            )
+        )
+        if n <= 0:
+            buf.resize(0, 0)
+            return 0
+        buf.resize(n, 0)
+        var p = external_call["sqlite3_column_blob", CharPtr](
+            self._handle, c_int(index)
+        )
+        unsafe_memcpy(dest=buf.unsafe_ptr(), src=p, count=n)
+        return n
 
     def column_name(self, index: Int) -> String:
         """Declared name of a result column."""
@@ -217,6 +244,77 @@ struct Statement(Movable):
             self._handle, c_int(index)
         )
         return cstr_to_string(p, cstr_len(p))
+
+    # --- Bulk read-out (SoA) ----------------------------------------------
+    #
+    # These are a shape convenience, **not** a speed-up, and the distinction is
+    # worth stating plainly: `bench_sqlite.mojo` measures them at 4.37ms against
+    # 4.29ms for the equivalent `while step():` loop over 100k rows — i.e. no
+    # win, slightly negative, which is what you would expect. SQLite has no bulk
+    # column API (`sqlite3_step` is per row, `sqlite3_column_*` is per cell) and
+    # `external_call` is a direct call, so there is no per-row boundary cost for
+    # a loop up here to save.
+    #
+    # What they are for is the output shape: a caller-owned `List` per column,
+    # sized once up front, which is what a SIMD pass over the results wants and
+    # what the parallel-`List` layout used elsewhere in the repo expects.
+    # Reach for them when you want columns; keep the explicit loop when you
+    # want rows.
+    #
+    # Each returns the number of rows appended and leaves the statement
+    # positioned after the last row read, so a capped call can be resumed by
+    # calling again. `max_rows < 0` means "until SQLITE_DONE".
+    #
+    # Exhaustion is signalled by a **short read**: a call that returns fewer
+    # than `max_rows` has hit the end of the result set. Never probe for it by
+    # calling again and expecting 0 — what happens when you step past
+    # SQLITE_DONE is not portable, and both outcomes are bad:
+    #
+    #   Linux (libsqlite3 3.45)  auto-resets and silently re-runs the query,
+    #                            so `while fetch(...) > 0` never terminates.
+    #   macOS (system SQLite)    returns SQLITE_MISUSE, which `step` raises.
+    #
+    # Measured, not assumed — CI caught the divergence. It is inherited from
+    # `sqlite3_step` and is equally present in the plain `while stmt.step():`
+    # loop. It is surfaced rather than papered over: hiding it would mean
+    # holding a "done" flag that could disagree with the statement's own state.
+    # Stop on the short read and this never arises.
+
+    def fetch_ints(
+        mut self, col: Int, mut out: List[Int], max_rows: Int = -1
+    ) raises -> Int:
+        """Append column `col` of every remaining row to `out` as integers."""
+        var rows = 0
+        while max_rows < 0 or rows < max_rows:
+            if not self.step():
+                break
+            out.append(self.column_int(col))
+            rows += 1
+        return rows
+
+    def fetch_floats(
+        mut self, col: Int, mut out: List[Float64], max_rows: Int = -1
+    ) raises -> Int:
+        """Append column `col` of every remaining row to `out` as doubles."""
+        var rows = 0
+        while max_rows < 0 or rows < max_rows:
+            if not self.step():
+                break
+            out.append(self.column_float(col))
+            rows += 1
+        return rows
+
+    def fetch_texts(
+        mut self, col: Int, mut out: List[String], max_rows: Int = -1
+    ) raises -> Int:
+        """Append column `col` of every remaining row to `out` as text."""
+        var rows = 0
+        while max_rows < 0 or rows < max_rows:
+            if not self.step():
+                break
+            out.append(self.column_text(col))
+            rows += 1
+        return rows
 
     # --- Lifetime ----------------------------------------------------------
 

@@ -61,8 +61,8 @@ The four `sse_*` hooks are the streaming interface; a handler that does not stre
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser | 59 |
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor | 107 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions | 30 |
-| **Total** | | **252** |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out | 47 |
+| **Total** | | **269** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -141,6 +141,15 @@ a second owner that would close it twice — move with `^` to transfer ownership
 (`begin` / `commit` / `rollback`); there is no scope guard, because Mojo has no
 `defer` and a destructor that rolled back would make correctness depend on drop
 order.
+
+**Reading in bulk.** `column_blob` copies with one `memcpy`, and
+`column_blob_into` reuses a caller buffer across a scan instead of allocating
+per row (3.3x on 4KB blobs over 100k rows). `fetch_ints` / `fetch_floats` /
+`fetch_texts` append a whole column into a caller-owned `List`; they are a
+shape convenience rather than a speed-up — SQLite has no bulk column API — but
+a `List` per column is what a SIMD pass over the results wants. They signal
+exhaustion with a **short read**, so stop when you get fewer rows than you
+asked for rather than looping until zero.
 
 **Linking.** Tests build to a binary with `-Xlinker -lsqlite3` rather than using
 `mojo run`. The JIT resolves symbols only from libraries already in its process:
