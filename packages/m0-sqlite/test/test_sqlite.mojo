@@ -14,6 +14,7 @@ from std.testing import (
     TestSuite,
 )
 
+from src.ffi import check_c_int_length, MAX_C_INT
 from src import (
     Connection,
     Statement,
@@ -84,6 +85,41 @@ def test_bad_sql_raises_with_message() raises:
         db.execute("SELECT * FROM does_not_exist")
 
 
+def test_prepare_rejects_a_trailing_statement() raises:
+    """One statement per prepare. The tail used to be compiled away in silence."""
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    with assert_raises():
+        var _s = db.prepare("INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)")
+    var q = db.prepare("SELECT COUNT(*) FROM t")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 0, "the first statement must not have run")
+
+
+def test_prepare_allows_trailing_whitespace_and_semicolon() raises:
+    """Rejecting a real second statement must not reject ordinary formatting."""
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    var a = db.prepare("INSERT INTO t VALUES (1);")
+    _ = a.step()
+    var b = db.prepare("INSERT INTO t VALUES (2) ;  \n")
+    _ = b.step()
+    var q = db.prepare("SELECT COUNT(*) FROM t")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 2)
+
+
+def test_prepare_rejects_text_that_compiles_to_nothing() raises:
+    """SQLite returns OK with a NULL handle here; stepping that would crash."""
+    var db = open_memory()
+    with assert_raises():
+        var _a = db.prepare("")
+    with assert_raises():
+        var _b = db.prepare("   \n\t ")
+    with assert_raises():
+        var _c = db.prepare("-- just a comment")
+
+
 def test_prepare_rejects_invalid_sql() raises:
     var db = open_memory()
     with assert_raises():
@@ -126,6 +162,44 @@ def test_roundtrip_every_type() raises:
     assert_equal(blob[2], UInt8(255))
     assert_true(q.is_null(3))
     assert_false(q.step())
+
+
+def test_large_blob_roundtrips_byte_exact() raises:
+    """`column_blob` copies in bulk; this is the check that it copies right.
+
+    64 KB is past every buffer boundary a per-byte loop used to hide.
+    """
+    var payload = List[UInt8](capacity=65536)
+    for i in range(65536):
+        payload.append(UInt8((i * 31 + 7) & 0xFF))
+
+    var db = _seeded()
+    var ins = db.prepare("INSERT INTO users (name, avatar) VALUES ('big', ?)")
+    ins.bind_blob(1, payload)
+    _ = ins.step()
+
+    var q = db.prepare("SELECT avatar FROM users")
+    assert_true(q.step())
+    var got = q.column_blob(0)
+    assert_equal(len(got), len(payload))
+    for i in range(len(payload)):
+        if got[i] != payload[i]:
+            raise Error("blob differs at byte " + String(i))
+
+
+def test_empty_blob_is_a_blob_not_null() raises:
+    """SQLite maps a NULL data pointer to bind_null, so an empty List must not
+    produce one. That depends on Mojo's List, not on this package — hence a test.
+    """
+    var db = _seeded()
+    var ins = db.prepare("INSERT INTO users (name, avatar) VALUES ('e', ?)")
+    ins.bind_blob(1, List[UInt8]())
+    _ = ins.step()
+
+    var q = db.prepare("SELECT typeof(avatar), length(avatar) FROM users")
+    assert_true(q.step())
+    assert_equal(q.column_text(0), "blob")
+    assert_equal(q.column_int(1), 0)
 
 
 def test_column_types_are_reported() raises:
@@ -230,6 +304,99 @@ def test_step_raises_on_constraint_violation() raises:
         _ = ins.step()
 
 
+def test_step_error_carries_sqlites_own_message() raises:
+    """Not just "constraint failed" — which constraint, on which column."""
+    var db = open_memory()
+    db.execute("CREATE TABLE u (name TEXT UNIQUE)")
+    db.execute("INSERT INTO u VALUES ('ada')")
+    var ins = db.prepare("INSERT INTO u VALUES ('ada')")
+    var message = String("")
+    try:
+        _ = ins.step()
+    except e:
+        message = String(e)
+    assert_true(db.in_transaction() == False)  # keeps db alive past the step
+    assert_true(
+        "UNIQUE constraint failed: u.name" in message,
+        "step error lost SQLite's message: " + message,
+    )
+    assert_true("rc=19" in message, "step error lost the code: " + message)
+
+
+def test_step_error_stays_truthful_without_a_live_connection() raises:
+    """Mojo destroys `db` at its last use — here, `prepare()`.
+
+    The statement still steps, because close_v2 keeps the connection alive
+    until its statements finalize, but the closed connection answers
+    SQLITE_MISUSE to every question. The error must degrade to the generic
+    text for the real code, never report the connection's misleading one.
+    """
+    var db = open_memory()
+    db.execute("CREATE TABLE u (name TEXT UNIQUE)")
+    db.execute("INSERT INTO u VALUES ('ada')")
+    var ins = db.prepare("INSERT INTO u VALUES ('ada')")
+    var message = String("")
+    try:
+        _ = ins.step()
+    except e:
+        message = String(e)
+    assert_true("rc=19" in message, "wrong code reported: " + message)
+    assert_true(
+        "constraint failed" in message, "wrong message reported: " + message
+    )
+    assert_false(
+        "misuse" in message, "reported the zombie connection's error: " + message
+    )
+
+
+# --- Recovering from a failed step -------------------------------------------
+#
+# sqlite3_reset and sqlite3_finalize report the *previous* evaluation's error
+# code. Raising on it would make recovery and cleanup each throw a second,
+# stale copy of an error step() has already raised.
+
+def test_reset_after_a_failed_step_does_not_raise() raises:
+    var db = open_memory()
+    db.execute("CREATE TABLE u (name TEXT UNIQUE)")
+    db.execute("INSERT INTO u VALUES ('ada')")
+    var ins = db.prepare("INSERT INTO u VALUES (?)")
+    ins.bind_text(1, "ada")
+    with assert_raises():
+        _ = ins.step()
+    ins.reset()  # must not raise the constraint error a second time
+
+
+def test_statement_is_reusable_after_a_failed_step() raises:
+    """The point of not raising from reset: rebind and retry actually works."""
+    var db = open_memory()
+    db.execute("CREATE TABLE u (name TEXT UNIQUE)")
+    db.execute("INSERT INTO u VALUES ('ada')")
+    var ins = db.prepare("INSERT INTO u VALUES (?)")
+    ins.bind_text(1, "ada")
+    with assert_raises():
+        _ = ins.step()
+
+    ins.reset()
+    ins.clear_bindings()
+    ins.bind_text(1, "grace")
+    _ = ins.step()
+
+    var q = db.prepare("SELECT COUNT(*) FROM u")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 2)
+
+
+def test_finalize_after_a_failed_step_does_not_raise() raises:
+    """Cleanup must not throw; this used to abort the process."""
+    var db = open_memory()
+    db.execute("CREATE TABLE u (name TEXT UNIQUE)")
+    db.execute("INSERT INTO u VALUES ('ada')")
+    var ins = db.prepare("INSERT INTO u VALUES ('ada')")
+    with assert_raises():
+        _ = ins.step()
+    ins.finalize()  # no reset first: finalize is where the stale code surfaces
+
+
 # --- Transactions ------------------------------------------------------------
 
 def test_commit_persists() raises:
@@ -313,6 +480,58 @@ def test_many_statements_are_released() raises:
         assert_true(s.step())
         assert_equal(s.column_int(0), i)
     db.close()
+
+
+def test_statement_outlives_its_connection() raises:
+    """A live statement keeps working after its connection is closed.
+
+    Mojo destroys a value at its last use, so a Connection whose last mention
+    is `prepare()` can be gone before the first `step()`. That is safe only
+    because every close path here uses `sqlite3_close_v2`, which leaves the
+    connection alive until the last statement is finalized. Switching any of
+    them to `sqlite3_close` would break this, silently, at run time.
+    """
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    db.execute("INSERT INTO t VALUES (7)")
+    var q = db.prepare("SELECT v FROM t")
+    db.close()
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 7)
+
+
+# --- Length guards -----------------------------------------------------------
+
+def test_c_int_length_guard_rejects_an_oversize_length() raises:
+    """Past 2^31-1 the cast to C int wraps negative.
+
+    A negative length is not just wrong to `sqlite3_bind_text` — it means "scan
+    to the first NUL", which a Mojo String does not guarantee having. Tested
+    directly rather than by allocating 2 GB.
+    """
+    with assert_raises():
+        check_c_int_length("bind_text", MAX_C_INT + 1)
+
+
+def test_c_int_length_guard_allows_the_maximum() raises:
+    check_c_int_length("bind_text", MAX_C_INT)
+    check_c_int_length("bind_text", 0)
+
+
+def test_query_scalar_reads_one_cell() raises:
+    var db = open_memory()
+    assert_equal(db.query_scalar("SELECT 'ok'"), "ok")
+    assert_equal(db.query_scalar("SELECT 1 WHERE 0"), "")
+
+
+# --- Busy handling -----------------------------------------------------------
+
+def test_memory_database_has_no_busy_timeout() raises:
+    """Nothing to contend with, so no handler is installed."""
+    var db = open_memory()
+    var q = db.prepare("PRAGMA busy_timeout")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 0)
 
 
 def main() raises:

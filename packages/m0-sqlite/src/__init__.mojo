@@ -38,6 +38,7 @@ Depends on nothing else in this repo — it is a sibling of `m0-core` and
 from .ffi import (
     libversion,
     errstr,
+    db_errmsg,
     c_string,
     SQLITE_OK,
     SQLITE_ROW,
@@ -59,4 +60,5 @@ from .conn import (
     open_memory,
     open_serialized,
     MEMORY,
+    DEFAULT_BUSY_TIMEOUT_MS,
 )

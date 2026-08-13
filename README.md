@@ -52,18 +52,18 @@ def main() raises:
     server.listen_and_serve("0.0.0.0:8080", handler)
 ```
 
-The four `sse_*` hooks are the streaming interface; a handler that does not stream returns the empty defaults shown here.
+The three `sse_*` hooks are the streaming interface; a handler that does not stream returns the empty defaults shown here.
 
 ## What's in the box
 
 | Package | Description | Tests |
 | --- | --- | --- |
-| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser | 59 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor | 107 |
+| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 65 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, request-parsing hardening | 169 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 7 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 68 |
-| **Total** | | **297** |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 88 |
+| **Total** | | **385** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -76,7 +76,7 @@ Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http
 ## Datastar
 
 `m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.2 wire format, and
-`DatastarStream` connects it to the server. A handler holds one, wires the four SSE hooks
+`DatastarStream` connects it to the server. A handler holds one, wires the three SSE hooks
 through it, and broadcasts after a mutation:
 
 ```mojo
@@ -188,10 +188,27 @@ while q.step():                # columns are 0-based
 Both are `Movable` but **not** `Copyable`, so a handle cannot be duplicated into
 a second owner that would close it twice — move with `^` to transfer ownership.
 `open()` applies the pragmas a server actually wants: `journal_mode=WAL`,
-`synchronous=NORMAL`, `foreign_keys=ON`. Transactions are explicit
+`synchronous=NORMAL`, `foreign_keys=ON`, plus a 5-second busy timeout so a
+contended write waits instead of failing on contact. Transactions are explicit
 (`begin` / `commit` / `rollback`); there is no scope guard, because Mojo has no
 `defer` and a destructor that rolled back would make correctness depend on drop
 order.
+
+**Wrap bulk writes in a transaction.** Ten thousand inserts take 7 ms inside one
+`begin`/`commit` and 325 ms without — autocommit gives each row its own
+transaction. It is a 46x difference, and the largest single effect measured in
+[docs/SQLITE_PERFORMANCE.md](docs/SQLITE_PERFORMANCE.md), which also covers
+`mmap_size`, variable-length `IN` lists, and how `m0_array` relates to the
+`carray()` extension it replaces.
+
+```mojo
+db.begin()
+for row in rows:
+    ins.reset()
+    ins.bind_text(1, row)
+    _ = ins.step()
+db.commit()
+```
 
 **Reading in bulk.** `column_blob` copies with one `memcpy`, and
 `column_blob_into` reuses a caller buffer across a scan instead of allocating
@@ -201,6 +218,10 @@ shape convenience rather than a speed-up — SQLite has no bulk column API — b
 a `List` per column is what a SIMD pass over the results wants. They signal
 exhaustion with a **short read**, so stop when you get fewer rows than you
 asked for rather than looping until zero.
+
+`prepare()` compiles exactly one statement; text after the first — or text that
+compiles to nothing, like a lone comment — is an error rather than silently
+ignored. Use `execute()` for a multi-statement script.
 
 **Linking.** Tests build to a binary with `-Xlinker -lsqlite3` rather than using
 `mojo run`. The JIT resolves symbols only from libraries already in its process:
@@ -252,7 +273,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 297 unit tests, then compiles every example
+uv run poe test-all         # 385 unit tests, then compiles every example
 uv run poe serve-counter    # the Datastar demo on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop

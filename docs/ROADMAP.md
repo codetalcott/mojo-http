@@ -46,8 +46,9 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
   with `:id`, content negotiation, ETag + `304`, `problem+json`, CORS, config.
 - `apps/datastar_todo/` — the flagship: live multi-tab sync over SSE.
 
-Add a `build-apps` CI gate at the same time. Nothing currently compiles `apps/`,
-and the examples are this repo's front door.
+The `build-apps` gate this section once called for now exists: `poe build-apps`
+compiles every example to a temp directory, and CI runs it before the smoke
+tests. The examples themselves are still outstanding.
 
 ### WSGI landed (spike)
 
@@ -66,17 +67,42 @@ gunicorn would be premature until the concurrency story exists.
 
 ## Known issues
 
-- `packages/m0-core/ffi/` is dead code. It sits beside `src/` rather than inside
-  it, so `mojo precompile src` never compiles it, and its `from ..hashing import`
-  cannot resolve from that location. Either move it under `src/` with a build
-  task emitting a C-ABI shared object, or delete it.
+- The C-ABI exports have no shared-object build task, so nothing yet produces
+  the `.so`/`.dylib` that Bun's `dlopen` or N-API would load. `mojo build
+  --emit shared-lib` cannot compile `src/ffi/exports.mojo` directly — its
+  relative `from ..hashing import` is not resolvable from a top-level entry
+  file — so this needs either an absolute-import shim or a restructure. The
+  code itself is live and tested (`test_ffi_exports.mojo`); only the packaging
+  step is missing.
 - Content negotiation does not implement `Accept-Encoding`, `Accept-Language`,
   or `Vary`.
 - `WorkerSupervisor` is never called from any app, and a respawned child returns
   `True` up through `_supervise` rather than to `fork_all`'s caller — so a
   respawned worker never reaches the server startup path. Blocks prefork, and
-  therefore blocks concurrent WSGI.
+  therefore blocks concurrent WSGI. (`test_lifecycle.mojo` covers the
+  supervisor's initial state only, and says so — it does not exercise respawn.)
 - Every package's sources live in a directory named `src`, so `from src.x import`
   in a test binds to whichever `-I` root is searched first. `test-wsgi` puts its
   own package first for this reason; the other test tasks survive only because
-  their module names happen not to collide.
+  their module names happen not to collide. The m0-http tests added since
+  (`test_config`, `test_log`, `test_lifecycle`) rely on that same luck.
+
+## Recently resolved
+
+- **`packages/m0-core/ffi/` was dead code** — outside `src/`, so `mojo
+  precompile src` never compiled it. Moving it to `src/ffi/` revealed it had
+  also gone stale against Mojo 1.0: `@export` rejects parametric functions, so
+  the inferred pointer origins (`UnsafePointer[UInt8, _]`) had to be named.
+  Now compiled, exported, and covered by tests asserting the exports agree with
+  the pure-Mojo hash functions.
+- **The fork's request-parsing hardening was untested.** `test_parsing.mojo`
+  now pins every claim [NOTICE](../NOTICE) makes: request smuggling (CL+TE,
+  duplicate `Content-Length`, `chunked` not last), the `Host` requirement, the
+  header-count cap, request-target normalization, and chunked integer overflow.
+  Each guard was verified load-bearing by disabling it and confirming the
+  matching test fails — the overflow guard turned out to crash the process when
+  removed, and an earlier version of that test passed either way.
+- **m0-sqlite reliability pass** — busy timeouts, non-raising `reset`/`finalize`,
+  real SQLite error text, single-statement `prepare`. See
+  [SQLITE_PERFORMANCE.md](SQLITE_PERFORMANCE.md) for the measured optimization
+  work that accompanied it.
