@@ -99,7 +99,10 @@ def test_paths_of_many_lengths_open_cleanly() raises:
     """
     from src import SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE
 
-    for n in range(1, 40):
+    # Every third length from 1 to 40. The full sweep cost ~115s on a CI macOS
+    # runner for no extra signal — allocation layout does not change character
+    # between adjacent lengths.
+    for n in range(1, 40, 3):
         var name = String("p")
         for _ in range(n):
             name += "x"

@@ -142,9 +142,12 @@ a second owner that would close it twice — move with `^` to transfer ownership
 `defer` and a destructor that rolled back would make correctness depend on drop
 order.
 
-**Linking.** libsqlite3 resolves with no link flags on macOS, where it lives in
-the dyld shared cache. On Linux the library must be installed — CI covers
-`ubuntu-latest`, so the matrix is the contract.
+**Linking.** Tests build to a binary with `-Xlinker -lsqlite3` rather than using
+`mojo run`. The JIT resolves symbols only from libraries already in its process:
+on macOS libsqlite3 lives in the dyld shared cache so `mojo run` happens to
+work, but on Linux it fails with `JIT session error: Symbols not found:
+[sqlite3_open_v2, ...]`. Linking explicitly behaves the same on both. Linux also
+needs `libsqlite3-dev` present at link time; CI installs it.
 
 **Not implemented:** statement caching. It was measured in the benchmark that
 chose SQLite and came out within noise at realistic row counts (~10% at N=50),

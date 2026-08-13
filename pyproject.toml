@@ -102,9 +102,23 @@ shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-
 help = "Test m0-datastar"
 shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar \"$f\" || exit 1; done"
 
+# Built and run, not `mojo run`. The JIT resolves symbols only from libraries
+# already loaded into its process: on macOS libsqlite3 is in the dyld shared
+# cache so `mojo run` happens to work, but on Linux it fails with
+# "JIT session error: Symbols not found: [sqlite3_open_v2, ...]". Linking
+# explicitly works identically on both, so both do it.
+# Linux also needs the library present at link time: libsqlite3-dev.
 [tool.poe.tasks.test-sqlite]
-help = "Test m0-sqlite (requires libsqlite3)"
-shell = "for f in packages/m0-sqlite/test/test_*.mojo; do mojo run -I packages/m0-sqlite \"$f\" || exit 1; done"
+help = "Test m0-sqlite (links libsqlite3; Linux needs libsqlite3-dev)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+for f in packages/m0-sqlite/test/test_*.mojo; do
+  name=$(basename "$f" .mojo)
+  mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 "$f" -o "$out/$name" || exit 1
+  "$out/$name" || exit 1
+done
+"""
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"

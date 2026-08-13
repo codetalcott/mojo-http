@@ -30,6 +30,12 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      # m0-sqlite links libsqlite3. macOS resolves it from the dyld shared
+      # cache with no setup; Linux needs the development package present at
+      # link time, or the build fails with "cannot find -lsqlite3".
+      - name: Install libsqlite3 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
       - name: Build packages (cross-package deps need .mojoc)
         run: uv run poe build-all
       - name: Run unit tests
@@ -46,6 +52,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      - name: Install libsqlite3 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
       - name: Build all packages
         run: uv run poe build-all
       # Exercises the m0-http <-> lightbug_http cycle end to end: the binary
