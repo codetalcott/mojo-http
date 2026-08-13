@@ -14,7 +14,10 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["poethepoet>=0.30"]
+dev = [
+    "django>=5.2.17",
+    "poethepoet>=0.30",
+]
 
 # No [build-system]: this is a virtual project. uv manages the environment but
 # does not install the repo itself.
@@ -67,10 +70,19 @@ for app in apps/*/server.mojo; do
   name=$(basename "$(dirname "$app")")
   echo "building $name"
   mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
-    -I apps/ "$app" -o "$out/$name" || exit 1
+    -I packages/m0-wsgi/ -I apps/ "$app" -o "$out/$name" || exit 1
 done
 echo "all apps built"
 """
+
+# NOTE ON -I ORDER: every package's sources live in a directory named `src`, so
+# `from src.x import ...` in a test resolves against whichever -I root is
+# searched first. The package under test must therefore come first, or its
+# tests silently bind to another package's `src`. The tasks above happen to work
+# because their module names do not collide; this one would not.
+[tool.poe.tasks.test-wsgi]
+help = "Test m0-wsgi (mapping logic only; needs no interpreter)"
+shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
 
 # m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
 # m0-http, not a layer on them — so it needs no -I at build time, and consumers
@@ -79,9 +91,16 @@ echo "all apps built"
 help = "Build m0-sqlite package"
 shell = "cd packages/m0-sqlite && mojo precompile src -o m0_sqlite.mojoc"
 
+# m0-wsgi is the only package that embeds CPython. It layers on m0-http exactly
+# as m0-datastar does; keeping it a separate package is what stops libpython
+# from landing on the link line of every other build in the repo.
+[tool.poe.tasks.build-wsgi]
+help = "Build m0-wsgi package (embeds CPython)"
+shell = "cd packages/m0-wsgi && mojo precompile src -I ../m0-http/ -I ../m0-core/ -o m0_wsgi.mojoc"
+
 [tool.poe.tasks.build-all]
 help = "Build all packages in dependency order"
-sequence = ["build-core", "build-http", "build-datastar", "build-sqlite"]
+sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite"]
 default_item_type = "ref"
 
 [tool.poe.tasks.clean]
@@ -122,7 +141,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-sqlite", "build-apps"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-sqlite", "build-apps"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -137,6 +156,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
 [tool.poe.tasks.serve-counter]
 help = "Run the Datastar counter demo on :8080"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/datastar_counter/server.mojo"
+
+[tool.poe.tasks.serve-django]
+help = "Run the Django WSGI example on :8080 (needs the django dev dependency)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/django_wsgi/server.mojo"
 
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
@@ -172,6 +195,58 @@ grep -q 'data: signals {"count":1}' sse.txt \
 grep -q 'data: event:' sse.txt && { echo 'frame was double-framed'; exit 1; }
 rm -f sse.txt
 echo "smoke-counter OK"
+"""
+
+# Each assertion below pins down one part of the WSGI bridge. They are cheap to
+# run and expensive to lose: every one of them failed at some point while the
+# bridge was being written.
+[tool.poe.tasks.smoke-django]
+help = "Start the Django example, assert a real request/response cycle, stop"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
+  apps/django_wsgi/server.mojo > django.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+
+fail() { echo "$1"; echo '=== django.log ==='; cat django.log; exit 1; }
+
+# The view's own body proves the request reached Django and came back.
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
+  | grep -q 'hello from django on mojo-http' || fail 'GET / did not return the view body'
+
+# Headers is a Dict[String, String], so a naive mapping keeps only the last
+# Set-Cookie. Django sets sessionid and csrftoken as two separate headers.
+n=$(curl -s -i http://localhost:8080/cookies | grep -ci '^set-cookie:')
+[ "$n" = "2" ] || fail "expected 2 Set-Cookie headers, got $n"
+
+# wsgi.input: the request body has to survive the crossing.
+echo 'round-trip-me' | curl -s --data-binary @- http://localhost:8080/echo \
+  | grep -q 'round-trip-me' || fail 'POST body did not round-trip'
+
+# QUERY_STRING reaches Django's request.GET rather than being swallowed.
+curl -s 'http://localhost:8080/query?name=ada+lovelace' \
+  | grep -q 'ada lovelace' || fail 'QUERY_STRING did not reach the view'
+
+# All 256 byte values, unchanged. A latin-1 round trip through a Mojo String
+# would corrupt everything above 0x7F, since Mojo strings are UTF-8.
+python3 -c 'import sys; sys.stdout.buffer.write(bytes(range(256)))' > expected.bin
+curl -s http://localhost:8080/binary > got.bin
+cmp -s expected.bin got.bin || fail "binary body was corrupted in transit ($(wc -c < got.bin) bytes)"
+rm -f expected.bin got.bin
+
+# The response mapper must carry Django's status, not hard-code 200.
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/nope)
+[ "$code" = "404" ] || fail "expected 404 from Django urls.py, got $code"
+
+# A view that raises becomes the server's 500 rather than killing the process.
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/boom)
+[ "$code" = "500" ] || fail "expected 500 from a raising view, got $code"
+
+# ...and the server is still answering afterwards.
+curl -s --fail http://localhost:8080/ > /dev/null || fail 'server died after a view raised'
+
+rm -f django.log
+echo "smoke-django OK"
 """
 
 # --- Benchmarks ------------------------------------------------------------

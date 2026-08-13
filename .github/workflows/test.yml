@@ -40,6 +40,11 @@ jobs:
         run: uv run poe build-all
       - name: Run unit tests
         run: uv run poe test-all
+      # m0-wsgi embeds CPython, so its interpreter has to resolve on both
+      # runners. Failing here rather than inside a smoke test makes a
+      # libpython discovery problem legible.
+      - name: Check the embedded interpreter resolves
+        run: uv run python -c "import django, sys; print(sys.version, django.__version__)"
 
   smoke:
     strategy:
@@ -68,6 +73,11 @@ jobs:
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
         run: uv run poe smoke-counter
+      # Proves the WSGI bridge end to end: a real Django request/response cycle,
+      # two Set-Cookie headers surviving a Dict-backed Headers, and a body of all
+      # 256 byte values coming back unchanged.
+      - name: Smoke test the Django WSGI example
+        run: uv run poe smoke-django
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -76,4 +86,5 @@ jobs:
           path: |
             hello.log
             counter.log
+            django.log
           if-no-files-found: ignore

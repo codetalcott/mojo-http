@@ -429,6 +429,19 @@ struct Headers(Copyable, Writable):
     def get(self, key: String) -> Optional[String]:
         return self._inner.get(key.lower())
 
+    def keys(self) -> List[String]:
+        """Snapshot of every header key present, lowercased.
+
+        The only way to enumerate headers without reaching into `_inner`.
+        Pair each key with `__getitem__` to walk the whole collection — needed
+        by anything that has to project these headers into another
+        representation, such as a WSGI `environ`.
+        """
+        var out = List[String](capacity=len(self._inner))
+        for entry in self._inner.items():
+            out.append(entry.key)
+        return out^
+
     @always_inline
     def __setitem__(mut self, key: String, value: String):
         self._inner[key.lower()] = value

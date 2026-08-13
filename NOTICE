@@ -37,6 +37,9 @@ lightbug_http
         memory/origin APIs
       - uri.mojo: implicit `hashlib` stdlib import corrected to `std.hashlib`,
         which any consumer importing the compiled package needed
+      - header.mojo: `Headers.keys()` added, so headers can be enumerated
+        without reaching into the private `_inner` dict from another package
+        (needed to project them into a WSGI environ)
 
     For the modification history carried into this repository (15 commits):
         git log -- packages/m0-http/lightbug_http
