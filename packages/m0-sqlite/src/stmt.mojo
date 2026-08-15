@@ -200,6 +200,12 @@ struct Statement(Movable):
         is the order SQLite documents: fetching the pointer forces the value
         into the requested format, and only then does the reported length
         describe that format rather than the one stored.
+
+        The bytes are trusted as UTF-8 without validation. That holds for
+        anything this package wrote, but SQLite stores TEXT as whatever bytes
+        it was handed, so a database written elsewhere can legally hold
+        invalid UTF-8 — and it lands in the returned String as-is. Validation
+        belongs to the caller who knows the data's provenance.
         """
         var p = external_call["sqlite3_column_text", CharPtr](
             self._handle, c_int(index)
@@ -375,6 +381,11 @@ struct Statement(Movable):
     # so they do not compose with incremental stepping. That is the trade, and
     # it is the right way round for the case that motivated them: bulk ingest
     # measured ~2.9x against the per-row bind/step/reset loop.
+    #
+    # The read side is deliberately int-only (`fetch_ints_over`), although
+    # `execute_over` takes float arrays too: ingest is the case that earns the
+    # module its keep, and a float read-out variant should be added the day
+    # something needs it, not speculatively.
 
     def execute_over(mut self, param: Int, data: List[Int]) raises:
         """Run this statement with `data` bound to `param` as `m0_array(?)`.

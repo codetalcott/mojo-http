@@ -33,7 +33,7 @@ from .ffi import (
     check_c_int_length,
 )
 from .stmt import Statement
-from .vtab import _register, SQLITE_MIN_POINTER_VERSION
+from .vtab import _register, SQLITE_MIN_VTAB_VERSION
 
 
 comptime MEMORY = ":memory:"
@@ -52,12 +52,33 @@ each holding its own connection to the same file.
 
 
 def _tail_is_blank(sql: String, start: Int) -> Bool:
-    """Whether everything from `start` on is whitespace or a statement separator."""
+    """Whether everything from `start` on is whitespace, separators or comments.
+
+    Comments count as blank because SQLite compiles them to nothing:
+    `prepare("SELECT 1; -- note")` carries one statement, not a script. An
+    unterminated block comment runs to the end of the text, as SQLite's own
+    tokenizer treats it.
+    """
     var bytes = sql.as_bytes()
-    for i in range(start, len(bytes)):
+    var n = len(bytes)
+    var i = start
+    while i < n:
         var c = bytes[i]
         # space, tab, newline, carriage return, vertical tab, form feed, ';'
-        if c != 32 and c != 9 and c != 10 and c != 13 and c != 11 and c != 12 and c != 59:
+        if c == 32 or c == 9 or c == 10 or c == 13 or c == 11 or c == 12 or c == 59:
+            i += 1
+        elif c == 45 and i + 1 < n and bytes[i + 1] == 45:  # "--" to end of line
+            i += 2
+            while i < n and bytes[i] != 10:
+                i += 1
+        elif c == 47 and i + 1 < n and bytes[i + 1] == 42:  # "/*" to "*/"
+            i += 2
+            while i + 1 < n and not (bytes[i] == 42 and bytes[i + 1] == 47):
+                i += 1
+            if i + 1 >= n:
+                return True
+            i += 2
+        else:
             return False
     return True
 
@@ -116,7 +137,10 @@ struct Connection(Movable):
             )
         )
         if rc != SQLITE_OK:
-            raise Error("sqlite3_exec failed: " + self.errmsg() + " [" + sql + "]")
+            raise Error(
+                "sqlite3_exec failed: " + self.errmsg() + " [" + sql
+                + "] (rc=" + String(rc) + ")"
+            )
 
     def prepare(self, sql: String) raises -> Statement:
         """Compile exactly one statement.
@@ -152,7 +176,8 @@ struct Connection(Movable):
         )
         if rc != SQLITE_OK:
             raise Error(
-                "sqlite3_prepare_v2 failed: " + self.errmsg() + " [" + sql + "]"
+                "sqlite3_prepare_v2 failed: " + self.errmsg() + " [" + sql
+                + "] (rc=" + String(rc) + ")"
             )
 
         var handle = pstmt[unsafe_offset=0]
@@ -289,17 +314,22 @@ struct Connection(Movable):
         worth its cost if you use it. Arrays may only be bound through the
         `Statement.*_over` helpers; see the note above them for why.
 
-        Raises on SQLite older than 3.20.0, which predates
-        `sqlite3_bind_pointer`. That is already a hard failure — a missing
-        symbol at link time on Linux, at load time on macOS — but an unresolved
-        symbol names neither the feature that wanted it nor the version that
-        would provide it, so it is worth saying plainly here.
+        Raises on SQLite older than 3.26.0. `sqlite3_bind_pointer` arrived in
+        3.20.0, but the planner's side of the contract — SQLITE_CONSTRAINT
+        from xBestIndex meaning "reject this plan", which `m0_array` uses to
+        refuse a scan without its array — is only honoured from 3.26.0, and on
+        the versions between, that refusal fails legitimate queries. A
+        pre-3.20 build would already be a hard failure — a missing symbol at
+        link time on Linux, at load time on macOS — but an unresolved symbol
+        names neither the feature that wanted it nor the version that would
+        provide it, so it is worth saying plainly here.
         """
         var have = libversion_number()
-        if have < SQLITE_MIN_POINTER_VERSION:
+        if have < SQLITE_MIN_VTAB_VERSION:
             raise Error(
-                "m0_array needs SQLite 3.20.0 or newer for sqlite3_bind_pointer,"
-                " but this build links "
+                "m0_array needs SQLite 3.26.0 or newer (sqlite3_bind_pointer"
+                " and the SQLITE_CONSTRAINT xBestIndex contract), but this"
+                " build links "
                 + libversion()
                 + " ("
                 + String(have)

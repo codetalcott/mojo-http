@@ -10,7 +10,7 @@ Registers `m0_array(?)` on a connection, a table-valued function with a single
     var q = db.prepare("SELECT sum(v) FROM t WHERE id IN "
                        "(SELECT value FROM m0_array(?1))")
     var out = List[Int]()
-    _ = q.select_ints_over(0, 1, ids, out)
+    _ = q.fetch_ints_over(0, 1, ids, out)
 
 Its reason to exist is bulk ingest — `INSERT INTO t SELECT value FROM
 m0_array(?1)` runs one `sqlite3_step` where the per-row loop runs 3N bind/step/
@@ -39,7 +39,7 @@ Three things about the implementation are deliberate:
     `c_string()` buffer would dangle.
 
 Borrow safety is not this file's job; see `Statement.execute_over` and
-`Statement.select_ints_over`, which are the only supported way to bind an
+`Statement.fetch_ints_over`, which are the only supported way to bind an
 array and are shaped so the borrow cannot outlive the data.
 """
 
@@ -53,8 +53,13 @@ comptime SQLITE_NOMEM: Int = 7
 comptime SQLITE_CONSTRAINT: Int = 19
 comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
 
-# sqlite3_bind_pointer, and so this whole module, arrived in SQLite 3.20.0.
-comptime SQLITE_MIN_POINTER_VERSION: Int = 3_020_000
+# The floor is 3.26.0, not 3.20.0. `sqlite3_bind_pointer` arrived in 3.20.0,
+# but xBestIndex returning SQLITE_CONSTRAINT to mean "reject this plan" — which
+# _x_best_index relies on to refuse a scan without its array — is only honoured
+# from 3.26.0. On the versions between, that refusal fails the whole query, and
+# not just for misuse: the planner may probe a plan in which the spec
+# constraint is unusable, so legitimate joins would error too.
+comptime SQLITE_MIN_VTAB_VERSION: Int = 3_026_000
 
 # Static storage: sqlite3_bind_pointer retains this pointer, so it cannot be a
 # transient buffer. A comptime literal is NUL-terminated with a stable address.
@@ -174,7 +179,9 @@ def _x_best_index(p_vtab: Int, p_info: Int) abi("C") -> c_int:
 
     if spec_slot < 0:
         # Without the spec there is nothing to scan; refuse the plan outright
-        # rather than quietly returning an empty table.
+        # rather than quietly returning an empty table. SQLITE_CONSTRAINT is
+        # honoured as "reject this plan" from 3.26.0 — see
+        # SQLITE_MIN_VTAB_VERSION.
         idx_num[unsafe_offset=0] = Int32(0)
         cost[unsafe_offset=0] = 1.0e99
         return c_int(SQLITE_CONSTRAINT)
@@ -348,7 +355,9 @@ def _register(db_handle: Int) raises:
         )
     )
     if rc != SQLITE_OK:
-        external_call["sqlite3_free", NoneType](m)
+        # No free here: create_module_v2 invokes the destructor on failure too
+        # (documented in sqlite3.h), and pAux is the module buffer itself, so
+        # SQLite has already released `m`. Freeing it again would double-free.
         raise Error("sqlite3_create_module_v2 failed (rc=" + String(rc) + ")")
 
 
@@ -379,6 +388,8 @@ def _bind_spec(
         )
     )
     if rc != SQLITE_OK:
-        # bind_pointer only runs the destructor on success.
-        external_call["sqlite3_free", NoneType](p)
+        # No free here: bind_pointer runs the destructor even when the bind
+        # fails — measured on 3.51.0 for both SQLITE_RANGE and SQLITE_MISUSE,
+        # and sqlite3.h documents the same for the blob/text binders. SQLite
+        # has already released the spec; freeing it again would double-free.
         raise Error("sqlite3_bind_pointer failed (rc=" + String(rc) + ")")

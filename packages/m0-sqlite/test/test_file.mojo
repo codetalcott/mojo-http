@@ -16,7 +16,9 @@ from src import (
     open,
     open_readonly,
     open_memory,
+    error_code,
     DEFAULT_BUSY_TIMEOUT_MS,
+    SQLITE_BUSY,
 )
 
 
@@ -201,11 +203,15 @@ def test_busy_timeout_waits_before_giving_up() raises:
     writer.execute("INSERT INTO t VALUES (1)")
 
     var t0 = perf_counter_ns()
-    with assert_raises():
+    var code = -1
+    try:
         other.execute("INSERT INTO t VALUES (2)")
+    except e:
+        code = error_code(String(e))
     var waited_ms = (perf_counter_ns() - t0) // 1_000_000
 
     writer.rollback()
+    assert_equal(code, SQLITE_BUSY, "the contended write must report BUSY")
     assert_true(
         waited_ms >= 250,
         "expected a wait of about 300ms, waited " + String(waited_ms) + "ms",

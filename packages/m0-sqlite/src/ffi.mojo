@@ -202,3 +202,39 @@ def describe(what: String, rc: Int, detail: String) -> String:
     if len(msg.as_bytes()) == 0 or msg == "not an error":
         msg = errstr(rc)
     return "sqlite3_" + what + " failed: " + msg + " (rc=" + String(rc) + ")"
+
+
+def error_code(message: String) -> Int:
+    """The SQLite result code carried by an error raised from this package.
+
+    Every error that had a result code available ends in "(rc=NN)"; this
+    recovers the NN, or returns -1 when the message carries none. It exists
+    because a Mojo `Error` is only text, and branching on the code — retry on
+    SQLITE_BUSY (5), report a constraint violation (19) — should not require
+    every caller to reinvent this parse:
+
+        try:
+            db.begin_immediate()
+        except e:
+            if error_code(String(e)) == SQLITE_BUSY:
+                ...
+    """
+    var b = message.as_bytes()
+    var n = len(b)
+    if n < 6 or b[n - 1] != 41:  # ')'
+        return -1
+    var i = n - 2
+    var value = 0
+    var scale = 1
+    var digits = 0
+    while i >= 0 and b[i] >= 48 and b[i] <= 57:
+        value += Int(b[i] - 48) * scale
+        scale *= 10
+        digits += 1
+        i -= 1
+    if digits == 0 or i < 3:
+        return -1
+    # The digits must be introduced by exactly "(rc=".
+    if b[i] != 61 or b[i - 1] != 99 or b[i - 2] != 114 or b[i - 3] != 40:
+        return -1
+    return value

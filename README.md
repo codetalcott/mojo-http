@@ -250,7 +250,7 @@ there is no `bind_array` to get wrong. The trade is that these do not compose
 with incremental stepping. See
 [docs/sqlite-vtab-feasibility.md](docs/sqlite-vtab-feasibility.md) for the
 measurements and the reasoning, including why this is worth it for ingest and
-not for `IN` clauses. Needs SQLite 3.20+; `register_array_module` says so if not.
+not for `IN` clauses. Needs SQLite 3.26+; `register_array_module` says so if not.
 
 **Not implemented:** statement caching. It was measured in the benchmark that
 chose SQLite and came out within noise at realistic row counts (~10% at N=50),

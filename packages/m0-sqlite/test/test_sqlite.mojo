@@ -21,6 +21,7 @@ from src import (
     open_memory,
     libversion,
     errstr,
+    error_code,
     c_string,
     SQLITE_INTEGER,
     SQLITE_FLOAT,
@@ -107,6 +108,35 @@ def test_prepare_allows_trailing_whitespace_and_semicolon() raises:
     var q = db.prepare("SELECT COUNT(*) FROM t")
     assert_true(q.step())
     assert_equal(q.column_int(0), 2)
+
+
+def test_prepare_allows_a_trailing_comment() raises:
+    """A comment after the final semicolon is not a second statement."""
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    var a = db.prepare("INSERT INTO t VALUES (1); -- audit note")
+    _ = a.step()
+    var b = db.prepare("INSERT INTO t VALUES (2); /* block */ ;")
+    _ = b.step()
+    var c = db.prepare("INSERT INTO t VALUES (3); /* unterminated runs to EOF")
+    _ = c.step()
+    var q = db.prepare("SELECT COUNT(*) FROM t")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 3)
+
+
+def test_prepare_still_rejects_a_statement_after_a_comment() raises:
+    """Skipping comments in the tail must not skip the statement behind one."""
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    with assert_raises():
+        _ = db.prepare(
+            "INSERT INTO t VALUES (1); -- note\nINSERT INTO t VALUES (2)"
+        )
+    with assert_raises():
+        _ = db.prepare(
+            "INSERT INTO t VALUES (1); /* c */ INSERT INTO t VALUES (2)"
+        )
 
 
 def test_prepare_rejects_text_that_compiles_to_nothing() raises:
@@ -199,6 +229,22 @@ def test_empty_blob_is_a_blob_not_null() raises:
     var q = db.prepare("SELECT typeof(avatar), length(avatar) FROM users")
     assert_true(q.step())
     assert_equal(q.column_text(0), "blob")
+    assert_equal(q.column_int(1), 0)
+
+
+def test_empty_text_is_text_not_null() raises:
+    """Twin of the empty-blob test: SQLite reads a NULL data pointer as
+    bind_null, so an empty String must not hand one over. That depends on
+    Mojo's String keeping its inline buffer non-null — hence a test.
+    """
+    var db = _seeded()
+    var ins = db.prepare("INSERT INTO users (name, note) VALUES ('e', ?)")
+    ins.bind_text(1, "")
+    _ = ins.step()
+
+    var q = db.prepare("SELECT typeof(note), length(note) FROM users")
+    assert_true(q.step())
+    assert_equal(q.column_text(0), "text")
     assert_equal(q.column_int(1), 0)
 
 
@@ -516,6 +562,36 @@ def test_c_int_length_guard_rejects_an_oversize_length() raises:
 def test_c_int_length_guard_allows_the_maximum() raises:
     check_c_int_length("bind_text", MAX_C_INT)
     check_c_int_length("bind_text", 0)
+
+
+def test_error_code_recovers_the_rc() raises:
+    """Branching on the code — retry on BUSY, report a constraint — must not
+    require callers to reinvent the "(rc=NN)" parse."""
+    var db = open_memory()
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    db.execute("INSERT INTO t VALUES (1)")
+    var ins = db.prepare("INSERT INTO t VALUES (1)")
+    var code = -1
+    try:
+        _ = ins.step()
+    except e:
+        code = error_code(String(e))
+    assert_equal(code, 19)  # SQLITE_CONSTRAINT
+
+    # execute() failures carry the code too.
+    code = -1
+    try:
+        db.execute("INSERT INTO t VALUES (1)")
+    except e:
+        code = error_code(String(e))
+    assert_equal(code, 19)
+
+
+def test_error_code_is_minus_one_without_a_code() raises:
+    assert_equal(error_code("no code in sight"), -1)
+    assert_equal(error_code(""), -1)
+    assert_equal(error_code("ends in (rc=)"), -1)
+    assert_equal(error_code("digits but no marker 42)"), -1)
 
 
 def test_query_scalar_reads_one_cell() raises:
