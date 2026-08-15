@@ -38,9 +38,11 @@ Depends on nothing else in this repo — it is a sibling of `m0-core` and
 from .ffi import (
     libversion,
     errstr,
+    error_code,
     db_errmsg,
     c_string,
     SQLITE_OK,
+    SQLITE_BUSY,
     SQLITE_ROW,
     SQLITE_DONE,
     SQLITE_INTEGER,

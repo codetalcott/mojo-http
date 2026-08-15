@@ -16,7 +16,7 @@ from std.testing import (
     TestSuite,
 )
 
-from src import Connection, Statement, open_memory, libversion
+from src import Connection, Statement, open_memory, libversion, error_code
 from src.ffi import libversion_number
 
 
@@ -63,11 +63,11 @@ def test_version_guard_admits_this_build() raises:
     Asserts a floor rather than an exact version: pinning one would turn a
     contributor's newer (or older-but-adequate) libsqlite3 into a spurious
     failure, which is the opposite of what the guard is for. The interesting
-    case — an actual pre-3.20 build — cannot be exercised here without a
+    case — an actual pre-3.26 build — cannot be exercised here without a
     second libsqlite3 to link against.
     """
     var n = libversion_number()
-    assert_true(n >= 3_020_000)
+    assert_true(n >= 3_026_000)
     # Sanity-check the encoding itself, so a bogus reading cannot satisfy the
     # floor by accident: major*1000000 + minor*1000 + patch.
     var major = n // 1_000_000
@@ -357,6 +357,32 @@ def test_array_survives_allocation_churn_during_the_scan() raises:
     assert_equal(out[0], 0)
     for i in range(64):
         assert_equal(out[i], i)
+
+
+def test_out_of_range_parameter_raises_cleanly() raises:
+    """SQLITE_RANGE from bind_pointer must surface as an error, not corrupt.
+
+    Regression guard for a double free: bind_pointer runs the spec destructor
+    even when the bind *fails*, so the failure path must not free the spec a
+    second time. The double free itself is silent heap corruption this test
+    cannot reliably observe — what it pins is the contract: a clean raise
+    carrying SQLITE_RANGE, and a statement that still works afterwards.
+    """
+    var db = _db()
+    var q = db.prepare("SELECT count(*) FROM m0_array(?1)")
+    var data = _seq(3, 1)
+    var out = List[Int]()
+
+    var code = -1
+    try:
+        _ = q.fetch_ints_over(0, 2, data, out)  # the statement has one param
+    except e:
+        code = error_code(String(e))
+    assert_equal(code, 25)  # SQLITE_RANGE
+
+    # The failed bind must not poison the statement.
+    assert_equal(q.fetch_ints_over(0, 1, data, out), 1)
+    assert_equal(out[0], 3)
 
 
 def test_repeated_binds_do_not_leak_the_spec() raises:
