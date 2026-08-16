@@ -69,6 +69,10 @@ jobs:
         run: uv run poe build-apps
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
+      # The framework showcase: routing with :id and a real 405, content
+      # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
+      - name: Smoke test the notes API
+        run: uv run poe smoke-notes
       # Proves the Datastar path end to end: a POST on one connection reaches a
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
@@ -85,6 +89,7 @@ jobs:
           name: server-logs-${{ matrix.os }}
           path: |
             hello.log
+            notes.log
             counter.log
             django.log
           if-no-files-found: ignore
