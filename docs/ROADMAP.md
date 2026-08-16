@@ -93,11 +93,12 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Known issues
 
-- Content negotiation does not implement `Accept-Language`. (`Accept-Encoding`
-  is negotiated by `negotiate_encoding` — codec-agnostic, for callers with
-  precompressed variants; the framework deliberately ships no compressor, so
-  dynamic compression stays out. `Vary` is set by the notes example for its
-  `Accept`-negotiated responses; there is no automatic Vary tracking.)
+- Negotiation covers `Accept`, `Accept-Encoding` (`negotiate_encoding` —
+  codec-agnostic, for callers with precompressed variants; the framework
+  deliberately ships no compressor), and `Accept-Language`
+  (`negotiate_language` — RFC 4647 matching, serve-something-over-406 per
+  RFC 9110's advice). What remains deliberate: no automatic `Vary` tracking
+  (the notes example sets it by hand) and no dynamic compression.
 - **Mojo 1.0's `PythonObject` interop leaks a reference per call argument and
   per `__setitem__` value.** Upstream toolchain bug, measured directly (a
   dict passed to a no-op Python function 1000 times gains 1000 references).

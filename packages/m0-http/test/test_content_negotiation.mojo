@@ -4,6 +4,7 @@ from std.testing import assert_true, assert_false, assert_equal, TestSuite
 
 from src.content_negotiation import (
     negotiate_encoding,
+    negotiate_language,
     parse_accept,
     wants_html,
     wants_event_stream,
@@ -293,6 +294,96 @@ def test_encoding_tolerates_whitespace() raises:
     assert_equal(
         negotiate_encoding(" br ; q=0.8 ,  gzip ; q=0.9 ", _gzip_br()), "gzip"
     )
+
+
+
+# --- Accept-Language (RFC 9110 §12.5.4, matching per RFC 4647) ---------------
+
+
+def _en_de() -> List[String]:
+    var a = List[String]()
+    a.append("en")
+    a.append("de-CH")
+    return a^
+
+
+def test_language_absent_header_serves_the_default() raises:
+    """No Accept-Language: the server's first choice, not an error."""
+    assert_equal(negotiate_language("", _en_de()), "en")
+
+
+def test_language_exact_match() raises:
+    assert_equal(negotiate_language("de-CH", _en_de()), "de-CH")
+
+
+def test_language_is_case_insensitive_and_keeps_caller_casing() raises:
+    """BCP 47 tags compare case-insensitively; the caller's spelling returns."""
+    assert_equal(negotiate_language("DE-ch", _en_de()), "de-CH")
+
+
+def test_language_range_prefix_matches_regional_tag() raises:
+    """RFC 4647 basic filtering: range `de` matches available `de-CH`."""
+    assert_equal(negotiate_language("de", _en_de()), "de-CH")
+
+
+def test_language_lookup_falls_back_to_the_base_tag() raises:
+    """RFC 4647 lookup: range `en-US` finds available `en`."""
+    assert_equal(negotiate_language("en-US", _en_de()), "en")
+
+
+def test_language_prefix_boundary_is_respected() raises:
+    """Range `de` must not match an available `denglish`."""
+    var a = List[String]()
+    a.append("denglish")
+    a.append("en")
+    assert_equal(negotiate_language("de, en;q=0.1", a), "en")
+
+
+def test_language_client_quality_orders_the_choice() raises:
+    assert_equal(negotiate_language("en;q=0.3, de-CH;q=0.9", _en_de()), "de-CH")
+
+
+def test_language_quality_ties_keep_server_order() raises:
+    assert_equal(negotiate_language("de-CH, en", _en_de()), "en")
+
+
+def test_language_specific_range_beats_a_broader_one() raises:
+    """en-GB;q=0.9 with en;q=0.1: the exact range settles available en-GB."""
+    var a = List[String]()
+    a.append("en")
+    a.append("en-GB")
+    assert_equal(negotiate_language("en;q=0.1, en-GB;q=0.9", a), "en-GB")
+
+
+def test_language_unmatched_request_still_gets_the_default() raises:
+    """A French-only client gets the default, not a 406 — RFC advice."""
+    assert_equal(negotiate_language("fr", _en_de()), "en")
+
+
+def test_language_refusing_the_default_falls_to_the_next_tag() raises:
+    """en;q=0 refuses en only; unmatched de-CH is acceptance by silence."""
+    assert_equal(negotiate_language("en;q=0", _en_de()), "de-CH")
+
+
+def test_language_refusing_everything_is_visible() raises:
+    """Only when every available tag is refused does "" come back."""
+    var only_en = List[String]()
+    only_en.append("en")
+    assert_equal(negotiate_language("en;q=0", only_en), "")
+
+
+def test_language_star_zero_refuses_everything_unnamed() raises:
+    var only_en = List[String]()
+    only_en.append("en")
+    assert_equal(negotiate_language("fr, *;q=0", only_en), "")
+
+
+def test_language_wildcard_accepts_anything() raises:
+    assert_equal(negotiate_language("fr, *;q=0.1", _en_de()), "en")
+
+
+def test_language_no_available_tags_is_empty() raises:
+    assert_equal(negotiate_language("en", List[String]()), "")
 
 
 def main() raises:

@@ -11,6 +11,7 @@ from .router import Router, MatchResult
 from .content_negotiation import (
     AcceptResult,
     negotiate_encoding,
+    negotiate_language,
     parse_accept,
     wants_html,
     wants_event_stream,
