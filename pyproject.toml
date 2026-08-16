@@ -69,8 +69,12 @@ trap 'rm -rf "$out"' EXIT
 for app in apps/*/server.mojo; do
   name=$(basename "$(dirname "$app")")
   echo "building $name"
+  extra=""
+  # datastar_todo persists in SQLite; only IT carries libsqlite3 on its link
+  # line — the other apps must not grow the dependency by riding along.
+  [ "$name" = "datastar_todo" ] && extra="-Xlinker -lsqlite3"
   mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
-    -I packages/m0-wsgi/ -I apps/ "$app" -o "$out/$name" || exit 1
+    -I packages/m0-wsgi/ -I packages/m0-sqlite/ -I apps/ $extra "$app" -o "$out/$name" || exit 1
 done
 echo "all apps built"
 """
@@ -180,9 +184,19 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
+# Built and run, not `mojo run`: the app links libsqlite3, and the JIT only
+# resolves symbols from libraries already in its process — works on macOS via
+# the dyld shared cache, fails on Linux. Same reason as test-sqlite.
 [tool.poe.tasks.serve-todo]
-help = "Run the Datastar todo demo on :8080 (M0_PORT to change)"
-cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/datastar_todo/server.mojo"
+help = "Run the Datastar todo demo on :8080 (M0_PORT, M0_DB to change)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
+  -I packages/m0-sqlite/ -I apps/ -Xlinker -lsqlite3 \
+  apps/datastar_todo/server.mojo -o "$out/todo" || exit 1
+"$out/todo"
+"""
 
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
@@ -429,18 +443,25 @@ PYEOF
 echo "smoke-ffi OK"
 """
 
-# The wire-format half of the todo demo's story: a mutation on one connection
-# must reach another client's open SSE stream as a single patch-elements frame
-# carrying the rendered fragment. (The browser half — Datastar actually
-# morphing the DOM in a second tab — was verified with Playwright when the
-# attribute syntax was pinned; see apps/datastar_todo/page.mojo.)
+# Two claims, each with its own server run off one compiled binary. First:
+# a mutation on one connection reaches another client's open SSE stream as a
+# single patch-elements frame carrying the rendered fragment. Second: the
+# list is rows in SQLite, so a killed and restarted server comes back with
+# the same list — the claim the in-memory version could not make. (The
+# browser half — Datastar actually morphing the DOM in a second tab — was
+# verified with Playwright when the attribute syntax was pinned; see
+# apps/datastar_todo/page.mojo.)
 [tool.poe.tasks.smoke-todo]
-help = "Start the todo demo, assert a broadcast patches a live client, stop"
+help = "Todo demo: assert a broadcast patches a live client, and the list survives a restart"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
-  apps/datastar_todo/server.mojo > todo.log 2>&1 &
+out=$(mktemp -d)
+trap 'kill $pid 2>/dev/null; rm -rf "$out"' EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
+  -I packages/m0-sqlite/ -I apps/ -Xlinker -lsqlite3 \
+  apps/datastar_todo/server.mojo -o "$out/todo" || exit 1
+
+M0_DB="$out/todos.db" "$out/todo" > todo.log 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || { echo '=== todo.log ==='; cat todo.log; exit 1; }
 curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > todo_sse.txt &
@@ -461,6 +482,18 @@ grep -q '<s>buy milk</s>' todo_sse.txt \
 grep -q 'data: event:' todo_sse.txt && { echo 'frame was double-framed'; exit 1; }
 curl -s http://localhost:8080/ | grep -q '<s>buy milk</s>' \
   || { echo 'a fresh page load did not render current server state'; exit 1; }
+
+# The persistence claim: kill the server, start it again on the same M0_DB,
+# and the struck-through todo must still be there.
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+M0_DB="$out/todos.db" "$out/todo" > todo.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== todo.log (restart) ==='; cat todo.log; exit 1; }
+curl -s http://localhost:8080/ | grep -q '<s>buy milk</s>' \
+  || { echo 'the list did not survive the restart'; curl -s http://localhost:8080/; exit 1; }
+
 rm -f todo_sse.txt todo.log
 echo "smoke-todo OK"
 """

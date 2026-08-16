@@ -46,17 +46,25 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
   RFC 9457 `problem+json` on every error, CORS via one `after_response` hook,
   and `M0_PORT` via `AppConfig`. In-memory store, deliberately not a
   database. Every feature is asserted end to end by `poe smoke-notes`.
-- `apps/datastar_todo/` — **done.** The flagship: live multi-tab sync over
-  SSE. Where the counter broadcasts a signal, this broadcasts *HTML* — every
-  mutation renders `<section id="todos">` once and `patch_elements` morphs it
-  into every connected tab — and its per-item actions are `Router` routes
-  with `:id`. Todo text is HTML-escaped before broadcast (the alternative is
-  distributed stored XSS). `poe smoke-todo` asserts the wire format; the
-  browser half was verified with Playwright in two real tabs, which is also
-  how two latent Datastar-syntax bugs got caught: v1.0.2 has no `on-load`
-  plugin (`data-init` opens the stream) and keyed attributes are
-  colon-separated (`data-on:click`, `data-bind:draft`) — the hyphen forms
-  fail silently. The counter shipped with both and is fixed alongside.
+- `apps/datastar_todo/` — **done, now SQLite-backed.** The flagship: live
+  multi-tab sync over SSE. Where the counter broadcasts a signal, this
+  broadcasts *HTML* — every mutation renders `<section id="todos">` once and
+  `patch_elements` morphs it into every connected tab — and its per-item
+  actions are `Router` routes with `:id`. Todo text is HTML-escaped before
+  broadcast (the alternative is distributed stored XSS). The list is rows in
+  SQLite (`M0_DB`), the first composition of `m0-sqlite` with the server —
+  in `apps/`, where packages compose; the package itself still imports
+  nothing here — and the prerequisite for SSE replay across restarts, whose
+  remaining half is persisting `PatchJournal` and cross-restart event-id
+  semantics. Because it links libsqlite3, the app is built-then-run, never
+  `mojo run` (the test-sqlite rule). `poe smoke-todo` asserts the wire
+  format *and* that a killed-and-restarted server comes back with the same
+  list; the browser half was verified with Playwright in two real tabs
+  (re-run after the SQLite conversion), which is also how two latent
+  Datastar-syntax bugs got caught: v1.0.2 has no `on-load` plugin
+  (`data-init` opens the stream) and keyed attributes are colon-separated
+  (`data-on:click`, `data-bind:draft`) — the hyphen forms fail silently.
+  The counter shipped with both and is fixed alongside.
 
 The `build-apps` gate this section once called for now exists: `poe build-apps`
 compiles every example to a temp directory, and CI runs it before the smoke

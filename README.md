@@ -121,8 +121,10 @@ Run [apps/datastar_counter/](apps/datastar_counter/) with `uv run poe serve-coun
 it in two tabs; pressing a button in one updates the other.
 [apps/datastar_todo/](apps/datastar_todo/) is the same idea grown up: mutations
 broadcast rendered *HTML* (`patch_elements` morphs `<section id="todos">` by id
-in every tab), the per-item actions are `Router` routes with `:id`, and todo
-text is HTML-escaped before it is broadcast. `uv run poe serve-todo`.
+in every tab), the per-item actions are `Router` routes with `:id`, todo
+text is HTML-escaped before it is broadcast, and the list is rows in SQLite
+(`M0_DB`, default `todos.db`) — kill the server and restart it, the list comes
+back. `poe smoke-todo` asserts exactly that. `uv run poe serve-todo`.
 
 A note on Datastar v1.0.2 attribute syntax, learned the hard way in a real
 browser: the stream opens from `data-init` (there is no `on-load` plugin), and
@@ -298,7 +300,7 @@ so it is not worth the ownership complexity yet.
 - **SSE fan-out is single-process.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry, so a push on one worker never reaches subscribers on another.
 - **No server-side timer hook.** Every push must be triggered by an inbound request.
 - `m0-sqlite` has no statement cache and no connection pool; see above.
-- No SSE replay across restarts. `DatastarStream` ignores `Last-Event-ID` because event ids restart per process; `PatchJournal` is the building block if you need it.
+- No SSE replay across restarts. `DatastarStream` ignores `Last-Event-ID` because event ids restart per process; `PatchJournal` is the building block if you need it. (The state half of the story is solved — the todo demo persists its list in SQLite — so replay is the remaining half.)
 
 ## Development
 
