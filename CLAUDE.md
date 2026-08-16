@@ -37,8 +37,11 @@ Mojo 1.0 interop imposes and that the code depends on:
 - **Mojo never acquires the GIL** except when destroying a `PythonObject`. Every
   other call assumes the calling thread holds it, which is true only because
   `Py_Initialize` leaves it held on the thread that ran `main()`. This is safe
-  today purely because the server is single-threaded. If `WorkerSupervisor` is
-  ever wired in, **fork before the first Python call, never after.**
+  today purely because each server process is single-threaded. `WorkerSupervisor`
+  is wired in (`apps/django_wsgi/server.mojo`, via `M0_WORKERS`) and the rule it
+  obeys is load-bearing: **fork before the first Python call, never after.**
+  Mojo initializes the interpreter lazily, so each worker's own `WSGIApp`
+  construction after `fork_all()` returns is that first call — keep it there.
 
 `m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
 flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
