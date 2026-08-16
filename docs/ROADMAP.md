@@ -112,14 +112,22 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
   a design property its remaining consumers (`apps/hello`) don't notice, but
   it measured p99 ~140 ms under 16 persistent connections, which is why the
   WSGI app now uses the non-blocking loop instead.
-- Every package's sources live in a directory named `src`, so `from src.x import`
-  in a test binds to whichever `-I` root is searched first. `test-wsgi` puts its
-  own package first for this reason; the other test tasks survive only because
-  their module names happen not to collide. The m0-http tests added since
-  (`test_config`, `test_log`, `test_lifecycle`) rely on that same luck.
 
 ## Recently resolved
 
+- **The `src` name-collision hazard was a misdiagnosis, now fixed at the
+  root.** The old known issue said tests bind `from src.x import` to
+  whichever `-I` root comes first and survive on module names not colliding.
+  Measured against the toolchain, the real rule: a test file inside a
+  `test/` marked with `__init__.mojo` binds its *own* package's `src`
+  regardless of `-I` order; only without that marker does `-I` order decide —
+  and m0-wsgi (plus m0-sqlite) were exactly the packages missing it, which
+  is how `test-wsgi`'s ordering workaround and the over-generalized rule
+  were born. Every `test/` now carries the marker (documented as
+  load-bearing), every test task lists its package first anyway, and a
+  deliberately colliding `src/which_package.mojo` sentinel plus
+  `test_resolution.mojo` in every package turns any future erosion into a
+  loud failure instead of silent cross-package misbinding.
 - **The C-ABI exports now ship as a shared object.** `poe build-ffi` emits
   `packages/m0-core/libm0core.so` (`.dylib` on macOS) from
   `ffi_exports.mojo`, which moved back to the package root: a shared-lib
