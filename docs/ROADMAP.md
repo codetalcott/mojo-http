@@ -90,15 +90,14 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
   step is missing.
 - Content negotiation does not implement `Accept-Encoding`, `Accept-Language`,
   or `Vary`.
-- The non-blocking event loop's accept path develops a latency tail under
-  high connection churn: with `Connection: close` traffic at ~5k conn/s and
-  one worker, p50 stays ~3 ms but p99 reaches ~80–140 ms, fading with more
-  workers (~21 ms at 2, ~5 ms at 4 — see
-  [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). Keep-alive traffic is
-  unaffected, so a deployment behind a proxy holding persistent upstream
-  connections never sees it. Likely the edge-triggered listen socket leaving
-  late arrivals in the backlog until the next readiness edge; not
-  investigated further.
+- **Mojo 1.0's `PythonObject` interop leaks a reference per call argument and
+  per `__setitem__` value.** Upstream toolchain bug, measured directly (a
+  dict passed to a no-op Python function 1000 times gains 1000 references).
+  `m0-wsgi` works around it by never letting a per-request Python object
+  cross through those operations — requests are serialized into a persistent
+  Python-side bytearray instead (see `bridge.mojo`). Any new bridge code must
+  hold the same line, and the workaround can be retired if a future toolchain
+  fixes the leak (re-test with `smoke-django`'s RSS guard).
 - The blocking `listen_and_serve` loop serves one accepted keep-alive
   connection exclusively until timeout or the `max_keepalive_requests` cap —
   a design property its remaining consumers (`apps/hello`) don't notice, but
@@ -112,6 +111,23 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **The WSGI bridge leaked ~2.3 KB per request**, which on a long-lived
+  worker grew the CPython heap without bound and turned gen-2 GC into
+  ~200 ms event-loop pauses — the real cause of the close-mode latency tail
+  previously (wrongly) pinned on the accept path. Root cause is the
+  `PythonObject` interop leak above; the bridge now crosses per-request data
+  as a byte blob through leak-free operations only, the shim gained the
+  PEP 3333-required `close()` on the application's result iterable, and
+  `smoke-django` fails if 10k requests grow the worker's RSS by more than
+  12 MB (verified to catch the old bridge at ~23 MB). Diagnosis narrative
+  and clean numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
+- **The event loop's accept drain broke on any `accept()` error.** An
+  `ECONNABORTED` from a client that gave up while queued ended the whole
+  drain, and on an edge-triggered listen socket (both backends) the
+  connections left behind are owed no new readiness edge until another
+  connection arrives — stranding live clients behind a dead one under bursty
+  load. Transient errors now skip and keep draining; only `EAGAIN` and
+  resource-exhaustion errors end the drain.
 - **`WorkerSupervisor` respawn returned to the wrong place.** A respawned
   child returned `True` up through `_supervise` and kept *supervising* instead
   of returning to `fork_all`'s caller, so it never reached server startup.

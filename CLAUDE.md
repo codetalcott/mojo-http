@@ -34,6 +34,15 @@ Mojo 1.0 interop imposes and that the code depends on:
   raw addresses through `ctypes` (see `bridge.mojo`). Do not "simplify" this to
   a `String` round trip; Mojo strings are UTF-8 and it corrupts every byte above
   0x7F.
+- **`PythonObject` interop leaks a reference per call argument and per
+  `__setitem__` value** (Mojo 1.0, measured; zero-argument calls, call
+  results, `len()`, and `String(py=...)` are clean). This is why the bridge
+  ships each request as a byte blob through a persistent Python-side
+  bytearray and takes everything back as call results. Never add a
+  per-request `PythonObject` call argument or dict/attr assignment to the
+  bridge — it reintroduces an unbounded per-request leak that shows up as
+  growing GC pauses, and `smoke-django`'s RSS guard will fail. Startup-only
+  calls (`set_app`, `set_base`) are the deliberate, bounded exception.
 - **Mojo never acquires the GIL** except when destroying a `PythonObject`. Every
   other call assumes the calling thread holds it, which is true only because
   `Py_Initialize` leaves it held on the thread that ran `main()`. This is safe

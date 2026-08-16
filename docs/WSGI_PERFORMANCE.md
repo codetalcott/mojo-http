@@ -3,16 +3,18 @@
 First measured 2026-08-16, once the prefork concurrency story existed. Before
 that, `HTTPService.func` served one request at a time per process and any
 throughput claim would have been noise about the wrong bottleneck. Re-measured
-the same day after two serving changes this document motivated: the shared
-pre-fork listener, and the move from the blocking accept loop to the
-non-blocking event loop.
+the same day after each of three serving changes this document motivated: the
+shared pre-fork listener, the move to the non-blocking event loop, and the
+leak-free bridge.
 
 ## Setup
 
 Same Django project (`apps/django_wsgi/djangoproj`, `DEBUG = False`, no
 middleware), same worker counts, same machine, same load generator.
 
-- 4-core Linux container, everything (server + load) on one box
+- 4-core Linux container, everything (server + load) on one box. The
+  container is shared, so absolute numbers drift between sessions — each
+  table row was measured in the same run as its gunicorn baseline.
 - mojo-http: `apps/django_wsgi/server.mojo` compiled with `mojo build`
   (Mojo 1.0, the `uv.lock` pin), `M0_WORKERS=N`. Workers accept from one
   listener bound before the fork, the same model gunicorn uses — a busy
@@ -29,56 +31,78 @@ Two client modes, because the servers differ in one relevant way: gunicorn's
 sync worker closes every connection (it does not implement keep-alive), while
 mojo-http keeps connections alive. `Connection: close` is the apples-to-apples
 comparison; keep-alive is what a reverse proxy in front of mojo-http would
-actually do. gunicorn's numbers were the same in both client modes, as
-expected — its server-side close decides.
+actually do.
 
-## Requests per second
+## Results
+
+Requests per second, with wrk's p99 latency in parentheses:
 
 | Workers | mojo-http (keep-alive) | mojo-http (close) | gunicorn (best of both modes) |
 |--------:|-----------------------:|------------------:|------------------------------:|
-| 1       | 6,720                  | 5,238             | 4,123                          |
-| 2       | 12,819                 | 10,816            | 8,019                          |
-| 4       | 21,528                 | 14,303            | 9,655                          |
+| 1       | 5,865 (4.0 ms)         | 5,020 (5.9 ms)    | 3,883 (6.5 ms)                 |
+| 2       | 11,443 (2.4 ms)        | 10,296 (2.3 ms)   | 7,723 (3.1 ms)                 |
+| 4       | 19,596 (3.3 ms)        | 14,127 (4.7 ms)   | 9,613 (2.9 ms)                 |
 
-Keep-alive — the mode a fronting proxy uses — serves ~1.6x gunicorn's
-throughput at 1–2 workers and ~2.2x at 4. The 4-worker rows carry a caveat
-for both servers: 4 workers plus 2 wrk threads oversubscribe 4 cores, so the
-load generator competes with the servers it is measuring.
+~1.5x gunicorn's throughput at 1–2 workers and ~2x at 4, with p99 at or below
+gunicorn's at 1–2 workers. The 4-worker rows carry a caveat for both servers:
+4 workers plus 2 wrk threads oversubscribe 4 cores, so the load generator
+competes with the servers it is measuring.
 
-## Latency
+These numbers hold on a long-lived process — the table's close-mode runs were
+taken *after* the keep-alive runs on the same workers, ~200k requests in.
+That sentence is the point of the next section.
 
-Keep-alive is clean at every worker count: p50 in the hundreds of
-microseconds, p99 of 5–8 ms. It was not always — see the history below,
-which is why the numbers in this section exist at all.
+## History: three fixes, and what the tails actually were
 
-`Connection: close` now carries the tail instead: medians stay low
-(p50 2.9 ms at 1 worker, 1.4 ms at 2) but p99 reaches ~80–140 ms at 1 worker
-(stable across repeated runs), ~21 ms at 2, ~5 ms at 4. That is an
-accept-path cost of the event loop under high connection churn — thousands of
-connect-request-close cycles per second against an edge-triggered listen
-socket — and it fades as more workers drain the backlog. It is recorded as a
-known issue in [ROADMAP.md](ROADMAP.md). A deployment behind a proxy holding
-persistent upstream connections never sees this mode.
+**Keep-alive p99 ~140 ms — the blocking accept loop.** The first benchmarked
+configuration served each worker through the blocking accept loop, which
+drains one accepted connection's keep-alive requests exclusively until the
+idle timeout or the `max_keepalive_requests` cap closes it. Under 16
+persistent connections that measured p50 ~245 µs but p99 ~140 ms: fifteen
+connections queued while one was drained. Moving the workers onto the
+non-blocking event loop (the same loop SSE already requires) replaced
+connection-exclusive draining with multiplexing after every response, and
+keep-alive collapsed to single-digit p99 while throughput rose at every
+worker count.
 
-## History: why the event loop, with numbers
+**Close-mode p99 ~80–150 ms — a per-request reference leak.** After the loop
+switch, `Connection: close` runs showed a wild tail that keep-alive runs
+mostly didn't. Chasing the obvious suspect (the edge-triggered accept path)
+was wrong twice over: server-side timing (`M0_ACCESS_LOG=true`) showed
+requests completing in p99 298 µs *inside* the loop while clients waited
+45+ ms, and a level-triggered listener changed nothing. The discriminating
+observation was that only *aged* processes showed the tail — and the worker's
+RSS was growing ~2.3 KB per request, without bound.
 
-The first benchmarked configuration served each worker through the blocking
-accept loop, which drains one accepted connection's keep-alive requests
-exclusively — microsecond responses for that connection — until the idle
-timeout or the `max_keepalive_requests` cap closes it, and only then accepts
-the next waiting connection. Under 16 persistent connections that measured
-p50 ~245 µs but p99 ~140 ms at 2 workers: fifteen connections queued while
-one was being drained. `Connection: close` was clean on that loop (p99
-2.1 ms at 2 workers), because every request re-entered the accept queue.
+The growth was a CPython reference leak in Mojo 1.0's `PythonObject` interop:
+every call *argument* and every `__setitem__` *value* leaks one reference
+(measured directly — a dict passed to a no-op Python function 1000 times ends
+with its refcount 1000 higher). The old bridge built the environ dict via
+Mojo setitems and passed it as a call argument, so every request pinned its
+environ, `wsgi.input`, and response body forever. The leaked heap made
+CPython's gen-2 collections progressively slower — one ~200 ms GC pause on
+the event loop stalls every queued connection at once, which is exactly a
+1% tail at 5k req/s. Close mode amplified it only because connection churn
+runs closer to CPU saturation, where a single pause backs up more clients.
 
-Moving the workers onto the non-blocking event loop — the same loop SSE
-already requires — replaced connection-exclusive draining with multiplexing
-between connections after every response. Keep-alive p99 fell from ~140 ms to
-~5 ms at 2 workers and throughput rose at every worker count (keep-alive,
-2 workers: 10,186 → 12,819 req/s; 4 workers: 16,373 → 21,528). The trade was
-the close-mode tail described above. The view still runs synchronously on the
-loop either way: a slow view stalls its whole process, and cross-request
-concurrency remains `M0_WORKERS`'s job.
+The fix (`m0-wsgi/src/bridge.mojo`) restructures the boundary so no
+per-request Python object crosses through a leaky operation: Mojo serializes
+the request into a persistent Python-side `bytearray` through a raw pointer,
+and a zero-argument `handle()` builds the environ natively, runs the
+application, and returns `(status, headers, body)` — zero-argument calls and
+call results are measured leak-free. RSS over 500k requests now moves ~360 KB
+total, and `smoke-django` fails if 10k requests grow the worker by more than
+12 MB. The same rewrite made the shim call `close()` on the application's
+result iterable, which PEP 3333 requires and the old shim skipped.
+
+**What remains.** At one worker under saturation, the median close-mode
+request still waits ~2–3 ms: a synchronous view occupies the process, so a
+16-client closed loop queues about one batch deep. That is the design (more
+workers absorb it), not a defect. Separately, the first seconds after a
+keep-alive fleet aborts can show a handful of ~220 ms requests — the
+signature of kernel TCP retransmission (RTO floor 200 ms) during mass
+teardown, visible server-side and identical with the leak fixed; it is a
+boundary artifact of switching load patterns, not steady-state behavior.
 
 ## Reproducing
 
@@ -99,4 +123,6 @@ cd apps/django_wsgi && uv run --with gunicorn python -m gunicorn \
 ```
 
 When killing the mojo server, kill the workers too — they are forks of the
-supervisor, and their pids are in its startup output.
+supervisor, and their pids are in its startup output. `M0_ACCESS_LOG=true`
+logs per-request server-side duration, which is how in-loop time gets
+separated from accept-queue wait when a latency number needs explaining.
