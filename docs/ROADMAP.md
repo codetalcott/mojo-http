@@ -70,10 +70,14 @@ and set `wsgi.multiprocess=True`.
 then `M0_WORKERS=2` asserting that two overlapping slow requests complete in
 ~1x the view latency on two distinct worker pids.
 
+Workers serve through the non-blocking event loop — the blocking accept loop
+drained one keep-alive connection exclusively, and the switch took its p99
+from ~140 ms to ~5 ms while lifting throughput at every worker count.
+
 Benchmarked against gunicorn (same Django project, same worker counts, wrk):
-~1.4x gunicorn's throughput at 1–2 workers and ~1.7x at 4, with a keep-alive
-latency caveat that matters — methodology and numbers in
-[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
+~1.6x gunicorn's throughput at 1–2 workers and ~2.2x at 4 under keep-alive,
+with the remaining tail-latency caveat on close-per-request traffic —
+methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Known issues
 
@@ -86,14 +90,20 @@ latency caveat that matters — methodology and numbers in
   step is missing.
 - Content negotiation does not implement `Accept-Encoding`, `Accept-Language`,
   or `Vary`.
-- The blocking `listen_and_serve` loop is unfair to concurrent keep-alive
-  connections: it serves one accepted connection's requests exclusively until
-  the idle timeout or `max_keepalive_requests` closes it, so other persistent
-  connections queue for tens to hundreds of milliseconds (measured: p50
-  ~245 µs but p99 ~140 ms under 16 keep-alive connections at 2 workers — see
-  [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). `Connection: close` traffic is
-  unaffected. The non-blocking event loop multiplexes and should not have
-  this; moving the WSGI app onto it has not been tried.
+- The non-blocking event loop's accept path develops a latency tail under
+  high connection churn: with `Connection: close` traffic at ~5k conn/s and
+  one worker, p50 stays ~3 ms but p99 reaches ~80–140 ms, fading with more
+  workers (~21 ms at 2, ~5 ms at 4 — see
+  [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). Keep-alive traffic is
+  unaffected, so a deployment behind a proxy holding persistent upstream
+  connections never sees it. Likely the edge-triggered listen socket leaving
+  late arrivals in the backlog until the next readiness edge; not
+  investigated further.
+- The blocking `listen_and_serve` loop serves one accepted keep-alive
+  connection exclusively until timeout or the `max_keepalive_requests` cap —
+  a design property its remaining consumers (`apps/hello`) don't notice, but
+  it measured p99 ~140 ms under 16 persistent connections, which is why the
+  WSGI app now uses the non-blocking loop instead.
 - Every package's sources live in a directory named `src`, so `from src.x import`
   in a test binds to whichever `-I` root is searched first. `test-wsgi` puts its
   own package first for this reason; the other test tasks survive only because
