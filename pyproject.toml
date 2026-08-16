@@ -199,16 +199,31 @@ echo "smoke-counter OK"
 
 # Each assertion below pins down one part of the WSGI bridge. They are cheap to
 # run and expensive to lose: every one of them failed at some point while the
-# bridge was being written.
+# bridge was being written. The server is compiled once and started twice:
+# single-worker for the bridge assertions, then M0_WORKERS=2 for the prefork
+# concurrency assertions.
 [tool.poe.tasks.smoke-django]
-help = "Start the Django example, assert a real request/response cycle, stop"
+help = "Start the Django example, assert a real request/response cycle (single-worker, then M0_WORKERS=2), stop"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
-  apps/django_wsgi/server.mojo > django.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
+out=$(mktemp -d)
+srv="$out/django_server"
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
+  apps/django_wsgi/server.mojo -o "$srv" || exit 1
 
-fail() { echo "$1"; echo '=== django.log ==='; cat django.log; exit 1; }
+cleanup() {
+  kill $pid $worker_pids 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+
+"$srv" > django.log 2>&1 &
+pid=$!
+
+fail() {
+  echo "$1"; echo '=== django.log ==='; cat django.log
+  if [ -f django2.log ]; then echo '=== django2.log ==='; cat django2.log; fi
+  exit 1
+}
 
 # The view's own body proves the request reached Django and came back.
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
@@ -245,7 +260,66 @@ code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/boom)
 # ...and the server is still answering afterwards.
 curl -s --fail http://localhost:8080/ > /dev/null || fail 'server died after a view raised'
 
-rm -f django.log
+# One process by default, and the environ says so.
+curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=False' \
+  || fail 'wsgi.multiprocess was not False with one worker'
+
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+# --- M0_WORKERS=2: the prefork path -----------------------------------------
+
+M0_WORKERS=2 "$srv" > django2.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
+  | grep -q 'hello from django on mojo-http' || fail 'GET / failed with M0_WORKERS=2'
+
+# Workers are forks of the supervisor, not children of this shell, so $pid
+# alone cannot reach them at cleanup. Their pids exist only in the log
+# ("[worker N] pid=... starting") — capture them now, before the log is gone.
+worker_pids=$(grep -oE 'pid=[0-9]+' django2.log | cut -d= -f2 | sort -u)
+
+# Each worker built its own WSGIApp after fork, with multiprocess=True.
+curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=True' \
+  || fail 'wsgi.multiprocess was not True with two workers'
+
+# Correctness holds when a different process may answer each request.
+curl -s 'http://localhost:8080/query?name=ada+lovelace' \
+  | grep -q 'ada lovelace' || fail 'QUERY_STRING broke under M0_WORKERS=2'
+
+# Two overlapping 1.5s requests must finish in ~1x the view latency, not 2x.
+# Workers accept from one shared pre-fork listener, and a worker that is busy
+# in a view never accepts, so the pair should land on two distinct workers
+# every time — but the retry loop stays rather than trusting a single race.
+# A server that never spreads the pair across two workers fails after 8
+# attempts; that is what a macOS-style per-worker SO_REUSEPORT bind does
+# (all connections to one socket), which is why the listener is shared.
+parallel_ok=0
+attempt=0
+while [ $attempt -lt 8 ]; do
+  attempt=$((attempt + 1))
+  start=$(date +%s)
+  curl -s http://localhost:8080/slow > slow1.txt &
+  c1=$!
+  curl -s http://localhost:8080/slow > slow2.txt &
+  c2=$!
+  wait $c1 $c2
+  elapsed=$(( $(date +%s) - start ))
+  grep -q 'slow done' slow1.txt || fail 'first /slow response was wrong'
+  grep -q 'slow done' slow2.txt || fail 'second /slow response was wrong'
+  pid1=$(cut -d= -f2 slow1.txt)
+  pid2=$(cut -d= -f2 slow2.txt)
+  if [ "$pid1" != "$pid2" ]; then
+    [ "$elapsed" -lt 3 ] || fail "distinct workers, yet overlapping requests took ${elapsed}s"
+    parallel_ok=1
+    break
+  fi
+done
+[ "$parallel_ok" = 1 ] || fail 'the request pair never reached two distinct workers in 8 attempts'
+rm -f slow1.txt slow2.txt
+
+rm -f django.log django2.log
 echo "smoke-django OK"
 """
 

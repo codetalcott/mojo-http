@@ -58,12 +58,22 @@ implemented in an embedded Python shim rather than as a Mojo callable, and
 bodies moved as raw addresses because Mojo 1.0's `std.python` binds no `bytes`
 API at all.
 
-What it is not yet: concurrent. `HTTPService.func` runs the view on the event
-loop, so this serves one request at a time per process. The next step is
-prefork — which needs the `WorkerSupervisor` respawn bug below fixed first, and
-each child constructing its own `WSGIApp` *after* `fork()`, since forking a live
-CPython is not safe. No benchmark has been run; a throughput claim against
-gunicorn would be premature until the concurrency story exists.
+Concurrency is prefork, and it exists now: `M0_WORKERS=N` makes
+`apps/django_wsgi/server.mojo` fork N workers through `WorkerSupervisor`
+*before* the first Python call — forking a live CPython is not safe, and Mojo
+initializes the interpreter lazily, so each worker makes its own first Python
+call by constructing its own `WSGIApp` after returning from `fork_all()`.
+Workers accept from one listener bound before the fork (per-worker
+`SO_REUSEPORT` binds do not distribute on macOS, and hash blindly on Linux)
+and set `wsgi.multiprocess=True`.
+`poe smoke-django` runs both shapes: single-worker for the bridge assertions,
+then `M0_WORKERS=2` asserting that two overlapping slow requests complete in
+~1x the view latency on two distinct worker pids.
+
+Benchmarked against gunicorn (same Django project, same worker counts, wrk):
+~1.4x gunicorn's throughput at 1–2 workers and ~1.7x at 4, with a keep-alive
+latency caveat that matters — methodology and numbers in
+[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Known issues
 
@@ -76,11 +86,14 @@ gunicorn would be premature until the concurrency story exists.
   step is missing.
 - Content negotiation does not implement `Accept-Encoding`, `Accept-Language`,
   or `Vary`.
-- `WorkerSupervisor` is never called from any app, and a respawned child returns
-  `True` up through `_supervise` rather than to `fork_all`'s caller — so a
-  respawned worker never reaches the server startup path. Blocks prefork, and
-  therefore blocks concurrent WSGI. (`test_lifecycle.mojo` covers the
-  supervisor's initial state only, and says so — it does not exercise respawn.)
+- The blocking `listen_and_serve` loop is unfair to concurrent keep-alive
+  connections: it serves one accepted connection's requests exclusively until
+  the idle timeout or `max_keepalive_requests` closes it, so other persistent
+  connections queue for tens to hundreds of milliseconds (measured: p50
+  ~245 µs but p99 ~140 ms under 16 keep-alive connections at 2 workers — see
+  [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). `Connection: close` traffic is
+  unaffected. The non-blocking event loop multiplexes and should not have
+  this; moving the WSGI app onto it has not been tried.
 - Every package's sources live in a directory named `src`, so `from src.x import`
   in a test binds to whichever `-I` root is searched first. `test-wsgi` puts its
   own package first for this reason; the other test tasks survive only because
@@ -89,6 +102,14 @@ gunicorn would be premature until the concurrency story exists.
 
 ## Recently resolved
 
+- **`WorkerSupervisor` respawn returned to the wrong place.** A respawned
+  child returned `True` up through `_supervise` and kept *supervising* instead
+  of returning to `fork_all`'s caller, so it never reached server startup.
+  `_try_respawn` now distinguishes parent from child, and the child unwinds
+  out of `fork_all` exactly like an initially-forked worker. `test_respawn.mojo`
+  proves it with real forks (the whole scenario isolated in a subprocess), and
+  was verified load-bearing against the old code. `M0_WORKERS` is now wired
+  into `apps/django_wsgi`.
 - **`packages/m0-core/ffi/` was dead code** — outside `src/`, so `mojo
   precompile src` never compiled it. Moving it to `src/ffi/` revealed it had
   also gone stale against Mojo 1.0: `@export` rejects parametric functions, so

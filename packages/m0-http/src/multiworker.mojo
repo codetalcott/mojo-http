@@ -18,6 +18,15 @@ from lightbug_http.c.process import (
 )
 
 
+# _try_respawn outcomes. A plain Bool cannot express the case that matters:
+# after the respawn fork() there are *two* processes inside _try_respawn, and
+# the child must unwind all the way out of fork_all while the parent keeps
+# supervising.
+comptime _RESPAWN_FAILED = 0
+comptime _RESPAWN_PARENT = 1
+comptime _RESPAWN_CHILD = 2
+
+
 struct WorkerSupervisor:
     """Supervises forked worker processes with crash respawn."""
     var child_pids: List[Int]
@@ -36,7 +45,12 @@ struct WorkerSupervisor:
         self.last_fork_ns = 0
 
     def fork_all(mut self) raises:
-        """Fork all workers. Children return. Parent enters supervise loop and exits."""
+        """Fork all workers. Children return. Parent enters supervise loop and exits.
+
+        Every child — initial or respawned — returns from this call to run the
+        caller's normal server startup path. The parent never returns: it
+        supervises until all children are gone, then exits the process.
+        """
         for i in range(self.num_workers):
             self.last_fork_ns = perf_counter_ns()
             var pid = fork()
@@ -48,11 +62,19 @@ struct WorkerSupervisor:
 
         # Parent process: supervise children
         print("[parent] pid={} supervising {} workers".format(getpid(), self.num_workers))
-        self._supervise()
+        if self._supervise():
+            # Respawned child: unwind to the caller's server startup path,
+            # exactly as an initially-forked child does above.
+            return
         process_exit(0)
 
-    def _supervise(mut self) raises:
-        """Parent supervision loop: respawn crashes, propagate signals."""
+    def _supervise(mut self) raises -> Bool:
+        """Parent supervision loop: respawn crashes, propagate signals.
+
+        Returns True only in a respawned child, which must return to
+        `fork_all`'s caller rather than keep supervising. Returns False in the
+        parent once supervision is over.
+        """
         var remaining = self.num_workers
         while remaining > 0:
             var result = waitpid_blocking(-1)
@@ -74,26 +96,38 @@ struct WorkerSupervisor:
                     while remaining > 0:
                         _ = waitpid_blocking(-1)
                         remaining -= 1
-                    return
+                    return False
                 # Other signal (e.g., SIGKILL) — treat as crash, try respawn
-                if self._try_respawn():
+                var outcome = self._try_respawn()
+                if outcome == _RESPAWN_CHILD:
+                    return True
+                if outcome == _RESPAWN_PARENT:
                     continue
                 remaining -= 1
             else:
                 var code = exit_code(status)
                 if code != 0:
                     print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
-                    if self._try_respawn():
+                    var outcome = self._try_respawn()
+                    if outcome == _RESPAWN_CHILD:
+                        return True
+                    if outcome == _RESPAWN_PARENT:
                         continue
                 else:
                     print("[parent] worker pid={} exited cleanly".format(child_pid))
                 remaining -= 1
+        return False
 
-    def _try_respawn(mut self) raises -> Bool:
-        """Attempt to respawn a worker. Returns True if successful."""
+    def _try_respawn(mut self) raises -> Int:
+        """Attempt to respawn a worker.
+
+        Returns `_RESPAWN_PARENT` in the parent on success, `_RESPAWN_CHILD` in
+        the freshly forked child (which must unwind out to `fork_all`'s
+        caller), and `_RESPAWN_FAILED` when the respawn budget is spent.
+        """
         if self.respawn_count >= self.max_respawns:
             print("[parent] max respawns ({}) reached, not respawning".format(self.max_respawns))
-            return False
+            return _RESPAWN_FAILED
 
         # Rapid crash detection: if child died within 1 second of last fork
         var now = perf_counter_ns()
@@ -102,7 +136,7 @@ struct WorkerSupervisor:
             self.rapid_crash_count += 1
             if self.rapid_crash_count >= 5:
                 print("[parent] 5 rapid crashes detected, stopping respawn")
-                return False
+                return _RESPAWN_FAILED
         else:
             self.rapid_crash_count = 0
 
@@ -110,13 +144,11 @@ struct WorkerSupervisor:
         self.last_fork_ns = perf_counter_ns()
         var new_pid = fork()
         if new_pid == 0:
-            # New child — cannot return from _supervise to caller's fork_all context.
-            # Respawned children get a fresh print and return True up through _supervise.
             print("[worker respawn] pid={} starting".format(getpid()))
-            return True
+            return _RESPAWN_CHILD
         self.child_pids.append(new_pid)
         print("[parent] respawned worker as pid={}".format(new_pid))
-        return True
+        return _RESPAWN_PARENT
 
     def _remove_pid(mut self, pid: Int):
         """Remove a PID from the tracked list."""

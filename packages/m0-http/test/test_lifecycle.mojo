@@ -6,8 +6,10 @@ file on its own.
 **What is deliberately not tested here: forking.** `WorkerSupervisor.fork_all`
 calls `fork(2)`, and a child forked out of a test binary resumes inside the test
 runner — it would re-enter the suite, duplicate output, and race the parent for
-the terminal. Only the supervisor's pure state is exercised below. The forking
-path is covered end to end by `poe smoke-hello` instead, which starts a real
+the terminal. Only the supervisor's pure state is exercised below. The respawn
+path, which must fork, lives in `test_respawn.mojo` — it isolates the whole
+scenario in a forked subprocess so nothing escapes into the runner — and the
+serving path is covered end to end by `poe smoke-hello`, which starts a real
 server and asserts it answers.
 """
 

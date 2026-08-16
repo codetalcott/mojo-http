@@ -1,5 +1,8 @@
 """Routes for the example. Each one pins down a specific part of the bridge."""
 
+import os
+import time
+
 from django.http import HttpResponse
 from django.urls import path
 
@@ -46,6 +49,26 @@ def boom(request):
     raise RuntimeError("intentional failure")
 
 
+def wsgi(request):
+    """Exposes wsgi.multiprocess, pinning the M0_WORKERS wiring in server.mojo."""
+    return HttpResponse(
+        f"multiprocess={request.META['wsgi.multiprocess']}", content_type="text/plain"
+    )
+
+
+def slow(request):
+    """Holds its worker for a while, and says which worker that was.
+
+    The multi-worker smoke test overlaps two of these: if they finish in ~1x
+    the sleep, they ran in parallel. The pid is in the body so the test can
+    require the pair to have been answered by two distinct workers — with the
+    shared pre-fork listener a busy worker never accepts, so this holds on
+    every attempt, but the test still retries rather than trust one race.
+    """
+    time.sleep(1.5)
+    return HttpResponse(f"slow done pid={os.getpid()}", content_type="text/plain")
+
+
 urlpatterns = [
     path("", hello),
     path("cookies", cookies),
@@ -53,4 +76,6 @@ urlpatterns = [
     path("binary", binary),
     path("query", query),
     path("boom", boom),
+    path("wsgi", wsgi),
+    path("slow", slow),
 ]
