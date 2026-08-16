@@ -1,24 +1,39 @@
-"""Datastar todos — the flagship: live multi-tab sync over one SSE stream.
+"""Datastar todos — the flagship: live multi-tab sync, persisted in SQLite.
 
 Where `apps/datastar_counter` broadcasts a signal (a number), this broadcasts
 *HTML*: every mutation renders the `<section id="todos">` fragment once and
 `patch_elements` morphs it into every connected tab. The list lives on the
 server; the browser never owns state beyond the draft input.
 
+The list also survives the server: todos are rows in SQLite (`M0_DB`, default
+`todos.db`), so a restart comes back with the same list — the first example
+composing `m0-sqlite` with the server, and the prerequisite for SSE replay
+across restarts (patches are only worth replaying onto state that survived).
+`apps/` is where packages compose; `m0-sqlite` itself still imports nothing
+else here.
+
 It also composes the framework layer the counter skips: the per-item actions
 are `Router` routes with `:id` captures —
 
     GET  /              the page, list already rendered
     GET  /events        opens the SSE stream (data-on-load)
-    POST /add           reads the draft signal, appends, broadcasts
+    POST /add           reads the draft signal, inserts, broadcasts
     POST /toggle/:id    flips done, broadcasts
     POST /delete/:id    removes, broadcasts
 
 One process only: SSE fan-out is per-process, so `M0_WORKERS>1` would split
-tabs across workers that cannot see each other's broadcasts.
+tabs across workers that cannot see each other's broadcasts. (SQLite itself
+would cope — WAL mode — but the streams would not.)
+
+Because this app links libsqlite3, it is built and run, never `mojo run`:
+the JIT resolves symbols only from libraries already in its process, which
+happens to work on macOS and fails on Linux. `poe serve-todo` does the right
+thing.
 
 Run it:  uv run poe serve-todo
 """
+
+from std.os import getenv
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.header import Headers, Header, HeaderKey
@@ -29,6 +44,8 @@ from m0_http import AppConfig, Router
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
+
+from m0_sqlite import Connection, open
 
 from datastar_todo.page import render_page, render_todos
 
@@ -41,19 +58,16 @@ comptime H_DELETE = 2
 
 
 struct TodoHandler(HTTPService):
-    """One shared todo list, every connected tab in sync."""
+    """One shared todo list, every connected tab in sync, rows in SQLite."""
 
     var router: Router
     var stream: DatastarStream
-    # The store, SoA (the repo convention around List[Struct] copyability).
-    # Ids are stable and never reused; deletion shifts to preserve order —
-    # a todo list that reorders itself on delete looks broken.
-    var ids: List[Int]
-    var texts: List[String]
-    var done: List[Bool]
-    var next_id: Int
+    # The store is the database; every render loads fresh rows. Statements
+    # are prepared per use — a statement cache was measured within noise for
+    # this repo (docs/SQLITE_PERFORMANCE.md) and is deliberately absent.
+    var db: Connection
 
-    def __init__(out self):
+    def __init__(out self, var db: Connection) raises:
         self.router = Router()
         self.router.add("POST", "/add", H_ADD)
         self.router.add("POST", "/toggle/:id", H_TOGGLE)
@@ -61,21 +75,36 @@ struct TodoHandler(HTTPService):
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
         self.stream = DatastarStream(1024)
-        self.ids = List[Int]()
-        self.texts = List[String]()
-        self.done = List[Bool]()
-        self.next_id = 1
+        # AUTOINCREMENT keeps ids never-reused across deletes and restarts,
+        # matching what the in-memory version promised. `ORDER BY id` below
+        # is what preserves insertion order — the visible order of the list.
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS todos ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  text TEXT NOT NULL,"
+            "  done INTEGER NOT NULL DEFAULT 0)"
+        )
+        self.db = db^
 
-    def _find(self, id: Int) -> Int:
-        for i in range(len(self.ids)):
-            if self.ids[i] == id:
-                return i
-        return -1
+    def _load(
+        self,
+    ) raises -> Tuple[List[Int], List[String], List[Bool]]:
+        """Rows → the three parallel lists the renderer takes."""
+        var ids = List[Int]()
+        var texts = List[String]()
+        var done = List[Bool]()
+        var q = self.db.prepare("SELECT id, text, done FROM todos ORDER BY id")
+        while q.step():
+            ids.append(q.column_int(0))
+            texts.append(q.column_text(1))
+            done.append(q.column_int(2) != 0)
+        return (ids^, texts^, done^)
 
     def _broadcast(mut self):
         """Render the fragment once, morph it into every subscriber."""
         try:
-            var fragment = render_todos(self.ids, self.texts, self.done)
+            var rows = self._load()
+            var fragment = render_todos(rows[0], rows[1], rows[2])
             _ = self.stream.patch_elements(STREAM_URL, fragment)
         except:
             pass  # a render bug must not kill the mutating request
@@ -87,7 +116,8 @@ struct TodoHandler(HTTPService):
             return OK('{"status":"ok"}', "application/json")
 
         if path == "/":
-            return _html(render_page(self.ids, self.texts, self.done))
+            var rows = self._load()
+            return _html(render_page(rows[0], rows[1], rows[2]))
 
         if path == STREAM_URL:
             return self.stream.open(req, STREAM_URL)
@@ -100,29 +130,31 @@ struct TodoHandler(HTTPService):
             # The browser posts its signal store; the draft is all we want.
             var draft = parse_json_field(read_signals(req), "draft")
             if draft.byte_length() > 0:
-                self.ids.append(self.next_id)
-                self.texts.append(draft)
-                self.done.append(False)
-                self.next_id += 1
+                var ins = self.db.prepare(
+                    "INSERT INTO todos (text) VALUES (?)"
+                )
+                ins.bind_text(1, draft)
+                _ = ins.step()
                 self._broadcast()
             # Empty drafts are ignored, not an error: the Add button is
             # always clickable and a 4xx would surface nothing useful.
             return _no_content()
 
         var id = _parse_id(m.params[0])
-        var i = self._find(id)
-        if i < 0:
-            # A stale tab can race a delete; its click is simply out of date.
-            # 204 keeps the tab quiet — the next broadcast corrects its view.
-            return _no_content()
-
-        if m.handler_id == H_TOGGLE:
-            self.done[i] = not self.done[i]
-        else:
-            _ = self.ids.pop(i)
-            _ = self.texts.pop(i)
-            _ = self.done.pop(i)
-        self._broadcast()
+        if id >= 0:
+            # A stale tab racing a delete makes these no-ops; the broadcast
+            # below still runs and corrects that tab's view. 204 either way.
+            if m.handler_id == H_TOGGLE:
+                var upd = self.db.prepare(
+                    "UPDATE todos SET done = 1 - done WHERE id = ?"
+                )
+                upd.bind_int(1, id)
+                _ = upd.step()
+            else:
+                var rm = self.db.prepare("DELETE FROM todos WHERE id = ?")
+                rm.bind_int(1, id)
+                _ = rm.step()
+            self._broadcast()
         return _no_content()
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
@@ -189,9 +221,13 @@ def _parse_id(s: String) -> Int:
 
 def main() raises:
     var config = AppConfig()
-    print("Datastar todos on " + config.base_url + " — open it in two tabs")
+    var db_path = getenv("M0_DB", "todos.db")
+    print(
+        "Datastar todos on " + config.base_url
+        + " — open it in two tabs (db: " + db_path + ")"
+    )
     var server = Server()
-    var handler = TodoHandler()
+    var handler = TodoHandler(open(db_path))
     # SSE requires `listen_and_serve_nonblocking`, not `listen_and_serve`:
     # only the non-blocking event loop assigns `req.slot_id` and drains the
     # outbox; the plain accept loop would answer every stream open with 409.
