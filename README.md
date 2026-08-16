@@ -115,6 +115,15 @@ struct CounterHandler(HTTPService):
 
 Run [apps/datastar_counter/](apps/datastar_counter/) with `uv run poe serve-counter` and open
 it in two tabs; pressing a button in one updates the other.
+[apps/datastar_todo/](apps/datastar_todo/) is the same idea grown up: mutations
+broadcast rendered *HTML* (`patch_elements` morphs `<section id="todos">` by id
+in every tab), the per-item actions are `Router` routes with `:id`, and todo
+text is HTML-escaped before it is broadcast. `uv run poe serve-todo`.
+
+A note on Datastar v1.0.2 attribute syntax, learned the hard way in a real
+browser: the stream opens from `data-init` (there is no `on-load` plugin), and
+keyed attributes are colon-separated — `data-on:click`, `data-bind:draft`. The
+hyphenated forms fail silently.
 
 **SSE needs `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only the non-blocking
 event loop assigns `req.slot_id` and drains the outbox; the plain accept loop leaves
@@ -294,11 +303,13 @@ uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
 uv run poe test-all         # 395 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
-uv run poe serve-counter    # the Datastar demo on :8080
+uv run poe serve-counter    # the Datastar counter demo on :8080
+uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+json, CORS
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
+uv run poe smoke-todo       # assert a mutation broadcast patches a live client
 uv run poe smoke-django     # assert a Django request/response cycle end to end
 uv run poe bench-core       # benchmark m0-core hot paths
 uv run poe bench-sqlite     # benchmark m0-sqlite blob reads and bulk ingest

@@ -77,6 +77,10 @@ jobs:
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
         run: uv run poe smoke-counter
+      # The flagship: a mutation broadcasts the rendered fragment to a live
+      # subscriber as one patch-elements frame.
+      - name: Smoke test the Datastar todo demo
+        run: uv run poe smoke-todo
       # Proves the WSGI bridge end to end: a real Django request/response cycle,
       # two Set-Cookie headers surviving a Dict-backed Headers, and a body of all
       # 256 byte values coming back unchanged.
@@ -91,5 +95,6 @@ jobs:
             hello.log
             notes.log
             counter.log
+            todo.log
             django.log
           if-no-files-found: ignore

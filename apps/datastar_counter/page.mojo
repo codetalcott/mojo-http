@@ -13,7 +13,7 @@ comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.
 def render_page(count: Int) -> String:
     """Full HTML document with the current count already rendered.
 
-    `data-signals` seeds the client store, `data-on-load` opens the SSE stream,
+    `data-signals` seeds the client store, `data-init` opens the SSE stream,
     and the two buttons POST the signal store back. After that every update
     arrives over the stream — including updates caused by *other* tabs.
     """
@@ -28,15 +28,17 @@ def render_page(count: Int) -> String:
         _STYLE,
         '</head>\n'
         '<body data-signals=\'{"count":', String(count), '}\' '
-        'data-on-load="@get(\'/events\')">\n'
+        # data-init, not the pre-1.0 data-on-load: v1.0.2 has no on-load
+        # plugin, and the misnamed attribute fails silently.
+        'data-init="@get(\'/events\')">\n'
         '<main>\n'
         '<h1>Datastar counter</h1>\n'
         '<p class="sub">Served by <code>mojo-http</code>. '
         'Open this page in two tabs — both track the same number.</p>\n'
         '<output id="count" data-text="$count">', String(count), '</output>\n'
         '<div class="row">\n'
-        '<button data-on-click="@post(\'/decrement\')">−1</button>\n'
-        '<button data-on-click="@post(\'/increment\')">+1</button>\n'
+        '<button data-on:click="@post(\'/decrement\')">−1</button>\n'
+        '<button data-on:click="@post(\'/increment\')">+1</button>\n'
         '</div>\n'
         '<p class="hint">The buttons POST the signal store. The new value comes '
         'back to <em>every</em> connected tab over one SSE stream.</p>\n'

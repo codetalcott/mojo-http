@@ -165,6 +165,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
+[tool.poe.tasks.serve-todo]
+help = "Run the Datastar todo demo on :8080 (M0_PORT to change)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/datastar_todo/server.mojo"
+
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
 shell = """
@@ -351,6 +355,42 @@ rm -f slow1.txt slow2.txt
 
 rm -f django.log django2.log
 echo "smoke-django OK"
+"""
+
+# The wire-format half of the todo demo's story: a mutation on one connection
+# must reach another client's open SSE stream as a single patch-elements frame
+# carrying the rendered fragment. (The browser half — Datastar actually
+# morphing the DOM in a second tab — was verified with Playwright when the
+# attribute syntax was pinned; see apps/datastar_todo/page.mojo.)
+[tool.poe.tasks.smoke-todo]
+help = "Start the todo demo, assert a broadcast patches a live client, stop"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+  apps/datastar_todo/server.mojo > todo.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== todo.log ==='; cat todo.log; exit 1; }
+curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > todo_sse.txt &
+sse=$!
+sleep 2
+curl -s -X POST http://localhost:8080/add -d '{"draft":"buy milk"}' -o /dev/null
+curl -s -X POST http://localhost:8080/toggle/1 -o /dev/null
+sleep 2
+kill $sse 2>/dev/null
+grep -q 'event: datastar-patch-elements' todo_sse.txt \
+  || { echo 'no patch-elements frame reached the client'; cat todo_sse.txt; exit 1; }
+grep -q 'data: elements <section id="todos">' todo_sse.txt \
+  || { echo 'broadcast did not carry the todos fragment'; cat todo_sse.txt; exit 1; }
+grep -q 'buy milk' todo_sse.txt \
+  || { echo 'broadcast did not carry the new todo'; cat todo_sse.txt; exit 1; }
+grep -q '<s>buy milk</s>' todo_sse.txt \
+  || { echo 'toggle broadcast did not strike the todo through'; cat todo_sse.txt; exit 1; }
+grep -q 'data: event:' todo_sse.txt && { echo 'frame was double-framed'; exit 1; }
+curl -s http://localhost:8080/ | grep -q '<s>buy milk</s>' \
+  || { echo 'a fresh page load did not render current server state'; exit 1; }
+rm -f todo_sse.txt todo.log
+echo "smoke-todo OK"
 """
 
 # Each assertion pins one framework feature the notes API exists to showcase:
