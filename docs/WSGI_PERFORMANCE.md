@@ -11,7 +11,12 @@ middleware), same worker counts, same machine, same load generator.
 
 - 4-core Linux container, everything (server + load) on one box
 - mojo-http: `apps/django_wsgi/server.mojo` compiled with `mojo build`
-  (Mojo 1.0, the `uv.lock` pin), `M0_WORKERS=N`
+  (Mojo 1.0, the `uv.lock` pin), `M0_WORKERS=N`. Workers accept from one
+  listener bound before the fork, the same model gunicorn uses — a busy
+  worker simply doesn't accept, so connections land on free workers. (An
+  earlier per-worker `SO_REUSEPORT` design measured ~20% lower at 4 workers,
+  because REUSEPORT hashes connections to workers with no regard for load —
+  and on macOS it does not distribute at all.)
 - gunicorn 26.0.0, default sync workers, `-w N`, `--log-level warning`
 - wrk: 2 threads, 16 connections, 10 s runs after a 3 s warm-up, against `/`
   (a plain-text Django view)
@@ -27,23 +32,23 @@ expected — its server-side close decides.
 
 | Workers | mojo-http (close) | mojo-http (keep-alive) | gunicorn (best of both modes) |
 |--------:|------------------:|-----------------------:|------------------------------:|
-| 1       | 5,678             | 5,377                  | 4,046                          |
-| 2       | 10,602            | 9,699                  | 8,067                          |
-| 4       | 13,124            | 14,390                 | 9,565                          |
+| 1       | 5,295             | 4,999                  | 3,832                          |
+| 2       | 10,985            | 10,186                 | 7,433                          |
+| 4       | 16,853            | 16,373                 | 9,850                          |
 
-mojo-http serves ~1.3–1.45x gunicorn's throughput at every worker count, and
-both scale close to linearly from 1 to 2 workers. The 4-worker rows understate
-both servers: at that point 4 workers plus 2 wrk threads oversubscribe 4 cores,
-and the load generator is competing with the servers it is measuring.
+mojo-http serves ~1.4x gunicorn's throughput at 1–2 workers and ~1.7x at 4,
+and scales close to linearly from 1 to 2 workers. The 4-worker rows carry a
+caveat for both servers: 4 workers plus 2 wrk threads oversubscribe 4 cores,
+so the load generator competes with the servers it is measuring.
 
 ## Latency, and the honest caveat
 
 `Connection: close` latencies are clean on both servers — at 2 workers,
-mojo-http p50 1.49 ms / p99 3.49 ms vs gunicorn p99 3.10 ms.
+mojo-http p50 1.43 ms / p99 2.08 ms vs gunicorn p99 2.86 ms.
 
 Keep-alive is where the honest reporting lives. mojo-http's p50 drops to
-~275 µs — no accept, no TCP handshake — but the tail inverts: p99 reaches
-~260 ms at 2 workers (p75 already ~84 ms). The distribution is bimodal, and
+~245 µs — no accept, no TCP handshake — but the tail inverts: p99 reaches
+~140 ms at 2 workers (p75 already ~65 ms). The distribution is bimodal, and
 the mechanism is visible in `lightbug_http/server.mojo`: the blocking
 `listen_and_serve` loop accepts a connection and serves *its* keep-alive
 requests exclusively — microsecond responses for that connection — until the

@@ -153,10 +153,10 @@ of all 256 byte values comes back unchanged.
 - **One request at a time per process.** `HTTPService.func` is called
   synchronously on the event loop, so a slow view blocks every other connection
   in its process. Concurrency means more processes: `M0_WORKERS=N` preforks N
-  workers, each binding the port via `SO_REUSEPORT` — and the fork happens
-  *before* the first Python call, never after, because forking a live CPython
-  is unsafe. Benchmarked against gunicorn at ~1.3–1.45x its throughput, with
-  one honest keep-alive latency caveat:
+  workers that all accept from one shared listener, gunicorn-style — and the
+  fork happens *before* the first Python call, never after, because forking a
+  live CPython is unsafe. Benchmarked against gunicorn at ~1.4–1.7x its
+  throughput, with one honest keep-alive latency caveat:
   [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md).
 - **Responses are fully buffered.** There is no chunked encoding, so
   `StreamingHttpResponse` and `FileResponse` are materialized in memory.

@@ -63,13 +63,15 @@ Concurrency is prefork, and it exists now: `M0_WORKERS=N` makes
 *before* the first Python call — forking a live CPython is not safe, and Mojo
 initializes the interpreter lazily, so each worker makes its own first Python
 call by constructing its own `WSGIApp` after returning from `fork_all()`.
-Workers each bind the port (`SO_REUSEPORT`) and set `wsgi.multiprocess=True`.
+Workers accept from one listener bound before the fork (per-worker
+`SO_REUSEPORT` binds do not distribute on macOS, and hash blindly on Linux)
+and set `wsgi.multiprocess=True`.
 `poe smoke-django` runs both shapes: single-worker for the bridge assertions,
 then `M0_WORKERS=2` asserting that two overlapping slow requests complete in
 ~1x the view latency on two distinct worker pids.
 
 Benchmarked against gunicorn (same Django project, same worker counts, wrk):
-~1.3–1.45x gunicorn's throughput at 1, 2, and 4 workers, with a keep-alive
+~1.4x gunicorn's throughput at 1–2 workers and ~1.7x at 4, with a keep-alive
 latency caveat that matters — methodology and numbers in
 [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
@@ -87,8 +89,8 @@ latency caveat that matters — methodology and numbers in
 - The blocking `listen_and_serve` loop is unfair to concurrent keep-alive
   connections: it serves one accepted connection's requests exclusively until
   the idle timeout or `max_keepalive_requests` closes it, so other persistent
-  connections queue for hundreds of milliseconds (measured: p50 ~275 µs but
-  p99 ~260 ms under 16 keep-alive connections — see
+  connections queue for tens to hundreds of milliseconds (measured: p50
+  ~245 µs but p99 ~140 ms under 16 keep-alive connections at 2 workers — see
   [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). `Connection: close` traffic is
   unaffected. The non-blocking event loop multiplexes and should not have
   this; moving the WSGI app onto it has not been tried.

@@ -9,9 +9,12 @@ difference is what `func` returns.
 
 `func` runs the Django view synchronously on the event loop, so a process
 serves one request at a time; concurrency comes from `M0_WORKERS` forking more
-processes, never from threads. Each worker binds the port itself —
-`SO_REUSEPORT` is what lets N binds coexist — and the kernel spreads incoming
-connections across them.
+processes, never from threads. The listener is bound *before* the fork and
+inherited, gunicorn-style: every worker blocks in `accept()` on the one shared
+socket, so the kernel hands each connection to a worker that is actually free
+to take it. Per-worker `SO_REUSEPORT` binds would also work on Linux, but not
+on macOS, where all connections land on a single socket — and even on Linux
+they hash connections to workers with no regard for which worker is busy.
 
 **The fork happens before the first Python call, and must stay there.**
 Forking a live CPython interpreter is unsafe, and Mojo initializes the
@@ -24,6 +27,7 @@ above the fork would hand every worker a copy of a live interpreter.
 from std.os import getenv
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse
+from lightbug_http.connection import ListenConfig
 
 from m0_http import WorkerSupervisor
 from m0_http.config import AppConfig
@@ -65,6 +69,9 @@ def main() raises:
     # anywhere else should set M0_DJANGO_PROJECT.
     var project_path = getenv("M0_DJANGO_PROJECT", "apps/django_wsgi")
 
+    # Bind before forking; every worker accepts from this one socket.
+    var listener = ListenConfig().listen(String("0.0.0.0:", port))
+
     # Fork before touching Python — see the module docstring. The parent stays
     # inside fork_all() supervising; only workers (initial or respawned) return
     # here and continue to server startup.
@@ -84,4 +91,4 @@ def main() raises:
 
     print("Starting Django server on 0.0.0.0:" + port)
     var server = Server()
-    server.listen_and_serve(String("0.0.0.0:", port), handler)
+    server.serve(listener, handler)

@@ -60,10 +60,10 @@ def slow(request):
     """Holds its worker for a while, and says which worker that was.
 
     The multi-worker smoke test overlaps two of these: if they finish in ~1x
-    the sleep, they ran in parallel. The pid is in the body because
-    SO_REUSEPORT assigns connections to workers by hash — two requests *can*
-    land on the same worker, and the test needs to see that and retry rather
-    than misread the serial timing as a concurrency failure.
+    the sleep, they ran in parallel. The pid is in the body so the test can
+    require the pair to have been answered by two distinct workers — with the
+    shared pre-fork listener a busy worker never accepts, so this holds on
+    every attempt, but the test still retries rather than trust one race.
     """
     time.sleep(1.5)
     return HttpResponse(f"slow done pid={os.getpid()}", content_type="text/plain")

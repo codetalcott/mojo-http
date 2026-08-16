@@ -289,10 +289,12 @@ curl -s 'http://localhost:8080/query?name=ada+lovelace' \
   | grep -q 'ada lovelace' || fail 'QUERY_STRING broke under M0_WORKERS=2'
 
 # Two overlapping 1.5s requests must finish in ~1x the view latency, not 2x.
-# SO_REUSEPORT hashes each connection to a worker, so a pair can land on the
-# same worker by chance — retry until the response pids differ, then hold the
-# pair to the parallel timing. A server that never spreads the pair across
-# two workers fails after 8 attempts.
+# Workers accept from one shared pre-fork listener, and a worker that is busy
+# in a view never accepts, so the pair should land on two distinct workers
+# every time — but the retry loop stays rather than trusting a single race.
+# A server that never spreads the pair across two workers fails after 8
+# attempts; that is what a macOS-style per-worker SO_REUSEPORT bind does
+# (all connections to one socket), which is why the listener is shared.
 parallel_ok=0
 attempt=0
 while [ $attempt -lt 8 ]; do
