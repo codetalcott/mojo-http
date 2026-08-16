@@ -593,7 +593,7 @@ struct CreateConnectionError(Movable, Writable):
         return String(self)
 
 
-def create_connection(mut host: String, port: UInt16) raises CreateConnectionError -> TCPConnection[NetworkType.tcp4]:
+def create_connection(mut host: String, port: UInt16) raises -> TCPConnection[NetworkType.tcp4]:
     """Connect to a server using a TCP socket.
 
     Args:
@@ -604,7 +604,11 @@ def create_connection(mut host: String, port: UInt16) raises CreateConnectionErr
         A connected TCPConnection.
 
     Raises:
-        CreateConnectionError: If socket creation or connection fails.
+        Error: If socket creation, name resolution, or connection fails.
+        The original error propagates: `Socket.connect` raises a plain
+        `Error`, which the old `raises CreateConnectionError` signature
+        could not carry — that wrap never compiled, this path being dead
+        code until the client revived it.
     """
     var socket: Socket[TCPAddr[NetworkType.tcp4]]
     try:
@@ -621,7 +625,7 @@ def create_connection(mut host: String, port: UInt16) raises CreateConnectionErr
         except shutdown_err:
             # Shutdown failure is not critical here - connection already failed
             pass
-        # Propagate the original connection error with type info
-        raise CreateConnectionError(String(connect_err))
+        # Propagate the original connection error
+        raise connect_err^
 
     return TCPConnection(socket^)

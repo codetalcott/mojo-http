@@ -40,6 +40,13 @@ lightbug_http
       - header.mojo: `Headers.keys()` added, so headers can be enumerated
         without reaching into the private `_inner` dict from another package
         (needed to project them into a WSGI environ)
+      - Client-side connect path (create_connection, getaddrinfo bindings)
+        revived after rotting as dead code: addrinfo pointer fields modeled
+        as Optional[Pointer] (Mojo 1.0 pointers are non-nullable), connect()
+        fd type corrected, create_connection propagates the original error
+        (its typed re-wrap never compiled), getaddrinfo called with a valid
+        numeric service instead of a non-NULL empty string glibc rejects,
+        and ai_protocol no longer passed an address family
 
     For the modification history carried into this repository (15 commits):
         git log -- packages/m0-http/lightbug_http

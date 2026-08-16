@@ -266,7 +266,7 @@ struct UDPAddr[network: NetworkType = NetworkType.udp4](Addr, ImplicitlyCopyable
 
 
 @fieldwise_init
-struct addrinfo_macos(AnAddrInfo, TrivialRegisterPassable):
+struct addrinfo_macos(AnAddrInfo):
     """
     For MacOS, I had to swap the order of ai_canonname and ai_addr.
     https://stackoverflow.com/questions/53575101/calling-getaddrinfo-directly-from-python-ai-addr-is-null-pointer.
@@ -277,9 +277,9 @@ struct addrinfo_macos(AnAddrInfo, TrivialRegisterPassable):
     var ai_socktype: c_int
     var ai_protocol: c_int
     var ai_addrlen: socklen_t
-    var ai_canonname: ExternalMutUnsafePointer[c_char]
-    var ai_addr: ExternalMutUnsafePointer[sockaddr]
-    var ai_next: ExternalMutUnsafePointer[addrinfo_macos]
+    var ai_canonname: Optional[ExternalMutUnsafePointer[c_char]]
+    var ai_addr: Optional[ExternalMutUnsafePointer[sockaddr]]
+    var ai_next: Optional[ExternalMutUnsafePointer[addrinfo_macos]]
 
     def __init__(
         out self,
@@ -294,19 +294,19 @@ struct addrinfo_macos(AnAddrInfo, TrivialRegisterPassable):
         self.ai_socktype = ai_socktype.value
         self.ai_protocol = 0
         self.ai_addrlen = ai_addrlen
-        self.ai_canonname = {}
-        self.ai_addr = {}
-        self.ai_next = {}
+        self.ai_canonname = None
+        self.ai_addr = None
+        self.ai_next = None
 
     def has_next(self) -> Bool:
         return Bool(self.ai_next)
 
     def next(self) -> ExternalMutUnsafePointer[Self]:
-        return self.ai_next
+        return self.ai_next.value()
 
 
 @fieldwise_init
-struct addrinfo_unix(AnAddrInfo, TrivialRegisterPassable):
+struct addrinfo_unix(AnAddrInfo):
     """Standard addrinfo struct for Unix systems.
     Overwrites the existing libc `getaddrinfo` function to adhere to the AnAddrInfo trait.
     """
@@ -316,9 +316,9 @@ struct addrinfo_unix(AnAddrInfo, TrivialRegisterPassable):
     var ai_socktype: c_int
     var ai_protocol: c_int
     var ai_addrlen: socklen_t
-    var ai_addr: ExternalMutUnsafePointer[sockaddr]
-    var ai_canonname: ExternalMutUnsafePointer[c_char]
-    var ai_next: ExternalMutUnsafePointer[addrinfo_unix]
+    var ai_addr: Optional[ExternalMutUnsafePointer[sockaddr]]
+    var ai_canonname: Optional[ExternalMutUnsafePointer[c_char]]
+    var ai_next: Optional[ExternalMutUnsafePointer[addrinfo_unix]]
 
     def __init__(
         out self,
@@ -333,15 +333,15 @@ struct addrinfo_unix(AnAddrInfo, TrivialRegisterPassable):
         self.ai_socktype = ai_socktype.value
         self.ai_protocol = ai_protocol.value
         self.ai_addrlen = ai_addrlen
-        self.ai_addr = {}
-        self.ai_canonname = {}
-        self.ai_next = {}
+        self.ai_addr = None
+        self.ai_canonname = None
+        self.ai_next = None
 
     def has_next(self) -> Bool:
         return Bool(self.ai_addr)
 
     def next(self) -> ExternalMutUnsafePointer[Self]:
-        return self.ai_next
+        return self.ai_next.value()
 
 
 def get_ip_address(
@@ -365,9 +365,8 @@ def get_ip_address(
             ai_flags=0,
             ai_family=address_family,
             ai_socktype=sock_type,
-            ai_protocol=address_family,
         )
-        var service = String()
+        var service = String("0")
         try:
             result = getaddrinfo(host, service, hints)
         except getaddrinfo_err:
@@ -379,7 +378,7 @@ def get_ip_address(
         # extend result's lifetime to avoid invalid access of pointer, it'd get freed early
         return (
             result.unsafe_ptr()[]
-            .ai_addr.bitcast[sockaddr_in]()
+            .ai_addr.value().bitcast[sockaddr_in]()
             .unsafe_origin_cast[origin_of(result)]()[]
             .sin_addr.s_addr
         )
@@ -389,9 +388,8 @@ def get_ip_address(
             ai_flags=0,
             ai_family=address_family,
             ai_socktype=sock_type,
-            ai_protocol=address_family,
         )
-        var service = String()
+        var service = String("0")
         try:
             result = getaddrinfo(host, service, hints)
         except getaddrinfo_err:
@@ -402,7 +400,7 @@ def get_ip_address(
 
         return (
             result.unsafe_ptr()[]
-            .ai_addr.bitcast[sockaddr_in]()
+            .ai_addr.value().bitcast[sockaddr_in]()
             .unsafe_origin_cast[origin_of(result)]()[]
             .sin_addr.s_addr
         )
@@ -887,9 +885,6 @@ struct _CAddrInfoIterator[
         Returns:
             True if there are more elements, False otherwise.
         """
-        if not self.src[].ptr:
-            return False
-
         return self.src[].ptr[].has_next()
 
     def __next__(mut self) -> Self.Element:
@@ -936,8 +931,7 @@ struct CAddrInfo[T: AnAddrInfo](Iterable):
         return self.ptr.unsafe_mut_cast[origin.mut]().unsafe_origin_cast[origin]().address_space_cast[address_space]()
 
     def __del__(deinit self):
-        if self.ptr:
-            freeaddrinfo(self.ptr)
+        freeaddrinfo(self.ptr)
 
     def __iter__(ref self) -> Self.IteratorType[origin_of(self)]:
         """Iterate over elements of the list, returning immutable references.
@@ -979,7 +973,7 @@ def _getaddrinfo[
     nodename: UnsafePointer[c_char, node_origin],
     servname: UnsafePointer[c_char, serv_origin],
     hints: Pointer[T, hints_origin],
-    res: Pointer[ExternalMutUnsafePointer[T], result_origin],
+    res: Pointer[Optional[ExternalMutUnsafePointer[T]], result_origin],
 ) -> c_int:
     """Libc POSIX `getaddrinfo` function.
 
@@ -1040,7 +1034,7 @@ def getaddrinfo[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/getaddrinfo.3p.html.
     """
-    var ptr = ExternalMutUnsafePointer[T](unsafe_from_address=0)
+    var ptr: Optional[ExternalMutUnsafePointer[T]] = None
     var result = _getaddrinfo(
         node.as_c_string_slice().unsafe_ptr(),
         service.as_c_string_slice().unsafe_ptr(),
@@ -1050,6 +1044,9 @@ def getaddrinfo[
 
     if result != 0:
         raise GetaddrinfoError()
+    if not ptr:
+        # Cannot happen on a zero return; keeps the typed raises contract.
+        raise GetaddrinfoError()
 
     # CAddrInfo will be responsible for freeing the memory allocated by getaddrinfo.
-    return CAddrInfo[T](ptr=ptr)
+    return CAddrInfo[T](ptr=ptr.value())

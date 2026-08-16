@@ -77,6 +77,10 @@ jobs:
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API
         run: uv run poe smoke-notes
+      # Both ends of the wire in Mojo: the client dials, sends, and parses
+      # against the notes API, including the error and refusal paths.
+      - name: Smoke test the HTTP client
+        run: uv run poe smoke-client
       # Proves the Datastar path end to end: a POST on one connection reaches a
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
