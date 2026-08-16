@@ -157,14 +157,14 @@ struct NotesHandler(HTTPService):
                     self.titles[i], "</a></li>",
                 )
             html += "</ul>"
-            return _html(html)
+            return _vary_accept(_html(html))
         var json = String("[")
         for i in range(len(self.ids)):
             if i > 0:
                 json += ","
             json += self._note_json(i)
         json += "]"
-        return _json(200, "OK", json)
+        return _vary_accept(_json(200, "OK", json))
 
     def _create(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var body = _body_string(req)
@@ -197,7 +197,7 @@ struct NotesHandler(HTTPService):
 
         var accept = parse_accept(_accept_header(req))
         if accept.wants_html:
-            return _html(self._note_html(i))
+            return _vary_accept(_html(self._note_html(i)))
 
         # ETag + 304 on the JSON representation: hash the exact bytes that
         # would be served, compare against If-None-Match, and skip the body
@@ -211,10 +211,10 @@ struct NotesHandler(HTTPService):
             if etag_matches(etag, inm.value()):
                 var not_modified = _empty(304, "Not Modified")
                 not_modified.headers[HeaderKey.ETAG] = etag
-                return not_modified^
+                return _vary_accept(not_modified^)
         var resp = _json(200, "OK", json)
         resp.headers[HeaderKey.ETAG] = etag
-        return resp^
+        return _vary_accept(resp^)
 
     def _update(mut self, req: HTTPRequest, id: Int) raises -> HTTPResponse:
         var i = self._find(id)
@@ -314,6 +314,17 @@ def _html(body: String) -> HTTPResponse:
         status_code=200,
         status_text="OK",
     )
+
+
+def _vary_accept(var resp: HTTPResponse) -> HTTPResponse:
+    """Mark a response whose representation was chosen by the Accept header.
+
+    Without `Vary: Accept`, a shared cache that stored the HTML answer would
+    happily replay it to a JSON client. Every negotiated representation gets
+    it — the 304 included, per RFC 9110 §15.4.5.
+    """
+    resp.headers[HeaderKey.VARY] = "Accept"
+    return resp^
 
 
 def _empty(status: Int, text: String) -> HTTPResponse:
