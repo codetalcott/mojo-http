@@ -2,7 +2,12 @@
 
 from std.testing import assert_true, assert_false, assert_equal, TestSuite
 
-from src.content_negotiation import parse_accept, wants_html, wants_event_stream
+from src.content_negotiation import (
+    negotiate_encoding,
+    parse_accept,
+    wants_html,
+    wants_event_stream,
+)
 
 
 comptime VENDOR_BIN = "application/vnd.siren+bin"
@@ -183,6 +188,112 @@ def test_problem_json() raises:
     var r = parse_accept("application/problem+json")
     assert_true(r.wants_problem_json)
     assert_false(r.wants_json)
+
+
+# --- Accept-Encoding (RFC 9110 §12.5.3) --------------------------------------
+
+
+def _gzip_br() -> List[String]:
+    var a = List[String]()
+    a.append("br")
+    a.append("gzip")
+    return a^
+
+
+def test_encoding_absent_header_means_identity() raises:
+    """No Accept-Encoding: serve unencoded, the answer nobody guesses about."""
+    assert_equal(negotiate_encoding("", _gzip_br()), "identity")
+
+
+def test_encoding_picks_the_named_coding() raises:
+    var gz = List[String]()
+    gz.append("gzip")
+    assert_equal(negotiate_encoding("gzip", gz), "gzip")
+
+
+def test_encoding_server_preference_breaks_quality_ties() raises:
+    """`available` is ordered by server preference; equal q keeps that order."""
+    assert_equal(negotiate_encoding("gzip, br", _gzip_br()), "br")
+
+
+def test_encoding_client_quality_beats_server_order() raises:
+    """A client that says gzip;q=1, br;q=0.5 gets gzip, whatever we prefer."""
+    assert_equal(negotiate_encoding("br;q=0.5, gzip;q=1", _gzip_br()), "gzip")
+
+
+def test_encoding_quality_zero_disables_a_coding() raises:
+    var gz = List[String]()
+    gz.append("gzip")
+    assert_equal(negotiate_encoding("gzip;q=0", gz), "identity")
+
+
+def test_encoding_wildcard_matches_unnamed_codings() raises:
+    var gz = List[String]()
+    gz.append("gzip")
+    assert_equal(negotiate_encoding("*", gz), "gzip")
+
+
+def test_encoding_wildcard_does_not_revive_a_refused_coding() raises:
+    """gzip;q=0, * refuses gzip explicitly; the wildcard covers the rest."""
+    assert_equal(negotiate_encoding("gzip;q=0, *", _gzip_br()), "br")
+
+
+def test_encoding_unknown_available_falls_back_to_identity() raises:
+    """The client asked for gzip; we only have zstd. Serve identity."""
+    var zs = List[String]()
+    zs.append("zstd")
+    assert_equal(negotiate_encoding("gzip", zs), "identity")
+
+
+def test_encoding_identity_refused_yields_the_406_signal() raises:
+    """identity;q=0 with nothing acceptable available returns empty."""
+    var gz = List[String]()
+    gz.append("gzip")
+    assert_equal(negotiate_encoding("identity;q=0, br", gz), "")
+
+
+def test_encoding_star_zero_refuses_identity_too() raises:
+    """*;q=0 refuses everything unnamed — identity included (RFC example)."""
+    var zs = List[String]()
+    zs.append("zstd")
+    assert_equal(negotiate_encoding("gzip, *;q=0", zs), "")
+
+
+def test_encoding_star_zero_with_identity_named_keeps_identity() raises:
+    var zs = List[String]()
+    zs.append("zstd")
+    assert_equal(negotiate_encoding("identity;q=0.5, *;q=0", zs), "identity")
+
+
+def test_encoding_is_case_insensitive() raises:
+    var gz = List[String]()
+    gz.append("gzip")
+    assert_equal(negotiate_encoding("GZip", gz), "gzip")
+    var up = List[String]()
+    up.append("GZIP")
+    assert_equal(negotiate_encoding("gzip", up), "gzip")
+
+
+def test_encoding_last_occurrence_wins() raises:
+    """A repeated coding behaves like an overwrite, as on the Accept side."""
+    var gz = List[String]()
+    gz.append("gzip")
+    assert_equal(negotiate_encoding("gzip;q=0, gzip", gz), "gzip")
+
+
+def test_encoding_identity_in_available_is_not_an_encoding() raises:
+    """Listing identity in `available` must not make it beat a real coding."""
+    var av = List[String]()
+    av.append("identity")
+    av.append("gzip")
+    assert_equal(negotiate_encoding("gzip", av), "gzip")
+
+
+def test_encoding_tolerates_whitespace() raises:
+    assert_equal(
+        negotiate_encoding(" br ; q=0.8 ,  gzip ; q=0.9 ", _gzip_br()), "gzip"
+    )
+
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

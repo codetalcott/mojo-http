@@ -478,9 +478,13 @@ etag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\\r\\n')
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8091/notes/1)
 [ "$code" = "304" ] || fail "expected 304 for a matching If-None-Match, got $code"
 
-# Content negotiation: same note, HTML representation on request.
+# Content negotiation: same note, HTML representation on request — and the
+# response says it varies, so a shared cache cannot replay HTML to a JSON
+# client.
 curl -s -H 'Accept: text/html' http://localhost:8091/notes/1 \
   | grep -q '<h1>First</h1>' || fail 'Accept: text/html did not negotiate HTML'
+curl -s -D headers.txt http://localhost:8091/notes/1 -o /dev/null
+grep -qi '^vary: Accept' headers.txt || fail 'negotiated response carried no Vary'
 # A plain curl (Accept: */*) still gets JSON, never HTML.
 curl -s http://localhost:8091/notes \
   | grep -q '^\\[{"id":1' || fail 'the list was not JSON for Accept: */*'

@@ -225,3 +225,97 @@ def wants_html(accept: String) -> Bool:
 
 def wants_event_stream(accept: String) -> Bool:
     return parse_accept(accept).wants_event_stream
+
+
+# --- Accept-Encoding (RFC 9110 §12.5.3) --------------------------------------
+
+
+def _parse_codings(
+    header: String, mut ranges: List[String], mut qualities: List[Float64]
+):
+    """Split an Accept-Encoding header into (coding, quality) pairs.
+
+    Reuses the media-range splitter: a content-coding entry is the same
+    `token;q=...` shape, just without a slash.
+    """
+    var start = 0
+    var i = 0
+    while i <= header.byte_length():
+        var at_end = i == header.byte_length()
+        var at_comma = False
+        if not at_end:
+            at_comma = header.as_bytes()[i] == UInt8(ord(","))
+        if at_comma or at_end:
+            if i > start:
+                var part = String(StringSlice(header)[byte=start:i])
+                _split_media_range(part, ranges, qualities)
+            start = i + 1
+        i += 1
+
+
+def _coding_quality(
+    ranges: List[String], qualities: List[Float64], coding: String
+) -> Float64:
+    """Quality for a coding: its own last occurrence, else `*`, else -1."""
+    var q = _last_quality(ranges, qualities, coding)
+    if q >= 0.0:
+        return q
+    return _last_quality(ranges, qualities, "*")
+
+
+def negotiate_encoding(
+    accept_encoding: String, available: List[String]
+) -> String:
+    """Choose a content-coding per RFC 9110 §12.5.3.
+
+    `available` lists the codings the caller can actually serve, most
+    preferred first — for example `["br", "gzip"]` when precompressed
+    variants exist. This layer only *picks*; it never compresses anything,
+    for the same reason `AcceptResult` never renders anything: negotiation
+    stays representation-agnostic, and what codings exist is the caller's
+    business. `OK(body, content_type, content_encoding)` is the far end of
+    the handshake.
+
+    Returns the chosen coding, lowercased. Returns `"identity"` when no
+    listed coding is acceptable but an unencoded response is — identity is
+    implicitly acceptable unless the client refuses it (`identity;q=0`, or
+    `*;q=0` without identity being named). Returns `""` when even identity
+    is refused: the caller should answer 406.
+
+    Selection: the acceptable available coding with the highest quality
+    wins; on a quality tie the earlier entry in `available` (the server's
+    preference) wins. An implicitly acceptable identity never outranks a
+    coding the client explicitly accepted — a client that said `gzip;q=0.1`
+    asked for gzip, however faintly.
+
+    A response chosen this way varies by request header: send
+    `Vary: Accept-Encoding` alongside it, and do not put it in a URL-keyed
+    cache such as `ResponseCache`.
+    """
+    if accept_encoding.byte_length() == 0:
+        # No header: the client states no preference, and an unencoded
+        # response is the one nobody has to guess about — the same
+        # conservative default as `*/*` resolving to JSON.
+        return String("identity")
+
+    var ranges = List[String]()
+    var qualities = List[Float64]()
+    _parse_codings(accept_encoding, ranges, qualities)
+
+    var best = String("")
+    var best_q: Float64 = 0.0
+    for i in range(len(available)):
+        var coding = available[i].lower()
+        if coding == "identity":
+            continue  # identity is the fallback below, never an "encoding"
+        var q = _coding_quality(ranges, qualities, coding)
+        if q > best_q:
+            best = coding^
+            best_q = q
+    if best.byte_length() > 0:
+        return best^
+
+    var identity_q = _coding_quality(ranges, qualities, "identity")
+    if identity_q < 0.0 or identity_q > 0.0:
+        return String("identity")
+    return String("")
