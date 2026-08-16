@@ -155,8 +155,9 @@ of all 256 byte values comes back unchanged.
   in its process. Concurrency means more processes: `M0_WORKERS=N` preforks N
   workers that all accept from one shared listener, gunicorn-style — and the
   fork happens *before* the first Python call, never after, because forking a
-  live CPython is unsafe. Benchmarked against gunicorn at ~1.4–1.7x its
-  throughput, with one honest keep-alive latency caveat:
+  live CPython is unsafe. Benchmarked against gunicorn at ~1.6–2.2x its
+  throughput under keep-alive, with an honest tail-latency caveat on
+  close-per-request traffic:
   [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md).
 - **Responses are fully buffered.** There is no chunked encoding, so
   `StreamingHttpResponse` and `FileResponse` are materialized in memory.

@@ -10,11 +10,19 @@ difference is what `func` returns.
 `func` runs the Django view synchronously on the event loop, so a process
 serves one request at a time; concurrency comes from `M0_WORKERS` forking more
 processes, never from threads. The listener is bound *before* the fork and
-inherited, gunicorn-style: every worker blocks in `accept()` on the one shared
-socket, so the kernel hands each connection to a worker that is actually free
-to take it. Per-worker `SO_REUSEPORT` binds would also work on Linux, but not
-on macOS, where all connections land on a single socket — and even on Linux
-they hash connections to workers with no regard for which worker is busy.
+inherited, gunicorn-style: every worker accepts from the one shared socket, so
+connections land on workers that are actually free to take them. Per-worker
+`SO_REUSEPORT` binds would also work on Linux, but not on macOS, where all
+connections land on a single socket — and even on Linux they hash connections
+to workers with no regard for which worker is busy.
+
+Each worker serves through the non-blocking event loop, not the blocking
+accept loop. The blocking loop drains one keep-alive connection exclusively
+until it closes, which benchmarked at a p99 of ~140 ms under 16 persistent
+connections while the median sat at ~245 µs; the event loop multiplexes
+between connections after every response instead. This does not change the
+one-request-at-a-time rule above — a slow view still stalls its whole
+process — it changes whose request runs next once a response is out.
 
 **The fork happens before the first Python call, and must stay there.**
 Forking a live CPython interpreter is unsafe, and Mojo initializes the
@@ -91,4 +99,4 @@ def main() raises:
 
     print("Starting Django server on 0.0.0.0:" + port)
     var server = Server()
-    server.serve(listener, handler)
+    server.serve_nonblocking(listener, handler)
