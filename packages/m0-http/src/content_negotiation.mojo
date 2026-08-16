@@ -319,3 +319,109 @@ def negotiate_encoding(
     if identity_q < 0.0 or identity_q > 0.0:
         return String("identity")
     return String("")
+
+
+# --- Accept-Language (RFC 9110 §12.5.4, matching per RFC 4647) ---------------
+
+
+def _language_quality(
+    ranges: List[String], qualities: List[Float64], tag: String
+) -> Float64:
+    """Quality for a language tag, most specific matching range first.
+
+    Tiers, in order — a more specific match settles the question, exactly as
+    subtype wildcards do on the Accept side:
+
+    1. exact: range `en-us` for tag `en-us`
+    2. range-prefix (RFC 4647 basic filtering): range `en` matches `en-us`
+       at a `-` boundary; the longest such range wins
+    3. tag-prefix (RFC 4647 lookup fallback): range `en-us` falls back to
+       tag `en` when nothing closer exists
+    4. `*`
+
+    Returns -1.0 when no range matches at all.
+    """
+    var q = _last_quality(ranges, qualities, tag)
+    if q >= 0.0:
+        return q
+
+    var best_len = 0
+    var best_q: Float64 = -1.0
+    for i in range(len(ranges)):
+        var r = ranges[i]
+        if r == "*":
+            continue
+        if tag.startswith(r + "-"):
+            # Longest range is most specific; ties take the later occurrence,
+            # matching the overwrite semantics everywhere else in this file.
+            if r.byte_length() >= best_len:
+                best_len = r.byte_length()
+                best_q = qualities[i]
+    if best_q >= 0.0:
+        return best_q
+
+    for i in range(len(ranges)):
+        var r = ranges[i]
+        if r == "*":
+            continue
+        if r.startswith(tag + "-"):
+            if r.byte_length() >= best_len:
+                best_len = r.byte_length()
+                best_q = qualities[i]
+    if best_q >= 0.0:
+        return best_q
+
+    return _last_quality(ranges, qualities, "*")
+
+
+def negotiate_language(
+    accept_language: String, available: List[String]
+) -> String:
+    """Choose a language tag per RFC 9110 §12.5.4.
+
+    `available` lists the tags the caller has representations for, most
+    preferred first — e.g. `["en", "de-CH"]`. Like the rest of this module,
+    the function only picks; what translations exist is the caller's
+    business. The chosen tag is returned exactly as it appears in
+    `available`, for the `Content-Language` header.
+
+    Returns the first entry of `available` when the header is absent, and
+    the first *unrefused* entry when the header names no available
+    language — RFC 9110 advises that sending some representation beats a
+    406 here, so an unmatched request gets the server's default rather
+    than an error. Returns `""` only when the client explicitly refused
+    every available tag (`q=0`, directly or via `*;q=0`); even then the
+    RFC's advice stands, and the caller may serve a default anyway —
+    `""` just makes the refusal visible.
+
+    A response chosen this way varies by request header: send
+    `Vary: Accept-Language` alongside it, and do not put it in a URL-keyed
+    cache such as `ResponseCache`.
+    """
+    if len(available) == 0:
+        return String("")
+    if accept_language.byte_length() == 0:
+        return available[0]
+
+    var ranges = List[String]()
+    var qualities = List[Float64]()
+    _parse_codings(accept_language, ranges, qualities)
+
+    var best = String("")
+    var best_q: Float64 = 0.0
+    for i in range(len(available)):
+        var q = _language_quality(ranges, qualities, available[i].lower())
+        if q > best_q:
+            best = available[i]
+            best_q = q
+    if best.byte_length() > 0:
+        return best^
+
+    # Nothing matched positively. Serve the first tag the client did not
+    # explicitly refuse (unmatched, q = -1, is acceptance by silence); ""
+    # only when a refusal covers every tag we have.
+    for i in range(len(available)):
+        var q = _language_quality(ranges, qualities, available[i].lower())
+        if q != 0.0:
+            return available[i]
+    return String("")
