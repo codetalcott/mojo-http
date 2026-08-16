@@ -20,6 +20,13 @@ def _get(path: String) raises -> HTTPRequest:
     return req^
 
 
+def _reconnect(path: String, last_id: String) raises -> HTTPRequest:
+    """A reconnecting client: same GET, plus the Last-Event-ID it saw last."""
+    var req = _get(path)
+    req.headers["last-event-id"] = last_id
+    return req^
+
+
 # --- The bug this whole module exists to fix ---------------------------------
 
 def test_frames_are_not_double_framed() raises:
@@ -165,6 +172,149 @@ def test_subscriber_introspection() raises:
     _ = s.open(_get("/e"), "/e")
     assert_true(s.has_subscribers("/e"))
     assert_equal(s.subscriber_count("/e"), 1)
+
+
+# --- Replay ------------------------------------------------------------------
+
+def test_reconnect_replays_missed_frames() raises:
+    """A Last-Event-ID reconnection is caught up from the journal.
+
+    The client presents id 1, so it must receive events 2 and 3 — and not 1.
+    """
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.patch_signals("/e", '{"b":2}')
+    _ = s.patch_signals("/e", '{"c":3}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "1"), "/e")
+    var out = _text(s.drain(0))
+    assert_false(out.find('{"a":1}') >= 0)
+    assert_true(out.find('{"b":2}') >= 0)
+    assert_true(out.find('{"c":3}') >= 0)
+
+
+def test_no_header_means_no_replay() raises:
+    """A first-time consumer starts from the live feed, not from history."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_signals("/e", '{"old":1}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_get("/e"), "/e")
+    assert_equal(len(s.drain(0)), 0)
+
+
+def test_replayed_frame_is_not_redelivered_live() raises:
+    """Catch-up advances the slot's last-seen id past what it replayed."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "0"), "/e")
+    var replayed = _text(s.drain(0))
+    assert_true(replayed.find('{"a":1}') >= 0)
+    _ = s.patch_signals("/e", '{"b":2}')
+    var live = _text(s.drain(0))
+    assert_false(live.find('{"a":1}') >= 0)
+    assert_true(live.find('{"b":2}') >= 0)
+
+
+def test_replay_is_url_scoped() raises:
+    """The journal replays only frames for the URL being opened."""
+    var s = DatastarStream(4)
+    var a = _get("/a")
+    var b = HTTPRequest(URI.parse("http://localhost:8080/b"), method="GET")
+    b.slot_id = 1
+    _ = s.open(a, "/a")
+    _ = s.open(b, "/b")
+    _ = s.patch_signals("/a", '{"a":1}')
+    _ = s.patch_signals("/b", '{"b":1}')
+    _ = s.drain(0)
+    _ = s.drain(1)
+    s.closed(0)
+    _ = s.open(_reconnect("/a", "0"), "/a")
+    var out = _text(s.drain(0))
+    assert_true(out.find('{"a":1}') >= 0)
+    assert_false(out.find('{"b":1}') >= 0)
+
+
+def test_id_ahead_of_counter_is_clamped() raises:
+    """An id from an unknown incarnation must not mute the live feed.
+
+    Without the clamp, a process that does not restore a journal would
+    subscribe the client at an id above everything it will ever send.
+    """
+    var s = DatastarStream(4)
+    _ = s.open(_reconnect("/e", "999"), "/e")
+    _ = s.patch_signals("/e", '{"live":1}')
+    assert_true(_text(s.drain(0)).find('{"live":1}') >= 0)
+
+
+def test_malformed_last_event_id_replays_all() raises:
+    """An id we cannot parse carries no position — replay from the start."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "not-a-number"), "/e")
+    assert_true(_text(s.drain(0)).find('{"a":1}') >= 0)
+
+
+def test_restore_seeds_the_journal_and_counter() raises:
+    """Boot-time restore makes a prior process's frames replayable.
+
+    This is the restart half: a fresh stream fed persisted rows must serve a
+    reconnection exactly as the old process would have, and continue numbering
+    where it left off.
+    """
+    var s = DatastarStream(4)
+    s.restore("/e", 1, List[UInt8](String("event: one\n\n").as_bytes()))
+    s.restore("/e", 2, List[UInt8](String("event: two\n\n").as_bytes()))
+    _ = s.open(_reconnect("/e", "1"), "/e")
+    var out = _text(s.drain(0))
+    assert_false(out.find("event: one") >= 0)
+    assert_true(out.find("event: two") >= 0)
+    assert_equal(s.patch_signals("/e", "{}"), 3)
+
+
+def test_journal_evicts_beyond_cap() raises:
+    """The journal keeps the newest `journal_entries` frames, no more."""
+    var s = DatastarStream(4, journal_entries=2)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.patch_signals("/e", '{"b":2}')
+    _ = s.patch_signals("/e", '{"c":3}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "0"), "/e")
+    var out = _text(s.drain(0))
+    assert_false(out.find('{"a":1}') >= 0)
+    assert_true(out.find('{"b":2}') >= 0)
+    assert_true(out.find('{"c":3}') >= 0)
+
+
+def test_zero_journal_disables_replay() raises:
+    """journal_entries=0 records nothing; reconnections just resume live."""
+    var s = DatastarStream(4, journal_entries=0)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "0"), "/e")
+    assert_equal(len(s.drain(0)), 0)
+
+
+def test_frame_for_returns_journaled_bytes() raises:
+    """frame_for hands back exactly what went out — the persistence hook."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    var eid = s.send_frame("/e", "event: custom\ndata: hi\n\n")
+    assert_equal(_text(s.frame_for(eid)), "event: custom\ndata: hi\n\n")
+    assert_equal(len(s.frame_for(999)), 0)
 
 
 # --- read_signals ------------------------------------------------------------

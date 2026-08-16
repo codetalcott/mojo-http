@@ -55,15 +55,32 @@ struct DatastarStream:
 
     var registry: SSERegistry
     var next_event_id: Int
+    # The replay journal: the last `journal_cap` broadcast frames, verbatim,
+    # as parallel lists (the repo's SoA convention — List[Struct] fights
+    # ImplicitlyCopyable). A reconnecting client's `Last-Event-ID` is caught
+    # up from here in `open`. In-memory only; an app that wants replay to
+    # survive a restart persists (id, url, frame) after each broadcast and
+    # feeds rows back through `restore` at boot — see apps/datastar_todo.
+    var journal_urls: List[String]
+    var journal_ids: List[Int]
+    var journal_frames: List[List[UInt8]]
+    var journal_cap: Int
 
-    def __init__(out self, capacity: Int = 1024):
+    def __init__(out self, capacity: Int = 1024, journal_entries: Int = 64):
         """Create a stream sized for `capacity` connection slots.
 
         `capacity` must be at least the server's max connections, since slots
         are indexed directly by `req.slot_id`.
+
+        `journal_entries` bounds the replay journal; 0 disables replay
+        entirely (reconnecting clients simply resume from the live feed).
         """
         self.registry = SSERegistry(capacity)
         self.next_event_id = 0
+        self.journal_urls = List[String]()
+        self.journal_ids = List[Int]()
+        self.journal_frames = List[List[UInt8]]()
+        self.journal_cap = journal_entries
 
     # --- Lifecycle: drive these from the HTTPService SSE hooks -------------
 
@@ -74,11 +91,19 @@ struct DatastarStream:
         (`slot_id < 0`), which means it did not arrive over the streaming
         server and cannot be held open.
 
-        The client's `Last-Event-ID` is deliberately ignored: `next_event_id`
-        restarts at 0 in every process, so honouring an id from a previous
-        process would suppress every subsequent event. Replay across restarts
-        needs a durable log — `m0_http.sse.PatchJournal` is the building block,
-        but wiring it is an application decision.
+        A request carrying `Last-Event-ID` is a reconnection, and gets caught
+        up: every journaled frame for `url` newer than the id it presents is
+        queued before any live broadcast, and the id also suppresses
+        redelivery of frames the client already has. A request without the
+        header is a new consumer and starts from the live feed — SSE
+        semantics, and what keeps a first-time visitor from replaying stale
+        patches onto a freshly rendered page.
+
+        An id *ahead* of this process's counter is clamped to it: the id came
+        from an incarnation whose history this process does not have, and
+        taking it literally would suppress every subsequent event. Processes
+        that restore a persisted journal at boot (`restore`) seed the counter
+        past this clamp, which is what makes replay work across restarts.
         """
         if req.slot_id < 0:
             return HTTPResponse(
@@ -90,7 +115,23 @@ struct DatastarStream:
                 status_code=409,
                 status_text="Conflict",
             )
-        self.registry.subscribe(req.slot_id, url, 0)
+        var last_id = 0
+        var reconnecting = False
+        var header = req.headers.get("last-event-id")
+        if header:
+            reconnecting = True
+            last_id = _parse_event_id(header.value())
+            if last_id > self.next_event_id:
+                last_id = self.next_event_id
+        self.registry.subscribe(req.slot_id, url, last_id)
+        if reconnecting:
+            for i in range(len(self.journal_ids)):
+                if self.journal_urls[i] == url and self.journal_ids[i] > last_id:
+                    self.registry.queue_frame(
+                        req.slot_id,
+                        self.journal_ids[i],
+                        self.journal_frames[i].copy(),
+                    )
         return sse_response()
 
     def drain(mut self, slot: Int) -> List[UInt8]:
@@ -104,6 +145,50 @@ struct DatastarStream:
     def closed(mut self, slot: Int):
         """Release a disconnected slot. Wire to `sse_slot_disconnected`."""
         self.registry.unsubscribe(slot)
+
+    # --- Replay journal ----------------------------------------------------
+
+    def _dispatch(mut self, url: String, event_id: Int, frame: String):
+        """Journal a broadcast frame, then queue it for every subscriber."""
+        var bytes = List[UInt8](frame.as_bytes())
+        self._record(url, event_id, bytes)
+        self.registry.notify_frame(url, event_id, bytes)
+
+    def _record(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        if self.journal_cap <= 0:
+            return
+        self.journal_urls.append(url)
+        self.journal_ids.append(event_id)
+        self.journal_frames.append(frame.copy())
+        while len(self.journal_ids) > self.journal_cap:
+            _ = self.journal_urls.pop(0)
+            _ = self.journal_ids.pop(0)
+            _ = self.journal_frames.pop(0)
+
+    def restore(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        """Reload one persisted frame into the journal — the boot-time path.
+
+        Call once per persisted row, in ascending id order, before serving.
+        Seeds `next_event_id` so ids stay monotonic across restarts — the
+        property that makes a client's pre-restart `Last-Event-ID` meaningful
+        to this process. Without it the counter restarts at 0 and `open`'s
+        clamp writes the reconnecting client's id off entirely.
+        """
+        self._record(url, event_id, frame)
+        if event_id > self.next_event_id:
+            self.next_event_id = event_id
+
+    def frame_for(self, event_id: Int) -> List[UInt8]:
+        """The journaled frame bytes for `event_id`, empty if evicted/unknown.
+
+        This is what an app persists after a broadcast: the broadcast methods
+        return the id they assigned, and this returns the exact bytes that
+        went out under it.
+        """
+        for i in range(len(self.journal_ids)):
+            if self.journal_ids[i] == event_id:
+                return self.journal_frames[i].copy()
+        return List[UInt8]()
 
     # --- Broadcast: each returns the event id it assigned ------------------
 
@@ -122,7 +207,7 @@ struct DatastarStream:
             mode=mode,
             event_id=String(self.next_event_id),
         )
-        self.registry.notify_frame(url, self.next_event_id, List[UInt8](frame.as_bytes()))
+        self._dispatch(url, self.next_event_id, frame)
         return self.next_event_id
 
     def patch_signals(
@@ -135,7 +220,7 @@ struct DatastarStream:
             event_id=String(self.next_event_id),
             only_if_missing=only_if_missing,
         )
-        self.registry.notify_frame(url, self.next_event_id, List[UInt8](frame.as_bytes()))
+        self._dispatch(url, self.next_event_id, frame)
         return self.next_event_id
 
     def execute_script(mut self, url: String, script: String) -> Int:
@@ -144,7 +229,7 @@ struct DatastarStream:
         var frame = _frame_execute_script(
             script=script, event_id=String(self.next_event_id)
         )
-        self.registry.notify_frame(url, self.next_event_id, List[UInt8](frame.as_bytes()))
+        self._dispatch(url, self.next_event_id, frame)
         return self.next_event_id
 
     def redirect_to(mut self, url: String, location: String) -> Int:
@@ -153,7 +238,7 @@ struct DatastarStream:
         var frame = _frame_redirect(
             location=location, event_id=String(self.next_event_id)
         )
-        self.registry.notify_frame(url, self.next_event_id, List[UInt8](frame.as_bytes()))
+        self._dispatch(url, self.next_event_id, frame)
         return self.next_event_id
 
     def send_frame(mut self, url: String, frame: String) -> Int:
@@ -163,7 +248,7 @@ struct DatastarStream:
         frame must be complete, including its terminating blank line.
         """
         self.next_event_id += 1
-        self.registry.notify_frame(url, self.next_event_id, List[UInt8](frame.as_bytes()))
+        self._dispatch(url, self.next_event_id, frame)
         return self.next_event_id
 
     # --- Introspection -----------------------------------------------------
@@ -175,3 +260,23 @@ struct DatastarStream:
     def has_subscribers(self, url: String) -> Bool:
         """Whether anyone is listening — skip an expensive render if not."""
         return self.registry.has_subscribers(url)
+
+
+def _parse_event_id(s: String) -> Int:
+    """Parse a decimal `Last-Event-ID`; anything malformed is 0.
+
+    Ids here are always decimal (`next_event_id` stringified), so a value that
+    is not one came from somewhere else and carries no position — 0 means
+    "replay whatever the journal holds", the safe reading of an id we cannot
+    place.
+    """
+    if s.byte_length() == 0:
+        return 0
+    var result = 0
+    var bytes = s.as_bytes()
+    for i in range(s.byte_length()):
+        var c = Int(bytes[i])
+        if c < ord("0") or c > ord("9"):
+            return 0
+        result = result * 10 + (c - ord("0"))
+    return result

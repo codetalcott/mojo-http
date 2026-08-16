@@ -452,7 +452,7 @@ echo "smoke-ffi OK"
 # verified with Playwright when the attribute syntax was pinned; see
 # apps/datastar_todo/page.mojo.)
 [tool.poe.tasks.smoke-todo]
-help = "Todo demo: assert a broadcast patches a live client, and the list survives a restart"
+help = "Todo demo: assert a broadcast patches a live client, the list survives a restart, and Last-Event-ID replays across it"
 shell = """
 out=$(mktemp -d)
 trap 'kill $pid 2>/dev/null; rm -rf "$out"' EXIT
@@ -494,7 +494,24 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
 curl -s http://localhost:8080/ | grep -q '<s>buy milk</s>' \
   || { echo 'the list did not survive the restart'; curl -s http://localhost:8080/; exit 1; }
 
-rm -f todo_sse.txt todo.log
+# The replay claim: a client reconnecting with the id it saw last is caught
+# up by the *restarted* process from the persisted event log — the toggle
+# frame (id 2) replays, the add frame (id 1) it already has does not, and no
+# new mutation is needed to cause any of it.
+curl -sN --max-time 4 -H 'Accept: text/event-stream' -H 'Last-Event-ID: 1' \
+  http://localhost:8080/events > todo_replay.txt || true
+grep -q 'id: 2' todo_replay.txt \
+  || { echo 'reconnect did not replay the missed frame after restart'; cat todo_replay.txt; exit 1; }
+grep -q '<s>buy milk</s>' todo_replay.txt \
+  || { echo 'the replayed frame did not carry the struck-through todo'; cat todo_replay.txt; exit 1; }
+grep -q 'id: 1$' todo_replay.txt \
+  && { echo 'replay redelivered a frame the client already had'; cat todo_replay.txt; exit 1; }
+# A consumer with no Last-Event-ID is new, and gets no history.
+curl -sN --max-time 4 -H 'Accept: text/event-stream' http://localhost:8080/events > todo_fresh.txt || true
+grep -q 'datastar-patch-elements' todo_fresh.txt \
+  && { echo 'a new consumer was served history it never asked for'; cat todo_fresh.txt; exit 1; }
+
+rm -f todo_sse.txt todo_replay.txt todo_fresh.txt todo.log
 echo "smoke-todo OK"
 """
 

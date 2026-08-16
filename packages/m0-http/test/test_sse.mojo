@@ -167,6 +167,61 @@ def test_notify_frame_backpressure_drops() raises:
     assert_equal(len(reg.drain(0)), before)
 
 
+def test_queue_frame_targets_one_slot() raises:
+    """The replay path queues for exactly the slot named — no fan-out."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    reg.subscribe(1, "/x", 0)
+    reg.queue_frame(0, 1, List[UInt8](String("replay\n\n").as_bytes()))
+    assert_true(reg.has_pending(0))
+    assert_false(reg.has_pending(1))
+
+
+def test_queue_frame_applies_delivery_filter() raises:
+    """Ids at or below the slot's last-seen id are not replayed."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 5)
+    reg.queue_frame(0, 5, List[UInt8](String("old\n\n").as_bytes()))
+    assert_false(reg.has_pending(0))
+    reg.queue_frame(0, 6, List[UInt8](String("new\n\n").as_bytes()))
+    assert_true(reg.has_pending(0))
+
+
+def test_queue_frame_advances_last_seen() raises:
+    """A replayed frame suppresses the same id arriving again via broadcast.
+
+    This is what keeps catch-up and the live feed from double-delivering the
+    frame at the boundary between them.
+    """
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    reg.queue_frame(0, 3, List[UInt8](String("replay\n\n").as_bytes()))
+    reg.notify_frame("/x", 3, List[UInt8](String("live\n\n").as_bytes()))
+    assert_equal(_as_text(reg.drain(0)), "replay\n\n")
+
+
+def test_queue_frame_skips_non_streaming_and_bad_slots() raises:
+    """A slot not in streaming mode gets nothing; out-of-range is a no-op."""
+    var reg = SSERegistry(4)
+    reg.queue_frame(0, 1, List[UInt8](String("f\n\n").as_bytes()))
+    assert_false(reg.has_pending(0))
+    reg.queue_frame(-1, 1, List[UInt8](String("f\n\n").as_bytes()))
+    reg.queue_frame(99, 1, List[UInt8](String("f\n\n").as_bytes()))
+
+
+def test_queue_frame_backpressure_drops() raises:
+    """A frame that would overflow the slot's pending buffer is dropped."""
+    var reg = SSERegistry(2)
+    reg.subscribe(0, "/x", 0)
+    var big = List[UInt8]()
+    for _ in range(MAX_PENDING_BYTES):
+        big.append(UInt8(ord("x")))
+    reg.queue_frame(0, 1, big)
+    var before = len(reg.pending_bufs[0])
+    reg.queue_frame(0, 2, List[UInt8](String("tiny\n\n").as_bytes()))
+    assert_equal(len(reg.pending_bufs[0]), before)
+
+
 def test_notify_delegates_to_notify_frame() raises:
     """`notify()` still frames and delivers; backpressure lives in one place."""
     var reg = SSERegistry(4)

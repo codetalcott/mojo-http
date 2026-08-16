@@ -124,7 +124,10 @@ broadcast rendered *HTML* (`patch_elements` morphs `<section id="todos">` by id
 in every tab), the per-item actions are `Router` routes with `:id`, todo
 text is HTML-escaped before it is broadcast, and the list is rows in SQLite
 (`M0_DB`, default `todos.db`) — kill the server and restart it, the list comes
-back. `poe smoke-todo` asserts exactly that. `uv run poe serve-todo`.
+back. So does the *stream*: broadcast frames are logged to SQLite and restored
+into the `DatastarStream` journal at boot, so a tab reconnecting with
+`Last-Event-ID` is caught up by the new process instead of waiting for the
+next mutation. `poe smoke-todo` asserts both. `uv run poe serve-todo`.
 
 A note on Datastar v1.0.2 attribute syntax, learned the hard way in a real
 browser: the stream opens from `data-init` (there is no `on-load` plugin), and
@@ -300,14 +303,14 @@ so it is not worth the ownership complexity yet.
 - **SSE fan-out is single-process.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry, so a push on one worker never reaches subscribers on another.
 - **No server-side timer hook.** Every push must be triggered by an inbound request.
 - `m0-sqlite` has no statement cache and no connection pool; see above.
-- No SSE replay across restarts. `DatastarStream` ignores `Last-Event-ID` because event ids restart per process; `PatchJournal` is the building block if you need it. (The state half of the story is solved — the todo demo persists its list in SQLite — so replay is the remaining half.)
+- SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that resumes live instead of being caught up. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines).
 
 ## Development
 
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 395 unit tests, then compiles every example
+uv run poe test-all         # 454 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
@@ -315,7 +318,7 @@ uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+json, CORS
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
-uv run poe smoke-todo       # assert a mutation broadcast patches a live client
+uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
 uv run poe smoke-django     # assert a Django request/response cycle end to end
 uv run poe build-ffi        # emit the C-ABI shared library (libm0core.so/.dylib)

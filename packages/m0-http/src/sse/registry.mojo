@@ -85,6 +85,25 @@ struct SSERegistry:
                         if event_id != NO_EVENT_ID:
                             self.last_event_ids[slot] = event_id
 
+    def queue_frame(mut self, slot: Int, event_id: Int, frame: List[UInt8]):
+        """Queue a pre-formatted frame for ONE slot — the replay path.
+
+        `notify_frame` for a single subscriber: the same delivery filter and
+        backpressure, scoped to one slot. This is what catches a reconnecting
+        client up from its `Last-Event-ID` without re-broadcasting history to
+        everyone else. Bounds-safe; a slot that is not streaming gets nothing.
+        """
+        if slot < 0 or slot >= self._capacity:
+            return
+        if not self.is_streaming[slot]:
+            return
+        var deliver = event_id == NO_EVENT_ID or event_id > self.last_event_ids[slot]
+        if deliver:
+            if len(self.pending_bufs[slot]) + len(frame) <= MAX_PENDING_BYTES:
+                self.pending_bufs[slot].extend(Span(frame))
+                if event_id != NO_EVENT_ID:
+                    self.last_event_ids[slot] = event_id
+
     def has_subscribers(self, url: String) -> Bool:
         """Whether any slot is streaming for `url`.
 
