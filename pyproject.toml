@@ -103,9 +103,21 @@ help = "Build all packages in dependency order"
 sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite"]
 default_item_type = "ref"
 
+# The C-ABI surface. ffi_exports.mojo sits at the package root because a
+# shared-lib entry file cannot use relative imports and @export symbols are
+# only emitted from the entry module — see its docstring for the dead ends.
+[tool.poe.tasks.build-ffi]
+help = "Emit the C-ABI shared library (packages/m0-core/libm0core.so|.dylib)"
+shell = """
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+mojo build --emit shared-lib -I packages/m0-core \
+  packages/m0-core/ffi_exports.mojo -o "packages/m0-core/libm0core.$ext" || exit 1
+echo "built packages/m0-core/libm0core.$ext"
+"""
+
 [tool.poe.tasks.clean]
 help = "Remove build artifacts"
-shell = "find packages \\( -name '*.mojoc' -o -name '*.mojopkg' \\) -delete"
+shell = "find packages \\( -name '*.mojoc' -o -name '*.mojopkg' -o -name 'libm0core.*' \\) -delete"
 
 # --- Test ------------------------------------------------------------------
 
@@ -355,6 +367,46 @@ rm -f slow1.txt slow2.txt
 
 rm -f django.log django2.log
 echo "smoke-django OK"
+"""
+
+# The foreign-caller half of the C-ABI story: the emitted shared object must
+# load and answer through ctypes — the same dlopen path Bun or N-API takes.
+# Vectors are the public known answers test_hashing.mojo also pins, so the
+# .so is checked against the algorithm, not against itself.
+[tool.poe.tasks.smoke-ffi]
+help = "Build the C-ABI shared library, load it via ctypes, assert known vectors"
+shell = """
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+mojo build --emit shared-lib -I packages/m0-core \
+  packages/m0-core/ffi_exports.mojo -o "packages/m0-core/libm0core.$ext" || exit 1
+python3 - "packages/m0-core/libm0core.$ext" <<'PYEOF'
+import ctypes, sys
+
+lib = ctypes.CDLL(sys.argv[1])
+u32, buf_t = ctypes.c_uint32, ctypes.c_char_p
+lib.m0_fnv1a.restype = u32
+lib.m0_fnv1a.argtypes = [buf_t, u32]
+lib.m0_xxhash32.restype = u32
+lib.m0_xxhash32.argtypes = [buf_t, u32, u32]
+lib.m0_format_hash.restype = u32
+lib.m0_format_hash.argtypes = [u32, ctypes.c_char_p, u32]
+
+# FNV-1a and xxHash32 public vectors, the same ones test_hashing.mojo pins.
+assert lib.m0_fnv1a(b"a", 1) == 0xE40C292C, "fnv1a('a')"
+assert lib.m0_fnv1a(b"foobar", 6) == 0xBF9CF968, "fnv1a('foobar')"
+assert lib.m0_xxhash32(b"", 0, 0) == 0x02CC5D05, "xxhash32('')"
+h0 = lib.m0_xxhash32(b"hello world", 11, 0)
+h7 = lib.m0_xxhash32(b"hello world", 11, 7)
+assert h0 != h7, "seed had no effect"
+
+out = ctypes.create_string_buffer(8)
+n = lib.m0_format_hash(0xBF9CF968, out, 8)
+assert n == 8 and out.raw == b"bf9cf968", f"format_hash wrote {n}: {out.raw}"
+assert lib.m0_format_hash(1, out, 4) == 0, "short buffer must write nothing"
+print("ctypes round trip OK")
+PYEOF
+[ $? = 0 ] || exit 1
+echo "smoke-ffi OK"
 """
 
 # The wire-format half of the todo demo's story: a mutation on one connection

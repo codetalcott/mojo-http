@@ -67,6 +67,8 @@ The three `sse_*` hooks are the streaming interface; a handler that does not str
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
+`m0-core`'s hash functions are also exported over a C ABI: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS) for Bun's `dlopen`, Node's N-API, or Python's `ctypes` — `poe smoke-ffi` proves that path against public hash vectors in CI.
+
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · SSE with backpressure and `Last-Event-ID` reconnect replay.
@@ -311,6 +313,8 @@ uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+jso
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-todo       # assert a mutation broadcast patches a live client
 uv run poe smoke-django     # assert a Django request/response cycle end to end
+uv run poe build-ffi        # emit the C-ABI shared library (libm0core.so/.dylib)
+uv run poe smoke-ffi        # load the shared library via ctypes, assert known vectors
 uv run poe bench-core       # benchmark m0-core hot paths
 uv run poe bench-sqlite     # benchmark m0-sqlite blob reads and bulk ingest
 ```
