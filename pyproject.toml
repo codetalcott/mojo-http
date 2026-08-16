@@ -75,11 +75,14 @@ done
 echo "all apps built"
 """
 
-# NOTE ON -I ORDER: every package's sources live in a directory named `src`, so
-# `from src.x import ...` in a test resolves against whichever -I root is
-# searched first. The package under test must therefore come first, or its
-# tests silently bind to another package's `src`. The tasks above happen to work
-# because their module names do not collide; this one would not.
+# NOTE ON src BINDING: every package's sources live in a directory named
+# `src`. A test file's `from src.x import ...` binds to its OWN package's src
+# because `test/__init__.mojo` makes the test part of the package; without
+# that marker, the first -I root wins instead (measured — that fallback is
+# how test-wsgi once came to need its own package listed first). Every test/
+# now carries the marker, every task below still lists its package first as
+# a second layer, and each package's `test_resolution.mojo` fails loudly if
+# either protection erodes.
 [tool.poe.tasks.test-wsgi]
 help = "Test m0-wsgi (mapping logic only; needs no interpreter)"
 shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
@@ -127,11 +130,11 @@ shell = "for f in packages/m0-core/test/test_*.mojo; do mojo run -I packages/m0-
 
 [tool.poe.tasks.test-http]
 help = "Test m0-http"
-shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
+shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-http -I packages/m0-core \"$f\" || exit 1; done"
 
 [tool.poe.tasks.test-datastar]
 help = "Test m0-datastar"
-shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar \"$f\" || exit 1; done"
+shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-datastar -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
 
 # Built and run, not `mojo run`. The JIT resolves symbols only from libraries
 # already loaded into its process: on macOS libsqlite3 is in the dyld shared

@@ -80,11 +80,15 @@ multiworker}.mojo` import from `lightbug_http`, and `lightbug_http/event_loop.mo
 imports `m0_http.log`. Both sides live inside `packages/m0-http/`, so the cycle
 never crosses a package boundary.
 
-`m0-core/src/ffi/` holds C-ABI exports for foreign callers (Bun `dlopen`,
-N-API). `@export` cannot be applied to a parametric function, so those entry
-points name a concrete pointer origin rather than inferring one, and Mojo-side
-callers must erase the origin explicitly — see `test_ffi_exports.mojo`. No task
-emits the shared object yet ([docs/ROADMAP.md](docs/ROADMAP.md)).
+`m0-core/ffi_exports.mojo` (package root, deliberately outside `src/`) holds
+the C-ABI exports for foreign callers (Bun `dlopen`, N-API, `ctypes`); `poe
+build-ffi` emits `libm0core.so`/`.dylib` from it, and `poe smoke-ffi` proves
+the artifact through `ctypes` in CI. It must stay the shared-lib entry file —
+relative imports don't compile there, and `@export` symbols are only emitted
+from the entry module (its docstring records the dead ends). `@export` cannot
+be applied to a parametric function, so the entry points name a concrete
+pointer origin, and Mojo-side callers erase the origin explicitly — see
+`test_ffi_exports.mojo`.
 
 ## The lightbug fork
 
@@ -113,7 +117,7 @@ dependencies. `mojo` lives in `.venv`, so every invocation needs `uv run`
 (or an activated venv):
 
 ```bash
-uv run mojo run -I packages/m0-core -I packages/m0-http \
+uv run mojo run -I packages/m0-http -I packages/m0-core \
   packages/m0-http/test/test_router.mojo
 
 # m0-sqlite is the exception: build, then run. Never `mojo run` — see below.
@@ -163,9 +167,13 @@ like it gated on CI.
 
 ## Imports resolve two ways
 
-Inside a package's own `test/`, imports are `src.*`: `-I packages/m0-http` puts
-the package directory on the path, so `from src.router import Router` compiles
-that source directly and the package under test needs no rebuild.
+Inside a package's own `test/`, imports are `src.*` and compile the package's
+source directly, so the package under test needs no rebuild. What makes that
+binding safe is `test/__init__.mojo`: with it, a test file is part of its
+package and its own `src` wins regardless of `-I` order; without it, the first
+`-I` root's `src` wins instead — every package's `test_resolution.mojo` fails
+loudly if that ever erodes. Keep the package under test first in `-I` lists
+anyway; it is the convention the tasks follow.
 
 Everywhere else — across packages, and from `apps/` — imports are `m0_*` and
 resolve through the `.mojoc`. A change to `m0-core` is therefore invisible to
