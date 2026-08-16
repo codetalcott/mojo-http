@@ -1,22 +1,26 @@
 """Tests for the C-ABI export surface.
 
-`src/ffi/exports.mojo` exists so Bun's `dlopen` and Node's N-API can call the
-hash functions directly. Its docstring claims the exports "delegate to shared
-_fnv1a_ptr / _xxhash32_ptr internals — single source of truth for both APIs";
-these tests are what makes that claim checkable, by asserting the exported
-entry points agree with the ordinary Mojo ones on the same input.
+`ffi_exports.mojo` at the package root exists so Bun's `dlopen` and Node's
+N-API can call the hash functions directly; `poe build-ffi` emits it as a
+shared object. Its docstring claims the exports delegate to the shared
+`_fnv1a_ptr` / `_xxhash32_ptr` internals — single source of truth for both
+APIs; these tests are what makes that claim checkable, by asserting the
+exported entry points agree with the ordinary Mojo ones on the same input.
 
-The directory previously sat outside `src/`, so `mojo precompile src` never
-compiled it and the code had drifted out of step with the language — `@export`
-rejects parametric functions, so the pointer origins had to be named rather
-than inferred. Nothing caught that, because nothing compiled it.
+The module lives outside `src/` because it is the `--emit shared-lib` entry
+point, and code outside `src/` once rotted here unnoticed (nothing compiled
+it, and `@export`'s rejection of parametric functions went undetected).
+These tests importing the module directly are what prevents a repeat: every
+`test-core` run compiles it. `poe smoke-ffi` covers the other half — that
+the emitted shared object actually loads and answers known vectors through
+`ctypes`.
 """
 
 from std.memory import UnsafePointer
 from std.testing import assert_equal, assert_true, TestSuite
 
 from src.hashing import fnv1a, xxhash32, format_hash32
-from src.ffi.exports import m0_fnv1a, m0_xxhash32, m0_format_hash
+from ffi_exports import m0_fnv1a, m0_xxhash32, m0_format_hash
 
 
 def _any_origin(p: Pointer[UInt8, _]) -> UnsafePointer[UInt8, MutAnyOrigin]:

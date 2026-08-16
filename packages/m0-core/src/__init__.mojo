@@ -3,7 +3,9 @@
 
 Provides hashing (FNV-1a, xxHash32, wyhash64), SIMD-accelerated JSON
 string escaping, and lightweight JSON field parsing.
-C-ABI FFI exports live in ffi/ (outside src/, build target only).
+C-ABI FFI exports live in ffi_exports.mojo at the package root — outside
+src/ because it is the `mojo build --emit shared-lib` entry point (see its
+docstring); `poe build-ffi` emits the shared object.
 """
 
 from .hashing import (

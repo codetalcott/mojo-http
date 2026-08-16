@@ -67,6 +67,10 @@ jobs:
       # log_access` resolves against m0_http.mojoc at run time.
       - name: Compile every example app
         run: uv run poe build-apps
+      # Emits libm0core.so (.dylib on macOS) and drives it through ctypes —
+      # the same dlopen path Bun or N-API takes — against public hash vectors.
+      - name: Smoke test the C-ABI shared library
+        run: uv run poe smoke-ffi
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
       # The framework showcase: routing with :id and a real 405, content

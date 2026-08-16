@@ -93,13 +93,6 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Known issues
 
-- The C-ABI exports have no shared-object build task, so nothing yet produces
-  the `.so`/`.dylib` that Bun's `dlopen` or N-API would load. `mojo build
-  --emit shared-lib` cannot compile `src/ffi/exports.mojo` directly — its
-  relative `from ..hashing import` is not resolvable from a top-level entry
-  file — so this needs either an absolute-import shim or a restructure. The
-  code itself is live and tested (`test_ffi_exports.mojo`); only the packaging
-  step is missing.
 - Content negotiation does not implement `Accept-Encoding`, `Accept-Language`,
   or `Vary`.
 - **Mojo 1.0's `PythonObject` interop leaks a reference per call argument and
@@ -123,6 +116,16 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **The C-ABI exports now ship as a shared object.** `poe build-ffi` emits
+  `packages/m0-core/libm0core.so` (`.dylib` on macOS) from
+  `ffi_exports.mojo`, which moved back to the package root: a shared-lib
+  entry file cannot use relative imports, `@export` symbols are only emitted
+  from the entry module, and a re-exporting wrapper is rejected by the
+  compiler — so the entry *is* the definition, importing the hashing
+  internals absolutely. The old outside-`src/` rot risk is held off by
+  `test_ffi_exports.mojo` compiling the module on every `test-core` run and
+  by `poe smoke-ffi` (in CI, both runners) loading the emitted library
+  through `ctypes` and asserting the public FNV-1a/xxHash32 vectors.
 - **The WSGI bridge leaked ~2.3 KB per request**, which on a long-lived
   worker grew the CPython heap without bound and turned gen-2 GC into
   ~200 ms event-loop pauses — the real cause of the close-mode latency tail
