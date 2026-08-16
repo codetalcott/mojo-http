@@ -23,6 +23,6 @@ Known limits, all inherited from the server rather than the bridge:
 """
 
 from .bridge import PyBridge, SHIM_SOURCE
-from .environ import build_environ, cgi_header_name
+from .environ import cgi_header_name, serialize_request
 from .response import build_response, split_status
 from .app import WSGIApp

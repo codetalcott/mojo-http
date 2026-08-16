@@ -5,7 +5,7 @@ from std.python import Python, PythonObject
 from lightbug_http import HTTPRequest, HTTPResponse
 
 from .bridge import PyBridge
-from .environ import build_environ
+from .environ import serialize_request
 from .response import build_response
 
 
@@ -30,10 +30,6 @@ struct WSGIApp(Movable):
     """
 
     var _bridge: PyBridge
-    var _app: PythonObject
-    var _server_name: String
-    var _server_port: String
-    var _multiprocess: Bool
 
     def __init__(
         out self,
@@ -63,17 +59,14 @@ struct WSGIApp(Movable):
         if project_path:
             Python.add_to_path(project_path)
         var module = Python.import_module(module_name)
-        self._app = module.__getattr__(attribute)
-        self._server_name = server_name
-        self._server_port = server_port
-        self._multiprocess = multiprocess
+        # The application object and the request-invariant environ entries
+        # live on the Python side of the bridge from here on — per-request
+        # crossings must not carry Python objects (see bridge.mojo).
+        self._bridge.set_app(module.__getattr__(attribute))
+        self._bridge.set_base(server_name, server_port, multiprocess)
 
     def __init__(out self, *, deinit move: Self):
         self._bridge = move._bridge^
-        self._app = move._app^
-        self._server_name = move._server_name^
-        self._server_port = move._server_port^
-        self._multiprocess = move._multiprocess
 
     def serve(mut self, req: HTTPRequest) raises -> HTTPResponse:
         """Run one request through the application.
@@ -82,14 +75,8 @@ struct WSGIApp(Movable):
         generic 500 instead can simply let it propagate — the event loop
         catches handler exceptions and answers `InternalError()`.
         """
-        var environ = build_environ(
-            self._bridge,
-            req,
-            self._server_name,
-            self._server_port,
-            self._multiprocess,
-        )
-        var result = self._bridge.call_app(self._app, environ)
+        var payload = serialize_request(req)
+        var result = self._bridge.handle(Span(payload))
         return build_response(
             self._bridge, String(py=result[0]), result[1], result[2]
         )

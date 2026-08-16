@@ -264,6 +264,32 @@ curl -s --fail http://localhost:8080/ > /dev/null || fail 'server died after a v
 curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=False' \
   || fail 'wsgi.multiprocess was not False with one worker'
 
+# The bridge must not leak per request. Mojo 1.0's PythonObject interop leaks
+# one reference per call argument and per setitem value, which is why requests
+# cross as a byte blob (see m0-wsgi/src/bridge.mojo). The pre-blob bridge
+# leaked ~2.3KB/request — ~23MB over this loop; 12MB allows allocator noise.
+rss0=$(ps -o rss= -p $pid | tr -d ' ')
+python3 - <<'PYEOF'
+import http.client
+done = attempts = 0
+conn = http.client.HTTPConnection("localhost", 8080)
+while done < 10000 and attempts < 20000:
+    attempts += 1
+    try:
+        conn.request("GET", "/")
+        conn.getresponse().read()
+        done += 1
+    except Exception:
+        conn.close()
+        conn = http.client.HTTPConnection("localhost", 8080)
+conn.close()
+raise SystemExit(0 if done >= 10000 else 1)
+PYEOF
+[ $? = 0 ] || fail 'leak-check load loop could not complete 10k requests'
+rss1=$(ps -o rss= -p $pid | tr -d ' ')
+growth=$((rss1 - rss0))
+[ "$growth" -lt 12288 ] || fail "bridge leaked ${growth}KB of RSS over 10k requests"
+
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
 
