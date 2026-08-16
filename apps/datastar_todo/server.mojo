@@ -7,10 +7,13 @@ server; the browser never owns state beyond the draft input.
 
 The list also survives the server: todos are rows in SQLite (`M0_DB`, default
 `todos.db`), so a restart comes back with the same list — the first example
-composing `m0-sqlite` with the server, and the prerequisite for SSE replay
-across restarts (patches are only worth replaying onto state that survived).
-`apps/` is where packages compose; `m0-sqlite` itself still imports nothing
-else here.
+composing `m0-sqlite` with the server. And so does the *stream*: every
+broadcast frame is logged to the `events` table, restored into the
+`DatastarStream` journal at boot (which seeds the event-id counter, keeping
+ids monotonic across restarts), so a tab reconnecting with `Last-Event-ID`
+after a restart is caught up from where it left off instead of waiting for
+the next mutation. `apps/` is where packages compose; `m0-sqlite` itself
+still imports nothing else here.
 
 It also composes the framework layer the counter skips: the per-item actions
 are `Router` routes with `:id` captures —
@@ -52,6 +55,12 @@ from datastar_todo.page import render_page, render_todos
 
 comptime STREAM_URL = "/events"
 
+# How many broadcast frames survive for replay — both the DatastarStream
+# journal and the SQLite `events` table are pruned to this depth. A client
+# further behind than this reconnects past the gap: it resumes live and its
+# next mutation (or refresh) re-renders the full list anyway.
+comptime JOURNAL_ENTRIES = 64
+
 comptime H_ADD = 0
 comptime H_TOGGLE = 1
 comptime H_DELETE = 2
@@ -74,7 +83,7 @@ struct TodoHandler(HTTPService):
         self.router.add("POST", "/delete/:id", H_DELETE)
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
-        self.stream = DatastarStream(1024)
+        self.stream = DatastarStream(1024, journal_entries=JOURNAL_ENTRIES)
         # AUTOINCREMENT keeps ids never-reused across deletes and restarts,
         # matching what the in-memory version promised. `ORDER BY id` below
         # is what preserves insertion order — the visible order of the list.
@@ -84,6 +93,22 @@ struct TodoHandler(HTTPService):
             "  text TEXT NOT NULL,"
             "  done INTEGER NOT NULL DEFAULT 0)"
         )
+        # The broadcast log: the exact SSE frame bytes that went out under
+        # each event id. Restored into the stream's journal at boot, which
+        # also seeds the id counter — the two halves of SSE replay across
+        # restarts (ids must stay monotonic, or Last-Event-ID means nothing
+        # to the next process).
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS events ("
+            "  id INTEGER PRIMARY KEY,"
+            "  url TEXT NOT NULL,"
+            "  frame BLOB NOT NULL)"
+        )
+        var saved = db.prepare("SELECT id, url, frame FROM events ORDER BY id")
+        while saved.step():
+            self.stream.restore(
+                saved.column_text(1), saved.column_int(0), saved.column_blob(2)
+            )
         self.db = db^
 
     def _load(
@@ -101,11 +126,26 @@ struct TodoHandler(HTTPService):
         return (ids^, texts^, done^)
 
     def _broadcast(mut self):
-        """Render the fragment once, morph it into every subscriber."""
+        """Render the fragment once, morph it into every subscriber.
+
+        Also persists the broadcast frame to the `events` log so a client
+        reconnecting after a restart can be caught up from its Last-Event-ID.
+        """
         try:
             var rows = self._load()
             var fragment = render_todos(rows[0], rows[1], rows[2])
-            _ = self.stream.patch_elements(STREAM_URL, fragment)
+            var eid = self.stream.patch_elements(STREAM_URL, fragment)
+            var ins = self.db.prepare(
+                "INSERT OR REPLACE INTO events (id, url, frame)"
+                " VALUES (?, ?, ?)"
+            )
+            ins.bind_int(1, eid)
+            ins.bind_text(2, STREAM_URL)
+            ins.bind_blob(3, self.stream.frame_for(eid))
+            _ = ins.step()
+            var prune = self.db.prepare("DELETE FROM events WHERE id <= ?")
+            prune.bind_int(1, eid - JOURNAL_ENTRIES)
+            _ = prune.step()
         except:
             pass  # a render bug must not kill the mutating request
 

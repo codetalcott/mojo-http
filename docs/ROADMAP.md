@@ -54,12 +54,14 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
   broadcast (the alternative is distributed stored XSS). The list is rows in
   SQLite (`M0_DB`), the first composition of `m0-sqlite` with the server —
   in `apps/`, where packages compose; the package itself still imports
-  nothing here — and the prerequisite for SSE replay across restarts, whose
-  remaining half is persisting `PatchJournal` and cross-restart event-id
-  semantics. Because it links libsqlite3, the app is built-then-run, never
-  `mojo run` (the test-sqlite rule). `poe smoke-todo` asserts the wire
-  format *and* that a killed-and-restarted server comes back with the same
-  list; the browser half was verified with Playwright in two real tabs
+  nothing here. SSE replay across restarts landed on top of it (see below):
+  the app logs each broadcast frame to an `events` table and restores it
+  into the stream's journal at boot. Because it links libsqlite3, the app
+  is built-then-run, never `mojo run` (the test-sqlite rule). `poe
+  smoke-todo` asserts the wire format, that a killed-and-restarted server
+  comes back with the same list, *and* that a `Last-Event-ID` reconnect is
+  caught up across the restart;
+  the browser half was verified with Playwright in two real tabs
   (re-run after the SQLite conversion), which is also how two latent
   Datastar-syntax bugs got caught: v1.0.2 has no `on-load` plugin
   (`data-init` opens the stream) and keyed attributes are colon-separated
@@ -69,6 +71,29 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
 The `build-apps` gate this section once called for now exists: `poe build-apps`
 compiles every example to a temp directory, and CI runs it before the smoke
 tests.
+
+### SSE replay across restarts (done)
+
+`DatastarStream` now honours `Last-Event-ID`. Every broadcast is journaled
+in-memory (bounded, default 64 frames, SoA parallel lists); a reconnecting
+client — the header is what marks one; its absence marks a new consumer, who
+gets no history — is caught up through `SSERegistry.queue_frame`, the
+single-slot twin of `notify_frame` with the same delivery filter and
+backpressure, so the replayed id also suppresses the same frame arriving
+again off the live feed. Not `PatchJournal`: that stores *patches keyed by
+ETag* for the HTTP cache story, the wrong shape for verbatim frame bytes.
+
+The restart half is deliberately an application decision, because only the
+app has durable storage: persist `(id, url, frame_for(id))` after each
+broadcast, feed rows back through `restore()` at boot — which also seeds the
+id counter, keeping ids monotonic across restarts, the property that makes a
+pre-restart `Last-Event-ID` meaningful at all. An id *ahead* of the counter
+(an incarnation whose history this process never had) is clamped, so a
+non-persisting app degrades to resume-live instead of a muted stream — the
+exact failure the old code avoided by ignoring the header entirely.
+`apps/datastar_todo` wires it in ~15 lines and `poe smoke-todo` asserts a
+reconnect across a real kill-and-restart replays the missed frame, skips the
+already-seen one, and serves a fresh consumer no history.
 
 ### HTTP client (done)
 

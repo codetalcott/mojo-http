@@ -96,7 +96,15 @@ def render_page(
         # data-init, not the pre-1.0 data-on-load: v1.0.2 has no on-load
         # plugin, and the misnamed attribute fails silently — nothing opens
         # the stream and nothing errors. Verified against the bundle.
-        '<body data-signals=\'{"draft":""}\' data-init="@get(\'/events\')">\n'
+        #
+        # retry: 'always' is what makes replay-across-restart real in a
+        # browser: with the default 'auto', v1.0.2 treats a clean stream
+        # close — which a dying server produces — as an intentional end and
+        # never reconnects. 'always' retries with backoff and re-sends the
+        # last seen id as `last-event-id`, and the server catches the tab up
+        # from its persisted journal. Also verified against the bundle.
+        '<body data-signals=\'{"draft":""}\''
+        ' data-init="@get(\'/events\', {retry: \'always\'})">\n'
         "<main>\n"
         "<h1>Todos, in every tab at once</h1>\n"
         '<p class="sub">Served by <code>mojo-http</code>. Open two tabs; '
