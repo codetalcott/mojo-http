@@ -141,12 +141,18 @@ Run [apps/django_wsgi/](apps/django_wsgi/) with `uv run poe serve-django`.
 **Why the boundary looks the way it does.** WSGI hands the application a
 `start_response` callable that the *server* supplies, and building a Python
 callable that closes over Mojo state is the hardest thing at this boundary — so
-a small Python shim does it instead, and each request costs exactly one call
-into the interpreter. The shim is a string `exec`'d at startup, not a file, so
-there is nothing to locate at run time. Bodies cross as raw addresses via
-`ctypes`: Mojo 1.0's `std.python` binds no `bytes` API at all, and a `String`
-round trip would corrupt any byte above 0x7F. `poe smoke-django` asserts a body
-of all 256 byte values comes back unchanged.
+a small Python shim does it instead. The shim is a string `exec`'d at startup,
+not a file, so there is nothing to locate at run time. Each request crosses as
+a length-prefixed byte blob written into a persistent Python-side `bytearray`,
+and the shim's zero-argument `handle()` parses it, builds the environ natively,
+and returns `(status, headers, body)`. The blob is not an optimization: Mojo
+1.0's `PythonObject` interop leaks a reference per call argument and per
+`__setitem__` value, so any per-request Python object passed the obvious way
+is pinned forever — the blob is the shape that survives a million requests
+with flat memory, and `poe smoke-django` asserts exactly that. Bodies come
+back as raw addresses via `ctypes`: `std.python` binds no `bytes` API at all,
+and a `String` round trip would corrupt any byte above 0x7F; the same smoke
+asserts a body of all 256 byte values returns unchanged.
 
 **Limits**, all inherited from the server rather than the bridge:
 
@@ -155,9 +161,10 @@ of all 256 byte values comes back unchanged.
   in its process. Concurrency means more processes: `M0_WORKERS=N` preforks N
   workers that all accept from one shared listener, gunicorn-style — and the
   fork happens *before* the first Python call, never after, because forking a
-  live CPython is unsafe. Benchmarked against gunicorn at ~1.6–2.2x its
-  throughput under keep-alive, with an honest tail-latency caveat on
-  close-per-request traffic:
+  live CPython is unsafe. Benchmarked against gunicorn at ~1.5–2x its
+  throughput with comparable-or-better p99, in both keep-alive and
+  close-per-request modes — methodology, history, and the leak that once made
+  this paragraph less flattering:
   [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md).
 - **Responses are fully buffered.** There is no chunked encoding, so
   `StreamingHttpResponse` and `FileResponse` are materialized in memory.

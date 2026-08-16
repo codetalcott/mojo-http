@@ -13,7 +13,8 @@ from lightbug_http.c.kqueue import (
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import accept, recv, send, close
 from lightbug_http.c.socket_error import (
-    AcceptEAGAINError, RecvEAGAINError, SendEAGAINError,
+    AcceptEAGAINError, AcceptECONNABORTEDError, AcceptEINTRError,
+    RecvEAGAINError, SendEAGAINError,
 )
 from lightbug_http.connection import ConnectionState, default_buffer_size
 from lightbug_http.header import (
@@ -143,7 +144,21 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     var new_fd: FileDescriptor
                     try:
                         new_fd = accept(listen_fd)
-                    except:
+                    except accept_err:
+                        # EAGAIN: backlog drained — this readiness event is done.
+                        if accept_err.isa[AcceptEAGAINError]():
+                            break
+                        # ECONNABORTED (the client gave up while queued) and
+                        # EINTR are per-attempt transients. They MUST NOT end
+                        # the drain: the listen socket is edge-triggered on
+                        # both backends, so connections left in the backlog
+                        # here are owed no new readiness edge until some later
+                        # connection arrives — under bursty load that strands
+                        # live clients behind a dead one.
+                        if accept_err.isa[AcceptECONNABORTEDError]() or accept_err.isa[AcceptEINTRError]():
+                            continue
+                        # Anything else (EMFILE, ENFILE, ...) won't be cured
+                        # by accepting harder; stop and let the loop breathe.
                         break
 
                     var slot = UNUSED

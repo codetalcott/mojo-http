@@ -1,14 +1,24 @@
-"""`HTTPRequest` → WSGI `environ` (PEP 3333).
+"""`HTTPRequest` → the request blob the bridge ships to Python.
 
-The CGI-variable half of the mapping is pure string work and is tested without
-an interpreter; only `build_environ` needs Python.
+The environ dict itself is built *inside* the interpreter by the bridge's
+shim, because building it from Mojo would leak every entry (see
+`bridge.mojo`). What lives here is the pure half: the CGI header-name
+transform and the blob serializer, both testable without an interpreter.
+
+Blob layout, all integers little-endian u32, strings raw bytes:
+
+    method | path | query | protocol      each as  u32 len + bytes
+    u32 header-count
+    per header:  cgi-name, value          each as  u32 len + bytes
+    u32 body-len + body bytes
+
+`PATH_INFO` comes from `req.uri.path`, which the URI parser has already
+percent-decoded — which is what PEP 3333 asks for. `QUERY_STRING` comes from
+`req.uri.query_string`, which is deliberately still raw. The shim decodes
+every string field as latin-1, PEP 3333's byte-tunneling convention.
 """
 
-from std.python import Python, PythonObject
-
-from lightbug_http import HTTPRequest, HeaderKey
-
-from .bridge import PyBridge
+from lightbug_http import HTTPRequest
 
 
 def cgi_header_name(header_key: String) -> String:
@@ -24,45 +34,42 @@ def cgi_header_name(header_key: String) -> String:
     return String("HTTP_", upper)
 
 
-def build_environ(
-    bridge: PyBridge,
-    req: HTTPRequest,
-    server_name: String,
-    server_port: String,
-    multiprocess: Bool = False,
-) raises -> PythonObject:
-    """Build the WSGI `environ` dict for one request.
+def _append_u32(mut out: List[UInt8], value: Int):
+    out.append(UInt8(value & 0xFF))
+    out.append(UInt8((value >> 8) & 0xFF))
+    out.append(UInt8((value >> 16) & 0xFF))
+    out.append(UInt8((value >> 24) & 0xFF))
 
-    `PATH_INFO` comes from `req.uri.path`, which the URI parser has already
-    percent-decoded — which is what PEP 3333 asks for. `QUERY_STRING` comes
-    from `req.uri.query_string`, which is deliberately still raw.
-    """
-    var environ = Python.dict()
 
-    environ["REQUEST_METHOD"] = req.method
-    environ["PATH_INFO"] = req.uri.path
-    environ["QUERY_STRING"] = req.uri.query_string
-    environ["SERVER_NAME"] = server_name
-    environ["SERVER_PORT"] = server_port
-    environ["SERVER_PROTOCOL"] = req.protocol
-    environ["SCRIPT_NAME"] = ""
-    environ["REMOTE_ADDR"] = ""
+def _append_str(mut out: List[UInt8], s: String):
+    _append_u32(out, s.byte_length())
+    out.extend(s.as_bytes())
 
+
+def serialize_request(req: HTTPRequest) raises -> List[UInt8]:
+    """Serialize one request into the bridge's blob format."""
+    var out = List[UInt8](capacity=256 + len(req.body_raw))
+
+    _append_str(out, req.method)
+    _append_str(out, req.uri.path)
+    _append_str(out, req.uri.query_string)
+    _append_str(out, req.protocol)
+
+    var present = List[String]()
     for key in req.headers.keys():
+        present.append(key)
+    _append_u32(out, len(present))
+    for key in present:
         var value = req.headers.get(key)
         if value:
-            environ[cgi_header_name(key)] = value.value()
+            _append_str(out, cgi_header_name(key))
+            _append_str(out, value.value())
+        else:
+            # keys() promised presence; keep the count honest regardless.
+            _append_str(out, cgi_header_name(key))
+            _append_str(out, "")
 
-    environ["wsgi.version"] = Python.tuple(1, 0)
-    # No TLS in this server; a proxy terminating TLS should send
-    # X-Forwarded-Proto, which Django reads via SECURE_PROXY_SSL_HEADER.
-    environ["wsgi.url_scheme"] = "http"
-    environ["wsgi.input"] = bridge.make_input(Span(req.body_raw))
-    environ["wsgi.errors"] = bridge.stderr()
-    # The event loop is single-threaded and calls the handler synchronously,
-    # so an application never sees two concurrent requests in one process.
-    environ["wsgi.multithread"] = False
-    environ["wsgi.multiprocess"] = multiprocess
-    environ["wsgi.run_once"] = False
+    _append_u32(out, len(req.body_raw))
+    out.extend(Span(req.body_raw))
 
-    return environ^
+    return out^

@@ -1,14 +1,37 @@
 """Tests for the pure parts of the WSGI mapping.
 
-Deliberately no interpreter here: `cgi_header_name` and `split_status` are
-plain string transforms, and keeping them testable without Python is why they
-are separate from `build_environ` and `build_response`.
+Deliberately no interpreter here: `cgi_header_name`, `serialize_request`, and
+`split_status` are plain byte/string transforms, and keeping them testable
+without Python is why they are separate from the bridge and `build_response`.
 """
 
-from std.testing import assert_equal, TestSuite
+from std.testing import assert_equal, assert_true, TestSuite
 
-from src.environ import cgi_header_name
+from lightbug_http import HTTPRequest
+from lightbug_http.uri import URI
+
+from src.environ import cgi_header_name, serialize_request
 from src.response import split_status
+
+
+def _read_u32(blob: List[UInt8], off: Int) -> Tuple[Int, Int]:
+    var n = (
+        Int(blob[off])
+        | (Int(blob[off + 1]) << 8)
+        | (Int(blob[off + 2]) << 16)
+        | (Int(blob[off + 3]) << 24)
+    )
+    return (n, off + 4)
+
+
+def _read_str(blob: List[UInt8], off: Int) -> Tuple[String, Int]:
+    var pair = _read_u32(blob, off)
+    var n = pair[0]
+    var start = pair[1]
+    var out = String()
+    for i in range(n):
+        out += String(chr(Int(blob[start + i])))
+    return (out^, start + n)
 
 
 def test_cgi_header_name_prefixes_ordinary_headers() raises:
@@ -28,6 +51,71 @@ def test_cgi_header_name_is_case_insensitive() raises:
     """`Headers` lowercases keys, but the mapping must not depend on that."""
     assert_equal(cgi_header_name("Content-Type"), "CONTENT_TYPE")
     assert_equal(cgi_header_name("USER-AGENT"), "HTTP_USER_AGENT")
+
+
+# --- serialize_request -------------------------------------------------------
+# The blob is the whole request's trip across the interpreter boundary; the
+# shim parses it positionally, so field order and framing are contract.
+
+
+def test_serialize_request_line_fields_in_order() raises:
+    """method, path, query, protocol — each u32-length-prefixed, in order."""
+    var req = HTTPRequest(
+        URI.parse("http://localhost:8080/widgets?name=ada"), method="GET"
+    )
+    var blob = serialize_request(req)
+    var off = 0
+    var method = _read_str(blob, off)
+    assert_equal(method[0], "GET")
+    var path = _read_str(blob, method[1])
+    assert_equal(path[0], "/widgets")
+    var query = _read_str(blob, path[1])
+    assert_equal(query[0], "name=ada")
+    var protocol = _read_str(blob, query[1])
+    assert_true(protocol[0].startswith("HTTP/"))
+
+
+def test_serialize_request_headers_use_cgi_names() raises:
+    """Headers cross already CGI-transformed, so the shim stays dumb."""
+    var req = HTTPRequest(
+        URI.parse("http://localhost:8080/"), method="GET"
+    )
+    req.headers["content-type"] = "text/plain"
+    var blob = serialize_request(req)
+    # Skip the four request-line strings, then the header count.
+    var off = 0
+    for _ in range(4):
+        off = _read_str(blob, off)[1]
+    var count_pair = _read_u32(blob, off)
+    off = count_pair[1]
+    var found = False
+    for _ in range(count_pair[0]):
+        var k = _read_str(blob, off)
+        var v = _read_str(blob, k[1])
+        off = v[1]
+        if k[0] == "CONTENT_TYPE":
+            assert_equal(v[0], "text/plain")
+            found = True
+    assert_true(found, "CONTENT_TYPE header did not cross")
+
+
+def test_serialize_request_body_is_last_and_binary() raises:
+    """The body is the final field: u32 length + raw bytes, untouched."""
+    var req = HTTPRequest(
+        URI.parse("http://localhost:8080/echo"), method="POST"
+    )
+    req.body_raw = List[UInt8]()
+    req.body_raw.append(0)
+    req.body_raw.append(127)
+    req.body_raw.append(255)
+    var blob = serialize_request(req)
+    var n = len(blob)
+    assert_equal(Int(blob[n - 3]), 0)
+    assert_equal(Int(blob[n - 2]), 127)
+    assert_equal(Int(blob[n - 1]), 255)
+    # the u32 immediately before the body says 3
+    var len_pair = _read_u32(blob, n - 7)
+    assert_equal(len_pair[0], 3)
 
 
 def test_split_status_ordinary() raises:
