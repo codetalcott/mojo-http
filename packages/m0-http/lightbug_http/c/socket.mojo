@@ -891,7 +891,7 @@ def connect(socket: FileDescriptor, mut address: SocketAddress) raises ConnectEr
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/connect.3p.html .
     """
-    var result = _connect(socket.value, Pointer(to=address.as_sockaddr_in()), address.SIZE)
+    var result = _connect(c_int(socket.value), Pointer(to=address.as_sockaddr_in()), address.SIZE)
     if result == -1:
         var errno = get_errno()
         if errno == errno.EACCES:

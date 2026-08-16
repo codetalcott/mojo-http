@@ -62,6 +62,21 @@ The `build-apps` gate this section once called for now exists: `poe build-apps`
 compiles every example to a temp directory, and CI runs it before the smoke
 tests.
 
+### HTTP client (done)
+
+`Client` in m0-http sends outbound HTTP/1.1: GET/POST/any method, request
+bodies, headers, and full response parsing — Content-Length (with loud
+truncation detection; the fork's `read_body` quietly accepts short bodies),
+chunked, and close-delimited. Every request is `Connection: close`, so EOF
+frames every body shape with one read loop; keep-alive reuse is deliberately
+absent rather than half-done. No TLS (terminate at a proxy, as everywhere
+here) and no redirect following — a 3xx is a response, not an instruction.
+
+Building it revived the fork's client-side connect path, which had rotted as
+dead code — nullable addrinfo pointers, a `getaddrinfo` call glibc rejects,
+an error wrap that never compiled (see [NOTICE](../NOTICE)). `poe
+smoke-client` runs the first smoke where both ends of the wire are Mojo.
+
 ### WSGI landed (spike)
 
 `m0-wsgi` runs a real Django request/response cycle, asserted end to end by

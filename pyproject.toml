@@ -372,6 +372,23 @@ rm -f django.log django2.log
 echo "smoke-django OK"
 """
 
+# Both ends of the wire in Mojo: the client dials, sends, and parses against
+# the notes API — GET, POST with body, negotiation, problem+json, a refused
+# connection, and the https rejection. client_check.mojo raises on any miss.
+[tool.poe.tasks.smoke-client]
+help = "Start the notes API, run the Mojo HTTP client against it, stop"
+shell = """
+M0_PORT=8091 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo > notes.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8091/health \
+  || { echo '=== notes.log ==='; cat notes.log; exit 1; }
+mojo run -I packages/m0-http/ -I packages/m0-core/ packages/m0-http/client_check.mojo \
+  || { echo '=== notes.log ==='; cat notes.log; exit 1; }
+rm -f notes.log
+echo "smoke-client OK"
+"""
+
 # The foreign-caller half of the C-ABI story: the emitted shared object must
 # load and answer through ctypes — the same dlopen path Bun or N-API takes.
 # Vectors are the public known answers test_hashing.mojo also pins, so the

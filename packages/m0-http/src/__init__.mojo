@@ -37,3 +37,4 @@ from .log import LogEntry, log_json, log_access
 from .signal import create_shutdown_pipe, ShutdownHandle
 from .health import HealthRegistry
 from .config import AppConfig
+from .client import Client

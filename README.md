@@ -75,6 +75,8 @@ Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http
 
 **Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor with `SO_REUSEPORT` (`M0_WORKERS=4`).
 
+**Outbound too** — `Client` speaks HTTP/1.1 the other way: `client.get(url)` / `client.post(url, body)` with DNS, timeouts, and full response parsing (Content-Length with loud truncation detection, chunked, close-delimited). One connection per request, no TLS, no redirect following — the same honest constraints as the server, documented in `client.mojo`. `poe smoke-client` runs a Mojo client against a Mojo server in CI.
+
 Most of that composed, in one small app: [apps/notes_api/](apps/notes_api/server.mojo)
 — CRUD with `:id` routes and a real `405` with `Allow`, the same note negotiated
 as JSON or HTML by the `Accept` header, `ETag`/`304`, RFC 9457 `problem+json`
@@ -312,6 +314,7 @@ uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+json, CORS
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-todo       # assert a mutation broadcast patches a live client
+uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
 uv run poe smoke-django     # assert a Django request/response cycle end to end
 uv run poe build-ffi        # emit the C-ABI shared library (libm0core.so/.dylib)
 uv run poe smoke-ffi        # load the shared library via ctypes, assert known vectors
