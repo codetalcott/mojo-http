@@ -73,6 +73,13 @@ Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http
 
 **Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor with `SO_REUSEPORT` (`M0_WORKERS=4`).
 
+Most of that composed, in one small app: [apps/notes_api/](apps/notes_api/server.mojo)
+— CRUD with `:id` routes and a real `405` with `Allow`, the same note negotiated
+as JSON or HTML by the `Accept` header, `ETag`/`304`, RFC 9457 `problem+json`
+on every error, CORS from a single `after_response` hook, and `M0_PORT` config.
+`uv run poe serve-notes` runs it; `poe smoke-notes` asserts each feature end to
+end.
+
 ## Datastar
 
 `m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.2 wire format, and
@@ -285,10 +292,12 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 385 unit tests, then compiles every example
+uv run poe test-all         # 395 unit tests, then compiles every example
+uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar demo on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
+uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+json, CORS
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-django     # assert a Django request/response cycle end to end
 uv run poe bench-core       # benchmark m0-core hot paths

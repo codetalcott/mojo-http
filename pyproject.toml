@@ -161,6 +161,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datasta
 help = "Run the Django WSGI example on :8080 (needs the django dev dependency)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/django_wsgi/server.mojo"
 
+[tool.poe.tasks.serve-notes]
+help = "Run the notes API example on :8080 (M0_PORT to change)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
+
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
 shell = """
@@ -347,6 +351,77 @@ rm -f slow1.txt slow2.txt
 
 rm -f django.log django2.log
 echo "smoke-django OK"
+"""
+
+# Each assertion pins one framework feature the notes API exists to showcase:
+# routing with :id and a real 405, negotiation, ETag/304, problem+json, CORS,
+# and M0_PORT via AppConfig (the smoke runs the whole thing on :8091).
+[tool.poe.tasks.smoke-notes]
+help = "Start the notes API, assert each framework feature end to end, stop"
+shell = """
+M0_PORT=8091 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo > notes.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+
+fail() { echo "$1"; echo '=== notes.log ==='; cat notes.log; exit 1; }
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8091/health \
+  | grep -q '"status":"ok"' || fail 'health check did not answer'
+
+# M0_PORT reached AppConfig: the server is on 8091, not the 8080 default.
+
+# Create: 201, a Location header, and the note echoed back.
+code=$(curl -s -o note1.json -w '%{http_code}' -D headers.txt \
+  -X POST http://localhost:8091/notes -d '{"title":"First","body":"hello"}')
+[ "$code" = "201" ] || fail "expected 201 from create, got $code"
+grep -qi '^location: /notes/1' headers.txt || fail 'create did not answer a Location header'
+grep -q '"title":"First"' note1.json || fail 'created note did not echo its title'
+
+# The :id route, and an ETag on the JSON representation.
+curl -s -D headers.txt http://localhost:8091/notes/1 -o /dev/null
+etag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\\r\\n')
+[ -n "$etag" ] || fail 'GET /notes/:id answered no ETag'
+
+# 304: same resource, If-None-Match, no body.
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8091/notes/1)
+[ "$code" = "304" ] || fail "expected 304 for a matching If-None-Match, got $code"
+
+# Content negotiation: same note, HTML representation on request.
+curl -s -H 'Accept: text/html' http://localhost:8091/notes/1 \
+  | grep -q '<h1>First</h1>' || fail 'Accept: text/html did not negotiate HTML'
+# A plain curl (Accept: */*) still gets JSON, never HTML.
+curl -s http://localhost:8091/notes \
+  | grep -q '^\\[{"id":1' || fail 'the list was not JSON for Accept: */*'
+
+# Errors are RFC 9457 problem+json, with the right content type.
+curl -s -D headers.txt http://localhost:8091/notes/999 -o problem.json
+grep -qi '^content-type: application/problem+json' headers.txt \
+  || fail 'a 404 was not problem+json'
+grep -q '"status":404' problem.json || fail 'the problem body did not carry the status'
+
+# The router distinguishes 405 from 404, and says what IS allowed.
+code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -X PATCH http://localhost:8091/notes/1)
+[ "$code" = "405" ] || fail "expected 405 for PATCH on a GET/PUT/DELETE route, got $code"
+grep -qi '^allow: GET, PUT, DELETE, OPTIONS' headers.txt || fail '405 carried no Allow header'
+
+# CORS: preflight and ordinary responses both carry the headers.
+curl -s -D headers.txt -X OPTIONS http://localhost:8091/notes -o /dev/null
+grep -qi '^access-control-allow-origin' headers.txt || fail 'preflight carried no CORS headers'
+
+# Validation: a body without a title is a 400 problem, not a 500.
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8091/notes -d '{"nope":1}')
+[ "$code" = "400" ] || fail "expected 400 for a note without a title, got $code"
+
+# Update and delete round out the CRUD.
+curl -s -X PUT http://localhost:8091/notes/1 -d '{"title":"Renamed","body":"x"}' \
+  | grep -q '"title":"Renamed"' || fail 'PUT did not update the note'
+code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:8091/notes/1)
+[ "$code" = "204" ] || fail "expected 204 from delete, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
+[ "$code" = "404" ] || fail "expected 404 after delete, got $code"
+
+rm -f notes.log note1.json problem.json headers.txt
+echo "smoke-notes OK"
 """
 
 # --- Benchmarks ------------------------------------------------------------

@@ -40,15 +40,18 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
 
 ### Examples
 
-`apps/hello` is the only example. Add:
-
-- `apps/notes_api/` — what the framework adds over the bare server: `Router`
-  with `:id`, content negotiation, ETag + `304`, `problem+json`, CORS, config.
-- `apps/datastar_todo/` — the flagship: live multi-tab sync over SSE.
+- `apps/notes_api/` — **done.** What the framework adds over the bare server:
+  `Router` with `:id` and a real 405 with `Allow`, content negotiation (the
+  same note as JSON or HTML, `*/*` resolving to JSON), ETag + `304`,
+  RFC 9457 `problem+json` on every error, CORS via one `after_response` hook,
+  and `M0_PORT` via `AppConfig`. In-memory store, deliberately not a
+  database. Every feature is asserted end to end by `poe smoke-notes`.
+- `apps/datastar_todo/` — the flagship: live multi-tab sync over SSE. Still
+  outstanding.
 
 The `build-apps` gate this section once called for now exists: `poe build-apps`
 compiles every example to a temp directory, and CI runs it before the smoke
-tests. The examples themselves are still outstanding.
+tests.
 
 ### WSGI landed (spike)
 
