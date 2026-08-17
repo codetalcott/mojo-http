@@ -86,6 +86,12 @@ jobs:
       # heartbeat cadence bounds, and the close handshake to the TCP FIN.
       - name: Smoke test the WebSocket echo demo
         run: uv run poe smoke-ws
+      # The WebSocket sibling of the counter's fan-out proof: sockets spread
+      # across two workers (concurrent-burst opens beat the accept-race bias),
+      # then one message reaches every socket — the other worker's over the
+      # BroadcastBus.
+      - name: Smoke test the WebSocket chat demo
+        run: uv run poe smoke-chat
       # Proves the Datastar path end to end: a POST on one connection reaches a
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter

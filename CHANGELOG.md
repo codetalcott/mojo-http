@@ -5,6 +5,16 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+- `m0_http.WSHub` — the handler-side WebSocket registry: connected slots,
+  per-slot outboxes, room broadcast, and cross-worker fan-out over the
+  same `BroadcastBus` SSE uses (the bus is transport-agnostic;
+  `sse_peer_frame` delivers encoded WebSocket frames as readily as SSE
+  events). New `apps/ws_chat` demo — one room, every message reaching
+  every socket across `M0_WORKERS` — and `poe smoke-chat`, which proves a
+  message sent on one worker's socket arrives on the other worker's.
+
 ## [0.2.0] — 2026-08-17
 
 - WebSockets (RFC 6455), server side: `websocket_upgrade` answers the

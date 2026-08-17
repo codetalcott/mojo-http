@@ -228,7 +228,10 @@ Properties of the design, not defects to fix in passing:
   `sse_peer_frame` → `deliver_peer`. `apps/datastar_counter` is the
   reference; partial wiring fails quietly (publishing without draining just
   fills peer channels). Cross-worker ordering is best-effort — the
-  redelivery filter keeps the newer of two racing ids.
+  redelivery filter keeps the newer of two racing ids. The bus itself is
+  transport-agnostic: `WSHub` (`src/ws.mojo`) rides it for WebSocket
+  fan-out the same way (`apps/ws_chat` is that reference), with
+  `sse_peer_frame` carrying encoded WS frames instead of SSE events.
 - **Server-initiated work goes through the `tick` hook** (`M0_APP_TICK_MS`,
   0 = off). It runs ON the event loop thread — a slow tick stalls every
   connection — and handlers with slower cadences sub-schedule off `now_ms`

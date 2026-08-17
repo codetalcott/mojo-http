@@ -31,6 +31,7 @@ from .sse import (
     SSE_CONTENT_TYPE,
 )
 from .multiworker import WorkerSupervisor
+from .ws import WSHub
 from .cors import CorsConfig, apply_cors_headers
 from .auth import check_api_key
 from .request_context import RequestContext
