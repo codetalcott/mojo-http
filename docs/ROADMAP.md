@@ -192,6 +192,15 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **Cross-worker WebSocket fan-out** (`m0_http.WSHub` + `apps/ws_chat`):
+  the handler-side registry for WebSocket connections, riding the same
+  `BroadcastBus` as SSE — the bus is transport-agnostic, and
+  `sse_peer_frame` delivers encoded WS frames as readily as SSE events.
+  One chat room across `M0_WORKERS`; `poe smoke-chat` proves a message
+  sent on one worker's socket arrives on the other worker's over the bus,
+  with the concurrent-burst spread and worker-reaping lessons from the
+  counter smoke baked into the probe.
+
 - **WebSockets** (RFC 6455, server side): `websocket_upgrade` answers the
   handshake from an ordinary handler, the event loop owns frame mode
   (client-masking enforcement, fragment assembly, ping/pong and close

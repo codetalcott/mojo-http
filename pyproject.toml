@@ -202,6 +202,10 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
 help = "Run the WebSocket echo demo on :8080 (endpoint at /ws)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/ws_echo/server.mojo"
 
+[tool.poe.tasks.serve-chat]
+help = "Run the WebSocket chat demo on :8080 (M0_WORKERS=2 for cross-worker fan-out)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/server.mojo"
+
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
 shell = """
@@ -245,6 +249,49 @@ done
 [ "$conns" = "0" ] || { echo "socket closed but still registered (connections=$conns)"; exit 1; }
 rm -f ws.log
 echo "smoke-ws OK"
+"""
+
+# Phase 1 (single worker): two sockets in one room — one speaks, both hear
+# it. Phase 2 (M0_WORKERS=2): the probe opens sockets in concurrent bursts
+# until they provably span both workers (X-Worker on each 101), then ONE
+# message must reach every socket — the other worker's arrive over the
+# BroadcastBus. Same accept-race spread and worker-reaping lessons as
+# smoke-counter, encoded in the probe and the trap.
+[tool.poe.tasks.smoke-chat]
+help = "WebSocket chat demo: room broadcast, then cross-worker fan-out over the bus"
+shell = """
+M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/server.mojo > chat.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== chat.log ==='; cat chat.log; exit 1; }
+curl -s http://localhost:8080/ | grep -q 'mojo-http chat' \
+  || { echo 'chat page did not render'; exit 1; }
+python3 apps/ws_chat/chat_probe.py \
+  || { echo '=== chat.log ==='; cat chat.log; exit 1; }
+for i in 1 2 3 4 5; do
+  conns=$(curl -s http://localhost:8080/health | grep -o '"connections":[0-9]*' | cut -d: -f2)
+  [ "$conns" = "0" ] && break
+  sleep 1
+done
+[ "$conns" = "0" ] || { echo "sockets closed but still registered (connections=$conns)"; exit 1; }
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+# Phase 2: cross-worker fan-out.
+M0_WORKERS=2 M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/server.mojo > chat2.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== chat2.log ==='; cat chat2.log; exit 1; }
+# Reap the forked workers on ANY exit — a failing probe would otherwise
+# leave two workers holding :8080 to poison the next run's phase 1.
+worker_pids=$(grep -oE 'pid=[0-9]+' chat2.log | cut -d= -f2 | sort -u)
+trap 'kill $pid $worker_pids 2>/dev/null' EXIT
+CHAT_EXPECT_WORKERS=2 python3 apps/ws_chat/chat_probe.py \
+  || { echo '=== chat2.log ==='; cat chat2.log; exit 1; }
+kill $pid $worker_pids 2>/dev/null
+rm -f chat.log chat2.log
+echo "smoke-chat OK"
 """
 
 [tool.poe.tasks.smoke-counter]

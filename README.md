@@ -68,11 +68,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 281 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 291 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
-| **Total** | | **526** |
+| **Total** | | **536** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -170,6 +170,15 @@ close path — close handshake, vanished client, failed ping — lands in
 `sse_slot_disconnected`. Run it with `uv run poe serve-ws`; `poe smoke-ws`
 proves the wire format against a from-scratch stdlib client, from the
 accept key to the closing TCP FIN.
+
+[apps/ws_chat/](apps/ws_chat/server.mojo) grows that into the multi-worker
+shape: one chat room, every message reaching every socket, across workers.
+`m0_http.WSHub` is the handler-side registry (who is connected, what each
+socket should be sent), and under `M0_WORKERS>1` it rides the same
+`BroadcastBus` the SSE counter uses — the bus never cared what its payload
+bytes were. `uv run poe serve-chat` with `M0_WORKERS=2`, open a few tabs;
+`poe smoke-chat` proves a message sent on one worker's socket arrives on
+the other worker's, over the bus.
 
 ## Django, and anything else that speaks WSGI
 
@@ -343,7 +352,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 526 unit tests, then compiles every example
+uv run poe test-all         # 536 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
@@ -351,6 +360,7 @@ uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, static files, CORS
 uv run poe smoke-ws         # speak RFC 6455 raw: handshake, echo, fragments, ping/pong, close
+uv run poe smoke-chat       # one chat message reaches sockets on BOTH workers, over the bus
 uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, app tick, fan-out
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
