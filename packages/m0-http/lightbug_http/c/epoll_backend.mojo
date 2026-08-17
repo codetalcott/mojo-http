@@ -8,11 +8,12 @@ On Linux, timers are implemented via timerfd + epoll. The high bit (bit 63)
 of the epoll data field marks a timerfd event so event_filter() can return
 EVFILT_TIMER; bits 0–62 carry the original ident for event_ident().
 
-_timer_fds layout (4 * 65536 entries, value = timerfd or -1):
+_timer_fds layout (5 * 65536 entries, value = timerfd or -1):
   slot 0: header     ident in [0x100000, 0x10FFFF]  → index = ident - 0x100000
   slot 1: body       ident in [0x200000, 0x20FFFF]  → index = 65536 + ident - 0x200000
   slot 2: idle       ident in [0x300000, 0x30FFFF]  → index = 2*65536 + ident - 0x300000
   slot 3: heartbeat  ident in [0x400000, 0x40FFFF]  → index = 3*65536 + ident - 0x400000
+  slot 4: app tick   ident 0x500000 (one per loop)  → index = 4*65536 + ident - 0x500000
 """
 
 from lightbug_http.c.epoll import (
@@ -36,12 +37,14 @@ comptime _MAX_EVENTS = 64
 # The remaining 63 bits carry the original ident value.
 comptime _TIMER_FLAG: UInt64 = 1 << 63
 
-# Timer slot bases — must match event_loop.mojo TIMER_HEADER/BODY/IDLE/SSE_HEARTBEAT.
+# Timer slot bases — must match event_loop.mojo TIMER_HEADER/BODY/IDLE/
+# SSE_HEARTBEAT/APP_TICK.
 comptime _TIMER_HEADER: UInt = 0x100000
 comptime _TIMER_BODY: UInt = 0x200000
 comptime _TIMER_IDLE: UInt = 0x300000
 comptime _TIMER_SSE_HEARTBEAT: UInt = 0x400000
-comptime _TIMER_FD_MAP_SIZE: Int = 4 * 65536
+comptime _TIMER_APP_TICK: UInt = 0x500000
+comptime _TIMER_FD_MAP_SIZE: Int = 5 * 65536
 
 
 @always_inline
@@ -53,8 +56,11 @@ def _timer_slot(ident: UInt) -> Int:
       slot 1: body       ident in [0x200000, 0x20FFFF]  → index = 65536 + ident - 0x200000
       slot 2: idle       ident in [0x300000, 0x30FFFF]  → index = 2*65536 + ident - 0x300000
       slot 3: heartbeat  ident in [0x400000, 0x40FFFF]  → index = 3*65536 + ident - 0x400000
+      slot 4: app tick   ident 0x500000 (one per loop)  → index = 4*65536 + ident - 0x500000
     """
-    if ident >= _TIMER_SSE_HEARTBEAT:
+    if ident >= _TIMER_APP_TICK:
+        return 4 * 65536 + Int(ident - _TIMER_APP_TICK)
+    elif ident >= _TIMER_SSE_HEARTBEAT:
         return 3 * 65536 + Int(ident - _TIMER_SSE_HEARTBEAT)
     elif ident >= _TIMER_IDLE:
         return 2 * 65536 + Int(ident - _TIMER_IDLE)

@@ -192,6 +192,22 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **The application timer hook exists: `HTTPService.tick`.** The eighth
+  trait method, fired every `app_tick_ms` (`M0_APP_TICK_MS`, 0 = off) by a
+  loop-wide one-shot timer that re-arms on every firing — the same
+  discipline the SSE heartbeat learned, for the same epoll reason. "A
+  shared todo list is expressible; a clock is not" stopped being true: the
+  counter demo now runs a live uptime clock, broadcast from `tick` with no
+  inbound request involved, and it composes with everything that came
+  before — the sub-second tick drives a 1s sub-schedule (the intended
+  pattern), only worker 0 owns the clock under `M0_WORKERS>1`, and the
+  other worker's tabs get it over the `BroadcastBus` (asserted by smoke and
+  verified in four real tabs across two workers). One honest asymmetry,
+  found by sabotage: a never-re-armed tick fires exactly once on kqueue —
+  the smoke's lower bound catches that on the macOS runner — while on epoll
+  the same bug storms the loop but the demo's sub-schedule masks it from
+  frame counts; the heartbeat's storm guard pins that shape.
+
 - **`set_nonblocking` was a silent no-op on ARM64 macOS — for the fork's
   whole life.** fcntl is variadic, and Darwin ARM64 passes variadic
   arguments on the stack while `external_call` passed them in registers, so

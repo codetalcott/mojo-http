@@ -46,6 +46,9 @@ struct ServerConfig(Copyable, Movable):
     var sse_heartbeat_ms: Int
     """Milliseconds between SSE heartbeat comments (default: 15000)."""
 
+    var app_tick_ms: Int
+    """Milliseconds between application `tick` hook calls (0 = never, default)."""
+
     def __init__(out self):
         self.max_connections = 1024
         self.max_keepalive_requests = 100
@@ -64,6 +67,7 @@ struct ServerConfig(Copyable, Movable):
         self.access_log = False
         self.enable_metrics = False
         self.sse_heartbeat_ms = 15000
+        self.app_tick_ms = 0
 
     def __init__(out self, *, copy: Self):
         self.max_connections = copy.max_connections
@@ -79,6 +83,7 @@ struct ServerConfig(Copyable, Movable):
         self.access_log = copy.access_log
         self.enable_metrics = copy.enable_metrics
         self.sse_heartbeat_ms = copy.sse_heartbeat_ms
+        self.app_tick_ms = copy.app_tick_ms
 
     def __init__(out self, *, deinit take: Self):
         self.max_connections = take.max_connections
@@ -94,3 +99,4 @@ struct ServerConfig(Copyable, Movable):
         self.access_log = take.access_log
         self.enable_metrics = take.enable_metrics
         self.sse_heartbeat_ms = take.sse_heartbeat_ms
+        self.app_tick_ms = take.app_tick_ms

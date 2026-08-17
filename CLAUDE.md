@@ -188,12 +188,14 @@ back-edge pulls it in — `event_loop.mojo` → `m0_http.log` →
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has seven methods and no
-defaults: `func`, `before_request`, `after_response`, and four SSE hooks —
+`HTTPService` (`lightbug_http/service.mojo`) has eight methods and no
+defaults: `func`, `before_request`, `after_response`, four SSE hooks —
 `sse_drain_slot`, `sse_is_streaming`, `sse_slot_disconnected`,
 `sse_peer_frame` (frames arriving over the cross-worker `BroadcastBus`; empty
-in non-streaming handlers). A handler that does not stream returns the empty
-defaults. Adding a method to the trait breaks every handler in the repo at
+in non-streaming handlers) — and `tick`, the application timer hook (fires
+every `app_tick_ms` when configured; runs ON the event loop thread, so keep
+it quick). A handler that streams nothing and schedules nothing returns the
+empty defaults. Adding a method to the trait breaks every handler in the repo at
 once: all five apps, plus the five demo services inside `service.mojo`
 itself, plus the example in README.md.
 
@@ -216,13 +218,19 @@ Properties of the design, not defects to fix in passing:
   reference; partial wiring fails quietly (publishing without draining just
   fills peer channels). Cross-worker ordering is best-effort — the
   redelivery filter keeps the newer of two racing ids.
-- **No application timer hook.** Every application push must be triggered by
-  an inbound request. (The event loop runs its own SSE heartbeat timer —
-  `M0_SSE_HEARTBEAT_MS`, one-shot on both backends so the handler re-arms it
-  on every firing; on epoll the re-arm is also what clears the fired
-  timerfd's readability, and skipping it is a level-triggered event storm.)
+- **Server-initiated work goes through the `tick` hook** (`M0_APP_TICK_MS`,
+  0 = off). It runs ON the event loop thread — a slow tick stalls every
+  connection — and handlers with slower cadences sub-schedule off `now_ms`
+  (see the counter's uptime clock). Under `M0_WORKERS>1` every worker
+  ticks; an app that must act once per interval designates an owner (the
+  counter uses worker 0) and lets the bus carry the result. All loop
+  timers (tick, SSE heartbeat) are one-shot on both backends, so the
+  firing handler re-arms FIRST — on epoll the re-arm is also what clears
+  the fired timerfd's readability, and skipping it is a level-triggered
+  event storm.
 - Configuration is env vars, all `M0_`-prefixed: `M0_PORT`, `M0_BASE_URL`,
-  `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`.
+  `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
+  `M0_APP_TICK_MS`.
 
 ## Mojo 1.0 patterns
 

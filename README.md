@@ -47,6 +47,9 @@ struct HelloHandler(HTTPService):
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         pass
 
+    def tick(mut self, now_ms: Int):
+        pass
+
 
 def main() raises:
     print("Starting hello server on 0.0.0.0:8080")
@@ -55,18 +58,18 @@ def main() raises:
     server.listen_and_serve("0.0.0.0:8080", handler)
 ```
 
-The four `sse_*` hooks are the streaming interface; a handler that does not stream returns the empty defaults shown here.
+The four `sse_*` hooks are the streaming interface and `tick` is the opt-in timer hook; a handler that uses neither returns the empty defaults shown here.
 
 ## What's in the box
 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 233 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 235 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
-| **Total** | | **478** |
+| **Total** | | **480** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -310,7 +313,7 @@ so it is not worth the ownership complexity yet.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - Pre-1.0: the API will break.
 - **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
-- **No application timer hook.** Every *application* push must be triggered by an inbound request. The event loop does run its own timer for SSE: idle streams get a `: heartbeat` comment every `M0_SSE_HEARTBEAT_MS` (default 15s, 0 disables), which keeps proxies from reaping quiet streams and discovers dead subscribers — but there is no hook for application code to schedule work on it.
+- **Server-initiated pushes go through `tick`.** The `tick(now_ms)` hook fires every `M0_APP_TICK_MS` milliseconds (0, the default, disables it) on the event loop's own timer — broadcast from it and the same loop pass delivers, no inbound request involved; the counter demo's live uptime clock is the reference. It runs on the event loop thread, so keep it quick; handlers with slower cadences sub-schedule off `now_ms`. (Idle-stream `: heartbeat` comments are separate and automatic, every `M0_SSE_HEARTBEAT_MS`.)
 - `m0-sqlite` has no statement cache and no connection pool; see above.
 - SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that resumes live instead of being caught up. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines).
 
@@ -319,14 +322,14 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 478 unit tests, then compiles every example
+uv run poe test-all         # 480 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+json, CORS
-uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, cross-worker fan-out
+uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, app tick, fan-out
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
 uv run poe smoke-django     # assert a Django request/response cycle end to end

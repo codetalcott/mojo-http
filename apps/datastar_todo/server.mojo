@@ -222,6 +222,9 @@ struct TodoHandler(HTTPService):
         # subscribers (and journal it, so replay works on every worker).
         self.stream.deliver_peer(url, event_id, frame)
 
+    def tick(mut self, now_ms: Int):
+        pass
+
 
 def _html(body: String) -> HTTPResponse:
     return HTTPResponse(
