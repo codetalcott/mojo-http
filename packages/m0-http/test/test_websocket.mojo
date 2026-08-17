@@ -28,7 +28,9 @@ from lightbug_http.websocket import (
     WS_OP_PING,
     WS_OP_PONG,
     WS_CLOSE_PROTOCOL_ERROR,
+    WS_CLOSE_INVALID_DATA,
     WS_CLOSE_TOO_BIG,
+    is_valid_utf8,
 )
 
 
@@ -357,6 +359,90 @@ def test_oversized_fragmented_total_is_too_big() raises:
     var res2 = state.feed(Span(f2))  # 20 total > 16
     assert_true(res2.close_after_reply)
     assert_equal(_close_code(res2.reply), WS_CLOSE_TOO_BIG)
+
+
+def _seq(*bytes: Int) raises -> List[UInt8]:
+    var out = List[UInt8]()
+    for b in bytes:
+        out.append(UInt8(b))
+    return out^
+
+
+def test_utf8_validator_accepts_and_rejects() raises:
+    # Valid: ASCII, and 2/3/4-byte sequences (é, €, 😀).
+    assert_true(is_valid_utf8("plain ascii".as_bytes()))
+    assert_true(is_valid_utf8(Span(_seq(0xC3, 0xA9))))
+    assert_true(is_valid_utf8(Span(_seq(0xE2, 0x82, 0xAC))))
+    assert_true(is_valid_utf8(Span(_seq(0xF0, 0x9F, 0x98, 0x80))))
+    # Boundary-valid: U+FFFD, U+10FFFF, lowest non-overlong per length.
+    assert_true(is_valid_utf8(Span(_seq(0xEF, 0xBF, 0xBD))))
+    assert_true(is_valid_utf8(Span(_seq(0xF4, 0x8F, 0xBF, 0xBF))))
+    # Invalid shapes, each rejected.
+    assert_false(is_valid_utf8(Span(_seq(0x80))))  # stray continuation
+    assert_false(is_valid_utf8(Span(_seq(0xC3))))  # truncated
+    assert_false(is_valid_utf8(Span(_seq(0xC0, 0xAF))))  # overlong 2-byte
+    assert_false(is_valid_utf8(Span(_seq(0xE0, 0x80, 0xAF))))  # overlong 3-byte
+    assert_false(is_valid_utf8(Span(_seq(0xED, 0xA0, 0x80))))  # surrogate
+    assert_false(is_valid_utf8(Span(_seq(0xF4, 0x90, 0x80, 0x80))))  # > U+10FFFF
+    assert_false(is_valid_utf8(Span(_seq(0xFF))))  # never valid
+    assert_false(is_valid_utf8(Span(_seq(0xE2, 0x82, 0x41))))  # bad continuation
+
+
+def test_invalid_utf8_text_closes_1007() raises:
+    var state = WSState(1 << 20)
+    var payload = List[UInt8]()
+    payload.append(0xC3)  # lone lead byte, no continuation
+    payload.append(0x28)
+    var frame = encode_ws_frame_masked(WS_OP_TEXT, Span(payload), _mask())
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_INVALID_DATA)
+    assert_equal(len(res.msg_opcodes), 0)
+
+
+def test_binary_frames_carry_any_bytes() raises:
+    var state = WSState(1 << 20)
+    var payload = List[UInt8]()
+    payload.append(0xFF)
+    payload.append(0x00)
+    payload.append(0x80)
+    var frame = encode_ws_frame_masked(WS_OP_BINARY, Span(payload), _mask())
+    var res = state.feed(Span(frame))
+    assert_false(res.close_after_reply)
+    assert_equal(len(res.msg_opcodes), 1)
+
+
+def test_multibyte_char_split_across_fragments_is_valid() raises:
+    # "€" = E2 82 AC, split mid-character: neither fragment is valid UTF-8
+    # alone; the assembled message is — validation must happen at assembly.
+    var state = WSState(1 << 20)
+    var part1 = List[UInt8]()
+    part1.append(0xE2)
+    var part2 = List[UInt8]()
+    part2.append(0x82)
+    part2.append(0xAC)
+    var f1 = encode_ws_frame_masked(WS_OP_TEXT, Span(part1), _mask())
+    f1[0] = f1[0] & 0x7F  # clear FIN
+    var f2 = encode_ws_frame_masked(WS_OP_CONT, Span(part2), _mask())
+    _ = state.feed(Span(f1))
+    var res = state.feed(Span(f2))
+    assert_equal(len(res.msg_opcodes), 1)
+    assert_false(res.close_after_reply)
+
+
+def test_invalid_utf8_across_fragments_closes_1007() raises:
+    var state = WSState(1 << 20)
+    var part1 = List[UInt8]()
+    part1.append(0xE2)  # needs two continuations...
+    var part2 = List[UInt8]()
+    part2.append(0x41)  # ...gets ASCII instead
+    var f1 = encode_ws_frame_masked(WS_OP_TEXT, Span(part1), _mask())
+    f1[0] = f1[0] & 0x7F
+    var f2 = encode_ws_frame_masked(WS_OP_CONT, Span(part2), _mask())
+    _ = state.feed(Span(f1))
+    var res = state.feed(Span(f2))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_INVALID_DATA)
 
 
 def test_error_state_discards_buffered_bytes() raises:

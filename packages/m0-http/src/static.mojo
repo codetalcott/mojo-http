@@ -15,9 +15,17 @@ understood. What this does NOT defend against is a symlink inside the root
 pointing out of it: like most servers' defaults, following symlinks is the
 filesystem owner's decision.
 
-No `Range` support and no directory listings — a request for a directory
-(trailing `/`) serves its `index.html` or 404s. Every hit reads and hashes
-the file; put `ResponseCache` in front if that ever shows up in a profile.
+Single byte ranges are honoured (RFC 9110 §14): `bytes=a-b`, `bytes=a-`,
+and `bytes=-suffix` answer `206` with a `Content-Range`; a parseable range
+past the end answers `416` with `bytes */total`; everything else a Range
+header can say — multiple ranges, other units, backwards bounds — is
+ignored and served as the full `200`, which the RFC explicitly permits.
+`If-Range` is never satisfied here: it requires strong comparison and
+these ETags are weak by design, so a conditional range falls back to the
+full representation rather than risking a stale slice. No directory
+listings — a request for a directory (trailing `/`) serves its
+`index.html` or 404s. Every hit reads and hashes the file; put
+`ResponseCache` in front if that ever shows up in a profile.
 """
 
 from lightbug_http import HTTPRequest, HTTPResponse
@@ -117,16 +125,137 @@ struct StaticFiles(Copyable, Movable):
                 )
                 return not_modified^
 
+        # A single satisfiable byte range gets its slice; If-Range never
+        # matches (strong comparison, weak ETags), so a conditional range
+        # falls back to the full representation. GET only: a ranged HEAD
+        # would advertise a length no GET here ever sends for that request.
+        var range_hdr = req.headers.get("range")
+        if range_hdr and req.method == "GET" and not req.headers.get("if-range"):
+            var r = parse_range(range_hdr.value(), len(contents))
+            if r.kind == RANGE_UNSATISFIABLE:
+                var unsat = HTTPResponse(
+                    body_bytes=String("").as_bytes(),
+                    headers=Headers(
+                        Header("Content-Range", "bytes */" + String(len(contents))),
+                        Header(HeaderKey.ETAG, etag),
+                    ),
+                    status_code=416,
+                    status_text="Range Not Satisfiable",
+                )
+                return unsat^
+            if r.kind == RANGE_VALID:
+                var part = List[UInt8](capacity=r.end - r.start + 1)
+                for i in range(r.start, r.end + 1):
+                    part.append(contents[i])
+                var partial = HTTPResponse(
+                    body_bytes=part^,
+                    headers=Headers(
+                        Header(HeaderKey.CONTENT_TYPE, content_type_for(rel)),
+                        Header(HeaderKey.ETAG, etag),
+                        Header("Accept-Ranges", "bytes"),
+                        Header(
+                            "Content-Range",
+                            "bytes " + String(r.start) + "-" + String(r.end)
+                            + "/" + String(len(contents)),
+                        ),
+                    ),
+                    status_code=206,
+                    status_text="Partial Content",
+                )
+                return partial^
+
         var resp = HTTPResponse(
             body_bytes=contents,
             headers=Headers(
                 Header(HeaderKey.CONTENT_TYPE, content_type_for(rel)),
                 Header(HeaderKey.ETAG, etag),
+                Header("Accept-Ranges", "bytes"),
             ),
             status_code=200,
             status_text="OK",
         )
         return resp^
+
+
+comptime RANGE_NONE = 0
+"""No usable range: absent, malformed, multi-range, or a non-bytes unit —
+serve the full representation (RFC 9110 lets a server ignore Range)."""
+comptime RANGE_VALID = 1
+"""A satisfiable single range, clamped to the representation."""
+comptime RANGE_UNSATISFIABLE = 2
+"""Parseable but past the end — answer 416 with `bytes */total`."""
+
+
+@fieldwise_init
+struct ByteRange(Copyable, Movable):
+    """One parsed byte range; `start`/`end` are inclusive, valid when kind
+    is RANGE_VALID."""
+
+    var kind: Int
+    var start: Int
+    var end: Int
+
+
+def parse_range(header: String, total: Int) -> ByteRange:
+    """Parse a Range header against a representation of `total` bytes.
+
+    Deliberately answers RANGE_NONE for anything this server chooses not
+    to satisfy (multiple ranges, non-bytes units, backwards bounds) — the
+    caller serves the full 200, which is always a correct answer to Range.
+    """
+    var h = header.lower()
+    if not h.startswith("bytes="):
+        return ByteRange(RANGE_NONE, 0, 0)
+    var spec = String(h[byte=6:])
+    # One dash, no commas — found by byte scan ("-" at index 0 is a valid
+    # suffix range, which index-as-truthiness would silently drop).
+    var dash_idx = -1
+    var sb = spec.as_bytes()
+    for i in range(spec.byte_length()):
+        if Int(sb[i]) == ord(","):
+            return ByteRange(RANGE_NONE, 0, 0)
+        if Int(sb[i]) == ord("-") and dash_idx < 0:
+            dash_idx = i
+    if dash_idx < 0:
+        return ByteRange(RANGE_NONE, 0, 0)
+    var lo = String(spec[byte = : dash_idx])
+    var hi = String(spec[byte = dash_idx + 1 :])
+
+    if lo.byte_length() == 0:
+        # Suffix: the LAST `hi` bytes.
+        var suffix: Int
+        try:
+            suffix = Int(hi)
+        except:
+            return ByteRange(RANGE_NONE, 0, 0)
+        if suffix <= 0 or total == 0:
+            return ByteRange(RANGE_UNSATISFIABLE, 0, 0)
+        if suffix >= total:
+            return ByteRange(RANGE_VALID, 0, total - 1)
+        return ByteRange(RANGE_VALID, total - suffix, total - 1)
+
+    var start: Int
+    try:
+        start = Int(lo)
+    except:
+        return ByteRange(RANGE_NONE, 0, 0)
+    if start < 0:
+        return ByteRange(RANGE_NONE, 0, 0)
+    if start >= total:
+        return ByteRange(RANGE_UNSATISFIABLE, 0, 0)
+
+    if hi.byte_length() == 0:
+        return ByteRange(RANGE_VALID, start, total - 1)
+    var end: Int
+    try:
+        end = Int(hi)
+    except:
+        return ByteRange(RANGE_NONE, 0, 0)
+    if end < start:
+        return ByteRange(RANGE_NONE, 0, 0)
+    if end >= total:
+        end = total - 1
+    return ByteRange(RANGE_VALID, start, end)
 
 
 def _safe_join(root: String, rel: String) -> Optional[String]:

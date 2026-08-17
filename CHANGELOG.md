@@ -7,6 +7,20 @@ versions may break the API**.
 
 ## [Unreleased]
 
+- WebSocket text messages are now validated as UTF-8 (RFC 6455 §8.1) on
+  the assembled message — a multi-byte character split across fragments is
+  fine; an invalid sequence closes with 1007. Binary frames still carry
+  any bytes.
+- `StaticFiles` honours single byte ranges (RFC 9110 §14): `bytes=a-b`,
+  `bytes=a-`, and `bytes=-suffix` answer `206` + `Content-Range`;
+  parseable-but-past-the-end answers `416` with `bytes */total`; multiple
+  ranges and other units are ignored (full `200`, as the RFC permits).
+  `Accept-Ranges: bytes` is advertised; `If-Range` deliberately never
+  matches (weak ETags, strong comparison required) and falls back to the
+  full representation.
+- `apps/hello` (and the README example) now use the non-blocking event
+  loop — the blocking accept loop remains in the fork but has no in-repo
+  app consumers left.
 - `Client` keep-alive: response boundaries are now computed
   (`classify_response` — Content-Length, chunked terminal chunk + trailers,
   bodiless statuses, HEAD) instead of inferred from EOF, and the connection
