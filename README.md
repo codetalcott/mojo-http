@@ -68,11 +68,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 291 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 306 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
-| **Total** | | **536** |
+| **Total** | | **551** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -84,7 +84,7 @@ Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http
 
 **Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor (`M0_WORKERS=4`) — workers accept from one shared pre-fork listener, with a cross-worker SSE broadcast bus when the app wires it in.
 
-**Outbound too** — `Client` speaks HTTP/1.1 the other way: `client.get(url)` / `client.post(url, body)` with DNS, timeouts, and full response parsing (Content-Length with loud truncation detection, chunked, close-delimited). One connection per request, no TLS, no redirect following — the same honest constraints as the server, documented in `client.mojo`. `poe smoke-client` runs a Mojo client against a Mojo server in CI.
+**Outbound too** — `Client` speaks HTTP/1.1 the other way: `client.get(url)` / `client.post(url, body)` with DNS, timeouts, keep-alive connection reuse (framing boundaries computed per response — Content-Length, chunked with trailers, bodiless statuses, HEAD — with conservative retirement rules and a single stale-connection retry), and full response parsing with loud truncation detection. No TLS, no redirect following — the same honest constraints as the server, documented in `client.mojo`. `poe smoke-client` proves a six-request conversation rides one TCP connection in CI.
 
 Most of that composed, in one small app: [apps/notes_api/](apps/notes_api/server.mojo)
 — CRUD with `:id` routes and a real `405` with `Allow`, the same note negotiated
@@ -352,7 +352,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 536 unit tests, then compiles every example
+uv run poe test-all         # 551 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
