@@ -211,9 +211,9 @@ echo "smoke-hello OK"
 """
 
 [tool.poe.tasks.smoke-counter]
-help = "Start the counter demo, assert an SSE broadcast reaches a client, stop"
+help = "Start the counter demo, assert an SSE broadcast reaches a client and heartbeats tick at the configured cadence, stop"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
   apps/datastar_counter/server.mojo > counter.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
@@ -225,11 +225,35 @@ sleep 2
 curl -s -X POST http://localhost:8080/increment -o /dev/null
 sleep 2
 kill $sse 2>/dev/null
+wait $sse 2>/dev/null
 grep -q 'event: datastar-patch-signals' sse.txt \
   || { echo 'no Datastar frame reached the client'; cat sse.txt; exit 1; }
 grep -q 'data: signals {"count":1}' sse.txt \
   || { echo 'broadcast did not carry the new count'; cat sse.txt; exit 1; }
 grep -q 'data: event:' sse.txt && { echo 'frame was double-framed'; exit 1; }
+
+# Heartbeats: the stream was held ~6s with the cadence set to 500ms, so
+# several ': heartbeat' comments must have arrived. The bounds are the
+# assertion: fewer than 2 means the one-shot timer never re-armed (one
+# heartbeat per stream, ever); an absurd count means the fired timer kept
+# being redelivered (the level-triggered epoll storm, which floods the
+# client at loop speed).
+beats=$(grep -c '^: heartbeat' sse.txt)
+[ "$beats" -ge 2 ] \
+  || { echo "expected repeating heartbeats, saw $beats"; cat sse.txt; exit 1; }
+[ "$beats" -le 40 ] \
+  || { echo "heartbeat storm: $beats beats in ~6s at 500ms cadence"; exit 1; }
+
+# The subscriber the loop just lost (the curl above was killed, not closed
+# politely) must be unsubscribed from the handler's registry — every close
+# path notifies sse_slot_disconnected, not only the polite recv->0 one.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+  [ "$subs" = "0" ] && break
+  sleep 1
+done
+[ "$subs" = "0" ] \
+  || { echo "dead SSE client still subscribed (subscribers=$subs)"; exit 1; }
 rm -f sse.txt
 echo "smoke-counter OK"
 """

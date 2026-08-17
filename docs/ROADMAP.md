@@ -163,6 +163,29 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **SSE heartbeats now actually tick, and dead subscribers are reaped on
+  every close path.** The heartbeat plumbing (`sse_heartbeat_ms`, a per-fd
+  timer, `: heartbeat` comments) existed but had never fired in anger: both
+  backends implement one-shot timers, and the firing path never re-armed. On
+  kqueue that meant exactly one heartbeat per stream, ever; on epoll it was
+  a *storm* — the fired timerfd is level-triggered and nothing read it, so
+  every `epoll_wait` redelivered it, measured at ~1,000,000 heartbeats in
+  6 seconds. The handler now re-arms on every firing (which on epoll also
+  clears the timerfd's expiration count — the load-bearing side effect), and
+  `poe smoke-counter` pins both failure modes with a lower and upper bound
+  on beats observed at a 500ms cadence. Separately, only the polite
+  recv→0 disconnect path notified `sse_slot_disconnected`; the EV_EOF path —
+  how a killed client actually presents on Linux (`EPOLLRDHUP`) — and the
+  failed-write paths did not, leaving stale registry subscriptions. The
+  notification now lives in `_close_slot`, the one place every close goes
+  through, and a heartbeat send failure closes the slot instead of leaving a
+  zombie — heartbeats are the disconnect *detector* for clients that vanish
+  without a FIN. The smoke asserts the counter's `/health` subscriber count
+  returns to 0 after an impolite disconnect (verified load-bearing: the old
+  code leaves it at 1). `M0_SSE_HEARTBEAT_MS` wires the cadence through
+  `AppConfig` (default 15000, 0 disables), and both Datastar demo pages now
+  open their streams with `retry: 'always'` so a dropped stream reconnects.
+
 - **The `src` name-collision hazard was a misdiagnosis, now fixed at the
   root.** The old known issue said tests bind `from src.x import` to
   whichever `-I` root comes first and survive on module names not colliding.

@@ -30,7 +30,13 @@ def render_page(count: Int) -> String:
         '<body data-signals=\'{"count":', String(count), '}\' '
         # data-init, not the pre-1.0 data-on-load: v1.0.2 has no on-load
         # plugin, and the misnamed attribute fails silently.
-        'data-init="@get(\'/events\')">\n'
+        #
+        # retry: 'always', because the default 'auto' treats the clean close
+        # a dying (or restarting) server produces as an intentional end and
+        # never reconnects — a tab would go permanently stale. 'always'
+        # retries with backoff, and the server clamps the stale
+        # Last-Event-ID it re-sends, so the tab resumes on the live feed.
+        'data-init="@get(\'/events\', {retry: \'always\'})">\n'
         '<main>\n'
         '<h1>Datastar counter</h1>\n'
         '<p class="sub">Served by <code>mojo-http</code>. '

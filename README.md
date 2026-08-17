@@ -58,12 +58,12 @@ The three `sse_*` hooks are the streaming interface; a handler that does not str
 
 | Package | Description | Tests |
 | --- | --- | --- |
-| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 65 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, request-parsing hardening | 169 |
-| `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out, `read_signals` | 56 |
-| `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 7 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 88 |
-| **Total** | | **385** |
+| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, HTTP client, request-parsing hardening | 218 |
+| `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay, `read_signals` | 67 |
+| `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
+| **Total** | | **457** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -301,7 +301,7 @@ so it is not worth the ownership complexity yet.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - Pre-1.0: the API will break.
 - **SSE fan-out is single-process.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry, so a push on one worker never reaches subscribers on another.
-- **No server-side timer hook.** Every push must be triggered by an inbound request.
+- **No application timer hook.** Every *application* push must be triggered by an inbound request. The event loop does run its own timer for SSE: idle streams get a `: heartbeat` comment every `M0_SSE_HEARTBEAT_MS` (default 15s, 0 disables), which keeps proxies from reaping quiet streams and discovers dead subscribers — but there is no hook for application code to schedule work on it.
 - `m0-sqlite` has no statement cache and no connection pool; see above.
 - SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that resumes live instead of being caught up. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines).
 
@@ -310,14 +310,14 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 454 unit tests, then compiles every example
+uv run poe test-all         # 457 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+json, CORS
-uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
+uv run poe smoke-counter    # assert SSE broadcast, heartbeat cadence, disconnect cleanup
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
 uv run poe smoke-django     # assert a Django request/response cycle end to end

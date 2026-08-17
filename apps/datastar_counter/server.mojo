@@ -17,6 +17,9 @@ Run it:  uv run poe serve-counter
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.header import Headers, Header, HeaderKey
+from lightbug_http.server_config import ServerConfig
+
+from m0_http import AppConfig
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
@@ -43,7 +46,15 @@ struct CounterHandler(HTTPService):
         var path = req.uri.path
 
         if path == "/health":
-            return OK('{"status":"ok"}', "application/json")
+            # subscribers surfaces the stream registry's live count — how the
+            # smoke asserts a vanished client is actually unsubscribed, not
+            # left as a stale registration queueing bytes nobody will read.
+            return OK(
+                '{"status":"ok","subscribers":'
+                + String(self.stream.subscriber_count(STREAM_URL))
+                + "}",
+                "application/json",
+            )
 
         if path == "/":
             return _html(render_page(self.count))
@@ -108,11 +119,18 @@ def _html(body: String) -> HTTPResponse:
 
 
 def main() raises:
-    print("Datastar counter on http://localhost:8080 — open it in two tabs")
-    var server = Server()
+    var config = AppConfig()
+    print("Datastar counter on " + config.base_url + " — open it in two tabs")
+    # Heartbeats keep idle streams alive through proxies and NATs, and let the
+    # loop discover dead subscribers; M0_SSE_HEARTBEAT_MS tunes the cadence
+    # (the smoke sets it low to assert heartbeats actually arrive).
+    var server_config = ServerConfig()
+    server_config.access_log = config.access_log
+    server_config.sse_heartbeat_ms = config.sse_heartbeat_ms
+    var server = Server(server_config^)
     var handler = CounterHandler()
     # SSE requires `listen_and_serve_nonblocking`, not `listen_and_serve`.
     # Only the non-blocking event loop assigns `req.slot_id` and drains the
     # outbox; the plain accept loop leaves slot_id at -1, and every stream open
     # would answer 409.
-    server.listen_and_serve_nonblocking("0.0.0.0:8080", handler)
+    server.listen_and_serve_nonblocking(config.address(), handler)

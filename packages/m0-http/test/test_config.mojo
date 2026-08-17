@@ -26,6 +26,7 @@ def _clear():
         String("M0_API_KEY"),
         String("M0_WORKERS"),
         String("M0_ACCESS_LOG"),
+        String("M0_SSE_HEARTBEAT_MS"),
     ]:
         _ = setenv(name, "", True)
 
@@ -102,6 +103,20 @@ def test_access_log_is_case_sensitive() raises:
     assert_false(_with("M0_ACCESS_LOG", "TRUE").access_log)
     assert_false(_with("M0_ACCESS_LOG", "yes").access_log)
     assert_false(_with("M0_ACCESS_LOG", "0").access_log)
+
+
+def test_sse_heartbeat_defaults_to_fifteen_seconds() raises:
+    _clear()
+    assert_equal(AppConfig().sse_heartbeat_ms, 15000)
+
+
+def test_sse_heartbeat_is_read_from_the_environment() raises:
+    assert_equal(_with("M0_SSE_HEARTBEAT_MS", "500").sse_heartbeat_ms, 500)
+
+
+def test_sse_heartbeat_zero_disables() raises:
+    """0 is a valid value, not junk: it turns heartbeats off entirely."""
+    assert_equal(_with("M0_SSE_HEARTBEAT_MS", "0").sse_heartbeat_ms, 0)
 
 
 def test_address_binds_all_interfaces() raises:
