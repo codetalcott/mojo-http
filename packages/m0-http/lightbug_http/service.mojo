@@ -40,6 +40,18 @@ trait HTTPService:
         """
         ...
 
+    def tick(mut self, now_ms: Int):
+        """Scheduled wakeup from the event loop — the application timer hook.
+
+        Fires every `ServerConfig.app_tick_ms` milliseconds (0, the default,
+        means never), with a monotonic timestamp for handlers running their
+        own sub-schedules. This is the one place server-initiated work can
+        happen: broadcast from here and the same loop pass delivers it, no
+        inbound request required. Keep it quick — the tick runs on the event
+        loop thread, and every connection waits while it does.
+        """
+        ...
+
 
 @fieldwise_init
 struct Printer(HTTPService):
@@ -72,6 +84,9 @@ struct Printer(HTTPService):
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         pass
 
+    def tick(mut self, now_ms: Int):
+        pass
+
 
 @fieldwise_init
 struct Welcome(HTTPService):
@@ -102,6 +117,9 @@ struct Welcome(HTTPService):
         pass
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        pass
+
+    def tick(mut self, now_ms: Int):
         pass
 
 
@@ -137,6 +155,9 @@ struct ExampleRouter(HTTPService):
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         pass
 
+    def tick(mut self, now_ms: Int):
+        pass
+
 
 @fieldwise_init
 struct TechEmpowerRouter(HTTPService):
@@ -164,6 +185,9 @@ struct TechEmpowerRouter(HTTPService):
         pass
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        pass
+
+    def tick(mut self, now_ms: Int):
         pass
 
 
@@ -194,4 +218,7 @@ struct Counter(HTTPService):
         pass
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        pass
+
+    def tick(mut self, now_ms: Int):
         pass

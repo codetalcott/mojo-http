@@ -295,6 +295,9 @@ struct NotesHandler(HTTPService):
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         pass
 
+    def tick(mut self, now_ms: Int):
+        pass
+
 
 # --- response constructors ---------------------------------------------------
 

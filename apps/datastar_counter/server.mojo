@@ -8,6 +8,11 @@ The smallest app that exercises the whole Datastar path:
     POST /decrement   likewise
 
 Open two tabs and press a button in one; the other updates without a reload.
+The page also shows a live uptime clock driven by the `tick` hook
+(`M0_APP_TICK_MS`, e.g. 1000): the event loop's own timer broadcasts the
+patch — no inbound request involved, which no earlier version of this
+framework could express. Under `M0_WORKERS>1` only worker 0 drives the
+clock, and everyone else's tabs get it over the bus.
 That is the entire point, and it is what `DatastarStream` exists to make
 possible — the builders in `m0_datastar.sse` produce complete SSE frames, which
 `SSERegistry.notify` cannot carry without double-framing them.
@@ -15,7 +20,8 @@ possible — the builders in `m0_datastar.sse` produce complete SSE frames, whic
 It is also the reference wiring for **cross-worker SSE fan-out**. With
 `M0_WORKERS>1` this app creates, before the fork: the listener every worker
 accepts from, a `BroadcastBus` (one datagram channel per worker), and a
-`SharedAtomics` page (slot 0: SSE event ids, slot 1: the count itself). Each
+`SharedAtomics` page (slot 0: SSE event ids, slot 1: the count, slot 2:
+uptime seconds). Each
 worker then joins the bus with `enable_bus`, hands its channel to the server,
 and wires `sse_peer_frame` → `deliver_peer` — after which a button press
 handled by any worker updates tabs connected to every worker. The count lives
@@ -50,10 +56,22 @@ struct CounterHandler(HTTPService):
     # under M0_WORKERS>1 every worker must read and bump the same number, and
     # in single-worker mode the same code simply runs uncontended.
     var count_addr: Int
+    # Uptime seconds, also shared: the page renders it consistently no
+    # matter which worker serves the GET, and a respawned tick owner
+    # continues the count instead of restarting it.
+    var uptime_addr: Int
+    # Exactly one worker drives the clock. Every worker's loop ticks, but
+    # only the owner bumps and broadcasts — otherwise N workers would each
+    # patch every tab N times a second (locally and over the bus).
+    var tick_owner: Bool
+    var _last_bump_ms: Int
     var stream: DatastarStream
 
-    def __init__(out self, count_addr: Int):
+    def __init__(out self, count_addr: Int, uptime_addr: Int, tick_owner: Bool):
         self.count_addr = count_addr
+        self.uptime_addr = uptime_addr
+        self.tick_owner = tick_owner
+        self._last_bump_ms = 0
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
         self.stream = DatastarStream(1024)
@@ -73,7 +91,9 @@ struct CounterHandler(HTTPService):
             )
 
         if path == "/":
-            return _html(render_page(shared_load(self.count_addr)))
+            return _html(render_page(
+                shared_load(self.count_addr), shared_load(self.uptime_addr)
+            ))
 
         if path == STREAM_URL:
             var resp = self.stream.open(req, STREAM_URL)
@@ -136,6 +156,22 @@ struct CounterHandler(HTTPService):
         # subscribers (and journal it, so replay works on every worker).
         self.stream.deliver_peer(url, event_id, frame)
 
+    def tick(mut self, now_ms: Int):
+        # The server-initiated push the framework could not express before
+        # this hook existed: nobody sends a request, and every tab's uptime
+        # advances anyway. The tick may fire faster than once a second
+        # (M0_APP_TICK_MS); the sub-schedule below decides when to act —
+        # the intended pattern for handlers with their own cadences.
+        if not self.tick_owner:
+            return
+        if now_ms - self._last_bump_ms < 1000:
+            return
+        self._last_bump_ms = now_ms
+        var up = shared_fetch_add(self.uptime_addr, 1) + 1
+        _ = self.stream.patch_signals(
+            STREAM_URL, '{"uptime":' + String(up) + "}"
+        )
+
 
 def _html(body: String) -> HTTPResponse:
     return HTTPResponse(
@@ -156,7 +192,7 @@ def main() raises:
     # numbers SSE events across workers, slot 1 is the count. In
     # single-worker mode the same objects simply serve one process.
     var listener = ListenConfig().listen(config.address())
-    var shared = SharedAtomics(2)
+    var shared = SharedAtomics(3)
     var bus = BroadcastBus(config.workers)
     var worker = 0
     if config.workers > 1:
@@ -164,7 +200,9 @@ def main() raises:
         supervisor.fork_all()
         worker = supervisor.worker_index
 
-    var handler = CounterHandler(shared.addr(1))
+    var handler = CounterHandler(
+        shared.addr(1), shared.addr(2), tick_owner=(worker == 0)
+    )
     var bus_read_fd = -1
     if config.workers > 1:
         # Joining the bus is three-sided: the stream publishes to peers and
@@ -179,6 +217,7 @@ def main() raises:
     var server_config = ServerConfig()
     server_config.access_log = config.access_log
     server_config.sse_heartbeat_ms = config.sse_heartbeat_ms
+    server_config.app_tick_ms = config.app_tick_ms
     var server = Server(server_config^, config.address())
     # SSE requires the non-blocking event loop: only it assigns `req.slot_id`
     # and drains the outbox; the plain accept loop would answer every stream

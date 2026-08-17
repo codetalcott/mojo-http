@@ -211,9 +211,9 @@ echo "smoke-hello OK"
 """
 
 [tool.poe.tasks.smoke-counter]
-help = "Start the counter demo, assert an SSE broadcast reaches a client and heartbeats tick at the configured cadence, stop"
+help = "Counter demo: assert SSE broadcast, heartbeat cadence, disconnect cleanup, the app tick, and cross-worker fan-out"
 shell = """
-M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+M0_SSE_HEARTBEAT_MS=500 M0_APP_TICK_MS=300 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
   apps/datastar_counter/server.mojo > counter.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
@@ -244,6 +244,20 @@ beats=$(grep -c '^: heartbeat' sse.txt)
 [ "$beats" -le 40 ] \
   || { echo "heartbeat storm: $beats beats in ~6s at 500ms cadence"; exit 1; }
 
+# Server-initiated push: the tick hook broadcast these uptime patches with
+# NO inbound request driving them — the stream above was idle apart from
+# one POST. The lower bound is the load-bearing one, and it bites on the
+# kqueue runner: a tick timer that never re-arms fires exactly once there
+# (verified by sabotage). On epoll the same bug storms the loop instead,
+# but the demo's 1s sub-schedule masks it from frame counts — the
+# heartbeat's storm guard above pins that failure shape for the identical
+# timer pattern.
+ups=$(grep -c '"uptime":' sse.txt)
+[ "$ups" -ge 2 ] \
+  || { echo "expected tick-driven uptime patches, saw $ups"; cat sse.txt; exit 1; }
+[ "$ups" -le 40 ] \
+  || { echo "tick storm: $ups uptime patches in ~6s at 1s cadence"; exit 1; }
+
 # The subscriber the loop just lost (the curl above was killed, not closed
 # politely) must be unsubscribed from the handler's registry — every close
 # path notifies sse_slot_disconnected, not only the polite recv->0 one.
@@ -261,7 +275,7 @@ done
 # stream — the ones on the other worker arrive over the BroadcastBus.
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
-M0_WORKERS=2 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+M0_WORKERS=2 M0_APP_TICK_MS=400 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
   apps/datastar_counter/server.mojo > counter2.log 2>&1 &
 pid=$!
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
@@ -285,6 +299,18 @@ sleep 2
 for i in $(seq 1 $count); do
   grep -q 'data: signals {"count":1}' mw_sse_$i.txt \
     || { echo "stream $i missed the cross-worker broadcast (worker $(grep -i '^x-worker' mw_hdr_$i.txt))"; cat counter2.log; exit 1; }
+done
+
+# The tick composes with the bus: only worker 0 drives the clock, so a
+# stream owned by the OTHER worker receiving uptime patches proves the
+# tick's broadcasts crossed the bus like any other.
+w0=$(grep -oE 'worker 0. pid=[0-9]+' counter2.log | grep -oE '[0-9]+' | tail -1)
+for i in $(seq 1 $count); do
+  wpid=$(grep -i '^x-worker' mw_hdr_$i.txt | tr -d ' \r' | cut -d: -f2)
+  if [ -n "$wpid" ] && [ "$wpid" != "$w0" ]; then
+    grep -q '"uptime":' mw_sse_$i.txt \
+      || { echo "stream $i (worker $wpid) never saw the tick owner's clock over the bus"; cat counter2.log; exit 1; }
+  fi
 done
 
 worker_pids=$(grep -oE 'pid=[0-9]+' counter2.log | cut -d= -f2 | sort -u)

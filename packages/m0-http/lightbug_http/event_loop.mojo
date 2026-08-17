@@ -46,6 +46,7 @@ comptime TIMER_HEADER: UInt = 0x100000
 comptime TIMER_BODY: UInt = 0x200000
 comptime TIMER_IDLE: UInt = 0x300000
 comptime TIMER_SSE_HEARTBEAT: UInt = 0x400000
+comptime TIMER_APP_TICK: UInt = 0x500000
 
 comptime MAX_EVENTS = 64
 comptime UNUSED: Int = -1
@@ -90,6 +91,11 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     # Cross-worker broadcast channel: register this worker's receive end.
     if bus_read_fd >= 0:
         backend.try_add_read(bus_read_fd)
+
+    # Application tick: one loop-wide timer driving the handler's `tick`
+    # hook. Opt-in — 0 means the hook never fires and costs nothing.
+    if config.app_tick_ms > 0:
+        backend.try_add_timer(TIMER_APP_TICK, config.app_tick_ms)
 
     var max_conns = config.max_connections
     var provision_pool = ProvisionPool(max_conns, config)
@@ -262,6 +268,19 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             if backend.event_filter(i) == EVFILT_TIMER:
                 var timer_ident = backend.event_ident(i)
                 var fd_val: Int
+
+                # Application tick: hand the handler its scheduled wakeup.
+                if timer_ident >= TIMER_APP_TICK:
+                    # Re-arm FIRST — one-shot on both backends, and on epoll
+                    # the re-arm is also what clears the fired timerfd's
+                    # readability (the same level-triggered storm the SSE
+                    # heartbeat hit; see that handler below).
+                    backend.try_add_timer(TIMER_APP_TICK, config.app_tick_ms)
+                    handler.tick(Int(perf_counter_ns() // 1_000_000))
+                    # Whatever the handler broadcast is queued in per-slot
+                    # outboxes now; the SSE drain at the bottom of this pass
+                    # pushes it to the wire.
+                    continue
 
                 # SSE heartbeat timer: send ": heartbeat\n\n" to keep connection alive
                 if timer_ident >= TIMER_SSE_HEARTBEAT:

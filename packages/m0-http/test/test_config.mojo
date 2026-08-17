@@ -27,6 +27,7 @@ def _clear():
         String("M0_WORKERS"),
         String("M0_ACCESS_LOG"),
         String("M0_SSE_HEARTBEAT_MS"),
+        String("M0_APP_TICK_MS"),
     ]:
         _ = setenv(name, "", True)
 
@@ -117,6 +118,16 @@ def test_sse_heartbeat_is_read_from_the_environment() raises:
 def test_sse_heartbeat_zero_disables() raises:
     """0 is a valid value, not junk: it turns heartbeats off entirely."""
     assert_equal(_with("M0_SSE_HEARTBEAT_MS", "0").sse_heartbeat_ms, 0)
+
+
+def test_app_tick_defaults_to_off() raises:
+    """The tick is opt-in: 0 means the hook never fires."""
+    _clear()
+    assert_equal(AppConfig().app_tick_ms, 0)
+
+
+def test_app_tick_is_read_from_the_environment() raises:
+    assert_equal(_with("M0_APP_TICK_MS", "1000").app_tick_ms, 1000)
 
 
 def test_address_binds_all_interfaces() raises:

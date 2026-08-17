@@ -10,7 +10,7 @@ binary with no static-file dependency and no `open()` in the request path.
 comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"
 
 
-def render_page(count: Int) -> String:
+def render_page(count: Int, uptime: Int) -> String:
     """Full HTML document with the current count already rendered.
 
     `data-signals` seeds the client store, `data-init` opens the SSE stream,
@@ -27,7 +27,7 @@ def render_page(count: Int) -> String:
         '<script type="module" src="', DATASTAR_CDN, '"></script>\n',
         _STYLE,
         '</head>\n'
-        '<body data-signals=\'{"count":', String(count), '}\' '
+        '<body data-signals=\'{"count":', String(count), ',"uptime":', String(uptime), '}\' '
         # data-init, not the pre-1.0 data-on-load: v1.0.2 has no on-load
         # plugin, and the misnamed attribute fails silently.
         #
@@ -42,6 +42,10 @@ def render_page(count: Int) -> String:
         '<p class="sub">Served by <code>mojo-http</code>. '
         'Open this page in two tabs — both track the same number.</p>\n'
         '<output id="count" data-text="$count">', String(count), '</output>\n'
+        # The uptime line is server-initiated: no request causes these
+        # patches — the tick hook broadcasts them on the loop's own timer.
+        '<p class="sub">server uptime: <span id="uptime" data-text="$uptime">',
+        String(uptime), '</span>s</p>\n'
         '<div class="row">\n'
         '<button data-on:click="@post(\'/decrement\')">−1</button>\n'
         '<button data-on:click="@post(\'/increment\')">+1</button>\n'

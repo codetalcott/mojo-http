@@ -5,6 +5,16 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+- `HTTPService.tick(now_ms)` — the application timer hook, fired every
+  `M0_APP_TICK_MS` milliseconds (0 = off, the default) on the event loop's
+  timer. Server-initiated pushes no longer need an inbound request; the
+  counter demo gained a live uptime clock driven by it, ticking on one
+  designated worker and reaching every worker's tabs over the broadcast
+  bus. Breaking for handler authors: the trait gains an eighth method
+  (empty `tick` in non-scheduling handlers).
+
 ## [0.1.0] — 2026-08-17
 
 First release. Everything below is new.

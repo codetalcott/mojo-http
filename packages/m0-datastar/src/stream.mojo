@@ -58,9 +58,11 @@ struct DatastarStream:
       registry's redelivery filter keeps the *newer* id — fine for
       state-patch frames (the newer state already won), something to think
       about for increments.
-    - **No server-initiated push.** `HTTPService` has no tick hook, so every
-      broadcast must be caused by an inbound request — client A's POST pushing
-      to client B's stream. A shared todo list is expressible; a clock is not.
+    - **Server-initiated pushes need the `tick` hook.** Broadcasts here fire
+      from whatever handler code calls them; with `app_tick_ms` configured,
+      that can be `HTTPService.tick` on the loop's own timer — a clock is
+      expressible now (the counter demo runs one). Without a tick, every
+      broadcast is caused by an inbound request.
     """
 
     var registry: SSERegistry
