@@ -225,7 +225,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             backend.add_read(fd_val)
                         except:
                             _close_slot(
-                                backend, slot, fd_val,
+                                backend, handler, slot, fd_val,
                                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                                 slot_sse,
                             )
@@ -239,23 +239,53 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 # SSE heartbeat timer: send ": heartbeat\n\n" to keep connection alive
                 if timer_ident >= TIMER_SSE_HEARTBEAT:
                     fd_val = Int(timer_ident - TIMER_SSE_HEARTBEAT)
-                    if fd_val < len(fd_to_slot):
-                        var hb_slot = fd_to_slot[fd_val]
-                        if hb_slot != UNUSED and slot_sse[hb_slot] and provision_pool.provisions[hb_slot].state.kind == ConnectionState.STREAMING_SSE:
-                            var hb = String(": heartbeat\n\n")
-                            slot_response[hb_slot] = Bytes(hb.as_bytes())
-                            slot_send_offset[hb_slot] = 0
-                            provision_pool.provisions[hb_slot].state = ConnectionState.responding()
-                            var fd_desc = FileDescriptor(fd_val)
-                            try:
-                                var sent = send(fd_desc, Span(slot_response[hb_slot]), UInt(len(slot_response[hb_slot])), 0)
-                                slot_send_offset[hb_slot] = Int(sent)
-                            except:
-                                pass
-                            if slot_send_offset[hb_slot] >= len(slot_response[hb_slot]):
-                                provision_pool.provisions[hb_slot].state = ConnectionState.streaming_sse()
-                            else:
-                                backend.try_add_write_oneshot(fd_val)
+                    if fd_val >= len(fd_to_slot):
+                        continue
+                    var hb_slot = fd_to_slot[fd_val]
+                    if hb_slot == UNUSED or not slot_sse[hb_slot]:
+                        # The stream this timer belonged to is gone (or the fd
+                        # now serves a non-SSE connection); retire the timer.
+                        backend.try_delete_timer(timer_ident)
+                        continue
+                    # Re-arm FIRST, unconditionally. Timers are one-shot on
+                    # both backends (kqueue EV_ONESHOT; epoll timerfd with no
+                    # interval), so without this a stream gets exactly one
+                    # heartbeat ever. On epoll the re-arm is also what clears
+                    # the fired timerfd's expiration count — the timerfd is
+                    # registered level-triggered and nothing read()s it, so an
+                    # expired-and-unrearmed timer would be returned by every
+                    # subsequent epoll_wait: a heartbeat storm at loop speed.
+                    backend.try_add_timer(timer_ident, config.sse_heartbeat_ms)
+                    if provision_pool.provisions[hb_slot].state.kind != ConnectionState.STREAMING_SSE:
+                        # Mid-send of a real event; skip this beat, keep the next.
+                        continue
+                    var hb = String(": heartbeat\n\n")
+                    slot_response[hb_slot] = Bytes(hb.as_bytes())
+                    slot_send_offset[hb_slot] = 0
+                    provision_pool.provisions[hb_slot].state = ConnectionState.responding()
+                    var fd_desc = FileDescriptor(fd_val)
+                    var hb_dead = False
+                    try:
+                        var sent = send(fd_desc, Span(slot_response[hb_slot]), UInt(len(slot_response[hb_slot])), 0)
+                        slot_send_offset[hb_slot] = Int(sent)
+                    except hb_err:
+                        # EPIPE/ECONNRESET here is the heartbeat doing its
+                        # other job: discovering a dead subscriber that never
+                        # sent a FIN. Close it (which notifies the handler)
+                        # rather than leaving a zombie stream.
+                        if not hb_err.isa[SendEAGAINError]():
+                            hb_dead = True
+                    if hb_dead:
+                        _close_slot(
+                            backend, handler, hb_slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse,
+                        )
+                        continue
+                    if slot_send_offset[hb_slot] >= len(slot_response[hb_slot]):
+                        provision_pool.provisions[hb_slot].state = ConnectionState.streaming_sse()
+                    else:
+                        backend.try_add_write_oneshot(fd_val)
                     continue
 
                 if timer_ident >= TIMER_IDLE:
@@ -279,7 +309,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     _send_error_to_fd(fd_val, RequestTimeout())
 
                 _close_slot(
-                    backend, slot, fd_val,
+                    backend, handler, slot, fd_val,
                     slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                     slot_sse,
                 )
@@ -296,17 +326,17 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
 
                 if (backend.event_flags(i) & EV_EOF) != 0:
                     _close_slot(
-                        backend, slot, fd_val,
+                        backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse,
                     )
                     continue
 
                 if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_SSE:
-                    # SSE client disconnect: recv→0 means client closed connection
-                    handler.sse_slot_disconnected(slot)
+                    # SSE client disconnect: recv→0 means client closed
+                    # connection. _close_slot notifies the handler.
                     _close_slot(
-                        backend, slot, fd_val,
+                        backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse,
                     )
@@ -339,7 +369,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         if recv_err.isa[RecvEAGAINError]():
                             continue
                         _close_slot(
-                            backend, slot, fd_val,
+                            backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse,
                         )
@@ -347,7 +377,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
 
                     if bytes_read == 0:
                         _close_slot(
-                            backend, slot, fd_val,
+                            backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse,
                         )
@@ -365,7 +395,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_max:
                         _send_error_to_fd(fd_val, BadRequest())
                         _close_slot(
-                            backend, slot, fd_val,
+                            backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse,
                         )
@@ -377,7 +407,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         var raw_body_len = len(provision_pool.provisions[slot].recv_buffer) - raw_body_start
                         if raw_body_len > config.max_request_body_size:
                             _send_error_to_fd(fd_val, PayloadTooLarge())
-                            _close_slot(backend, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
+                            _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
                             continue
                         if raw_body_len > 0:
                             var chunk_buf = Bytes(capacity=raw_body_len)
@@ -387,7 +417,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             var (ret, decoded_size) = decoder.decode(Span(chunk_buf))
                             if ret == -1:
                                 _send_error_to_fd(fd_val, BadRequest())
-                                _close_slot(backend, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
+                                _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
                                 continue
                             elif ret >= 0:
                                 var new_buf = Bytes(capacity=raw_body_start + decoded_size)
@@ -466,7 +496,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         backend.try_add_write_oneshot(fd_val)
                         continue
                     _close_slot(
-                        backend, slot, fd_val,
+                        backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse,
                     )
@@ -488,7 +518,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         backend.add_write_oneshot(fd_val)
                     except:
                         _close_slot(
-                            backend, slot, fd_val,
+                            backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse,
                         )
@@ -529,7 +559,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     except:
                         pass
                     _close_slot(
-                        backend, s, slot_fds[s],
+                        backend, handler, s, slot_fds[s],
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse,
                     )
@@ -551,7 +581,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         var drain_slot = fd_to_slot[drain_ident] if drain_ident < len(fd_to_slot) else UNUSED
                         if drain_slot != UNUSED:
                             _close_slot(
-                                backend, drain_slot, drain_ident,
+                                backend, handler, drain_slot, drain_ident,
                                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                                 slot_sse,
                             )
@@ -586,7 +616,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         if elapsed_s >= Int(config.header_read_timeout):
             _send_error_to_fd(fd_val, RequestTimeout())
             _close_slot(
-                backend, slot, fd_val,
+                backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse,
             )
@@ -611,7 +641,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             bytes_read = 0
         else:
             _close_slot(
-                backend, slot, fd_val,
+                backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse,
             )
@@ -619,7 +649,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
 
     if bytes_read == 0 and len(provision_pool.provisions[slot].recv_buffer) == 0:
         _close_slot(
-            backend, slot, fd_val,
+            backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse,
         )
@@ -634,7 +664,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_max:
         _send_error_to_fd(fd_val, BadRequest())
         _close_slot(
-            backend, slot, fd_val,
+            backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse,
         )
@@ -655,7 +685,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         if header_end_offset > config.max_total_header_size:
             _send_error_to_fd(fd_val, HeadersTooLarge())
             _close_slot(
-                backend, slot, fd_val,
+                backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse,
             )
@@ -670,7 +700,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         except parse_err:
             _send_error_to_fd(fd_val, BadRequest())
             _close_slot(
-                backend, slot, fd_val,
+                backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse,
             )
@@ -679,7 +709,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         if parsed.path.byte_length() > config.max_request_uri_length:
             _send_error_to_fd(fd_val, URITooLong())
             _close_slot(
-                backend, slot, fd_val,
+                backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse,
             )
@@ -691,7 +721,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         if not is_chunked and content_length > config.max_request_body_size:
             _send_error_to_fd(fd_val, PayloadTooLarge())
             _close_slot(
-                backend, slot, fd_val,
+                backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse,
             )
@@ -730,7 +760,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 var (ret, decoded_size) = decoder.decode(Span(chunk_buf))
                 if ret == -1:
                     _send_error_to_fd(fd_val, BadRequest())
-                    _close_slot(backend, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
+                    _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
                     return
                 elif ret >= 0:
                     var new_buf = Bytes(capacity=header_end_offset + decoded_size)
@@ -826,7 +856,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     except from_parsed_err:
         _send_error_to_fd(fd_val, BadRequest())
         _close_slot(
-            backend, slot, fd_val,
+            backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse,
         )
@@ -919,7 +949,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         except send_err:
             if not send_err.isa[SendEAGAINError]():
                 _close_slot(
-                    backend, slot, fd_val,
+                    backend, handler, slot, fd_val,
                     slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                     slot_sse,
                 )
@@ -942,7 +972,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         backend.add_write_oneshot(fd_val)
     except:
         _close_slot(
-            backend, slot, fd_val,
+            backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse,
         )
@@ -985,7 +1015,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
                 slot_send_offset[slot],
             )
         _close_slot(
-            backend, slot, fd_val,
+            backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse,
         )
@@ -1002,7 +1032,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
                 slot_send_offset[slot],
             )
         _close_slot(
-            backend, slot, fd_val,
+            backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse,
         )
@@ -1049,8 +1079,9 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     backend.try_add_read(fd_val)
 
 
-def _close_slot[B: EventLoopBackend](
+def _close_slot[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
+    mut handler: T,
     slot: Int,
     fd_val: Int,
     mut slot_fds: List[Int],
@@ -1060,7 +1091,17 @@ def _close_slot[B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
 ):
-    """Close a connection and release its slot."""
+    """Close a connection and release its slot.
+
+    Notifies the handler's `sse_slot_disconnected` hook when the slot was in
+    SSE streaming mode, whatever path led here — EV_EOF, a failed write, a
+    dead heartbeat, timeouts, shutdown. This is the single point that keeps
+    the handler's subscriber registry from retaining a stale subscription
+    (and, once the slot is reused, misdirecting queued bytes) after a client
+    vanishes without the clean recv→0 the read path handles.
+    """
+    if slot_sse[slot]:
+        handler.sse_slot_disconnected(slot)
     backend.try_delete_read(fd_val)
     backend.try_delete_write(fd_val)
     backend.try_delete_timer(UInt(fd_val) + TIMER_HEADER)

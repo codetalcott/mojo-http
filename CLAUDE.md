@@ -208,10 +208,13 @@ Properties of the design, not defects to fix in passing:
 - **SSE fan-out is per-process.** `M0_WORKERS>1` forks, and each worker gets its
   own subscriber registry, so a broadcast never reaches another worker's
   subscribers.
-- **No server-side timer hook.** Every push must be triggered by an inbound
-  request.
+- **No application timer hook.** Every application push must be triggered by
+  an inbound request. (The event loop runs its own SSE heartbeat timer —
+  `M0_SSE_HEARTBEAT_MS`, one-shot on both backends so the handler re-arms it
+  on every firing; on epoll the re-arm is also what clears the fired
+  timerfd's readability, and skipping it is a level-triggered event storm.)
 - Configuration is env vars, all `M0_`-prefixed: `M0_PORT`, `M0_BASE_URL`,
-  `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`.
+  `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`.
 
 ## Mojo 1.0 patterns
 

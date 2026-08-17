@@ -9,6 +9,8 @@ Env vars:
     M0_API_KEY    — API key for mutation auth (default: "" = disabled)
     M0_WORKERS    — Worker count for multi-worker mode (default: 1)
     M0_ACCESS_LOG — Enable access logging: "true" or "1" (default: false)
+    M0_SSE_HEARTBEAT_MS — Milliseconds between SSE heartbeat comments on idle
+                    streams; "0" disables them (default: 15000)
 """
 
 from std.os import getenv
@@ -21,6 +23,7 @@ struct AppConfig(Copyable, Movable):
     var api_key: String
     var workers: Int
     var access_log: Bool
+    var sse_heartbeat_ms: Int
 
     def __init__(out self, default_port: Int = 8080):
         """Load configuration from M0_-prefixed env vars with defaults."""
@@ -29,6 +32,7 @@ struct AppConfig(Copyable, Movable):
         self.workers = _parse_int_env("M0_WORKERS", 1)
         var access_log_str = getenv("M0_ACCESS_LOG", "")
         self.access_log = access_log_str == "true" or access_log_str == "1"
+        self.sse_heartbeat_ms = _parse_int_env("M0_SSE_HEARTBEAT_MS", 15000)
 
         var base_url_env = getenv("M0_BASE_URL", "")
         if base_url_env.byte_length() > 0:
@@ -42,6 +46,7 @@ struct AppConfig(Copyable, Movable):
         self.api_key = copy.api_key
         self.workers = copy.workers
         self.access_log = copy.access_log
+        self.sse_heartbeat_ms = copy.sse_heartbeat_ms
 
     def __init__(out self, *, deinit move: Self):
         self.port = move.port
@@ -49,6 +54,7 @@ struct AppConfig(Copyable, Movable):
         self.api_key = move.api_key^
         self.workers = move.workers
         self.access_log = move.access_log
+        self.sse_heartbeat_ms = move.sse_heartbeat_ms
 
     def address(self) -> String:
         """Return listen address string (e.g. '0.0.0.0:8080')."""
