@@ -52,6 +52,20 @@ trait HTTPService:
         """
         ...
 
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        """A complete WebSocket message from the client on `slot`.
+
+        Fires only on connections a `func` response upgraded (see
+        `websocket_upgrade` in `websocket.mojo`). Fragments arrive already
+        assembled; `opcode` is WS_OP_TEXT or WS_OP_BINARY. Control frames
+        never reach here — the loop answers ping and close itself. To send,
+        queue `encode_ws_frame(...)` bytes for the slot and return them from
+        `sse_drain_slot`; the outbox contract (and `sse_slot_disconnected`
+        cleanup) is shared between SSE and WebSocket slots. Handlers that
+        never upgrade leave this empty.
+        """
+        ...
+
 
 @fieldwise_init
 struct Printer(HTTPService):
@@ -87,6 +101,9 @@ struct Printer(HTTPService):
     def tick(mut self, now_ms: Int):
         pass
 
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        pass
+
 
 @fieldwise_init
 struct Welcome(HTTPService):
@@ -120,6 +137,9 @@ struct Welcome(HTTPService):
         pass
 
     def tick(mut self, now_ms: Int):
+        pass
+
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         pass
 
 
@@ -158,6 +178,9 @@ struct ExampleRouter(HTTPService):
     def tick(mut self, now_ms: Int):
         pass
 
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        pass
+
 
 @fieldwise_init
 struct TechEmpowerRouter(HTTPService):
@@ -188,6 +211,9 @@ struct TechEmpowerRouter(HTTPService):
         pass
 
     def tick(mut self, now_ms: Int):
+        pass
+
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         pass
 
 
@@ -221,4 +247,7 @@ struct Counter(HTTPService):
         pass
 
     def tick(mut self, now_ms: Int):
+        pass
+
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         pass

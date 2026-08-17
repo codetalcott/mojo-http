@@ -198,6 +198,10 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
 "$out/todo"
 """
 
+[tool.poe.tasks.serve-ws]
+help = "Run the WebSocket echo demo on :8080 (endpoint at /ws)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/ws_echo/server.mojo"
+
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
 shell = """
@@ -208,6 +212,39 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== hello.log ==='; cat hello.log; exit 1; }
 echo
 echo "smoke-hello OK"
+"""
+
+# The probe speaks RFC 6455 by hand (stdlib sockets, no websocket library),
+# so this smoke proves the server against the wire format itself: handshake
+# with the accept key verified, masked echo round trip, fragmented message
+# reassembly, ping/pong both directions, heartbeat cadence bounds, and the
+# close handshake down to the TCP FIN.
+[tool.poe.tasks.smoke-ws]
+help = "WebSocket echo demo: handshake, echo, fragmentation, ping/pong, heartbeats, close"
+shell = """
+M0_SSE_HEARTBEAT_MS=400 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/ws_echo/server.mojo > ws.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== ws.log ==='; cat ws.log; exit 1; }
+
+# A plain HTTP GET on the endpoint is told how to connect, not left hanging.
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ws)
+[ "$code" = "426" ] || { echo "GET /ws without upgrade: expected 426, got $code"; exit 1; }
+
+WS_EXPECT_PINGS=1 python3 apps/ws_echo/ws_probe.py \
+  || { echo '=== ws.log ==='; cat ws.log; exit 1; }
+
+# The closed socket must be gone from the handler's registry — the close
+# handshake path notifies sse_slot_disconnected like every other close.
+for i in 1 2 3 4 5; do
+  conns=$(curl -s http://localhost:8080/health | grep -o '"connections":[0-9]*' | cut -d: -f2)
+  [ "$conns" = "0" ] && break
+  sleep 1
+done
+[ "$conns" = "0" ] || { echo "socket closed but still registered (connections=$conns)"; exit 1; }
+rm -f ws.log
+echo "smoke-ws OK"
 """
 
 [tool.poe.tasks.smoke-counter]

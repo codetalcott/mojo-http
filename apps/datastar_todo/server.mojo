@@ -225,6 +225,9 @@ struct TodoHandler(HTTPService):
     def tick(mut self, now_ms: Int):
         pass
 
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        pass
+
 
 def _html(body: String) -> HTTPResponse:
     return HTTPResponse(

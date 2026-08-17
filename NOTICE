@@ -49,6 +49,13 @@ lightbug_http
         O_NONBLOCK. The visible symptom was a multi-worker accept race:
         the losing worker blocked inside accept() on the still-blocking
         shared listener, wedging its event loop
+      - websocket.mojo added (no upstream counterpart): RFC 6455 server
+        side — opening handshake (self-contained SHA-1 and base64),
+        frame encode/decode with client-masking enforcement, fragmented
+        message assembly, ping/pong and close handshake; the event loop
+        gained a STREAMING_WS slot state, frame-mode reads after a 101
+        upgrade response, WebSocket heartbeat pings on the SSE heartbeat
+        cadence, and a ws_message hook on HTTPService
       - Client-side connect path (create_connection, getaddrinfo bindings)
         revived after rotting as dead code: addrinfo pointer fields modeled
         as Optional[Pointer] (Mojo 1.0 pointers are non-nullable), connect()

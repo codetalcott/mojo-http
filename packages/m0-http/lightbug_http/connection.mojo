@@ -328,6 +328,7 @@ struct ConnectionState(Copyable):
     - responding: Sending response to client
     - closed: Connection finished
     - streaming_sse: SSE stream idle, waiting for events to push
+    - streaming_ws: WebSocket connection, exchanging frames
     """
 
     comptime READING_HEADERS = 0
@@ -336,6 +337,7 @@ struct ConnectionState(Copyable):
     comptime RESPONDING = 3
     comptime CLOSED = 4
     comptime STREAMING_SSE = 5
+    comptime STREAMING_WS = 6
 
     var kind: Int
     var body_state: RequestBodyState
@@ -363,6 +365,10 @@ struct ConnectionState(Copyable):
     @staticmethod
     def streaming_sse() -> Self:
         return ConnectionState(Self.STREAMING_SSE, RequestBodyState(0, 0))
+
+    @staticmethod
+    def streaming_ws() -> Self:
+        return ConnectionState(Self.STREAMING_WS, RequestBodyState(0, 0))
 
 
 struct TCPConnection[network: NetworkType = NetworkType.tcp4]:

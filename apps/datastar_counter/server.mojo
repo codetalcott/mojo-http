@@ -180,6 +180,9 @@ struct CounterHandler(HTTPService):
             + ',"count":' + String(shared_load(self.count_addr)) + "}",
         )
 
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        pass
+
 
 def _html(body: String) -> HTTPResponse:
     return HTTPResponse(

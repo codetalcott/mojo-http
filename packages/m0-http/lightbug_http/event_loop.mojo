@@ -35,6 +35,10 @@ from lightbug_http.server import (
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.service import HTTPService
 from lightbug_http.utils.owning_list import OwningList
+from lightbug_http.websocket import (
+    WSState, is_ws_upgrade_response, encode_ws_frame, close_frame,
+    WS_OP_PING, WS_CLOSE_GOING_AWAY,
+)
 from std.time import perf_counter_ns
 from std.sys.info import CompilationTarget
 from m0_http.log import log_access
@@ -106,6 +110,10 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     var slot_send_offset = List[Int](capacity=max_conns)
     var slot_header_start = List[Int](capacity=max_conns)
     var slot_sse = List[Bool](capacity=max_conns)
+    var slot_ws = List[Bool](capacity=max_conns)
+    # Per-slot WebSocket frame parser. Always allocated, tiny while unused;
+    # reset (not reallocated) when a slot is reused.
+    var slot_ws_state = OwningList[WSState](capacity=max_conns)
 
     for _ in range(max_conns):
         slot_fds.append(UNUSED)
@@ -113,6 +121,8 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         slot_send_offset.append(0)
         slot_header_start.append(0)
         slot_sse.append(False)
+        slot_ws.append(False)
+        slot_ws_state.append(WSState(config.max_request_body_size))
 
     var fd_map_size = 65536
     var fd_to_slot = List[Int](capacity=fd_map_size)
@@ -248,7 +258,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         server_address, tcp_keep_alive,
                         slot_fds, slot_response, slot_send_offset,
                         slot_header_start, fd_to_slot, provision_pool,
-                        active_count, metrics, slot_sse,
+                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
                     )
 
                     # If the slot is still active and in reading_headers state,
@@ -260,7 +270,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             _close_slot(
                                 backend, handler, slot, fd_val,
                                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                                slot_sse,
+                                slot_sse, slot_ws, slot_ws_state,
                             )
                 continue
 
@@ -282,17 +292,21 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # pushes it to the wire.
                     continue
 
-                # SSE heartbeat timer: send ": heartbeat\n\n" to keep connection alive
+                # Stream heartbeat timer: an SSE comment or a WebSocket ping,
+                # depending on what the slot is — same cadence, same job
+                # (keep intermediaries from timing the connection out, and
+                # discover dead clients that never sent a FIN).
                 if timer_ident >= TIMER_SSE_HEARTBEAT:
                     fd_val = Int(timer_ident - TIMER_SSE_HEARTBEAT)
                     if fd_val >= len(fd_to_slot):
                         continue
                     var hb_slot = fd_to_slot[fd_val]
-                    if hb_slot == UNUSED or not slot_sse[hb_slot]:
+                    if hb_slot == UNUSED or not (slot_sse[hb_slot] or slot_ws[hb_slot]):
                         # The stream this timer belonged to is gone (or the fd
-                        # now serves a non-SSE connection); retire the timer.
+                        # now serves a non-streaming connection); retire the timer.
                         backend.try_delete_timer(timer_ident)
                         continue
+                    var hb_is_ws = slot_ws[hb_slot]
                     # Re-arm FIRST, unconditionally. Timers are one-shot on
                     # both backends (kqueue EV_ONESHOT; epoll timerfd with no
                     # interval), so without this a stream gets exactly one
@@ -302,11 +316,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # expired-and-unrearmed timer would be returned by every
                     # subsequent epoll_wait: a heartbeat storm at loop speed.
                     backend.try_add_timer(timer_ident, config.sse_heartbeat_ms)
-                    if provision_pool.provisions[hb_slot].state.kind != ConnectionState.STREAMING_SSE:
+                    var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
+                    if provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
                         # Mid-send of a real event; skip this beat, keep the next.
                         continue
-                    var hb = String(": heartbeat\n\n")
-                    slot_response[hb_slot] = Bytes(hb.as_bytes())
+                    if hb_is_ws:
+                        slot_response[hb_slot] = Bytes(Span(encode_ws_frame(WS_OP_PING, "hb".as_bytes())))
+                    else:
+                        var hb = String(": heartbeat\n\n")
+                        slot_response[hb_slot] = Bytes(hb.as_bytes())
                     slot_send_offset[hb_slot] = 0
                     provision_pool.provisions[hb_slot].state = ConnectionState.responding()
                     var fd_desc = FileDescriptor(fd_val)
@@ -325,11 +343,11 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         _close_slot(
                             backend, handler, hb_slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse,
+                            slot_sse, slot_ws, slot_ws_state,
                         )
                         continue
                     if slot_send_offset[hb_slot] >= len(slot_response[hb_slot]):
-                        provision_pool.provisions[hb_slot].state = ConnectionState.streaming_sse()
+                        provision_pool.provisions[hb_slot].state = ConnectionState.streaming_ws() if hb_is_ws else ConnectionState.streaming_sse()
                     else:
                         backend.try_add_write_oneshot(fd_val)
                     continue
@@ -357,7 +375,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 _close_slot(
                     backend, handler, slot, fd_val,
                     slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse,
+                    slot_sse, slot_ws, slot_ws_state,
                 )
                 continue
 
@@ -374,8 +392,72 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     _close_slot(
                         backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
+                    continue
+
+                if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_WS:
+                    # WebSocket frames from the client. The parser answers
+                    # control frames itself (ping→pong, close→close echo);
+                    # complete data messages go to the handler, whose queued
+                    # replies the outbox drain below this pass sends.
+                    provision_pool.provisions[slot].recv_staging.clear()
+                    var ws_fd = FileDescriptor(fd_val)
+                    var ws_read: UInt
+                    try:
+                        ws_read = recv(
+                            ws_fd,
+                            Span(provision_pool.provisions[slot].recv_staging),
+                            UInt(provision_pool.provisions[slot].recv_staging.capacity()),
+                            0,
+                        )
+                    except ws_recv_err:
+                        if ws_recv_err.isa[RecvEAGAINError]():
+                            continue
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                        continue
+                    if ws_read == 0:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                        continue
+                    provision_pool.provisions[slot].recv_staging._len = Int(ws_read)
+                    var ws_res = slot_ws_state[slot].feed(
+                        Span(provision_pool.provisions[slot].recv_staging)
+                    )
+                    if len(ws_res.reply) > 0:
+                        # Pongs and close echoes are tiny; a send failure that
+                        # isn't EAGAIN means the client is gone. A dropped
+                        # pong on EAGAIN is fine — the next ping repeats it.
+                        var ws_reply_dead = False
+                        try:
+                            _ = send(ws_fd, Span(ws_res.reply), UInt(len(ws_res.reply)), 0)
+                        except ws_send_err:
+                            if not ws_send_err.isa[SendEAGAINError]():
+                                ws_reply_dead = True
+                        if ws_reply_dead:
+                            _close_slot(
+                                backend, handler, slot, fd_val,
+                                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                                slot_sse, slot_ws, slot_ws_state,
+                            )
+                            continue
+                    for m in range(len(ws_res.msg_opcodes)):
+                        handler.ws_message(
+                            slot, ws_res.msg_opcodes[m], ws_res.msg_payloads[m]
+                        )
+                    if ws_res.close_after_reply:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
                     continue
 
                 if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_SSE:
@@ -384,7 +466,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     _close_slot(
                         backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
                     continue
 
@@ -394,7 +476,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         server_address, tcp_keep_alive,
                         slot_fds, slot_response, slot_send_offset,
                         slot_header_start, fd_to_slot, provision_pool,
-                        active_count, metrics, slot_sse,
+                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
                     )
 
                 elif provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY:
@@ -417,7 +499,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         _close_slot(
                             backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse,
+                            slot_sse, slot_ws, slot_ws_state,
                         )
                         continue
 
@@ -425,7 +507,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         _close_slot(
                             backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse,
+                            slot_sse, slot_ws, slot_ws_state,
                         )
                         continue
 
@@ -443,7 +525,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         _close_slot(
                             backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse,
+                            slot_sse, slot_ws, slot_ws_state,
                         )
                         continue
 
@@ -453,7 +535,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         var raw_body_len = len(provision_pool.provisions[slot].recv_buffer) - raw_body_start
                         if raw_body_len > config.max_request_body_size:
                             _send_error_to_fd(fd_val, PayloadTooLarge())
-                            _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
+                            _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
                             continue
                         if raw_body_len > 0:
                             var chunk_buf = Bytes(capacity=raw_body_len)
@@ -463,7 +545,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             var (ret, decoded_size) = decoder.decode(Span(chunk_buf))
                             if ret == -1:
                                 _send_error_to_fd(fd_val, BadRequest())
-                                _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
+                                _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
                                 continue
                             elif ret >= 0:
                                 var new_buf = Bytes(capacity=raw_body_start + decoded_size)
@@ -484,7 +566,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                                     config, server_address, tcp_keep_alive,
                                     slot_fds, slot_response, slot_send_offset, slot_header_start,
                                     fd_to_slot, provision_pool, active_count, metrics,
-                                    slot_sse,
+                                    slot_sse, slot_ws, slot_ws_state,
                                 )
                         # ret == -2 or empty: wait for more data via EVFILT_READ
                     elif body_st.bytes_read >= body_st.content_length:
@@ -499,7 +581,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             slot_fds, slot_response, slot_send_offset,
                             slot_header_start,
                             fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse,
+                            slot_sse, slot_ws, slot_ws_state,
                         )
 
                 continue
@@ -524,7 +606,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_fds, slot_response, slot_send_offset,
                         slot_header_start,
                         fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
                     continue
 
@@ -544,7 +626,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     _close_slot(
                         backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
                     continue
 
@@ -557,7 +639,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_fds, slot_response, slot_send_offset,
                         slot_header_start,
                         fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
                 else:
                     try:
@@ -566,12 +648,19 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         _close_slot(
                             backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse,
+                            slot_sse, slot_ws, slot_ws_state,
                         )
 
-        # SSE outbox drain: push pending events to streaming connections
+        # Outbox drain: push pending bytes to streaming connections — SSE
+        # events and WebSocket frames share the same per-slot outbox contract
+        # (sse_drain_slot returns whichever the handler queued).
         for s in range(max_conns):
-            if slot_sse[s] and slot_fds[s] != UNUSED and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_SSE:
+            var s_idle = (
+                slot_sse[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_SSE
+            ) or (
+                slot_ws[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
+            )
+            if s_idle and slot_fds[s] != UNUSED:
                 var pending = handler.sse_drain_slot(s)
                 if len(pending) > 0:
                     slot_response[s] = Bytes(Span(pending))
@@ -585,7 +674,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     except:
                         pass
                     if slot_send_offset[s] >= len(slot_response[s]):
-                        provision_pool.provisions[s].state = ConnectionState.streaming_sse()
+                        provision_pool.provisions[s].state = ConnectionState.streaming_ws() if slot_ws[s] else ConnectionState.streaming_sse()
                     else:
                         backend.try_add_write_oneshot(slot_fds[s])
 
@@ -596,18 +685,23 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             except:
                 pass
 
-            # Send SSE close comment to all streaming slots
+            # Tell every streaming client we're going: an SSE close comment,
+            # or a WebSocket close frame (1001 going away).
             for s in range(max_conns):
-                if slot_sse[s] and slot_fds[s] != UNUSED:
-                    var close_comment = String(": close\n\n").as_bytes()
+                if (slot_sse[s] or slot_ws[s]) and slot_fds[s] != UNUSED:
+                    var farewell: List[UInt8]
+                    if slot_ws[s]:
+                        farewell = close_frame(WS_CLOSE_GOING_AWAY)
+                    else:
+                        farewell = List[UInt8](String(": close\n\n").as_bytes())
                     try:
-                        _ = send(FileDescriptor(slot_fds[s]), Span(close_comment), UInt(len(close_comment)), 0)
+                        _ = send(FileDescriptor(slot_fds[s]), Span(farewell), UInt(len(farewell)), 0)
                     except:
                         pass
                     _close_slot(
                         backend, handler, s, slot_fds[s],
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
 
             # Drain in-flight: wait for active non-SSE connections (max 5s)
@@ -629,7 +723,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             _close_slot(
                                 backend, handler, drain_slot, drain_ident,
                                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                                slot_sse,
+                                slot_sse, slot_ws, slot_ws_state,
                             )
             break
 
@@ -651,6 +745,8 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut active_count: Int,
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
 ):
     """Read and parse HTTP request headers for a connection slot.
 
@@ -664,7 +760,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(
                 backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse,
+                slot_sse, slot_ws, slot_ws_state,
             )
             return
 
@@ -689,7 +785,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(
                 backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse,
+                slot_sse, slot_ws, slot_ws_state,
             )
             return
 
@@ -697,7 +793,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         _close_slot(
             backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse,
+            slot_sse, slot_ws, slot_ws_state,
         )
         return
 
@@ -712,7 +808,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         _close_slot(
             backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse,
+            slot_sse, slot_ws, slot_ws_state,
         )
         return
 
@@ -733,7 +829,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(
                 backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse,
+                slot_sse, slot_ws, slot_ws_state,
             )
             return
 
@@ -748,7 +844,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(
                 backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse,
+                slot_sse, slot_ws, slot_ws_state,
             )
             return
 
@@ -757,7 +853,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(
                 backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse,
+                slot_sse, slot_ws, slot_ws_state,
             )
             return
 
@@ -769,7 +865,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(
                 backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse,
+                slot_sse, slot_ws, slot_ws_state,
             )
             return
 
@@ -806,7 +902,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 var (ret, decoded_size) = decoder.decode(Span(chunk_buf))
                 if ret == -1:
                     _send_error_to_fd(fd_val, BadRequest())
-                    _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse)
+                    _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
                     return
                 elif ret >= 0:
                     var new_buf = Bytes(capacity=header_end_offset + decoded_size)
@@ -826,7 +922,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                         config, server_address, tcp_keep_alive,
                         slot_fds, slot_response, slot_send_offset, slot_header_start,
                         fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
                     return
                 # ret == -2: incomplete, wait for EVFILT_READ to fire again
@@ -839,7 +935,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     slot_fds, slot_response, slot_send_offset,
                     slot_header_start,
                     fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse,
+                    slot_sse, slot_ws, slot_ws_state,
                 )
         else:
             provision_pool.provisions[slot].state = ConnectionState.processing()
@@ -850,7 +946,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 slot_fds, slot_response, slot_send_offset,
                 slot_header_start,
                 fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse,
+                slot_sse, slot_ws, slot_ws_state,
             )
 
     provision_pool.provisions[slot].last_parse_len = len(provision_pool.provisions[slot].recv_buffer)
@@ -873,6 +969,8 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     mut active_count: Int,
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
 ):
     """Build request, call handler, encode response, register for write."""
     var parsed = provision_pool.provisions[slot].parsed_headers.take()
@@ -904,7 +1002,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         _close_slot(
             backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse,
+            slot_sse, slot_ws, slot_ws_state,
         )
         return
 
@@ -947,6 +1045,17 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         slot_sse[slot] = True
         provision_pool.provisions[slot].should_close = False
 
+    # A 101 with Upgrade: websocket switches this connection to frame mode
+    # once the handshake response is on the wire (see _after_send).
+    var upgraded_ws = is_ws_upgrade_response(response)
+    if upgraded_ws:
+        slot_ws[slot] = True
+        slot_ws_state[slot].reset()
+        provision_pool.provisions[slot].should_close = False
+        # A 1xx response carries no body: drop the defaulted entity headers.
+        response.headers.pop("content-length")
+        response.headers.pop("content-type")
+
     if (not provision_pool.provisions[slot].should_close) and (config.max_keepalive_requests > 0):
         if (provision_pool.provisions[slot].keepalive_count + 1) >= config.max_keepalive_requests:
             provision_pool.provisions[slot].should_close = True
@@ -955,7 +1064,11 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     if request_method == "HEAD":
         response.body_raw = Bytes()
 
-    if provision_pool.provisions[slot].should_close:
+    if upgraded_ws:
+        # The handshake already set "Connection: Upgrade"; a keep-alive or
+        # close rewrite here would corrupt the upgrade.
+        pass
+    elif provision_pool.provisions[slot].should_close:
         response.set_connection_close()
     else:
         response.set_connection_keep_alive()
@@ -997,7 +1110,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                 _close_slot(
                     backend, handler, slot, fd_val,
                     slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse,
+                    slot_sse, slot_ws, slot_ws_state,
                 )
                 return
             # EAGAIN: fall through to register EVFILT_WRITE
@@ -1009,7 +1122,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             slot_fds, slot_response, slot_send_offset,
             slot_header_start,
             fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse,
+            slot_sse, slot_ws, slot_ws_state,
         )
         return
 
@@ -1020,7 +1133,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         _close_slot(
             backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse,
+            slot_sse, slot_ws, slot_ws_state,
         )
 
 
@@ -1041,6 +1154,8 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     mut active_count: Int,
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
 ):
     """Handle post-send: close or transition to keep-alive."""
     # Phase 4e: record completed response metrics
@@ -1063,7 +1178,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         _close_slot(
             backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse,
+            slot_sse, slot_ws, slot_ws_state,
         )
         return
 
@@ -1080,7 +1195,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         _close_slot(
             backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse,
+            slot_sse, slot_ws, slot_ws_state,
         )
         return
 
@@ -1095,12 +1210,29 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
             slot_send_offset[slot],
         )
 
+    # WebSocket: the 101 (or a pushed frame) is on the wire — sit in frame
+    # mode. Reads now mean frames, not a new HTTP request, and the idle
+    # timeout no longer applies (an idle WebSocket is healthy; heartbeat
+    # pings discover dead ones).
+    if slot_ws[slot]:
+        slot_response[slot] = Bytes()
+        slot_send_offset[slot] = 0
+        provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+        backend.try_delete_timer(UInt(fd_val) + TIMER_IDLE)
+        backend.try_add_read(fd_val)
+        if config.sse_heartbeat_ms > 0:
+            backend.try_add_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT, config.sse_heartbeat_ms)
+        return
+
     # SSE streaming: after initial response (or a pushed event) is sent,
     # enter idle streaming state instead of returning to READING_HEADERS.
     if slot_sse[slot]:
         slot_response[slot] = Bytes()
         slot_send_offset[slot] = 0
         provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
+        # A stale idle timer from the keep-alive request that preceded the
+        # stream open would fire mid-stream and kill it.
+        backend.try_delete_timer(UInt(fd_val) + TIMER_IDLE)
         # Register EVFILT_READ for client disconnect detection (recv→0)
         backend.try_add_read(fd_val)
         # Set up heartbeat timer (configurable interval, repeating)
@@ -1136,6 +1268,8 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     mut active_count: Int,
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
 ):
     """Close a connection and release its slot.
 
@@ -1146,7 +1280,9 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     (and, once the slot is reused, misdirecting queued bytes) after a client
     vanishes without the clean recv→0 the read path handles.
     """
-    if slot_sse[slot]:
+    if slot_sse[slot] or slot_ws[slot]:
+        # One disconnect hook serves both stream kinds — the handler-side
+        # cleanup (drop the subscription, forget the slot) is identical.
         handler.sse_slot_disconnected(slot)
     backend.try_delete_read(fd_val)
     backend.try_delete_write(fd_val)
@@ -1155,6 +1291,8 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     backend.try_delete_timer(UInt(fd_val) + TIMER_IDLE)
     backend.try_delete_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT)
     slot_sse[slot] = False
+    slot_ws[slot] = False
+    slot_ws_state[slot].reset()
 
     try:
         close(FileDescriptor(fd_val))

@@ -188,22 +188,33 @@ back-edge pulls it in — `event_loop.mojo` → `m0_http.log` →
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has eight methods and no
+`HTTPService` (`lightbug_http/service.mojo`) has nine methods and no
 defaults: `func`, `before_request`, `after_response`, four SSE hooks —
 `sse_drain_slot`, `sse_is_streaming`, `sse_slot_disconnected`,
 `sse_peer_frame` (frames arriving over the cross-worker `BroadcastBus`; empty
-in non-streaming handlers) — and `tick`, the application timer hook (fires
+in non-streaming handlers) — `tick`, the application timer hook (fires
 every `app_tick_ms` when configured; runs ON the event loop thread, so keep
-it quick). A handler that streams nothing and schedules nothing returns the
-empty defaults. Adding a method to the trait breaks every handler in the repo at
-once: all five apps, plus the five demo services inside `service.mojo`
-itself, plus the example in README.md.
+it quick), and `ws_message`, which receives complete WebSocket messages
+(fragments assembled, control frames already answered by the loop). The
+`sse_*` names are historical: the outbox drain and the disconnect hook serve
+WebSocket slots identically — a WS handler queues `encode_ws_frame(...)`
+bytes and returns them from `sse_drain_slot`. A handler that streams
+nothing and schedules nothing returns the empty defaults. Adding a method
+to the trait breaks every handler in the repo at once: all six apps, plus
+the five demo services inside `service.mojo` itself, plus the example in
+README.md.
 
-**SSE requires `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only
-the non-blocking event loop assigns `req.slot_id` and drains the outbox; the
-plain accept loop leaves `slot_id` at `-1` and every stream open answers `409`.
+**SSE and WebSockets require `listen_and_serve_nonblocking`,** not
+`listen_and_serve`. Only the non-blocking event loop assigns `req.slot_id`,
+drains the outbox, and parses WebSocket frames; the plain accept loop leaves
+`slot_id` at `-1` and every stream open answers `409`.
 Slots index the registry directly, so a stream's capacity
 (`DatastarStream(1024)`) must be at least the server's max connections.
+A WebSocket upgrade is signalled on the wire, not by a flag: the loop
+switches a slot to frame mode when the handler's response is
+`101` + `Upgrade: websocket` (what `websocket_upgrade` builds). The
+heartbeat timer is shared: on the `sse_heartbeat_ms` cadence an SSE slot
+gets a `: heartbeat` comment and a WS slot gets a protocol ping.
 
 ## Runtime constraints
 

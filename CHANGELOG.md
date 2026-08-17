@@ -7,6 +7,18 @@ versions may break the API**.
 
 ## [Unreleased]
 
+- WebSockets (RFC 6455), server side: `websocket_upgrade` answers the
+  opening handshake from an ordinary handler, the event loop parses frames
+  (client masking enforced, fragments assembled, ping/pong and the close
+  handshake answered in the loop), and complete messages arrive at the new
+  `HTTPService.ws_message` hook — the ninth trait method, empty in handlers
+  that never upgrade. Outbox, heartbeat (a protocol ping on the
+  `M0_SSE_HEARTBEAT_MS` cadence), and disconnect plumbing are shared with
+  SSE. Protocol violations answer with the RFC's close codes (1002/1009).
+  New `apps/ws_echo` demo; `poe smoke-ws` proves the wire format against a
+  from-scratch stdlib client. Also fixed in passing: a stale keep-alive
+  idle timer could fire mid-stream and kill an SSE connection opened on a
+  reused keep-alive connection.
 - `m0_http.StaticFiles` — static file serving: a directory mounted under a
   URL prefix, with lexical path-traversal defense (decoded `..`/`.`/empty
   segments answer 404), extension-based content types, and ETag/`304`
