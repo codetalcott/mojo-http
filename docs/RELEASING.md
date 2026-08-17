@@ -13,16 +13,22 @@ The steps, in order:
 2. **Bump `version` in `pyproject.toml`** to match.
 3. **Land those changes on `main`** through an ordinary PR — CI green first,
    like any change.
-4. **Tag the merge commit and push the tag:**
+4. **Tag and release**, either way:
+   - Push a tag (needs tag-push rights):
 
-   ```bash
-   git tag vX.Y.Z <merge-commit>
-   git push origin vX.Y.Z
-   ```
+     ```bash
+     git tag vX.Y.Z <merge-commit>
+     git push origin vX.Y.Z
+     ```
+
+   - Or dispatch the `Release` workflow (Actions → Release → Run workflow)
+     with `tag` and `sha` inputs — it creates the tag *and* the release in
+     one run. This is the path for automation whose credentials can push
+     branches but not tags.
 
 5. The workflow does the rest. If a build or the artifact proof fails, no
-   release is created — fix, delete the tag (`git push origin :vX.Y.Z`),
-   and re-tag.
+   release is created — fix, delete the tag if it was pushed
+   (`git push origin :vX.Y.Z`), and re-run.
 
 Versioning is SemVer with the standard pre-1.0 caveat, stated in the
 README: minor versions may break the API. The version lives only in
