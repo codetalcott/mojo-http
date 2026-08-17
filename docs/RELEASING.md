@@ -23,8 +23,13 @@ The steps, in order:
 
    - Or dispatch the `Release` workflow (Actions → Release → Run workflow)
      with `tag` and `sha` inputs — it creates the tag *and* the release in
-     one run. This is the path for automation whose credentials can push
-     branches but not tags.
+     one run.
+   - Or push a `release/vX.Y.Z` branch at the commit to release — same
+     one-run behavior, with the tag named by the branch. This is the path
+     for automation whose credentials can push branches but not tags, and
+     whose workflow dispatches run with a capped GITHUB_TOKEN (an
+     integration-dispatched run cannot create releases; a push-triggered
+     run can). Delete the branch afterwards.
 
 5. The workflow does the rest. If a build or the artifact proof fails, no
    release is created — fix, delete the tag if it was pushed

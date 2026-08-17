@@ -1,12 +1,18 @@
 # Publishes a GitHub release: builds libm0core on both platforms, proves
 # each artifact through the same ctypes smoke CI runs, and attaches them.
 #
-# Two triggers, one job graph:
+# Three triggers, one job graph:
 #   - tag push (v*): release an existing tag, the ordinary path.
-#   - workflow_dispatch: create tag AND release in one run, for callers
-#     whose credentials can push branches but not tags (`gh release create`
-#     makes the tag at --target when it does not exist). Runs against the
-#     given commit, not whatever main has moved to.
+#   - push to a release/v* branch: create the TAG named by the branch
+#     (release/v0.1.0 → v0.1.0) at the pushed commit, and the release with
+#     it. This is the path for automation whose credentials can push
+#     branches but not tags — and whose workflow_dispatch runs get a
+#     GITHUB_TOKEN capped to the dispatching integration's permissions,
+#     which is exactly how the first v0.1.0 dispatch died with "Resource
+#     not accessible by integration" on the releases API. A push-triggered
+#     run carries an ordinary token that honours the permissions block.
+#   - workflow_dispatch: same tag-and-release-in-one-run behavior, for
+#     humans clicking Run workflow (a human dispatch is not capped).
 #
 # This workflow is additive — the automerge workflows key on the workflow
 # named "Tests", which this deliberately is not.
@@ -16,6 +22,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'release/v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -76,14 +84,22 @@ jobs:
           path: assets
           merge-multiple: true
       # Release notes come from the tag's CHANGELOG section living in the
-      # repo; --generate-notes appends the commit list for completeness. On
-      # dispatch, --target makes gh create the tag at the requested commit.
+      # repo; --generate-notes appends the commit list for completeness.
+      # Where the tag does not exist yet (branch-push and dispatch paths),
+      # --target makes gh create it at the requested commit.
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.sha }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          INPUT_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || '' }}
         run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"; TARGET="$INPUT_SHA"
+          elif [ "${GITHUB_REF#refs/heads/release/}" != "$GITHUB_REF" ]; then
+            TAG="${GITHUB_REF_NAME#release/}"; TARGET="$GITHUB_SHA"
+          else
+            TAG="$GITHUB_REF_NAME"; TARGET="$GITHUB_SHA"
+          fi
           gh release create "$TAG" \
             --target "$TARGET" \
             --title "$TAG" \
