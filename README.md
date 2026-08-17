@@ -4,7 +4,7 @@
 
 The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
 
-It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, Linux and macOS, and the API will change before 1.0.
+It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, Linux and macOS, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
 
 ```bash
 uv sync                     # installs the Mojo toolchain
@@ -70,7 +70,7 @@ The four `sse_*` hooks are the streaming interface; a handler that does not stre
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
-`m0-core`'s hash functions are also exported over a C ABI: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS) for Bun's `dlopen`, Node's N-API, or Python's `ctypes` — `poe smoke-ffi` proves that path against public hash vectors in CI.
+`m0-core`'s hash functions are also exported over a C ABI: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS) for Bun's `dlopen`, Node's N-API, or Python's `ctypes` — `poe smoke-ffi` proves that path against public hash vectors in CI, and prebuilt Linux/macOS artifacts ship with each [GitHub release](https://github.com/codetalcott/mojo-http/releases).
 
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-## v0.1 (current)
+## v0.1.0 (released)
 
 - `m0-core` — hashing (FNV-1a, xxHash32, wyhash64), SIMD JSON escape, JSON field parser
 - `m0-http` — router, content negotiation, weak ETags, response cache, SSE with
@@ -36,7 +36,10 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
 `apps/datastar_counter` demonstrates multi-tab sync and is asserted in CI by
 `poe smoke-counter`, which fails if a frame is ever double-framed again.
 
-## v0.2 (planned)
+## Also in v0.1.0
+
+Everything below started as the v0.2 plan and landed before the first
+release instead.
 
 ### Examples
 
