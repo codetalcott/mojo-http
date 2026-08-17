@@ -72,6 +72,32 @@ The `build-apps` gate this section once called for now exists: `poe build-apps`
 compiles every example to a temp directory, and CI runs it before the smoke
 tests.
 
+### Cross-worker SSE fan-out (done)
+
+`M0_WORKERS>1` and SSE are no longer mutually exclusive. The design keeps
+the per-process registries and adds a `BroadcastBus`: one `SOCK_DGRAM`
+socketpair channel per worker, created before the fork so every process
+inherits every descriptor. A broadcasting worker queues locally and writes
+one datagram per peer channel (datagrams because message boundaries survive
+concurrent writers — a pipe only guarantees that up to PIPE_BUF); each
+worker's event loop drains its own channel and hands frames to the handler
+through `sse_peer_frame`, the seventh `HTTPService` method. Event ids come
+from a `SharedAtomics` slot — an `mmap(MAP_SHARED|MAP_ANON)` page of
+atomics, also pre-fork — so ids stay globally unique and the redelivery
+filter keeps working; the journal inserts by id so replay works on every
+worker even when peer frames arrive out of order (that ordering test was
+verified load-bearing against append-only recording). Respawned workers
+take over the dead worker's index, and with it its bus channel.
+
+Delivery to a stalled peer is fire-and-forget (drop on full, matching
+per-slot backpressure), and cross-worker ordering is best-effort: two
+workers broadcasting concurrently can reach a subscriber in either order
+and the filter keeps the newer id — exactly right for state-patch frames,
+a documented caveat for increments. `apps/datastar_counter` is the
+reference wiring (shared-memory count, X-Worker header), and
+`poe smoke-counter` proves its streams span both workers before asserting
+that a single POST reaches every stream.
+
 ### SSE replay across restarts (done)
 
 `DatastarStream` now honours `Last-Event-ID`. Every broadcast is journaled

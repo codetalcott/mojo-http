@@ -30,6 +30,16 @@ trait HTTPService:
         """Notify the service that an SSE client disconnected."""
         ...
 
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        """Deliver an SSE frame broadcast by ANOTHER worker (BroadcastBus).
+
+        Only fires when the server was started with a bus channel
+        (`bus_read_fd`), i.e. under a multi-worker SSE setup. Queue the frame
+        for local subscribers of `url` — `DatastarStream.deliver_peer` is the
+        standard wiring. Non-streaming handlers leave it empty.
+        """
+        ...
+
 
 @fieldwise_init
 struct Printer(HTTPService):
@@ -59,6 +69,9 @@ struct Printer(HTTPService):
     def sse_slot_disconnected(mut self, slot: Int):
         pass
 
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        pass
+
 
 @fieldwise_init
 struct Welcome(HTTPService):
@@ -86,6 +99,9 @@ struct Welcome(HTTPService):
         return False
 
     def sse_slot_disconnected(mut self, slot: Int):
+        pass
+
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         pass
 
 
@@ -118,6 +134,9 @@ struct ExampleRouter(HTTPService):
     def sse_slot_disconnected(mut self, slot: Int):
         pass
 
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        pass
+
 
 @fieldwise_init
 struct TechEmpowerRouter(HTTPService):
@@ -142,6 +161,9 @@ struct TechEmpowerRouter(HTTPService):
         return False
 
     def sse_slot_disconnected(mut self, slot: Int):
+        pass
+
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         pass
 
 
@@ -169,4 +191,7 @@ struct Counter(HTTPService):
         return False
 
     def sse_slot_disconnected(mut self, slot: Int):
+        pass
+
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         pass

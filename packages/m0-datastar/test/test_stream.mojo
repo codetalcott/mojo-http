@@ -2,9 +2,12 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
+from lightbug_http.broadcast import BroadcastBus, drain_bus_channel
 from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import URI
 from lightbug_http.io.bytes import Bytes
+
+from m0_http.multiworker import SharedAtomics
 
 from src.stream import DatastarStream
 from src.signals import read_signals, EMPTY_SIGNALS
@@ -315,6 +318,92 @@ def test_frame_for_returns_journaled_bytes() raises:
     var eid = s.send_frame("/e", "event: custom\ndata: hi\n\n")
     assert_equal(_text(s.frame_for(eid)), "event: custom\ndata: hi\n\n")
     assert_equal(len(s.frame_for(999)), 0)
+
+
+# --- Cross-worker fan-out ----------------------------------------------------
+#
+# Two DatastarStreams standing in for two workers, joined by one bus and one
+# shared id slot — all in this process, which is exactly the same wiring the
+# forked workers get (fds and mmap pages are inherited; nothing else differs).
+
+def test_bus_broadcast_reaches_the_peer_worker() raises:
+    var bus = BroadcastBus(2)
+    var shm = SharedAtomics(1)
+    var a = DatastarStream(4)
+    var b = DatastarStream(4)
+    a.enable_bus(bus, 0, shm.addr(0))
+    b.enable_bus(bus, 1, shm.addr(0))
+    _ = b.open(_get("/e"), "/e")
+
+    _ = a.patch_signals("/e", '{"x":1}')
+    # what the event loop does on bus readiness, inlined:
+    var arrived = drain_bus_channel(bus.read_fd(1))
+    assert_equal(len(arrived), 1)
+    b.deliver_peer(arrived[0].url, arrived[0].event_id, arrived[0].frame)
+    var out = _text(b.drain(0))
+    assert_true(out.find('{"x":1}') >= 0)
+    assert_true(out.find("id: 1\n") >= 0)
+
+
+def test_shared_ids_never_collide_across_workers() raises:
+    """Interleaved broadcasts on two workers must allocate distinct ids —
+    colliding ids would make the redelivery filter drop real frames."""
+    var bus = BroadcastBus(2)
+    var shm = SharedAtomics(1)
+    var a = DatastarStream(4)
+    var b = DatastarStream(4)
+    a.enable_bus(bus, 0, shm.addr(0))
+    b.enable_bus(bus, 1, shm.addr(0))
+    assert_equal(a.patch_signals("/e", "{}"), 1)
+    assert_equal(b.patch_signals("/e", "{}"), 2)
+    assert_equal(a.patch_signals("/e", "{}"), 3)
+
+
+def test_peer_frames_are_replayable() raises:
+    """A frame that arrived over the bus must serve a later reconnection —
+    replay has to work no matter which worker a client reconnects to."""
+    var b = DatastarStream(4)
+    b.deliver_peer("/e", 1, List[UInt8](String("event: one\nid: 1\n\n").as_bytes()))
+    b.deliver_peer("/e", 2, List[UInt8](String("event: two\nid: 2\n\n").as_bytes()))
+    _ = b.open(_reconnect("/e", "1"), "/e")
+    var out = _text(b.drain(0))
+    assert_false(out.find("event: one") >= 0)
+    assert_true(out.find("event: two") >= 0)
+
+
+def test_out_of_order_peer_frame_still_replays() raises:
+    """The journal inserts by id, so a peer frame that arrived late does not
+    get skipped when replay walks the journal in order."""
+    var b = DatastarStream(4)
+    b.deliver_peer("/e", 3, List[UInt8](String("event: three\n\n").as_bytes()))
+    b.deliver_peer("/e", 2, List[UInt8](String("event: two\n\n").as_bytes()))
+    _ = b.open(_reconnect("/e", "1"), "/e")
+    var out = _text(b.drain(0))
+    assert_true(out.find("event: two") >= 0)
+    assert_true(out.find("event: three") >= 0)
+    assert_true(out.find("event: two") < out.find("event: three"))
+
+
+def test_unbussed_stream_publishes_nothing() raises:
+    """A stream that never joined a bus must not try to write anywhere."""
+    var bus = BroadcastBus(2)
+    var a = DatastarStream(4)
+    _ = a.open(_get("/e"), "/e")
+    _ = a.patch_signals("/e", "{}")
+    assert_equal(len(drain_bus_channel(bus.read_fd(0))), 0)
+    assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
+
+
+def test_enable_bus_seeds_shared_counter_from_restored_journal() raises:
+    """A worker that restored a persisted journal pushes its high-water mark
+    into the shared counter, keeping post-restart ids monotonic."""
+    var bus = BroadcastBus(2)
+    var shm = SharedAtomics(1)
+    var a = DatastarStream(4)
+    a.restore("/e", 41, List[UInt8](String("event: old\n\n").as_bytes()))
+    a.enable_bus(bus, 0, shm.addr(0))
+    assert_equal(shm.load(0), 41)
+    assert_equal(a.patch_signals("/e", "{}"), 42)
 
 
 # --- read_signals ------------------------------------------------------------

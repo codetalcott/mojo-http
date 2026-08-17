@@ -803,6 +803,7 @@ struct Server(Movable):
     def listen_and_serve_nonblocking[T: HTTPService](
         mut self, address: StringSlice, mut handler: T,
         shutdown_read_fd: Int = -1,
+        bus_read_fd: Int = -1,
     ) raises ServerError:
         """Listen and serve using the non-blocking kqueue event loop.
 
@@ -828,13 +829,14 @@ struct Server(Movable):
         var effective_shutdown_fd = shutdown_read_fd if shutdown_read_fd >= 0 else self.shutdown_read_fd
 
         try:
-            self.serve_nonblocking(listener, handler, effective_shutdown_fd)
+            self.serve_nonblocking(listener, handler, effective_shutdown_fd, bus_read_fd)
         except server_err:
             raise server_err^
 
     def serve_nonblocking[T: HTTPService](
         self, ln: NoTLSListener[NetworkType.tcp4], mut handler: T,
         shutdown_read_fd: Int = -1,
+        bus_read_fd: Int = -1,
     ) raises ServerError:
         """Serve HTTP requests using the non-blocking kqueue event loop.
 
@@ -862,6 +864,7 @@ struct Server(Movable):
                     self.address(),
                     self.tcp_keep_alive,
                     shutdown_read_fd,
+                    bus_read_fd,
                 )
             except e:
                 raise e^
@@ -877,6 +880,7 @@ struct Server(Movable):
                     self.address(),
                     self.tcp_keep_alive,
                     shutdown_read_fd,
+                    bus_read_fd,
                 )
             except e:
                 raise e^
