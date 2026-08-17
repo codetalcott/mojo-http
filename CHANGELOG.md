@@ -7,6 +7,10 @@ versions may break the API**.
 
 ## [Unreleased]
 
+- `m0_http.StaticFiles` — static file serving: a directory mounted under a
+  URL prefix, with lexical path-traversal defense (decoded `..`/`.`/empty
+  segments answer 404), extension-based content types, and ETag/`304`
+  revalidation. The notes example serves `/static/` with it.
 - `HTTPService.tick(now_ms)` — the application timer hook, fired every
   `M0_APP_TICK_MS` milliseconds (0 = off, the default) on the event loop's
   timer. Server-initiated pushes no longer need an inbound request; the
