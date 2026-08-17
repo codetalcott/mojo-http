@@ -25,11 +25,19 @@ queues them with `notify_frame` exactly as if it had broadcast them itself.
 
 from std.ffi import c_int, external_call, get_errno
 from std.memory import alloc
+from std.sys.info import CompilationTarget
 
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, setsockopt, SocketOption, SOL_SOCKET,
 )
+
+# Per-call non-blocking I/O. The bus cannot rely on O_NONBLOCK because
+# `set_nonblocking` is a documented no-op on ARM64 macOS (fcntl's variadic
+# calling convention — see c/kqueue.mojo), and a blocking recv() inside the
+# drain loop would wedge the event loop until the next datagram arrived.
+# MSG_DONTWAIT needs no fcntl and works identically on both platforms.
+comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(0x40)
 
 # One frame per datagram, so the socket buffers bound the largest broadcast
 # that can cross workers. 64KB matches the registry's MAX_PENDING_BYTES: a
@@ -81,8 +89,9 @@ struct BroadcastBus(Copyable, Movable):
         self.write_fds = List[Int]()
         for _ in range(num_workers):
             var pair = _socketpair()
-            # Both ends non-blocking: the reader drains until EAGAIN inside
-            # the event loop, and a writer must never block on a slow peer.
+            # Belt (O_NONBLOCK, a no-op on ARM64 macOS) and braces
+            # (MSG_DONTWAIT on every send/recv, which is what actually
+            # guarantees the loop never blocks on either platform).
             set_nonblocking(FileDescriptor(pair[0]))
             set_nonblocking(FileDescriptor(pair[1]))
             # Default UNIX dgram buffers are far too small for a 64KB frame
@@ -144,7 +153,7 @@ def publish_to_channels(
                 FileDescriptor(write_fds[w]),
                 Span(datagram),
                 UInt(len(datagram)),
-                0,
+                _MSG_DONTWAIT,
             )
         except:
             pass  # full or gone: drop for that peer alone
@@ -217,7 +226,7 @@ def drain_bus_channel(read_fd: Int) raises -> List[BusFrame]:
     while True:
         var n: UInt
         try:
-            n = recv(fd, Span(buf), UInt(len(buf)), 0)
+            n = recv(fd, Span(buf), UInt(len(buf)), _MSG_DONTWAIT)
         except:
             break  # EAGAIN: drained (or the channel died; either way, done)
         if n == 0:
