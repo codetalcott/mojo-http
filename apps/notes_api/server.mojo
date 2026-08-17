@@ -40,6 +40,7 @@ from m0_http import (
     compute_etag,
     etag_matches,
     parse_accept,
+    StaticFiles,
 )
 
 # Router handler ids. The router maps (method, pattern) to one of these; func
@@ -64,7 +65,11 @@ struct NotesHandler(HTTPService):
     var bodies: List[String]
     var next_id: Int
 
+    # /static/* — files from apps/notes_api/public, ETag/304 included.
+    var static: StaticFiles
+
     def __init__(out self):
+        self.static = StaticFiles("apps/notes_api/public", "/static/")
         self.router = Router()
         self.router.add("GET", "/notes", H_LIST)
         self.router.add("POST", "/notes", H_CREATE)
@@ -108,6 +113,13 @@ struct NotesHandler(HTTPService):
 
         if path == "/health":
             return _json(200, "OK", self.health.to_json())
+
+        # Static files answer before the router: everything under /static/
+        # is the mount's business, including its 404s. `serve` returns None
+        # for other paths, and routing continues.
+        var static_hit = self.static.serve(req)
+        if static_hit:
+            return static_hit.take()
 
         # CORS preflight: answer before routing. The actual CORS headers are
         # added in after_response, which runs for this response too.

@@ -192,6 +192,20 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **Static file serving** (`m0_http.StaticFiles`): a directory mounted
+  under a URL prefix, composing what already existed — `compute_etag` +
+  `If-None-Match` → 304, a deliberately small extension→type map, `None`
+  for paths outside the mount so the handler's routing continues. The
+  load-bearing part is refusal: the URL path arrives percent-decoded, so
+  traversal is rejected lexically per segment (`..`, `.`, empty, backslash,
+  NUL → 404, never 400 — a probe deserves no confirmation), verified
+  against a real secret file planted outside the root and sabotage-checked.
+  Symlinks inside the root are the filesystem owner's decision, documented.
+  No Range, no listings; every hit reads and hashes — compose with
+  `ResponseCache` if a profile ever asks. The notes example serves
+  `/static/` and `poe smoke-notes` asserts type, ETag, 304, and two
+  traversal probes (`--path-as-is`, percent-encoded).
+
 - **The application timer hook exists: `HTTPService.tick`.** The eighth
   trait method, fired every `app_tick_ms` (`M0_APP_TICK_MS`, 0 = off) by a
   loop-wide one-shot timer that re-arms on every firing — the same

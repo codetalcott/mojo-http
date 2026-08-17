@@ -604,7 +604,7 @@ echo "smoke-todo OK"
 # routing with :id and a real 405, negotiation, ETag/304, problem+json, CORS,
 # and M0_PORT via AppConfig (the smoke runs the whole thing on :8091).
 [tool.poe.tasks.smoke-notes]
-help = "Start the notes API, assert each framework feature end to end, stop"
+help = "Start the notes API, assert each framework feature end to end (incl. static files), stop"
 shell = """
 M0_PORT=8091 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo > notes.log 2>&1 &
 pid=$!
@@ -671,7 +671,22 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:8091/no
 code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
 
-rm -f notes.log note1.json problem.json headers.txt
+# Static files: a real type, an ETag, a 304 on revalidation — and, the part
+# that matters, traversal probes answering 404 with no source code in them.
+curl -s -D headers.txt http://localhost:8091/static/styles.css -o static.css
+grep -q 'font-family' static.css || fail 'static css did not serve'
+grep -qi '^content-type: text/css' headers.txt || fail 'static css had the wrong content type'
+setag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\r\n')
+[ -n "$setag" ] || fail 'static file served without an ETag'
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8091/static/styles.css)
+[ "$code" = "304" ] || fail "static revalidation expected 304, got $code"
+code=$(curl -s --path-as-is -o trav.txt -w '%{http_code}' http://localhost:8091/static/../server.mojo)
+[ "$code" = "404" ] || fail "traversal probe expected 404, got $code"
+grep -q 'HTTPService' trav.txt && fail 'traversal probe served source code'
+code=$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://localhost:8091/static/%2e%2e/server.mojo)
+[ "$code" = "404" ] || fail "encoded traversal probe expected 404, got $code"
+
+rm -f notes.log note1.json problem.json headers.txt static.css trav.txt
 echo "smoke-notes OK"
 """
 
