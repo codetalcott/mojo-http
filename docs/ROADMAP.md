@@ -192,6 +192,22 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **`set_nonblocking` was a silent no-op on ARM64 macOS — for the fork's
+  whole life.** fcntl is variadic, and Darwin ARM64 passes variadic
+  arguments on the stack while `external_call` passed them in registers, so
+  F_SETFL never received its flags. Single-worker servers never noticed
+  (kqueue readiness gates every recv/send, and backlog counts gate accept),
+  which is exactly why it survived: the first thing that ever needed a
+  *losing* accept to fail fast was two workers racing on one shared
+  listener, where the loser blocked inside accept() and its event loop —
+  bus channel included — wedged until the next connection arrived. The fix
+  is a padded call: nine fixed arguments on Darwin put the flag argument on
+  the stack exactly where the variadic callee's va_list reads it. No C
+  shim, so `mojo run` keeps working; `is_nonblocking` (F_GETFL, which never
+  had the bug) plus a regression test hold the ABI reasoning to account on
+  the macOS runner, and the dead `fcntl_wrapper.c` from an earlier shim
+  attempt is deleted.
+
 - **SSE heartbeats now actually tick, and dead subscribers are reaped on
   every close path.** The heartbeat plumbing (`sse_heartbeat_ms`, a per-fd
   timer, `: heartbeat` comments) existed but had never fired in anger: both

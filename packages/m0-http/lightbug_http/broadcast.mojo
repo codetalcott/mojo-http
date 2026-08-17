@@ -32,11 +32,12 @@ from lightbug_http.c.socket import (
     send, recv, setsockopt, SocketOption, SOL_SOCKET,
 )
 
-# Per-call non-blocking I/O. The bus cannot rely on O_NONBLOCK because
-# `set_nonblocking` is a documented no-op on ARM64 macOS (fcntl's variadic
-# calling convention — see c/kqueue.mojo), and a blocking recv() inside the
-# drain loop would wedge the event loop until the next datagram arrived.
-# MSG_DONTWAIT needs no fcntl and works identically on both platforms.
+# Per-call non-blocking I/O. `set_nonblocking` was a silent no-op on ARM64
+# macOS until `_fcntl` learned the Darwin variadic convention (see
+# c/kqueue.mojo) — a blocking recv() inside the drain loop wedged the event
+# loop until the next datagram arrived. O_NONBLOCK works now, but the
+# per-call flag stays: it makes each recv/send non-blocking by construction
+# rather than by fd state, and it costs nothing.
 comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(0x40)
 
 # One frame per datagram, so the socket buffers bound the largest broadcast
@@ -89,9 +90,9 @@ struct BroadcastBus(Copyable, Movable):
         self.write_fds = List[Int]()
         for _ in range(num_workers):
             var pair = _socketpair()
-            # Belt (O_NONBLOCK, a no-op on ARM64 macOS) and braces
-            # (MSG_DONTWAIT on every send/recv, which is what actually
-            # guarantees the loop never blocks on either platform).
+            # Belt (O_NONBLOCK on the fds) and braces (MSG_DONTWAIT on
+            # every send/recv): either alone suffices now that fcntl works
+            # on ARM64 macOS, and both together survive either regressing.
             set_nonblocking(FileDescriptor(pair[0]))
             set_nonblocking(FileDescriptor(pair[1]))
             # Default UNIX dgram buffers are far too small for a 64KB frame

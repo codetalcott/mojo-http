@@ -27,6 +27,10 @@ First release. Everything below is new.
 - Cross-worker SSE fan-out: a pre-fork `BroadcastBus` (one datagram channel
   per worker) plus `SharedAtomics` event ids make `M0_WORKERS>1` and SSE
   compose; a broadcast on any worker reaches every worker's subscribers.
+- `fcntl(F_SETFL)` fixed on ARM64 macOS (Darwin passes variadic arguments
+  on the stack): `set_nonblocking` now actually works there, which is what
+  lets two workers race on one shared listener without the loser blocking
+  inside `accept()`.
 - Outbound `Client`: GET/POST/any method with full response parsing —
   Content-Length with loud truncation detection, chunked, and
   close-delimited bodies.

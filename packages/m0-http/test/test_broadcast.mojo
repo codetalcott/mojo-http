@@ -13,7 +13,9 @@ from lightbug_http.broadcast import (
     BroadcastBus, BUS_MAX_FRAME,
     encode_bus_frame, decode_bus_frame, drain_bus_channel,
     publish_to_channels,
+    _socketpair,
 )
+from lightbug_http.c.kqueue import set_nonblocking, is_nonblocking
 
 from src.multiworker import SharedAtomics, shared_fetch_add, shared_load, shared_store
 
@@ -111,6 +113,39 @@ def test_publish_to_channels_skips_named_worker() raises:
     publish_to_channels(bus.write_fds, 1, "/e", 5, Span(_bytes("f\n\n")))
     assert_equal(len(drain_bus_channel(bus.read_fd(0))), 1)
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
+
+
+# --- set_nonblocking (the Darwin variadic-fcntl fix) -------------------------
+
+def test_set_nonblocking_takes_effect() raises:
+    """O_NONBLOCK must actually be set — per F_GETFL, not per hope.
+
+    On ARM64 macOS this was a silent no-op for the fork's whole life (the
+    variadic third argument never reached fcntl), which is how the bus's
+    drain loop hung a CI runner. The padded-call fix in `_fcntl` is ABI
+    reasoning; this test is what holds it to account on the macOS runner —
+    and it probes via F_GETFL, which never had the bug, rather than by
+    recv-blocking, which would hang the suite instead of failing it.
+    """
+    var pair = _socketpair()
+    var a = FileDescriptor(pair[0])
+    assert_false(is_nonblocking(a))
+    set_nonblocking(a)
+    assert_true(is_nonblocking(a))
+    # The other end is untouched: the flag is per-fd, not per-pair.
+    assert_false(is_nonblocking(FileDescriptor(pair[1])))
+
+
+def test_bus_channels_are_nonblocking() raises:
+    """Every bus fd carries O_NONBLOCK from construction.
+
+    MSG_DONTWAIT on each call is the guarantee the drain loop relies on;
+    this asserts the belt under the braces is real too.
+    """
+    var bus = BroadcastBus(2)
+    for w in range(2):
+        assert_true(is_nonblocking(FileDescriptor(bus.read_fds[w])))
+        assert_true(is_nonblocking(FileDescriptor(bus.write_fds[w])))
 
 
 # --- Shared atomics ----------------------------------------------------------
