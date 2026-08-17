@@ -58,7 +58,10 @@ def main() raises:
     print("Starting hello server on 0.0.0.0:8080")
     var server = Server()
     var handler = HelloHandler()
-    server.listen_and_serve("0.0.0.0:8080", handler)
+    # The non-blocking loop multiplexes keep-alive connections instead of
+    # serving one at a time — measurably better tail latency under
+    # concurrent clients, and the same one-liner to call.
+    server.listen_and_serve_nonblocking("0.0.0.0:8080", handler)
 ```
 
 The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket slots), `tick` is the opt-in timer hook, and `ws_message` receives WebSocket messages; a handler that uses none of them returns the empty defaults shown here.
@@ -68,11 +71,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 306 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 318 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
-| **Total** | | **551** |
+| **Total** | | **563** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -80,7 +83,7 @@ Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import p
 
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
-**HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · `Accept-Encoding` negotiation (codec-agnostic: it picks among the precompressed codings you can serve, with the RFC 9110 `identity`/`*`/q=0 rules, and tells you when the honest answer is 406) · `Accept-Language` negotiation (RFC 4647 matching — `de` finds your `de-CH`, `en-US` falls back to your `en` — preferring to serve *something* over a 406, as RFC 9110 advises) · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · static file serving with lexical traversal defense, extension content types, and ETag/304 · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, protocol-error refusals, ping/pong heartbeats, clean close.
+**HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · `Accept-Encoding` negotiation (codec-agnostic: it picks among the precompressed codings you can serve, with the RFC 9110 `identity`/`*`/q=0 rules, and tells you when the honest answer is 406) · `Accept-Language` negotiation (RFC 4647 matching — `de` finds your `de-CH`, `en-US` falls back to your `en` — preferring to serve *something* over a 406, as RFC 9110 advises) · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · static file serving with lexical traversal defense, extension content types, ETag/304, and single byte ranges (206/416) · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, UTF-8 validation of text (1007), protocol-error refusals, ping/pong heartbeats, clean close.
 
 **Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor (`M0_WORKERS=4`) — workers accept from one shared pre-fork listener, with a cross-worker SSE broadcast bus when the app wires it in.
 
@@ -352,7 +355,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 551 unit tests, then compiles every example
+uv run poe test-all         # 563 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

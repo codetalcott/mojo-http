@@ -189,10 +189,10 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
   hold the same line, and the workaround can be retired if a future toolchain
   fixes the leak (re-test with `smoke-django`'s RSS guard).
 - The blocking `listen_and_serve` loop serves one accepted keep-alive
-  connection exclusively until timeout or the `max_keepalive_requests` cap —
-  a design property its remaining consumers (`apps/hello`) don't notice, but
-  it measured p99 ~140 ms under 16 persistent connections, which is why the
-  WSGI app now uses the non-blocking loop instead.
+  connection exclusively until timeout or the `max_keepalive_requests` cap
+  (measured p99 ~140 ms under 16 persistent connections). No in-repo app
+  uses it anymore — `apps/hello` moved to the non-blocking loop like
+  everything else — but it remains in the fork for the simplest embeddings.
 
 ## Recently resolved
 
@@ -214,8 +214,10 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
   heartbeat is a protocol ping. `apps/ws_echo` is the reference;
   `poe smoke-ws` proves the wire format with a from-scratch stdlib client.
   Deliberate limits, documented in `websocket.mojo`: no extensions
-  (RSV bits refused), no subprotocol negotiation, no UTF-8 validation of
-  text payloads, no client-side WebSocket in `Client`.
+  (RSV bits refused), no subprotocol negotiation, no client-side
+  WebSocket in `Client`. (UTF-8 validation of text payloads landed after
+  the initial ship: invalid text closes 1007, validated on the assembled
+  message.)
 - **Static file serving** (`m0_http.StaticFiles`): a directory mounted
   under a URL prefix, composing what already existed — `compute_etag` +
   `If-None-Match` → 304, a deliberately small extension→type map, `None`

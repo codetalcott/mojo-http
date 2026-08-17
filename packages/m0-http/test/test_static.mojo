@@ -14,7 +14,7 @@ from lightbug_http.c.process import getpid
 from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import URI
 
-from src.static import StaticFiles, content_type_for
+from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE
 
 
 def _fixture_root() raises -> String:
@@ -229,3 +229,110 @@ def test_prefix_and_root_are_normalized() raises:
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
+
+
+# --- Byte ranges (RFC 9110 §14) ----------------------------------------------
+
+
+def _serve(static: StaticFiles, var req: HTTPRequest) raises -> HTTPResponse:
+    var hit = static.serve(req^)
+    return hit.take()
+
+
+def _file_len(root: String, name: String) raises -> Int:
+    with open(root + "/" + name, "r") as f:
+        return len(f.read_bytes())
+
+
+
+def test_parse_range_shapes() raises:
+    # bounded, open-ended, suffix; clamping; unsatisfiable; ignorable.
+    var r = parse_range("bytes=2-5", 100)
+    assert_equal(r.kind, RANGE_VALID)
+    assert_equal(r.start, 2)
+    assert_equal(r.end, 5)
+    r = parse_range("bytes=90-", 100)
+    assert_equal(r.kind, RANGE_VALID)
+    assert_equal(r.start, 90)
+    assert_equal(r.end, 99)
+    r = parse_range("bytes=-10", 100)
+    assert_equal(r.kind, RANGE_VALID)
+    assert_equal(r.start, 90)
+    assert_equal(r.end, 99)
+    r = parse_range("bytes=0-9999", 100)  # end clamps to the representation
+    assert_equal(r.kind, RANGE_VALID)
+    assert_equal(r.end, 99)
+    r = parse_range("bytes=-9999", 100)  # long suffix means the whole thing
+    assert_equal(r.start, 0)
+    assert_equal(r.end, 99)
+    assert_equal(parse_range("bytes=100-", 100).kind, RANGE_UNSATISFIABLE)
+    assert_equal(parse_range("bytes=-0", 100).kind, RANGE_UNSATISFIABLE)
+    assert_equal(parse_range("bytes=0-", 0).kind, RANGE_UNSATISFIABLE)
+    # Ignored shapes: multi-range, other units, backwards, garbage.
+    assert_equal(parse_range("bytes=0-1,5-6", 100).kind, RANGE_NONE)
+    assert_equal(parse_range("items=0-5", 100).kind, RANGE_NONE)
+    assert_equal(parse_range("bytes=5-2", 100).kind, RANGE_NONE)
+    assert_equal(parse_range("bytes=abc-def", 100).kind, RANGE_NONE)
+
+
+def test_range_serves_206_with_content_range() raises:
+    var root = _fixture_root()
+    var static = StaticFiles(root, "/static/")
+    var req = _get("/static/style.css")
+    req.headers["Range"] = "bytes=0-3"
+    var resp = _serve(static, req^)
+    assert_equal(resp.status_code, 206)
+    assert_equal(resp.headers["Content-Range"], "bytes 0-3/" + String(_file_len(root, "style.css")))
+    assert_equal(len(resp.body_raw), 4)
+
+
+def test_range_unsatisfiable_is_416_with_total() raises:
+    var root = _fixture_root()
+    var static = StaticFiles(root, "/static/")
+    var req = _get("/static/style.css")
+    req.headers["Range"] = "bytes=999999-"
+    var resp = _serve(static, req^)
+    assert_equal(resp.status_code, 416)
+    assert_equal(resp.headers["Content-Range"], "bytes */" + String(_file_len(root, "style.css")))
+
+
+def test_multi_range_is_ignored_and_served_full() raises:
+    var root = _fixture_root()
+    var static = StaticFiles(root, "/static/")
+    var req = _get("/static/style.css")
+    req.headers["Range"] = "bytes=0-1,3-4"
+    var resp = _serve(static, req^)
+    assert_equal(resp.status_code, 200)
+
+
+def test_if_range_with_weak_etags_serves_full() raises:
+    # If-Range requires strong comparison; these ETags are weak, so the
+    # condition can never hold — full representation, never a stale slice.
+    var root = _fixture_root()
+    var static = StaticFiles(root, "/static/")
+    var probe = _serve(static, _get("/static/style.css"))
+    var etag = probe.headers["etag"]
+    var req = _get("/static/style.css")
+    req.headers["Range"] = "bytes=0-3"
+    req.headers["If-Range"] = etag
+    var resp = _serve(static, req^)
+    assert_equal(resp.status_code, 200)
+
+
+def test_if_none_match_beats_range() raises:
+    var root = _fixture_root()
+    var static = StaticFiles(root, "/static/")
+    var probe = _serve(static, _get("/static/style.css"))
+    var etag = probe.headers["etag"]
+    var req = _get("/static/style.css")
+    req.headers["Range"] = "bytes=0-3"
+    req.headers["If-None-Match"] = etag
+    var resp = _serve(static, req^)
+    assert_equal(resp.status_code, 304)
+
+
+def test_plain_200_advertises_accept_ranges() raises:
+    var root = _fixture_root()
+    var static = StaticFiles(root, "/static/")
+    var resp = _serve(static, _get("/static/style.css"))
+    assert_equal(resp.headers["Accept-Ranges"], "bytes")

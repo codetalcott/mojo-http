@@ -17,8 +17,9 @@ The split of responsibilities is deliberate:
 - **Protocol violations close the connection**, with the RFC's close code
   (1002 protocol error, 1009 too big) in the close frame: unmasked client
   frames, reserved bits, interleaved data frames, oversized control frames,
-  unknown opcodes. Text payloads are NOT validated as UTF-8 (RFC 1007) —
-  the handler owns interpretation of its own payloads.
+  unknown opcodes — and text messages that are not valid UTF-8, which
+  close with 1007 once the complete message is assembled (RFC 6455 §8.1).
+  Binary payloads are the handler's to interpret.
 
 SHA-1 and base64 are implemented here rather than imported: the handshake
 needs exactly one hash of one short string per connection open, nothing
@@ -43,6 +44,7 @@ comptime WS_OP_PONG = 0xA
 comptime WS_CLOSE_NORMAL = 1000
 comptime WS_CLOSE_GOING_AWAY = 1001
 comptime WS_CLOSE_PROTOCOL_ERROR = 1002
+comptime WS_CLOSE_INVALID_DATA = 1007
 comptime WS_CLOSE_TOO_BIG = 1009
 
 comptime _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -295,6 +297,54 @@ def close_frame(code: Int) -> List[UInt8]:
     return encode_ws_frame(WS_OP_CLOSE, Span(body))
 
 
+def is_valid_utf8(data: Span[Byte, _]) -> Bool:
+    """Strict UTF-8 (RFC 3629): rejects bad continuations, overlong
+    encodings, surrogates (U+D800–U+DFFF), and anything past U+10FFFF."""
+    var i = 0
+    var n = len(data)
+    while i < n:
+        var b0 = Int(data[i])
+        if b0 < 0x80:
+            i += 1
+            continue
+        var needed: Int
+        var lo = 0x80
+        var hi = 0xBF
+        if b0 >= 0xC2 and b0 <= 0xDF:
+            needed = 1
+        elif b0 == 0xE0:
+            needed = 2
+            lo = 0xA0  # excludes overlongs
+        elif b0 >= 0xE1 and b0 <= 0xEC:
+            needed = 2
+        elif b0 == 0xED:
+            needed = 2
+            hi = 0x9F  # excludes surrogates
+        elif b0 >= 0xEE and b0 <= 0xEF:
+            needed = 2
+        elif b0 == 0xF0:
+            needed = 3
+            lo = 0x90  # excludes overlongs
+        elif b0 >= 0xF1 and b0 <= 0xF3:
+            needed = 3
+        elif b0 == 0xF4:
+            needed = 3
+            hi = 0x8F  # excludes > U+10FFFF
+        else:
+            return False  # 0x80–0xC1 (stray continuation/overlong), 0xF5+
+        if i + needed >= n:
+            return False  # truncated sequence
+        var b1 = Int(data[i + 1])
+        if b1 < lo or b1 > hi:
+            return False
+        for j in range(2, needed + 1):
+            var bj = Int(data[i + j])
+            if bj < 0x80 or bj > 0xBF:
+                return False
+        i += needed + 1
+    return True
+
+
 struct WSParseResult(Movable):
     """What one `feed` produced. Parallel arrays, per repo convention."""
 
@@ -437,6 +487,8 @@ struct WSState(Movable):
                     # message in progress (§5.4).
                     return self._fail(WS_CLOSE_PROTOCOL_ERROR)
                 if fin:
+                    if opcode == WS_OP_TEXT and not is_valid_utf8(Span(payload)):
+                        return self._fail(WS_CLOSE_INVALID_DATA)
                     res.msg_opcodes.append(opcode)
                     res.msg_payloads.append(payload^)
                 else:
@@ -450,6 +502,13 @@ struct WSState(Movable):
                 for j in range(plen):
                     self.frag_payload.append(payload[j])
                 if fin:
+                    # Validated on the ASSEMBLED message: a multi-byte
+                    # character legitimately split across fragments is valid
+                    # even though neither fragment alone is.
+                    if self.frag_opcode == WS_OP_TEXT and not is_valid_utf8(
+                        Span(self.frag_payload)
+                    ):
+                        return self._fail(WS_CLOSE_INVALID_DATA)
                     res.msg_opcodes.append(self.frag_opcode)
                     res.msg_payloads.append(self.frag_payload.copy())
                     self.frag_opcode = -1

@@ -786,6 +786,17 @@ setag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\r\n')
 [ -n "$setag" ] || fail 'static file served without an ETag'
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8091/static/styles.css)
 [ "$code" = "304" ] || fail "static revalidation expected 304, got $code"
+
+# Byte ranges: a bounded range comes back 206 with the right slice and a
+# Content-Range naming the total; a range past the end is 416 with */total.
+total=$(wc -c < static.css | tr -d ' ')
+code=$(curl -s -o part.bin -w '%{http_code}' -D headers.txt -r 0-3 http://localhost:8091/static/styles.css)
+[ "$code" = "206" ] || fail "range request expected 206, got $code"
+[ "$(wc -c < part.bin | tr -d ' ')" = "4" ] || fail 'range served the wrong number of bytes'
+grep -qi "^content-range: bytes 0-3/$total" headers.txt || fail 'missing or wrong Content-Range'
+code=$(curl -s -o /dev/null -w '%{http_code}' -r 9999999- http://localhost:8091/static/styles.css)
+[ "$code" = "416" ] || fail "unsatisfiable range expected 416, got $code"
+rm -f part.bin
 code=$(curl -s --path-as-is -o trav.txt -w '%{http_code}' http://localhost:8091/static/../server.mojo)
 [ "$code" = "404" ] || fail "traversal probe expected 404, got $code"
 grep -q 'HTTPService' trav.txt && fail 'traversal probe served source code'

@@ -39,4 +39,7 @@ def main() raises:
     print("Starting hello server on 0.0.0.0:8080")
     var server = Server()
     var handler = HelloHandler()
-    server.listen_and_serve("0.0.0.0:8080", handler)
+    # The non-blocking loop multiplexes keep-alive connections instead of
+    # serving one at a time — measurably better tail latency under
+    # concurrent clients, and the same one-liner to call.
+    server.listen_and_serve_nonblocking("0.0.0.0:8080", handler)
