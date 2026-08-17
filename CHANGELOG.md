@@ -7,6 +7,17 @@ versions may break the API**.
 
 ## [Unreleased]
 
+- `Client` keep-alive: response boundaries are now computed
+  (`classify_response` — Content-Length, chunked terminal chunk + trailers,
+  bodiless statuses, HEAD) instead of inferred from EOF, and the connection
+  is kept warm and reused across requests to the same host and port. Reuse
+  rules are conservative (a `Connection: close` response, an HTTP/1.0 peer,
+  a close-delimited body, or stray bytes past the boundary all retire the
+  connection); a reused connection that dies before yielding a single
+  response byte is retried once on a fresh dial. `keep_alive=False`
+  restores one-connection-per-request. `connections_opened` reports dials;
+  the smoke asserts a six-request conversation (HEAD included) rides one
+  connection. Breaking: `request`/`get`/`post` now take `mut self`.
 - `m0_http.WSHub` — the handler-side WebSocket registry: connected slots,
   per-slot outboxes, room broadcast, and cross-worker fan-out over the
   same `BroadcastBus` SSE uses (the bus is transport-agnostic;

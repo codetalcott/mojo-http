@@ -59,6 +59,38 @@ def main() raises:
     if ct.value() != "application/problem+json":
         raise Error("missing: expected problem+json, got ", ct.value())
 
+    # HEAD is the framing trap: the response advertises its GET twin's
+    # Content-Length but sends no body. If the client waited for those
+    # bytes the connection would hang; if it misjudged the boundary, the
+    # NEXT request on the same connection would parse garbage.
+    var head = client.request("HEAD", base + "/health")
+    if head.status_code != 200:
+        raise Error("head: expected 200, got ", head.status_code)
+    if len(head.body_raw) != 0:
+        raise Error("head: body must be empty, got ", len(head.body_raw), " bytes")
+    var after_head = client.get(base + "/health")
+    if after_head.status_code != 200:
+        raise Error("get-after-head: connection desynced (", after_head.status_code, ")")
+
+    # Everything above rode ONE TCP connection — that is what keep-alive
+    # means, and every response parsing cleanly is what proves the computed
+    # framing boundaries were exact.
+    if client.connections_opened != 1:
+        raise Error(
+            "keep-alive: expected 1 connection for the whole conversation,"
+            " dialed ", client.connections_opened,
+        )
+
+    # keep_alive=False restores one-connection-per-request exactly.
+    var cold = Client(timeout_s=10, keep_alive=False)
+    _ = cold.get(base + "/health")
+    _ = cold.get(base + "/health")
+    if cold.connections_opened != 2:
+        raise Error(
+            "keep_alive=False: expected 2 dials for 2 requests, got ",
+            cold.connections_opened,
+        )
+
     # A refused connection is an error, and a legible one.
     var refused = False
     try:

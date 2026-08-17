@@ -124,14 +124,18 @@ exact failure the old code avoided by ignoring the header entirely.
 reconnect across a real kill-and-restart replays the missed frame, skips the
 already-seen one, and serves a fresh consumer no history.
 
-### HTTP client (done)
+### HTTP client (done, now with keep-alive)
 
 `Client` in m0-http sends outbound HTTP/1.1: GET/POST/any method, request
 bodies, headers, and full response parsing — Content-Length (with loud
 truncation detection; the fork's `read_body` quietly accepts short bodies),
-chunked, and close-delimited. Every request is `Connection: close`, so EOF
-frames every body shape with one read loop; keep-alive reuse is deliberately
-absent rather than half-done. No TLS (terminate at a proxy, as everywhere
+chunked, and close-delimited. Response boundaries are computed per message
+(`classify_response`), which is what makes keep-alive possible: the
+connection is kept warm and reused across requests to the same host and
+port, with conservative retirement (Connection: close, HTTP/1.0,
+close-delimited bodies, stray bytes past the boundary) and one retry on a
+stale reused connection. `keep_alive=False` restores
+one-connection-per-request. No TLS (terminate at a proxy, as everywhere
 here) and no redirect following — a 3xx is a response, not an instruction.
 
 Building it revived the fork's client-side connect path, which had rotted as
