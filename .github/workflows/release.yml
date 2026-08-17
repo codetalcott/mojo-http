@@ -1,6 +1,12 @@
-# Publishes a GitHub release when a v* tag is pushed: builds libm0core on
-# both platforms, proves each artifact through the same ctypes smoke CI
-# runs, and attaches them to the release.
+# Publishes a GitHub release: builds libm0core on both platforms, proves
+# each artifact through the same ctypes smoke CI runs, and attaches them.
+#
+# Two triggers, one job graph:
+#   - tag push (v*): release an existing tag, the ordinary path.
+#   - workflow_dispatch: create tag AND release in one run, for callers
+#     whose credentials can push branches but not tags (`gh release create`
+#     makes the tag at --target when it does not exist). Runs against the
+#     given commit, not whatever main has moved to.
 #
 # This workflow is additive — the automerge workflows key on the workflow
 # named "Tests", which this deliberately is not.
@@ -10,6 +16,16 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create and release (e.g. v0.1.0)"
+        required: true
+        type: string
+      sha:
+        description: "Commit SHA the tag should point at"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -28,6 +44,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.ref }}
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -51,18 +69,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.ref }}
       - uses: actions/download-artifact@v7
         with:
           path: assets
           merge-multiple: true
       # Release notes come from the tag's CHANGELOG section living in the
-      # repo; --generate-notes appends the commit list for completeness.
+      # repo; --generate-notes appends the commit list for completeness. On
+      # dispatch, --target makes gh create the tag at the requested commit.
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.sha }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
+            --target "$TARGET" \
+            --title "$TAG" \
             --generate-notes \
-            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md) for the full release notes." \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md) for the full release notes." \
             assets/*
