@@ -168,8 +168,16 @@ struct CounterHandler(HTTPService):
             return
         self._last_bump_ms = now_ms
         var up = shared_fetch_add(self.uptime_addr, 1) + 1
+        # The tick carries the WHOLE signal state, not just the clock.
+        # Cross-worker ordering is best-effort: a count patch racing an
+        # uptime patch can lose (the newer id wins the redelivery filter),
+        # and a tab would show a stale count until the next click. Ticks
+        # that reconcile full state heal any lost race within a second —
+        # the recommended shape for increment-y signals under fan-out.
         _ = self.stream.patch_signals(
-            STREAM_URL, '{"uptime":' + String(up) + "}"
+            STREAM_URL,
+            '{"uptime":' + String(up)
+            + ',"count":' + String(shared_load(self.count_addr)) + "}",
         )
 
 

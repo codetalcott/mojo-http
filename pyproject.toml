@@ -228,7 +228,7 @@ kill $sse 2>/dev/null
 wait $sse 2>/dev/null
 grep -q 'event: datastar-patch-signals' sse.txt \
   || { echo 'no Datastar frame reached the client'; cat sse.txt; exit 1; }
-grep -q 'data: signals {"count":1}' sse.txt \
+grep -q '"count":1' sse.txt \
   || { echo 'broadcast did not carry the new count'; cat sse.txt; exit 1; }
 grep -q 'data: event:' sse.txt && { echo 'frame was double-framed'; exit 1; }
 
@@ -280,24 +280,47 @@ M0_WORKERS=2 M0_APP_TICK_MS=400 mojo run -I packages/m0-core/ -I packages/m0-htt
 pid=$!
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || { echo '=== counter2.log ==='; cat counter2.log; exit 1; }
+# The trap must reap the forked workers too, not just the supervisor: a
+# failing assertion below would otherwise leave two workers holding :8080,
+# and the NEXT smoke run's phase 1 talks to this stale server and fails on
+# its leftover state.
+worker_pids=$(grep -oE 'pid=[0-9]+' counter2.log | cut -d= -f2 | sort -u)
+trap 'kill $pid $worker_pids 2>/dev/null' EXIT
 rm -f mw_workers.txt
 count=0
 distinct=0
-for i in $(seq 1 24); do
-  curl -sN --max-time 30 -D mw_hdr_$i.txt -H 'Accept: text/event-stream' \
-    http://localhost:8080/events > mw_sse_$i.txt &
-  sleep 0.4
-  grep -i '^x-worker' mw_hdr_$i.txt | tr -d ' \\r' | cut -d: -f2 >> mw_workers.txt
-  count=$i
-  distinct=$(sort -u mw_workers.txt | grep -c .)
+for round in 1 2 3 4 5 6; do
+  # Streams open in a concurrent BURST: simultaneous connections leave
+  # pending work for both workers' wakeups, where a sequential trickle can
+  # be won by whichever worker is hottest every single time (that exact
+  # bias hit a 2-core CI runner: 24 sequential opens, one worker won all).
+  for j in 1 2 3 4; do
+    count=$((count+1))
+    curl -sN --max-time 60 -D mw_hdr_$count.txt -H 'Accept: text/event-stream' \
+      http://localhost:8080/events > mw_sse_$count.txt &
+  done
+  sleep 1
+  # Agitate between rounds: overlapping requests pull the hot worker off
+  # the listener so the other one wins some of the next burst.
+  for j in 1 2 3; do curl -s --max-time 2 http://localhost:8080/health -o /dev/null & done
+  for i in $(seq 1 $count); do
+    grep -i '^x-worker' "mw_hdr_$i.txt" | tr -d ' \\r' | cut -d: -f2
+  done | sort -u > mw_workers.txt
+  distinct=$(grep -c . mw_workers.txt)
   [ "$distinct" -ge 2 ] && break
 done
 [ "$distinct" -ge 2 ] \
-  || { echo "streams never spread across two workers"; cat counter2.log; exit 1; }
+  || { echo "streams never spread across two workers (workers seen: $(tr '\\n' ' ' < mw_workers.txt))"; cat counter2.log; exit 1; }
+# ONE mutation, handled by whichever worker wins the accept race; every
+# stream — both workers' — must see the new count.
 curl -s -X POST http://localhost:8080/increment -o /dev/null
 sleep 2
 for i in $(seq 1 $count); do
-  grep -q 'data: signals {"count":1}' mw_sse_$i.txt \
+  # '"count":1' rather than a full-frame match: the POST's own patch can
+  # lose an ordering race against a concurrent tick (documented
+  # best-effort semantics) — but the reconciling tick re-carries the
+  # count, so every stream converges on it within a second either way.
+  grep -q '"count":1' mw_sse_$i.txt \
     || { echo "stream $i missed the cross-worker broadcast (worker $(grep -i '^x-worker' mw_hdr_$i.txt))"; cat counter2.log; exit 1; }
 done
 
@@ -313,7 +336,6 @@ for i in $(seq 1 $count); do
   fi
 done
 
-worker_pids=$(grep -oE 'pid=[0-9]+' counter2.log | cut -d= -f2 | sort -u)
 kill $pid $worker_pids 2>/dev/null
 rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt mw_workers.txt counter2.log
 echo "smoke-counter OK"
