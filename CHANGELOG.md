@@ -5,7 +5,7 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
-## [Unreleased]
+## [0.2.0] — 2026-08-17
 
 - WebSockets (RFC 6455), server side: `websocket_upgrade` answers the
   opening handshake from an ordinary handler, the event loop parses frames
@@ -115,4 +115,5 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.2.0
 [0.1.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.1.0
