@@ -40,6 +40,15 @@ lightbug_http
       - header.mojo: `Headers.keys()` added, so headers can be enumerated
         without reaching into the private `_inner` dict from another package
         (needed to project them into a WSGI environ)
+      - fcntl F_SETFL fixed on ARM64 macOS: fcntl is variadic, Darwin
+        passes variadic arguments on the stack while external_call used
+        registers, so set_nonblocking silently did nothing there for the
+        fork's whole life. The call now pads to nine fixed arguments on
+        Darwin, forcing the flag argument onto the stack where the callee's
+        va_list reads it; a regression test asserts F_GETFL reflects
+        O_NONBLOCK. The visible symptom was a multi-worker accept race:
+        the losing worker blocked inside accept() on the still-blocking
+        shared listener, wedging its event loop
       - Client-side connect path (create_connection, getaddrinfo bindings)
         revived after rotting as dead code: addrinfo pointer fields modeled
         as Optional[Pointer] (Mojo 1.0 pointers are non-nullable), connect()

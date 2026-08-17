@@ -12,14 +12,27 @@ That is the entire point, and it is what `DatastarStream` exists to make
 possible — the builders in `m0_datastar.sse` produce complete SSE frames, which
 `SSERegistry.notify` cannot carry without double-framing them.
 
-Run it:  uv run poe serve-counter
+It is also the reference wiring for **cross-worker SSE fan-out**. With
+`M0_WORKERS>1` this app creates, before the fork: the listener every worker
+accepts from, a `BroadcastBus` (one datagram channel per worker), and a
+`SharedAtomics` page (slot 0: SSE event ids, slot 1: the count itself). Each
+worker then joins the bus with `enable_bus`, hands its channel to the server,
+and wires `sse_peer_frame` → `deliver_peer` — after which a button press
+handled by any worker updates tabs connected to every worker. The count lives
+in shared memory so all workers agree on it without a database.
+
+Run it:  uv run poe serve-counter        (M0_WORKERS=2 for the fan-out shape)
 """
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from lightbug_http.broadcast import BroadcastBus
+from lightbug_http.c.process import getpid
+from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.server_config import ServerConfig
 
-from m0_http import AppConfig
+from m0_http import AppConfig, WorkerSupervisor
+from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
@@ -33,11 +46,14 @@ comptime STREAM_URL = "/events"
 struct CounterHandler(HTTPService):
     """One counter, shared by every connected client."""
 
-    var count: Int
+    # The count is a shared atomic (a `SharedAtomics` slot), not a field:
+    # under M0_WORKERS>1 every worker must read and bump the same number, and
+    # in single-worker mode the same code simply runs uncontended.
+    var count_addr: Int
     var stream: DatastarStream
 
-    def __init__(out self):
-        self.count = 0
+    def __init__(out self, count_addr: Int):
+        self.count_addr = count_addr
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
         self.stream = DatastarStream(1024)
@@ -57,10 +73,15 @@ struct CounterHandler(HTTPService):
             )
 
         if path == "/":
-            return _html(render_page(self.count))
+            return _html(render_page(shared_load(self.count_addr)))
 
         if path == STREAM_URL:
-            return self.stream.open(req, STREAM_URL)
+            var resp = self.stream.open(req, STREAM_URL)
+            # Which worker owns this stream — the multi-worker smoke reads
+            # this to prove its streams span workers before asserting that
+            # one POST reaches all of them.
+            resp.headers["X-Worker"] = String(getpid())
+            return resp^
 
         if path == "/increment" or path == "/decrement":
             # The browser posts its whole signal store. This demo keeps the
@@ -68,14 +89,16 @@ struct CounterHandler(HTTPService):
             # is how you would accept client-supplied input.
             _ = read_signals(req)
 
+            var count: Int
             if path == "/increment":
-                self.count += 1
+                count = shared_fetch_add(self.count_addr, 1) + 1
             else:
-                self.count -= 1
+                count = shared_fetch_add(self.count_addr, -1) - 1
 
-            # One broadcast reaches every tab, including the one that clicked.
+            # One broadcast reaches every tab, including the one that clicked
+            # — and, over the bus, tabs held by every other worker.
             _ = self.stream.patch_signals(
-                STREAM_URL, '{"count":' + String(self.count) + "}"
+                STREAM_URL, '{"count":' + String(count) + "}"
             )
             # The POST itself needs no body: the update arrives over the stream.
             return HTTPResponse(
@@ -108,6 +131,11 @@ struct CounterHandler(HTTPService):
     def sse_slot_disconnected(mut self, slot: Int):
         self.stream.closed(slot)
 
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        # A broadcast from another worker: queue it for this worker's
+        # subscribers (and journal it, so replay works on every worker).
+        self.stream.deliver_peer(url, event_id, frame)
+
 
 def _html(body: String) -> HTTPResponse:
     return HTTPResponse(
@@ -121,16 +149,38 @@ def _html(body: String) -> HTTPResponse:
 def main() raises:
     var config = AppConfig()
     print("Datastar counter on " + config.base_url + " — open it in two tabs")
+
+    # Everything workers must share is created BEFORE the fork, so every
+    # process inherits it: the listener (all workers accept from this one
+    # socket), the broadcast bus channels, and the shared atomics — slot 0
+    # numbers SSE events across workers, slot 1 is the count. In
+    # single-worker mode the same objects simply serve one process.
+    var listener = ListenConfig().listen(config.address())
+    var shared = SharedAtomics(2)
+    var bus = BroadcastBus(config.workers)
+    var worker = 0
+    if config.workers > 1:
+        var supervisor = WorkerSupervisor(config.workers)
+        supervisor.fork_all()
+        worker = supervisor.worker_index
+
+    var handler = CounterHandler(shared.addr(1))
+    var bus_read_fd = -1
+    if config.workers > 1:
+        # Joining the bus is three-sided: the stream publishes to peers and
+        # takes ids from the shared slot; the server drains this worker's
+        # channel; sse_peer_frame (above) delivers what arrives.
+        handler.stream.enable_bus(bus, worker, shared.addr(0))
+        bus_read_fd = bus.read_fd(worker)
+
     # Heartbeats keep idle streams alive through proxies and NATs, and let the
     # loop discover dead subscribers; M0_SSE_HEARTBEAT_MS tunes the cadence
     # (the smoke sets it low to assert heartbeats actually arrive).
     var server_config = ServerConfig()
     server_config.access_log = config.access_log
     server_config.sse_heartbeat_ms = config.sse_heartbeat_ms
-    var server = Server(server_config^)
-    var handler = CounterHandler()
-    # SSE requires `listen_and_serve_nonblocking`, not `listen_and_serve`.
-    # Only the non-blocking event loop assigns `req.slot_id` and drains the
-    # outbox; the plain accept loop leaves slot_id at -1, and every stream open
-    # would answer 409.
-    server.listen_and_serve_nonblocking(config.address(), handler)
+    var server = Server(server_config^, config.address())
+    # SSE requires the non-blocking event loop: only it assigns `req.slot_id`
+    # and drains the outbox; the plain accept loop would answer every stream
+    # open with 409.
+    server.serve_nonblocking(listener, handler, bus_read_fd=bus_read_fd)

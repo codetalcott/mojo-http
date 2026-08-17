@@ -292,6 +292,9 @@ struct NotesHandler(HTTPService):
     def sse_slot_disconnected(mut self, slot: Int):
         pass
 
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        pass
+
 
 # --- response constructors ---------------------------------------------------
 

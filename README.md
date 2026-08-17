@@ -4,7 +4,7 @@
 
 The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
 
-It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, Linux and macOS, and the API will change before 1.0.
+It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, Linux and macOS, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
 
 ```bash
 uv sync                     # installs the Mojo toolchain
@@ -44,6 +44,9 @@ struct HelloHandler(HTTPService):
     def sse_slot_disconnected(mut self, slot: Int):
         pass
 
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        pass
+
 
 def main() raises:
     print("Starting hello server on 0.0.0.0:8080")
@@ -52,28 +55,28 @@ def main() raises:
     server.listen_and_serve("0.0.0.0:8080", handler)
 ```
 
-The three `sse_*` hooks are the streaming interface; a handler that does not stream returns the empty defaults shown here.
+The four `sse_*` hooks are the streaming interface; a handler that does not stream returns the empty defaults shown here.
 
 ## What's in the box
 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, HTTP client, request-parsing hardening | 218 |
-| `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay, `read_signals` | 67 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 233 |
+| `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
-| **Total** | | **457** |
+| **Total** | | **478** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
-`m0-core`'s hash functions are also exported over a C ABI: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS) for Bun's `dlopen`, Node's N-API, or Python's `ctypes` — `poe smoke-ffi` proves that path against public hash vectors in CI.
+`m0-core`'s hash functions are also exported over a C ABI: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS) for Bun's `dlopen`, Node's N-API, or Python's `ctypes` — `poe smoke-ffi` proves that path against public hash vectors in CI, and prebuilt Linux/macOS artifacts ship with each [GitHub release](https://github.com/codetalcott/mojo-http/releases).
 
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · `Accept-Encoding` negotiation (codec-agnostic: it picks among the precompressed codings you can serve, with the RFC 9110 `identity`/`*`/q=0 rules, and tells you when the honest answer is 406) · `Accept-Language` negotiation (RFC 4647 matching — `de` finds your `de-CH`, `en-US` falls back to your `en` — preferring to serve *something* over a 406, as RFC 9110 advises) · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · SSE with backpressure and `Last-Event-ID` reconnect replay.
 
-**Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor with `SO_REUSEPORT` (`M0_WORKERS=4`).
+**Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor (`M0_WORKERS=4`) — workers accept from one shared pre-fork listener, with a cross-worker SSE broadcast bus when the app wires it in.
 
 **Outbound too** — `Client` speaks HTTP/1.1 the other way: `client.get(url)` / `client.post(url, body)` with DNS, timeouts, and full response parsing (Content-Length with loud truncation detection, chunked, close-delimited). One connection per request, no TLS, no redirect following — the same honest constraints as the server, documented in `client.mojo`. `poe smoke-client` runs a Mojo client against a Mojo server in CI.
 
@@ -87,7 +90,7 @@ end.
 ## Datastar
 
 `m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.2 wire format, and
-`DatastarStream` connects it to the server. A handler holds one, wires the three SSE hooks
+`DatastarStream` connects it to the server. A handler holds one, wires the four SSE hooks
 through it, and broadcasts after a mutation:
 
 ```mojo
@@ -112,13 +115,19 @@ struct CounterHandler(HTTPService):
         return self.stream.is_streaming(slot)
     def sse_slot_disconnected(mut self, slot: Int):
         self.stream.closed(slot)
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        self.stream.deliver_peer(url, event_id, frame)   # cross-worker fan-out
 ```
 
 `read_signals(req)` is the other direction — the browser posts its whole signal store, as a
 `datastar` query parameter on GET and as the body otherwise.
 
 Run [apps/datastar_counter/](apps/datastar_counter/) with `uv run poe serve-counter` and open
-it in two tabs; pressing a button in one updates the other.
+it in two tabs; pressing a button in one updates the other. It is also the
+reference wiring for **cross-worker fan-out**: with `M0_WORKERS=2` it creates a
+`BroadcastBus` and a shared-memory counter before the fork, and a button press
+handled by any worker updates tabs connected to every worker (`poe
+smoke-counter` proves its streams span workers before asserting exactly that).
 [apps/datastar_todo/](apps/datastar_todo/) is the same idea grown up: mutations
 broadcast rendered *HTML* (`patch_elements` morphs `<section id="todos">` by id
 in every tab), the per-item actions are `Router` routes with `:id`, todo
@@ -300,7 +309,7 @@ so it is not worth the ownership complexity yet.
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - Pre-1.0: the API will break.
-- **SSE fan-out is single-process.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry, so a push on one worker never reaches subscribers on another.
+- **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
 - **No application timer hook.** Every *application* push must be triggered by an inbound request. The event loop does run its own timer for SSE: idle streams get a `: heartbeat` comment every `M0_SSE_HEARTBEAT_MS` (default 15s, 0 disables), which keeps proxies from reaping quiet streams and discovers dead subscribers — but there is no hook for application code to schedule work on it.
 - `m0-sqlite` has no statement cache and no connection pool; see above.
 - SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that resumes live instead of being caught up. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines).
@@ -310,14 +319,14 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 457 unit tests, then compiles every example
+uv run poe test-all         # 478 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, problem+json, CORS
-uv run poe smoke-counter    # assert SSE broadcast, heartbeat cadence, disconnect cleanup
+uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, cross-worker fan-out
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
 uv run poe smoke-django     # assert a Django request/response cycle end to end

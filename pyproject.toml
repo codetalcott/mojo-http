@@ -254,7 +254,42 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 done
 [ "$subs" = "0" ] \
   || { echo "dead SSE client still subscribed (subscribers=$subs)"; exit 1; }
-rm -f sse.txt
+
+# Phase 2: cross-worker fan-out. Two workers, one shared listener; streams
+# are opened until they provably span both workers (the X-Worker header on
+# each stream response says who owns it), then ONE mutation must reach every
+# stream — the ones on the other worker arrive over the BroadcastBus.
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+M0_WORKERS=2 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+  apps/datastar_counter/server.mojo > counter2.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || { echo '=== counter2.log ==='; cat counter2.log; exit 1; }
+rm -f mw_workers.txt
+count=0
+distinct=0
+for i in $(seq 1 24); do
+  curl -sN --max-time 30 -D mw_hdr_$i.txt -H 'Accept: text/event-stream' \
+    http://localhost:8080/events > mw_sse_$i.txt &
+  sleep 0.4
+  grep -i '^x-worker' mw_hdr_$i.txt | tr -d ' \\r' | cut -d: -f2 >> mw_workers.txt
+  count=$i
+  distinct=$(sort -u mw_workers.txt | grep -c .)
+  [ "$distinct" -ge 2 ] && break
+done
+[ "$distinct" -ge 2 ] \
+  || { echo "streams never spread across two workers"; cat counter2.log; exit 1; }
+curl -s -X POST http://localhost:8080/increment -o /dev/null
+sleep 2
+for i in $(seq 1 $count); do
+  grep -q 'data: signals {"count":1}' mw_sse_$i.txt \
+    || { echo "stream $i missed the cross-worker broadcast (worker $(grep -i '^x-worker' mw_hdr_$i.txt))"; cat counter2.log; exit 1; }
+done
+
+worker_pids=$(grep -oE 'pid=[0-9]+' counter2.log | cut -d= -f2 | sort -u)
+kill $pid $worker_pids 2>/dev/null
+rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt mw_workers.txt counter2.log
 echo "smoke-counter OK"
 """
 

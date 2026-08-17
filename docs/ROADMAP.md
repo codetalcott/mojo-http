@@ -1,6 +1,6 @@
 # Roadmap
 
-## v0.1 (current)
+## v0.1.0 (released)
 
 - `m0-core` — hashing (FNV-1a, xxHash32, wyhash64), SIMD JSON escape, JSON field parser
 - `m0-http` — router, content negotiation, weak ETags, response cache, SSE with
@@ -36,7 +36,10 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
 `apps/datastar_counter` demonstrates multi-tab sync and is asserted in CI by
 `poe smoke-counter`, which fails if a frame is ever double-framed again.
 
-## v0.2 (planned)
+## Also in v0.1.0
+
+Everything below started as the v0.2 plan and landed before the first
+release instead.
 
 ### Examples
 
@@ -71,6 +74,32 @@ owns subscriptions and broadcasts, and `read_signals()` covers the request half.
 The `build-apps` gate this section once called for now exists: `poe build-apps`
 compiles every example to a temp directory, and CI runs it before the smoke
 tests.
+
+### Cross-worker SSE fan-out (done)
+
+`M0_WORKERS>1` and SSE are no longer mutually exclusive. The design keeps
+the per-process registries and adds a `BroadcastBus`: one `SOCK_DGRAM`
+socketpair channel per worker, created before the fork so every process
+inherits every descriptor. A broadcasting worker queues locally and writes
+one datagram per peer channel (datagrams because message boundaries survive
+concurrent writers — a pipe only guarantees that up to PIPE_BUF); each
+worker's event loop drains its own channel and hands frames to the handler
+through `sse_peer_frame`, the seventh `HTTPService` method. Event ids come
+from a `SharedAtomics` slot — an `mmap(MAP_SHARED|MAP_ANON)` page of
+atomics, also pre-fork — so ids stay globally unique and the redelivery
+filter keeps working; the journal inserts by id so replay works on every
+worker even when peer frames arrive out of order (that ordering test was
+verified load-bearing against append-only recording). Respawned workers
+take over the dead worker's index, and with it its bus channel.
+
+Delivery to a stalled peer is fire-and-forget (drop on full, matching
+per-slot backpressure), and cross-worker ordering is best-effort: two
+workers broadcasting concurrently can reach a subscriber in either order
+and the filter keeps the newer id — exactly right for state-patch frames,
+a documented caveat for increments. `apps/datastar_counter` is the
+reference wiring (shared-memory count, X-Worker header), and
+`poe smoke-counter` proves its streams span both workers before asserting
+that a single POST reaches every stream.
 
 ### SSE replay across restarts (done)
 
@@ -162,6 +191,22 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
   WSGI app now uses the non-blocking loop instead.
 
 ## Recently resolved
+
+- **`set_nonblocking` was a silent no-op on ARM64 macOS — for the fork's
+  whole life.** fcntl is variadic, and Darwin ARM64 passes variadic
+  arguments on the stack while `external_call` passed them in registers, so
+  F_SETFL never received its flags. Single-worker servers never noticed
+  (kqueue readiness gates every recv/send, and backlog counts gate accept),
+  which is exactly why it survived: the first thing that ever needed a
+  *losing* accept to fail fast was two workers racing on one shared
+  listener, where the loser blocked inside accept() and its event loop —
+  bus channel included — wedged until the next connection arrived. The fix
+  is a padded call: nine fixed arguments on Darwin put the flag argument on
+  the stack exactly where the variadic callee's va_list reads it. No C
+  shim, so `mojo run` keeps working; `is_nonblocking` (F_GETFL, which never
+  had the bug) plus a regression test hold the ABI reasoning to account on
+  the macOS runner, and the dead `fcntl_wrapper.c` from an earlier shim
+  attempt is deleted.
 
 - **SSE heartbeats now actually tick, and dead subscribers are reaped on
   every close path.** The heartbeat plumbing (`sse_heartbeat_ms`, a per-fd

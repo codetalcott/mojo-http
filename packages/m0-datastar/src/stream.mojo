@@ -16,8 +16,10 @@ uses `notify_frame`, which queues bytes verbatim.
 # Top-level package, not the `lightbug_http.http` subpackage — see the note in
 # signals.mojo. Everything needed is re-exported here anyway.
 from lightbug_http import Headers, Header, HeaderKey, HTTPRequest, HTTPResponse
+from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 
 from m0_http import SSERegistry, sse_response
+from m0_http.multiworker import shared_fetch_add, shared_load, shared_store
 
 from .consts import DEFAULT_PATCH_MODE
 from .sse import (
@@ -44,10 +46,18 @@ struct DatastarStream:
 
     Two limits worth knowing before you design around this:
 
-    - **Single process.** `WorkerSupervisor` forks, and each child gets its own
-      `DatastarStream`, so a broadcast on one worker never reaches subscribers
-      pinned to another. `M0_WORKERS > 1` and SSE fan-out are mutually
-      exclusive today.
+    - **Single process by default.** `WorkerSupervisor` forks, and each child
+      gets its own `DatastarStream`, so out of the box a broadcast on one
+      worker never reaches subscribers pinned to another. `enable_bus` lifts
+      this: with a pre-fork `BroadcastBus` and a shared id slot wired in
+      (plus `sse_peer_frame` → `deliver_peer` and the bus channel passed to
+      the server), a broadcast on any worker reaches every worker's
+      subscribers. See `apps/datastar_counter` for the complete wiring.
+      Cross-worker ordering is best-effort: two workers broadcasting
+      concurrently can reach a subscriber in either order, and the
+      registry's redelivery filter keeps the *newer* id — fine for
+      state-patch frames (the newer state already won), something to think
+      about for increments.
     - **No server-initiated push.** `HTTPService` has no tick hook, so every
       broadcast must be caused by an inbound request — client A's POST pushing
       to client B's stream. A shared todo list is expressible; a clock is not.
@@ -65,6 +75,14 @@ struct DatastarStream:
     var journal_ids: List[Int]
     var journal_frames: List[List[UInt8]]
     var journal_cap: Int
+    # Cross-worker fan-out, off by default. `enable_bus` wires all three:
+    # broadcasts then publish to peer workers over the bus (held as plain
+    # write fds), event ids come from a shared atomic so they stay unique
+    # across workers, and peer frames arrive through `deliver_peer`. See
+    # "Single process" above — this is the escape from it.
+    var bus_write_fds: List[Int]
+    var bus_worker: Int
+    var shared_id_addr: Int
 
     def __init__(out self, capacity: Int = 1024, journal_entries: Int = 64):
         """Create a stream sized for `capacity` connection slots.
@@ -81,6 +99,9 @@ struct DatastarStream:
         self.journal_ids = List[Int]()
         self.journal_frames = List[List[UInt8]]()
         self.journal_cap = journal_entries
+        self.bus_write_fds = List[Int]()
+        self.bus_worker = -1
+        self.shared_id_addr = 0
 
     # --- Lifecycle: drive these from the HTTPService SSE hooks -------------
 
@@ -121,8 +142,8 @@ struct DatastarStream:
         if header:
             reconnecting = True
             last_id = _parse_event_id(header.value())
-            if last_id > self.next_event_id:
-                last_id = self.next_event_id
+            if last_id > self._current_id():
+                last_id = self._current_id()
         self.registry.subscribe(req.slot_id, url, last_id)
         if reconnecting:
             for i in range(len(self.journal_ids)):
@@ -146,6 +167,54 @@ struct DatastarStream:
         """Release a disconnected slot. Wire to `sse_slot_disconnected`."""
         self.registry.unsubscribe(slot)
 
+    # --- Cross-worker fan-out ----------------------------------------------
+
+    def enable_bus(mut self, bus: BroadcastBus, worker: Int, shared_id_addr: Int):
+        """Join a pre-fork `BroadcastBus` as `worker`, with shared event ids.
+
+        Call after `fork_all()`, in each worker, before serving. All three
+        pieces are required together: the bus carries frames to peers, the
+        shared atomic (a `SharedAtomics.addr` slot) keeps ids unique across
+        workers, and the caller must ALSO hand `bus.read_fd(worker)` to the
+        server and wire `sse_peer_frame` to `deliver_peer` — publishing
+        without draining leaves peers' channels filling silently.
+        """
+        self.bus_write_fds = bus.write_fds.copy()
+        self.bus_worker = worker
+        self.shared_id_addr = shared_id_addr
+        # A journal restored before this call seeds the shared counter, so a
+        # pre-restart Last-Event-ID stays meaningful. Every worker restores
+        # the same journal, so the racing stores all write the same value.
+        if self.next_event_id > shared_load(shared_id_addr):
+            shared_store(shared_id_addr, self.next_event_id)
+
+    def deliver_peer(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        """Deliver a frame broadcast by another worker — wire `sse_peer_frame` here.
+
+        The local half of a broadcast, minus allocating an id (the origin
+        worker already did): journal it, so a reconnect to THIS worker can
+        replay it, then queue it for this worker's subscribers.
+        """
+        self._record(url, event_id, frame)
+        if event_id > self.next_event_id:
+            self.next_event_id = event_id
+        self.registry.notify_frame(url, event_id, frame)
+
+    def _next_id(mut self) -> Int:
+        """Allocate the next event id — from the shared atomic when bus'd."""
+        if self.shared_id_addr != 0:
+            var id = shared_fetch_add(self.shared_id_addr, 1) + 1
+            self.next_event_id = id
+            return id
+        self.next_event_id += 1
+        return self.next_event_id
+
+    def _current_id(self) -> Int:
+        """The highest id allocated anywhere — what `open`'s clamp compares."""
+        if self.shared_id_addr != 0:
+            return shared_load(self.shared_id_addr)
+        return self.next_event_id
+
     # --- Replay journal ----------------------------------------------------
 
     def _dispatch(mut self, url: String, event_id: Int, frame: String):
@@ -153,13 +222,25 @@ struct DatastarStream:
         var bytes = List[UInt8](frame.as_bytes())
         self._record(url, event_id, bytes)
         self.registry.notify_frame(url, event_id, bytes)
+        if self.bus_worker >= 0:
+            publish_to_channels(
+                self.bus_write_fds, self.bus_worker, url, event_id, Span(bytes)
+            )
 
     def _record(mut self, url: String, event_id: Int, frame: List[UInt8]):
         if self.journal_cap <= 0:
             return
-        self.journal_urls.append(url)
-        self.journal_ids.append(event_id)
-        self.journal_frames.append(frame.copy())
+        # Insert in id order. Local broadcasts always append; a frame from
+        # another worker can arrive behind one this worker already recorded,
+        # and replay walks the journal in order — `queue_frame` advances the
+        # slot's last-seen id as it goes, so an out-of-order entry would be
+        # skipped, not replayed late.
+        var pos = len(self.journal_ids)
+        while pos > 0 and self.journal_ids[pos - 1] > event_id:
+            pos -= 1
+        self.journal_urls.insert(pos, url)
+        self.journal_ids.insert(pos, event_id)
+        self.journal_frames.insert(pos, frame.copy())
         while len(self.journal_ids) > self.journal_cap:
             _ = self.journal_urls.pop(0)
             _ = self.journal_ids.pop(0)
@@ -200,46 +281,46 @@ struct DatastarStream:
         mode: String = DEFAULT_PATCH_MODE,
     ) -> Int:
         """Patch HTML into every subscriber's DOM."""
-        self.next_event_id += 1
+        var eid = self._next_id()
         var frame = _frame_patch_elements(
             elements=elements,
             selector=selector,
             mode=mode,
-            event_id=String(self.next_event_id),
+            event_id=String(eid),
         )
-        self._dispatch(url, self.next_event_id, frame)
-        return self.next_event_id
+        self._dispatch(url, eid, frame)
+        return eid
 
     def patch_signals(
         mut self, url: String, signals: String, only_if_missing: Bool = False
     ) -> Int:
         """Merge a signal JSON object into every subscriber's signal store."""
-        self.next_event_id += 1
+        var eid = self._next_id()
         var frame = _frame_patch_signals(
             signals=signals,
-            event_id=String(self.next_event_id),
+            event_id=String(eid),
             only_if_missing=only_if_missing,
         )
-        self._dispatch(url, self.next_event_id, frame)
-        return self.next_event_id
+        self._dispatch(url, eid, frame)
+        return eid
 
     def execute_script(mut self, url: String, script: String) -> Int:
         """Run a script in every subscriber's browser."""
-        self.next_event_id += 1
+        var eid = self._next_id()
         var frame = _frame_execute_script(
-            script=script, event_id=String(self.next_event_id)
+            script=script, event_id=String(eid)
         )
-        self._dispatch(url, self.next_event_id, frame)
-        return self.next_event_id
+        self._dispatch(url, eid, frame)
+        return eid
 
     def redirect_to(mut self, url: String, location: String) -> Int:
         """Redirect every subscriber to `location`."""
-        self.next_event_id += 1
+        var eid = self._next_id()
         var frame = _frame_redirect(
-            location=location, event_id=String(self.next_event_id)
+            location=location, event_id=String(eid)
         )
-        self._dispatch(url, self.next_event_id, frame)
-        return self.next_event_id
+        self._dispatch(url, eid, frame)
+        return eid
 
     def send_frame(mut self, url: String, frame: String) -> Int:
         """Queue a pre-built frame verbatim — the escape hatch.
@@ -247,9 +328,9 @@ struct DatastarStream:
         Use when you have composed a frame the helpers above do not cover. The
         frame must be complete, including its terminating blank line.
         """
-        self.next_event_id += 1
-        self._dispatch(url, self.next_event_id, frame)
-        return self.next_event_id
+        var eid = self._next_id()
+        self._dispatch(url, eid, frame)
+        return eid
 
     # --- Introspection -----------------------------------------------------
 

@@ -7,7 +7,7 @@ single-threaded, non-blocking HTTP server.
 
 from std.memory import stack_allocation
 from std.ffi import c_int, external_call, get_errno
-from std.sys.info import size_of
+from std.sys.info import CompilationTarget, size_of
 
 from lightbug_http.c.aliases import ExternalMutUnsafePointer
 from lightbug_http.c.socket import O_NONBLOCK
@@ -164,23 +164,43 @@ def kevent_poll(
 def _fcntl(fd: c_int, cmd: c_int, arg: c_int = 0) -> c_int:
     """Raw fcntl(fd, cmd, arg) — single signature to avoid conflicting declarations.
 
-    WARNING: fcntl is variadic (int fcntl(int, int, ...)). On ARM64 macOS,
-    variadic args go on the stack, but external_call passes all args in
-    registers. F_GETFL works (no variadic arg read by callee), but F_SETFL
-    silently fails (the flags arg is never received). The event loop
-    works around this by using kqueue event_data to count pending accepts
-    instead of relying on EAGAIN from a non-blocking listen socket.
+    fcntl is variadic (int fcntl(int, int, ...)), and the two major ABIs
+    disagree about what that means for the third argument:
+
+    - x86-64 SysV and AAPCS64-Linux pass leading variadic args in the same
+      registers as fixed args, so a plain three-argument declaration works.
+    - Darwin ARM64 passes ALL variadic arguments on the stack; fixed
+      arguments fill x0–x7 first. A three-argument call puts `arg` in x2,
+      the callee's va_list never sees it, and F_SETFL silently reads
+      whatever the stack happened to hold — historically making
+      `set_nonblocking` a no-op there.
+
+    The Darwin branch therefore declares NINE fixed arguments: fd and cmd
+    land in x0/x1, six zero dummies burn x2–x7, and the ninth — the real
+    arg — is forced onto the stack at sp+0, exactly where a variadic
+    callee's va_list points after two named parameters. The dummies are
+    never read by fcntl; only the stack slot is. `test_broadcast.mojo`
+    asserts F_GETFL reflects O_NONBLOCK after `set_nonblocking`, which is
+    what holds this ABI claim to account on the macOS CI runner.
     """
-    return external_call["fcntl", c_int, c_int, c_int, c_int](fd, cmd, arg)
+    comptime if CompilationTarget.is_macos():
+        return external_call[
+            "fcntl", c_int,
+            c_int, c_int, Int, Int, Int, Int, Int, Int, Int,
+        ](fd, cmd, 0, 0, 0, 0, 0, 0, Int(arg))
+    else:
+        return external_call["fcntl", c_int, c_int, c_int, c_int](fd, cmd, arg)
 
 
 def set_nonblocking(fd: FileDescriptor) raises:
     """Set a file descriptor to non-blocking mode via fcntl().
 
-    NOTE: This is currently a no-op on ARM64 macOS due to fcntl's variadic
-    calling convention (see _fcntl docstring). Connection sockets still work
-    because we only call recv/send when kqueue reports readiness. The listen
-    socket uses event_data-based accept counting instead of EAGAIN.
+    Works on both platforms — including ARM64 macOS, where this was a
+    silent no-op until `_fcntl` learned the Darwin variadic convention (see
+    its docstring). Callers written while the no-op stood carry their own
+    belt-and-braces (MSG_DONTWAIT on the broadcast bus, event_data-based
+    accept counting on the listen socket); those stay, because they are
+    also correct and they document the history.
     """
     var fd_c = c_int(fd.value)
     var flags = _fcntl(fd_c, F_GETFL)
@@ -191,3 +211,17 @@ def set_nonblocking(fd: FileDescriptor) raises:
     if result == -1:
         var errno = get_errno()
         raise Error("fcntl F_SETFL failed, errno: ", errno)
+
+
+def is_nonblocking(fd: FileDescriptor) raises -> Bool:
+    """Whether O_NONBLOCK is set — F_GETFL truth, not what a caller hoped.
+
+    F_GETFL takes no variadic argument, so it has always been reliable on
+    every platform; that is what makes this the right probe for asserting
+    `set_nonblocking` actually took effect.
+    """
+    var flags = _fcntl(c_int(fd.value), F_GETFL)
+    if flags == -1:
+        var errno = get_errno()
+        raise Error("fcntl F_GETFL failed, errno: ", errno)
+    return (Int(flags) & O_NONBLOCK) != 0

@@ -188,12 +188,14 @@ back-edge pulls it in — `event_loop.mojo` → `m0_http.log` →
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has six methods and no defaults:
-`func`, `before_request`, `after_response`, and three SSE hooks —
-`sse_drain_slot`, `sse_is_streaming`, `sse_slot_disconnected`. A handler that
-does not stream returns the empty defaults. Adding a method to the trait breaks
-every handler in the repo at once: both apps, plus the five demo services inside
-`service.mojo` itself.
+`HTTPService` (`lightbug_http/service.mojo`) has seven methods and no
+defaults: `func`, `before_request`, `after_response`, and four SSE hooks —
+`sse_drain_slot`, `sse_is_streaming`, `sse_slot_disconnected`,
+`sse_peer_frame` (frames arriving over the cross-worker `BroadcastBus`; empty
+in non-streaming handlers). A handler that does not stream returns the empty
+defaults. Adding a method to the trait breaks every handler in the repo at
+once: all five apps, plus the five demo services inside `service.mojo`
+itself, plus the example in README.md.
 
 **SSE requires `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only
 the non-blocking event loop assigns `req.slot_id` and drains the outbox; the
@@ -205,9 +207,15 @@ Slots index the registry directly, so a stream's capacity
 
 Properties of the design, not defects to fix in passing:
 
-- **SSE fan-out is per-process.** `M0_WORKERS>1` forks, and each worker gets its
-  own subscriber registry, so a broadcast never reaches another worker's
-  subscribers.
+- **SSE fan-out is per-process unless the app joins the `BroadcastBus`.**
+  `M0_WORKERS>1` forks, and each worker gets its own subscriber registry; a
+  broadcast reaches other workers' subscribers only when everything shared is
+  created *before* the fork (listener, `BroadcastBus`, `SharedAtomics` id
+  slot) and each worker wires `enable_bus` + `bus_read_fd` +
+  `sse_peer_frame` → `deliver_peer`. `apps/datastar_counter` is the
+  reference; partial wiring fails quietly (publishing without draining just
+  fills peer channels). Cross-worker ordering is best-effort — the
+  redelivery filter keeps the newer of two racing ids.
 - **No application timer hook.** Every application push must be triggered by
   an inbound request. (The event loop runs its own SSE heartbeat timer —
   `M0_SSE_HEARTBEAT_MS`, one-shot on both backends so the handler re-arms it

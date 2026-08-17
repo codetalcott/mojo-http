@@ -217,6 +217,11 @@ struct TodoHandler(HTTPService):
     def sse_slot_disconnected(mut self, slot: Int):
         self.stream.closed(slot)
 
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        # A broadcast from another worker: queue it for this worker's
+        # subscribers (and journal it, so replay works on every worker).
+        self.stream.deliver_peer(url, event_id, frame)
+
 
 def _html(body: String) -> HTTPResponse:
     return HTTPResponse(

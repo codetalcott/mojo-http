@@ -1,0 +1,68 @@
+# Publishes a GitHub release when a v* tag is pushed: builds libm0core on
+# both platforms, proves each artifact through the same ctypes smoke CI
+# runs, and attaches them to the release.
+#
+# This workflow is additive — the automerge workflows key on the workflow
+# named "Tests", which this deliberately is not.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-artifacts:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: libm0core.so
+            asset: libm0core-linux-x86_64.so
+          - os: macos-latest
+            artifact: libm0core.dylib
+            asset: libm0core-macos-arm64.dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Build the C-ABI shared library
+        run: uv run poe build-ffi
+      # The same proof CI runs on every commit: dlopen the artifact through
+      # ctypes and assert the public FNV-1a/xxHash32 vectors. A release
+      # asset that fails this must not ship.
+      - name: Prove the artifact through ctypes
+        run: uv run poe smoke-ffi
+      - name: Stage the asset under its platform name
+        run: cp packages/m0-core/${{ matrix.artifact }} ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          path: assets
+          merge-multiple: true
+      # Release notes come from the tag's CHANGELOG section living in the
+      # repo; --generate-notes appends the commit list for completeness.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md) for the full release notes." \
+            assets/*

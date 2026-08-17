@@ -10,6 +10,7 @@ from lightbug_http.c.kqueue import (
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_EOF, EV_ERROR,
 )
+from lightbug_http.broadcast import drain_bus_channel
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import accept, recv, send, close
 from lightbug_http.c.socket_error import (
@@ -58,8 +59,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     shutdown_read_fd: Int = -1,
+    bus_read_fd: Int = -1,
 ) raises:
     """Run the IO-multiplexed event loop.
+
+    `bus_read_fd`, when >= 0, is this worker's `BroadcastBus` channel: SSE
+    frames broadcast by other workers arrive here as datagrams, and each is
+    handed to the handler through `sse_peer_frame` so it can queue them for
+    its own subscribers. The subsequent outbox drain in the same loop pass
+    then pushes them to the wire.
 
     Parameters:
         T: The HTTP service handler type.
@@ -78,6 +86,10 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     # Phase 4a: register shutdown pipe read end if provided
     if shutdown_read_fd >= 0:
         backend.try_add_read(shutdown_read_fd)
+
+    # Cross-worker broadcast channel: register this worker's receive end.
+    if bus_read_fd >= 0:
+        backend.try_add_read(bus_read_fd)
 
     var max_conns = config.max_connections
     var provision_pool = ProvisionPool(max_conns, config)
@@ -124,6 +136,21 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             if shutdown_read_fd >= 0 and Int(backend.event_ident(i)) == shutdown_read_fd:
                 should_shutdown = True
                 break
+
+            # --- Cross-worker broadcast channel ---
+            # Registration is edge-triggered, so every waiting datagram must
+            # be consumed now; drain_bus_channel reads until EAGAIN. The
+            # handler queues each frame for its local subscribers, and the
+            # SSE outbox drain at the bottom of this pass sends them out.
+            if bus_read_fd >= 0 and Int(backend.event_ident(i)) == bus_read_fd:
+                var peer_frames = drain_bus_channel(bus_read_fd)
+                for f in range(len(peer_frames)):
+                    handler.sse_peer_frame(
+                        peer_frames[f].url,
+                        peer_frames[f].event_id,
+                        peer_frames[f].frame,
+                    )
+                continue
 
             # --- Listen socket: accept new connections ---
             if Int(backend.event_ident(i)) == listen_fd.value and backend.event_filter(i) == EVFILT_READ:
