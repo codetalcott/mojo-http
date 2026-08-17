@@ -2,7 +2,7 @@
 
 `mojo-http` is an HTTP/1.1 server and a small web framework for [Mojo](https://docs.modular.com/mojo/): routing, content negotiation, ETags, response caching, and Server-Sent Events, with a [Datastar](https://data-star.dev/) adapter for hypermedia UIs and SQLite bindings for storage.
 
-The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
+The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE- and WebSocket-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
 
 It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, Linux and macOS, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
 
@@ -50,6 +50,9 @@ struct HelloHandler(HTTPService):
     def tick(mut self, now_ms: Int):
         pass
 
+    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        pass
+
 
 def main() raises:
     print("Starting hello server on 0.0.0.0:8080")
@@ -58,18 +61,18 @@ def main() raises:
     server.listen_and_serve("0.0.0.0:8080", handler)
 ```
 
-The four `sse_*` hooks are the streaming interface and `tick` is the opt-in timer hook; a handler that uses neither returns the empty defaults shown here.
+The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket slots), `tick` is the opt-in timer hook, and `ws_message` receives WebSocket messages; a handler that uses none of them returns the empty defaults shown here.
 
 ## What's in the box
 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 252 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 281 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
-| **Total** | | **497** |
+| **Total** | | **526** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -77,7 +80,7 @@ Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import p
 
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
-**HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · `Accept-Encoding` negotiation (codec-agnostic: it picks among the precompressed codings you can serve, with the RFC 9110 `identity`/`*`/q=0 rules, and tells you when the honest answer is 406) · `Accept-Language` negotiation (RFC 4647 matching — `de` finds your `de-CH`, `en-US` falls back to your `en` — preferring to serve *something* over a 406, as RFC 9110 advises) · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · static file serving with lexical traversal defense, extension content types, and ETag/304 · SSE with backpressure and `Last-Event-ID` reconnect replay.
+**HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · `Accept-Encoding` negotiation (codec-agnostic: it picks among the precompressed codings you can serve, with the RFC 9110 `identity`/`*`/q=0 rules, and tells you when the honest answer is 406) · `Accept-Language` negotiation (RFC 4647 matching — `de` finds your `de-CH`, `en-US` falls back to your `en` — preferring to serve *something* over a 406, as RFC 9110 advises) · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · static file serving with lexical traversal defense, extension content types, and ETag/304 · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, protocol-error refusals, ping/pong heartbeats, clean close.
 
 **Production bits** — API key auth with constant-time comparison · CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown that drains in-flight requests · multi-worker fork supervisor (`M0_WORKERS=4`) — workers accept from one shared pre-fork listener, with a cross-worker SSE broadcast bus when the app wires it in.
 
@@ -148,9 +151,25 @@ browser: the stream opens from `data-init` (there is no `on-load` plugin), and
 keyed attributes are colon-separated — `data-on:click`, `data-bind:draft`. The
 hyphenated forms fail silently.
 
-**SSE needs `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only the non-blocking
-event loop assigns `req.slot_id` and drains the outbox; the plain accept loop leaves
-`slot_id` at `-1` and every stream open answers `409`.
+**SSE and WebSockets need `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only
+the non-blocking event loop assigns `req.slot_id`, drains the outbox, and parses
+WebSocket frames; the plain accept loop leaves `slot_id` at `-1` and every stream
+open answers `409`.
+
+## WebSockets
+
+[apps/ws_echo/](apps/ws_echo/server.mojo) shows the whole contract in one
+screen. `websocket_upgrade(req)` answers the opening handshake inside `func`
+(101 on success, 426/400 for near-misses, `None` when the request isn't an
+upgrade at all so ordinary routing continues); `ws_message(slot, opcode,
+payload)` receives each complete message — fragments already assembled,
+control frames already answered by the event loop — and replies are queued
+as `encode_ws_frame(...)` bytes that the shared outbox hook delivers. Idle
+sockets get protocol pings on the `M0_SSE_HEARTBEAT_MS` cadence, and every
+close path — close handshake, vanished client, failed ping — lands in
+`sse_slot_disconnected`. Run it with `uv run poe serve-ws`; `poe smoke-ws`
+proves the wire format against a from-scratch stdlib client, from the
+accept key to the closing TCP FIN.
 
 ## Django, and anything else that speaks WSGI
 
@@ -324,13 +343,14 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 497 unit tests, then compiles every example
+uv run poe test-all         # 526 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, static files, CORS
+uv run poe smoke-ws         # speak RFC 6455 raw: handshake, echo, fragments, ping/pong, close
 uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, app tick, fan-out
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server

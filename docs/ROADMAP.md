@@ -192,6 +192,17 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **WebSockets** (RFC 6455, server side): `websocket_upgrade` answers the
+  handshake from an ordinary handler, the event loop owns frame mode
+  (client-masking enforcement, fragment assembly, ping/pong and close
+  answered in the loop, protocol violations closed with 1002/1009), and
+  complete messages arrive at the `ws_message` trait hook. The outbox,
+  heartbeat, and disconnect plumbing are shared with SSE — a WS slot's
+  heartbeat is a protocol ping. `apps/ws_echo` is the reference;
+  `poe smoke-ws` proves the wire format with a from-scratch stdlib client.
+  Deliberate limits, documented in `websocket.mojo`: no extensions
+  (RSV bits refused), no subprotocol negotiation, no UTF-8 validation of
+  text payloads, no client-side WebSocket in `Client`.
 - **Static file serving** (`m0_http.StaticFiles`): a directory mounted
   under a URL prefix, composing what already existed — `compute_etag` +
   `If-None-Match` → 304, a deliberately small extension→type map, `None`

@@ -81,6 +81,11 @@ jobs:
       # against the notes API, including the error and refusal paths.
       - name: Smoke test the HTTP client
         run: uv run poe smoke-client
+      # RFC 6455 spoken raw from python's stdlib: handshake with the accept
+      # key verified, masked echo, fragment reassembly, ping/pong both ways,
+      # heartbeat cadence bounds, and the close handshake to the TCP FIN.
+      - name: Smoke test the WebSocket echo demo
+        run: uv run poe smoke-ws
       # Proves the Datastar path end to end: a POST on one connection reaches a
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
