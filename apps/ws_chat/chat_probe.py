@@ -5,8 +5,8 @@ Single-worker mode (default): two sockets, one speaks, both must hear it —
 the sender included (its own message coming back is the delivery
 confirmation).
 
-Multi-worker mode (CHAT_EXPECT_WORKERS=2): sockets are opened in
-concurrent bursts until they provably span two workers (the X-Worker
+Multi-worker mode (CHAT_EXPECT_WORKERS=2): one socket is placed on EACH
+worker by freezing the worker that wins the first one (the X-Worker
 header on each 101 says who owns each socket — sequential opens can all be
 won by whichever worker is hottest, the same accept-race bias the counter
 smoke hit on 2-core CI runners), then ONE message sent on a worker-A
@@ -15,11 +15,10 @@ BroadcastBus.
 """
 
 import os
+import signal
 import socket
 import struct
 import sys
-import threading
-import time
 import base64
 import hashlib
 
@@ -123,48 +122,6 @@ def connect_ws():
     return sock, worker
 
 
-def open_burst(n):
-    """n concurrent connects — simultaneous connections leave pending work
-    for both workers' wakeups, where a sequential trickle can be won by
-    whichever worker is hottest every time."""
-    results = [None] * n
-
-    def one(i):
-        try:
-            results[i] = connect_ws()
-        except SystemExit:
-            raise
-        except Exception as e:  # noqa: BLE001 - collected and reported below
-            results[i] = e
-
-    threads = [threading.Thread(target=one, args=(i,)) for i in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    return [r for r in results if isinstance(r, tuple)]
-
-
-def agitate():
-    """Overlapping plain-HTTP requests pull the hot worker off the listener
-    so the other one wins some of the next burst."""
-
-    def one():
-        try:
-            s = socket.create_connection((HOST, PORT), timeout=2)
-            s.sendall(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-            s.recv(4096)
-            s.close()
-        except OSError:
-            pass
-
-    threads = [threading.Thread(target=one) for _ in range(3)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-
 def close_all(socks):
     for s in socks:
         try:
@@ -186,19 +143,30 @@ if EXPECT_WORKERS <= 1:
     print("chat_probe OK (single worker)")
     sys.exit(0)
 
-# --- Multi-worker: spread first, then one message must reach everyone --------
-conns = []
-for _ in range(6):
-    conns.extend(open_burst(4))
-    if len(set(w for _, w in conns)) >= 2:
-        break
-    time.sleep(1)
-    agitate()
+# --- Multi-worker: one socket per worker, then one message reaches both ------
+# Which worker wins an accept is the kernel's choice and it is not a fair
+# one: a macOS runner once handed a single worker every one of 24 opens,
+# failing this precondition with nothing wrong in the server. Opening in
+# bursts made it worse, not better — the accept path drains the backlog
+# until EAGAIN, so the first worker to wake takes the whole burst.
+#
+# So stop racing. Open one socket, SIGSTOP the worker that got it (X-Worker
+# is that worker's pid), and open the second: a stopped process cannot
+# accept, so it provably lands on the other worker. Resume immediately —
+# the frozen worker's own socket is idle meanwhile, and the assertions
+# below are unchanged.
+sock_a, w_a = connect_ws()
+os.kill(int(w_a), signal.SIGSTOP)
+try:
+    sock_b, w_b = connect_ws()
+finally:
+    os.kill(int(w_a), signal.SIGCONT)
 
+conns = [(sock_a, w_a), (sock_b, w_b)]
 workers = set(w for _, w in conns)
 if len(workers) < 2:
     close_all([s for s, _ in conns])
-    fail("sockets never spread across two workers (saw: %s)" % sorted(workers))
+    fail("both sockets landed on worker %s even though it was SIGSTOPped" % w_a)
 
 sender_sock, sender_worker = conns[0]
 msg = b"hello from " + sender_worker.encode()

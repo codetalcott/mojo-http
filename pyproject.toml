@@ -353,10 +353,10 @@ done
 [ "$subs" = "0" ] \
   || { echo "dead SSE client still subscribed (subscribers=$subs)"; exit 1; }
 
-# Phase 2: cross-worker fan-out. Two workers, one shared listener; streams
-# are opened until they provably span both workers (the X-Worker header on
-# each stream response says who owns it), then ONE mutation must reach every
-# stream — the ones on the other worker arrive over the BroadcastBus.
+# Phase 2: cross-worker fan-out. Two workers, one shared listener; one
+# stream is placed on EACH worker (the X-Worker header on each stream
+# response says who owns it), then ONE mutation must reach both — the one
+# on the other worker arrives over the BroadcastBus.
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
 M0_WORKERS=2 M0_APP_TICK_MS=400 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
@@ -370,31 +370,43 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
 # its leftover state.
 worker_pids=$(grep -oE 'pid=[0-9]+' counter2.log | cut -d= -f2 | sort -u)
 trap 'kill $pid $worker_pids 2>/dev/null' EXIT
-rm -f mw_workers.txt
-count=0
-distinct=0
-for round in 1 2 3 4 5 6; do
-  # Streams open in a concurrent BURST: simultaneous connections leave
-  # pending work for both workers' wakeups, where a sequential trickle can
-  # be won by whichever worker is hottest every single time (that exact
-  # bias hit a 2-core CI runner: 24 sequential opens, one worker won all).
-  for j in 1 2 3 4; do
-    count=$((count+1))
-    curl -sN --max-time 60 -D mw_hdr_$count.txt -H 'Accept: text/event-stream' \
-      http://localhost:8080/events > mw_sse_$count.txt &
-  done
-  sleep 1
-  # Agitate between rounds: overlapping requests pull the hot worker off
-  # the listener so the other one wins some of the next burst.
-  for j in 1 2 3; do curl -s --max-time 2 http://localhost:8080/health -o /dev/null & done
-  for i in $(seq 1 $count); do
-    grep -i '^x-worker' "mw_hdr_$i.txt" | tr -d ' \\r' | cut -d: -f2
-  done | sort -u > mw_workers.txt
-  distinct=$(grep -c . mw_workers.txt)
-  [ "$distinct" -ge 2 ] && break
-done
-[ "$distinct" -ge 2 ] \
-  || { echo "streams never spread across two workers (workers seen: $(tr '\\n' ' ' < mw_workers.txt))"; cat counter2.log; exit 1; }
+# Which worker wins an accept is the kernel's choice and it is not a fair
+# one: a macOS runner once handed ONE worker all 24 opens across six
+# rounds, so this phase failed with nothing whatever wrong in the server.
+# Opening in bursts made that worse, not better — the accept path drains
+# the backlog until EAGAIN, so the first worker to wake takes the whole
+# burst in one go.
+#
+# So stop racing. Open one stream, then SIGSTOP the worker that got it: a
+# stopped process cannot accept, so the next connection provably lands on
+# the other worker. Resume it afterwards and both streams are live, one
+# per worker, with no dependence on scheduling luck. The assertions below
+# are unchanged — only the way this two-worker arrangement is reached
+# stopped being a gamble.
+count=2
+curl -sN --max-time 60 -D mw_hdr_1.txt -H 'Accept: text/event-stream' \
+  http://localhost:8080/events > mw_sse_1.txt &
+sleep 2
+w_a=$(grep -i '^x-worker' mw_hdr_1.txt | tr -dc '0-9')
+[ -n "$w_a" ] \
+  || { echo 'first stream never opened (no X-Worker header)'; cat mw_hdr_1.txt; cat counter2.log; exit 1; }
+
+# Freeze the winner. The trap resumes it on any exit — leaving a STOPped
+# process behind would wedge the next run.
+kill -STOP "$w_a" 2>/dev/null
+trap 'kill -CONT $w_a 2>/dev/null; kill $pid $worker_pids 2>/dev/null' EXIT
+curl -sN --max-time 60 -D mw_hdr_2.txt -H 'Accept: text/event-stream' \
+  http://localhost:8080/events > mw_sse_2.txt &
+sleep 3
+w_b=$(grep -i '^x-worker' mw_hdr_2.txt | tr -dc '0-9')
+kill -CONT "$w_a" 2>/dev/null
+trap 'kill $pid $worker_pids 2>/dev/null' EXIT
+
+[ -n "$w_b" ] \
+  || { echo "second stream never opened while worker $w_a was stopped"; cat mw_hdr_2.txt; cat counter2.log; exit 1; }
+[ "$w_a" != "$w_b" ] \
+  || { echo "both streams landed on worker $w_a even though it was SIGSTOPped"; cat counter2.log; exit 1; }
+
 # ONE mutation, handled by whichever worker wins the accept race; every
 # stream — both workers' — must see the new count.
 curl -s -X POST http://localhost:8080/increment -o /dev/null
@@ -421,7 +433,7 @@ for i in $(seq 1 $count); do
 done
 
 kill $pid $worker_pids 2>/dev/null
-rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt mw_workers.txt counter2.log
+rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt counter2.log
 echo "smoke-counter OK"
 """
 
