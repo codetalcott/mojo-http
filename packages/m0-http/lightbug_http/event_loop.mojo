@@ -7,6 +7,7 @@ connections by advancing per-connection state machines on IO readiness.
 
 from lightbug_http.c.kqueue import (
     set_nonblocking,
+    set_tcp_nodelay,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_EOF, EV_ERROR,
 )
@@ -22,6 +23,7 @@ from lightbug_http.header import (
     HeaderKey, ParsedRequestHeaders, find_header_end, parse_request_headers,
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse, encode
+from lightbug_http.http.date import http_date_from_unix, unix_now
 from lightbug_http.http.common_response import (
     BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge,
 )
@@ -111,6 +113,19 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     var slot_header_start = List[Int](capacity=max_conns)
     var slot_sse = List[Bool](capacity=max_conns)
     var slot_ws = List[Bool](capacity=max_conns)
+    # Whether the slot's fd currently has a read filter registered with the
+    # backend. Registrations are persistent on both backends (epoll: EPOLLIN
+    # edge-triggered without ONESHOT; kqueue: EV_ADD without EV_ONESHOT), so
+    # re-registering per keep-alive request is two wasted epoll_ctl calls per
+    # request — the ADD that fails EEXIST plus the MOD. The one operation
+    # that CAN disarm reads is add_write_oneshot: on epoll it replaces the
+    # fd's event mask. Tracking that transition here lets the steady-state
+    # keep-alive path skip re-arming entirely.
+    var slot_read_armed = List[Bool](capacity=max_conns)
+    # Idle-timeout deadline (perf_counter_ns value; 0 = none). Replaces a
+    # per-request timerfd_settime with a once-a-second sweep — idle timeouts
+    # are whole seconds, so 1 s sweep granularity loses nothing.
+    var slot_idle_deadline = List[Int](capacity=max_conns)
     # Per-slot WebSocket frame parser. Always allocated, tiny while unused;
     # reset (not reallocated) when a slot is reused.
     var slot_ws_state = OwningList[WSState](capacity=max_conns)
@@ -122,6 +137,8 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         slot_header_start.append(0)
         slot_sse.append(False)
         slot_ws.append(False)
+        slot_read_armed.append(False)
+        slot_idle_deadline.append(0)
         slot_ws_state.append(WSState(config.max_request_body_size))
 
     var fd_map_size = 65536
@@ -141,6 +158,12 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         print("Event loop started (epoll, max_connections=" + String(max_conns) + ")")
 
     var should_shutdown = False
+    var last_idle_sweep = perf_counter_ns()
+    # Date-header cache: IMF-fixdate has one-second granularity, so format
+    # it once per second instead of once per response (~10 String
+    # allocations + gmtime each time — measured ~9% of hello throughput).
+    var date_cache_sec: Int64 = unix_now()
+    var date_cache = http_date_from_unix(date_cache_sec)
     while True:
         var n_events = backend.wait(1000)
 
@@ -231,9 +254,16 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             pass
                         continue
 
+                    # Nagle off: single-send responses have nothing to
+                    # coalesce, and leaving it on stalls a response behind
+                    # the previous response's ACK. Best-effort.
+                    set_tcp_nodelay(new_fd)
+
                     slot_fds[slot] = fd_val
                     slot_send_offset[slot] = 0
                     slot_header_start[slot] = perf_counter_ns()
+                    slot_read_armed[slot] = False
+                    slot_idle_deadline[slot] = 0
                     fd_to_slot[fd_val] = slot
                     active_count += 1
                     if config.enable_metrics:
@@ -259,13 +289,18 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_fds, slot_response, slot_send_offset,
                         slot_header_start, fd_to_slot, provision_pool,
                         active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
+                        date_cache_sec, date_cache,
                     )
 
                     # If the slot is still active and in reading_headers state,
                     # the eager read got EAGAIN — register EVFILT_READ now.
-                    if slot_fds[slot] != UNUSED and provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
+                    # (_after_send may already have armed it if the eager read
+                    # carried a complete request; skip the redundant syscall.)
+                    if slot_fds[slot] != UNUSED and (not slot_read_armed[slot]) and provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
                         try:
                             backend.add_read(fd_val)
+                            slot_read_armed[slot] = True
                         except:
                             _close_slot(
                                 backend, handler, slot, fd_val,
@@ -350,6 +385,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         provision_pool.provisions[hb_slot].state = ConnectionState.streaming_ws() if hb_is_ws else ConnectionState.streaming_sse()
                     else:
                         backend.try_add_write_oneshot(fd_val)
+                        slot_read_armed[hb_slot] = False
                     continue
 
                 if timer_ident >= TIMER_IDLE:
@@ -477,6 +513,8 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_fds, slot_response, slot_send_offset,
                         slot_header_start, fd_to_slot, provision_pool,
                         active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
+                        date_cache_sec, date_cache,
                     )
 
                 elif provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY:
@@ -567,6 +605,8 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                                     slot_fds, slot_response, slot_send_offset, slot_header_start,
                                     fd_to_slot, provision_pool, active_count, metrics,
                                     slot_sse, slot_ws, slot_ws_state,
+                                    slot_read_armed, slot_idle_deadline,
+                                    date_cache_sec, date_cache,
                                 )
                         # ret == -2 or empty: wait for more data via EVFILT_READ
                     elif body_st.bytes_read >= body_st.content_length:
@@ -582,6 +622,8 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             slot_header_start,
                             fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse, slot_ws, slot_ws_state,
+                            slot_read_armed, slot_idle_deadline,
+                            date_cache_sec, date_cache,
                         )
 
                 continue
@@ -607,6 +649,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_header_start,
                         fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
                     )
                     continue
 
@@ -622,6 +665,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 except send_err:
                     if send_err.isa[SendEAGAINError]():
                         backend.try_add_write_oneshot(fd_val)
+                        slot_read_armed[slot] = False
                         continue
                     _close_slot(
                         backend, handler, slot, fd_val,
@@ -640,10 +684,12 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_header_start,
                         fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
                     )
                 else:
                     try:
                         backend.add_write_oneshot(fd_val)
+                        slot_read_armed[slot] = False
                     except:
                         _close_slot(
                             backend, handler, slot, fd_val,
@@ -677,6 +723,28 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         provision_pool.provisions[s].state = ConnectionState.streaming_ws() if slot_ws[s] else ConnectionState.streaming_sse()
                     else:
                         backend.try_add_write_oneshot(slot_fds[s])
+                        slot_read_armed[s] = False
+
+        # Idle-timeout sweep. Replaces the old per-request timerfd re-arm
+        # (one timerfd_settime per keep-alive request) with a once-a-second
+        # scan of active slots. Timeouts are whole seconds, so the 1 s sweep
+        # granularity changes nothing observable; the loop's wait() timeout
+        # of 1000 ms guarantees the sweep runs even when the server is idle.
+        if config.idle_timeout > 0:
+            var sweep_now = perf_counter_ns()
+            if sweep_now - last_idle_sweep >= 1_000_000_000:
+                last_idle_sweep = sweep_now
+                for s in range(max_conns):
+                    if (
+                        slot_fds[s] != UNUSED
+                        and slot_idle_deadline[s] != 0
+                        and sweep_now > slot_idle_deadline[s]
+                    ):
+                        _close_slot(
+                            backend, handler, s, slot_fds[s],
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
 
         if should_shutdown:
             # Graceful shutdown: close listener, drain in-flight, close SSE
@@ -747,6 +815,10 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
     mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
 ):
     """Read and parse HTTP request headers for a connection slot.
 
@@ -923,6 +995,8 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                         slot_fds, slot_response, slot_send_offset, slot_header_start,
                         fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
+                        date_cache_sec, date_cache,
                     )
                     return
                 # ret == -2: incomplete, wait for EVFILT_READ to fire again
@@ -936,6 +1010,8 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     slot_header_start,
                     fd_to_slot, provision_pool, active_count, metrics,
                     slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache,
                 )
         else:
             provision_pool.provisions[slot].state = ConnectionState.processing()
@@ -947,6 +1023,8 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 slot_header_start,
                 fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse, slot_ws, slot_ws_state,
+                slot_read_armed, slot_idle_deadline,
+                date_cache_sec, date_cache,
             )
 
     provision_pool.provisions[slot].last_parse_len = len(provision_pool.provisions[slot].recv_buffer)
@@ -971,6 +1049,10 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
     mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
 ):
     """Build request, call handler, encode response, register for write."""
     var parsed = provision_pool.provisions[slot].parsed_headers.take()
@@ -1080,6 +1162,15 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     if response.sse_streaming:
         response.headers.pop("content-length")
 
+    # Stamp the Date header from the loop's per-second cache (encode()
+    # would otherwise format a fresh date string for every response).
+    if HeaderKey.DATE not in response.headers:
+        var now_s = unix_now()
+        if now_s != date_cache_sec:
+            date_cache_sec = now_s
+            date_cache = http_date_from_unix(now_s)
+        response.headers[HeaderKey.DATE] = date_cache
+
     # Encode response. encode_into() (Phase 2f) requires moving the buffer
     # out of the provision, which Mojo does not allow for list-element fields;
     # use encode() until the move-from-field story matures in Mojo.
@@ -1123,12 +1214,14 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             slot_header_start,
             fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
         )
         return
 
     # Partial send or EAGAIN: register EVFILT_WRITE for the remainder.
     try:
         backend.add_write_oneshot(fd_val)
+        slot_read_armed[slot] = False
     except:
         _close_slot(
             backend, handler, slot, fd_val,
@@ -1156,6 +1249,8 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
     mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
 ):
     """Handle post-send: close or transition to keep-alive."""
     # Phase 4e: record completed response metrics
@@ -1218,8 +1313,10 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         slot_response[slot] = Bytes()
         slot_send_offset[slot] = 0
         provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
-        backend.try_delete_timer(UInt(fd_val) + TIMER_IDLE)
-        backend.try_add_read(fd_val)
+        slot_idle_deadline[slot] = 0
+        if not slot_read_armed[slot]:
+            backend.try_add_read(fd_val)
+            slot_read_armed[slot] = True
         if config.sse_heartbeat_ms > 0:
             backend.try_add_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT, config.sse_heartbeat_ms)
         return
@@ -1230,11 +1327,13 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         slot_response[slot] = Bytes()
         slot_send_offset[slot] = 0
         provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
-        # A stale idle timer from the keep-alive request that preceded the
-        # stream open would fire mid-stream and kill it.
-        backend.try_delete_timer(UInt(fd_val) + TIMER_IDLE)
+        # A stale idle deadline from the keep-alive request that preceded the
+        # stream open would sweep the stream closed mid-flight.
+        slot_idle_deadline[slot] = 0
         # Register EVFILT_READ for client disconnect detection (recv→0)
-        backend.try_add_read(fd_val)
+        if not slot_read_armed[slot]:
+            backend.try_add_read(fd_val)
+            slot_read_armed[slot] = True
         # Set up heartbeat timer (configurable interval, repeating)
         if config.sse_heartbeat_ms > 0:
             backend.try_add_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT, config.sse_heartbeat_ms)
@@ -1248,13 +1347,14 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     slot_header_start[slot] = perf_counter_ns()
 
     if config.idle_timeout > 0:
-        backend.try_add_timer(UInt(fd_val) + TIMER_IDLE, config.idle_timeout * 1000)
+        slot_idle_deadline[slot] = perf_counter_ns() + config.idle_timeout * 1_000_000_000
 
-    # Register EVFILT_READ for the next keep-alive request.
-    # The filter was deleted (or never registered for this cycle) when we
-    # consumed data via recv() outside kqueue delivery. Registering now
-    # ensures kqueue fires when the client sends the next request.
-    backend.try_add_read(fd_val)
+    # Register EVFILT_READ for the next keep-alive request — unless it is
+    # still armed from this cycle (registrations are persistent; only
+    # add_write_oneshot disarms them, and that path clears the flag).
+    if not slot_read_armed[slot]:
+        backend.try_add_read(fd_val)
+        slot_read_armed[slot] = True
 
 
 def _close_slot[T: HTTPService, B: EventLoopBackend](
@@ -1288,7 +1388,8 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     backend.try_delete_write(fd_val)
     backend.try_delete_timer(UInt(fd_val) + TIMER_HEADER)
     backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
-    backend.try_delete_timer(UInt(fd_val) + TIMER_IDLE)
+    # No TIMER_IDLE delete: idle timeouts are deadline-swept by the loop,
+    # never armed as backend timers (see slot_idle_deadline).
     backend.try_delete_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT)
     slot_sse[slot] = False
     slot_ws[slot] = False

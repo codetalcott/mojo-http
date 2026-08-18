@@ -6,6 +6,11 @@ Uses POSIX time/gmtime instead of small_time dependency.
 from std.ffi import external_call
 
 
+def unix_now() -> Int64:
+    """Current wall-clock time as Unix seconds (POSIX time(NULL), vDSO-fast)."""
+    return external_call["time", Int64, Int64](0)
+
+
 def http_date_now() -> String:
     """Get current time formatted as HTTP date.
 
@@ -13,9 +18,16 @@ def http_date_now() -> String:
         Current time in HTTP date format (IMF-fixdate).
         Format: Day, DD Mon YYYY HH:MM:SS GMT
     """
-    # Get current time via POSIX time(NULL) — pass 0 as the pointer arg
-    var t = external_call["time", Int64, Int64](0)
+    return http_date_from_unix(unix_now())
 
+
+def http_date_from_unix(t: Int64) -> String:
+    """Format a Unix timestamp as an HTTP date (IMF-fixdate).
+
+    Split out from http_date_now so the event loop can format once per
+    second and reuse the string — formatting costs ~10 small String
+    allocations plus gmtime, which is measurable at request rate.
+    """
     # Allocate space for the time value
     # NOTE: `alloc` without a Layout is deprecated, but the Layout form returns
     # an owning Allocation[T] (not subscriptable, no unsafe_free) and
