@@ -159,6 +159,14 @@ table above was a different session on the same container. Against that
 session's Go baseline of 36k, 18.9k was 0.53x. The honest way to read the
 two tables together is by ratio, not by subtraction.
 
+**How much this depends on header count.** The A/B above used wrk's default
+request, which sends a single `Host` header — the *least* favourable shape
+for a change whose cost scaled with header count. Measured separately on the
+Django path, where the same before/after pair was run at one header and at
+twelve: the benefit was 2.4x larger with twelve
+(see [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). Real traffic sits at the
+twelve end, so the number in the table is a floor, not a ceiling.
+
 **The profile then flipped.** Before, stack samples showed
 `String.to_lowercase`, `Headers.__init__`, and the allocator. After, 31 of
 35 samples sit in `__libc_send` — the write syscall itself — with exactly

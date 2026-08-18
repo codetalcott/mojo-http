@@ -7,14 +7,23 @@ the same day after each of three serving changes this document motivated: the
 shared pre-fork listener, the move to the non-blocking event loop, and the
 leak-free bridge.
 
+Re-measured again 2026-08-18 after the server-layer work in
+[SERVER_PERFORMANCE.md](SERVER_PERFORMANCE.md) — the syscall-budget pass and
+the span-based headers. The tables below are from that session; the earlier
+absolute numbers are not comparable to them (see the warning under Setup).
+
 ## Setup
 
 Same Django project (`apps/django_wsgi/djangoproj`, `DEBUG = False`, no
 middleware), same worker counts, same machine, same load generator.
 
-- 4-core Linux container, everything (server + load) on one box. The
-  container is shared, so absolute numbers drift between sessions — each
-  table row was measured in the same run as its gunicorn baseline.
+- 4-core Linux container, everything (server + load) on one box. **The
+  container is shared and drifts hard — never compare absolutes across
+  sessions, or even across distant rounds of one session.** Measured
+  directly on 2026-08-18: an untouched binary produced 2,035 req/s in one
+  round and 3,406 in another, 1.7x from container load alone. Every table
+  row was therefore measured by alternating against its comparator inside
+  one session, and the ratios are what carry meaning.
 - mojo-http: `apps/django_wsgi/server.mojo` compiled with `mojo build`
   (Mojo 1.0, the `uv.lock` pin), `M0_WORKERS=N`. Workers accept from one
   listener bound before the fork, the same model gunicorn uses — a busy
@@ -24,8 +33,12 @@ middleware), same worker counts, same machine, same load generator.
   and on macOS it does not distribute at all.) Each worker serves through the
   non-blocking event loop; the history below explains why.
 - gunicorn 26.0.0, default sync workers, `-w N`, `--log-level warning`
-- wrk: 2 threads, 16 connections, 10 s runs after a 3 s warm-up, against `/`
-  (a plain-text Django view)
+- wrk: 2 threads, 16 connections, 10 s runs after a 5 s warm-up, against `/`
+  (a plain-text Django view). The 2026-08-18 rows send a browser-shaped
+  request — twelve headers (`User-Agent`, `Accept`, `Accept-Language`,
+  `Accept-Encoding`, `Cache-Control`, `Referer`, the `Sec-Fetch-*` set) —
+  because wrk's default sends only `Host`, and header count is the variable
+  the request path is most sensitive to.
 
 Two client modes, because the servers differ in one relevant way: gunicorn's
 sync worker closes every connection (it does not implement keep-alive), while
@@ -35,22 +48,68 @@ actually do.
 
 ## Results
 
-Requests per second, with wrk's p99 latency in parentheses:
+Measured 2026-08-18, one worker and two, against a **browser-shaped request**
+— twelve headers, the sort a real client sends. That choice matters and is
+justified in the next section.
 
-| Workers | mojo-http (keep-alive) | mojo-http (close) | gunicorn (best of both modes) |
-|--------:|-----------------------:|------------------:|------------------------------:|
-| 1       | 5,865 (4.0 ms)         | 5,020 (5.9 ms)    | 3,883 (6.5 ms)                 |
-| 2       | 11,443 (2.4 ms)        | 10,296 (2.3 ms)   | 7,723 (3.1 ms)                 |
-| 4       | 19,596 (3.3 ms)        | 14,127 (4.7 ms)   | 9,613 (2.9 ms)                 |
+Requests per second, wrk p50 / p99 in parentheses:
 
-~1.5x gunicorn's throughput at 1–2 workers and ~2x at 4, with p99 at or below
-gunicorn's at 1–2 workers. The 4-worker rows carry a caveat for both servers:
-4 workers plus 2 wrk threads oversubscribe 4 cores, so the load generator
-competes with the servers it is measuring.
+| Workers | mojo-http (keep-alive) | mojo-http (close) | gunicorn        |
+|--------:|-----------------------:|------------------:|----------------:|
+| 1       | 4,279 (3.5 / 8.8 ms)   | 4,186 (3.7 / 5.8 ms) | 3,140 (4.8 / 8.9 ms) |
+| 2       | 8,166 (1.9 / 84 ms)    | 8,640 (1.8 / 3.6 ms) | 5,749 (2.6 / 113 ms) |
 
-These numbers hold on a long-lived process — the table's close-mode runs were
-taken *after* the keep-alive runs on the same workers, ~200k requests in.
-That sentence is the point of the next section.
+**1.36x gunicorn at one worker, 1.42x at two** (1.50x comparing close mode,
+the apples-to-apples pairing, since gunicorn's sync worker has no
+keep-alive). p50 is well below gunicorn's at both worker counts.
+
+Two things in that table are worth reading carefully rather than skimming:
+
+- **Close mode is not slower than keep-alive here, and its tail is far
+  better** (3.6 ms vs 84 ms p99 at two workers). Both servers show a fat
+  keep-alive p99 at two workers because 16 persistent connections pin
+  themselves across 2 processes and queue behind each other; gunicorn's is
+  worse still at 113 ms. This is queueing, not per-request cost — the p50s
+  are 1.8-1.9 ms.
+- **Do not compare these absolutes to the 2026-08-16 table above.** The
+  container drifts hard: during this very session the same before-binary
+  measured 2,035 req/s in one round and 3,406 in another, an untouched
+  binary moving 1.7x on container load alone. Every comparison here was
+  taken by alternating the two binaries within one session, and the ratios
+  are what carry meaning.
+
+## What the server-layer work bought the WSGI path
+
+The span-based headers landed a **+72%** throughput win on `apps/hello`,
+where the handler does nothing. The obvious question is how much of that
+survives once a real Django request is in the way. Two things were measured
+rather than assumed.
+
+**The win scales with header count, as predicted.** The old `Headers`
+allocated per header to fill and per lookup to probe, so its cost was a
+function of how many headers a request carried. Alternating A/B against the
+parent commit, one worker:
+
+| request shape          | before | after | delta   |
+|------------------------|-------:|------:|--------:|
+| wrk default (1 header) | 2,822  | 2,979 | **+5.6%**  |
+| browser-shaped (12)    | 2,052* | 2,308*| **+13.8%** |
+
+\* the browser rows are the mean of four alternating rounds; two ran during
+a slower container period (~2.0k) and two during a faster one (~3.4k), which
+is why the ratio is quoted rather than the absolutes.
+
+Twelve headers roughly **2.4x the benefit** of one. Anything measuring this
+server with a minimal synthetic request is understating what real traffic
+gets.
+
+**But it is diluted, and that is the honest headline.** +72% on hello
+becomes ~+14% on Django, because at ~3-4k req/s each request spends a few
+hundred microseconds inside CPython and Django — the server layer is a
+small and now-smaller slice of it. The header work is worth more to
+`apps/notes_api` and the Datastar apps, where the handler is Mojo, than it
+is here. The place to spend effort on *this* path remains the bridge and the
+worker count, not the request parser.
 
 ## History: three fixes, and what the tails actually were
 
@@ -115,12 +174,27 @@ uv run mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/
 source .venv/bin/activate            # the embedded CPython must see Django
 M0_WORKERS=2 /tmp/django_server &
 
-wrk -t2 -c16 -d10s --latency http://127.0.0.1:8080/
-wrk -t2 -c16 -d10s --latency -H 'Connection: close' http://127.0.0.1:8080/
+# A browser-shaped request; wrk's default sends only Host, which understates
+# the header-handling cost by roughly 2.4x (see the header-count table above).
+BROWSER=(-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+         -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+         -H 'Accept-Language: en-US,en;q=0.9' -H 'Accept-Encoding: gzip, deflate, br'
+         -H 'Cache-Control: max-age=0' -H 'Upgrade-Insecure-Requests: 1'
+         -H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document'
+         -H 'Referer: http://127.0.0.1:8080/')
+
+wrk -t2 -c16 -d10s --latency "${BROWSER[@]}" http://127.0.0.1:8080/
+wrk -t2 -c16 -d10s --latency "${BROWSER[@]}" -H 'Connection: close' http://127.0.0.1:8080/
 
 cd apps/django_wsgi && uv run --with gunicorn python -m gunicorn \
   djangoproj.wsgi:application -w 2 -b 127.0.0.1:8080 --log-level warning
 ```
+
+To reproduce a *before/after* claim rather than an absolute, build both
+binaries first and alternate them within one session — start A, measure,
+kill, start B, measure, kill, repeat. Given the drift above, three or more
+alternating rounds are the minimum worth quoting, and the ratio is the
+result; the absolutes are not.
 
 When killing the mojo server, kill the workers too — they are forks of the
 supervisor, and their pids are in its startup output. `M0_ACCESS_LOG=true`
