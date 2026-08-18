@@ -10,7 +10,7 @@ from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget, size_of
 
 from lightbug_http.c.aliases import ExternalMutUnsafePointer
-from lightbug_http.c.socket import O_NONBLOCK
+from lightbug_http.c.socket import O_NONBLOCK, setsockopt
 
 
 # --- kqueue filter constants ---
@@ -211,6 +211,21 @@ def set_nonblocking(fd: FileDescriptor) raises:
     if result == -1:
         var errno = get_errno()
         raise Error("fcntl F_SETFL failed, errno: ", errno)
+
+
+def set_tcp_nodelay(fd: FileDescriptor):
+    """Disable Nagle's algorithm on a TCP socket (best-effort).
+
+    The event loop writes each response with a single send(), so there is
+    nothing for Nagle to usefully coalesce — it only delays the response
+    when a previous small segment is still unacknowledged. Every mainstream
+    server (Go net/http, nginx, node) disables it on accepted sockets.
+    IPPROTO_TCP=6 and TCP_NODELAY=1 on both Linux and macOS.
+    """
+    try:
+        setsockopt(fd, c_int(6), c_int(1), c_int(1))
+    except:
+        pass
 
 
 def is_nonblocking(fd: FileDescriptor) raises -> Bool:

@@ -389,7 +389,19 @@ def encode_latin1_header_value(value: String) -> List[UInt8]:
 def write_header_latin1(mut writer: ByteWriter, key: String, value: String):
     """Write a header with the value transcoded to ISO-8859-1."""
     writer.write(key, ": ")
-    writer.consuming_write(encode_latin1_header_value(value))
+    # ASCII fast path: transcoding only changes bytes >= 0x80, so a pure
+    # ASCII value (the overwhelmingly common case) can be written directly
+    # instead of allocating a transcode buffer per header per response.
+    var bytes = value.as_bytes()
+    var all_ascii = True
+    for i in range(len(bytes)):
+        if bytes[i] >= 0x80:
+            all_ascii = False
+            break
+    if all_ascii:
+        writer.write(value)
+    else:
+        writer.consuming_write(encode_latin1_header_value(value))
     writer.write(lineBreak)
 
 

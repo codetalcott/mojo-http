@@ -3,7 +3,7 @@ from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
 from lightbug_http.io.sync import Duration
 from lightbug_http.strings import lineBreak, strHttp11, whitespace
-from lightbug_http.uri import URI
+from lightbug_http.uri import URI, QueryMap
 from std.utils import Variant
 
 from lightbug_http.cookie import RequestCookieJar
@@ -93,7 +93,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
     @staticmethod
     def from_parsed(
         server_addr: String,
-        parsed: ParsedRequestHeaders,
+        var parsed: ParsedRequestHeaders,
         var body: Bytes,
         max_uri_length: Int,
     ) raises RequestBuildError -> HTTPRequest:
@@ -126,16 +126,49 @@ struct HTTPRequest(Copyable, Encodable, Writable):
                 var value = String(key_value[1]) if len(key_value) > 1 else String("")
                 cookies._inner[key] = value
 
-        var full_uri_string = String(server_addr, parsed.path)
+        # Fast path: an origin-form path with no percent-escapes and no query
+        # string needs no URI parsing at all — every derived field is the
+        # path itself. This is the overwhelmingly common case for API
+        # traffic; anything else falls back to the full parser.
+        var needs_full_parse = (
+            parsed.path.byte_length() == 0
+            or parsed.path.as_bytes()[0] != 0x2F  # '/'
+            or ("%" in parsed.path)
+            or ("?" in parsed.path)
+        )
+
         var parsed_uri: URI
-        try:
-            parsed_uri = URI.parse(full_uri_string)
-        except uri_err:
-            raise RequestBuildError(URIParseError())
+        if not needs_full_parse:
+            parsed_uri = URI(
+                _original_path=parsed.path,
+                scheme="http",
+                path=parsed.path,
+                query_string="",
+                queries=QueryMap(),
+                _hash="",
+                host=server_addr,
+                port=None,
+                full_uri=parsed.path,
+                request_uri=parsed.path,
+                username="",
+                password="",
+            )
+        else:
+            var full_uri_string = String(server_addr, parsed.path)
+            try:
+                parsed_uri = URI.parse(full_uri_string)
+            except uri_err:
+                raise RequestBuildError(URIParseError())
+
+        # Take the parsed headers by swap rather than copying the Dict —
+        # `parsed` is owned here, but Mojo cannot destroy a struct with one
+        # field moved out, so swap an empty collection into its place.
+        var taken_headers = Headers()
+        swap(taken_headers, parsed.headers)
 
         var request = HTTPRequest(
             uri=parsed_uri^,
-            headers=parsed.headers.copy(),
+            headers=taken_headers^,
             method=parsed.method,
             protocol=parsed.protocol,
             cookies=cookies^,
