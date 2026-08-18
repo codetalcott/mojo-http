@@ -5,7 +5,7 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
-## [Unreleased]
+## [0.3.0] — 2026-08-17
 
 - WebSocket text messages are now validated as UTF-8 (RFC 6455 §8.1) on
   the assembled message — a multi-byte character split across fragments is
@@ -150,5 +150,6 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.3.0
 [0.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.2.0
 [0.1.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.1.0
