@@ -25,6 +25,11 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    # Green runs finish in 4-6 min. Without an explicit cap a hung step runs
+    # to GitHub's 6-hour default while holding this ref's concurrency group,
+    # so a stall reads as "still running" for hours instead of failing. See
+    # the apt step below for the stall that motivated this.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -35,6 +40,11 @@ jobs:
       # link time, or the build fails with "cannot find -lsqlite3".
       - name: Install libsqlite3 (Linux)
         if: runner.os == 'Linux'
+        # Normally ~6 s. Observed hanging for 63 min against an unreachable
+        # apt mirror, which is what a step-level cap turns into a fast,
+        # legible failure — the job cap above is the backstop, this is the
+        # one step known to stall.
+        timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
       - name: Build packages (cross-package deps need .mojoc)
         run: uv run poe build-all
@@ -52,6 +62,10 @@ jobs:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     needs: unit-tests
+    # Green runs finish in 3-5 min; same rationale as unit-tests above. Every
+    # smoke step starts a server and polls it, so a wedged server would
+    # otherwise hang here rather than fail.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -59,6 +73,11 @@ jobs:
           enable-cache: true
       - name: Install libsqlite3 (Linux)
         if: runner.os == 'Linux'
+        # Normally ~6 s. Observed hanging for 63 min against an unreachable
+        # apt mirror, which is what a step-level cap turns into a fast,
+        # legible failure — the job cap above is the backstop, this is the
+        # one step known to stall.
+        timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
       - name: Build all packages
         run: uv run poe build-all
