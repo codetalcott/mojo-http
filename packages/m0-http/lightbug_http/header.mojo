@@ -405,95 +405,266 @@ def write_header_latin1(mut writer: ByteWriter, key: String, value: String):
     writer.write(lineBreak)
 
 
-@fieldwise_init
-struct Headers(Copyable, Writable):
-    """Collection of HTTP headers.
+@always_inline
+def ascii_lower_byte(b: Byte) -> Byte:
+    """ASCII-lowercase a single byte; non-letters pass through unchanged.
 
-    Header keys are normalized to lowercase for case-insensitive lookup.
+    Header field names are ASCII by definition (RFC 9110 §5.1), so this is
+    the whole of case normalization for them — no Unicode tables, no
+    allocation.
+    """
+    return (b | 0x20) if (b >= 0x41 and b <= 0x5A) else b
+
+
+@always_inline
+def name_is(name: Span[Byte, _], lowercase: String) -> Bool:
+    """Whether a raw header name equals a known-lowercase constant.
+
+    Lets the parser dispatch on field names without calling `.lower()`,
+    which allocated a copy of every header name on every request.
+    """
+    var want = lowercase.as_bytes()
+    if len(name) != len(want):
+        return False
+    for i in range(len(name)):
+        if ascii_lower_byte(name[i]) != want[i]:
+            return False
+    return True
+
+
+struct Headers(Copyable, Writable):
+    """Collection of HTTP headers, stored as spans into one flat buffer.
+
+    Header names are normalized to lowercase, so lookup is case-insensitive.
+
+    Storage is a single byte blob holding every name and value back to back,
+    indexed by parallel (offset, length) arrays — the SoA pattern used
+    elsewhere in this repo. This replaced a `Dict[String, String]`, which
+    cost two String allocations per header to fill plus a third on every
+    lookup (`key.lower()` allocates a probe copy before it can hash). A
+    request carries 5-15 headers; over that range a linear scan of
+    contiguous bytes beats hashing outright, and it allocates nothing.
+
+    Insertion order is preserved, which the Dict did not guarantee.
     """
 
-    var _inner: Dict[String, String]
+    var _buf: List[Byte]
+    """Every name and value, back to back. Names are stored lowercased."""
+    var _name_off: List[Int32]
+    var _name_len: List[Int32]
+    var _val_off: List[Int32]
+    var _val_len: List[Int32]
 
     def __init__(out self):
-        self._inner = Dict[String, String]()
+        self._buf = List[Byte]()
+        self._name_off = List[Int32]()
+        self._name_len = List[Int32]()
+        self._val_off = List[Int32]()
+        self._val_len = List[Int32]()
 
     def __init__(out self, var *headers: Header):
-        self._inner = Dict[String, String]()
+        self = Headers()
         for header in headers:
-            self[header.key.lower()] = header.value
+            self[header.key] = header.value
+
+    @always_inline
+    def count(self) -> Int:
+        return len(self._name_off)
 
     @always_inline
     def empty(self) -> Bool:
-        return len(self._inner) == 0
+        return len(self._name_off) == 0
+
+    def _name_matches(self, i: Int, probe: Span[Byte, _]) -> Bool:
+        """Whether entry `i`'s name equals `probe`, case-insensitively.
+
+        Stored names are already lowercase, so only the probe needs folding
+        — which is what lets a lookup run without allocating.
+        """
+        var n = Int(self._name_len[i])
+        if n != len(probe):
+            return False
+        var off = Int(self._name_off[i])
+        for j in range(n):
+            if self._buf[off + j] != ascii_lower_byte(probe[j]):
+                return False
+        return True
+
+    def _find(self, key: Span[Byte, _]) -> Int:
+        """Index of the entry named `key`, or -1."""
+        for i in range(len(self._name_off)):
+            if self._name_matches(i, key):
+                return i
+        return -1
+
+    @always_inline
+    def _value_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
+        var off = Int(self._val_off[i])
+        return Span(self._buf)[off : off + Int(self._val_len[i])]
+
+    @always_inline
+    def _name_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
+        var off = Int(self._name_off[i])
+        return Span(self._buf)[off : off + Int(self._name_len[i])]
 
     @always_inline
     def __contains__(self, key: String) -> Bool:
-        return key.lower() in self._inner
+        return self._find(key.as_bytes()) >= 0
 
     @always_inline
     def __getitem__(self, key: String) raises HeaderKeyNotFoundError -> String:
-        try:
-            return self._inner[key.lower()]
-        except:
+        var i = self._find(key.as_bytes())
+        if i < 0:
             raise HeaderKeyNotFoundError()
+        return String(unsafe_from_utf8=self._value_span(i))
 
     @always_inline
     def get(self, key: String) -> Optional[String]:
-        return self._inner.get(key.lower())
+        var i = self._find(key.as_bytes())
+        if i < 0:
+            return None
+        return String(unsafe_from_utf8=self._value_span(i))
+
+    def value_equals_ignore_case(self, key: String, expected: String) -> Bool:
+        """Whether `key`'s value equals `expected`, case-insensitively.
+
+        The allocation-free form of `headers.get(k).value().lower() == v`,
+        which built two Strings to answer a yes/no question. Used by the
+        `Connection: close` check on every single request.
+        """
+        var i = self._find(key.as_bytes())
+        if i < 0:
+            return False
+        var value = self._value_span(i)
+        var want = expected.as_bytes()
+        if len(value) != len(want):
+            return False
+        for j in range(len(value)):
+            if ascii_lower_byte(value[j]) != ascii_lower_byte(want[j]):
+                return False
+        return True
 
     def keys(self) -> List[String]:
-        """Snapshot of every header key present, lowercased.
+        """Snapshot of every header name present, lowercased.
 
-        The only way to enumerate headers without reaching into `_inner`.
-        Pair each key with `__getitem__` to walk the whole collection — needed
-        by anything that has to project these headers into another
+        Pair each key with `__getitem__` to walk the whole collection —
+        needed by anything projecting these headers into another
         representation, such as a WSGI `environ`.
         """
-        var out = List[String](capacity=len(self._inner))
-        for entry in self._inner.items():
-            out.append(entry.key)
+        var out = List[String](capacity=len(self._name_off))
+        for i in range(len(self._name_off)):
+            out.append(String(unsafe_from_utf8=self._name_span(i)))
         return out^
+
+    def set_bytes(mut self, name: Span[Byte, _], value: Span[Byte, _]):
+        """Insert or overwrite, taking both sides as raw bytes.
+
+        The parser's entry point: it hands over slices of the receive
+        buffer, and the name is lowercased on the way into the blob so no
+        separate `.lower()` copy is ever made.
+
+        An overwrite appends the new value and repoints the index rather
+        than compacting the blob. The stranded bytes are bounded by the
+        header count and die with the request.
+        """
+        var i = self._find(name)
+        var v_off = len(self._buf)
+        for j in range(len(value)):
+            self._buf.append(value[j])
+        if i >= 0:
+            self._val_off[i] = Int32(v_off)
+            self._val_len[i] = Int32(len(value))
+            return
+        var n_off = len(self._buf)
+        for j in range(len(name)):
+            self._buf.append(ascii_lower_byte(name[j]))
+        self._name_off.append(Int32(n_off))
+        self._name_len.append(Int32(len(name)))
+        self._val_off.append(Int32(v_off))
+        self._val_len.append(Int32(len(value)))
 
     @always_inline
     def __setitem__(mut self, key: String, value: String):
-        self._inner[key.lower()] = value
+        self.set_bytes(key.as_bytes(), value.as_bytes())
 
     def pop(mut self, key: String):
-        """Remove a header by key (no-op if not present)."""
-        try:
-            _ = self._inner.pop(key.lower())
-        except:
-            pass
+        """Remove a header by name (no-op if absent).
+
+        Removes the index entry only; the name and value bytes stay in the
+        blob as garbage, same rationale as an overwrite in `set_bytes`.
+        """
+        var i = self._find(key.as_bytes())
+        if i < 0:
+            return
+        _ = self._name_off.pop(i)
+        _ = self._name_len.pop(i)
+        _ = self._val_off.pop(i)
+        _ = self._val_len.pop(i)
 
     def content_length(self) -> Int:
-        """Get Content-Length header value, or 0 if not present/invalid."""
-        var value = self._inner.get(HeaderKey.CONTENT_LENGTH)
-        if not value:
+        """Content-Length as an Int, or 0 if absent or malformed.
+
+        Reads the digits straight out of the blob; the Dict version built a
+        String first, on a path that runs for every request with a body.
+        """
+        var i = self._find(HeaderKey.CONTENT_LENGTH.as_bytes())
+        if i < 0:
             return 0
-        try:
-            return Int(value.value())
-        except:
+        var value = self._value_span(i)
+        if len(value) == 0:
             return 0
+        var total = 0
+        for j in range(len(value)):
+            var d = value[j]
+            if d < 0x30 or d > 0x39:
+                return 0
+            total = total * 10 + Int(d - 0x30)
+        return total
 
     def write_to[T: Writer, //](self, mut writer: T):
-        for header in self._inner.items():
-            write_header(writer, header.key, header.value)
+        for i in range(len(self._name_off)):
+            writer.write(
+                StringSlice(unsafe_from_utf8=self._name_span(i)),
+                ": ",
+                StringSlice(unsafe_from_utf8=self._value_span(i)),
+                lineBreak,
+            )
 
     def write_latin1_to(self, mut writer: ByteWriter):
-        """Write headers with values transcoded to ISO-8859-1 for HTTP wire format."""
-        for header in self._inner.items():
-            write_header_latin1(writer, header.key, header.value)
+        """Write headers with values transcoded to ISO-8859-1 for the wire."""
+        for i in range(len(self._name_off)):
+            writer.write(StringSlice(unsafe_from_utf8=self._name_span(i)), ": ")
+            var value = self._value_span(i)
+            var all_ascii = True
+            for j in range(len(value)):
+                if value[j] >= 0x80:
+                    all_ascii = False
+                    break
+            if all_ascii:
+                writer.write(StringSlice(unsafe_from_utf8=value))
+            else:
+                writer.consuming_write(
+                    encode_latin1_header_value(String(unsafe_from_utf8=value))
+                )
+            writer.write(lineBreak)
 
     def __str__(self) -> String:
         return String(self)
 
     def __eq__(self, other: Headers) -> Bool:
-        if len(self._inner) != len(other._inner):
+        if len(self._name_off) != len(other._name_off):
             return False
-        for item in self._inner.items():
-            var other_val = other._inner.get(item.key)
-            if not other_val or other_val.value() != item.value:
+        for i in range(len(self._name_off)):
+            var j = other._find(self._name_span(i))
+            if j < 0:
                 return False
+            var a = self._value_span(i)
+            var b = other._value_span(j)
+            if len(a) != len(b):
+                return False
+            for k in range(len(a)):
+                if a[k] != b[k]:
+                    return False
         return True
 
 
@@ -570,20 +741,32 @@ def parse_request_headers(
     var seen_content_length = False
 
     for i in range(num_headers):
-        var key = headers_array[i].name.lower()
+        # One `ref` to the element: a second subscript would invalidate the
+        # interior reference taken by the first.
+        ref h = headers_array[i]
+        var name_bytes = h.name.as_bytes()
         # Phase 1c: RFC 9110 §5.5 — trim OWS (SP / HTAB) from field values.
         # picohttpparser preserves surrounding whitespace; we normalise here.
-        var value = headers_array[i].value.strip()
+        # Trimming the span rather than calling `.strip()` keeps this
+        # allocation-free: only a cookie (rare) materializes a String.
+        var vb = h.value.as_bytes()
+        var vs = 0
+        var ve = len(vb)
+        while vs < ve and (vb[vs] == 0x20 or vb[vs] == 0x09):
+            vs += 1
+        while ve > vs and (vb[ve - 1] == 0x20 or vb[ve - 1] == 0x09):
+            ve -= 1
+        var value = vb[vs:ve]
 
-        if key == HeaderKey.SET_COOKIE or key == HeaderKey.COOKIE:
-            cookies.append(String(value))
-        elif key == HeaderKey.CONTENT_LENGTH:
+        if name_is(name_bytes, HeaderKey.SET_COOKIE) or name_is(name_bytes, HeaderKey.COOKIE):
+            cookies.append(String(unsafe_from_utf8=value))
+        elif name_is(name_bytes, HeaderKey.CONTENT_LENGTH):
             if seen_content_length:
                 raise RequestParseError(InvalidHTTPRequestError())
             seen_content_length = True
-            headers._inner[key] = String(value)
+            headers.set_bytes(name_bytes, value)
         else:
-            headers._inner[key] = String(value)
+            headers.set_bytes(name_bytes, value)
 
     # RFC 7230 §3.3.3: reject requests with both Transfer-Encoding and Content-Length
     if HeaderKey.TRANSFER_ENCODING in headers and HeaderKey.CONTENT_LENGTH in headers:
@@ -679,13 +862,16 @@ def parse_response_headers(
     var cookies = List[String]()
 
     for i in range(num_headers):
-        var key = headers_array[i].name.lower()
-        var value = headers_array[i].value
+        # One `ref` to the element: two separate subscripts would invalidate
+        # the first interior reference before the second is taken.
+        ref h = headers_array[i]
+        var name_bytes = h.name.as_bytes()
+        var value = h.value.as_bytes()
 
-        if key == HeaderKey.SET_COOKIE:
-            cookies.append(value)
+        if name_is(name_bytes, HeaderKey.SET_COOKIE):
+            cookies.append(String(unsafe_from_utf8=value))
         else:
-            headers._inner[key] = value
+            headers.set_bytes(name_bytes, value)
 
     var protocol = String("HTTP/1.", minor_version)
 

@@ -363,11 +363,12 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.headers[HeaderKey.CONNECTION] = "close"
 
     def connection_close(self) -> Bool:
-        """RFC 9110 §7.6.1: Connection option tokens are case-insensitive."""
-        var result = self.headers.get(HeaderKey.CONNECTION)
-        if not result:
-            return False
-        return result.value().lower() == "close"
+        """RFC 9110 §7.6.1: Connection option tokens are case-insensitive.
+
+        Compared against the header bytes directly; see the request-side
+        twin for why the String-building form was worth replacing.
+        """
+        return self.headers.value_equals_ignore_case(HeaderKey.CONNECTION, "close")
 
     @always_inline
     def set_connection_keep_alive(mut self):

@@ -9,8 +9,12 @@ zero.
 ## Setup
 
 - 4-core Linux container, 16 GB RAM, server and load generator on one box.
-  Absolute numbers drift between sessions; every comparison row below was
-  measured in the same session as its counterparts.
+  **Absolute numbers drift hard between sessions and comparing across them
+  will mislead you.** Measured directly: the same Go binary served 36k
+  req/s in one session and 60k in another, a 1.7x swing from nothing but
+  container load. Every comparison in this document was therefore taken in
+  the same session as its counterparts, and any before/after claim comes
+  from alternating A/B runs rather than a remembered number.
 - `apps/hello/server.mojo` compiled with `mojo build` (Mojo 1.0, the
   `uv.lock` pin). Single process, `listen_and_serve_nonblocking`, default
   `ServerConfig`.
@@ -109,48 +113,116 @@ Go's remaining ~1.9× is real and is not syscalls — both servers now issue
 the same two per request. It is the per-request object machinery, detailed
 next.
 
+## Span-based headers
+
+The item ranked first below landed next, and it was the largest single win
+in this file's history: **+72% throughput** on top of everything above.
+
+`Headers` stored a `Dict[String, String]`. Filling it cost two String
+allocations per header, `.lower()` allocated a third to normalize each name,
+and every lookup allocated a *fourth* — `key.lower()` builds a probe copy
+before it can hash. At 5-15 headers per request that is dozens of
+allocations to answer questions like "is this connection close?".
+
+It now stores one flat byte blob holding every name and value back to back,
+indexed by parallel (offset, length) arrays — the SoA pattern used
+elsewhere in this repo. Names are lowercased on the way in, so a lookup is
+a linear scan comparing lengths first and folding only the probe's bytes:
+no allocation at all. Over 5-15 entries that beats hashing outright, and
+insertion order is preserved, which the Dict never guaranteed.
+
+Three things fell out of the new representation for free:
+
+- `content_length()` parses digits straight out of the blob instead of
+  materializing a String first — it runs for every request with a body.
+- `value_equals_ignore_case()` answers the `Connection: close` question
+  without building the two Strings the old `get(k).value().lower() == v`
+  needed, on every single request.
+- The parser dispatches field names with `name_is()` against known-
+  lowercase constants, and trims OWS by moving span endpoints, so a header
+  only becomes a String if it is a cookie.
+
+Measured by alternating A/B runs in one session (wrk
+t2/c16 keep-alive):
+
+| variant | req/s | p50 | p99 |
+|---------|------:|----:|----:|
+| `Dict[String, String]` | 29,000 | 535 us | 0.90 ms |
+| **flat blob + offsets** | **50,000** | **320 us** | **485 us** |
+
+Five alternating rounds; the spread within each variant was under 5% and
+the two never overlapped. Go `net/http` measured 60k in that same session,
+so this moved mojo-http from 0.48x to 0.83x of Go on the same box.
+
+Note what these absolute numbers are *not* comparable to: the 18.9k in the
+table above was a different session on the same container. Against that
+session's Go baseline of 36k, 18.9k was 0.53x. The honest way to read the
+two tables together is by ratio, not by subtraction.
+
+**The profile then flipped.** Before, stack samples showed
+`String.to_lowercase`, `Headers.__init__`, and the allocator. After, 31 of
+35 samples sit in `__libc_send` — the write syscall itself — with exactly
+one in the allocator and one each in `set_bytes` and `Headers.__init__`.
+The server is now syscall-bound on loopback rather than allocation-bound.
+
+That result retires the rest of the header work. The parser still builds a
+String per name and per value in `parse_headers` (`create_string_from_reader`),
+and the original plan was to make `HTTPHeader` hold offsets too. The profile
+says that is no longer worth its complexity: the leaf cost it would remove
+does not appear in the samples. Revisit only if a future profile disagrees.
+
+### What this deliberately did not do
+
+The literal design sketched below — spans pointing *into the provision's
+receive buffer*, with zero copy at all — would require `Headers` to carry an
+origin parameter, which propagates to `ParsedRequestHeaders`, `HTTPRequest`,
+and therefore the `HTTPService` trait. That breaks every handler in the
+repo at once: all six apps, the five demo services in `service.mojo`, and
+the README example. The blob copies the header bytes once per request and
+gets the allocation win without touching a single caller — `Headers`'s
+public API (`get`, `[]`, `in`, `pop`, `keys`, `content_length`) is
+unchanged, which is why this landed as a pure internal substitution.
+
 ## Where the remaining gap lives
 
 The canonical fast HTTP/1.1 servers (fasthttp, may-minihttp/ntex, and
-TechEmpower's top plaintext entries generally) share one design decision
-this codebase doesn't make yet: **nothing request-scoped is allocated**.
-fasthttp documents it directly: headers stay `[]byte` slices into the read
-buffer, request/response objects are pooled per connection, `[]byte`→
-`string` conversions are avoided in hot paths. Against that checklist,
-each mojo-http request currently:
+TechEmpower's top plaintext entries generally) share one design decision:
+**nothing request-scoped is allocated**. fasthttp documents it directly —
+headers stay `[]byte` slices into the read buffer, request/response objects
+are pooled per connection, `[]byte`→`string` conversions are avoided in hot
+paths. The header half of that checklist is now done (above). What each
+request still allocates:
 
-- fills a 100-element `HTTPHeader` scratch array, then builds a
-  `Dict[String, String]` — one `String` for every header name (lowercased —
-  `to_lowercase` shows up in stack samples), one for every value;
-- constructs an `HTTPRequest` (cookies jar, URI struct with 12 String
-  fields) and an `HTTPResponse` (its own `Headers` Dict, 3–4 inserts, each
-  `__setitem__` lowercasing its key);
-- encodes into a fresh `ByteWriter` allocation, then moves the result into
-  the slot (`encode_into` exists for buffer reuse but is blocked on moving
-  a buffer out of a list-element field — the `swap` idiom now used in
-  `from_parsed` is the likely unblock);
-- copies the body bytes out of `recv_buffer`.
+- two Strings per header inside `parse_headers`
+  (`create_string_from_reader`) before `Headers` copies the bytes into its
+  blob — the one remaining piece of the header story, and the profile says
+  it is no longer worth chasing;
+- an `HTTPRequest` (cookie jar, URI struct with 12 String fields) and an
+  `HTTPResponse` (its own `Headers`, 3–4 inserts);
+- a fresh `ByteWriter` per response, moved into the slot afterwards
+  (`encode_into` exists for buffer reuse but is blocked on moving a buffer
+  out of a list-element field — the `swap` idiom used in `from_parsed` and
+  in `Headers` is the likely unblock);
+- a copy of the body bytes out of `recv_buffer`.
 
 Ranked next steps, by expected value:
 
-1. **Span-based headers.** Parse into (offset, length) pairs against the
-   provision's `recv_buffer`; materialize a `String` only when a handler
-   asks. Kills the majority of remaining per-request allocations and both
-   `to_lowercase` hot spots (compare case-insensitively against known-
-   lowercase keys instead). This is the fasthttp design, and the largest
-   single item.
-2. **Response encode into a reusable per-slot buffer** via the swap idiom —
-   removes the per-response `ByteWriter` growth cycle. Pair with a
-   `set_header_lc` path that skips `lower()` for known-lowercase constants.
-3. **Close-mode accept path**: `accept4(SOCK_NONBLOCK)` (one syscall instead
+1. **Response encode into a reusable per-slot buffer** via the swap idiom —
+   removes the per-response `ByteWriter` growth cycle. Now the largest
+   remaining allocation on the response side.
+2. **Close-mode accept path**: `accept4(SOCK_NONBLOCK)` (one syscall instead
    of accept + 2 × `fcntl`), and pool header-timeout timerfds instead of
    create/close per connection. Only matters for non-keep-alive clients;
-   the close-mode p99 (82 ms) suggests accept-queue latency is the tail.
-4. **Body handling**: hand the handler a span into `recv_buffer` instead of
+   the close-mode p99 suggests accept-queue latency is the tail.
+3. **Body handling**: hand the handler a span into `recv_buffer` instead of
    a copied `Bytes` (needs a lifetime story for the handler contract).
 
-For scale-out, `M0_WORKERS` prefork already exists (see
-WSGI_PERFORMANCE.md); everything here compounds per worker.
+Temper all three against the post-header profile: with 31 of 35 samples in
+`__libc_send`, user-space work is no longer what limits this server on
+loopback. The next honest win is likely more sockets doing the sending —
+`M0_WORKERS` prefork already exists (see WSGI_PERFORMANCE.md) and
+everything here compounds per worker — rather than more shaving in the
+request path. Measure before building.
 
 ## Non-goals, considered and rejected
 

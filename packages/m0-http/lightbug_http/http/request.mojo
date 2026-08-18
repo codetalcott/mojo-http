@@ -160,7 +160,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             except uri_err:
                 raise RequestBuildError(URIParseError())
 
-        # Take the parsed headers by swap rather than copying the Dict —
+        # Take the parsed headers by swap rather than copying them —
         # `parsed` is owned here, but Mojo cannot destroy a struct with one
         # field moved out, so swap an empty collection into its place.
         var taken_headers = Headers()
@@ -234,11 +234,11 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         """Check if the Connection header is set to 'close'.
 
         RFC 9110 §7.6.1: Connection option tokens are case-insensitive.
+
+        Answered against the header bytes directly — the `get(...).lower()`
+        form built two Strings per request just to compare four characters.
         """
-        var result = self.headers.get(HeaderKey.CONNECTION)
-        if not result:
-            return False
-        return result.value().lower() == "close"
+        return self.headers.value_equals_ignore_case(HeaderKey.CONNECTION, "close")
 
     def write_to[T: Writer, //](self, mut writer: T):
         """Write the request in HTTP format to a writer."""
