@@ -5,7 +5,7 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
-## [0.3.0] — 2026-08-17
+## [0.3.0] — 2026-08-18
 
 - WebSocket text messages are now validated as UTF-8 (RFC 6455 §8.1) on
   the assembled message — a multi-byte character split across fragments is
