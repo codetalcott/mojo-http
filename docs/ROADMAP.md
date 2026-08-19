@@ -196,6 +196,29 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **Request bodies that needed a second `recv` timed out with 408.** Read
+  interest was registered only while a connection sat in `READING_HEADERS`
+  — the accept path's arming condition names that state explicitly, and
+  the transition into `READING_BODY` armed the body *timer* and nothing
+  else. Edge-triggered epoll then made the stall total rather than merely
+  racy: the tail of the body was usually already in the socket buffer, and
+  the edge that delivered it was spent, so no further event was owed.
+  Every request whose body did not land inside the first 4KB staging read
+  stalled until `body_read_timeout` answered 408, as did every request
+  whose client flushed headers before the body at any size. Headers were
+  never affected, which is what hid it: an incomplete header read leaves
+  the state at `READING_HEADERS`, so that path armed correctly and 8KB of
+  headers always worked.
+
+  The fix re-registers on entering `READING_BODY` and after each
+  incomplete body read, unconditionally — with `EPOLLET` a fresh
+  `EPOLL_CTL_MOD` is what regenerates readiness for bytes that are pending
+  but unread, so a `slot_read_armed` guard would have preserved half the
+  bug. `poe smoke-django` now posts a 256KB binary body and a
+  headers-flushed-first body and compares the echo byte for byte; the old
+  assertions all used bodies small enough to arrive in the eager read,
+  which is why CI stayed green through it.
+
 - **Cross-worker WebSocket fan-out** (`m0_http.WSHub` + `apps/ws_chat`):
   the handler-side registry for WebSocket connections, riding the same
   `BroadcastBus` as SSE — the bus is transport-agnostic, and
