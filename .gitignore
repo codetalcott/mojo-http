@@ -24,7 +24,14 @@ apps/hello/hello
 # smoke test output
 hello.log
 counter.log
+counter2.log
 django.log
+django2.log
+notes.log
+todo.log
+ws.log
+chat.log
+chat2.log
 sse.txt
 expected.bin
 got.bin
