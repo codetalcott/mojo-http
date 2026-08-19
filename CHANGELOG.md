@@ -9,6 +9,35 @@ versions may break the API**.
 
 ### Fixed
 
+- **Request cookies never reached a WSGI application.** The request parser
+  diverted `Cookie` out of the header map into `RequestCookieJar`, and the
+  WSGI environ is built by walking the header map — so `HTTP_COOKIE` was
+  absent and `request.COOKIES` was always empty. Every Django session,
+  login, CSRF check and message silently behaved as though the visitor had
+  arrived with no cookies at all. `Cookie` now stays in `headers` as well as
+  feeding the jar, and several `Cookie` fields are rejoined into one
+  `"; "`-separated list (RFC 6265 §5.4) rather than collapsing to the last
+  one. `Set-Cookie` on a *request* is no longer folded into the request's
+  own cookies — it is a response field, and treating it as one invented a
+  cookie the client never sent.
+
+  Because a parsed request now carries its cookies in both places, `encode`
+  and `write_to` write the jar only when `headers` does not already carry
+  the field, so re-encoding a parsed request still emits one `Cookie`.
+
+- **`RequestCookieJar` mis-parsed values, and its lookups did not match its
+  storage.** Pairs were split on every `=` rather than the first, so any
+  value containing one was truncated at the first segment — base64 pads with
+  `=`, so a Django `sessionid` routinely lost its tail. Splitting also ran
+  over the whole field instead of per cookie, so `a=1; b=2` parsed as one
+  cookie `a` holding `1; b`. A pair with no `=` was stored under the empty
+  name instead of being ignored (RFC 6265 §5.2). And `__getitem__`
+  lowercased the key while stores, `__contains__` and `to_header` did not,
+  so a jar holding `sessionId` answered nothing to any spelling; cookie
+  names are case-sensitive (RFC 6265 §4.1.1) and are now treated that way
+  throughout. The jar's own `parse_cookies` was dead code — `HTTPRequest`
+  hand-rolled a separate, buggier copy — and both now share one path.
+
 - **A request body that could not be read in one `recv` never completed.**
   The event loop registered read interest only while a connection was in
   `READING_HEADERS`; once headers parsed and the state moved to
@@ -25,6 +54,14 @@ versions may break the API**.
   uploads and JSON APIs all timed out. `poe smoke-django` now posts a 256KB
   binary body and a header-flushed-first body to `/echo` and compares the
   echo byte for byte.
+
+### Changed
+
+- The Django example enables `django.contrib.sessions` on the signed-cookie
+  backend, so it still needs no database. `poe smoke-django` asserts request
+  cookies reach a view intact (including a value containing `=`), that split
+  `Cookie` fields rejoin, that a cookieless request stays cookieless, and
+  that a session counter advances across three requests.
 
 ## [0.3.0] — 2026-08-18
 

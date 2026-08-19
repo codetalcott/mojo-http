@@ -44,6 +44,31 @@ def query(request):
     return HttpResponse(request.GET.get("name", ""), content_type="text/plain")
 
 
+def cookies_echo(request):
+    """Echoes the cookies Django parsed out of the request.
+
+    The regression test for the request half of the cookie path. The server
+    used to divert `Cookie` out of the header map into its own jar, so
+    `HTTP_COOKIE` never reached the environ and this view saw nothing —
+    which is a logged-out visitor as far as any Django app can tell.
+    """
+    pairs = sorted(f"{k}={v}" for k, v in request.COOKIES.items())
+    return HttpResponse("|".join(pairs), content_type="text/plain")
+
+
+def session_bump(request):
+    """Increments a counter held in the session, and reports it.
+
+    The round trip: Django writes `sessionid` as a Set-Cookie on the way out,
+    the client sends it back, and the count only advances if the request half
+    of the cookie path works. A server that drops request cookies answers 1
+    forever, which is why the smoke asserts the sequence and not one call.
+    """
+    count = request.session.get("count", 0) + 1
+    request.session["count"] = count
+    return HttpResponse(f"count={count}", content_type="text/plain")
+
+
 def boom(request):
     """Raises, so the server's 500 path can be asserted."""
     raise RuntimeError("intentional failure")
@@ -72,6 +97,8 @@ def slow(request):
 urlpatterns = [
     path("", hello),
     path("cookies", cookies),
+    path("cookies/echo", cookies_echo),
+    path("session/bump", session_bump),
     path("echo", echo),
     path("binary", binary),
     path("query", query),

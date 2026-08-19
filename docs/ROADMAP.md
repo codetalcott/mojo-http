@@ -196,6 +196,35 @@ methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 ## Recently resolved
 
+- **Request cookies never reached a WSGI application.** The parser diverted
+  `Cookie` out of the header map into `RequestCookieJar`; the WSGI environ is
+  built by walking the header map, so `HTTP_COOKIE` was absent and
+  `request.COOKIES` was always empty. Nothing errored — Django simply saw
+  every visitor as having arrived with no cookies, which disables sessions,
+  login, CSRF and messages at once and looks from the outside like a user
+  who will not stay logged in.
+
+  `Cookie` now stays in `headers` *and* feeds the jar, since the two readers
+  want different things: a Mojo handler wants `req.cookies`, and a WSGI
+  application wants the raw field to parse itself, which is what PEP 3333
+  asks for. Several `Cookie` fields rejoin into one `"; "`-separated list
+  rather than collapsing to the last, and because a parsed request now holds
+  its cookies in both places, `encode`/`write_to` write the jar only when
+  `headers` lacks the field so a re-encoded request still emits one.
+
+  The jar itself was broken three ways and had no callers, which is why none
+  of it had ever been noticed: it split on every `=` (truncating any base64
+  value, so a real `sessionid` lost its tail), split across the whole field
+  rather than per cookie (`a=1; b=2` became one cookie `a` holding `1; b`),
+  and lowercased lookups against case-sensitive storage. Its own
+  `parse_cookies` was dead — `HTTPRequest` hand-rolled a separate, buggier
+  copy — and both now share one path.
+
+  The example enables `django.contrib.sessions` on the signed-cookie backend
+  to prove it, which keeps the "no database" rule: `poe smoke-django` now
+  asserts a session counter advances across three requests, which it cannot
+  do unless cookies survive in both directions.
+
 - **Request bodies that needed a second `recv` timed out with 408.** Read
   interest was registered only while a connection sat in `READING_HEADERS`
   — the accept path's arming condition names that state explicitly, and
