@@ -19,19 +19,34 @@ struct RequestCookieJar(Copyable, Writable):
         var cookie_header = headers.get(HeaderKey.COOKIE)
         if not cookie_header:
             return None
+        self.add_pairs(cookie_header.value())
 
-        var cookie_strings = cookie_header.value().split("; ")
+    def add_pairs(mut self, header_value: String):
+        """Parse one `Cookie` field value — `a=1; b=2` — into the jar.
 
-        for chunk in cookie_strings:
-            var key = String("")
-            var value = chunk
-            if "=" in chunk:
-                var key_value = chunk.split("=")
-                key = String(key_value[0])
-                value = key_value[1]
+        Split on the *first* `=` only. A cookie-value is opaque and may
+        contain `=`: base64 pads with it, so a Django `sessionid` routinely
+        ends in one, and splitting on every `=` truncated the value to its
+        first segment. Per RFC 6265 §5.4 the pairs are `; `-separated;
+        surrounding whitespace is tolerated because a single `;` separator is
+        common in the wild.
 
+        A pair with no `=` at all is skipped rather than stored under an empty
+        name — RFC 6265 §5.2 says to ignore it, and the empty-name entry it
+        used to create could be clobbered by the next such pair.
+        """
+        for chunk_ref in header_value.split(";"):
+            var chunk = String(chunk_ref).strip()
+            if chunk.byte_length() == 0:
+                continue
+            var eq = chunk.find("=")
+            if eq < 0:
+                continue
+            var name = String(String(chunk[byte=:eq]).strip())
+            if name.byte_length() == 0:
+                continue
             # TODO value must be "unquoted"
-            self._inner[key] = String(value)
+            self._inner[name] = String(chunk[byte=eq + 1 :])
 
     @always_inline
     def empty(self) -> Bool:
@@ -46,7 +61,11 @@ struct RequestCookieJar(Copyable, Writable):
 
     @always_inline
     def __getitem__(self, key: String) raises -> String:
-        return self._inner[key.lower()]
+        # Cookie names are case-sensitive (RFC 6265 §4.1.1), and `__contains__`
+        # and `to_header` have always treated them that way. Lowercasing only
+        # here meant a jar holding `sessionid` answered `get("sessionid")` but
+        # a jar holding `sessionId` answered nothing to any spelling at all.
+        return self._inner[key]
 
     def get(self, key: String) -> Optional[String]:
         try:
