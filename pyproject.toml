@@ -478,6 +478,65 @@ n=$(curl -s -i http://localhost:8080/cookies | grep -ci '^set-cookie:')
 echo 'round-trip-me' | curl -s --data-binary @- http://localhost:8080/echo \
   | grep -q 'round-trip-me' || fail 'POST body did not round-trip'
 
+# A body the server cannot read in one go. Both shapes below answered 408
+# after a 30s stall until the event loop learned to register read interest
+# when it enters READING_BODY: the accept path only armed EVFILT_READ while
+# the state was still READING_HEADERS, and epoll is edge-triggered, so bytes
+# already sitting in the socket buffer raised no further edge. Ordinary
+# Django traffic is exactly these two shapes — a form post or upload larger
+# than the 4KB staging buffer, and any client that flushes headers before
+# the body. The socket timeouts keep a regression to seconds instead of
+# hanging CI until the job limit.
+python3 - <<'PYEOF'
+import socket, sys, time
+
+def post(body, split):
+    head = (b"POST /echo HTTP/1.1\\r\\nHost: localhost\\r\\n"
+            b"Content-Type: application/octet-stream\\r\\n"
+            b"Content-Length: %d\\r\\n\\r\\n" % len(body))
+    s = socket.create_connection(("localhost", 8080), timeout=15)
+    try:
+        if split:
+            s.sendall(head)
+            time.sleep(0.2)   # force the body into its own read
+            s.sendall(body)
+        else:
+            s.sendall(head + body)
+        data = b""
+        while b"\\r\\n\\r\\n" not in data:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        head_end = data.index(b"\\r\\n\\r\\n") + 4
+        status = data.split(b"\\r\\n")[0]
+        if b"200" not in status:
+            return status, b""
+        while len(data) - head_end < len(body):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        return status, data[head_end:]
+    finally:
+        s.close()
+
+big = bytes(range(256)) * 1024          # 256KB, binary, > the 4KB staging buffer
+status, echoed = post(big, split=False)
+if b"200" not in status:
+    print("large body: expected 200, got %r" % status); sys.exit(1)
+if echoed != big:
+    print("large body: echoed %d of %d bytes" % (len(echoed), len(big))); sys.exit(1)
+
+small = b"headers-flushed-first"
+status, echoed = post(small, split=True)
+if b"200" not in status:
+    print("split write: expected 200, got %r" % status); sys.exit(1)
+if echoed != small:
+    print("split write: echoed %r" % echoed); sys.exit(1)
+PYEOF
+[ $? = 0 ] || fail 'a request body that needed a second read did not complete'
+
 # QUERY_STRING reaches Django's request.GET rather than being swallowed.
 curl -s 'http://localhost:8080/query?name=ada+lovelace' \
   | grep -q 'ada lovelace' || fail 'QUERY_STRING did not reach the view'

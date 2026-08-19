@@ -5,6 +5,27 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+### Fixed
+
+- **A request body that could not be read in one `recv` never completed.**
+  The event loop registered read interest only while a connection was in
+  `READING_HEADERS`; once headers parsed and the state moved to
+  `READING_BODY`, nothing armed `EVFILT_READ` again. Since epoll is
+  edge-triggered, body bytes already waiting in the socket buffer raised no
+  further edge either, so the connection stalled until `body_read_timeout`
+  answered `408`. Both the transition into `READING_BODY` and each
+  incomplete body read now re-register read interest.
+
+  This hit every request whose body did not arrive inside the first 4KB
+  staging read — any POST or PUT over ~4KB, and any request at all whose
+  client flushed headers before the body, regardless of size. It affected
+  every app in the repo, not just the WSGI host: Django form posts, file
+  uploads and JSON APIs all timed out. `poe smoke-django` now posts a 256KB
+  binary body and a header-flushed-first body to `/echo` and compares the
+  echo byte for byte.
+
 ## [0.3.0] — 2026-08-18
 
 - WebSocket text messages are now validated as UTF-8 (RFC 6455 §8.1) on

@@ -626,6 +626,20 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             date_cache_sec, date_cache,
                         )
 
+                    # One recv per event does not drain an edge-triggered
+                    # socket: a body larger than the staging buffer leaves
+                    # bytes pending that will never raise another edge on
+                    # their own. Re-register to regenerate readiness for
+                    # them, the same reason as the arm in
+                    # _handle_read_headers.
+                    if (
+                        slot_fds[slot] != UNUSED
+                        and provision_pool.provisions[slot].state.kind
+                        == ConnectionState.READING_BODY
+                    ):
+                        backend.try_add_read(fd_val)
+                        slot_read_armed[slot] = True
+
                 continue
 
             # --- Write events on connection sockets ---
@@ -1026,6 +1040,23 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 slot_read_armed, slot_idle_deadline,
                 date_cache_sec, date_cache,
             )
+
+    # Still short of a complete body: register read interest for the rest.
+    #
+    # Nothing else does. The accept path arms EVFILT_READ only while the
+    # state is still READING_HEADERS, so a request whose headers completed
+    # in the eager read but whose body did not would sit unarmed until the
+    # body timer answered 408. The re-registration is unconditional rather
+    # than guarded on `slot_read_armed`, because epoll is edge-triggered:
+    # the tail of the body is frequently already in the socket buffer, the
+    # edge that carried it is spent, and only a fresh EPOLL_CTL_MOD
+    # regenerates readiness for bytes that are pending but unread.
+    if (
+        slot_fds[slot] != UNUSED
+        and provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY
+    ):
+        backend.try_add_read(fd_val)
+        slot_read_armed[slot] = True
 
     provision_pool.provisions[slot].last_parse_len = len(provision_pool.provisions[slot].recv_buffer)
 
