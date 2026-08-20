@@ -30,6 +30,7 @@ things actually keep calling.
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.io.bytes import Bytes
+from std.memory import bitcast
 
 
 # Opcodes (RFC 6455 §5.2).
@@ -67,8 +68,7 @@ def sha1(data: Span[Byte, _]) -> List[UInt8]:
 
     # Pad: 0x80, zeros to 56 mod 64, then the bit length big-endian.
     var msg = List[UInt8](capacity=len(data) + 72)
-    for i in range(len(data)):
-        msg.append(data[i])
+    msg.extend(data)
     msg.append(0x80)
     while len(msg) % 64 != 56:
         msg.append(0)
@@ -260,8 +260,7 @@ def encode_ws_frame(opcode: Int, payload: Span[Byte, _]) -> List[UInt8]:
         out.append(127)
         for shift in range(56, -8, -8):
             out.append(UInt8((UInt64(n) >> UInt64(shift)) & 0xFF))
-    for i in range(n):
-        out.append(payload[i])
+    out.extend(payload)
     return out^
 
 
@@ -297,15 +296,84 @@ def close_frame(code: Int) -> List[UInt8]:
     return encode_ws_frame(WS_OP_CLOSE, Span(body))
 
 
+def unmask_payload(
+    masked: Span[Byte, _], mask: SIMD[DType.uint8, 4]
+) -> List[UInt8]:
+    """Undo a client frame's masking (RFC 6455 §5.3), 64 bytes at a time.
+
+    The mask is four bytes applied cyclically, so a scalar loop pays an
+    index-modulo per byte. Splatting it across 64 lanes turns the whole
+    payload into one XOR per chunk; 64 is a multiple of 4, so the pattern
+    stays phase-aligned and the scalar tail needs no special casing.
+
+    The splat itself is on the critical path for small frames — building it
+    with 64 lane stores costs more than the XOR it enables, and made short
+    frames slower than the scalar loop it replaced. Widening the four bytes
+    to a word and broadcasting that is effectively free. Bytes and word are
+    reinterpreted through `bitcast` in both directions, so lane k holds
+    `mask[k % 4]` whatever the platform's byte order is; do not "simplify"
+    either half to an arithmetic shift, which would bake in little-endian.
+
+    The mask arrives as four lanes rather than a `Span` so that a caller
+    holding both halves in one buffer — which `feed` does — is not passing
+    two aliasing spans of the same list.
+    """
+    var n = len(masked)
+    var out = List[UInt8](capacity=n if n > 0 else 1)
+    if n == 0:
+        return out^
+    out.resize(n, 0)
+
+    var mvec = bitcast[DType.uint8, 64](
+        SIMD[DType.uint32, 16](bitcast[DType.uint32, 1](mask))
+    )
+
+    var src = masked.unsafe_ptr()
+    var dst = out.unsafe_ptr()
+    var i = 0
+    while i + 64 <= n:
+        dst.unsafe_offset(i).unsafe_store[width=64](
+            src.unsafe_offset(i).unsafe_load[width=64]() ^ mvec
+        )
+        i += 64
+    # `i` is a multiple of 64 and therefore of 4: the tail stays in phase.
+    while i < n:
+        dst.unsafe_offset(i).unsafe_store(
+            src.unsafe_offset(i).unsafe_load() ^ mask[i % 4]
+        )
+        i += 1
+    return out^
+
+
 def is_valid_utf8(data: Span[Byte, _]) -> Bool:
     """Strict UTF-8 (RFC 3629): rejects bad continuations, overlong
-    encodings, surrogates (U+D800–U+DFFF), and anything past U+10FFFF."""
+    encodings, surrogates (U+D800–U+DFFF), and anything past U+10FFFF.
+
+    ASCII runs are skipped 64 bytes at a time by testing the high bit of a
+    whole chunk; every byte that is not plain ASCII still goes through the
+    scalar decoder below, so the strictness is exactly as before. The bulk
+    skip only advances past chunks that are entirely ASCII, so it can never
+    step into the middle of a multi-byte sequence.
+
+    The vector probe is guarded on the *current* byte being ASCII rather
+    than run unconditionally at the top of the loop: text that is mostly
+    multi-byte would otherwise pay a failed 64-byte load per character.
+    """
     var i = 0
     var n = len(data)
+    var ptr = data.unsafe_ptr()
+    var high = SIMD[DType.uint8, 64](0x80)
     while i < n:
         var b0 = Int(data[i])
         if b0 < 0x80:
-            i += 1
+            # Bulk-skip the ASCII run, then finish it a byte at a time.
+            while i + 64 <= n:
+                var chunk = ptr.unsafe_offset(i).unsafe_load[width=64]()
+                if (chunk & high).reduce_max() != 0:
+                    break
+                i += 64
+            while i < n and data[i] < 0x80:
+                i += 1
             continue
         var needed: Int
         var lo = 0x80
@@ -403,8 +471,7 @@ struct WSState(Movable):
         violation the result carries a close frame and `close_after_reply`
         — the connection is done either way.
         """
-        for i in range(len(data)):
-            self.buffer.append(data[i])
+        self.buffer.extend(data)
 
         var res = WSParseResult()
         var i = 0
@@ -449,11 +516,15 @@ struct WSState(Movable):
             if n - i < header + plen:
                 break  # partial frame: wait for more bytes
 
-            var payload = List[UInt8](capacity=plen)
-            for j in range(plen):
-                payload.append(
-                    self.buffer[mask_at + 4 + j] ^ self.buffer[mask_at + (j % 4)]
-                )
+            var frame_mask = SIMD[DType.uint8, 4](
+                self.buffer[mask_at],
+                self.buffer[mask_at + 1],
+                self.buffer[mask_at + 2],
+                self.buffer[mask_at + 3],
+            )
+            var payload = unmask_payload(
+                Span(self.buffer)[mask_at + 4 : mask_at + 4 + plen], frame_mask
+            )
             i += header + plen
 
             if opcode >= 0x8:
@@ -462,8 +533,7 @@ struct WSState(Movable):
                     return self._fail(WS_CLOSE_PROTOCOL_ERROR)
                 if opcode == WS_OP_PING:
                     var pong = encode_ws_frame(WS_OP_PONG, Span(payload))
-                    for j in range(len(pong)):
-                        res.reply.append(pong[j])
+                    res.reply.extend(Span(pong))
                 elif opcode == WS_OP_PONG:
                     pass  # answers to our heartbeat pings; nothing to do
                 elif opcode == WS_OP_CLOSE:
@@ -474,8 +544,7 @@ struct WSState(Movable):
                         echo_body.append(payload[0])
                         echo_body.append(payload[1])
                     var echo = encode_ws_frame(WS_OP_CLOSE, Span(echo_body))
-                    for j in range(len(echo)):
-                        res.reply.append(echo[j])
+                    res.reply.extend(Span(echo))
                     res.close_after_reply = True
                     self.buffer.clear()
                     return res^
@@ -499,8 +568,7 @@ struct WSState(Movable):
                     return self._fail(WS_CLOSE_PROTOCOL_ERROR)
                 if len(self.frag_payload) + plen > self.max_message_size:
                     return self._fail(WS_CLOSE_TOO_BIG)
-                for j in range(plen):
-                    self.frag_payload.append(payload[j])
+                self.frag_payload.extend(Span(payload))
                 if fin:
                     # Validated on the ASSEMBLED message: a multi-byte
                     # character legitimately split across fragments is valid
@@ -520,7 +588,6 @@ struct WSState(Movable):
         # Keep only the unparsed tail.
         if i > 0:
             var rest = List[UInt8](capacity=n - i)
-            for j in range(i, n):
-                rest.append(self.buffer[j])
+            rest.extend(Span(self.buffer)[i:n])
             self.buffer = rest^
         return res^

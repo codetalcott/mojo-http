@@ -56,6 +56,15 @@ lightbug_http
         gained a STREAMING_WS slot state, frame-mode reads after a 101
         upgrade response, WebSocket heartbeat pings on the SSE heartbeat
         cadence, and a ws_message hook on HTTPService
+      - websocket.mojo: client-frame unmasking and UTF-8 validation
+        vectorized. Unmasking splatted the frame's 4-byte mask across 64
+        lanes instead of applying it a byte at a time with an index-modulo
+        (measured 3.0x at a 64-byte payload, 56.9x at 8 KB, 77.9x at
+        64 KB); text validation skips pure-ASCII runs 64 bytes at a time,
+        leaving every non-ASCII byte to the same strict scalar decoder
+        (16x at 64 bytes, 56x at 8 KB, and neutral on mostly-multi-byte
+        text). Several byte-at-a-time buffer copies in the frame parser
+        became bulk extends
       - Client-side connect path (create_connection, getaddrinfo bindings)
         revived after rotting as dead code: addrinfo pointer fields modeled
         as Optional[Pointer] (Mojo 1.0 pointers are non-nullable), connect()
