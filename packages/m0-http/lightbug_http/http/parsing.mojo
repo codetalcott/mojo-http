@@ -6,7 +6,7 @@ from std.utils import Variant
 # --- SIMD scan helpers (64-byte chunks) ---
 
 
-def _simd_find_byte(ptr: UnsafePointer[UInt8, _], length: Int, target: UInt8) -> Int:
+def _simd_find_byte(ptr: Pointer[UInt8, _], length: Int, target: UInt8) -> Int:
     """Find the first occurrence of `target` in the buffer using 64-byte SIMD.
 
     Returns the offset of the first match, or -1 if not found.
@@ -15,7 +15,7 @@ def _simd_find_byte(ptr: UnsafePointer[UInt8, _], length: Int, target: UInt8) ->
     var target_vec = SIMD[DType.uint8, 64](target)
     var i = 0
     while i + 64 <= length:
-        var chunk = (ptr + i).load[width=64]()
+        var chunk = ptr.unsafe_offset(i).unsafe_load[width=64]()
         var diff = chunk ^ target_vec
         if diff.reduce_min() == 0:
             for lane in range(64):
@@ -25,7 +25,7 @@ def _simd_find_byte(ptr: UnsafePointer[UInt8, _], length: Int, target: UInt8) ->
     return -1
 
 
-def _simd_find_cr_or_control(ptr: UnsafePointer[UInt8, _], length: Int) -> Int:
+def _simd_find_cr_or_control(ptr: Pointer[UInt8, _], length: Int) -> Int:
     """Find the first control character (< 0x20 except TAB) or DEL in the buffer.
 
     Three-stage SIMD check per 64-byte chunk:
@@ -42,7 +42,7 @@ def _simd_find_cr_or_control(ptr: UnsafePointer[UInt8, _], length: Int) -> Int:
     var del_vec = SIMD[DType.uint8, 64](0x7F)
     var i = 0
     while i + 64 <= length:
-        var chunk = (ptr + i).load[width=64]()
+        var chunk = ptr.unsafe_offset(i).unsafe_load[width=64]()
         # Stage 1: CR is the most common line terminator
         var cr_diff = chunk ^ cr_vec
         if cr_diff.reduce_min() == 0:
@@ -128,7 +128,7 @@ struct HTTPParseError(Movable, Writable):
         return String(self)
 
 
-def try_peek[origin: ImmutOrigin](reader: ByteReader[origin]) -> Optional[UInt8]:
+def try_peek[origin: ImmOrigin](reader: ByteReader[origin]) -> Optional[UInt8]:
     """Try to peek at current byte, returns None if unavailable."""
     if reader.available():
         try:
@@ -138,7 +138,7 @@ def try_peek[origin: ImmutOrigin](reader: ByteReader[origin]) -> Optional[UInt8]
     return None
 
 
-def try_peek_at[origin: ImmutOrigin](reader: ByteReader[origin], offset: Int) -> Optional[UInt8]:
+def try_peek_at[origin: ImmOrigin](reader: ByteReader[origin], offset: Int) -> Optional[UInt8]:
     """Try to peek at byte at relative offset, returns None if out of bounds."""
     var abs_pos = reader.read_pos + offset
     if abs_pos < len(reader._inner):
@@ -146,7 +146,7 @@ def try_peek_at[origin: ImmutOrigin](reader: ByteReader[origin], offset: Int) ->
     return None
 
 
-def try_get_byte[origin: ImmutOrigin](mut reader: ByteReader[origin]) -> Optional[UInt8]:
+def try_get_byte[origin: ImmOrigin](mut reader: ByteReader[origin]) -> Optional[UInt8]:
     """Try to get current byte and advance, returns None if unavailable."""
     if reader.available():
         var byte = reader._inner[reader.read_pos]
@@ -155,7 +155,7 @@ def try_get_byte[origin: ImmutOrigin](mut reader: ByteReader[origin]) -> Optiona
     return None
 
 
-def create_string_from_reader[origin: ImmutOrigin](reader: ByteReader[origin], start_offset: Int, length: Int) -> String:
+def create_string_from_reader[origin: ImmOrigin](reader: ByteReader[origin], start_offset: Int, length: Int) -> String:
     """Create a string from a range in the reader."""
     if start_offset >= 0 and start_offset + length <= len(reader._inner):
         var ptr = reader._inner.unsafe_ptr().unsafe_offset(start_offset)
@@ -164,7 +164,7 @@ def create_string_from_reader[origin: ImmutOrigin](reader: ByteReader[origin], s
 
 
 def get_token_to_eol[
-    origin: ImmutOrigin
+    origin: ImmOrigin
 ](mut buf: ByteReader[origin], mut token: String, mut token_len: Int) raises HTTPParseError:
     var token_start = buf.read_pos
 
@@ -217,7 +217,7 @@ def get_token_to_eol[
     token = create_string_from_reader(buf, token_start, token_len)
 
 
-def is_complete[origin: ImmutOrigin](mut buf: ByteReader[origin], last_len: Int) raises HTTPParseError:
+def is_complete[origin: ImmOrigin](mut buf: ByteReader[origin], last_len: Int) raises HTTPParseError:
     var ret_cnt = 0
     var start_offset = 0 if last_len < 3 else last_len - 3
 
@@ -249,7 +249,7 @@ def is_complete[origin: ImmutOrigin](mut buf: ByteReader[origin], last_len: Int)
 
 
 def parse_token[
-    origin: ImmutOrigin
+    origin: ImmOrigin
 ](mut buf: ByteReader[origin], mut token: String, mut token_len: Int, next_char: UInt8,) raises HTTPParseError:
     var buf_start = buf.read_pos
 
@@ -286,7 +286,7 @@ def parse_token[
     raise IncompleteError()
 
 
-def parse_http_version[origin: ImmutOrigin](mut buf: ByteReader[origin], mut minor_version: Int) raises HTTPParseError:
+def parse_http_version[origin: ImmOrigin](mut buf: ByteReader[origin], mut minor_version: Int) raises HTTPParseError:
     if buf.remaining() < 9:
         raise IncompleteError()
 
@@ -316,7 +316,7 @@ def parse_http_version[origin: ImmutOrigin](mut buf: ByteReader[origin], mut min
 
 
 def parse_headers[
-    buf_origin: ImmutOrigin, header_origin: MutOrigin
+    buf_origin: ImmOrigin, header_origin: MutOrigin
 ](
     mut buf: ByteReader[buf_origin],
     headers: Span[HTTPHeader, header_origin],
@@ -385,9 +385,9 @@ def parse_headers[
 
 
 def http_parse_request_headers[
-    buf_origin: ImmutOrigin, header_origin: MutOrigin
+    buf_origin: ImmOrigin, header_origin: MutOrigin
 ](
-    buf_start: UnsafePointer[UInt8, buf_origin],
+    buf_start: Pointer[UInt8, buf_origin],
     len: Int,
     mut method: String,
     mut path: String,
@@ -520,9 +520,9 @@ def http_parse_request_headers[
 
 
 def http_parse_response_headers[
-    buf_origin: ImmutOrigin, header_origin: MutOrigin
+    buf_origin: ImmOrigin, header_origin: MutOrigin
 ](
-    buf_start: UnsafePointer[UInt8, buf_origin],
+    buf_start: Pointer[UInt8, buf_origin],
     len: Int,
     mut minor_version: Int,
     mut status: Int,
@@ -596,9 +596,9 @@ def http_parse_response_headers[
 
 
 def http_parse_headers[
-    buf_origin: ImmutOrigin, header_origin: MutOrigin
+    buf_origin: ImmOrigin, header_origin: MutOrigin
 ](
-    buf_start: UnsafePointer[UInt8, buf_origin],
+    buf_start: Pointer[UInt8, buf_origin],
     len: Int,
     headers: Span[HTTPHeader, header_origin],
     mut num_headers: Int,

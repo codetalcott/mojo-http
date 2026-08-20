@@ -315,7 +315,7 @@ struct ByteReader[origin: ImmOrigin](Copyable, Sized):
 
 def memmove[
     T: Copyable, dest_origin: MutOrigin, src_origin: MutOrigin
-](dest: UnsafePointer[T, dest_origin], src: UnsafePointer[T, src_origin], count: Int,):
+](dest: Pointer[T, dest_origin], src: Pointer[T, src_origin], count: Int,):
     """
     Copies count elements from src to dest, handling overlapping memory regions safely.
     """
@@ -343,12 +343,12 @@ def memmove[
     elif dest_addr < src_addr:
         # Destination is before source - copy forwards (left to right)
         for i in range(count):
-            (dest + i).init_pointee_copy((src + i)[])
+            dest.unsafe_offset(i).init_pointee_copy(src.unsafe_offset(i)[])
     else:
         # Destination is after source - copy backwards (right to left)
         var i = count - 1
         while i >= 0:
-            (dest + i).init_pointee_copy((src + i)[])
+            dest.unsafe_offset(i).init_pointee_copy(src.unsafe_offset(i)[])
             i -= 1
 
 

@@ -1,3 +1,4 @@
+from . import Cookie
 from lightbug_http.header import Header, HeaderKey, write_header
 from lightbug_http.io.bytes import ByteWriter
 from lightbug_http.strings import lineBreak

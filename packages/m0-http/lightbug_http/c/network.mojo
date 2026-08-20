@@ -2,7 +2,7 @@ from std.ffi import c_char, c_int, c_uint, c_ushort, external_call, get_errno
 from std.sys.info import size_of
 
 from lightbug_http.c.address import AddressFamily, AddressLength
-from lightbug_http.c.aliases import ExternalImmutUnsafePointer, ExternalMutUnsafePointer, c_void
+from lightbug_http.c.aliases import ExternalImmutPointer, ExternalMutPointer, c_void
 from lightbug_http.utils.error import CustomError
 from std.memory import stack_allocation
 from std.utils import StaticTuple, Variant
@@ -258,7 +258,7 @@ struct SocketAddress(Movable):
 
     comptime SIZE = socklen_t(size_of[sockaddr]())
     """The size of the underlying sockaddr struct."""
-    var addr: ExternalMutUnsafePointer[sockaddr]
+    var addr: ExternalMutPointer[sockaddr]
     """Pointer to the underlying sockaddr struct."""
 
     def __init__(out self):
@@ -276,26 +276,26 @@ struct SocketAddress(Movable):
             binary_ip: The binary representation of the IP address.
         """
         var sockaddr_in_ptr = alloc[sockaddr_in](count=1)
-        sockaddr_in_ptr.init_pointee_move(
+        sockaddr_in_ptr.unsafe_write(
             sockaddr_in(
                 address_family=Int(address_family.value),
                 port=port,
                 binary_ip=binary_ip,
             )
         )
-        self.addr = sockaddr_in_ptr.bitcast[sockaddr]()
+        self.addr = sockaddr_in_ptr.unsafe_bitcast[sockaddr]()
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if Int(self.addr) != 0:
-            self.addr.free()
+            self.addr.unsafe_free()
 
     def unsafe_ptr[
         origin: Origin, address_space: AddressSpace, //
-    ](ref [origin, address_space]self) -> UnsafePointer[sockaddr, origin, address_space=address_space]:
-        return self.addr.unsafe_mut_cast[origin.mut]().unsafe_origin_cast[origin]().address_space_cast[address_space]()
+    ](ref [origin, address_space]self) -> Pointer[sockaddr, origin, address_space=address_space]:
+        return self.addr.unsafe_mut_cast[origin.mut]().unsafe_origin_cast[origin]().unsafe_address_space_cast[address_space]()
 
     def as_sockaddr_in(mut self) -> ref [origin_of(self)] sockaddr_in:
-        return self.unsafe_ptr().bitcast[sockaddr_in]()[]
+        return self.unsafe_ptr().unsafe_bitcast[sockaddr_in]()[]
 
 
 @fieldwise_init
@@ -305,9 +305,9 @@ struct addrinfo(TrivialRegisterPassable):
     var ai_socktype: c_int
     var ai_protocol: c_int
     var ai_addrlen: socklen_t
-    var ai_addr: ExternalMutUnsafePointer[sockaddr]
-    var ai_canonname: ExternalMutUnsafePointer[c_char]
-    var ai_next: ExternalMutUnsafePointer[c_void]
+    var ai_addr: ExternalMutPointer[sockaddr]
+    var ai_canonname: ExternalMutPointer[c_char]
+    var ai_next: ExternalMutPointer[c_void]
 
     def __init__(out self):
         self.ai_flags = 0
@@ -315,27 +315,27 @@ struct addrinfo(TrivialRegisterPassable):
         self.ai_socktype = 0
         self.ai_protocol = 0
         self.ai_addrlen = 0
-        self.ai_addr = ExternalMutUnsafePointer[sockaddr](unsafe_from_address=0)
-        self.ai_canonname = ExternalMutUnsafePointer[c_char](unsafe_from_address=0)
-        self.ai_next = ExternalMutUnsafePointer[c_void](unsafe_from_address=0)
+        self.ai_addr = ExternalMutPointer[sockaddr](unsafe_from_address=0)
+        self.ai_canonname = ExternalMutPointer[c_char](unsafe_from_address=0)
+        self.ai_next = ExternalMutPointer[c_void](unsafe_from_address=0)
 
 
 def _inet_ntop(
     af: c_int,
-    src: UnsafePointer[c_void, _],
-    dst: UnsafePointer[c_char, _],
+    src: Pointer[c_void, _],
+    dst: Pointer[c_char, _],
     size: socklen_t,
-) raises -> ExternalImmutUnsafePointer[c_char]:
+) raises -> ExternalImmutPointer[c_char]:
     """Libc POSIX `inet_ntop` function.
 
     Args:
         af: Address Family see AF_ aliases.
-        src: A UnsafePointer to a binary address.
-        dst: A UnsafePointer to a buffer to store the result.
+        src: A Pointer to a binary address.
+        dst: A Pointer to a buffer to store the result.
         size: The size of the buffer.
 
     Returns:
-        A UnsafePointer to the buffer containing the result.
+        A Pointer to the buffer containing the result.
 
     #### C Function
     ```c
@@ -347,7 +347,7 @@ def _inet_ntop(
     """
     return external_call[
         "inet_ntop",
-        ExternalImmutUnsafePointer[c_char],  # FnName, RetType
+        ExternalImmutPointer[c_char],  # FnName, RetType
         type_of(af),
         type_of(src),
         type_of(dst),
@@ -387,7 +387,7 @@ def inet_ntop[
 
     var result = _inet_ntop(
         address_family.value,
-        UnsafePointer(to=ip_address).bitcast[c_void](),
+        Pointer(to=ip_address).unsafe_bitcast[c_void](),
         dst.unsafe_ptr().unsafe_bitcast[c_char](),
         UInt32(address_length.value),
     )
@@ -406,7 +406,7 @@ def inet_ntop[
     return String(unsafe_from_utf8_ptr=dst.unsafe_ptr())
 
 
-def _inet_pton(af: c_int, src: UnsafePointer[c_char, _], dst: UnsafePointer[c_void, _]) -> c_int:
+def _inet_pton(af: c_int, src: Pointer[c_char, _], dst: Pointer[c_void, _]) -> c_int:
     """Libc POSIX `inet_pton` function. Converts a presentation format address (that is, printable form as held in a character string)
     to network format (usually a struct in_addr or some other internal binary representation, in network byte order).
     It returns 1 if the address was valid for the specified address family, or 0 if the address was not parseable in the specified address family,
@@ -414,8 +414,8 @@ def _inet_pton(af: c_int, src: UnsafePointer[c_char, _], dst: UnsafePointer[c_vo
 
     Args:
         af: Address Family: `AF_INET` or `AF_INET6`.
-        src: A UnsafePointer to a string containing the address.
-        dst: A UnsafePointer to a buffer to store the result.
+        src: A Pointer to a string containing the address.
+        dst: A Pointer to a buffer to store the result.
 
     Returns:
         1 on success, 0 if the input is not a valid address, -1 on error.
@@ -445,7 +445,7 @@ def inet_pton[address_family: AddressFamily](var src: String) raises InetPtonErr
         address_family: Address Family: `AF_INET` or `AF_INET6`.
 
     Args:
-        src: A UnsafePointer to a string containing the address.
+        src: A Pointer to a string containing the address.
 
     Returns:
         The binary representation of the ip address.
@@ -462,7 +462,7 @@ def inet_pton[address_family: AddressFamily](var src: String) raises InetPtonErr
     * Reference: https://man7.org/linux/man-pages/man3/inet_ntop.3p.html .
     * This function is valid for `AF_INET` and `AF_INET6`.
     """
-    var ip_buffer: ExternalMutUnsafePointer[c_void]
+    var ip_buffer: ExternalMutPointer[c_void]
 
     comptime if address_family == AddressFamily.AF_INET6:
         ip_buffer = stack_allocation[16, c_void]()
@@ -479,4 +479,4 @@ def inet_pton[address_family: AddressFamily](var src: String) raises InetPtonErr
             errno,
         )
 
-    return ip_buffer.bitcast[c_uint]().take_pointee()
+    return ip_buffer.unsafe_bitcast[c_uint]().unsafe_take_pointee()

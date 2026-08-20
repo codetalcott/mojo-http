@@ -27,6 +27,7 @@ def unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: Li
                 # If the percent escape is not followed by two hex digits, we stop processing.
                 break
 
+            var char_byte: Int
             try:
                 char_byte = atol(
                     encoded_str[byte=current_offset + 1 : current_offset + 3],
@@ -184,7 +185,7 @@ struct URI(Copyable, Writable):
         # A query right after the domain is a valid uri, but it's equivalent to example.com/?query
         # so we should add the normalization of paths
         var host_and_port = reader.read_until(UInt8(ord(URIDelimiters.PATH)))
-        colon = host_and_port.find(UInt8(ord(URIDelimiters.SCHEME)))
+        var colon = host_and_port.find(UInt8(ord(URIDelimiters.SCHEME)))
         var host: String
         var port: Optional[UInt16] = None
         if colon != -1:

@@ -56,7 +56,7 @@ struct BytesConstant:
 
 
 def find_all(s: String, sub_str: String) -> List[Int]:
-    match_idxs = List[Int]()
+    var match_idxs = List[Int]()
     var current_idx: Int = s.find(sub_str)
     while current_idx > -1:
         match_idxs.append(current_idx)

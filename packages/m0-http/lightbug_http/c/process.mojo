@@ -12,7 +12,7 @@ Usage:
 
 from std.ffi import c_int, c_ssize_t, external_call, get_errno
 
-from lightbug_http.c.aliases import ExternalMutUnsafePointer
+from lightbug_http.c.aliases import ExternalMutPointer
 
 
 def _fork() -> c_int:
@@ -21,7 +21,7 @@ def _fork() -> c_int:
 
 
 def _waitpid(
-    pid: c_int, status: ExternalMutUnsafePointer[c_int], options: c_int,
+    pid: c_int, status: ExternalMutPointer[c_int], options: c_int,
 ) -> c_int:
     """Raw waitpid() syscall."""
     return external_call[

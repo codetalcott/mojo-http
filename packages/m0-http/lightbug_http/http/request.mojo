@@ -238,7 +238,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     def write_to[T: Writer, //](self, mut writer: T):
         """Write the request in HTTP format to a writer."""
-        path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
+        var path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
         if self.uri.query_string.byte_length() > 0:
             path.write("?", self.uri.query_string)
 

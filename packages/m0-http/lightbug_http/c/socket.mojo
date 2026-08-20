@@ -255,12 +255,12 @@ def socket(domain: c_int, type: c_int, protocol: c_int) raises SocketError -> c_
 
 
 def _setsockopt[
-    origin: ImmutOrigin
+    origin: ImmOrigin
 ](
     socket: c_int,
     level: c_int,
     option_name: c_int,
-    option_value: UnsafePointer[c_void, origin],
+    option_value: Pointer[c_void, origin],
     option_len: socklen_t,
 ) -> c_int:
     """Libc POSIX `setsockopt` function.
@@ -306,7 +306,7 @@ def setsockopt(
         socket: A File Descriptor.
         level: The protocol level.
         option_name: The option to set.
-        option_value: A UnsafePointer to the value to set.
+        option_value: A Pointer to the value to set.
 
     Raises:
         SetsockoptError: If an error occurs while setting the socket option.
@@ -328,7 +328,7 @@ def setsockopt(
         Int32(socket.value),
         level,
         option_name,
-        UnsafePointer(to=option_value).bitcast[c_void](),
+        Pointer(to=option_value).unsafe_bitcast[c_void](),
         UInt32(size_of[Int32]()),
     )
     if result == -1:
@@ -356,7 +356,7 @@ def _getsockopt[
     socket: c_int,
     level: c_int,
     option_name: c_int,
-    option_value: UnsafePointer[c_void, _],
+    option_value: Pointer[c_void, _],
     option_len: Pointer[socklen_t, origin],
 ) -> c_int:
     """Libc POSIX `getsockopt` function.
@@ -444,17 +444,17 @@ def getsockopt(
                 errno,
             )
 
-    return option_value.bitcast[Int]().take_pointee()
+    return option_value.unsafe_bitcast[Int]().unsafe_take_pointee()
 
 
 def _getsockname[
     origin: MutOrigin
-](socket: c_int, address: UnsafePointer[sockaddr, _], address_len: Pointer[socklen_t, origin],) -> c_int:
+](socket: c_int, address: Pointer[sockaddr, _], address_len: Pointer[socklen_t, origin],) -> c_int:
     """Libc POSIX `getsockname` function.
 
     Args:
         socket: A File Descriptor.
-        address: A UnsafePointer to a buffer to store the address of the peer.
+        address: A Pointer to a buffer to store the address of the peer.
         address_len: A Pointer to the size of the buffer.
 
     Returns:
@@ -518,13 +518,13 @@ def getsockname(socket: FileDescriptor, mut address: SocketAddress) raises Getso
 
 def _getpeername[
     origin: MutOrigin
-](sockfd: c_int, addr: UnsafePointer[sockaddr, _], address_len: Pointer[socklen_t, origin],) -> c_int:
+](sockfd: c_int, addr: Pointer[sockaddr, _], address_len: Pointer[socklen_t, origin],) -> c_int:
     """Libc POSIX `getpeername` function.
 
     Args:
         sockfd: A File Descriptor.
-        addr: A UnsafePointer to a buffer to store the address of the peer.
-        address_len: A UnsafePointer to the size of the buffer.
+        addr: A Pointer to a buffer to store the address of the peer.
+        address_len: A Pointer to the size of the buffer.
 
     Returns:
         0 on success, -1 on error.
@@ -594,13 +594,13 @@ def getpeername(file_descriptor: FileDescriptor) raises GetpeernameError -> Sock
     return remote_address^
 
 
-def _bind[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
+def _bind[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
     """Libc POSIX `bind` function. Assigns the address specified by `address` to the socket referred to by
        the file descriptor `socket`.
 
     Args:
         socket: A File Descriptor.
-        address: A UnsafePointer to the address to bind to.
+        address: A Pointer to the address to bind to.
         address_len: The size of the address.
 
     Returns:
@@ -624,7 +624,7 @@ def bind(socket: FileDescriptor, mut address: SocketAddress) raises BindError:
 
     Args:
         socket: A File Descriptor.
-        address: A UnsafePointer to the address to bind to.
+        address: A Pointer to the address to bind to.
 
     Raises:
         Error: If an error occurs while binding the socket.
@@ -831,7 +831,7 @@ def accept(socket: FileDescriptor) raises AcceptError -> FileDescriptor:
     return FileDescriptor(Int(result))
 
 
-def _connect[origin: ImmutOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
+def _connect[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
     """Libc POSIX `connect` function.
 
     Args:
@@ -926,7 +926,7 @@ def connect(socket: FileDescriptor, mut address: SocketAddress) raises ConnectEr
 
 def _recv(
     socket: c_int,
-    buffer: UnsafePointer[c_void, _],
+    buffer: Pointer[c_void, _],
     length: c_size_t,
     flags: c_int,
 ) -> c_ssize_t:
@@ -934,7 +934,7 @@ def _recv(
 
     Args:
         socket: A File Descriptor.
-        buffer: A UnsafePointer to the buffer to store the received data.
+        buffer: A Pointer to the buffer to store the received data.
         length: The size of the buffer.
         flags: Flags to control the behaviour of the function.
 
@@ -966,7 +966,7 @@ def recv[
 
     Args:
         socket: A File Descriptor.
-        buffer: A UnsafePointer to the buffer to store the received data.
+        buffer: A Pointer to the buffer to store the received data.
         length: The size of the buffer.
         flags: Flags to control the behaviour of the function.
 
@@ -1014,10 +1014,10 @@ def _recvfrom[
     origin: MutOrigin
 ](
     socket: c_int,
-    buffer: UnsafePointer[c_void, _],
+    buffer: Pointer[c_void, _],
     length: c_size_t,
     flags: c_int,
-    address: UnsafePointer[sockaddr, _],
+    address: Pointer[sockaddr, _],
     address_len: Pointer[socklen_t, origin],
 ) -> c_ssize_t:
     """Libc POSIX `recvfrom` function.
@@ -1144,7 +1144,7 @@ def recvfrom[
 
 def _send(
     socket: c_int,
-    buffer: UnsafePointer[c_void, _],
+    buffer: Pointer[c_void, _],
     length: c_size_t,
     flags: c_int,
 ) -> c_ssize_t:
@@ -1152,7 +1152,7 @@ def _send(
 
     Args:
         socket: A File Descriptor.
-        buffer: A UnsafePointer to the buffer to send.
+        buffer: A Pointer to the buffer to send.
         length: The size of the buffer.
         flags: Flags to control the behaviour of the function.
 
@@ -1178,13 +1178,13 @@ def _send(
 
 
 def send[
-    origin: ImmutOrigin
+    origin: ImmOrigin
 ](socket: FileDescriptor, buffer: Span[c_uchar, origin], length: c_size_t, flags: c_int,) raises SendError -> c_size_t:
     """Libc POSIX `send` function.
 
     Args:
         socket: A File Descriptor.
-        buffer: A UnsafePointer to the buffer to send.
+        buffer: A Pointer to the buffer to send.
         length: The size of the buffer.
         flags: Flags to control the behaviour of the function.
 
@@ -1274,7 +1274,7 @@ struct iovec_t(TrivialRegisterPassable):
 
 def _writev(
     fd: c_int,
-    iov: UnsafePointer[iovec_t, ...],
+    iov: Pointer[iovec_t, ...],
     iovcnt: c_int,
 ) -> c_ssize_t:
     """Libc POSIX `writev` function.
@@ -1303,7 +1303,7 @@ def _writev(
 
 def try_writev(
     fd: FileDescriptor,
-    iov: UnsafePointer[iovec_t, ...],
+    iov: Pointer[iovec_t, ...],
     iovcnt: Int,
 ) -> Int:
     """Libc POSIX `writev` — scatter-gather write (non-raising).
@@ -1323,10 +1323,10 @@ def try_writev(
 
 def _sendto(
     socket: c_int,
-    message: UnsafePointer[c_void, _],
+    message: Pointer[c_void, _],
     length: c_size_t,
     flags: c_int,
-    dest_addr: UnsafePointer[sockaddr, _],
+    dest_addr: Pointer[sockaddr, _],
     dest_len: socklen_t,
 ) -> c_ssize_t:
     """Libc POSIX `sendto` function
@@ -1369,7 +1369,7 @@ def _sendto(
 
 
 def sendto[
-    origin: ImmutOrigin
+    origin: ImmOrigin
 ](
     socket: FileDescriptor,
     message: Span[c_uchar, origin],
@@ -1406,7 +1406,7 @@ def sendto[
     """
     var result = _sendto(
         socket.value,
-        message.unsafe_ptr().bitcast[c_void](),
+        message.unsafe_ptr().unsafe_bitcast[c_void](),
         length,
         flags,
         dest_addr.unsafe_ptr().as_immutable(),

@@ -12,7 +12,7 @@ from std.memory import stack_allocation
 from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 
-from lightbug_http.c.aliases import ExternalMutUnsafePointer
+from lightbug_http.c.aliases import ExternalMutPointer
 
 
 # Re-export kqueue canonical filter constants so EpollBackend callers can
@@ -71,13 +71,13 @@ comptime EPOLL_DATA_WORD: Int = 1 if CompilationTarget.is_x86() else 2
 
 
 @always_inline
-def epoll_event_mask(events: ExternalMutUnsafePointer[UInt32], i: Int) -> UInt32:
+def epoll_event_mask(events: ExternalMutPointer[UInt32], i: Int) -> UInt32:
     """Read the events bitmask of the i-th event in a buffer."""
     return events[i * EPOLL_EVENT_WORDS]
 
 
 @always_inline
-def epoll_event_data(events: ExternalMutUnsafePointer[UInt32], i: Int) -> UInt64:
+def epoll_event_data(events: ExternalMutPointer[UInt32], i: Int) -> UInt64:
     """Read the 64-bit epoll_data_t of the i-th event in a buffer."""
     var base = i * EPOLL_EVENT_WORDS + EPOLL_DATA_WORD
     return UInt64(events[base]) | (UInt64(events[base + 1]) << 32)
@@ -106,25 +106,25 @@ def _epoll_ctl(
     epfd: c_int,
     op: c_int,
     fd: c_int,
-    event: OptionalUnsafePointer[UInt32, MutExternalOrigin],
+    event: OptionalPointer[UInt32, MutUntrackedOrigin],
 ) -> c_int:
     """Raw epoll_ctl(2) syscall.
 
     `event` is ignored (and conventionally NULL) for EPOLL_CTL_DEL, so it is
-    modelled as `Optional`: UnsafePointer is non-null by design and a literal
-    null address is now rejected outright. Optional[UnsafePointer] has the same
+    modelled as `Optional`: Pointer is non-null by design and a literal
+    null address is now rejected outright. Optional[Pointer] has the same
     layout with None as the null niche, so the ABI is unchanged.
     """
     return external_call[
         "epoll_ctl", c_int, c_int, c_int, c_int,
-        OptionalUnsafePointer[UInt32, MutExternalOrigin],
+        OptionalPointer[UInt32, MutUntrackedOrigin],
     ](
         epfd, op, fd, event,
     )
 
 
 @always_inline
-def _fill_event(ev: ExternalMutUnsafePointer[UInt32], events: UInt32, data: UInt64):
+def _fill_event(ev: ExternalMutPointer[UInt32], events: UInt32, data: UInt64):
     """Write one struct epoll_event into a caller-provided word buffer."""
     for w in range(EPOLL_EVENT_WORDS):
         ev[w] = 0
@@ -163,7 +163,7 @@ def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
 
 def epoll_wait(
     epfd: FileDescriptor,
-    events: ExternalMutUnsafePointer[UInt32],
+    events: ExternalMutPointer[UInt32],
     max_events: Int,
     timeout_ms: Int,
 ) raises -> Int:
@@ -173,7 +173,7 @@ def epoll_wait(
     """
     var result = external_call[
         "epoll_wait", c_int,
-        c_int, ExternalMutUnsafePointer[UInt32], c_int, c_int,
+        c_int, ExternalMutPointer[UInt32], c_int, c_int,
     ](c_int(epfd.value), events, c_int(max_events), c_int(timeout_ms))
     if result == -1:
         var errno = get_errno()
@@ -191,8 +191,8 @@ def timerfd_create(clockid: c_int, flags: c_int) -> c_int:
 def timerfd_settime(
     fd: c_int,
     flags: c_int,
-    new_value: ExternalMutUnsafePointer[itimerspec_t],
-    old_value: OptionalUnsafePointer[itimerspec_t, MutExternalOrigin],
+    new_value: ExternalMutPointer[itimerspec_t],
+    old_value: OptionalPointer[itimerspec_t, MutUntrackedOrigin],
 ) -> c_int:
     """Raw timerfd_settime(2) syscall.
 
@@ -202,8 +202,8 @@ def timerfd_settime(
     return external_call[
         "timerfd_settime", c_int,
         c_int, c_int,
-        ExternalMutUnsafePointer[itimerspec_t],
-        OptionalUnsafePointer[itimerspec_t, MutExternalOrigin],
+        ExternalMutPointer[itimerspec_t],
+        OptionalPointer[itimerspec_t, MutUntrackedOrigin],
     ](fd, flags, new_value, old_value)
 
 

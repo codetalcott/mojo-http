@@ -446,7 +446,7 @@ struct Socket[
     def __enter__(var self) -> Self:
         return self^
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Close the socket when the object is deleted."""
         try:
             self^.teardown()
@@ -828,7 +828,7 @@ struct Socket[
             Int32(self.fd.value),
             Int32(SOL_SOCKET),
             SocketOption.SO_RCVTIMEO.value,
-            UnsafePointer(to=timeval).bitcast[c_void](),
+            Pointer(to=timeval).unsafe_bitcast[c_void](),
             16,
         )
         if result == -1:

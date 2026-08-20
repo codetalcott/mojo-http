@@ -50,7 +50,7 @@ array and are shaped so the borrow cannot outlive the data.
 """
 
 from std.ffi import external_call, c_int
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from .ffi import SQLITE_OK, SQLITE_NOMEM, SQLITE_CONSTRAINT, c_string
 
@@ -75,10 +75,10 @@ comptime ARRAY_NAME = "m0_array"
 comptime KIND_INT: Int = 0
 comptime KIND_FLOAT: Int = 1
 
-comptime WordPtr = UnsafePointer[Int, MutAnyOrigin]
-comptime I32Ptr = UnsafePointer[Int32, MutAnyOrigin]
-comptime U8Ptr = UnsafePointer[UInt8, MutAnyOrigin]
-comptime F64Ptr = UnsafePointer[Float64, MutAnyOrigin]
+comptime WordPtr = Pointer[Int, MutAnyOrigin]
+comptime I32Ptr = Pointer[Int32, MutAnyOrigin]
+comptime U8Ptr = Pointer[UInt8, MutAnyOrigin]
+comptime F64Ptr = Pointer[Float64, MutAnyOrigin]
 
 # --- sqlite3_module: int iVersion, then 24 callbacks ------------------------
 comptime M_VERSION: Int = 0
@@ -313,34 +313,34 @@ def _build_module() raises -> Int:
     w[unsafe_offset=M_VERSION] = 1
     # xCreate stays NULL, which is what makes the table eponymous-only.
 
-    UnsafePointer[XConnectFn, MutAnyOrigin](
+    Pointer[XConnectFn, MutAnyOrigin](
         unsafe_from_address=m + M_CONNECT * 8
     )[unsafe_offset=0] = _x_connect
-    UnsafePointer[XBestIndexFn, MutAnyOrigin](
+    Pointer[XBestIndexFn, MutAnyOrigin](
         unsafe_from_address=m + M_BESTINDEX * 8
     )[unsafe_offset=0] = _x_best_index
-    UnsafePointer[XVtabFn, MutAnyOrigin](
+    Pointer[XVtabFn, MutAnyOrigin](
         unsafe_from_address=m + M_DISCONNECT * 8
     )[unsafe_offset=0] = _x_disconnect
-    UnsafePointer[XOpenFn, MutAnyOrigin](unsafe_from_address=m + M_OPEN * 8)[
+    Pointer[XOpenFn, MutAnyOrigin](unsafe_from_address=m + M_OPEN * 8)[
         unsafe_offset=0
     ] = _x_open
-    UnsafePointer[XVtabFn, MutAnyOrigin](unsafe_from_address=m + M_CLOSE * 8)[
+    Pointer[XVtabFn, MutAnyOrigin](unsafe_from_address=m + M_CLOSE * 8)[
         unsafe_offset=0
     ] = _x_close
-    UnsafePointer[XFilterFn, MutAnyOrigin](
+    Pointer[XFilterFn, MutAnyOrigin](
         unsafe_from_address=m + M_FILTER * 8
     )[unsafe_offset=0] = _x_filter
-    UnsafePointer[XVtabFn, MutAnyOrigin](unsafe_from_address=m + M_NEXT * 8)[
+    Pointer[XVtabFn, MutAnyOrigin](unsafe_from_address=m + M_NEXT * 8)[
         unsafe_offset=0
     ] = _x_next
-    UnsafePointer[XVtabFn, MutAnyOrigin](unsafe_from_address=m + M_EOF * 8)[
+    Pointer[XVtabFn, MutAnyOrigin](unsafe_from_address=m + M_EOF * 8)[
         unsafe_offset=0
     ] = _x_eof
-    UnsafePointer[XColumnFn, MutAnyOrigin](
+    Pointer[XColumnFn, MutAnyOrigin](
         unsafe_from_address=m + M_COLUMN * 8
     )[unsafe_offset=0] = _x_column
-    UnsafePointer[XRowidFn, MutAnyOrigin](unsafe_from_address=m + M_ROWID * 8)[
+    Pointer[XRowidFn, MutAnyOrigin](unsafe_from_address=m + M_ROWID * 8)[
         unsafe_offset=0
     ] = _x_rowid
 

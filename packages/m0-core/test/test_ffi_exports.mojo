@@ -16,14 +16,14 @@ the emitted shared object actually loads and answers known vectors through
 `ctypes`.
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.testing import assert_equal, assert_true, TestSuite
 
 from src.hashing import fnv1a, xxhash32, format_hash32
 from ffi_exports import m0_fnv1a, m0_xxhash32, m0_format_hash
 
 
-def _any_origin(p: Pointer[UInt8, _]) -> UnsafePointer[UInt8, MutAnyOrigin]:
+def _any_origin(p: Pointer[UInt8, _]) -> Pointer[UInt8, MutAnyOrigin]:
     """Erase a pointer's origin, the way a foreign caller's address arrives.
 
     `@export` cannot be applied to a parametric function, so these entry points
@@ -31,7 +31,7 @@ def _any_origin(p: Pointer[UInt8, _]) -> UnsafePointer[UInt8, MutAnyOrigin]:
     for their real callers, who hand over a bare address, and means Mojo-side
     callers have to say so explicitly.
     """
-    return UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(p))
+    return Pointer[UInt8, MutAnyOrigin](unsafe_from_address=Int(p))
 
 
 def test_exported_fnv1a_matches_the_mojo_function() raises:

@@ -9,7 +9,7 @@ from std.memory import stack_allocation
 from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget, size_of
 
-from lightbug_http.c.aliases import ExternalMutUnsafePointer
+from lightbug_http.c.aliases import ExternalMutPointer
 from lightbug_http.c.socket import O_NONBLOCK, setsockopt
 
 
@@ -93,17 +93,17 @@ def kqueue() raises -> FileDescriptor:
 
 def _kevent(
     kq: c_int,
-    changelist: OptionalUnsafePointer[kevent_t, MutExternalOrigin],
+    changelist: OptionalPointer[kevent_t, MutUntrackedOrigin],
     nchanges: c_int,
-    eventlist: OptionalUnsafePointer[kevent_t, MutExternalOrigin],
+    eventlist: OptionalPointer[kevent_t, MutUntrackedOrigin],
     nevents: c_int,
-    timeout: OptionalUnsafePointer[timespec_t, MutExternalOrigin],
+    timeout: OptionalPointer[timespec_t, MutUntrackedOrigin],
 ) -> c_int:
     """Raw kevent() syscall — single FFI signature using ExternalMut pointers.
 
     kevent() accepts NULL for changelist/eventlist/timeout, so those are
-    modelled as `Optional`: UnsafePointer is non-null by design and a literal
-    null address is now rejected outright. Optional[UnsafePointer] has the same
+    modelled as `Optional`: Pointer is non-null by design and a literal
+    null address is now rejected outright. Optional[Pointer] has the same
     layout with None as the null niche, so the ABI is unchanged.
     """
     return external_call["kevent", c_int](
@@ -129,7 +129,7 @@ def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
         cl[i] = changes[i]
 
     var result = _kevent(kq.value, cl, c_int(n), None, c_int(0), None)
-    cl.free()
+    cl.unsafe_free()
 
     if result == -1:
         var errno = get_errno()
@@ -138,7 +138,7 @@ def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
 
 def kevent_poll(
     kq: FileDescriptor,
-    eventlist: ExternalMutUnsafePointer[kevent_t],
+    eventlist: ExternalMutPointer[kevent_t],
     max_events: Int,
     timeout_ms: Int,
 ) raises -> Int:
@@ -151,7 +151,7 @@ def kevent_poll(
     var result = _kevent(
         Int32(kq.value), None, c_int(0), eventlist, c_int(max_events), ts,
     )
-    ts.free()
+    ts.unsafe_free()
 
     if result == -1:
         var errno = get_errno()
