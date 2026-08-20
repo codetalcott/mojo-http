@@ -86,5 +86,28 @@ def test_level_and_message_are_escaped() raises:
     assert_false(got.count('"') == 6, "level/msg went in unescaped: " + got)
 
 
+def test_a_long_value_crossing_the_simd_boundary_is_escaped_correctly() raises:
+    """format_json now escapes into one shared buffer, so the escaper's SIMD
+    chunking runs at a non-zero starting offset. A value long enough to reach
+    that path, with an escape past the first chunk, pins it."""
+    var value = String("")
+    for _ in range(30):
+        value += "abcdefghij"        # 300 safe bytes: well past 64
+    value += 'tail"quote'            # the escape lands far into the value
+
+    var entry = LogEntry("INFO", "access")
+    entry.add("path", value)
+    var line = format_json(entry, 1)
+
+    # The record must still be one line, still closed, and the embedded quote
+    # must be escaped rather than terminating the field.
+    assert_true(line.startswith('{"ts":1,'))
+    assert_true(line.endswith("}"))
+    assert_true(line.find('tail\\"quote') > 0)
+    assert_equal(line.count("\n"), 0)
+    # Exactly the quotes we expect: no stray terminator from the long value.
+    assert_true(line.find(String(value[byte=0:20])) > 0)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
