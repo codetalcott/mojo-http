@@ -758,7 +758,11 @@ def parse_request_headers(
             ve -= 1
         var value = vb[vs:ve]
 
-        if name_is(name_bytes, HeaderKey.SET_COOKIE) or name_is(name_bytes, HeaderKey.COOKIE):
+        if name_is(name_bytes, HeaderKey.COOKIE):
+            # Collected for the jar *and* left in `headers` below, because a
+            # WSGI application is handed the raw header and parses cookies
+            # itself. Diverting it out of `headers` is what kept `HTTP_COOKIE`
+            # out of the environ, and with it every session and CSRF token.
             cookies.append(String(unsafe_from_utf8=value))
         elif name_is(name_bytes, HeaderKey.CONTENT_LENGTH):
             if seen_content_length:
@@ -767,6 +771,15 @@ def parse_request_headers(
             headers.set_bytes(name_bytes, value)
         else:
             headers.set_bytes(name_bytes, value)
+
+    # Put the cookies back as one `Cookie` field. RFC 6265 §5.4 sends a single
+    # header, but HTTP/2 downgrades and some proxies split it across several,
+    # and the pieces are one "; "-joined list — so joining is what a second
+    # header means, not a fallback. Done after the loop because `Headers` is a
+    # unique-key map: setting it per header line would keep only the last.
+    if len(cookies) > 0:
+        var joined = StaticString("; ").join(cookies)
+        headers.set_bytes(HeaderKey.COOKIE.as_bytes(), joined.as_bytes())
 
     # RFC 7230 §3.3.3: reject requests with both Transfer-Encoding and Content-Length
     if HeaderKey.TRANSFER_ENCODING in headers and HeaderKey.CONTENT_LENGTH in headers:

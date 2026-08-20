@@ -468,5 +468,70 @@ def test_many_headers_all_resolve() raises:
     assert_false("x-header-60" in headers)
 
 
+def test_cookie_header_survives_parsing() raises:
+    """`Cookie` must stay in `headers`, not only in the jar.
+
+    A WSGI application is handed the raw field and parses cookies itself, so
+    diverting it out of `headers` erased `HTTP_COOKIE` from the environ — and
+    with it every session, login and CSRF check.
+    """
+    var raw = String(
+        "GET / HTTP/1.1\r\n",
+        "Host: example.com\r\n",
+        "Cookie: sessionid=abc123; csrftoken=xyz789\r\n",
+        "\r\n",
+    )
+    var parsed = parse_request_headers(raw.as_bytes())
+
+    assert_equal(
+        value_of(parsed.headers, "cookie"), "sessionid=abc123; csrftoken=xyz789"
+    )
+
+
+def test_split_cookie_headers_rejoin() raises:
+    """Several `Cookie` fields are one "; "-joined list, not a last-wins race.
+
+    `Headers` is a unique-key map, so the join has to happen after the parse
+    loop; setting per line would keep only the final field.
+    """
+    var raw = String(
+        "GET / HTTP/1.1\r\n",
+        "Host: example.com\r\n",
+        "Cookie: a=1\r\n",
+        "Cookie: b=2\r\n",
+        "\r\n",
+    )
+    var parsed = parse_request_headers(raw.as_bytes())
+
+    assert_equal(value_of(parsed.headers, "cookie"), "a=1; b=2")
+
+
+def test_set_cookie_on_a_request_is_an_ordinary_header() raises:
+    """`Set-Cookie` is a response field; on a request it is not a cookie.
+
+    It used to be folded into the request's own cookie list, which invented a
+    request cookie the client never sent.
+    """
+    var raw = String(
+        "GET / HTTP/1.1\r\n",
+        "Host: example.com\r\n",
+        "Set-Cookie: injected=1\r\n",
+        "\r\n",
+    )
+    var parsed = parse_request_headers(raw.as_bytes())
+
+    assert_equal(value_of(parsed.headers, "set-cookie"), "injected=1")
+    assert_false("cookie" in parsed.headers)
+    assert_equal(len(parsed.cookies), 0)
+
+
+def test_no_cookie_header_leaves_none_behind() raises:
+    """A request without cookies must not gain an empty `Cookie` field."""
+    var raw = String("GET / HTTP/1.1\r\n", "Host: example.com\r\n", "\r\n")
+    var parsed = parse_request_headers(raw.as_bytes())
+
+    assert_false("cookie" in parsed.headers)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

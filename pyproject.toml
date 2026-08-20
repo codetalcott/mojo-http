@@ -474,6 +474,37 @@ curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localh
 n=$(curl -s -i http://localhost:8080/cookies | grep -ci '^set-cookie:')
 [ "$n" = "2" ] || fail "expected 2 Set-Cookie headers, got $n"
 
+# The request half of the cookie path. The parser used to divert Cookie out of
+# the header map into its own jar, so HTTP_COOKIE never reached the environ and
+# request.COOKIES was always empty — every Django session, login and CSRF check
+# silently inert. The value deliberately contains '=': base64 pads with it, so
+# a real sessionid does too, and splitting on every '=' truncates it.
+got=$(curl -s -H 'Cookie: sessionid=YWJjZGVm==; csrftoken=a=b=c' http://localhost:8080/cookies/echo)
+[ "$got" = 'csrftoken=a=b=c|sessionid=YWJjZGVm==' ] \
+  || fail "request cookies did not reach Django: got '$got'"
+
+# ...and a request that sends none must not acquire any.
+got=$(curl -s http://localhost:8080/cookies/echo)
+[ -z "$got" ] || fail "a cookieless request arrived with cookies: '$got'"
+
+# Multiple Cookie fields are one '; '-joined list (RFC 6265 §5.4), not
+# last-wins — which is what a unique-key header map does without the rejoin.
+got=$(curl -s -H 'Cookie: a=1' -H 'Cookie: b=2' http://localhost:8080/cookies/echo)
+[ "$got" = 'a=1|b=2' ] || fail "split Cookie headers did not rejoin: got '$got'"
+
+# The full round trip, which is the point of all of the above: Django sets a
+# session cookie, the client returns it, and the counter only advances if the
+# request half works. A server that drops request cookies answers count=1
+# forever. Signed-cookie sessions, so this needs no database.
+jar="$out/cookies.txt"
+for expected in 1 2 3; do
+  got=$(curl -s -c "$jar" -b "$jar" http://localhost:8080/session/bump)
+  [ "$got" = "count=$expected" ] \
+    || fail "session did not persist across requests: expected count=$expected, got '$got'"
+done
+grep -q 'sessionid' "$jar" || fail 'Django never set a session cookie'
+rm -f "$jar"
+
 # wsgi.input: the request body has to survive the crossing.
 echo 'round-trip-me' | curl -s --data-binary @- http://localhost:8080/echo \
   | grep -q 'round-trip-me' || fail 'POST body did not round-trip'

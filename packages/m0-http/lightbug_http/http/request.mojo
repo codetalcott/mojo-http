@@ -120,11 +120,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
         var cookies = RequestCookieJar()
         for cookie_ref in parsed.cookies:
-            if "=" in cookie_ref:
-                var key_value = cookie_ref.split("=")
-                var key = String(key_value[0])
-                var value = String(key_value[1]) if len(key_value) > 1 else String("")
-                cookies._inner[key] = value
+            cookies.add_pairs(cookie_ref)
 
         # Fast path: an origin-form path with no percent-escapes and no query
         # string needs no URI parsing at all — every derived field is the
@@ -254,7 +250,14 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             self.protocol,
             lineBreak,
             self.headers,
-            self.cookies,
+        )
+        # A parsed request carries `Cookie` in `headers` as well as in the jar,
+        # so writing the jar unconditionally would emit the field twice. A
+        # hand-built request (the client's) has the jar and no header, and
+        # still gets its cookies written here.
+        if HeaderKey.COOKIE not in self.headers:
+            writer.write(self.cookies)
+        writer.write(
             lineBreak,
             StringSlice(unsafe_from_utf8=Span(self.body_raw)),
         )
@@ -275,7 +278,11 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             lineBreak,
         )
         self.headers.write_latin1_to(writer)
-        writer.write(self.cookies, lineBreak)
+        # See write_to: the jar is written only when `headers` does not already
+        # carry the field, so a re-encoded parsed request keeps one `Cookie`.
+        if HeaderKey.COOKIE not in self.headers:
+            writer.write(self.cookies)
+        writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
