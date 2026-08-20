@@ -15,6 +15,7 @@ The short version:
 | `PRAGMA cache_size` | ~5%, inside noise | Skip |
 | Statement cache | ~650 ns per prepare | Confirms the existing decision not to build one |
 | `carray()` | Unavailable, and unusable from Mojo structs anyway | Superseded by `m0_array` — see below |
+| Aggregating in Mojo instead of in SQL | **1.37x** on sum+min+max over 200k rows | Use when the rows are wanted anyway |
 
 > **Written in parallel with `m0_array`.** This study and the `m0_array`
 > virtual table landed from two separate sessions that did not see each other's
@@ -190,6 +191,47 @@ that is under 4% — consistent with the ~10% measured earlier on a smaller quer
 and not worth the ownership complexity of a cache that has to outlive the
 statements it hands out. Callers who care can hold their own `Statement`, which
 is what the benchmark's fastest column does.
+
+## Aggregates: SQL is not automatically the fast side
+
+`Statement.fetch_ints` was written to hand back a column-major `List` because
+that "is what a SIMD pass over the results wants". `m0_sqlite.stats_ints` and
+friends are that pass, and measuring them turned up something worth writing
+down: **pulling a column out and reducing it here beats asking SQLite to
+aggregate it.**
+
+200,000 integer rows, in-memory database, `sum` + `min` + `max`, values
+checked against SQLite's own answers before timing (`bench_reduce` in
+`bench_sqlite.mojo`):
+
+| Path | Time |
+| --- | --- |
+| `SELECT sum(v), min(v), max(v)` — in-engine | 11.84 ms |
+| `fetch_ints` + `stats_ints` | **8.63 ms** |
+| of which, the reduction itself | 0.043 ms |
+
+SQLite runs three aggregate steps through its bytecode VM for every row; the
+read-out runs one column fetch. That is the whole difference — and it is why
+the vectorization is almost beside the point. The reduction is **0.5% of the
+pipeline**. It is 4x its own scalar loop, and that 4x buys nothing you would
+notice unless the column is already materialised and you intend to pass over
+it repeatedly.
+
+**Do not read this as "aggregate in Mojo".** It is one shape: a full scan, in
+memory, three aggregates at once, no index, no `WHERE`. Any of those moving
+can move the answer past it — a single aggregate halves the VM work, an index
+can make SQLite skip rows entirely, and a result set larger than memory makes
+the read-out untenable at any speed. What it does establish is narrower and
+still useful: when you already need the rows, computing an aggregate from them
+is not the expensive choice it looks like, and reaching for SQL to avoid a
+Mojo-side pass is not automatically right.
+
+Integers only, deliberately. A vector sum reassociates the additions, and
+floating point is not associative — a `Float64` version would disagree with a
+scalar loop in the last ulp with no single right answer to test against.
+Integer addition reassociates exactly, so these agree bit for bit at every
+length, which `test_reduce.mojo` asserts from 0 to 80 elements and against
+SQLite over 1,000 rows.
 
 ## Recommendations
 
