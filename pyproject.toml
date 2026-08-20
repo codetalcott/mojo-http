@@ -126,6 +126,30 @@ mojo build --emit shared-lib -I packages/m0-core \
 echo "built packages/m0-core/libm0core.$ext"
 """
 
+# The warning ratchet. `mojo` has no per-warning suppression — only
+# --disable-warnings, which is all-or-nothing — so the residual warnings that
+# cannot be fixed on the pinned toolchain are held at a committed count
+# instead. Feed it a log containing both build-all and test-all output; those
+# two together are what surface every site (test-all compiles library sources
+# directly, which is the only way the test/ doc-string warnings appear).
+[tool.poe.tasks.check-warnings]
+help = "Fail if unique compiler warnings exceed scripts/warning_baseline.json"
+shell = """
+[ -n "$update" ] && flag=--update || flag=
+python3 scripts/warning_ratchet.py "$log" $flag
+"""
+
+[[tool.poe.tasks.check-warnings.args]]
+name = "log"
+positional = true
+help = "Build/test log to analyse, or - for stdin"
+
+[[tool.poe.tasks.check-warnings.args]]
+name = "update"
+options = ["--update"]
+type = "boolean"
+help = "Rewrite the baseline from this log instead of checking against it"
+
 [tool.poe.tasks.clean]
 help = "Remove build artifacts"
 shell = "find packages \\( -name '*.mojoc' -o -name '*.mojopkg' -o -name 'libm0core.*' \\) -delete"

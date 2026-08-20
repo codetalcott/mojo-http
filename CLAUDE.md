@@ -110,6 +110,13 @@ uv run poe test-all         # builds first, then runs all tests
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe test-sqlite      # needs libsqlite3 on the system
+
+# The warning ratchet. mojo has no per-warning suppression, so the residual
+# warnings that cannot be fixed on the pinned toolchain are pinned to a count
+# instead. CI tees build-all + test-all into one log and checks it; both are
+# needed, because only test-all compiles test/ sources.
+uv run poe check-warnings compile.log
+uv run poe check-warnings compile.log --update   # after genuinely fixing some
 ```
 
 One test file, without going through poe — the `-I` chain mirrors the package's
@@ -128,6 +135,15 @@ uv run mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 \
 Tests are `std.testing`: `test_*` functions in a `test_*.mojo`, dispatched by
 `TestSuite.discover_tests[__functions_in_module()]().run()` in `main()`. Adding
 a test means adding a function — there is no registration list to update.
+
+The 68 warnings the baseline records are not a backlog. 53 are doc-string
+capitalisation lint on summaries that open with a real identifier (`fetch_add
+on...`, `wants_html`, `q=0`, `text/*`) — capitalising them would corrupt the
+name each documents. The other 15 warn about APIs Mojo 1.0.0 does not ship:
+`alloc` without a `Layout` suggests an `unsafe_alloc` that does not exist, and
+`ABI="C"` suggests an `abi("C")` that is not a declaration in any position.
+Both are recorded in NOTICE and in `m0-core/ffi_exports.mojo`'s docstring. Do
+not spend time on them; do keep the count from growing.
 
 A `.mojoc` is locked to the exact compiler version that produced it. After any
 toolchain change run `build-all`, or you get:
