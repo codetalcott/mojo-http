@@ -74,7 +74,7 @@ lightbug_http
         ImplicitlyDeletable/Destructible -> Deinitable. Behaviour-preserving
         renames; the exception is `alloc` without a Layout, which is
         deprecated in favour of an `unsafe_alloc` the pinned toolchain does
-        not actually export (11 call sites left as they are)
+        not actually export (12 call sites left as they are)
       - Header read timeout corrected and moved off timerfds. The deadline
         was re-stamped after every response, so any keep-alive connection
         idle longer than header_read_timeout answered 408 to the next
@@ -102,9 +102,17 @@ lightbug_http
         (its typed re-wrap never compiled), getaddrinfo called with a valid
         numeric service instead of a non-NULL empty string glibc rejects,
         and ai_protocol no longer passed an address family
+      - http/common_response.mojo imports the names it uses (HTTPResponse,
+        Headers, Header, HeaderKey, Cookie, ResponseCookieJar) from their
+        defining modules instead of resolving them through the enclosing
+        http/__init__ star-import. That implicit-reference pattern is
+        deprecated in Mojo 1.0 and accounted for 57 of the repository's
+        143 unique compiler warnings. Nothing imports the enclosing http
+        package itself, so the star-import that pulls common_response in
+        is not re-entered and no cycle is introduced
 
-    For the modification history carried into this repository (15 commits):
-        git log -- packages/m0-http/lightbug_http
+    For the modification history carried into this repository (36 commits):
+        git log --no-merges -- packages/m0-http/lightbug_http
 
     The 28 earlier commits predating 2026-03-18 were made in the private
     mojo-siren-grail repository and are not reachable from this history. The
