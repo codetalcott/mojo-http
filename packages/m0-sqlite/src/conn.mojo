@@ -235,7 +235,14 @@ struct Connection(Movable):
         return Int(external_call["sqlite3_changes", c_int](self._handle))
 
     def total_changes(self) -> Int:
-        """Rows modified since this connection was opened."""
+        """Rows modified since this connection was opened.
+
+        Counted by `sqlite3_total_changes`, which returns a C `int` and so
+        wraps past 2^31 — reachable for a long-lived server process, if not a
+        short one. `sqlite3_total_changes64` fixes it and needs SQLite 3.37,
+        which would raise the floor for the whole package rather than just for
+        `m0_array`; not worth it for a counter. Treat this as advisory.
+        """
         return Int(external_call["sqlite3_total_changes", c_int](self._handle))
 
     def errmsg(self) -> String:
@@ -355,6 +362,14 @@ def open(path: String) raises -> Connection:
     and only at risk from an OS-level crash, which is the trade every serious
     WAL deployment makes. `foreign_keys=ON` because SQLite defaults it off for
     backward compatibility and almost nobody wants that.
+
+    **Raises on any database that cannot do WAL** — `:memory:`, a temp database
+    (`""`), some network filesystems. That is not a special case to work
+    around; WAL is the promise this constructor makes, and `_set_wal` explains
+    why delivering silently less is worse than failing. For an in-memory
+    database use `open_memory`, which makes no such promise. Note that `MEMORY`
+    is exported alongside this, so `open(MEMORY)` is easy to write by mistake —
+    it raises, naming the mode SQLite reported instead.
     """
     var db = Connection(
         path,

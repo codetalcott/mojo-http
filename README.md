@@ -71,11 +71,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 318 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 360 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 95 |
-| **Total** | | **563** |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 108 |
+| **Total** | | **618** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -305,6 +305,32 @@ asked for rather than looping until zero.
 compiles to nothing, like a lone comment — is an error rather than silently
 ignored. Use `execute()` for a multi-statement script.
 
+**Errors carry a code.** Every failure that had a SQLite result code raises a
+message ending in `(rc=NN)`, and `error_code()` recovers it, so retrying a
+`SQLITE_BUSY` or reporting a `SQLITE_CONSTRAINT` does not mean parsing text.
+The codes worth branching on are exported by name.
+
+```mojo
+from m0_sqlite import error_code, SQLITE_BUSY, SQLITE_CONSTRAINT
+
+try:
+    db.begin_immediate()
+except e:
+    if error_code(String(e)) == SQLITE_BUSY:
+        ...
+```
+
+**Column indices are checked.** SQLite calls an out-of-range index undefined
+behaviour and in practice answers 0, `""` and `SQLITE_NULL` to it — so a typo
+used to read back as a stored NULL, and `column_name` dereferenced the NULL
+pointer it got and crashed. Every reader now raises instead. It costs one
+`sqlite3_column_count` per cell, measured at 1.02 ns/row.
+
+`open()` raises on a target that cannot do WAL — `:memory:`, a temp database,
+some network filesystems — rather than quietly falling back to a rollback
+journal and delivering none of the concurrency it advertises. Use
+`open_memory()` for an in-memory database.
+
 **Linking.** Tests build to a binary with `-Xlinker -lsqlite3` rather than using
 `mojo run`. The JIT resolves symbols only from libraries already in its process:
 on macOS libsqlite3 lives in the dyld shared cache so `mojo run` happens to
@@ -355,7 +381,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 563 unit tests, then compiles every example
+uv run poe test-all         # 618 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

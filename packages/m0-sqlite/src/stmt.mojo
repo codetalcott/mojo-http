@@ -440,6 +440,13 @@ struct Statement(Movable):
     # it is the right way round for the case that motivated them: bulk ingest
     # measured ~2.9x against the per-row bind/step/reset loop.
     #
+    # It also means **one array per statement**. The array is an argument to
+    # the call, and there is one of it, so `SELECT ... FROM m0_array(?1) JOIN
+    # m0_array(?2)` cannot be written through the safe API — nor should it be
+    # reached for by dropping to `_bind_spec`, which is exactly the shape the
+    # borrow rule exists to forbid. Two arrays would need a call taking both,
+    # and nothing has wanted one yet.
+    #
     # The read side is deliberately int-only (`fetch_ints_over`), although
     # `execute_over` takes float arrays too: ingest is the case that earns the
     # module its keep, and a float read-out variant should be added the day
