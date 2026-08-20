@@ -272,11 +272,9 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     provision_pool.provisions[slot].prepare_for_new_request()
                     provision_pool.provisions[slot].keepalive_count = 0
 
-                    if config.header_read_timeout > 0:
-                        backend.try_add_timer(
-                            UInt(fd_val) + TIMER_HEADER,
-                            config.header_read_timeout * 1000,
-                        )
+                    # No header timerfd: the once-a-second sweep owns this
+                    # deadline now. `slot_header_start` stamped just above is
+                    # the whole mechanism, and it costs no fd and no syscall.
 
                     # Eager read: try to process data already buffered.
                     # EVFILT_READ is NOT registered yet — we register it only
@@ -392,8 +390,6 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     fd_val = Int(timer_ident - TIMER_IDLE)
                 elif timer_ident >= TIMER_BODY:
                     fd_val = Int(timer_ident - TIMER_BODY)
-                elif timer_ident >= TIMER_HEADER:
-                    fd_val = Int(timer_ident - TIMER_HEADER)
                 else:
                     continue
 
@@ -744,16 +740,41 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         # scan of active slots. Timeouts are whole seconds, so the 1 s sweep
         # granularity changes nothing observable; the loop's wait() timeout
         # of 1000 ms guarantees the sweep runs even when the server is idle.
-        if config.idle_timeout > 0:
+        if config.idle_timeout > 0 or config.header_read_timeout > 0:
             var sweep_now = perf_counter_ns()
             if sweep_now - last_idle_sweep >= 1_000_000_000:
                 last_idle_sweep = sweep_now
+                var header_ns = config.header_read_timeout * 1_000_000_000
                 for s in range(max_conns):
+                    if slot_fds[s] == UNUSED:
+                        continue
                     if (
-                        slot_fds[s] != UNUSED
+                        config.idle_timeout > 0
                         and slot_idle_deadline[s] != 0
                         and sweep_now > slot_idle_deadline[s]
                     ):
+                        _close_slot(
+                            backend, handler, s, slot_fds[s],
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                        continue
+                    # Header deadline, sweeping rather than by timerfd. A client
+                    # that connects and says nothing produces no read event, so
+                    # the check in `_read_headers` can never fire for it and
+                    # something has to notice on its own. Unlike the timerfd this
+                    # replaces, it also covers a client that stalls midway through
+                    # headers on a REUSED connection — that timer was armed on
+                    # accept and retired at the first complete header parse.
+                    if (
+                        config.header_read_timeout > 0
+                        and slot_header_start[s] != 0
+                        and provision_pool.provisions[s].state.kind
+                        == ConnectionState.READING_HEADERS
+                        and sweep_now - slot_header_start[s] > header_ns
+                    ):
+                        if provision_pool.provisions[s].keepalive_count == 0:
+                            _send_error_to_fd(slot_fds[s], RequestTimeout())
                         _close_slot(
                             backend, handler, s, slot_fds[s],
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
@@ -840,6 +861,11 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     before kqueue registration) and from the EVFILT_READ handler.
     """
     if config.header_read_timeout > 0:
+        # 0 means "no request in progress" — the first bytes of a keep-alive
+        # request start the clock here rather than inheriting a deadline from
+        # whenever the previous response happened to finish.
+        if slot_header_start[slot] == 0:
+            slot_header_start[slot] = perf_counter_ns()
         var elapsed_s = (perf_counter_ns() - slot_header_start[slot]) / 1_000_000_000
         if elapsed_s >= Int(config.header_read_timeout):
             _send_error_to_fd(fd_val, RequestTimeout())
@@ -955,8 +981,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             )
             return
 
-        if config.header_read_timeout > 0:
-            backend.try_delete_timer(UInt(fd_val) + TIMER_HEADER)
+
 
         var body_bytes_in_buffer = len(provision_pool.provisions[slot].recv_buffer) - header_end_offset
         provision_pool.provisions[slot].parsed_headers = parsed^
@@ -1389,7 +1414,11 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     swap(slot_response[slot], provision_pool.provisions[slot].encoding_buffer)
     slot_response[slot].clear()
     slot_send_offset[slot] = 0
-    slot_header_start[slot] = perf_counter_ns()
+    # Not perf_counter_ns(): the header deadline governs how long a client may
+    # take to SEND a request, not how long it may wait before starting one.
+    # Stamping it here made every keep-alive gap longer than header_read_timeout
+    # answer 408 to a request the client had just sent perfectly promptly.
+    slot_header_start[slot] = 0
 
     if config.idle_timeout > 0:
         slot_idle_deadline[slot] = perf_counter_ns() + config.idle_timeout * 1_000_000_000
@@ -1431,7 +1460,6 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
         handler.sse_slot_disconnected(slot)
     backend.try_delete_read(fd_val)
     backend.try_delete_write(fd_val)
-    backend.try_delete_timer(UInt(fd_val) + TIMER_HEADER)
     backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
     # No TIMER_IDLE delete: idle timeouts are deadline-swept by the loop,
     # never armed as backend timers (see slot_idle_deadline).

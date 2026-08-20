@@ -92,6 +92,11 @@ jobs:
         run: uv run poe smoke-ffi
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
+      # The one deadline with no event to hang itself on: a client that
+      # connects and says nothing is never readable. Also pins the inverse —
+      # a keep-alive gap past the header timeout must NOT be answered 408.
+      - name: Smoke test the header read timeout
+        run: uv run poe smoke-header-timeout
       # The framework showcase: routing with :id and a real 405, content
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API

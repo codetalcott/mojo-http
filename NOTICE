@@ -75,6 +75,17 @@ lightbug_http
         renames; the exception is `alloc` without a Layout, which is
         deprecated in favour of an `unsafe_alloc` the pinned toolchain does
         not actually export (11 call sites left as they are)
+      - Header read timeout corrected and moved off timerfds. The deadline
+        was re-stamped after every response, so any keep-alive connection
+        idle longer than header_read_timeout answered 408 to the next
+        request the client sent — promptly and correctly — even though
+        idle_timeout (60s, vs 10s) was what governed the gap. It is now
+        stamped when a request's bytes actually start arriving, and cleared
+        between requests. The per-connection timerfd it used is gone: the
+        once-a-second sweep that already ran for idle timeouts owns the
+        deadline, which also covers a client stalling midway through headers
+        on a reused connection (the timerfd was armed on accept and retired
+        at the first complete header parse, so it never did)
       - Client-side connect path (create_connection, getaddrinfo bindings)
         revived after rotting as dead code: addrinfo pointer fields modeled
         as Optional[Pointer] (Mojo 1.0 pointers are non-nullable), connect()
