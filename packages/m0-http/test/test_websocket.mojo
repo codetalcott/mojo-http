@@ -13,6 +13,7 @@ from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import URI
 from lightbug_http.websocket import (
     sha1,
+    unmask_payload,
     base64_encode,
     compute_accept_key,
     websocket_upgrade,
@@ -458,6 +459,110 @@ def test_close_frame_helper_carries_code() raises:
     assert_equal(Int(f[0]), 0x88)
     assert_equal(Int(f[1]), 2)
     assert_equal((Int(f[2]) << 8) | Int(f[3]), 1001)
+
+
+# --- SIMD unmasking and the ASCII fast path ---------------------------------
+#
+# Both replaced byte-at-a-time loops with 64-byte vector work, so the cases
+# that matter are the ones a chunked implementation can get wrong: lengths
+# that are not multiples of 4 or 64, and multi-byte characters that straddle
+# a chunk boundary.
+
+
+def _mask_lanes() raises -> SIMD[DType.uint8, 4]:
+    var m = _mask()
+    return SIMD[DType.uint8, 4](m[0], m[1], m[2], m[3])
+
+
+def _unmask_reference(masked: List[UInt8], mask: List[UInt8]) -> List[UInt8]:
+    """The byte-at-a-time unmask `unmask_payload` replaced, kept as the oracle."""
+    var out = List[UInt8](capacity=len(masked))
+    for j in range(len(masked)):
+        out.append(masked[j] ^ mask[j % 4])
+    return out^
+
+
+def test_unmask_payload_agrees_with_scalar_at_every_length() raises:
+    var mask = _mask()
+    # 0..200 covers every phase against both the 4-byte mask cycle and the
+    # 64-byte vector width, including the first and second chunk boundaries.
+    for n in range(0, 201):
+        var masked = List[UInt8](capacity=n if n > 0 else 1)
+        for j in range(n):
+            masked.append(UInt8((j * 31 + 7) % 256))
+        var want = _unmask_reference(masked, mask)
+        var got = unmask_payload(Span(masked), _mask_lanes())
+        assert_equal(len(got), n)
+        for j in range(n):
+            assert_equal(Int(got[j]), Int(want[j]))
+
+
+def test_unmask_payload_spans_many_chunks() raises:
+    var mask = _mask()
+    var n = 8192 + 37  # several full chunks plus a ragged tail
+    var masked = List[UInt8](capacity=n)
+    for j in range(n):
+        masked.append(UInt8((j * 131 + 17) % 256))
+    var want = _unmask_reference(masked, mask)
+    var got = unmask_payload(Span(masked), _mask_lanes())
+    assert_equal(len(got), n)
+    for j in range(n):
+        assert_equal(Int(got[j]), Int(want[j]))
+
+
+def test_large_masked_frame_survives_a_full_feed() raises:
+    # End to end through the parser, not just the helper.
+    var state = WSState(1 << 20)
+    var payload = List[UInt8](capacity=8192)
+    for j in range(8192):
+        payload.append(UInt8((j * 7 + 3) % 256))
+    var frame = encode_ws_frame_masked(WS_OP_BINARY, Span(payload), _mask())
+    var res = state.feed(Span(frame))
+    assert_equal(len(res.msg_payloads), 1)
+    assert_equal(len(res.msg_payloads[0]), 8192)
+    for j in range(8192):
+        assert_equal(Int(res.msg_payloads[0][j]), Int(payload[j]))
+
+
+def test_utf8_multibyte_straddles_every_chunk_boundary() raises:
+    # A 3-byte character placed at each offset around the 64-byte boundary,
+    # inside an ASCII run long enough for the bulk skip to engage. If the
+    # vector skip ever stepped into the middle of a sequence, one of these
+    # offsets would reject valid text.
+    for lead in range(56, 72):
+        var buf = List[UInt8](capacity=200)
+        for _ in range(lead):
+            buf.append(UInt8(ord("a")))
+        buf.append(0xE2)  # euro sign, U+20AC
+        buf.append(0x82)
+        buf.append(0xAC)
+        for _ in range(100):
+            buf.append(UInt8(ord("b")))
+        assert_true(is_valid_utf8(Span(buf)))
+
+
+def test_utf8_rejects_bad_byte_after_a_long_ascii_run() raises:
+    # The invalid byte sits past the first full chunk, so it is only reached
+    # after the bulk skip has advanced.
+    var buf = List[UInt8](capacity=300)
+    for _ in range(200):
+        buf.append(UInt8(ord("x")))
+    buf.append(0xC0)  # overlong lead, never valid
+    buf.append(0xAF)
+    assert_false(is_valid_utf8(Span(buf)))
+
+
+def test_utf8_validates_a_run_of_pure_multibyte_text() raises:
+    # Mostly non-ASCII: exercises the path where the vector probe is skipped.
+    var buf = List[UInt8](capacity=400)
+    for _ in range(100):
+        buf.append(0xE2)
+        buf.append(0x82)
+        buf.append(0xAC)
+    assert_true(is_valid_utf8(Span(buf)))
+    buf.append(0xE2)  # truncated tail
+    buf.append(0x82)
+    assert_false(is_valid_utf8(Span(buf)))
 
 
 def main() raises:
