@@ -63,6 +63,10 @@ jobs:
       # Holds the residual warning count at scripts/warning_baseline.json.
       # mojo has no per-warning suppression, so without this a new warning
       # just joins ~68 existing ones and nobody sees it.
+      # Guards the guard: the ratchet is only meaningful if its parser still
+      # matches. A silent parse regression would under-count and pass.
+      - name: Self-test the warning parser
+        run: python3 scripts/warning_ratchet.py --selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # m0-wsgi embeds CPython, so its interpreter has to resolve on both
