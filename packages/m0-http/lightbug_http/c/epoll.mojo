@@ -73,14 +73,14 @@ comptime EPOLL_DATA_WORD: Int = 1 if CompilationTarget.is_x86() else 2
 @always_inline
 def epoll_event_mask(events: ExternalMutPointer[UInt32], i: Int) -> UInt32:
     """Read the events bitmask of the i-th event in a buffer."""
-    return events[i * EPOLL_EVENT_WORDS]
+    return events[unsafe_offset=i * EPOLL_EVENT_WORDS]
 
 
 @always_inline
 def epoll_event_data(events: ExternalMutPointer[UInt32], i: Int) -> UInt64:
     """Read the 64-bit epoll_data_t of the i-th event in a buffer."""
     var base = i * EPOLL_EVENT_WORDS + EPOLL_DATA_WORD
-    return UInt64(events[base]) | (UInt64(events[base + 1]) << 32)
+    return UInt64(events[unsafe_offset=base]) | (UInt64(events[unsafe_offset=base + 1]) << 32)
 
 
 @fieldwise_init
@@ -127,10 +127,10 @@ def _epoll_ctl(
 def _fill_event(ev: ExternalMutPointer[UInt32], events: UInt32, data: UInt64):
     """Write one struct epoll_event into a caller-provided word buffer."""
     for w in range(EPOLL_EVENT_WORDS):
-        ev[w] = 0
-    ev[0] = events
-    ev[EPOLL_DATA_WORD] = UInt32(data & 0xFFFFFFFF)
-    ev[EPOLL_DATA_WORD + 1] = UInt32(data >> 32)
+        ev[unsafe_offset=w] = 0
+    ev[unsafe_offset=0] = events
+    ev[unsafe_offset=EPOLL_DATA_WORD] = UInt32(data & 0xFFFFFFFF)
+    ev[unsafe_offset=EPOLL_DATA_WORD + 1] = UInt32(data >> 32)
 
 
 def epoll_ctl_add(epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64) raises:

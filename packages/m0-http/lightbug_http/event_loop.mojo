@@ -29,7 +29,7 @@ from lightbug_http.http.common_response import (
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.io.bytes import Bytes
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from lightbug_http.metrics import ServerMetrics
 from lightbug_http.server import (
     BodyReadState, ConnectionProvision, ProvisionPool,
@@ -227,7 +227,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         # by accepting harder; stop and let the loop breathe.
                         break
 
-                    var slot = UNUSED
+                    var slot: Int
                     try:
                         slot = provision_pool.borrow()
                     except:
@@ -1120,7 +1120,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         var body_end = body_start + body_st.content_length
         if body_end <= len(provision_pool.provisions[slot].recv_buffer):
             body = Bytes(capacity=body_st.content_length)
-            memcpy(
+            unsafe_memcpy(
                 dest=body.unsafe_ptr(),
                 src=provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(body_start),
                 count=body_st.content_length,

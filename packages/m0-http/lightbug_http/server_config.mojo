@@ -85,18 +85,18 @@ struct ServerConfig(Copyable, Movable):
         self.sse_heartbeat_ms = copy.sse_heartbeat_ms
         self.app_tick_ms = copy.app_tick_ms
 
-    def __init__(out self, *, deinit take: Self):
-        self.max_connections = take.max_connections
-        self.max_keepalive_requests = take.max_keepalive_requests
-        self.socket_buffer_size = take.socket_buffer_size
-        self.recv_buffer_max = take.recv_buffer_max
-        self.max_request_body_size = take.max_request_body_size
-        self.max_request_uri_length = take.max_request_uri_length
-        self.max_total_header_size = take.max_total_header_size
-        self.header_read_timeout = take.header_read_timeout
-        self.body_read_timeout = take.body_read_timeout
-        self.idle_timeout = take.idle_timeout
-        self.access_log = take.access_log
-        self.enable_metrics = take.enable_metrics
-        self.sse_heartbeat_ms = take.sse_heartbeat_ms
-        self.app_tick_ms = take.app_tick_ms
+    def __init__(out self, *, deinit move: Self):
+        self.max_connections = move.max_connections
+        self.max_keepalive_requests = move.max_keepalive_requests
+        self.socket_buffer_size = move.socket_buffer_size
+        self.recv_buffer_max = move.recv_buffer_max
+        self.max_request_body_size = move.max_request_body_size
+        self.max_request_uri_length = move.max_request_uri_length
+        self.max_total_header_size = move.max_total_header_size
+        self.header_read_timeout = move.header_read_timeout
+        self.body_read_timeout = move.body_read_timeout
+        self.idle_timeout = move.idle_timeout
+        self.access_log = move.access_log
+        self.enable_metrics = move.enable_metrics
+        self.sse_heartbeat_ms = move.sse_heartbeat_ms
+        self.app_tick_ms = move.app_tick_ms
