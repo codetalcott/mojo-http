@@ -110,6 +110,7 @@ uv run poe test-all         # builds first, then runs all tests
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe test-sqlite      # needs libsqlite3 on the system
+uv run poe canary           # full suite against the Mojo nightly, then restore
 
 # The warning ratchet. mojo has no per-warning suppression, so the residual
 # warnings that cannot be fixed on the pinned toolchain are pinned to a count
@@ -157,6 +158,13 @@ stale artifacts appear as unresolved imports in the editor. If *every* prelude
 type (`String`, `List`, …) reports "unable to locate module 'std'", the LSP is
 running a different Mojo than `uv.lock` pins — that is an editor problem, not a
 code problem; check with the compiler before believing it.
+
+**`uv run poe canary` does the whole nightly probe in one command** — swap,
+`build-all` + `test-all`, then restore the pin and rebuild the `.mojoc`
+artifacts, with the restore in an `EXIT` trap so it happens even when the
+canary fails. It exits 0 if the nightly is clean, 1 if the nightly broke
+something, and 2 if the environment could not be put back. Prefer it to
+driving the steps by hand, because doing that has two traps:
 
 **On a nightly, every task needs `--no-sync`.** `poe nightly-try` swaps the
 venv's toolchain without touching `uv.lock`; a plain `uv run` re-syncs the venv

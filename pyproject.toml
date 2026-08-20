@@ -1026,3 +1026,57 @@ echo 'Now on a nightly. Run tasks as: uv run --no-sync poe <task>'
 [tool.poe.tasks.nightly-restore]
 help = "Restore the pinned stable toolchain from uv.lock"
 shell = "uv sync --reinstall-package mojo && mojo --version"
+
+# One command for the whole nightly probe, because doing it by hand has two
+# traps and both were hit while characterising the 1.1 break.
+#
+# 1. Every task run while on a nightly must avoid `uv run`, which re-syncs the
+#    venv to uv.lock and silently puts you back on stable — the canary then
+#    reports a green *stable* run and means nothing. Bare `poe` is
+#    .venv/bin/poe and never syncs, so it is what this uses throughout.
+# 2. A .mojoc is locked to the compiler that produced it, so a nightly run
+#    leaves artifacts that stable cannot load ("precompiled file is
+#    incompatible..."). Restoring the toolchain is not enough; the artifacts
+#    have to be rebuilt too, and that must happen even when the canary fails.
+#    Hence the EXIT trap rather than a trailing command.
+#
+# Exit codes: 0 the nightly is clean, 1 the nightly broke something (the
+# signal), 2 the environment could not be put back and needs a hand. Note
+# that while a break is mutually exclusive between toolchains - as the 1.1
+# `Atomic` change is - no tree can return 0: the pinned build fails for a
+# tree that satisfies the nightly, and vice versa. That is the break being
+# reported accurately, not a fault in this task.
+[tool.poe.tasks.canary]
+help = "Run build-all + test-all against the Mojo nightly, then restore the pin"
+shell = """
+set -u
+
+restore() {
+  code=$?
+  echo ""
+  echo "--- restoring the pinned toolchain ---"
+  if ! poe nightly-restore; then
+    echo "CANARY: restore FAILED - the venv may still be on a nightly." >&2
+    echo "Recover with: uv run poe nightly-restore && uv run poe build-all" >&2
+    exit 2
+  fi
+  if ! poe build-all >/dev/null 2>&1; then
+    echo "CANARY: rebuild on the pinned toolchain FAILED." >&2
+    echo "The toolchain is restored, but the .mojoc artifacts are not." >&2
+    echo "Most likely the working tree holds a change that only compiles on" >&2
+    echo "the nightly - which is its own useful result. See: uv run poe build-all" >&2
+    exit 2
+  fi
+  echo "--- restored $(mojo --version) ---"
+  exit $code
+}
+trap restore EXIT
+
+poe nightly-try || exit 1
+echo ""
+echo "--- canary: $(mojo --version) ---"
+poe build-all || exit 1
+poe test-all || exit 1
+echo ""
+echo "CANARY PASSED against $(mojo --version)"
+"""
