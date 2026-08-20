@@ -16,7 +16,14 @@ from std.testing import (
     TestSuite,
 )
 
-from src import Connection, Statement, open_memory, libversion, error_code
+from src import (
+    Connection,
+    Statement,
+    open_memory,
+    libversion,
+    error_code,
+    SQLITE_RANGE,
+)
 from src.ffi import libversion_number
 
 
@@ -378,7 +385,7 @@ def test_out_of_range_parameter_raises_cleanly() raises:
         _ = q.fetch_ints_over(0, 2, data, out)  # the statement has one param
     except e:
         code = error_code(String(e))
-    assert_equal(code, 25)  # SQLITE_RANGE
+    assert_equal(code, SQLITE_RANGE)
 
     # The failed bind must not poison the statement.
     assert_equal(q.fetch_ints_over(0, 1, data, out), 1)

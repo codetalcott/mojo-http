@@ -37,22 +37,52 @@ Depends on nothing else in this repo — it is a sibling of `m0-core` and
 
 from .ffi import (
     libversion,
+    libversion_number,
     errstr,
     error_code,
     db_errmsg,
     c_string,
+    # Result codes. `error_code` hands back one of these, so the set worth
+    # exporting is the set worth branching on — which is why SQLITE_CONSTRAINT
+    # and SQLITE_RANGE are here and were not before, despite this package's own
+    # tests having to spell them 19 and 25 with a comment.
     SQLITE_OK,
+    SQLITE_ERROR,
+    SQLITE_PERM,
+    SQLITE_ABORT,
     SQLITE_BUSY,
+    SQLITE_LOCKED,
+    SQLITE_NOMEM,
+    SQLITE_READONLY,
+    SQLITE_INTERRUPT,
+    SQLITE_IOERR,
+    SQLITE_CORRUPT,
+    SQLITE_FULL,
+    SQLITE_CANTOPEN,
+    SQLITE_CONSTRAINT,
+    SQLITE_MISMATCH,
+    SQLITE_MISUSE,
+    SQLITE_RANGE,
+    SQLITE_NOTADB,
+    # Not returned by `error_code` — `step` maps them to Bool — but exported so
+    # the mapping is nameable when reading the source.
     SQLITE_ROW,
     SQLITE_DONE,
+    # Column types, as returned by `Statement.column_type`.
     SQLITE_INTEGER,
     SQLITE_FLOAT,
     SQLITE_TEXT,
     SQLITE_BLOB,
     SQLITE_NULL,
+    # Open flags, for the explicit `Connection(path, flags)` constructor. The
+    # mutex flags are here because the package's own constructors use them:
+    # without them a caller assembling a custom flag set cannot reproduce the
+    # threading model `open` picks.
     SQLITE_OPEN_READONLY,
     SQLITE_OPEN_READWRITE,
     SQLITE_OPEN_CREATE,
+    SQLITE_OPEN_NOMUTEX,
+    SQLITE_OPEN_FULLMUTEX,
 )
 from .stmt import Statement
 from .conn import (

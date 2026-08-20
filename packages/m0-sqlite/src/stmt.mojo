@@ -36,8 +36,19 @@ struct Statement(Movable):
 
     var _handle: Int
 
-    def __init__(out self, handle: Int):
-        """Take ownership of a `sqlite3_stmt*` carried as an opaque address."""
+    def __init__(out self, handle: Int) raises:
+        """Take ownership of a `sqlite3_stmt*` carried as an opaque address.
+
+        Refuses a NULL handle. `Connection.prepare` already rejects the case
+        SQLite produces one — text that compiles to no statement — but this
+        constructor is public and takes a bare `Int`, so `Statement(0)` was
+        reachable and its first `step` would call `sqlite3_step(NULL)`.
+        """
+        if handle == 0:
+            raise Error(
+                "Statement was handed a NULL sqlite3_stmt* — a statement can"
+                " only be built from a handle sqlite3_prepare_v2 produced"
+            )
         self._handle = handle
 
     def __deinit__(deinit self):
@@ -159,38 +170,76 @@ struct Statement(Movable):
         """Number of columns in the result set."""
         return Int(external_call["sqlite3_column_count", c_int](self._handle))
 
-    def column_type(self, index: Int) -> Int:
+    def _check_column(self, index: Int) raises:
+        """Reject an index outside the result set.
+
+        SQLite documents an out-of-range column index as undefined behaviour,
+        and what it does in practice is worse than a crash: `column_int64`
+        answers 0, `column_text` answers NULL, and `column_type` answers
+        SQLITE_NULL — so a typo'd index is indistinguishable from a stored
+        NULL, which is the one distinction `is_null` exists to make.
+        `sqlite3_column_name` answers NULL outright, which used to be a
+        segfault inside `cstr_len`.
+
+        The count is re-read per call rather than cached on the statement.
+        `sqlite3_prepare_v2` silently re-prepares after a schema change, so a
+        `SELECT *` really can change its column count mid-life, and a cached
+        count would then be wrong in exactly the direction that reintroduces
+        the out-of-range read.
+
+        That costs one extra C call per cell read. Measured in isolation
+        against libsqlite3 3.51.0, a 100k-row single-column integer scan — the
+        worst case, since there per-cell is also per-row — goes from 31.68 to
+        32.70 ns/row: **1.02 ns/row, +3.2%**. Paid deliberately. It is under
+        the run-to-run noise of `bench_sqlite.mojo`, and it buys the difference
+        between a wrong answer and an error.
+        """
+        var n = self.column_count()
+        if index < 0 or index >= n:
+            raise Error(
+                "column index "
+                + String(index)
+                + " is out of range: this statement has "
+                + String(n)
+                + (" columns" if n != 1 else " column")
+            )
+
+    def column_type(self, index: Int) raises -> Int:
         """One of SQLITE_INTEGER / FLOAT / TEXT / BLOB / NULL."""
+        self._check_column(index)
         return Int(
             external_call["sqlite3_column_type", c_int](
                 self._handle, c_int(index)
             )
         )
 
-    def is_null(self, index: Int) -> Bool:
+    def is_null(self, index: Int) raises -> Bool:
         """Whether the column holds SQL NULL.
 
         Worth checking explicitly: `column_int` on a NULL returns 0 and
         `column_text` returns "", neither of which is distinguishable from a
-        real stored value.
+        real stored value. An index outside the result set raises rather than
+        answering True, which is what it used to do — see `_check_column`.
         """
         return self.column_type(index) == SQLITE_NULL
 
-    def column_int(self, index: Int) -> Int:
+    def column_int(self, index: Int) raises -> Int:
         """Read as a 64-bit integer. Returns 0 for NULL — see `is_null`."""
+        self._check_column(index)
         return Int(
             external_call["sqlite3_column_int64", Int64](
                 self._handle, c_int(index)
             )
         )
 
-    def column_float(self, index: Int) -> Float64:
+    def column_float(self, index: Int) raises -> Float64:
         """Read as a double. Returns 0.0 for NULL — see `is_null`."""
+        self._check_column(index)
         return external_call["sqlite3_column_double", Float64](
             self._handle, c_int(index)
         )
 
-    def column_text(self, index: Int) -> String:
+    def column_text(self, index: Int) raises -> String:
         """Read as text. Returns "" for NULL — see `is_null`.
 
         Uses `column_bytes` for the length rather than scanning for a NUL, so a
@@ -207,6 +256,7 @@ struct Statement(Movable):
         invalid UTF-8 — and it lands in the returned String as-is. Validation
         belongs to the caller who knows the data's provenance.
         """
+        self._check_column(index)
         var p = external_call["sqlite3_column_text", CharPtr](
             self._handle, c_int(index)
         )
@@ -219,7 +269,7 @@ struct Statement(Movable):
             return String("")
         return cstr_to_string(p, n)
 
-    def column_blob(self, index: Int) -> List[UInt8]:
+    def column_blob(self, index: Int) raises -> List[UInt8]:
         """Read as raw bytes. Returns an empty list for NULL — see `is_null`.
 
         One `unsafe_memcpy` rather than a per-byte loop: SQLite hands back a
@@ -231,6 +281,7 @@ struct Statement(Movable):
         into the requested format, and only then does the reported length
         describe that format rather than the one stored.
         """
+        self._check_column(index)
         var p = external_call["sqlite3_column_blob", CharPtr](
             self._handle, c_int(index)
         )
@@ -245,7 +296,9 @@ struct Statement(Movable):
         unsafe_memcpy(dest=out.unsafe_ptr(), src=p, count=n)
         return out^
 
-    def column_blob_into(self, index: Int, mut buf: List[UInt8]) -> Int:
+    def column_blob_into(
+        self, index: Int, mut buf: List[UInt8]
+    ) raises -> Int:
         """Read raw bytes into a caller-owned buffer; returns the byte count.
 
         `buf` is resized to exactly the blob's length and fully overwritten, so
@@ -253,6 +306,7 @@ struct Statement(Movable):
         allocating a fresh `List` per row. Returns 0 for NULL and for a
         zero-length blob alike — see `is_null` to tell them apart.
         """
+        self._check_column(index)
         # Pointer before length, as in `column_blob` — SQLite documents that
         # order, because fetching the pointer is what forces the value into the
         # requested format.
@@ -267,12 +321,16 @@ struct Statement(Movable):
         if n <= 0:
             buf.resize(0, 0)
             return 0
-        buf.resize(n, 0)
+        # Uninitialized: every byte is overwritten by the memcpy below, so a
+        # zero-fill of the grown tail would be written twice. This method
+        # exists to avoid per-row work; that includes its own.
+        buf.resize(unsafe_uninit_length=n)
         unsafe_memcpy(dest=buf.unsafe_ptr(), src=p, count=n)
         return n
 
-    def column_name(self, index: Int) -> String:
+    def column_name(self, index: Int) raises -> String:
         """Declared name of a result column."""
+        self._check_column(index)
         var p = external_call["sqlite3_column_name", CharPtr](
             self._handle, c_int(index)
         )
@@ -381,6 +439,13 @@ struct Statement(Movable):
     # so they do not compose with incremental stepping. That is the trade, and
     # it is the right way round for the case that motivated them: bulk ingest
     # measured ~2.9x against the per-row bind/step/reset loop.
+    #
+    # It also means **one array per statement**. The array is an argument to
+    # the call, and there is one of it, so `SELECT ... FROM m0_array(?1) JOIN
+    # m0_array(?2)` cannot be written through the safe API — nor should it be
+    # reached for by dropping to `_bind_spec`, which is exactly the shape the
+    # borrow rule exists to forbid. Two arrays would need a call taking both,
+    # and nothing has wanted one yet.
     #
     # The read side is deliberately int-only (`fetch_ints_over`), although
     # `execute_over` takes float arrays too: ingest is the case that earns the

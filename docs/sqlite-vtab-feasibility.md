@@ -105,7 +105,9 @@ to use this.
 The spike treats four SQLite structs as flat word buffers, so its correctness
 rests on offsets the Mojo compiler cannot see. Those are now re-derived from the
 real headers via `offsetof` and asserted at compile time in
-[`experiments/sqlite-vtab/verify_layout.c`](../experiments/sqlite-vtab/verify_layout.c):
+[`packages/m0-sqlite/test/verify_layout.c`](../packages/m0-sqlite/test/verify_layout.c)
+(moved there from `experiments/` once it became a build gate — `poe test-sqlite`
+now runs it for the host triple before any Mojo test):
 
 | Target | Result |
 |---|---|

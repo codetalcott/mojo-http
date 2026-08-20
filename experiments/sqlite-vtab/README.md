@@ -68,15 +68,21 @@ wrong by four bytes corrupts everything downstream in silence.
 
 Because those buffers encode offsets the Mojo compiler cannot see,
 `verify_layout.c` re-derives every one of them from the real headers and fails
-the build on any mismatch. It needs no linker, sysroot, or runner:
+the build on any mismatch. **It has moved to
+[`packages/m0-sqlite/test/verify_layout.c`](../../packages/m0-sqlite/test/verify_layout.c)**
+— it guards shipped code, not a spike, and `poe test-sqlite` now runs it for
+the host triple before any Mojo test. It needs no linker, sysroot, or runner:
 
 ```bash
 for t in x86_64-linux-gnu aarch64-linux-gnu arm64-apple-macos; do
-  clang -fsyntax-only -target $t experiments/sqlite-vtab/verify_layout.c && echo "$t OK"
+  clang -fsyntax-only -target $t packages/m0-sqlite/test/verify_layout.c && echo "$t OK"
 done
-clang -fsyntax-only -target i386-linux-gnu experiments/sqlite-vtab/verify_layout.c \
+clang -fsyntax-only -target i386-linux-gnu packages/m0-sqlite/test/verify_layout.c \
   && echo "BUG: i386 should have failed"
 ```
+
+The cross-triple sweep needs a sysroot carrying `sqlite3.h` for each target,
+which is why the CI gate is a native run rather than this loop.
 
 All three 64-bit targets pass with identical offsets; i386 fails, which is what
 shows the assertions are live. Add a triple there rather than assuming that

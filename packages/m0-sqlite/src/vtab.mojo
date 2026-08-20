@@ -28,11 +28,17 @@ Three things about the implementation are deliberate:
     `lightbug_http/c/epoll.mojo`: Mojo cannot vary a struct's fields by target,
     and a struct whose size is wrong by four bytes corrupts everything after the
     first row in silence. Every offset used here is asserted against the real
-    headers, for four target triples, by `experiments/sqlite-vtab/verify_layout.c`.
+    headers by `test/verify_layout.c`, which `poe test-sqlite` runs — for the
+    host triple — before any Mojo test. Four 64-bit triples were swept by hand
+    during the spike, with i386 as a negative control; see
+    `docs/sqlite-vtab-feasibility.md`. Sweep a new target the same way before
+    trusting it, because the gate only ever sees the machine it runs on.
 
   - **`iVersion` is 1 on purpose.** It bounds what SQLite reads from the module
-    to the first 19 slots, so the 25-word buffer stays in range even against a
-    future SQLite that appends fields.
+    to slots 0 through 19 — through `xRename`, so twenty words — and the buffer
+    is 25, which is what keeps it in range even against a future SQLite that
+    appends fields. (`verify_layout.c` asserts the 25 covers today's header;
+    the iVersion is what covers tomorrow's.)
 
   - **The pointer type tag is a `comptime` literal.** `sqlite3_bind_pointer`
     retains the tag pointer, so it must have static storage — a transient
@@ -46,11 +52,9 @@ array and are shaped so the borrow cannot outlive the data.
 from std.ffi import external_call, c_int
 from std.memory import UnsafePointer
 
-from .ffi import SQLITE_OK, c_string
+from .ffi import SQLITE_OK, SQLITE_NOMEM, SQLITE_CONSTRAINT, c_string
 
-# --- Result codes used by the callbacks -------------------------------------
-comptime SQLITE_NOMEM: Int = 7
-comptime SQLITE_CONSTRAINT: Int = 19
+# --- Constraint operators (xBestIndex input, not a result code) -------------
 comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
 
 # The floor is 3.26.0, not 3.20.0. `sqlite3_bind_pointer` arrived in 3.20.0,
@@ -173,6 +177,7 @@ def _x_best_index(p_vtab: Int, p_info: Int) abi("C") -> c_int:
         var usable = Int(U8Ptr(unsafe_from_address=base + 5)[unsafe_offset=0])
         if usable != 0 and op == SQLITE_INDEX_CONSTRAINT_EQ and i_column == 1:
             spec_slot = i
+            break  # one hidden column, so the first usable match is the one
 
     var cost = F64Ptr(unsafe_from_address=p_info + II_COST * 8)
     var idx_num = I32Ptr(unsafe_from_address=p_info + II_IDXNUM * 8)
@@ -190,6 +195,14 @@ def _x_best_index(p_vtab: Int, p_info: Int) abi("C") -> c_int:
     I32Ptr(unsafe_from_address=u)[unsafe_offset=0] = Int32(1)
     U8Ptr(unsafe_from_address=u + 4)[unsafe_offset=0] = UInt8(1)
     idx_num[unsafe_offset=0] = Int32(1)
+    # A flat estimate, and deliberately so: the array length lives behind the
+    # bound pointer, which xBestIndex cannot read — planning happens before
+    # any value is available. `estimatedRows` is left at the 25 SQLite fills
+    # in. So the planner sizes a 50k-element array the same as a 3-element
+    # one, which is wrong in the join case and irrelevant in the case that
+    # justifies this module: `INSERT INTO t SELECT ... FROM m0_array(?1)`
+    # joins nothing. Reading the length at plan time needs
+    # sqlite3_vtab_rhs_value (3.38+), above this module's 3.26 floor.
     cost[unsafe_offset=0] = 1.0
     return c_int(SQLITE_OK)
 

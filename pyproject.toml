@@ -140,14 +140,39 @@ shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-
 help = "Test m0-datastar"
 shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-datastar -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
 
+# The one part of m0-sqlite the Mojo compiler cannot check. src/vtab.mojo
+# treats four SQLite C structs as flat word buffers, so every offset it uses is
+# invisible to the type system, and a wrong one corrupts rows in silence rather
+# than crashing. verify_layout.c re-derives all of them from the installed
+# sqlite3.h with _Static_assert. Frontend only: no linker, no runner, ~0.1s.
+#
+# Native rather than cross-compiled on purpose. Cross-checking the other
+# triples needs a sysroot carrying sqlite3.h for each, which CI does not have;
+# what a native run does check is the header actually installed here, and
+# across the two CI runners that is both headers the repo is built against.
+[tool.poe.tasks.verify-vtab-layout]
+help = "Assert m0-sqlite's hardcoded SQLite struct offsets against sqlite3.h"
+shell = "${CC:-cc} -fsyntax-only packages/m0-sqlite/test/verify_layout.c"
+
 # Built and run, not `mojo run`. The JIT resolves symbols only from libraries
 # already loaded into its process: on macOS libsqlite3 is in the dyld shared
 # cache so `mojo run` happens to work, but on Linux it fails with
 # "JIT session error: Symbols not found: [sqlite3_open_v2, ...]". Linking
 # explicitly works identically on both, so both do it.
 # Linux also needs the library present at link time: libsqlite3-dev.
+#
+# verify-vtab-layout runs first: if the struct offsets are wrong, the vtab
+# tests below fail in confusing ways or pass by luck, and the offsets are the
+# more fundamental claim.
 [tool.poe.tasks.test-sqlite]
 help = "Test m0-sqlite (links libsqlite3; Linux needs libsqlite3-dev)"
+sequence = [
+  { ref = "verify-vtab-layout" },
+  { ref = "test-sqlite-mojo" },
+]
+
+[tool.poe.tasks.test-sqlite-mojo]
+help = "Run m0-sqlite's Mojo tests (prefer test-sqlite, which checks offsets first)"
 shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
