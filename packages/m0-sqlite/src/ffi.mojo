@@ -23,10 +23,31 @@ from std.ffi import external_call, c_int
 from std.memory import UnsafePointer
 
 # --- Result codes ---
+#
+# The primary codes a caller might reasonably branch on after `error_code`,
+# not the full set — SQLite defines about thirty and most of them are things
+# only SQLite can do anything about. These are the ones this package can
+# actually hand you. Extended codes (SQLITE_CONSTRAINT_UNIQUE and friends) are
+# deliberately absent: nothing here calls `sqlite3_extended_result_codes`, so
+# no error raised from this package ever carries one. See `stmt_errmsg`.
 comptime SQLITE_OK: Int = 0
 comptime SQLITE_ERROR: Int = 1
+comptime SQLITE_PERM: Int = 3
+comptime SQLITE_ABORT: Int = 4
 comptime SQLITE_BUSY: Int = 5
+comptime SQLITE_LOCKED: Int = 6
+comptime SQLITE_NOMEM: Int = 7
+comptime SQLITE_READONLY: Int = 8
+comptime SQLITE_INTERRUPT: Int = 9
+comptime SQLITE_IOERR: Int = 10
+comptime SQLITE_CORRUPT: Int = 11
+comptime SQLITE_FULL: Int = 13
+comptime SQLITE_CANTOPEN: Int = 14
+comptime SQLITE_CONSTRAINT: Int = 19
+comptime SQLITE_MISMATCH: Int = 20
 comptime SQLITE_MISUSE: Int = 21
+comptime SQLITE_RANGE: Int = 25
+comptime SQLITE_NOTADB: Int = 26
 comptime SQLITE_ROW: Int = 100
 comptime SQLITE_DONE: Int = 101
 
@@ -192,6 +213,14 @@ def stmt_errmsg(stmt_handle: Int, rc: Int) -> String:
     or other API misuse". So the message is used only when the connection's own
     error code agrees with the code being described; otherwise the caller falls
     back to `errstr`, which is less specific but always true.
+
+    That comparison assumes **primary** result codes on both sides, which holds
+    only because nothing here calls `sqlite3_extended_result_codes`. Turn those
+    on and `sqlite3_step` starts returning 2067 where `sqlite3_errcode` still
+    answers 19, the corroboration fails every time, and every message silently
+    degrades to `errstr`. If extended codes are ever wanted, this must compare
+    against `sqlite3_extended_errcode` instead — and `error_code`'s callers
+    would need to stop comparing against primary constants.
     """
     if stmt_handle == 0:
         return String("")
@@ -252,6 +281,9 @@ def error_code(message: String) -> Int:
         except e:
             if error_code(String(e)) == SQLITE_BUSY:
                 ...
+
+    Every code it can return is exported by name from the package, so no
+    caller needs a bare 19 with a comment next to it.
     """
     var b = message.as_bytes()
     var n = len(b)

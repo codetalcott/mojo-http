@@ -50,11 +50,9 @@ array and are shaped so the borrow cannot outlive the data.
 from std.ffi import external_call, c_int
 from std.memory import UnsafePointer
 
-from .ffi import SQLITE_OK, c_string
+from .ffi import SQLITE_OK, SQLITE_NOMEM, SQLITE_CONSTRAINT, c_string
 
-# --- Result codes used by the callbacks -------------------------------------
-comptime SQLITE_NOMEM: Int = 7
-comptime SQLITE_CONSTRAINT: Int = 19
+# --- Constraint operators (xBestIndex input, not a result code) -------------
 comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
 
 # The floor is 3.26.0, not 3.20.0. `sqlite3_bind_pointer` arrived in 3.20.0,

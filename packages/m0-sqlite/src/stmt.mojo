@@ -36,8 +36,19 @@ struct Statement(Movable):
 
     var _handle: Int
 
-    def __init__(out self, handle: Int):
-        """Take ownership of a `sqlite3_stmt*` carried as an opaque address."""
+    def __init__(out self, handle: Int) raises:
+        """Take ownership of a `sqlite3_stmt*` carried as an opaque address.
+
+        Refuses a NULL handle. `Connection.prepare` already rejects the case
+        SQLite produces one — text that compiles to no statement — but this
+        constructor is public and takes a bare `Int`, so `Statement(0)` was
+        reachable and its first `step` would call `sqlite3_step(NULL)`.
+        """
+        if handle == 0:
+            raise Error(
+                "Statement was handed a NULL sqlite3_stmt* — a statement can"
+                " only be built from a handle sqlite3_prepare_v2 produced"
+            )
         self._handle = handle
 
     def __deinit__(deinit self):
