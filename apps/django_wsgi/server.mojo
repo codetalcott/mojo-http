@@ -36,7 +36,6 @@ from std.os import getenv
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse
 from lightbug_http.connection import ListenConfig
-from lightbug_http.server_config import ServerConfig
 
 from m0_http import WorkerSupervisor
 from m0_http.config import AppConfig
@@ -112,7 +111,5 @@ def main() raises:
     # send). It is what separated "the loop is slow" from "connections wait
     # in the accept queue" when the close-mode latency tail was diagnosed —
     # keep it wired.
-    var server_config = ServerConfig()
-    server_config.access_log = config.access_log
-    var server = Server(server_config^)
+    var server = Server(config.server_config())
     server.serve_nonblocking(listener, handler)

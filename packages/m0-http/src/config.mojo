@@ -18,6 +18,8 @@ Env vars:
 
 from std.os import getenv
 
+from lightbug_http.server_config import ServerConfig
+
 
 struct AppConfig(Copyable, Movable):
     """Application configuration loaded from environment."""
@@ -66,6 +68,25 @@ struct AppConfig(Copyable, Movable):
     def address(self) -> String:
         """Return listen address string (e.g. '0.0.0.0:8080')."""
         return "0.0.0.0:" + String(self.port)
+
+    def server_config(self) -> ServerConfig:
+        """A `ServerConfig` carrying every field this config shares with it.
+
+        `AppConfig` reads the environment; `ServerConfig` is what the server
+        actually consults. Three fields exist in both, and every app used to
+        copy them across by hand — which meant each app copied a different
+        subset, and two copied none at all, so `M0_ACCESS_LOG` silently did
+        nothing there. The mapping lives here now so there is one place to
+        update when a fourth shared field appears.
+
+        Server-only tuning (connection limits, timeouts, body caps) keeps its
+        defaults; this sets only what the environment is allowed to reach.
+        """
+        var sc = ServerConfig()
+        sc.access_log = self.access_log
+        sc.sse_heartbeat_ms = self.sse_heartbeat_ms
+        sc.app_tick_ms = self.app_tick_ms
+        return sc^
 
 
 def _parse_int_env(name: String, default: Int) -> Int:

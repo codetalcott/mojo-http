@@ -1,4 +1,5 @@
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_http import AppConfig
 
 
 @fieldwise_init
@@ -36,10 +37,14 @@ struct HelloHandler(HTTPService):
 
 
 def main() raises:
-    print("Starting hello server on 0.0.0.0:8080")
-    var server = Server()
+    # Reads M0_PORT and M0_ACCESS_LOG. This is the app `scripts/bench_hello.sh`
+    # drives, and being able to move its port and toggle access logging without
+    # a rebuild is worth the two lines.
+    var config = AppConfig()
+    print("Starting hello server on " + config.address())
+    var server = Server(config.server_config())
     var handler = HelloHandler()
     # The non-blocking loop multiplexes keep-alive connections instead of
     # serving one at a time — measurably better tail latency under
     # concurrent clients, and the same one-liner to call.
-    server.listen_and_serve_nonblocking("0.0.0.0:8080", handler)
+    server.listen_and_serve_nonblocking(config.address(), handler)

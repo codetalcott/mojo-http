@@ -16,6 +16,7 @@ from std.os import setenv
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src.config import AppConfig
+from lightbug_http.server_config import ServerConfig
 
 
 def _clear():
@@ -143,6 +144,56 @@ def test_config_is_copyable_and_movable() raises:
     assert_equal(copied.base_url, "http://localhost:4242")
     var moved = copied^
     assert_equal(moved.port, 4242)
+    _clear()
+
+
+# --- the AppConfig -> ServerConfig mapping ---------------------------------
+#
+# Every app used to copy these fields across by hand, each a different subset,
+# and two copied none — so M0_ACCESS_LOG silently did nothing in notes_api and
+# hello. `server_config()` is the single mapping; these are what stop it
+# drifting back.
+
+
+def test_server_config_carries_every_shared_field() raises:
+    _clear()
+    _ = setenv("M0_ACCESS_LOG", "1", True)
+    _ = setenv("M0_SSE_HEARTBEAT_MS", "700", True)
+    _ = setenv("M0_APP_TICK_MS", "250", True)
+    var config = AppConfig()
+    var sc = config.server_config()
+    assert_true(sc.access_log)
+    assert_equal(sc.sse_heartbeat_ms, 700)
+    assert_equal(sc.app_tick_ms, 250)
+    _clear()
+
+
+def test_server_config_reflects_the_off_settings_too() raises:
+    # A mapping that only ever ORs values in would pass the test above while
+    # ignoring a deliberate "off".
+    _clear()
+    _ = setenv("M0_SSE_HEARTBEAT_MS", "0", True)
+    var config = AppConfig()
+    var sc = config.server_config()
+    assert_false(sc.access_log)
+    assert_equal(sc.sse_heartbeat_ms, 0)
+    assert_equal(sc.app_tick_ms, 0)
+    _clear()
+
+
+def test_server_config_leaves_server_only_tuning_at_defaults() raises:
+    # The environment is not allowed to reach connection limits or body caps;
+    # those stay wherever ServerConfig() puts them.
+    _clear()
+    _ = setenv("M0_ACCESS_LOG", "true", True)
+    var mapped = AppConfig().server_config()
+    var plain = ServerConfig()
+    assert_equal(mapped.max_connections, plain.max_connections)
+    assert_equal(mapped.max_keepalive_requests, plain.max_keepalive_requests)
+    assert_equal(mapped.socket_buffer_size, plain.socket_buffer_size)
+    assert_equal(mapped.max_request_body_size, plain.max_request_body_size)
+    assert_equal(mapped.header_read_timeout, plain.header_read_timeout)
+    assert_equal(mapped.idle_timeout, plain.idle_timeout)
     _clear()
 
 

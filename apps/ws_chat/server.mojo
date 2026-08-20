@@ -27,7 +27,6 @@ from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.c.process import getpid
 from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.server_config import ServerConfig
 from lightbug_http.websocket import websocket_upgrade, encode_ws_frame, WS_OP_TEXT
 
 from m0_http import AppConfig, WorkerSupervisor, WSHub
@@ -148,11 +147,8 @@ def main() raises:
         handler.hub.enable_bus(bus, worker, shared.addr(0))
         bus_read_fd = bus.read_fd(worker)
 
-    var server_config = ServerConfig()
-    server_config.access_log = config.access_log
     # WebSocket heartbeats are protocol pings on the same cadence knob.
-    server_config.sse_heartbeat_ms = config.sse_heartbeat_ms
-    var server = Server(server_config^, config.address())
+    var server = Server(config.server_config(), config.address())
     # WebSockets need the non-blocking event loop: it assigns req.slot_id,
     # parses frames, and drains the outbox.
     server.serve_nonblocking(listener, handler, bus_read_fd=bus_read_fd)
