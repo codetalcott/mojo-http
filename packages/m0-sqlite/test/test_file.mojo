@@ -16,7 +16,9 @@ from src import (
     open,
     open_readonly,
     open_memory,
+    open_serialized,
     error_code,
+    MEMORY,
     DEFAULT_BUSY_TIMEOUT_MS,
     SQLITE_BUSY,
 )
@@ -191,7 +193,12 @@ def test_open_installs_the_default_busy_timeout() raises:
 
 
 def test_busy_timeout_waits_before_giving_up() raises:
-    """A contended write must wait out the timeout, not fail on contact."""
+    """A contended write must wait out the timeout, not fail on contact.
+
+    Bounded on both sides. A lower bound alone cannot tell a 300ms wait from a
+    five-minute one, so a handler that ignored its limit — or a connection
+    that quietly kept the 5s default — would read as a pass.
+    """
     var p = _fresh("busywait")
     var writer = open(p)
     writer.execute("CREATE TABLE t (v INTEGER)")
@@ -215,6 +222,13 @@ def test_busy_timeout_waits_before_giving_up() raises:
     assert_true(
         waited_ms >= 250,
         "expected a wait of about 300ms, waited " + String(waited_ms) + "ms",
+    )
+    # Generous, because CI runners stall: this is here to catch a wait that is
+    # unbounded or still on the 5s default, not to time the handler.
+    assert_true(
+        waited_ms < 3000,
+        "expected a wait of about 300ms, waited " + String(waited_ms) + "ms —"
+        " the busy timeout is not being honoured",
     )
 
     # And the write succeeds once the lock is released.
@@ -255,7 +269,7 @@ def test_busy_timeout_can_be_cleared() raises:
 
 
 def test_mmap_size_is_opt_in() raises:
-    """open() must not enable mmap; asking for it must work.
+    """`open()` must not enable mmap; asking for it must work.
 
     Not a default because mmap turns a disk error into a SIGBUS — see
     docs/SQLITE_PERFORMANCE.md.
@@ -271,13 +285,90 @@ def test_mmap_size_is_opt_in() raises:
     _cleanup(p)
 
 
-def test_open_reports_wal_it_could_not_apply() raises:
-    """open() promises WAL; if SQLite disagrees it must say so, not proceed."""
+def test_open_applies_wal() raises:
+    """The success path: open() promises WAL and SQLite agrees."""
     var p = _fresh("walok")
     var db = open(p)
     assert_equal(db.query_scalar("PRAGMA journal_mode"), "wal")
     db.close()
     _cleanup(p)
+
+
+def test_open_reports_wal_it_could_not_apply() raises:
+    """The failure path, which this test used to skip while claiming to cover.
+
+    `PRAGMA journal_mode=WAL` can fail quietly — it answers with the mode
+    actually in force, and a database that cannot do WAL stays on a rollback
+    journal and reports something else. Discarding that row would mean open()
+    promising reader/writer concurrency while delivering a lock that
+    serializes them.
+
+    `:memory:` is the reachable case: it answers "memory", and it is reachable
+    by accident too, since `MEMORY` is exported right next to `open`. The
+    error must name the mode SQLite actually reported, or the next person
+    debugs a concurrency problem instead of reading a message.
+    """
+    var message = String("")
+    try:
+        var _db = open(MEMORY)
+    except e:
+        message = String(e)
+    assert_true(
+        "journal_mode=WAL was not applied" in message,
+        "open() accepted a database that cannot do WAL: " + message,
+    )
+    assert_true(
+        "'memory'" in message,
+        "the error did not report the mode SQLite gave: " + message,
+    )
+
+
+# --- open_serialized ----------------------------------------------------------
+
+def test_open_serialized_round_trips() raises:
+    """The only constructor whose flag set differs, and it had no test at all.
+
+    What this pins is that the flags still assemble into a working connection
+    and that it gets the same pragmas as `open`. It cannot pin that
+    FULLMUTEX took effect — that would need two threads writing through one
+    Connection, which this package tells you not to do and Mojo gives no
+    portable way to arrange here. A typo in the flag constant is the failure
+    this catches, and it was previously invisible.
+    """
+    var p = _fresh("serialized")
+    var db = open_serialized(p)
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    var ins = db.prepare("INSERT INTO t (v) VALUES (?)")
+    ins.bind_text(1, "threadsafe")
+    _ = ins.step()
+    ins.finalize()
+
+    assert_equal(db.query_scalar("PRAGMA journal_mode"), "wal")
+    assert_equal(
+        Int(db.query_scalar("PRAGMA busy_timeout")), DEFAULT_BUSY_TIMEOUT_MS
+    )
+    assert_equal(db.query_scalar("PRAGMA foreign_keys"), "1")
+    assert_equal(db.query_scalar("SELECT v FROM t"), "threadsafe")
+    db.close()
+
+    # And the file it wrote is an ordinary database to everyone else.
+    var ro = open_readonly(p)
+    assert_equal(ro.query_scalar("SELECT v FROM t"), "threadsafe")
+    ro.close()
+    _cleanup(p)
+
+
+def test_open_serialized_reports_wal_it_could_not_apply() raises:
+    """Same promise as open(), so the same failure must surface."""
+    var message = String("")
+    try:
+        var _db = open_serialized(MEMORY)
+    except e:
+        message = String(e)
+    assert_true(
+        "journal_mode=WAL was not applied" in message,
+        "open_serialized() accepted a database that cannot do WAL: " + message,
+    )
 
 
 def test_transaction_rollback_survives_reopen() raises:

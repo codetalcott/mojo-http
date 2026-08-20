@@ -184,7 +184,7 @@ def test_open_readonly_missing_file_raises() raises:
 
 
 def test_close_is_idempotent() raises:
-    """close() twice is fine; __deinit__ then has nothing to do."""
+    """`close()` twice is fine; `__deinit__` then has nothing to do."""
     var db = open_memory()
     db.close()
     db.close()
@@ -284,7 +284,7 @@ def test_column_types_are_reported() raises:
 
 
 def test_is_null_distinguishes_null_from_zero() raises:
-    """column_int returns 0 for NULL, which a real 0 also returns."""
+    """`column_int` returns 0 for NULL, which a real 0 also returns."""
     var db = open_memory()
     db.execute("CREATE TABLE t (v INTEGER)")
     db.execute("INSERT INTO t VALUES (0), (NULL)")
@@ -364,7 +364,7 @@ def test_every_column_reader_rejects_an_out_of_range_index() raises:
 
 
 def test_negative_column_index_raises() raises:
-    """sqlite3_column_type(-1) answers SQLITE_NULL rather than complaining."""
+    """`sqlite3_column_type(-1)` answers SQLITE_NULL rather than complaining."""
     var db = open_memory()
     var q = db.prepare("SELECT 1")
     assert_true(q.step())
@@ -706,7 +706,7 @@ def test_open_failure_carries_the_result_code() raises:
 
 
 def test_open_failure_does_not_say_the_same_thing_twice() raises:
-    """errstr(rc) and errmsg() agree here, and the message used to carry both:
+    """`errstr(rc)` and `errmsg()` agree here, and the message carried both:
     "unable to open database file (unable to open database file)".
     """
     var message = String("")
@@ -724,7 +724,7 @@ def test_open_failure_does_not_say_the_same_thing_twice() raises:
 
 
 def test_describe_falls_back_when_the_connection_has_no_message() raises:
-    """sqlite3_errmsg says "not an error" when nothing failed on the
+    """`sqlite3_errmsg` says "not an error" when nothing failed on the
     connection, which is worse than useless inside an error message.
     """
     assert_true("not an error" not in describe("step", 1, "not an error"))
