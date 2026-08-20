@@ -27,7 +27,7 @@ struct KqueueBackend(EventLoopBackend):
         self.kq = kqueue()
         self._events = alloc[kevent_t](count=_MAX_EVENTS)
         for i in range(_MAX_EVENTS):
-            self._events[i] = kevent_t(0, 0, 0, 0, 0, 0)
+            self._events[unsafe_offset=i] = kevent_t(0, 0, 0, 0, 0, 0)
         self._n_ready = 0
     # Note: _events is process-lifetime (server runs until process exit).
     # No __del__ needed; OS reclaims the allocation on process exit.
@@ -39,16 +39,16 @@ struct KqueueBackend(EventLoopBackend):
         return self._n_ready
 
     def event_ident(self, i: Int) -> UInt:
-        return self._events[i].ident
+        return self._events[unsafe_offset=i].ident
 
     def event_filter(self, i: Int) -> Int16:
-        return self._events[i].filter
+        return self._events[unsafe_offset=i].filter
 
     def event_flags(self, i: Int) -> UInt16:
-        return self._events[i].flags
+        return self._events[unsafe_offset=i].flags
 
     def event_data(self, i: Int) -> Int:
-        return self._events[i].data
+        return self._events[unsafe_offset=i].data
 
     def add_read_listen(mut self, fd: Int) raises:
         kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_READ, EV_ADD | EV_CLEAR))

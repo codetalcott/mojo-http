@@ -110,6 +110,19 @@ lightbug_http
         143 unique compiler warnings. Nothing imports the enclosing http
         package itself, so the star-import that pulls common_response in
         is not re-entered and no cycle is introduced
+      - Remaining Mojo 1.0 deprecations cleared across the fork: positional
+        pointer indexing `p[i]` -> `p[unsafe_offset=i]` (18 sites in
+        c/epoll.mojo, c/epoll_backend.mojo and c/kqueue_backend.mojo),
+        memcpy -> unsafe_memcpy in event_loop.mojo, and server_config.mojo's
+        `__init__(*, deinit take:)` -> `__init__(*, deinit move:)`, which is
+        the spelling the compiler now requires for a move constructor. Also
+        drops a dead `var slot = UNUSED` initialiser in event_loop.mojo's
+        accept path: every reader is preceded by the borrow that assigns it,
+        and the failure branch closes the fd and continues. Behaviour-
+        preserving throughout. Two deprecations remain unfixable rather
+        than unfixed, both warning about APIs Mojo 1.0.0 does not ship:
+        `alloc` without a Layout (12 sites here) and `ABI="C"` on
+        @export (in m0-core, outside the fork)
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

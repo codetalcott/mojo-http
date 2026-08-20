@@ -29,6 +29,18 @@ running in CI.
 name a concrete pointer origin (`MutAnyOrigin`) rather than inferring one —
 which is exactly right for their real callers, who hand over a bare address.
 Mojo-side callers must erase the origin explicitly; the test shows how.
+
+`ABI="C"` warns that it is deprecated in favour of `abi("C")`, and that
+suggestion is not actionable on Mojo 1.0.0 (ed45d567): `abi` is not a
+declaration the toolchain ships. Every position was tried — as a second
+`@export` argument (`@export("m0_fnv1a", abi("C"))` and the `abi=` keyword
+forms), as a decorator (`@abi("C")`), and as a function effect after the
+return type — and each is either "use of unknown declaration 'abi'" or a
+parse error; the compiled stdlib contains no `abi` symbol at all. Dropping
+the argument is not a fix either: a bare `@export("name")` then warns that
+it "requires an explicit 'abi()' effect on the function". There is no
+warning-free spelling on this toolchain, so `ABI="C"` stays until one
+ships. It is the same situation as `alloc` without a `Layout`.
 """
 
 from src.hashing import _fnv1a_ptr, _xxhash32_ptr
@@ -66,6 +78,6 @@ def m0_format_hash(
     for i in range(8):
         var shift = UInt32((7 - i) * 4)
         var nibble = Int((val >> shift) & 0xF)
-        out_buf[i] = hex.as_bytes()[nibble]
+        out_buf[unsafe_offset=i] = hex.as_bytes()[nibble]
 
     return 8

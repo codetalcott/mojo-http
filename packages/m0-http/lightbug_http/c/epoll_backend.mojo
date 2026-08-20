@@ -90,10 +90,10 @@ struct EpollBackend(EventLoopBackend):
         self.epfd = FileDescriptor(Int(epfd_raw))
         self._events = alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
         for i in range(_MAX_EVENTS * EPOLL_EVENT_WORDS):
-            self._events[i] = 0
+            self._events[unsafe_offset=i] = 0
         self._timer_fds = alloc[Int32](count=_TIMER_FD_MAP_SIZE)
         for i in range(_TIMER_FD_MAP_SIZE):
-            self._timer_fds[i] = -1
+            self._timer_fds[unsafe_offset=i] = -1
         self._n_ready = 0
     # Note: _events and _timer_fds are process-lifetime allocations.
     # No __del__ needed; the OS reclaims them on process exit.
@@ -186,7 +186,7 @@ struct EpollBackend(EventLoopBackend):
         var slot = _timer_slot(ident)
         if slot < 0 or slot >= _TIMER_FD_MAP_SIZE:
             return
-        var existing_tfd = Int(self._timer_fds[slot])
+        var existing_tfd = Int(self._timer_fds[unsafe_offset=slot])
         if existing_tfd >= 0:
             # Re-arm the existing timerfd (avoids epoll re-registration).
             try:
@@ -213,13 +213,13 @@ struct EpollBackend(EventLoopBackend):
             _ = external_call["close", c_int, c_int](c_int(tfd))
             return
 
-        self._timer_fds[slot] = Int32(tfd)
+        self._timer_fds[unsafe_offset=slot] = Int32(tfd)
 
     def try_delete_timer(mut self, ident: UInt):
         var slot = _timer_slot(ident)
         if slot < 0 or slot >= _TIMER_FD_MAP_SIZE:
             return
-        var tfd = Int(self._timer_fds[slot])
+        var tfd = Int(self._timer_fds[unsafe_offset=slot])
         if tfd < 0:
             return
         try:
@@ -227,4 +227,4 @@ struct EpollBackend(EventLoopBackend):
         except:
             pass
         _ = external_call["close", c_int, c_int](c_int(tfd))
-        self._timer_fds[slot] = -1
+        self._timer_fds[unsafe_offset=slot] = -1
