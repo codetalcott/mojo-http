@@ -14,5 +14,5 @@ from .hashing import (
     wyhash64, wyhash64_string, hex_nibble,
     _fnv1a_ptr, _xxhash32_ptr, _read_u32_le,
 )
-from .json_escape import escape_json_string, simd_find_escape_char
+from .json_escape import escape_json_string, escape_json_string_into, simd_find_escape_char
 from .json_parse import parse_json_field, parse_json_int, parse_json_number, parse_json_bool

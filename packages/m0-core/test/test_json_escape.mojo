@@ -2,7 +2,7 @@
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from src.json_escape import escape_json_string
+from src.json_escape import escape_json_string, escape_json_string_into
 
 
 def test_simple_string() raises:
@@ -73,6 +73,42 @@ def test_simd_boundary() raises:
         expected += "a"
     expected += "\\\\z\""
     assert_equal(out, expected)
+
+
+def test_into_buffer_matches_the_allocating_form() raises:
+    """`escape_json_string` is a wrapper over `escape_json_string_into`, so the
+    two must agree — including on the inputs that reach the SIMD path."""
+    var cases = List[String]()
+    cases.append("")
+    cases.append("plain")
+    cases.append('quote " backslash \\ tab \t newline \n')
+    cases.append(String("\x00\x1f control"))
+    var long_clean = String("")
+    for _ in range(20):
+        long_clean += "abcdefghij"          # 200 bytes, all safe: SIMD path
+    cases.append(long_clean)
+    var long_dirty = String("")
+    for _ in range(20):
+        long_dirty += 'abcdefgh"\t'        # escapes past the first chunk
+    cases.append(long_dirty)
+
+    for i in range(len(cases)):
+        var want = escape_json_string(cases[i])
+        var buf = List[UInt8]()
+        escape_json_string_into(buf, cases[i])
+        var got = String(unsafe_from_utf8=Span(buf))
+        assert_equal(got, want)
+
+
+def test_into_buffer_appends_rather_than_replacing() raises:
+    """The whole point of the API: several values into one document."""
+    var buf = List[UInt8]()
+    buf.extend(String("[").as_bytes())
+    escape_json_string_into(buf, "a")
+    buf.extend(String(",").as_bytes())
+    escape_json_string_into(buf, 'b"c')
+    buf.extend(String("]").as_bytes())
+    assert_equal(String(unsafe_from_utf8=Span(buf)), String('["a","b\\"c"]'))
 
 
 def main() raises:

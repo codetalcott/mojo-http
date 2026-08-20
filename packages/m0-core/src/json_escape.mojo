@@ -5,6 +5,10 @@ Generic escape logic with no dependency on any serialization format.
 
 Uses 64-byte SIMD scan for bulk safe-range detection + memcpy, falling
 back to scalar scan for the tail.
+
+`escape_json_string` allocates and returns a String;
+`escape_json_string_into` appends to a buffer the caller owns, which is
+what anything assembling several escaped values into one document wants.
 """
 
 from std.memory import unsafe_memcpy
@@ -40,9 +44,22 @@ def escape_json_string(s: String) -> String:
 
     Uses SIMD scan for bulk safe-range detection + memcpy.
     """
+    var out = List[UInt8](capacity=s.byte_length() + 18)
+    escape_json_string_into(out, s)
+    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=len(out)))
+
+
+def escape_json_string_into(mut out: List[UInt8], s: String):
+    """Append the escaped, quoted form of `s` to `out`.
+
+    The same routine `escape_json_string` runs — it is the wrapper — but
+    writing into a buffer the caller already owns. A caller assembling
+    several escaped values into one document would otherwise allocate a
+    String per value and then copy each one into the result; `format_json`
+    in m0-http did exactly that, twelve times per access-log line.
+    """
     var bytes = s.as_bytes()
     var slen = s.byte_length()
-    var out = List[UInt8](capacity=slen + 18)
     out.append(UInt8(ord('"')))
 
     var pos = 0
@@ -109,4 +126,3 @@ def escape_json_string(s: String) -> String:
             pos += 1
 
     out.append(UInt8(ord('"')))
-    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=len(out)))
