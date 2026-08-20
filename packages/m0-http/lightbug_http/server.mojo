@@ -152,9 +152,6 @@ struct ConnectionProvision(Movable):
     var should_close: Bool
     """Whether to close connection after response."""
 
-    var log_summary: String
-    """Partial access log entry populated in _process_request, emitted in _after_send."""
-
     var log_method: String
     """HTTP method for structured access log."""
 
@@ -178,7 +175,6 @@ struct ConnectionProvision(Movable):
         self.last_parse_len = 0
         self.keepalive_count = 0
         self.should_close = False
-        self.log_summary = String()
         self.log_method = String()
         self.log_path = String()
         self.response_status = 0
@@ -195,7 +191,6 @@ struct ConnectionProvision(Movable):
         self.body_state = None
         self.last_parse_len = 0
         self.should_close = False
-        self.log_summary = String()
         self.log_method = String()
         self.log_path = String()
         self.response_status = 0

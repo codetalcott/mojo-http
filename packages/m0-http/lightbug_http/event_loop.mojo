@@ -1219,9 +1219,6 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
 
     # Phase 4d: populate access log fields (emitted after send)
     if config.access_log:
-        provision_pool.provisions[slot].log_summary = String(
-            '"', request_method, ' ', request_path, ' HTTP/1.1" ', String(response_status),
-        )
         provision_pool.provisions[slot].log_method = request_method
         provision_pool.provisions[slot].log_path = request_path
     provision_pool.provisions[slot].state = ConnectionState.responding()
