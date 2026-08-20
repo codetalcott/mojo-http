@@ -207,17 +207,36 @@ request still allocates:
   it is no longer worth chasing;
 - an `HTTPRequest` (cookie jar, URI struct with 12 String fields) and an
   `HTTPResponse` (its own `Headers`, 3–4 inserts);
-- a fresh `ByteWriter` per response, moved into the slot afterwards
-  (`encode_into` exists for buffer reuse but is blocked on moving a buffer
-  out of a list-element field — the `swap` idiom used in `from_parsed` and
-  in `Headers` is the likely unblock);
+- ~~a fresh `ByteWriter` per response~~ — **done, and it was worth less than
+  this list implied — but the field it uses was already costing memory.** It was never blocked: a buffer moves out of a
+  list-element field by `swap`, the same idiom `from_parsed` and `Headers`
+  already used, verified on the 1.0 toolchain. Each slot now rotates one
+  buffer between `encode_into` and `_after_send`. Measured in isolation at
+  **76 ns per response (1.04x on the encode step)**, and *not* separable from
+  run-to-run noise end to end — see below;
 - a copy of the body bytes out of `recv_buffer`.
 
 Ranked next steps, by expected value:
 
-1. **Response encode into a reusable per-slot buffer** via the swap idiom —
-   removes the per-response `ByteWriter` growth cycle. Now the largest
-   remaining allocation on the response side.
+1. ~~**Response encode into a reusable per-slot buffer**~~ — **done; this
+   ranking was wrong.** The change is in, and the honest result is that it
+   buys 76 ns per response in isolation and nothing measurable end to end.
+   An alternating A/B of the two binaries (`ab -k -c16 -n20000`, five rounds
+   each) put both between 75k and 89k req/s with the distributions fully
+   overlapping. That is what the post-header profile already predicted —
+   one allocator sample out of 35 — and the general lesson is worth keeping:
+   after the header work, *no* remaining allocation on this path is large
+   enough to see through loopback noise. Rank the next two accordingly.
+
+   It landed anyway, and on a different argument than throughput.
+   `ProvisionPool` eagerly constructs every provision at startup —
+   `for _ in range(capacity)` over `max_connections`, 1024 by default — and
+   each one allocated an `encoding_buffer` of `socket_buffer_size`. That is
+   ~4 MB of heap per process that nothing read or wrote. The choice was
+   never "76 ns or nothing"; it was "use the buffer, or delete the field".
+   Using it also retires the false claim that Mojo cannot move out of a
+   list-element field, which is what put this item at the top of this list
+   in the first place.
 2. **Close-mode accept path**: `accept4(SOCK_NONBLOCK)` (one syscall instead
    of accept + 2 × `fcntl`), and pool header-timeout timerfds instead of
    create/close per connection. Only matters for non-keep-alive clients;

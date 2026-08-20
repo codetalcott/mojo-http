@@ -1202,10 +1202,19 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             date_cache = http_date_from_unix(now_s)
         response.headers[HeaderKey.DATE] = date_cache
 
-    # Encode response. encode_into() (Phase 2f) requires moving the buffer
-    # out of the provision, which Mojo does not allow for list-element fields;
-    # use encode() until the move-from-field story matures in Mojo.
-    slot_response[slot] = encode(response^)
+    # Encode into the slot's spare buffer rather than allocating a fresh one.
+    # `_after_send` parks the just-sent buffer back here, so one allocation
+    # per slot serves the whole connection instead of one per response.
+    #
+    # The buffer has to leave the provision to be encoded into, and a struct
+    # with a field moved out cannot be destroyed — so it goes out by swap,
+    # the same idiom `HTTPRequest.from_parsed` and `Headers` use. (An earlier
+    # comment here claimed Mojo could not move out of a list-element field at
+    # all; it can, verified on the 1.0 toolchain against both this shape and
+    # a bare `List[Bytes]` element.)
+    var scratch = Bytes()
+    swap(provision_pool.provisions[slot].encoding_buffer, scratch)
+    slot_response[slot] = response^.encode_into(scratch^)
     slot_send_offset[slot] = 0
 
     # Phase 4d: populate access log fields (emitted after send)
@@ -1373,7 +1382,12 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     # Keep-alive: prepare for next request
     provision_pool.provisions[slot].keepalive_count += 1
     provision_pool.provisions[slot].prepare_for_new_request()
-    slot_response[slot] = Bytes()
+    # Park the buffer just sent as the slot's encode scratch instead of
+    # dropping its allocation. The swap hands back whatever was parked
+    # there — the empty stand-in `_process_request` left behind — so the
+    # two rotate for the life of the connection.
+    swap(slot_response[slot], provision_pool.provisions[slot].encoding_buffer)
+    slot_response[slot].clear()
     slot_send_offset[slot] = 0
     slot_header_start[slot] = perf_counter_ns()
 
