@@ -242,7 +242,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             decoder: The chunked decoder state machine.
             chunks: The raw chunked data to decode.
         """
-        # Convert Bytes to UnsafePointer
+        # Convert Bytes to Pointer
         # var buf_ptr = Span(chunks)
         # var buf_ptr = alloc[Byte](count=len(chunks))
         # for i in range(len(chunks)):
@@ -254,7 +254,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         var decoded_size = result[1]
 
         if ret == -1:
-            # buf_ptr.free()
+            # buf_ptr.unsafe_free()
             raise ResponseParseError(ChunkedEncodingError(detail="Invalid chunked encoding"))
         # ret == -2 means incomplete, but we'll proceed with what we have
         # ret >= 0 means complete, with ret bytes of trailing data
@@ -266,7 +266,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         # self.body_raw = Bytes(Span(chunks))
 
         self.set_content_length(len(self.body_raw))
-        # buf_ptr.free()
+        # buf_ptr.unsafe_free()
 
     def __init__(
         out self,

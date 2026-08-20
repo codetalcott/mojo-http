@@ -1,6 +1,6 @@
 from std.ffi import c_int
 
-from lightbug_http.c.aliases import ExternalImmutUnsafePointer, ExternalMutUnsafePointer, c_void
+from lightbug_http.c.aliases import ExternalImmutPointer, ExternalMutPointer, c_void
 
 
 @fieldwise_init

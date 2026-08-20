@@ -13,7 +13,7 @@ library's compiled default is (macOS ships `THREADSAFE=2`, multi-thread).
 """
 
 from std.ffi import external_call, c_int
-from std.memory import UnsafePointer, stack_allocation
+from std.memory import Pointer, stack_allocation
 
 from .ffi import (
     SQLITE_OK,

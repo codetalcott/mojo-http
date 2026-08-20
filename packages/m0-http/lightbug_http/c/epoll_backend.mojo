@@ -78,10 +78,10 @@ struct EpollBackend(EventLoopBackend):
     var epfd: FileDescriptor
     # Flat word buffer of _MAX_EVENTS structs; stride is EPOLL_EVENT_WORDS,
     # which differs by architecture (see c/epoll.mojo).
-    var _events: UnsafePointer[UInt32, MutExternalOrigin]
+    var _events: Pointer[UInt32, MutUntrackedOrigin]
     var _n_ready: Int
     # _timer_fds[_timer_slot(ident)] = timerfd value, or -1 if no timer.
-    var _timer_fds: UnsafePointer[Int32, MutExternalOrigin]
+    var _timer_fds: Pointer[Int32, MutUntrackedOrigin]
 
     def __init__(out self) raises:
         var epfd_raw = epoll_create1(EPOLL_CLOEXEC)

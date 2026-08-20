@@ -61,7 +61,7 @@ from std.memory import Pointer, memcpy
 #             return self.index
 
 
-struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized):
+struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
     """The `List` type is a dynamically-allocated list.
 
     It supports pushing and popping from the back resizing the underlying
@@ -72,7 +72,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
     """
 
     # Fields
-    var data: UnsafePointer[Self.T, MutExternalOrigin]
+    var data: Pointer[Self.T, MutUntrackedOrigin]
     """The underlying storage for the list."""
     var size: Int
     """The number of elements in the list."""
@@ -81,18 +81,18 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
 
     def _annotate_new(self):
         __sanitizer_annotate_contiguous_container(
-            beg=self.data.bitcast[NoneType](),
-            end=(self.data + self.capacity).bitcast[NoneType](),
-            old_mid=(self.data + self.capacity).bitcast[NoneType](),
-            new_mid=(self.data + self.size).bitcast[NoneType](),
+            beg=self.data.unsafe_bitcast[NoneType](),
+            end=self.data.unsafe_offset(self.capacity).unsafe_bitcast[NoneType](),
+            old_mid=self.data.unsafe_offset(self.capacity).unsafe_bitcast[NoneType](),
+            new_mid=self.data.unsafe_offset(self.size).unsafe_bitcast[NoneType](),
         )
 
     def _annotate_delete(self):
         __sanitizer_annotate_contiguous_container(
-            beg=self.data.bitcast[NoneType](),
-            end=(self.data + self.capacity).bitcast[NoneType](),
-            old_mid=(self.data + self.size).bitcast[NoneType](),
-            new_mid=(self.data + self.capacity).bitcast[NoneType](),
+            beg=self.data.unsafe_bitcast[NoneType](),
+            end=self.data.unsafe_offset(self.capacity).unsafe_bitcast[NoneType](),
+            old_mid=self.data.unsafe_offset(self.size).unsafe_bitcast[NoneType](),
+            new_mid=self.data.unsafe_offset(self.capacity).unsafe_bitcast[NoneType](),
         )
 
     # ===-------------------------------------------------------------------===#
@@ -101,7 +101,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
 
     def __init__(out self):
         """Constructs an empty list."""
-        self.data = UnsafePointer[Self.T, MutExternalOrigin](unsafe_from_address=0)
+        self.data = Pointer[Self.T, MutUntrackedOrigin](unsafe_from_address=0)
         self.size = 0
         self.capacity = 0
 
@@ -115,11 +115,11 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
         self.size = 0
         self.capacity = capacity
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         """Destroy all elements in the list and free its memory."""
         for i in range(self.size):
-            (self.data + i).destroy_pointee()
-        self.data.free()
+            self.data.unsafe_offset(i).unsafe_deinit_pointee()
+        self.data.unsafe_free()
 
     # ===-------------------------------------------------------------------===#
     # Operator dunders
@@ -252,11 +252,11 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
         var new_data = alloc[Self.T](new_capacity)
 
         for i in range(len(self)):
-            (new_data + i).init_pointee_move_from(self.data + i)
+            new_data.unsafe_offset(i).unsafe_write_move_from(self.data.unsafe_offset(i))
 
         if Int(self.data) != 0:
             self._annotate_delete()
-            self.data.free()
+            self.data.unsafe_free()
         self.data = new_data
         self.capacity = new_capacity
         self._annotate_new()
@@ -269,7 +269,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
         """
         if self.size >= self.capacity:
             self._realloc(max(1, self.capacity * 2))
-        (self.data + self.size).init_pointee_move(value^)
+        self.data.unsafe_offset(self.size).unsafe_write(value^)
         self.size += 1
 
     def insert(mut self, i: Int, var value: Self.T):
@@ -294,9 +294,9 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
             var earlier_ptr = self.data + earlier_idx
             var later_ptr = self.data + later_idx
 
-            var tmp = earlier_ptr.take_pointee()
-            earlier_ptr.init_pointee_move_from(later_ptr)
-            later_ptr.init_pointee_move(tmp^)
+            var tmp = earlier_ptr.unsafe_take_pointee()
+            earlier_ptr.unsafe_write_move_from(later_ptr)
+            later_ptr.unsafe_write(tmp^)
 
             earlier_idx -= 1
             later_idx -= 1
@@ -333,7 +333,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
             # `other` list into this list using a single `T.__moveinit()__`
             # call, without moving into an intermediate temporary value
             # (avoiding an extra redundant move constructor call).
-            dest_ptr.init_pointee_move_from(src_ptr)
+            dest_ptr.unsafe_write_move_from(src_ptr)
 
             dest_ptr = dest_ptr + 1
 
@@ -356,9 +356,9 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
         if i < 0:
             normalized_idx += len(self)
 
-        var ret_val = (self.data + normalized_idx).take_pointee()
+        var ret_val = self.data.unsafe_offset(normalized_idx).unsafe_take_pointee()
         for j in range(normalized_idx + 1, self.size):
-            (self.data + j - 1).init_pointee_move_from(self.data + j)
+            self.data.unsafe_offset(j - 1).unsafe_write_move_from(self.data.unsafe_offset(j))
         self.size -= 1
         if self.size * 4 < self.capacity:
             if self.capacity > 1:
@@ -395,7 +395,7 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
                 " size is smaller than the current size."
             )
         for i in range(new_size, self.size):
-            (self.data + i).destroy_pointee()
+            self.data.unsafe_offset(i).unsafe_deinit_pointee()
         self.size = new_size
         self.reserve(new_size)
 
@@ -454,17 +454,17 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
     def clear(mut self):
         """Clears the elements in the list."""
         for i in range(self.size):
-            (self.data + i).destroy_pointee()
+            self.data.unsafe_offset(i).unsafe_deinit_pointee()
         self.size = 0
 
-    def steal_data(mut self) -> UnsafePointer[Self.T, MutExternalOrigin]:
+    def steal_data(mut self) -> Pointer[Self.T, MutUntrackedOrigin]:
         """Take ownership of the underlying pointer from the list.
 
         Returns:
             The underlying data.
         """
         var ptr = self.data
-        self.data = UnsafePointer[Self.T, MutExternalOrigin](unsafe_from_address=0)
+        self.data = Pointer[Self.T, MutUntrackedOrigin](unsafe_from_address=0)
         self.size = 0
         self.capacity = 0
         return ptr
@@ -491,14 +491,14 @@ struct OwningList[T: Movable & ImplicitlyDestructible](Boolable, Movable, Sized)
         if normalized_idx < 0:
             normalized_idx += len(self)
 
-        return (self.data + normalized_idx)[]
+        return self.data.unsafe_offset(normalized_idx)[]
 
     @always_inline
-    def unsafe_ptr(self) -> UnsafePointer[Self.T, MutExternalOrigin]:
+    def unsafe_ptr(self) -> Pointer[Self.T, MutUntrackedOrigin]:
         """Retrieves a pointer to the underlying memory.
 
         Returns:
-            The UnsafePointer to the underlying memory.
+            The Pointer to the underlying memory.
         """
         return self.data
 
@@ -509,7 +509,7 @@ def _clip(value: Int, start: Int, end: Int) -> Int:
 
 def _move_pointee_into_many_elements[
     T: Movable, dest_origin: MutOrigin, src_origin: MutOrigin
-](dest: UnsafePointer[T, dest_origin], src: UnsafePointer[T, src_origin], size: Int):
+](dest: Pointer[T, dest_origin], src: Pointer[T, src_origin], size: Int):
     for i in range(size):
-        (dest + i).init_pointee_move_from(src + i)
-        # (src + i).move_pointee_into(dest + i)
+        dest.unsafe_offset(i).unsafe_write_move_from(src.unsafe_offset(i))
+        # src.unsafe_offset(i).move_pointee_into(dest + i)

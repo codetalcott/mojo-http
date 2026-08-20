@@ -20,7 +20,7 @@ struct KqueueBackend(EventLoopBackend):
     """kqueue-based IO backend for macOS."""
 
     var kq: FileDescriptor
-    var _events: UnsafePointer[kevent_t, MutExternalOrigin]
+    var _events: Pointer[kevent_t, MutUntrackedOrigin]
     var _n_ready: Int
 
     def __init__(out self) raises:

@@ -51,7 +51,7 @@ def sum_ints(data: Span[Int, _]) -> Int:
     var n = len(data)
     if n == 0:
         return 0
-    var p = data.unsafe_ptr().bitcast[Int64]()
+    var p = data.unsafe_ptr().unsafe_bitcast[Int64]()
     var acc = SIMD[DType.int64, _W](0)
     var i = 0
     while i + _W <= n:
@@ -69,8 +69,8 @@ def min_ints(data: Span[Int, _]) raises -> Int:
     var n = len(data)
     if n == 0:
         raise Error("min_ints: empty column has no minimum")
-    var p = data.unsafe_ptr().bitcast[Int64]()
-    var i = 0
+    var p = data.unsafe_ptr().unsafe_bitcast[Int64]()
+    var i: Int
     var best: Int
     if n >= _W:
         var acc = p.unsafe_load[width=_W]()
@@ -94,8 +94,8 @@ def max_ints(data: Span[Int, _]) raises -> Int:
     var n = len(data)
     if n == 0:
         raise Error("max_ints: empty column has no maximum")
-    var p = data.unsafe_ptr().bitcast[Int64]()
-    var i = 0
+    var p = data.unsafe_ptr().unsafe_bitcast[Int64]()
+    var i: Int
     var best: Int
     if n >= _W:
         var acc = p.unsafe_load[width=_W]()
@@ -120,11 +120,11 @@ def stats_ints(data: Span[Int, _]) raises -> ColumnStats:
     var n = len(data)
     if n == 0:
         raise Error("stats_ints: empty column has no minimum or maximum")
-    var p = data.unsafe_ptr().bitcast[Int64]()
+    var p = data.unsafe_ptr().unsafe_bitcast[Int64]()
     var total: Int
     var lo: Int
     var hi: Int
-    var i = 0
+    var i: Int
     if n >= _W:
         var first = p.unsafe_load[width=_W]()
         var acc = first

@@ -65,6 +65,16 @@ lightbug_http
         (16x at 64 bytes, 56x at 8 KB, and neutral on mostly-multi-byte
         text). Several byte-at-a-time buffer copies in the frame parser
         became bulk extends
+      - Migration off the memory/origin APIs Mojo 1.0 deprecates, across the
+        fork: UnsafePointer -> Pointer, ImmutOrigin -> ImmOrigin,
+        Mut/ImmutExternalOrigin -> *UntrackedOrigin, pointer arithmetic
+        `(p + i).m()` -> `p.unsafe_offset(i).m()`, `.load`/`.bitcast`/`.free`
+        and the init_pointee_*/take_pointee/destroy_pointee family to their
+        `unsafe_` spellings, `__del__` -> `__deinit__`,
+        ImplicitlyDeletable/Destructible -> Deinitable. Behaviour-preserving
+        renames; the exception is `alloc` without a Layout, which is
+        deprecated in favour of an `unsafe_alloc` the pinned toolchain does
+        not actually export (11 call sites left as they are)
       - Client-side connect path (create_connection, getaddrinfo bindings)
         revived after rotting as dead code: addrinfo pointer fields modeled
         as Optional[Pointer] (Mojo 1.0 pointers are non-nullable), connect()

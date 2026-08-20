@@ -2,7 +2,7 @@ from std.ffi import c_char, c_int, c_uchar, external_call
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.address import AddressFamily, AddressLength
-from lightbug_http.c.aliases import ExternalImmutUnsafePointer, ExternalMutUnsafePointer, c_void
+from lightbug_http.c.aliases import ExternalImmutPointer, ExternalMutPointer, c_void
 from lightbug_http.c.network import (
     InetNtopError,
     InetPtonError,
@@ -38,7 +38,7 @@ trait Addr(
     Defaultable,
     Equatable,
     ImplicitlyCopyable,
-    ImplicitlyDeletable,
+    Deinitable,
     Writable,
 ):
     comptime _type: StaticString
@@ -67,7 +67,7 @@ trait AnAddrInfo(Copyable):
     def has_next(self) -> Bool:
         ...
 
-    def next(self) -> ExternalMutUnsafePointer[Self]:
+    def next(self) -> ExternalMutPointer[Self]:
         ...
 
 
@@ -277,9 +277,9 @@ struct addrinfo_macos(AnAddrInfo):
     var ai_socktype: c_int
     var ai_protocol: c_int
     var ai_addrlen: socklen_t
-    var ai_canonname: Optional[ExternalMutUnsafePointer[c_char]]
-    var ai_addr: Optional[ExternalMutUnsafePointer[sockaddr]]
-    var ai_next: Optional[ExternalMutUnsafePointer[addrinfo_macos]]
+    var ai_canonname: Optional[ExternalMutPointer[c_char]]
+    var ai_addr: Optional[ExternalMutPointer[sockaddr]]
+    var ai_next: Optional[ExternalMutPointer[addrinfo_macos]]
 
     def __init__(
         out self,
@@ -301,7 +301,7 @@ struct addrinfo_macos(AnAddrInfo):
     def has_next(self) -> Bool:
         return Bool(self.ai_next)
 
-    def next(self) -> ExternalMutUnsafePointer[Self]:
+    def next(self) -> ExternalMutPointer[Self]:
         return self.ai_next.value()
 
 
@@ -316,9 +316,9 @@ struct addrinfo_unix(AnAddrInfo):
     var ai_socktype: c_int
     var ai_protocol: c_int
     var ai_addrlen: socklen_t
-    var ai_addr: Optional[ExternalMutUnsafePointer[sockaddr]]
-    var ai_canonname: Optional[ExternalMutUnsafePointer[c_char]]
-    var ai_next: Optional[ExternalMutUnsafePointer[addrinfo_unix]]
+    var ai_addr: Optional[ExternalMutPointer[sockaddr]]
+    var ai_canonname: Optional[ExternalMutPointer[c_char]]
+    var ai_next: Optional[ExternalMutPointer[addrinfo_unix]]
 
     def __init__(
         out self,
@@ -340,7 +340,7 @@ struct addrinfo_unix(AnAddrInfo):
     def has_next(self) -> Bool:
         return Bool(self.ai_addr)
 
-    def next(self) -> ExternalMutUnsafePointer[Self]:
+    def next(self) -> ExternalMutPointer[Self]:
         return self.ai_next.value()
 
 
@@ -378,7 +378,7 @@ def get_ip_address(
         # extend result's lifetime to avoid invalid access of pointer, it'd get freed early
         return (
             result.unsafe_ptr()[]
-            .ai_addr.value().bitcast[sockaddr_in]()
+            .ai_addr.value().unsafe_bitcast[sockaddr_in]()
             .unsafe_origin_cast[origin_of(result)]()[]
             .sin_addr.s_addr
         )
@@ -400,7 +400,7 @@ def get_ip_address(
 
         return (
             result.unsafe_ptr()[]
-            .ai_addr.value().bitcast[sockaddr_in]()
+            .ai_addr.value().unsafe_bitcast[sockaddr_in]()
             .unsafe_origin_cast[origin_of(result)]()[]
             .sin_addr.s_addr
         )
@@ -680,7 +680,7 @@ struct ParseError(Movable, Writable):
 
 
 def parse_ipv6_bracketed_address[
-    origin: ImmutOrigin
+    origin: ImmOrigin
 ](address: StringSlice[origin]) raises ParseError -> Tuple[StringSlice[origin], UInt16]:
     """Parse an IPv6 address enclosed in brackets.
 
@@ -705,7 +705,7 @@ def parse_ipv6_bracketed_address[
 
 
 def validate_no_brackets[
-    origin: ImmutOrigin
+    origin: ImmOrigin
 ](address: StringSlice[origin], start_idx: UInt16, end_idx: Optional[UInt16] = None,) raises ParseError:
     """Validate that the address segment contains no brackets."""
     var segment: StringSlice[origin]
@@ -721,7 +721,7 @@ def validate_no_brackets[
         raise ParseUnexpectedBracketError()
 
 
-def parse_port[origin: ImmutOrigin](port_str: StringSlice[origin]) raises ParseError -> UInt16:
+def parse_port[origin: ImmOrigin](port_str: StringSlice[origin]) raises ParseError -> UInt16:
     """Parse and validate port number."""
     if port_str == AddressConstants.EMPTY:
         raise ParseEmptyPortError()
@@ -745,7 +745,7 @@ struct HostPort(Movable):
 
 
 def parse_address[
-    origin: ImmutOrigin,
+    origin: ImmOrigin,
     //,
     network: NetworkType,
 ](address: StringSlice[origin]) raises ParseError -> HostPort:
@@ -848,7 +848,7 @@ def binary_ip_to_string[address_family: AddressFamily](ip_address: UInt32) raise
         return inet_ntop[address_family, AddressLength.INET6_ADDRSTRLEN](ip_address)
 
 
-def freeaddrinfo[T: AnAddrInfo, //](ptr: ExternalMutUnsafePointer[T]):
+def freeaddrinfo[T: AnAddrInfo, //](ptr: ExternalMutPointer[T]):
     """Free the memory allocated by `getaddrinfo`."""
     external_call["freeaddrinfo", NoneType, type_of(ptr)](ptr)
 
@@ -903,7 +903,7 @@ struct _CAddrInfoIterator[
 
 @fieldwise_init
 struct CAddrInfo[T: AnAddrInfo](Iterable):
-    """A wrapper around an ExternalMutUnsafePointer to an addrinfo struct.
+    """A wrapper around an ExternalMutPointer to an addrinfo struct.
 
     This struct will call `freeaddrinfo` when it is deinitialized to free the memory allocated
     by `getaddrinfo`. Make sure to use the data method to access the underlying pointer, so Mojo
@@ -914,11 +914,11 @@ struct CAddrInfo[T: AnAddrInfo](Iterable):
     comptime IteratorType[
         iterable_mut: Bool, //, iterable_origin: Origin[mut=iterable_mut]
     ]: Iterator = _CAddrInfoIterator[Self.T, iterable_origin]
-    var ptr: ExternalMutUnsafePointer[Self.T]
+    var ptr: ExternalMutPointer[Self.T]
 
     def unsafe_ptr[
         origin: Origin, address_space: AddressSpace, //
-    ](ref [origin, address_space]self) -> UnsafePointer[Self.T, origin, address_space=address_space]:
+    ](ref [origin, address_space]self) -> Pointer[Self.T, origin, address_space=address_space]:
         """Retrieves a pointer to the underlying memory.
 
         Parameters:
@@ -928,9 +928,9 @@ struct CAddrInfo[T: AnAddrInfo](Iterable):
         Returns:
             The pointer to the underlying memory.
         """
-        return self.ptr.unsafe_mut_cast[origin.mut]().unsafe_origin_cast[origin]().address_space_cast[address_space]()
+        return self.ptr.unsafe_mut_cast[origin.mut]().unsafe_origin_cast[origin]().unsafe_address_space_cast[address_space]()
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         freeaddrinfo(self.ptr)
 
     def __iter__(ref self) -> Self.IteratorType[origin_of(self)]:
@@ -942,14 +942,14 @@ struct CAddrInfo[T: AnAddrInfo](Iterable):
         return {0, Pointer(to=self)}
 
 
-def gai_strerror(ecode: c_int) -> ExternalImmutUnsafePointer[c_char]:
+def gai_strerror(ecode: c_int) -> ExternalImmutPointer[c_char]:
     """Libc POSIX `gai_strerror` function.
 
     Args:
         ecode: The error code.
 
     Returns:
-        An UnsafePointer to a string describing the error.
+        An Pointer to a string describing the error.
 
     #### C Function
     ```c
@@ -959,21 +959,21 @@ def gai_strerror(ecode: c_int) -> ExternalImmutUnsafePointer[c_char]:
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/gai_strerror.3p.html .
     """
-    return external_call["gai_strerror", ExternalImmutUnsafePointer[c_char], type_of(ecode)](ecode)
+    return external_call["gai_strerror", ExternalImmutPointer[c_char], type_of(ecode)](ecode)
 
 
 def _getaddrinfo[
     T: AnAddrInfo,
-    node_origin: ImmutOrigin,
-    serv_origin: ImmutOrigin,
-    hints_origin: ImmutOrigin,
+    node_origin: ImmOrigin,
+    serv_origin: ImmOrigin,
+    hints_origin: ImmOrigin,
     result_origin: MutOrigin,
     //,
 ](
-    nodename: UnsafePointer[c_char, node_origin],
-    servname: UnsafePointer[c_char, serv_origin],
+    nodename: Pointer[c_char, node_origin],
+    servname: Pointer[c_char, serv_origin],
     hints: Pointer[T, hints_origin],
-    res: Pointer[Optional[ExternalMutUnsafePointer[T]], result_origin],
+    res: Pointer[Optional[ExternalMutPointer[T]], result_origin],
 ) -> c_int:
     """Libc POSIX `getaddrinfo` function.
 
@@ -981,7 +981,7 @@ def _getaddrinfo[
         nodename: The node name.
         servname: The service name.
         hints: A Pointer to the hints.
-        res: A Pointer to an UnsafePointer the result.
+        res: A Pointer to an Pointer the result.
 
     Returns:
         0 on success, an error code on failure.
@@ -1034,7 +1034,7 @@ def getaddrinfo[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/getaddrinfo.3p.html.
     """
-    var ptr: Optional[ExternalMutUnsafePointer[T]] = None
+    var ptr: Optional[ExternalMutPointer[T]] = None
     var result = _getaddrinfo(
         node.as_c_string_slice().unsafe_ptr(),
         service.as_c_string_slice().unsafe_ptr(),

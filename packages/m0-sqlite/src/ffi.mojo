@@ -11,7 +11,7 @@ Three facts that shape this whole package:
     the library must be present at link time; see the README.
 
   - **Mojo 1.0 pointers are non-null by design**, so a NULL argument cannot be
-    written `UnsafePointer[T]()`. `sqlite3*` and `sqlite3_stmt*` are carried as
+    written `Pointer[T]()`. `sqlite3*` and `sqlite3_stmt*` are carried as
     opaque `Int` addresses with `Int(0)` for NULL. That is also the honest
     representation — they are opaque to us.
 
@@ -20,7 +20,7 @@ Three facts that shape this whole package:
 
 from std.collections.span import Span
 from std.ffi import external_call, c_int
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 # --- Result codes ---
 #
@@ -70,7 +70,7 @@ comptime SQLITE_NULL: Int = 5
 # buffer does not need to outlive the call.
 comptime SQLITE_TRANSIENT: Int = -1
 
-comptime CharPtr = UnsafePointer[UInt8, MutAnyOrigin]
+comptime CharPtr = Pointer[UInt8, MutAnyOrigin]
 
 comptime MAX_C_INT: Int = 2147483647
 """Largest length expressible in the `int` parameters SQLite takes.

@@ -71,8 +71,8 @@ struct SharedAtomics(Copyable, Movable):
         self._base = move._base
         self._count = move._count
 
-    def _slot(self, i: Int) -> UnsafePointer[Atomic[DType.int64], MutUntrackedOrigin]:
-        return UnsafePointer[Atomic[DType.int64], MutUntrackedOrigin](
+    def _slot(self, i: Int) -> Pointer[Atomic[DType.int64], MutUntrackedOrigin]:
+        return Pointer[Atomic[DType.int64], MutUntrackedOrigin](
             unsafe_from_address=self._base + i * 8
         )
 
@@ -103,7 +103,7 @@ def shared_fetch_add(addr: Int, delta: Int) -> Int:
     """
     if addr == 0:
         return 0
-    var slot = UnsafePointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
     return Int(slot[].fetch_add(Int64(delta)))
@@ -113,7 +113,7 @@ def shared_load(addr: Int) -> Int:
     """load on a shared atomic slot named by its raw address (0 → 0)."""
     if addr == 0:
         return 0
-    var slot = UnsafePointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
     return Int(slot[].load())
@@ -123,7 +123,7 @@ def shared_store(addr: Int, value: Int):
     """store on a shared atomic slot named by its raw address (0 → no-op)."""
     if addr == 0:
         return
-    var slot = UnsafePointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
     slot[].store(Int64(value))

@@ -12,7 +12,7 @@ reads across directly.
 
 from std.collections.span import Span
 from std.ffi import external_call, c_int
-from std.memory import UnsafePointer, unsafe_memcpy
+from std.memory import Pointer, unsafe_memcpy
 
 from .vtab import KIND_INT, KIND_FLOAT, _bind_spec
 from .ffi import (

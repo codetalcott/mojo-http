@@ -9,10 +9,10 @@ Usage:
 
 from std.ffi import c_int, external_call, get_errno
 
-from lightbug_http.c.aliases import ExternalMutUnsafePointer
+from lightbug_http.c.aliases import ExternalMutPointer
 
 
-def _pipe(fds: ExternalMutUnsafePointer[c_int]) -> c_int:
+def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
     """Raw pipe() syscall."""
     return external_call["pipe", c_int](fds)
 
