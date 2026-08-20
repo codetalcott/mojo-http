@@ -19,7 +19,6 @@ Talk to it from a browser console:
 """
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK, NotFound
-from lightbug_http.server_config import ServerConfig
 from lightbug_http.websocket import websocket_upgrade, encode_ws_frame
 
 from m0_http import AppConfig
@@ -120,12 +119,9 @@ def main() raises:
     var config = AppConfig()
     print("WebSocket echo on " + config.base_url + " — endpoint at /ws")
 
-    var server_config = ServerConfig()
-    server_config.access_log = config.access_log
     # For WebSocket slots the heartbeat is a protocol ping; the same
     # M0_SSE_HEARTBEAT_MS cadence drives both stream kinds.
-    server_config.sse_heartbeat_ms = config.sse_heartbeat_ms
-    var server = Server(server_config^, config.address())
+    var server = Server(config.server_config(), config.address())
     var handler = EchoHandler()
     # Upgrades need the non-blocking loop: it assigns req.slot_id and owns
     # the frame parsing; the plain accept loop knows nothing of WebSockets.

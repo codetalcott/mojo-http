@@ -40,7 +40,6 @@ from std.os import getenv
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.server_config import ServerConfig
 
 from m0_core.json_parse import parse_json_field
 
@@ -278,10 +277,7 @@ def main() raises:
         "Datastar todos on " + config.base_url
         + " — open it in two tabs (db: " + db_path + ")"
     )
-    var server_config = ServerConfig()
-    server_config.access_log = config.access_log
-    server_config.sse_heartbeat_ms = config.sse_heartbeat_ms
-    var server = Server(server_config^)
+    var server = Server(config.server_config())
     var handler = TodoHandler(open(db_path))
     # SSE requires `listen_and_serve_nonblocking`, not `listen_and_serve`:
     # only the non-blocking event loop assigns `req.slot_id` and drains the

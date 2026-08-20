@@ -412,6 +412,6 @@ def _parse_id(s: String) -> Int:
 def main() raises:
     var config = AppConfig()
     print("Notes API on " + config.base_url)
-    var server = Server()
+    var server = Server(config.server_config())
     var handler = NotesHandler()
     server.listen_and_serve_nonblocking(config.address(), handler)

@@ -35,7 +35,6 @@ from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.c.process import getpid
 from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.server_config import ServerConfig
 
 from m0_http import AppConfig, WorkerSupervisor
 from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
@@ -225,11 +224,7 @@ def main() raises:
     # Heartbeats keep idle streams alive through proxies and NATs, and let the
     # loop discover dead subscribers; M0_SSE_HEARTBEAT_MS tunes the cadence
     # (the smoke sets it low to assert heartbeats actually arrive).
-    var server_config = ServerConfig()
-    server_config.access_log = config.access_log
-    server_config.sse_heartbeat_ms = config.sse_heartbeat_ms
-    server_config.app_tick_ms = config.app_tick_ms
-    var server = Server(server_config^, config.address())
+    var server = Server(config.server_config(), config.address())
     # SSE requires the non-blocking event loop: only it assigns `req.slot_id`
     # and drains the outbox; the plain accept loop would answer every stream
     # open with 409.
