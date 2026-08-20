@@ -248,6 +248,26 @@ echo "smoke-hello OK"
 # with the accept key verified, masked echo round trip, fragmented message
 # reassembly, ping/pong both directions, heartbeat cadence bounds, and the
 # close handshake down to the TCP FIN.
+# The header read timeout is the one deadline with no event to hang itself on:
+# a client that connects and says nothing generates no readable data, ever. It
+# used to be a per-connection timerfd; it is now the once-a-second sweep that
+# already ran for idle timeouts. This probe pins both halves — that a silent
+# connection is still answered 408 and closed, and that a keep-alive connection
+# idle for longer than the header timeout is NOT, which is what regressed
+# before (every gap past header_read_timeout answered 408 to a request the
+# client had just sent promptly).
+[tool.poe.tasks.smoke-header-timeout]
+help = "Assert a silent connection times out, and a keep-alive gap does not"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > ht.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f ht.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
+  || { echo '=== ht.log ==='; cat ht.log; exit 1; }
+python3 scripts/header_timeout_probe.py 8080 || { echo '=== ht.log ==='; cat ht.log; exit 1; }
+echo "smoke-header-timeout OK"
+"""
+
 [tool.poe.tasks.smoke-ws]
 help = "WebSocket echo demo: handshake, echo, fragmentation, ping/pong, heartbeats, close"
 shell = """
