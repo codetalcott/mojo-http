@@ -86,6 +86,15 @@ lightbug_http
         deadline, which also covers a client stalling midway through headers
         on a reused connection (the timerfd was armed on accept and retired
         at the first complete header parse, so it never did)
+      - Connection provisions size their buffers on first use instead of at
+        pool construction. The pool builds every provision up front
+        (max_connections, 1024 by default) and each held three buffers at
+        socket_buffer_size, so a server allocated ~12 MB of resident memory
+        for its worst case before accepting anything, multiplied per
+        prefork worker. Provisions are never reconstructed, so a slot keeps
+        its buffers once used and the peak now tracks the high-water mark of
+        concurrent connections: 26.4 -> 14.0 MB idle, and 77.7 -> 28.0 MB at
+        four workers
       - Client-side connect path (create_connection, getaddrinfo bindings)
         revived after rotting as dead code: addrinfo pointer fields modeled
         as Optional[Pointer] (Mojo 1.0 pointers are non-nullable), connect()

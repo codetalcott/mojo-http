@@ -165,8 +165,9 @@ struct ConnectionProvision(Movable):
     """Pre-allocated buffer for response encoding; swapped into slot_response to avoid per-request allocation."""
 
     def __init__(out self, config: ServerConfig):
-        self.recv_buffer = Bytes(capacity=config.socket_buffer_size)
-        self.recv_staging = Bytes(capacity=config.socket_buffer_size)
+        # Empty, not `capacity=socket_buffer_size`: see `ensure_buffers`.
+        self.recv_buffer = Bytes()
+        self.recv_staging = Bytes()
         self.parsed_headers = None
         self.request = None
         self.response = None
@@ -178,7 +179,37 @@ struct ConnectionProvision(Movable):
         self.log_method = String()
         self.log_path = String()
         self.response_status = 0
-        self.encoding_buffer = Bytes(capacity=config.socket_buffer_size)
+        self.encoding_buffer = Bytes()
+
+    def ensure_buffers(mut self, size: Int):
+        """Size this connection's buffers, once, the first time it is used.
+
+        The pool builds every provision up front — `max_connections` of them,
+        1024 by default — so sizing the buffers in `__init__` meant a server
+        allocated for its worst case before accepting anything. Three buffers
+        at `socket_buffer_size` each is ~12 KB per provision, and it is
+        resident, not merely reserved: measured at 26.4 MB RSS at startup
+        against 13.4 MB with a 64-slot pool, and it multiplies per worker
+        (26 / 45 / 78 MB at 1 / 2 / 4 workers).
+
+        Sizing here instead makes the cost track the concurrency actually
+        reached. Provisions are never reconstructed — `release` only clears a
+        bit — so a slot keeps its buffers once it has been used, and the peak
+        is the high-water mark of concurrent connections rather than the
+        configured ceiling. A server that never sees more than 20 at once
+        pays for 20.
+
+        `recv_staging`'s capacity is load-bearing rather than an
+        optimization: the read path passes `capacity()` as the recv size and
+        then sets `_len` from the result, so a zero-capacity buffer would
+        read nothing at all. Hence one place that guarantees the sizing,
+        called before a slot is handed out.
+        """
+        if self.recv_staging.capacity() > 0:
+            return
+        self.recv_buffer.reserve(size)
+        self.recv_staging.reserve(size)
+        self.encoding_buffer.reserve(size)
 
     def prepare_for_new_request(mut self):
         """Reset provision for next request in keepalive connection."""
@@ -243,10 +274,13 @@ struct ProvisionPool(Movable):
     var bitmask: List[UInt64]
     var num_words: Int
     var capacity: Int
+    var buffer_size: Int
+    """Size each provision's buffers are given on first use."""
 
     def __init__(out self, capacity: Int, config: ServerConfig):
         self.provisions = OwningList[ConnectionProvision](capacity=capacity)
         self.capacity = capacity
+        self.buffer_size = config.socket_buffer_size
         self.num_words = (capacity + 63) // 64
 
         # Initialize bitmask: all bits=1 (free)
@@ -306,7 +340,10 @@ struct ProvisionPool(Movable):
                 var bit_pos = Self._clz64(word)
                 # Clear bit (mark in-use)
                 self.bitmask[w] = word & ~(UInt64(1) << UInt64(63 - bit_pos))
-                return w * 64 + bit_pos
+                var index = w * 64 + bit_pos
+                # First use of this slot sizes its buffers; a no-op after that.
+                self.provisions[index].ensure_buffers(self.buffer_size)
+                return index
         raise ProvisionPoolExhaustedError()
 
     def release(mut self, index: Int):
