@@ -105,9 +105,13 @@ shell = "cd packages/m0-sqlite && mojo precompile src -o m0_sqlite.mojoc"
 help = "Build m0-wsgi package (embeds CPython)"
 shell = "cd packages/m0-wsgi && mojo precompile src -I ../m0-http/ -I ../m0-core/ -o m0_wsgi.mojoc"
 
+# build-ffi is in this sequence on purpose. ffi_exports.mojo lives at the
+# package root, outside src/, so `mojo precompile src` never sees it and
+# build-core cannot catch a syntax error there — it builds perfectly clean
+# while the C-ABI surface is broken, and only test-core and smoke-ffi fail.
 [tool.poe.tasks.build-all]
-help = "Build all packages in dependency order"
-sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite"]
+help = "Build all packages in dependency order, then the C-ABI shared library"
+sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite", "build-ffi"]
 default_item_type = "ref"
 
 # The C-ABI surface. ffi_exports.mojo sits at the package root because a
