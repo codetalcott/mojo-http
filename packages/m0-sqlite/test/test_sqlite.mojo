@@ -14,11 +14,12 @@ from std.testing import (
     TestSuite,
 )
 
-from src.ffi import check_c_int_length, MAX_C_INT
+from src.ffi import check_c_int_length, MAX_C_INT, describe
 from src import (
     Connection,
     Statement,
     open_memory,
+    open_readonly,
     libversion,
     errstr,
     error_code,
@@ -158,7 +159,6 @@ def test_prepare_rejects_invalid_sql() raises:
 
 def test_open_readonly_missing_file_raises() raises:
     """Opening a nonexistent database read-only must fail, not create it."""
-    from src import open_readonly
     with assert_raises():
         _ = open_readonly("/nonexistent-dir-xyz/nope.db")
 
@@ -287,6 +287,80 @@ def test_text_with_embedded_nul_survives() raises:
     var q = db.prepare("SELECT v FROM t")
     assert_true(q.step())
     assert_equal(q.column_text(0).byte_length(), 3)
+
+
+# --- Column index bounds ------------------------------------------------------
+#
+# SQLite documents an out-of-range column index as undefined behaviour. What it
+# actually does is answer 0 / "" / SQLITE_NULL, and hand back a NULL pointer
+# from sqlite3_column_name — so the old behaviour was a silently wrong read for
+# four accessors and a segfault for the fifth.
+
+def test_column_name_out_of_range_raises() raises:
+    """This used to dereference the NULL sqlite3_column_name returns."""
+    var db = open_memory()
+    var q = db.prepare("SELECT 42, 'hi'")
+    assert_true(q.step())
+    assert_equal(q.column_name(1), "'hi'")
+    with assert_raises():
+        _ = q.column_name(2)
+
+
+def test_out_of_range_column_is_not_reported_as_null() raises:
+    """`is_null` is the one call whose whole job is telling NULL apart.
+
+    Before the bounds check it answered True for a column that does not
+    exist, which is the same answer it gives for a stored NULL — so the
+    accessor that exists to remove an ambiguity was introducing one.
+    """
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    db.execute("INSERT INTO t VALUES (NULL)")
+    var q = db.prepare("SELECT v FROM t")
+    assert_true(q.step())
+    assert_true(q.is_null(0))  # a real NULL still reads as NULL
+    with assert_raises():
+        _ = q.is_null(1)
+
+
+def test_every_column_reader_rejects_an_out_of_range_index() raises:
+    var db = open_memory()
+    var q = db.prepare("SELECT 1")
+    assert_true(q.step())
+    assert_equal(q.column_count(), 1)
+    with assert_raises():
+        _ = q.column_int(1)
+    with assert_raises():
+        _ = q.column_float(1)
+    with assert_raises():
+        _ = q.column_text(1)
+    with assert_raises():
+        _ = q.column_blob(1)
+    with assert_raises():
+        _ = q.column_type(1)
+    var buf = List[UInt8]()
+    with assert_raises():
+        _ = q.column_blob_into(1, buf)
+
+
+def test_negative_column_index_raises() raises:
+    """sqlite3_column_type(-1) answers SQLITE_NULL rather than complaining."""
+    var db = open_memory()
+    var q = db.prepare("SELECT 1")
+    assert_true(q.step())
+    with assert_raises():
+        _ = q.column_int(-1)
+
+
+def test_a_statement_with_no_columns_rejects_every_read() raises:
+    """An INSERT has zero columns, so column 0 is already out of range."""
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    var ins = db.prepare("INSERT INTO t VALUES (1)")
+    assert_equal(ins.column_count(), 0)
+    assert_false(ins.step())
+    with assert_raises():
+        _ = ins.column_int(0)
 
 
 def test_column_metadata() raises:
@@ -585,6 +659,55 @@ def test_error_code_recovers_the_rc() raises:
     except e:
         code = error_code(String(e))
     assert_equal(code, 19)
+
+
+def test_open_failure_carries_the_result_code() raises:
+    """`error_code`'s contract is that every error with a code available ends
+    in "(rc=NN)". open_v2 used to be one of three sites that did not, which
+    made exactly the failures worth branching on — CANTOPEN, BUSY, READONLY —
+    the ones a caller could not branch on.
+    """
+    var message = String("")
+    try:
+        _ = open_readonly("/nonexistent-dir-xyz/nope.db")
+    except e:
+        message = String(e)
+    assert_equal(error_code(message), 14)  # SQLITE_CANTOPEN
+    assert_true(
+        "/nonexistent-dir-xyz/nope.db" in message,
+        "the open error lost the path: " + message,
+    )
+
+
+def test_open_failure_does_not_say_the_same_thing_twice() raises:
+    """errstr(rc) and errmsg() agree here, and the message used to carry both:
+    "unable to open database file (unable to open database file)".
+    """
+    var message = String("")
+    try:
+        _ = open_readonly("/nonexistent-dir-xyz/nope.db")
+    except e:
+        message = String(e)
+    var first = message.find("unable to open database file")
+    assert_true(first >= 0, "unexpected message: " + message)
+    assert_equal(
+        message.find("unable to open database file", first + 1),
+        -1,
+        "the message repeats itself: " + message,
+    )
+
+
+def test_describe_falls_back_when_the_connection_has_no_message() raises:
+    """sqlite3_errmsg says "not an error" when nothing failed on the
+    connection, which is worse than useless inside an error message.
+    """
+    assert_true("not an error" not in describe("step", 1, "not an error"))
+    assert_true("(rc=1)" in describe("step", 1, "not an error"))
+    assert_true("(rc=1)" in describe("step", 1, ""))
+    assert_true(
+        "UNIQUE constraint failed: u.name"
+        in describe("step", 19, "UNIQUE constraint failed: u.name")
+    )
 
 
 def test_error_code_is_minus_one_without_a_code() raises:

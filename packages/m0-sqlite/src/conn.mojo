@@ -16,7 +16,6 @@ from std.ffi import external_call, c_int
 from std.memory import UnsafePointer, stack_allocation
 
 from .ffi import (
-    CharPtr,
     SQLITE_OK,
     SQLITE_OPEN_READONLY,
     SQLITE_OPEN_READWRITE,
@@ -24,9 +23,8 @@ from .ffi import (
     SQLITE_OPEN_NOMUTEX,
     SQLITE_OPEN_FULLMUTEX,
     c_string,
-    cstr_to_string,
-    cstr_len,
-    errstr,
+    describe,
+    describe_in,
     libversion,
     libversion_number,
     db_errmsg,
@@ -105,16 +103,15 @@ struct Connection(Movable):
         )
         self._handle = pp[unsafe_offset=0]
         if rc != SQLITE_OK:
+            # Read the message before closing: the handle is what carries it.
             var detail = String("")
             if self._handle != 0:
-                detail = String(" (") + self.errmsg() + ")"
+                detail = self.errmsg()
                 # close_v2 everywhere: statements outliving their connection is
                 # a property this package relies on, and only close_v2 has it.
                 _ = external_call["sqlite3_close_v2", c_int](self._handle)
                 self._handle = 0
-            raise Error(
-                "sqlite3_open_v2 failed on " + path + ": " + errstr(rc) + detail
-            )
+            raise Error(describe_in("open_v2", rc, detail, path))
 
     def __deinit__(deinit self):
         if self._handle != 0:
@@ -137,10 +134,7 @@ struct Connection(Movable):
             )
         )
         if rc != SQLITE_OK:
-            raise Error(
-                "sqlite3_exec failed: " + self.errmsg() + " [" + sql
-                + "] (rc=" + String(rc) + ")"
-            )
+            raise Error(describe_in("exec", rc, self.errmsg(), sql))
 
     def prepare(self, sql: String) raises -> Statement:
         """Compile exactly one statement.
@@ -175,10 +169,7 @@ struct Connection(Movable):
             )
         )
         if rc != SQLITE_OK:
-            raise Error(
-                "sqlite3_prepare_v2 failed: " + self.errmsg() + " [" + sql
-                + "] (rc=" + String(rc) + ")"
-            )
+            raise Error(describe_in("prepare_v2", rc, self.errmsg(), sql))
 
         var handle = pstmt[unsafe_offset=0]
         if handle == 0:
@@ -298,7 +289,7 @@ struct Connection(Movable):
             )
         )
         if rc != SQLITE_OK:
-            raise Error("sqlite3_busy_timeout failed: " + errstr(rc))
+            raise Error(describe("busy_timeout", rc, self.errmsg()))
 
     def register_array_module(mut self) raises:
         """Make `m0_array(?)` available on this connection.
@@ -349,7 +340,8 @@ struct Connection(Movable):
         var rc = Int(external_call["sqlite3_close_v2", c_int](self._handle))
         self._handle = 0
         if rc != SQLITE_OK:
-            raise Error("sqlite3_close_v2 failed: " + errstr(rc))
+            # No errmsg(): the handle this would ask is the one just closed.
+            raise Error(describe("close_v2", rc, String("")))
 
 
 # --- Constructors ----------------------------------------------------------

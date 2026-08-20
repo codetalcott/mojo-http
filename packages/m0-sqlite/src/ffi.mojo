@@ -89,7 +89,17 @@ def cstr_to_string(p: CharPtr, length: Int) -> String:
 
 
 def cstr_len(p: CharPtr) -> Int:
-    """Length of a NUL-terminated C string, for APIs that report no length."""
+    """Length of a NUL-terminated C string, for APIs that report no length.
+
+    Answers 0 for a NULL pointer instead of dereferencing it. Several SQLite
+    accessors that report no length can return NULL — `sqlite3_column_name`
+    for an out-of-range index, any of them under OOM — and a Mojo 1.0 pointer
+    carries no nullability, so nothing upstream of here would notice. Since
+    `cstr_to_string` already maps a length of 0 to "", the whole chain degrades
+    to the empty string rather than segfaulting inside this loop.
+    """
+    if Int(p) == 0:
+        return 0
     var n = 0
     while p[unsafe_offset=n] != 0:
         n += 1
@@ -191,17 +201,41 @@ def stmt_errmsg(stmt_handle: Int, rc: Int) -> String:
     return db_errmsg(db)
 
 
-def describe(what: String, rc: Int, detail: String) -> String:
-    """Uniform error text: SQLite's own message when it has one, else the code.
+def _best_message(rc: Int, detail: String) -> String:
+    """SQLite's own message when it has one, else the text for the code.
 
     `sqlite3_errmsg` reports "not an error" when nothing failed on the
     connection, which is worse than useless in an error message, so that case
     falls back to `errstr` too.
     """
-    var msg = detail
-    if len(msg.as_bytes()) == 0 or msg == "not an error":
-        msg = errstr(rc)
-    return "sqlite3_" + what + " failed: " + msg + " (rc=" + String(rc) + ")"
+    if len(detail.as_bytes()) == 0 or detail == "not an error":
+        return errstr(rc)
+    return detail
+
+
+def describe(what: String, rc: Int, detail: String) -> String:
+    """Uniform error text ending in the result code."""
+    return (
+        "sqlite3_" + what + " failed: " + _best_message(rc, detail)
+        + " (rc=" + String(rc) + ")"
+    )
+
+
+def describe_in(
+    what: String, rc: Int, detail: String, context: String
+) -> String:
+    """`describe`, plus the SQL or path the failing call was made against.
+
+    The context goes *before* the code, never after. `error_code` recovers the
+    result code from the end of the message, so anything appended past
+    "(rc=NN)" makes the code silently unrecoverable — which is how three call
+    sites came to raise without one. Both shapes living in one place is what
+    keeps that from drifting apart again.
+    """
+    return (
+        "sqlite3_" + what + " failed: " + _best_message(rc, detail)
+        + " [" + context + "] (rc=" + String(rc) + ")"
+    )
 
 
 def error_code(message: String) -> Int:
