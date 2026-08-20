@@ -21,6 +21,9 @@ __pycache__/
 # Compiled app binaries (rebuild with `mojo build`)
 apps/hello/hello
 
+# warning ratchet input (CI tees build output here; see scripts/warning_ratchet.py)
+compile.log
+
 # smoke test output
 hello.log
 counter.log

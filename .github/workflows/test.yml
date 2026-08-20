@@ -46,10 +46,29 @@ jobs:
         # one step known to stall.
         timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
+      # Both steps tee into one log so the ratchet below sees every warning:
+      # build-all covers the packages, and test-all is the only thing that
+      # compiles test/ sources, where most of the residual warnings live.
+      # pipefail keeps a build failure fatal despite the pipe into tee.
       - name: Build packages (cross-package deps need .mojoc)
-        run: uv run poe build-all
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run poe build-all 2>&1 | tee -a compile.log
       - name: Run unit tests
-        run: uv run poe test-all
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run poe test-all 2>&1 | tee -a compile.log
+      # Holds the residual warning count at scripts/warning_baseline.json.
+      # mojo has no per-warning suppression, so without this a new warning
+      # just joins ~68 existing ones and nobody sees it.
+      # Guards the guard: the ratchet is only meaningful if its parser still
+      # matches. A silent parse regression would under-count and pass.
+      - name: Self-test the warning parser
+        run: python3 scripts/warning_ratchet.py --selftest
+      - name: Check the compiler warning count has not grown
+        run: uv run poe check-warnings compile.log
       # m0-wsgi embeds CPython, so its interpreter has to resolve on both
       # runners. Failing here rather than inside a smoke test makes a
       # libpython discovery problem legible.
