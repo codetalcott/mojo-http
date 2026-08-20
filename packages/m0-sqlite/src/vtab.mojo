@@ -28,7 +28,11 @@ Three things about the implementation are deliberate:
     `lightbug_http/c/epoll.mojo`: Mojo cannot vary a struct's fields by target,
     and a struct whose size is wrong by four bytes corrupts everything after the
     first row in silence. Every offset used here is asserted against the real
-    headers, for four target triples, by `experiments/sqlite-vtab/verify_layout.c`.
+    headers by `test/verify_layout.c`, which `poe test-sqlite` runs — for the
+    host triple — before any Mojo test. Four 64-bit triples were swept by hand
+    during the spike, with i386 as a negative control; see
+    `docs/sqlite-vtab-feasibility.md`. Sweep a new target the same way before
+    trusting it, because the gate only ever sees the machine it runs on.
 
   - **`iVersion` is 1 on purpose.** It bounds what SQLite reads from the module
     to the first 19 slots, so the 25-word buffer stays in range even against a
