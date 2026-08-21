@@ -16,6 +16,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "django>=5.2.17",
+    "flask>=3.0",
     "poethepoet>=0.30",
 ]
 
@@ -593,32 +594,13 @@ fail() {
   exit 1
 }
 
-# The view's own body proves the request reached Django and came back.
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
-  | grep -q 'hello from django on mojo-http' || fail 'GET / did not return the view body'
-
-# Headers is a Dict[String, String], so a naive mapping keeps only the last
-# Set-Cookie. Django sets sessionid and csrftoken as two separate headers.
-n=$(curl -s -i http://localhost:8080/cookies | grep -ci '^set-cookie:')
-[ "$n" = "2" ] || fail "expected 2 Set-Cookie headers, got $n"
-
-# The request half of the cookie path. The parser used to divert Cookie out of
-# the header map into its own jar, so HTTP_COOKIE never reached the environ and
-# request.COOKIES was always empty — every Django session, login and CSRF check
-# silently inert. The value deliberately contains '=': base64 pads with it, so
-# a real sessionid does too, and splitting on every '=' truncates it.
-got=$(curl -s -H 'Cookie: sessionid=YWJjZGVm==; csrftoken=a=b=c' http://localhost:8080/cookies/echo)
-[ "$got" = 'csrftoken=a=b=c|sessionid=YWJjZGVm==' ] \
-  || fail "request cookies did not reach Django: got '$got'"
-
-# ...and a request that sends none must not acquire any.
-got=$(curl -s http://localhost:8080/cookies/echo)
-[ -z "$got" ] || fail "a cookieless request arrived with cookies: '$got'"
-
-# Multiple Cookie fields are one '; '-joined list (RFC 6265 §5.4), not
-# last-wins — which is what a unique-key header map does without the rejoin.
-got=$(curl -s -H 'Cookie: a=1' -H 'Cookie: b=2' http://localhost:8080/cookies/echo)
-[ "$got" = 'a=1|b=2' ] || fail "split Cookie headers did not rejoin: got '$got'"
+# The framework-facing contract -- routing, both halves of the cookie path,
+# body round trip, binary safety, query parsing, 404 and 500 -- shared verbatim
+# with every other framework row, because every one of those is true of any
+# WSGI framework. Everything below this line is Django-specific and stays here.
+# The contract also carries the readiness retry, so it must run first.
+bash scripts/wsgi_framework_contract.sh http://localhost:8080 'hello from django on mojo-http' django \
+  || fail 'the WSGI framework contract failed against Django'
 
 # The full round trip, which is the point of all of the above: Django sets a
 # session cookie, the client returns it, and the counter only advances if the
@@ -632,10 +614,6 @@ for expected in 1 2 3; do
 done
 grep -q 'sessionid' "$jar" || fail 'Django never set a session cookie'
 rm -f "$jar"
-
-# wsgi.input: the request body has to survive the crossing.
-echo 'round-trip-me' | curl -s --data-binary @- http://localhost:8080/echo \
-  | grep -q 'round-trip-me' || fail 'POST body did not round-trip'
 
 # A body the server cannot read in one go. Both shapes below answered 408
 # after a 30s stall until the event loop learned to register read interest
@@ -695,28 +673,6 @@ if echoed != small:
     print("split write: echoed %r" % echoed); sys.exit(1)
 PYEOF
 [ $? = 0 ] || fail 'a request body that needed a second read did not complete'
-
-# QUERY_STRING reaches Django's request.GET rather than being swallowed.
-curl -s 'http://localhost:8080/query?name=ada+lovelace' \
-  | grep -q 'ada lovelace' || fail 'QUERY_STRING did not reach the view'
-
-# All 256 byte values, unchanged. A latin-1 round trip through a Mojo String
-# would corrupt everything above 0x7F, since Mojo strings are UTF-8.
-python3 -c 'import sys; sys.stdout.buffer.write(bytes(range(256)))' > expected.bin
-curl -s http://localhost:8080/binary > got.bin
-cmp -s expected.bin got.bin || fail "binary body was corrupted in transit ($(wc -c < got.bin) bytes)"
-rm -f expected.bin got.bin
-
-# The response mapper must carry Django's status, not hard-code 200.
-code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/nope)
-[ "$code" = "404" ] || fail "expected 404 from Django urls.py, got $code"
-
-# A view that raises becomes the server's 500 rather than killing the process.
-code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/boom)
-[ "$code" = "500" ] || fail "expected 500 from a raising view, got $code"
-
-# ...and the server is still answering afterwards.
-curl -s --fail http://localhost:8080/ > /dev/null || fail 'server died after a view raised'
 
 # One process by default, and the environ says so.
 curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=False' \
@@ -890,6 +846,47 @@ wait $pid 2>/dev/null
 
 rm -f django.log django2.log django3.log
 echo "smoke-django OK"
+"""
+
+[tool.poe.tasks.serve-flask]
+help = "Run the Flask WSGI example on :8087 (needs the flask dev dependency)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/flask_wsgi/server.mojo"
+
+# The second framework row. Everything it asserts lives in the shared contract
+# script, because everything it asserts is true of any WSGI framework -- which
+# is exactly the claim a second row exists to test. A row that needed its own
+# assertions would be evidence the host is not framework-agnostic after all.
+#
+# Skips cleanly when flask is absent: it is a dev dependency for this example
+# and nothing in packages/ imports it.
+[tool.poe.tasks.smoke-flask]
+help = "Run the WSGI framework contract against Flask (skips if flask is absent)"
+shell = """
+python3 -c 'import flask' 2>/dev/null || { echo "flask not installed - skipping smoke-flask"; exit 0; }
+
+out=$(mktemp -d)
+srv="$out/flask_server"
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
+  apps/flask_wsgi/server.mojo -o "$srv" || exit 1
+
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+
+"$srv" > flask.log 2>&1 &
+pid=$!
+
+if ! bash scripts/wsgi_framework_contract.sh http://localhost:8087 'hello from flask on mojo-http' flask; then
+  echo '=== flask.log ==='; cat flask.log
+  exit 1
+fi
+
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+rm -f flask.log
+echo "smoke-flask OK"
 """
 
 [tool.poe.tasks.serve-wsgi-bare]

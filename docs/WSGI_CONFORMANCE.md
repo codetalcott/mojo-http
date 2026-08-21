@@ -119,12 +119,46 @@ answers in ~14 ms. Django's equivalent test calls `urlopen` with no timeout and
 hangs forever — the difference between a red test and a CI job that runs until
 the runner kills it.
 
-### 3. Frameworks as an optional matrix
+### 3. Frameworks as a matrix (Django + Flask)
 
-Each framework contributes only "build me an app with these routes" — Django's
-exists in spirit already, Flask is ~30 lines — and is skipped when not
-installed. Django becomes one row rather than the foundation, and adding
-Pyramid or Bottle costs an adapter, not a CI dependency.
+`smoke-wsgi` asks whether the bridge implements PEP 3333, against a bare
+callable with no framework to blame. The rows ask a different question:
+whether a real framework's idioms survive the crossing — its router, its
+cookie jar, its body parsing, its error handling. Those need a framework, and
+every framework answers them identically, so the assertions live once in
+[`scripts/wsgi_framework_contract.sh`](../scripts/wsgi_framework_contract.sh)
+rather than once per row:
+
+| | |
+|---|---|
+| `GET /` | the row's own body, passed in as an argument |
+| `GET /cookies` | two Set-Cookie headers on one response |
+| `GET /cookies/echo` | request cookies, sorted `k=v`, joined with `\|` |
+| `POST /echo` | the request body unchanged, and again at 256KB |
+| `GET /binary` | all 256 byte values |
+| `GET /query?name=` | the framework's own parameter parsing |
+| `GET /boom` | raises, so the 500 path is reachable |
+| any unrouted path | the framework's own 404 |
+
+[`apps/django_wsgi`](../apps/django_wsgi/) and
+[`apps/flask_wsgi`](../apps/flask_wsgi/) both implement it, and
+`smoke-django` and `smoke-flask` both call the same script. A row that needed
+assertions of its own would be evidence the host is *not* framework-agnostic,
+so the shared script is the test — not a convenience.
+
+Flask required **no changes to `m0-wsgi`**: the app, a `server.mojo` identical
+to the other two apart from the module name and port, and a task that calls the
+contract. It passed on the first run. One framework is an anecdote; two that
+share a contract are a claim.
+
+Django keeps its own extra assertions — signed-cookie sessions, the RSS leak
+guard, `wsgi.multiprocess`, the prefork parallelism check, the validator pass —
+because those genuinely are Django-specific or server-specific rather than
+framework-contract material.
+
+Adding Pyramid or Bottle now costs an app directory and a task, not a CI
+dependency and not a line of the contract. Flask is a dev dependency and
+`smoke-flask` skips cleanly when it is absent.
 
 ### What landed
 
@@ -135,7 +169,8 @@ Pyramid or Bottle costs an adapter, not a CI dependency.
 | `poe smoke-wsgi`, `poe serve-wsgi-bare` | built |
 | `write()` + double-`start_response` fixes in `bridge.mojo` | fixed |
 | CI step ahead of `smoke-django`, `wsgi.log` in failure artifacts | wired |
-| Flask adapter row | not built; ~30 lines when wanted |
+| Shared `scripts/wsgi_framework_contract.sh`, with `smoke-django` refactored onto it | built |
+| Flask row: `apps/flask_wsgi/`, `poe smoke-flask`, `poe serve-flask` | built |
 
 `M0_WSGI_VALIDATE` stayed on the Django example as well as moving onto the bare
 app. Removing it there would have dropped real coverage — Django is the
