@@ -196,7 +196,8 @@ pass into a second unvalidated run that always succeeds.
 `django.test.Client` and never open a socket. Repointing `tests/servers/` at
 this server was scoped and rejected: only four of its assertions target the
 wire, and the price is a pinned Django *source tree* in CI. The replacement is
-a framework-neutral suite over a bare WSGI callable — see
+a framework-neutral suite over a bare WSGI callable, plus a shared framework
+contract that Django and Flask both run — see
 [WSGI_CONFORMANCE.md](WSGI_CONFORMANCE.md).
 
 ## Known issues

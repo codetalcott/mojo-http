@@ -159,6 +159,12 @@ jobs:
       # 256 byte values coming back unchanged.
       - name: Smoke test the Django WSGI example
         run: uv run poe smoke-django
+      # The second framework row. It asserts nothing of its own -- it runs the
+      # same contract script as the Django row against a different framework,
+      # which is the only way to tell a framework-agnostic host from one that
+      # happens to suit the single framework it was developed against.
+      - name: Run the WSGI framework contract against Flask
+        run: uv run poe smoke-flask
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -175,4 +181,5 @@ jobs:
             django2.log
             django3.log
             wsgi.log
+            flask.log
           if-no-files-found: ignore

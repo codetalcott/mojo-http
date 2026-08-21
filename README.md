@@ -208,6 +208,14 @@ def main() raises:
 
 Run [apps/django_wsgi/](apps/django_wsgi/) with `uv run poe serve-django`.
 
+[apps/flask_wsgi/](apps/flask_wsgi/) is the same server running Flask instead,
+and the two `server.mojo` files differ only in the module name and the default
+port. Both rows run the same assertions —
+[scripts/wsgi_framework_contract.sh](scripts/wsgi_framework_contract.sh) — because
+routing, cookies in both directions, body round trips and error handling are
+things every WSGI framework does identically. Adding Flask needed no change to
+`m0-wsgi` at all.
+
 [apps/wsgi_bare/](apps/wsgi_bare/) is the same server with no framework at all —
 a plain PEP 3333 callable, zero third-party imports. It is what makes the claim
 above demonstrable rather than merely asserted, and it is the conformance target
@@ -395,6 +403,7 @@ uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
 uv run poe serve-wsgi-bare  # the framework-free WSGI example on :8086
+uv run poe serve-flask      # the Flask WSGI example on :8087
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, static files, CORS
 uv run poe smoke-ws         # speak RFC 6455 raw: handshake, echo, fragments, ping/pong, close
@@ -403,6 +412,7 @@ uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect clean
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
 uv run poe smoke-wsgi       # PEP 3333 conformance against a bare WSGI callable
+uv run poe smoke-flask      # the same framework contract, against Flask
 uv run poe smoke-django     # assert a Django request/response cycle end to end
 uv run poe build-ffi        # emit the C-ABI shared library (libm0core.so/.dylib)
 uv run poe smoke-ffi        # load the shared library via ctypes, assert known vectors
