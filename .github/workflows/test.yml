@@ -148,6 +148,12 @@ jobs:
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo
         run: uv run poe smoke-todo
+      # PEP 3333 conformance against a bare WSGI callable -- no framework, so a
+      # wrong answer is the server's by construction. Covers surface no
+      # framework-based test can reach: the write() callable, a second
+      # start_response, multi-chunk iterables, wsgi.input read patterns.
+      - name: Conformance test the WSGI bridge
+        run: uv run poe smoke-wsgi
       # Proves the WSGI bridge end to end: a real Django request/response cycle,
       # two Set-Cookie headers surviving a Dict-backed Headers, and a body of all
       # 256 byte values coming back unchanged.
@@ -166,4 +172,7 @@ jobs:
             counter.log
             todo.log
             django.log
+            django2.log
+            django3.log
+            wsgi.log
           if-no-files-found: ignore

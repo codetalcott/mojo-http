@@ -93,6 +93,22 @@ def slow(request):
     time.sleep(1.5)
     return HttpResponse(f"slow done pid={os.getpid()}", content_type="text/plain")
 
+def pep3333_canary(request):
+    """A deliberate PEP 3333 violation, so the smoke test can prove the
+    validator is engaged.
+
+    A response that carries a body but no `Content-Type` is what
+    `wsgiref.validate` rejects with "No Content-Type header found in
+    headers" — and it is exactly the kind of thing a plain server serves
+    without complaint. So this route answers 200 normally and 500 under
+    `M0_WSGI_VALIDATE`, which is the only way the smoke test can tell
+    validation is really on: every other assertion in the validation pass
+    passes just as well with the wrapper missing entirely.
+    """
+    response = HttpResponse("canary", content_type="text/plain")
+    del response["Content-Type"]
+    return response
+
 
 urlpatterns = [
     path("", hello),
@@ -105,4 +121,5 @@ urlpatterns = [
     path("boom", boom),
     path("wsgi", wsgi),
     path("slow", slow),
+    path("pep3333/canary", pep3333_canary),
 ]

@@ -39,6 +39,12 @@ The shim does it instead. The shim also calls `close()` on the application's
 result iterable, as PEP 3333 requires — Django's `request_finished` cleanup
 hangs off it.
 
+`start_response` returns a real `write()` callable, not a no-op. Django never
+calls it, so nothing in a Django-shaped test can tell the difference and this
+silently discarded every byte written through it until `apps/wsgi_bare`
+existed to ask. It is the reason that app is a bare callable rather than
+another framework.
+
 Blob strings decode as latin-1 on the Python side, which is PEP 3333's
 convention for tunneling raw request bytes through `str`: Django re-encodes
 latin-1 and decodes UTF-8 itself.
@@ -113,15 +119,28 @@ def handle():
     environ['wsgi.input'] = io.BytesIO(mv[off:off + n_body].tobytes())
 
     captured = {}
+    written = []
 
     def start_response(status, headers, exc_info=None):
+        # PEP 3333: a second call without exc_info is an application error.
+        # With exc_info it must replace the stored status and headers, and may
+        # only re-raise once the headers have actually gone out -- which for a
+        # fully-buffering server is never, so replacing is always the branch
+        # taken here.
+        if captured and exc_info is None:
+            raise AssertionError('start_response() called twice without exc_info')
         captured['status'] = status
         captured['headers'] = headers
-        return lambda data: None
+        return written.append
 
     result = _app(environ, start_response)
     try:
-        _body = b''.join(result)
+        # PEP 3333: everything passed to write() is transmitted before the
+        # iterable's output. The iterable is drained FIRST even so, because an
+        # application is allowed to call write() from inside the generator it
+        # returned, and joining `written` before draining would drop those.
+        chunks = b''.join(result)
+        _body = b''.join(written) + chunks
     finally:
         close = getattr(result, 'close', None)
         if close is not None:
