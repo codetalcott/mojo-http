@@ -172,6 +172,33 @@ Benchmarked against gunicorn (same Django project, same worker counts, wrk):
 with the remaining tail-latency caveat on close-per-request traffic —
 methodology and numbers in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
+### PEP 3333 conformance (done)
+
+`smoke-django` runs a third pass with `M0_WSGI_VALIDATE=1`, which wraps the
+example's application in `wsgiref.validate` — the stdlib's own WSGI checker,
+and the closest thing that exists to a conformance suite for a *server*. It
+asserts on the environ this server builds rather than on what Django does with
+it: every required key present and correctly typed, `Content-Type` and
+`Content-Length` arriving *without* the `HTTP_` prefix while every other header
+keeps it, `wsgi.input`/`wsgi.errors` implementing the required methods, and the
+application's iterable closed exactly once. Violations raise out of the
+application call and the event loop answers 500, so a conformance failure
+cannot pass quietly. It is off by default because the wrapper copies the
+environ and wraps `wsgi.input` on every request.
+
+The pass carries its own canary. `/pep3333/canary` returns a body with no
+`Content-Type`, which is an ordinary 200 unvalidated and a 500 under the
+wrapper — without it, a misspelled variable name would downgrade the whole
+pass into a second unvalidated run that always succeeds.
+
+**Django's own test suite is not the tool for this.** Of its 1996 test files,
+6 start a live HTTP server; the rest reach the application in-process through
+`django.test.Client` and never open a socket. Repointing `tests/servers/` at
+this server was scoped and rejected: only four of its assertions target the
+wire, and the price is a pinned Django *source tree* in CI. The replacement is
+a framework-neutral suite over a bare WSGI callable — see
+[WSGI_CONFORMANCE.md](WSGI_CONFORMANCE.md).
+
 ## Known issues
 
 - Negotiation covers `Accept`, `Accept-Encoding` (`negotiate_encoding` —

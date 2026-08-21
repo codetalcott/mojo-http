@@ -586,8 +586,10 @@ trap cleanup EXIT
 pid=$!
 
 fail() {
-  echo "$1"; echo '=== django.log ==='; cat django.log
-  if [ -f django2.log ]; then echo '=== django2.log ==='; cat django2.log; fi
+  echo "$1"
+  for log in django.log django2.log django3.log; do
+    if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
+  done
   exit 1
 }
 
@@ -720,6 +722,12 @@ curl -s --fail http://localhost:8080/ > /dev/null || fail 'server died after a v
 curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=False' \
   || fail 'wsgi.multiprocess was not False with one worker'
 
+# The PEP 3333 canary is an ordinary 200 here. It is only a violation while
+# the validator is watching, which is exactly what makes it a usable probe
+# for whether the validation pass further down really has the wrapper on.
+got=$(curl -s http://localhost:8080/pep3333/canary)
+[ "$got" = "canary" ] || fail "/pep3333/canary did not answer normally: got '$got'"
+
 # The bridge must not leak per request. Mojo 1.0's PythonObject interop leaks
 # one reference per call argument and per setitem value, which is why requests
 # cross as a byte blob (see m0-wsgi/src/bridge.mojo). The pre-blob bridge
@@ -801,8 +809,293 @@ done
 [ "$parallel_ok" = 1 ] || fail 'the request pair never reached two distinct workers in 8 attempts'
 rm -f slow1.txt slow2.txt
 
-rm -f django.log django2.log
+# --- M0_WSGI_VALIDATE=1: PEP 3333 conformance -------------------------------
+#
+# wsgiref.validate is the stdlib's own WSGI checker and the closest thing that
+# exists to a conformance suite for a *server*: it asserts on the environ this
+# server builds rather than on what Django does with it. Any violation raises
+# AssertionError out of the application call, m0-wsgi propagates it, and the
+# event loop answers 500 -- so every assertion below reads as "still the right
+# status and body, with the validator watching".
+#
+# Django's own test suite does not cover this ground. Of its 1996 test files,
+# only 6 start a live HTTP server; the rest reach the application in-process
+# through django.test.Client and never open a socket.
+
+kill $pid $worker_pids 2>/dev/null
+wait $pid 2>/dev/null
+worker_pids=
+
+M0_WSGI_VALIDATE=1 "$srv" > django3.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
+  | grep -q 'hello from django on mojo-http' || fail 'GET / failed under M0_WSGI_VALIDATE'
+
+# One request per environ shape the bridge assembles differently.
+curl -s 'http://localhost:8080/query?name=ada+lovelace' \
+  | grep -q 'ada lovelace' || fail 'QUERY_STRING did not survive validation'
+
+echo 'round-trip-me' | curl -s --data-binary @- http://localhost:8080/echo \
+  | grep -q 'round-trip-me' || fail 'CONTENT_TYPE/CONTENT_LENGTH/wsgi.input did not survive validation'
+
+# HTTP_COOKIE specifically. Content-Type and Content-Length are the only two
+# headers PEP 3333 wants *without* the HTTP_ prefix, and the validator asserts
+# the converse as well -- an environ carrying HTTP_CONTENT_TYPE is a failure.
+got=$(curl -s -H 'Cookie: a=1' http://localhost:8080/cookies/echo)
+[ "$got" = 'a=1' ] || fail "HTTP_COOKIE did not survive validation: got '$got'"
+
+# A body past the shim's 64KB transfer buffer, so grow() runs while wsgi.input
+# is the validator's InputWrapper rather than a bare BytesIO.
+python3 -c 'import sys; sys.stdout.buffer.write(b"x" * 262144)' > big.bin
+n=$(curl -s --data-binary @big.bin http://localhost:8080/echo | wc -c | tr -d ' ')
+[ "$n" = "262144" ] || fail "a 256KB body did not survive validation: echoed $n bytes"
+rm -f big.bin
+
+# A binary response body, and a status the mapper has to carry through.
+n=$(curl -s http://localhost:8080/binary | wc -c | tr -d ' ')
+[ "$n" = "256" ] || fail "binary body did not survive validation: got $n bytes"
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/nope)
+[ "$code" = "404" ] || fail "the 404 path did not survive validation, got $code"
+
+# The session round trip: two Set-Cookie headers out, HTTP_COOKIE back in.
+jar="$out/validated-cookies.txt"
+for expected in 1 2; do
+  got=$(curl -s -c "$jar" -b "$jar" http://localhost:8080/session/bump)
+  [ "$got" = "count=$expected" ] || fail "session round trip failed validation: got '$got'"
+done
+rm -f "$jar"
+
+# The validator asserts close() is called on the application's iterable
+# exactly once, and reports a missed close from the iterator's __del__ -- on
+# a later request, out of band. So a clean run has to be quiet as well.
+grep -qiE 'assertionerror|not being closed' django3.log \
+  && fail 'the validator reported a violation out of band (see django3.log)'
+
+# Last, because it is the one request that is *meant* to fail: proof the
+# wrapper is installed at all. Every assertion above passes just as well with
+# the validator missing entirely, so without this one a typo in the variable
+# name would silently downgrade the whole pass into a second unvalidated run
+# that always succeeds. It runs after the log check because a deliberate
+# violation is entitled to make noise.
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/pep3333/canary)
+[ "$code" = "500" ] || fail "validator not engaged: /pep3333/canary answered $code, expected 500"
+
+# ...and the server is still serving after the validator raised through it.
+curl -s --fail http://localhost:8080/ > /dev/null \
+  || fail 'server died after a validation failure'
+
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+rm -f django.log django2.log django3.log
 echo "smoke-django OK"
+"""
+
+[tool.poe.tasks.serve-wsgi-bare]
+help = "Run the bare WSGI example on :8086 (no framework, no third-party deps)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/wsgi_bare/server.mojo"
+
+# PEP 3333 conformance against a bare WSGI callable. The Django example proves
+# a real framework survives the bridge; this proves the bridge implements the
+# spec, which is a different claim and needs a target with no framework in it
+# to be attributable. Every assertion below maps to one paragraph of PEP 3333.
+#
+# Runs M0_WORKERS=2 throughout, because /reentrant issues a request back into
+# this same server from inside a view and one worker cannot answer itself.
+[tool.poe.tasks.smoke-wsgi]
+help = "PEP 3333 conformance: write(), start_response, wsgi.input, CGI environ, validator"
+shell = """
+out=$(mktemp -d)
+srv="$out/bare_server"
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
+  apps/wsgi_bare/server.mojo -o "$srv" || exit 1
+
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+
+fail() {
+  echo "$1"
+  if [ -f wsgi.log ]; then echo '=== wsgi.log ==='; cat wsgi.log; fi
+  exit 1
+}
+
+B=http://localhost:8086
+M0_WORKERS=2 "$srv" > wsgi.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'bare wsgi app' || fail 'GET / did not answer'
+
+# --- the write() callable -----------------------------------------------------
+# PEP 3333 requires start_response to return a write callable whose data
+# reaches the client. The shim returned `lambda data: None` until this app
+# existed to ask; Django never calls write(), so nothing Django-shaped could
+# ever have caught it -- including the wsgiref.validate pass, which type-checks
+# the call and not its effect.
+got=$(curl -s $B/write)
+[ "$got" = "written-body" ] || fail "write() output was dropped: got '$got'"
+
+# write() output precedes the iterable's, in order.
+got=$(curl -s $B/write/mixed)
+[ "$got" = "firstsecondthird" ] || fail "write()/iterable ordering wrong: got '$got'"
+
+# --- the response iterable ----------------------------------------------------
+got=$(curl -s $B/chunks)
+[ "$got" = "one-two-three" ] || fail "multi-chunk iterable was not joined: got '$got'"
+
+# close() must be called on an iterable that has one -- Django hangs
+# request_finished off exactly this, so skipping it breaks framework teardown
+# without breaking any single response.
+#
+# The tally lives in the worker's own interpreter, so all three requests go
+# down ONE keep-alive connection: the worker that accepted it owns it for its
+# lifetime. Three separate curls race two workers and read a counter that was
+# never incremented in the process that answered.
+python3 - <<'PYEOF'
+import http.client, sys
+c = http.client.HTTPConnection("localhost", 8086, timeout=10)
+def get(path):
+    c.request("GET", path)
+    return c.getresponse().read()
+before = int(get("/close/count"))
+get("/close")
+after = int(get("/close/count"))
+c.close()
+if after <= before:
+    print("close() not called: count %d -> %d" % (before, after)); sys.exit(1)
+PYEOF
+[ $? = 0 ] || fail 'close() was not called on the response iterable'
+
+# --- start_response -----------------------------------------------------------
+# A second call without exc_info is an application error the server must reject.
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/start-twice)
+[ "$code" = "500" ] || fail "start_response called twice was accepted: got $code"
+
+# With exc_info, and nothing sent yet, the server must REPLACE status and
+# headers rather than re-raise. This server buffers, so nothing is ever sent
+# before the application returns and replacing is always the correct branch.
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/exc-info)
+[ "$code" = "503" ] || fail "exc_info did not replace the status: got $code"
+got=$(curl -s $B/exc-info)
+[ "$got" = "replaced" ] || fail "exc_info did not replace the body: got '$got'"
+
+# Arbitrary status passthrough, not just the ones a framework happens to use.
+code=$(curl -s -o /dev/null -w '%{http_code}' "$B/status?code=418")
+[ "$code" = "418" ] || fail "status passthrough failed: got $code"
+
+# --- the CGI environ ----------------------------------------------------------
+# QUERY_STRING must arrive still percent-encoded. PEP 3333 wants the raw bytes
+# and every framework re-decodes them itself; a server that helpfully decodes
+# here corrupts any value containing %26 or a plus sign.
+curl -s "$B/environ?q=%D1%82%D0%B5%D1%81%D1%82" \
+  | grep -qF "QUERY_STRING='q=%D1%82%D0%B5%D1%81%D1%82'" \
+  || fail 'QUERY_STRING did not arrive percent-encoded'
+
+# PATH_INFO is decoded, and starts with a slash.
+curl -s "$B/environ" | grep -qF "PATH_INFO='/environ'" || fail 'PATH_INFO wrong'
+
+# Content-Type and Content-Length are the only two headers PEP 3333 wants in
+# bare CGI form; everything else keeps the HTTP_ prefix, and the HTTP_-prefixed
+# spellings of those two must not appear at all.
+env=$(curl -s -H 'X-Custom: v' -H 'Content-Type: text/x-test' --data-binary 'ab' $B/environ)
+echo "$env" | grep -qF "CONTENT_TYPE='text/x-test'" || fail 'CONTENT_TYPE missing or prefixed'
+echo "$env" | grep -qF "CONTENT_LENGTH='2'" || fail 'CONTENT_LENGTH missing or prefixed'
+echo "$env" | grep -qF "HTTP_X_CUSTOM='v'" || fail 'ordinary header lost its HTTP_ prefix'
+echo "$env" | grep -q '^HTTP_CONTENT_' && fail 'HTTP_CONTENT_* must not appear in the environ'
+
+# --- wsgi.input ---------------------------------------------------------------
+got=$(printf 'hello' | curl -s --data-binary @- $B/input/read)
+[ "$got" = "len=5 sum=532" ] || fail "wsgi.input read() wrong: got '$got'"
+
+got=$(curl -s --data-binary @- $B/input/readline <<'EOF'
+a
+b
+c
+EOF
+)
+[ "$got" = "a|b|c" ] || fail "wsgi.input readline() wrong: got '$got'"
+
+got=$(printf 'hello' | curl -s --data-binary @- $B/input/iter)
+[ "$got" = "iter=5" ] || fail "wsgi.input iteration wrong: got '$got'"
+
+# Reading past the end yields b'', rather than blocking or raising.
+got=$(printf 'hi' | curl -s --data-binary @- $B/input/overread)
+[ "$got" = "extra=b''" ] || fail "reading past EOF wrong: got '$got'"
+
+# --- the wire -----------------------------------------------------------------
+# HTTP/1.1, and one request's body must not leak into the next on a reused
+# connection. Two POSTs of different lengths down one socket catch a parser
+# that keeps stale body state.
+python3 - <<'PYEOF'
+import http.client, sys
+c = http.client.HTTPConnection("localhost", 8086, timeout=10)
+c.request("POST", "/input/read", b"aaaa")
+r1 = c.getresponse()
+b1 = r1.read()
+if r1.version != 11:
+    print("expected HTTP/1.1, got version %r" % r1.version); sys.exit(1)
+if r1.will_close:
+    print("connection closed despite Content-Length"); sys.exit(1)
+c.request("POST", "/input/read", b"bb")
+b2 = c.getresponse().read()
+c.close()
+if not b1.startswith(b"len=4"):
+    print("first keep-alive request: %r" % b1); sys.exit(1)
+if not b2.startswith(b"len=2"):
+    print("second keep-alive request saw stale body state: %r" % b2); sys.exit(1)
+PYEOF
+[ $? = 0 ] || fail 'keep-alive request isolation failed'
+
+# --- re-entrancy --------------------------------------------------------------
+# A request issued from inside a view, back to this same server. A worker runs
+# views synchronously on the event loop, so with one worker the only process
+# that could accept the sub-request is the one blocked in the view that made
+# it -- measured at a 10s timeout and a 504. Two workers answer in ~14ms.
+got=$(curl -s "$B/reentrant?url=http%3A%2F%2Flocalhost%3A8086")
+[ "$got" = "reentrant: subview" ] || fail "re-entrant request failed: got '$got'"
+
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+# --- the same app under wsgiref.validate --------------------------------------
+# The stdlib's PEP 3333 checker, over routes chosen to exercise the spec rather
+# than the conventional slice a framework happens to use.
+M0_WSGI_VALIDATE=1 M0_WORKERS=2 "$srv" > wsgi.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'bare wsgi app' || fail 'GET / failed under M0_WSGI_VALIDATE'
+
+for path in write write/mixed chunks close input/read; do
+  curl -s --fail "$B/$path" > /dev/null || fail "/$path failed validation"
+done
+got=$(curl -s $B/write)
+[ "$got" = "written-body" ] || fail "write() broke under the validator: got '$got'"
+
+curl -s "$B/environ?q=%D1%82" | grep -qF "QUERY_STRING='q=%D1%82'" \
+  || fail 'QUERY_STRING failed validation'
+
+grep -qiE 'assertionerror|not being closed' wsgi.log \
+  && fail 'the validator reported a violation out of band (see wsgi.log)'
+
+# Last, because it is the one request meant to fail: /no-content-type is an
+# ordinary 200 unvalidated and an AssertionError under the wrapper, which is
+# the only way to tell the validator is installed rather than skipped by a
+# misspelled variable name.
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/no-content-type)
+[ "$code" = "500" ] || fail "validator not engaged: /no-content-type answered $code, expected 500"
+
+curl -s --fail $B/ > /dev/null || fail 'server died after a validation failure'
+
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+rm -f wsgi.log
+echo "smoke-wsgi OK"
 """
 
 # Both ends of the wire in Mojo: the client dials, sends, and parses against

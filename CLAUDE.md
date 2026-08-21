@@ -279,6 +279,16 @@ Properties of the design, not defects to fix in passing:
   runtime's teardown calls into libdispatch, which is unusable after a fork
   without exec, and the worker dies with a SIGTRAP the supervisor reads as a
   crash. Nothing reached that path until workers learned to drain.
+- **After `fork()` without `exec`, platform runtimes are off limits — including
+  from application code.** The `exit_worker()` rule above is one instance; the
+  general form bites WSGI apps directly. On macOS `urlopen` consults the system
+  proxy through `_scproxy`, which calls into CoreFoundation, and Objective-C
+  aborts the process rather than run in a forked child: under `M0_WORKERS>1` the
+  worker dies with SIGKILL and the supervisor respawns it, so it reads as a
+  dropped connection and a churning worker, not a crash. `M0_WORKERS=1` runs the
+  identical code cleanly, which is what makes it look like a load bug. Use
+  `http.client.HTTPConnection` (no proxy lookup) — `apps/wsgi_bare`'s
+  `/reentrant` route is the worked example and `poe smoke-wsgi` pins it.
 - **Mojo has no global `var`, but it does have `pop.global_alloc`.** A POSIX
   handler gets no user-data pointer, so `src/global_slot.mojo` reaches an
   internal MLIR op for what C spells `static`. `@no_inline` on the accessors

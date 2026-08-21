@@ -208,6 +208,14 @@ def main() raises:
 
 Run [apps/django_wsgi/](apps/django_wsgi/) with `uv run poe serve-django`.
 
+[apps/wsgi_bare/](apps/wsgi_bare/) is the same server with no framework at all —
+a plain PEP 3333 callable, zero third-party imports. It is what makes the claim
+above demonstrable rather than merely asserted, and it is the conformance target
+for `uv run poe smoke-wsgi`, which checks the parts of the spec a framework
+never exercises: the `write()` callable, a second `start_response`, multi-chunk
+iterables, `wsgi.input` read patterns, and the CGI environ transform. See
+[docs/WSGI_CONFORMANCE.md](docs/WSGI_CONFORMANCE.md).
+
 **Why the boundary looks the way it does.** WSGI hands the application a
 `start_response` callable that the *server* supplies, and building a Python
 callable that closes over Mojo state is the hardest thing at this boundary — so
@@ -386,6 +394,7 @@ uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
 uv run poe serve-django     # the Django WSGI example on :8080
+uv run poe serve-wsgi-bare  # the framework-free WSGI example on :8086
 uv run poe smoke-hello      # start the hello server, assert /health, stop
 uv run poe smoke-notes      # assert routing, negotiation, ETag/304, static files, CORS
 uv run poe smoke-ws         # speak RFC 6455 raw: handshake, echo, fragments, ping/pong, close
@@ -393,6 +402,7 @@ uv run poe smoke-chat       # one chat message reaches sockets on BOTH workers, 
 uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, app tick, fan-out
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
 uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
+uv run poe smoke-wsgi       # PEP 3333 conformance against a bare WSGI callable
 uv run poe smoke-django     # assert a Django request/response cycle end to end
 uv run poe build-ffi        # emit the C-ABI shared library (libm0core.so/.dylib)
 uv run poe smoke-ffi        # load the shared library via ctypes, assert known vectors
