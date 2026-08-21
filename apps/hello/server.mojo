@@ -1,5 +1,5 @@
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
-from m0_http import AppConfig
+from m0_http import AppConfig, install_shutdown_signals
 
 
 @fieldwise_init
@@ -47,4 +47,11 @@ def main() raises:
     # The non-blocking loop multiplexes keep-alive connections instead of
     # serving one at a time — measurably better tail latency under
     # concurrent clients, and the same one-liner to call.
-    server.listen_and_serve_nonblocking(config.address(), handler)
+    # SIGTERM (docker stop) and SIGINT (Ctrl-C) now reach the loop's graceful
+    # drain instead of severing every open connection. -1 back means signal
+    # shutdown could not be armed, which is also the server's "no shutdown
+    # pipe" sentinel, so there is nothing to branch on here.
+    var shutdown_fd = install_shutdown_signals()
+    server.listen_and_serve_nonblocking(
+        config.address(), handler, shutdown_read_fd=shutdown_fd
+    )

@@ -4,6 +4,12 @@ Forks N child processes. Children return to the caller to run the
 normal server startup path. The parent supervises: respawns crashed
 children, propagates SIGTERM/SIGINT to all children.
 
+Propagation runs two ways, and both are needed. A signal sent to the process
+group — Ctrl-C in a terminal — reaches every worker directly. A signal sent to
+the supervisor alone — what `docker stop` does, since only PID 1 is signalled —
+reaches nobody but the parent, and used to leave the workers orphaned and still
+holding the port. `_on_supervisor_signal` closes that gap.
+
 Usage:
     var supervisor = WorkerSupervisor(num_workers)
     supervisor.fork_all()
@@ -17,7 +23,11 @@ from std.time import perf_counter_ns
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking,
     kill_process, was_signaled, term_signal, exit_code,
-    SIGTERM, SIGINT,
+    install_signal_handler, SIGTERM, SIGINT,
+)
+
+from .global_slot import (
+    publish_child_pids, child_pid_count, child_pid_at, MAX_TRACKED_CHILDREN,
 )
 
 
@@ -129,6 +139,58 @@ def shared_store(addr: Int, value: Int):
     slot[].store(Int64(value))
 
 
+def _on_supervisor_signal(sig: c_int):
+    """Signal handler for the supervising parent: pass the signal on.
+
+    Async-signal-safe: reads two immortal words per child and calls `kill(2)`,
+    which POSIX lists as safe. Everything else — reaping, deciding not to
+    respawn — happens back in `_supervise`, which needs no change at all,
+    because a worker that drained and exited 0 already retires cleanly there.
+
+    A PID of 0 means a vacant index, and is skipped: `kill(0, sig)` signals the
+    caller's whole process group, which from inside the parent would mean
+    signalling itself.
+    """
+    var count = child_pid_count()
+    for i in range(count):
+        var pid = child_pid_at(i)
+        if pid > 0:
+            _ = kill_process(pid, Int(sig))
+
+
+def exit_worker():
+    """End a forked worker's process without unwinding the Mojo runtime.
+
+    Call this where a worker's serve loop returns — `if config.workers > 1`,
+    after `serve_nonblocking`. **Returning from `main` in a forked child
+    crashes.** The runtime's teardown reaches into libdispatch, and libdispatch
+    is documented as unusable in a child that forked without exec'ing: the
+    worker dies with a SIGTRAP and a backtrace, and the supervisor sees a crash
+    and respawns it, so a graceful shutdown turns into a respawn loop.
+
+    Nothing hit this until workers learned to shut down gracefully — before
+    that a worker only ever ended by taking an uncaught signal, which never
+    reaches teardown. `process_exit` is `_exit(2)`: no atexit handlers, and no
+    flush of stdio buffers that were inherited from the parent, which is the
+    same reason the supervisor already uses it.
+    """
+    process_exit(0)
+
+
+def _forget_supervisor_signals():
+    """Restore default SIGTERM/SIGINT in a freshly forked child.
+
+    A respawned worker is forked *after* the parent armed itself, so it
+    inherits both the parent's handler and its list of sibling PIDs — one
+    SIGTERM and it would try to kill its own siblings. Every child clears the
+    inheritance before it returns from `fork_all`; the app then installs the
+    worker handler with `install_shutdown_signals`.
+    """
+    _ = install_signal_handler(SIGTERM, 0)
+    _ = install_signal_handler(SIGINT, 0)
+    publish_child_pids(List[Int]())
+
+
 # _try_respawn outcomes. A plain Bool cannot express the case that matters:
 # after the respawn fork() there are *two* processes inside _try_respawn, and
 # the child must unwind all the way out of fork_all while the parent keeps
@@ -185,11 +247,13 @@ struct WorkerSupervisor:
             if pid == 0:
                 # Child: record which index this process holds and return
                 self.worker_index = i
+                _forget_supervisor_signals()
                 print("[worker {}] pid={} starting".format(i, getpid()))
                 return
             self.child_pids.append(pid)
 
         # Parent process: supervise children
+        self._arm_signal_propagation()
         print("[parent] pid={} supervising {} workers".format(getpid(), self.num_workers))
         if self._supervise():
             # Respawned child: unwind to the caller's server startup path,
@@ -277,10 +341,12 @@ struct WorkerSupervisor:
             # The replacement takes over the dead worker's index — and with
             # it the dead worker's bus channel and shared slots.
             self.worker_index = respawn_index
+            _forget_supervisor_signals()
             print("[worker respawn {}] pid={} starting".format(respawn_index, getpid()))
             return _RESPAWN_CHILD
         if respawn_index >= 0 and respawn_index < len(self.child_pids):
             self.child_pids[respawn_index] = new_pid
+            publish_child_pids(self.child_pids)
         print("[parent] respawned worker {} as pid={}".format(respawn_index, new_pid))
         return _RESPAWN_PARENT
 
@@ -294,7 +360,32 @@ struct WorkerSupervisor:
             if self.child_pids[i] == pid:
                 self.child_pids[i] = -1
                 self._last_freed_index = i
+                publish_child_pids(self.child_pids)
                 return
+
+    def _arm_signal_propagation(self):
+        """Make a SIGTERM/SIGINT aimed at the parent alone reach the workers.
+
+        Publishes the child PIDs where `_on_supervisor_signal` can read them,
+        then verifies the publish round-tripped before installing anything. A
+        handler over a slot that does not work would swallow SIGTERM and leave
+        no way to stop the supervisor at all — strictly worse than the default
+        behaviour, which is what declining leaves in place. See
+        `src/global_slot.mojo` for when that can happen.
+        """
+        publish_child_pids(self.child_pids)
+        var expected = len(self.child_pids)
+        if expected > MAX_TRACKED_CHILDREN:
+            expected = MAX_TRACKED_CHILDREN
+        if child_pid_count() != expected:
+            print("[parent] signal propagation unavailable; workers will not"
+                  " be reaped if the supervisor alone is signalled")
+            return
+        var handler = _on_supervisor_signal
+        var handler_address = Pointer(to=handler).unsafe_bitcast[Int]()[]
+        _ = install_signal_handler(SIGTERM, handler_address)
+        _ = install_signal_handler(SIGINT, handler_address)
+        _ = handler
 
     def _kill_all(self, signal: Int):
         """Send a signal to all tracked child processes."""

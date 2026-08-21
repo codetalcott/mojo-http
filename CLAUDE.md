@@ -109,6 +109,7 @@ uv run poe build-all        # each package -> .mojoc, in dependency order
 uv run poe test-all         # builds first, then runs all tests
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
+uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers
 uv run poe test-sqlite      # needs libsqlite3 on the system
 uv run poe canary           # full suite against the Mojo nightly, then restore
 
@@ -266,6 +267,28 @@ Properties of the design, not defects to fix in passing:
   firing handler re-arms FIRST — on epoll the re-arm is also what clears
   the fired timerfd's readability, and skipping it is a level-triggered
   event storm.
+- **Graceful shutdown is opt-in, and armed after the fork.**
+  `install_shutdown_signals()` returns the fd to pass as `shutdown_read_fd`;
+  its handler writes one byte to that pipe and nothing else. Dispositions and
+  fds are both inherited across `fork()`, so a pre-fork install points every
+  worker at the supervisor's pipe, which nothing watches — each worker arms
+  itself once `fork_all()` returns, and the supervisor arms a different
+  handler (`kill` each child) from inside `fork_all`, which is what makes
+  `docker stop` on the supervisor alone reap the workers. **A forked worker
+  must end with `exit_worker()`, never by returning from `main`**: the
+  runtime's teardown calls into libdispatch, which is unusable after a fork
+  without exec, and the worker dies with a SIGTRAP the supervisor reads as a
+  crash. Nothing reached that path until workers learned to drain.
+- **Mojo has no global `var`, but it does have `pop.global_alloc`.** A POSIX
+  handler gets no user-data pointer, so `src/global_slot.mojo` reaches an
+  internal MLIR op for what C spells `static`. `@no_inline` on the accessors
+  is load-bearing (the op is `Pure`, so each inlined copy makes its own
+  global), the slots are private to m0-http so writer and reader share one
+  emission, and fork copies them rather than sharing — cross-process state is
+  `SharedAtomics`, not this. If the op ever stops working nothing is
+  installed and the default signal behaviour stands, because a handler over a
+  dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
+  happened and `test_lifecycle.mojo` asserts it.
 - Configuration is env vars, all `M0_`-prefixed: `M0_PORT`, `M0_BASE_URL`,
   `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
   `M0_APP_TICK_MS`.

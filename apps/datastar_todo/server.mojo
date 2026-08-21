@@ -43,7 +43,7 @@ from lightbug_http.header import Headers, Header, HeaderKey
 
 from m0_core.json_parse import parse_json_field
 
-from m0_http import AppConfig, Router
+from m0_http import AppConfig, Router, install_shutdown_signals
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
@@ -282,4 +282,7 @@ def main() raises:
     # SSE requires `listen_and_serve_nonblocking`, not `listen_and_serve`:
     # only the non-blocking event loop assigns `req.slot_id` and drains the
     # outbox; the plain accept loop would answer every stream open with 409.
-    server.listen_and_serve_nonblocking(config.address(), handler)
+    var shutdown_fd = install_shutdown_signals()
+    server.listen_and_serve_nonblocking(
+        config.address(), handler, shutdown_read_fd=shutdown_fd
+    )

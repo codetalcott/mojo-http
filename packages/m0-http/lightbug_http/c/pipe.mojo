@@ -22,6 +22,37 @@ def _close(fd: c_int) -> c_int:
     return external_call["close", c_int, c_int](fd)
 
 
+def close_fd(fd: Int):
+    """Close a descriptor, ignoring the result.
+
+    For unwinding a half-built pipe: the only failure close() reports is EBADF,
+    and a caller that is already abandoning the fd has nothing to do about it.
+
+    Args:
+        fd: The descriptor to close.
+    """
+    _ = _close(c_int(fd))
+
+
+comptime _OpaqueConst = Pointer[NoneType, ImmUntrackedOrigin]
+"""write(2) does not modify its buffer, so the source pointer is immutable.
+Origins are erased in the C signature, so this still matches the declaration
+the stdlib emits for this symbol."""
+
+comptime _NUDGE_BYTE = "!"
+"""The byte `notify` writes. Its value is arbitrary — the loop only reads
+"this fd became readable" — but its *storage* is not: see `notify`."""
+
+
+def _write(fd: Int, buf: _OpaqueConst, count: Int) -> Int:
+    """Raw write() syscall.
+
+    The argument types match the declaration the stdlib already emits for this
+    symbol; a differently-shaped one is rejected as a conflicting signature.
+    """
+    return external_call["write", Int, Int, _OpaqueConst, Int](fd, buf, count)
+
+
 struct ShutdownHandle(Movable):
     """Write end of a graceful-shutdown pipe.
 
@@ -38,11 +69,42 @@ struct ShutdownHandle(Movable):
     def signal(self):
         """Trigger graceful shutdown by closing the write end of the pipe.
 
-        Safe to call at any time — including from a POSIX signal handler, since
-        close() is async-signal-safe per POSIX.1-2017.  The event loop will
-        detect EV_EOF on the read end and perform a clean exit.
+        The event loop sees EV_EOF on the read end and exits cleanly. This is
+        the programmatic path — a `/shutdown` endpoint, a test. **Signal
+        handlers must use `notify` instead**: close() is async-signal-safe, but
+        it is not repeat-safe, and see `notify` for why that matters.
         """
         _ = _close(c_int(self.fd))
+
+    def notify(self):
+        """Trigger graceful shutdown by writing one byte to the pipe.
+
+        What a signal handler calls. Both write() and close() are
+        async-signal-safe, but only write() is safe to repeat: SIGTERM
+        followed by SIGINT would close the same fd twice, and in between the
+        kernel is free to hand that number to a freshly accepted connection —
+        so the second close would drop a live client instead. Writing is
+        idempotent, and the event loop treats "readable" and "EOF" on this fd
+        identically.
+
+        A full pipe (EAGAIN) or a closed read end (EPIPE) is ignored: the
+        first means a shutdown is already queued, the second that the loop is
+        already gone.
+        """
+        # The byte is sourced from .rodata, not from a local. A `var byte =
+        # UInt8(1)` here compiles and writes A byte, but the address has to be
+        # handed to an `external_call` as an untracked pointer, which severs
+        # the alias information — the store is then dead-coded and the pipe
+        # receives whatever the stack slot happened to hold. Verified: it wrote
+        # 0x00. A literal's pointer is immortal, always initialised, and needs
+        # no allocation, which a signal handler could not do anyway.
+        _ = _write(
+            self.fd,
+            _NUDGE_BYTE.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
+                ImmUntrackedOrigin
+            ](),
+            1,
+        )
 
 
 def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
