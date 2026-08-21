@@ -271,6 +271,59 @@ echo
 echo "smoke-hello OK"
 """
 
+# Two ways a server gets asked to stop, and both used to end the same way —
+# connections severed mid-response.
+#
+# Phase 2 is the one that bit in practice. `docker stop` signals PID 1 and
+# nothing else, so before the supervisor passed the signal on, its workers
+# were left orphaned and still holding the port. That is why smoke-counter and
+# smoke-chat have to scrape worker pids out of their logs to reap them.
+[tool.poe.tasks.smoke-shutdown]
+help = "SIGTERM drains the loop, and reaches the workers when only the supervisor is signalled"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > shutdown1.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health   || { echo '=== shutdown1.log ==='; cat shutdown1.log; exit 1; }
+# 0 is the drain path running to completion. 143 is 128+SIGTERM: the default
+# action took the process down where it stood, which is the old behaviour.
+kill -TERM $pid
+rc=0
+wait $pid || rc=$?
+[ "$rc" -eq 0 ]   || { echo "hello exited $rc, want 0 (143 means the signal killed it outright)"; cat shutdown1.log; exit 1; }
+trap - EXIT
+
+M0_WORKERS=2 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/   apps/datastar_counter/server.mojo > shutdown2.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health   || { echo '=== shutdown2.log ==='; cat shutdown2.log; exit 1; }
+workers=''
+for p in $(grep -oE 'pid=[0-9]+' shutdown2.log | cut -d= -f2 | sort -u); do
+  [ "$p" != "$pid" ] && workers="$workers $p"
+done
+[ -n "$workers" ] || { echo 'no worker pids in the log'; cat shutdown2.log; exit 1; }
+trap 'kill $pid $workers 2>/dev/null' EXIT
+
+# The supervisor ALONE. Nothing signals the workers directly.
+kill -TERM $pid
+wait $pid 2>/dev/null
+alive='x'
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  alive=''
+  for w in $workers; do kill -0 "$w" 2>/dev/null && alive="$alive $w"; done
+  [ -z "$alive" ] && break
+  sleep 1
+done
+[ -z "$alive" ]   || { echo "orphaned workers after signalling the supervisor:$alive"; cat shutdown2.log; exit 1; }
+# A worker that drained but then fell off the end of main would die in the Mojo
+# runtime's teardown, and the supervisor would read that as a crash.
+grep -q 'exited cleanly' shutdown2.log   || { echo 'no worker reported a clean exit'; cat shutdown2.log; exit 1; }
+grep -q 'respawn' shutdown2.log && { echo 'a worker was respawned during shutdown'; cat shutdown2.log; exit 1; }
+trap - EXIT
+rm -f shutdown1.log shutdown2.log
+echo "smoke-shutdown OK"
+"""
+
 # The probe speaks RFC 6455 by hand (stdlib sockets, no websocket library),
 # so this smoke proves the server against the wire format itself: handshake
 # with the accept key verified, masked echo round trip, fragmented message

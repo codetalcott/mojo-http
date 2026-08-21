@@ -110,6 +110,21 @@ lightbug_http
         143 unique compiler warnings. Nothing imports the enclosing http
         package itself, so the star-import that pulls common_response in
         is not re-entered and no cycle is introduced
+      - c/process.mojo gained signal(2) as install_signal_handler, next to
+        the kill/SIGTERM helpers already there. sigaction(2) was avoided
+        deliberately: struct sigaction has no portable layout (16 bytes on
+        macOS, 152 on glibc) and nothing here needs a flag signal(2) cannot
+        reach. waitpid_blocking now retries on EINTR rather than raising —
+        reachable for the first time now that the supervisor catches SIGTERM
+      - c/pipe.mojo gained ShutdownHandle.notify(), a one-byte write(2) for
+        signal handlers to call, and close_fd() for unwinding a half-built
+        pipe. notify() exists because signal() closes the write end, and a
+        close is not safe to repeat: a second signal would close an fd the
+        kernel may have already recycled onto a live connection. The byte it
+        writes is sourced from .rodata, not a local — the buffer address
+        reaches external_call as an untracked pointer, which severs the alias
+        information and lets the store to a local be dead-coded (verified: it
+        wrote an uninitialised 0x00)
       - Remaining Mojo 1.0 deprecations cleared across the fork: positional
         pointer indexing `p[i]` -> `p[unsafe_offset=i]` (18 sites in
         c/epoll.mojo, c/epoll_backend.mojo and c/kqueue_backend.mojo),

@@ -39,6 +39,7 @@ from m0_http import (
     apply_cors_headers,
     compute_etag,
     etag_matches,
+    install_shutdown_signals,
     parse_accept,
     StaticFiles,
 )
@@ -414,4 +415,7 @@ def main() raises:
     print("Notes API on " + config.base_url)
     var server = Server(config.server_config())
     var handler = NotesHandler()
-    server.listen_and_serve_nonblocking(config.address(), handler)
+    var shutdown_fd = install_shutdown_signals()
+    server.listen_and_serve_nonblocking(
+        config.address(), handler, shutdown_read_fd=shutdown_fd
+    )

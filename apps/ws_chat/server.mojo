@@ -29,7 +29,9 @@ from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import websocket_upgrade, encode_ws_frame, WS_OP_TEXT
 
-from m0_http import AppConfig, WorkerSupervisor, WSHub
+from m0_http import (
+    AppConfig, WorkerSupervisor, WSHub, install_shutdown_signals, exit_worker,
+)
 from m0_http.multiworker import SharedAtomics
 
 from ws_chat.page import render_page
@@ -151,4 +153,10 @@ def main() raises:
     var server = Server(config.server_config(), config.address())
     # WebSockets need the non-blocking event loop: it assigns req.slot_id,
     # parses frames, and drains the outbox.
-    server.serve_nonblocking(listener, handler, bus_read_fd=bus_read_fd)
+    # After fork_all — each worker arms its own pipe. See datastar_counter.
+    var shutdown_fd = install_shutdown_signals()
+    server.serve_nonblocking(
+        listener, handler, shutdown_read_fd=shutdown_fd, bus_read_fd=bus_read_fd
+    )
+    if config.workers > 1:
+        exit_worker()

@@ -30,13 +30,16 @@ from .sse import (
     sse_response,
     SSE_CONTENT_TYPE,
 )
-from .multiworker import WorkerSupervisor
+from .multiworker import WorkerSupervisor, exit_worker
 from .ws import WSHub
 from .cors import CorsConfig, apply_cors_headers
 from .auth import check_api_key
 from .request_context import RequestContext
 from .log import LogEntry, log_json, log_access
-from .signal import create_shutdown_pipe, ShutdownHandle
+from .signal import (
+    create_shutdown_pipe, ShutdownHandle,
+    install_shutdown_signals, shutdown_signals_active,
+)
 from .health import HealthRegistry
 from .config import AppConfig
 from .client import Client

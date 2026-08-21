@@ -37,7 +37,7 @@ from std.os import getenv
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse
 from lightbug_http.connection import ListenConfig
 
-from m0_http import WorkerSupervisor
+from m0_http import WorkerSupervisor, install_shutdown_signals, exit_worker
 from m0_http.config import AppConfig
 from m0_wsgi import WSGIApp
 
@@ -112,4 +112,8 @@ def main() raises:
     # in the accept queue" when the close-mode latency tail was diagnosed —
     # keep it wired.
     var server = Server(config.server_config())
-    server.serve_nonblocking(listener, handler)
+    # After fork_all — each worker arms its own pipe. See datastar_counter.
+    var shutdown_fd = install_shutdown_signals()
+    server.serve_nonblocking(listener, handler, shutdown_read_fd=shutdown_fd)
+    if config.workers > 1:
+        exit_worker()

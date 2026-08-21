@@ -21,7 +21,7 @@ Talk to it from a browser console:
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK, NotFound
 from lightbug_http.websocket import websocket_upgrade, encode_ws_frame
 
-from m0_http import AppConfig
+from m0_http import AppConfig, install_shutdown_signals
 
 
 comptime MAX_SLOTS = 1024
@@ -125,4 +125,7 @@ def main() raises:
     var handler = EchoHandler()
     # Upgrades need the non-blocking loop: it assigns req.slot_id and owns
     # the frame parsing; the plain accept loop knows nothing of WebSockets.
-    server.listen_and_serve_nonblocking(config.address(), handler)
+    var shutdown_fd = install_shutdown_signals()
+    server.listen_and_serve_nonblocking(
+        config.address(), handler, shutdown_read_fd=shutdown_fd
+    )

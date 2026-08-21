@@ -36,7 +36,9 @@ from lightbug_http.c.process import getpid
 from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
 
-from m0_http import AppConfig, WorkerSupervisor
+from m0_http import (
+    AppConfig, WorkerSupervisor, install_shutdown_signals, exit_worker,
+)
 from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
 
 from m0_datastar.stream import DatastarStream
@@ -228,4 +230,14 @@ def main() raises:
     # SSE requires the non-blocking event loop: only it assigns `req.slot_id`
     # and drains the outbox; the plain accept loop would answer every stream
     # open with 409.
-    server.serve_nonblocking(listener, handler, bus_read_fd=bus_read_fd)
+    # After fork_all, so each worker arms its own pipe: dispositions and fds
+    # are inherited, and a pre-fork install would point every worker at the
+    # supervisor's pipe, which nothing is watching. The supervisor arms itself
+    # separately, so signalling it alone still reaps the workers.
+    var shutdown_fd = install_shutdown_signals()
+    server.serve_nonblocking(
+        listener, handler, shutdown_read_fd=shutdown_fd, bus_read_fd=bus_read_fd
+    )
+    if config.workers > 1:
+        # A drained worker must not fall off the end of main — see exit_worker.
+        exit_worker()

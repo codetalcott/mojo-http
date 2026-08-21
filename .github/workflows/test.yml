@@ -111,6 +111,11 @@ jobs:
         run: uv run poe smoke-ffi
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
+      # Both stop paths: SIGTERM draining a single process, and a SIGTERM aimed
+      # at the supervisor alone reaching its workers — which is what `docker
+      # stop` does, and what used to leave them orphaned on the port.
+      - name: Smoke test graceful shutdown
+        run: uv run poe smoke-shutdown
       # The one deadline with no event to hang itself on: a client that
       # connects and says nothing is never readable. Also pins the inverse —
       # a keep-alive gap past the header timeout must NOT be answered 408.
@@ -155,6 +160,8 @@ jobs:
           name: server-logs-${{ matrix.os }}
           path: |
             hello.log
+            shutdown1.log
+            shutdown2.log
             notes.log
             counter.log
             todo.log

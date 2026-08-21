@@ -72,6 +72,15 @@ def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
     # `unsafe_alloc` does not exist in Mojo 1.0. Revisit when either lands.
     var status = alloc[c_int](count=1)
     var result = _waitpid(c_int(pid), status, c_int(0))
+    # EINTR is not a failure: a caught signal interrupted the wait and there is
+    # still a child to reap. Only reachable since the supervisor started
+    # catching SIGTERM, and only on a platform whose signal(2) does not set
+    # SA_RESTART — but a supervisor that died with "errno: 4" on shutdown
+    # would be a maddening thing to debug.
+    var err = get_errno()
+    while result == -1 and err == err.EINTR:
+        result = _waitpid(c_int(pid), status, c_int(0))
+        err = get_errno()
     if result == -1:
         var errno = get_errno()
         status.unsafe_free()
@@ -100,6 +109,9 @@ def getpid() -> Int:
 comptime SIGTERM = 15
 comptime SIGINT = 2
 
+comptime _SIG_ERR = -1
+"""What signal(2) returns when it refuses — SIGKILL and SIGSTOP always do."""
+
 
 def _kill(pid: c_int, sig: c_int) -> c_int:
     """Raw kill() syscall."""
@@ -124,3 +136,31 @@ def term_signal(status: Int) -> Int:
 def exit_code(status: Int) -> Int:
     """Extract the exit code from a waitpid status (valid only if not signaled)."""
     return (status >> 8) & 0xFF
+
+
+def _raw_signal(sig: c_int, handler: Int) -> Int:
+    """Raw signal() syscall. `handler` is a function address, or SIG_DFL/SIG_IGN."""
+    return external_call["signal", Int, c_int, Int](sig, handler)
+
+
+def install_signal_handler(sig: Int, handler_address: Int) -> Bool:
+    """Install a handler for `sig`, returning True if it took.
+
+    Uses `signal(2)` rather than `sigaction(2)` deliberately: `struct
+    sigaction` has no portable layout (16 bytes on macOS, 152 on glibc, with
+    `sa_mask` in different places), and nothing here needs a flag it cannot
+    reach. `signal` gives BSD semantics on both platforms — the handler stays
+    installed across deliveries, and restartable syscalls resume rather than
+    failing with EINTR.
+
+    Args:
+        sig: Signal number, e.g. `SIGTERM`.
+        handler_address: Address of a `def f(sig: c_int)` with no captures.
+            Take it with `Pointer(to=handler_value).unsafe_bitcast[Int]()[]`,
+            and keep `handler_value` alive across the call.
+
+    Returns:
+        True on success; False if the kernel refused (SIG_ERR), which is what
+        SIGKILL and SIGSTOP always answer.
+    """
+    return _raw_signal(c_int(sig), handler_address) != _SIG_ERR
