@@ -132,6 +132,13 @@ def test_workers_below_one_is_an_error() raises:
     assert_equal(_parse([String("m.wsgi"), String("--workers"), String("4")]).workers, 4)
 
 
+def test_threads_flag_and_its_floor() raises:
+    assert_equal(_parse([String("m.wsgi")]).threads, 1)
+    assert_equal(_parse([String("m.wsgi"), String("--threads"), String("4")]).threads, 4)
+    assert_true(_fails([String("m.wsgi"), String("--threads"), String("0")]))
+    assert_true(_fails([String("m.wsgi"), String("--threads"), String("four")]))
+
+
 def test_unknown_option_is_an_error() raises:
     assert_true(_fails([String("m.wsgi"), String("--bogus")]))
     assert_true(_fails([String("m.wsgi"), String("-x")]))
@@ -258,7 +265,7 @@ def test_parse_int_is_strict() raises:
 
 def _clear_env():
     for name in [
-        String("M0_HOST"), String("M0_PORT"), String("M0_WORKERS"),
+        String("M0_HOST"), String("M0_PORT"), String("M0_WORKERS"), String("M0_THREADS"),
         String("M0_ACCESS_LOG"), String("M0_SSE_HEARTBEAT_MS"), String("M0_APP_TICK_MS"),
     ]:
         _ = setenv(name, "", True)
@@ -302,6 +309,8 @@ def test_from_env_reads_host_port_workers() raises:
     assert_equal(seed.host, "127.0.0.1")
     assert_equal(seed.port, 8123)
     assert_equal(seed.workers, 2)
+    _ = setenv("M0_THREADS", "3", True)
+    assert_equal(ServeOptions.from_env().threads, 3)
     # And a flag still wins over it.
     var opts = parse_args([String("m.wsgi"), String("--port"), String("9")], seed)
     assert_equal(opts.port, 9)
@@ -321,7 +330,7 @@ def test_from_env_default_port_is_8000() raises:
 def test_usage_mentions_every_flag() raises:
     var text = usage()
     for flag in [
-        String("--host"), String("--port"), String("--workers"), String("--app-dir"),
+        String("--host"), String("--port"), String("--workers"), String("--threads"), String("--app-dir"),
         String("--static"), String("--static-cache-control"), String("--access-log"),
         String("--max-body"), String("--metrics"), String("--help"), String("--version"),
         String("-h"), String("-V"), String("MODULE[:ATTR]"),

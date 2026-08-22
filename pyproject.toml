@@ -1325,6 +1325,100 @@ wait $pid 2>/dev/null
 echo "smoke-serve OK"
 """
 
+# The threaded execution mode. Phase 1 runs everywhere and pins the guard:
+# on an interpreter with the GIL enabled (the pinned 3.13, every CI runner)
+# M0_THREADS>1 must refuse to start — exit 78, a sentence that names the
+# requirement — and never warn-and-run, because a thread pool under the GIL
+# is strictly worse than prefork and would mislead every benchmark. Phase 2
+# runs only where `sys._is_gil_enabled()` is False (the canary's swapped
+# 3.14t venv) and proves the mode serves: the conformance routes, the
+# reentrant sub-request (which another thread now answers), connections
+# spread across threads, and a clean SIGTERM with every thread reporting.
+[tool.poe.tasks.smoke-threads]
+help = "Threaded mode: refuses a GIL-enabled interpreter (exit 78); on free-threaded CPython serves across threads and drains cleanly"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8096"
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -f threads.log
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f threads.log ]; then echo '=== threads.log ==='; cat threads.log; fi
+  exit 1
+}
+gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
+
+# Phase 1: the guard, and the conflict. Both must be quick — a refusal that
+# hangs is the bug this phase exists for.
+if [ "$gil_off" != "1" ]; then
+  M0_THREADS=2 "$srv" $SPEC > threads.log 2>&1 &
+  pid=$!
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 $pid 2>/dev/null || break
+    sleep 1
+  done
+  kill -0 $pid 2>/dev/null && fail 'M0_THREADS=2 did not decide within 10s'
+  wait $pid; rc=$?
+  [ "$rc" = "78" ] || fail "M0_THREADS=2 on a GIL build: exit $rc, want 78"
+  grep -q 'requires free-threaded CPython' threads.log || fail 'refusal does not name the requirement'
+  grep -q 'M0_WORKERS' threads.log || fail 'refusal does not point at the prefork alternative'
+fi
+"$srv" $SPEC --threads 2 --workers 2 > threads.log 2>&1; rc=$?
+[ "$rc" = "2" ] || fail "--threads 2 --workers 2: exit $rc, want 2"
+grep -q 'mutually exclusive' threads.log || fail 'the conflict message is missing'
+
+if [ "$gil_off" != "1" ]; then
+  echo "smoke-threads OK (phase 1: the guard holds on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
+  exit 0
+fi
+
+# Phase 2: free-threaded CPython. Four loops, one process, one interpreter.
+"$srv" $SPEC --threads 4 > threads.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8096/ | grep -q 'bare wsgi app' \\
+  || fail 'the threaded server never became healthy'
+grep -q 'threaded: 4 loops' threads.log || fail 'startup did not report 4 loops'
+# The conformance routes the bare app carries, through a threaded loop.
+curl -s http://127.0.0.1:8096/write | grep -q 'written-body' || fail 'write() route broke under threads'
+# /reentrant issues a request back into this server from inside a view:
+# under prefork a second WORKER answers it; here a second THREAD does. The
+# url is percent-encoded as smoke-wsgi does: the URI parser reads a bare
+# `://` anywhere in the target as a scheme and answers 400.
+got=$(curl -s --max-time 20 'http://127.0.0.1:8096/reentrant?url=http%3A%2F%2F127.0.0.1%3A8096')
+[ "$got" = "reentrant: subview" ] || fail "/reentrant did not get an answer from another thread: got '$got'"
+# Spread: 16 keep-alive connections opened in a burst must land on >= 2
+# threads (X-Thread is the owning loop's index).
+python3 - <<'PYCHK'
+import http.client, sys, threading
+seen = set(); lock = threading.Lock(); errors = []
+def one():
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", 8096, timeout=15)
+        c.request("GET", "/"); r = c.getresponse(); r.read()
+        t = r.getheader("x-thread")
+        with lock: seen.add(t)
+        c.close()
+    except Exception as e:
+        with lock: errors.append(repr(e))
+ts = [threading.Thread(target=one) for _ in range(16)]
+[t.start() for t in ts]; [t.join() for t in ts]
+if errors: print("errors:", errors[:3]); sys.exit(1)
+print("threads seen:", sorted(seen))
+if len(seen) < 2: sys.exit(1)
+PYCHK
+[ $? = 0 ] || fail 'connections did not spread across threads (or a request failed)'
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --threads 4: exit $rc, want 0"
+n=$(grep -c 'exited cleanly' threads.log)
+[ "$n" = "4" ] || fail "expected 4 'exited cleanly' lines, saw $n"
+echo "smoke-threads OK (phase 2: 4 threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
+"""
+
 [tool.poe.tasks.serve-flask]
 help = "Serve the Flask example on :8087 with m0serve (needs the flask dev dependency)"
 deps = ["build-serve"]
@@ -2100,6 +2194,12 @@ echo 'C3 smoke-django-realtime (hybrid SSE + numbered ids under free-threading):
 phase=C4-smoke-django-realtime-ws
 poe smoke-django-realtime-ws >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): Django-gated WebSocket holds (see py-canary.log)"; exit 1; }
 echo 'C4 smoke-django-realtime-ws (WebSocket holds + ctypes atomic under free-threading): OK' >> "$report"
+
+# The mode free-threading exists for: N loops on N threads, one interpreter.
+# Phase 2 of smoke-threads only runs here, where the GIL is genuinely off.
+phase=D-smoke-threads
+poe smoke-threads >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the threaded execution mode (see py-canary.log)"; exit 1; }
+echo "D smoke-threads ($(grep -o 'threads seen: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 echo ''
 echo "PY-CANARY PASSED against $(.venv/bin/python3 --version 2>&1) (free-threaded)"

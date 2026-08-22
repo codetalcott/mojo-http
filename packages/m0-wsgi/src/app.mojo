@@ -19,14 +19,18 @@ struct WSGIApp(Movable):
         def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
             return self.app.serve(req)
 
-    **Construct this after any `fork()`, never before.** Forking a process
-    that already holds a live CPython interpreter is not safe, so a
-    `WorkerSupervisor` must run first and each child build its own `WSGIApp`.
+    **Under prefork, construct this after any `fork()`, never before.**
+    Forking a process that already holds a live CPython interpreter is not
+    safe, so a `WorkerSupervisor` must run first and each child build its own
+    `WSGIApp`. **Under the threaded mode, construct one per serving thread,
+    on that thread**, after the main thread has initialized the interpreter
+    and imported the module — `m0_wsgi.threaded` is that choreography.
 
-    **The application runs on the event loop thread.** `HTTPService.func` is
-    called synchronously, so a slow view blocks every other connection in this
-    process. Concurrency comes from running more processes, not more threads —
-    which is also why `wsgi.multithread` is False.
+    **The application runs on its event loop's thread.** `HTTPService.func`
+    is called synchronously, so a slow view blocks every other connection
+    that loop holds. Concurrency comes from `M0_WORKERS` processes or, on
+    free-threaded CPython, `M0_THREADS` threads — each with its own loop,
+    handler and bridge; `wsgi.multithread` reports which.
     """
 
     var _bridge: PyBridge
@@ -40,6 +44,7 @@ struct WSGIApp(Movable):
         attribute: String = "application",
         project_path: String = "",
         multiprocess: Bool = False,
+        multithread: Bool = False,
     ) raises:
         """Import `module_name` and take its WSGI callable.
 
@@ -54,6 +59,8 @@ struct WSGIApp(Movable):
                 Needed when the project is not already installed.
             multiprocess: Value for `wsgi.multiprocess`. True when more than
                 one worker process is serving.
+            multithread: Value for `wsgi.multithread`. True when this app is
+                one of several serving threads in one process.
         """
         self._bridge = PyBridge()
         if project_path:
@@ -63,7 +70,9 @@ struct WSGIApp(Movable):
         # live on the Python side of the bridge from here on — per-request
         # crossings must not carry Python objects (see bridge.mojo).
         self._bridge.set_app(module.__getattr__(attribute))
-        self._bridge.set_base(server_name, server_port, multiprocess)
+        self._bridge.set_base(
+            server_name, server_port, multiprocess, multithread
+        )
 
     def __init__(out self, *, deinit move: Self):
         self._bridge = move._bridge^

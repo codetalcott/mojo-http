@@ -228,10 +228,25 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   0.7-0.8x — a confirmed per-object-lock mechanism, and the design lesson:
   thread-local state scales, hot shared objects anti-scale. `poe
   py-thread-probe-stdpy` then showed the stdlib's own `CPython` bindings
-  carry the attach/detach discipline with no `-lpython` on the link line. A
-  threaded m0-wsgi (replacing `M0_WORKERS` forking, and with it the
-  fork-safety hazards) is now bounded engineering: the bridge's per-process
-  singletons must become per-thread.
+  carry the attach/detach discipline with no `-lpython` on the link line.
+  **The threaded mode shipped as Stage A — loop-per-thread**: `m0serve
+  --threads N` runs N event loops on N pthreads in one process
+  (`m0_wsgi.threaded`; `m0_http.threads` is the pthread substrate), each
+  with its own handler and bridge, the event loop untouched, a GIL-enabled
+  interpreter refused with exit 78. It retires the fork-after-init hazards
+  and the per-worker RSS for anyone who opts in. **Stage B, recorded:** per-
+  request balancing and slow-view isolation need an acceptor loop feeding a
+  Python thread pool with deferred responses — `HTTPResponse.deferred` (the
+  `sse_streaming` precedent), the request parked in
+  `ConnectionProvision.request` (a field that exists and is dead), a
+  slot-generation array so a late completion for a recycled slot is dropped,
+  `PROCESSING` surviving a loop pass (the idle/header sweeps must skip it),
+  a `SOCK_DGRAM` socketpair as the work queue (kernel-locked, message
+  boundaries) and another as the completion channel registered like
+  `bus_read_fd`, workers blocking in `recv` *detached* and attaching per job,
+  completion re-entering the existing `RESPONDING` write path exactly as the
+  outbox drain does. ~8 touchpoints in `event_loop.mojo`; gated on Stage A's
+  benchmark row showing the pinned keep-alive p99 as the remaining gap.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
@@ -256,6 +271,16 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.
 
 ## Known issues
+
+- **A bare `://` anywhere in a request target is read as a scheme**, and the
+  request answers `400` before reaching the application. `URI.parse` decides
+  "this is an absolute URI" by searching the whole string for `://`, so a
+  query parameter carrying an unencoded URL (`/go?url=http://x`) is
+  misparsed. Clients that percent-encode — every browser form, every
+  `urlencode` — never hit it; `smoke-wsgi` and `smoke-threads` encode their
+  `/reentrant?url=` for this reason. The fix is to look for `://` only
+  before the first `/` or `?`; recorded here because it is in the fork's
+  parser, where a change wants its own tests.
 
 - Negotiation covers `Accept`, `Accept-Encoding` (`negotiate_encoding` —
   codec-agnostic, for callers with precompressed variants; the framework

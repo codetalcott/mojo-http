@@ -282,22 +282,38 @@ needs **no libpython on the link line** — it runs under plain `mojo run`,
 prints from its pthreads, and uses a parametric `def` as the start routine,
 which is exactly the shape a threaded server spawns.
 
-The canary and the probes together do **not** make m0-wsgi multithreaded; they
-bound the design work. What remains is engineering, not discovery: the
-bridge's per-process singletons (one transfer bytearray, one `_body` global,
-"state attached to main forever") must become per-thread, and shared Python
-state above the bridge (Django's own caches — the contention Sam Gross is
-patching upstream) is the scaling risk to measure. One rule to carry into
-that design: a thread that blocks on a raw OS mutex *while attached to the
-interpreter* stalls every thread's stop-the-world pauses — blocking waits on
-the Mojo side must either detach first or use `PyMutex` (public C API since
-3.14), which parks cooperatively. The prize is unchanged:
-threads would eventually *replace* `M0_WORKERS` forking — one process, shared
-memory, no per-worker RSS duplication, no bus needed for fan-out, and the
-entire class of fork-after-init hazards (the macOS `_scproxy`/objc abort,
-`exit_worker`, fork-before-first-Python-call) simply disappears. That is the
-"WSGI thread pool" future; the canary plus this probe are its go/no-go gate,
-and both currently say go.
+**The threaded mode exists: `m0serve --threads N` / `M0_THREADS=N`.** Stage
+A of the design is loop-per-thread — Granian's free-threaded shape, "workers
+are threads instead of separated processes" — and it is the shape that
+needed *no change to the event loop*: every per-slot structure was already a
+local of `run_event_loop`, so N threads calling it get N disjoint loops, and
+each thread's own handler means its own `WSGIApp`, bridge and shim namespace,
+which made the bridge's per-process singletons per-thread without touching
+the bridge. `m0_wsgi.threaded` is the choreography the probes specified: main
+initializes and imports before spawning, then detaches; every thread attaches
+once, serves, and releases; `DetachingBackend` wraps the loop's one blocking
+wait (the rule above, applied); a GIL-enabled interpreter refuses to start
+with exit 78. Measured on 3.14.7t: four loops serve the conformance routes,
+a request arriving while one thread sleeps in a view is answered by another
+in under a millisecond, `/reentrant`'s call back into the server is answered
+by a second *thread* instead of a second worker, and SIGTERM drains all four
+cleanly. `smoke-threads` pins the guard on every CI runner and the mode on
+the weekly canary (phase D).
+
+What Stage A does **not** buy, stated plainly: per-request balancing. A
+keep-alive connection stays pinned to the loop that accepted it, exactly as
+under prefork, so the keep-alive p99 tail in
+[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) is unchanged by it. That is Stage
+B — an acceptor loop feeding a Python thread pool with deferred responses,
+Granian's inner `--blocking-threads` shape — recorded in
+[ROADMAP.md](ROADMAP.md) with its design, and gated on Stage A's benchmark
+row showing that tail as the remaining gap. Shared Python state above the
+bridge (Django's own caches — the contention Sam Gross is patching upstream)
+is the scaling risk that row measures. The prize Stage A already pays out:
+one process, shared memory, no per-worker RSS duplication, no bus needed for
+in-process fan-out, and the entire class of fork-after-init hazards (the
+macOS `_scproxy`/objc abort, `exit_worker`, fork-before-first-Python-call)
+gone for anyone who opts in.
 
 ## 6. Verdict
 

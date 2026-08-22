@@ -24,21 +24,74 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse
 from m0_http import StaticFiles
 
 from .app import WSGIApp
+from .cli import ServeOptions
+from .threaded import ThreadHandler, ThreadContext
 
 
-struct WSGIHandler(HTTPService):
-    """Serve a WSGI application, with optional static mounts in front of it."""
+struct WSGIHandler(ThreadHandler):
+    """Serve a WSGI application, with optional static mounts in front of it.
+
+    Also a `ThreadHandler`: under `--threads N` each serving thread calls
+    `make(ctx)` to build its own instance — and its own `WSGIApp` and bridge
+    — on that thread, from the `ServeOptions` whose address is `ctx.user`.
+    """
 
     var app: WSGIApp
     var mounts: List[StaticFiles]
+    var thread_index: Int
+    """Which serving thread owns this handler; -1 under prefork or alone.
+
+    Reported as `x-thread` on every response when >= 0 — the `X-Worker`
+    precedent, and what `smoke-threads` reads to prove connections spread.
+    """
 
     def __init__(out self, var app: WSGIApp):
         self.app = app^
         self.mounts = List[StaticFiles]()
+        self.thread_index = -1
 
     def __init__(out self, var app: WSGIApp, var mounts: List[StaticFiles]):
         self.app = app^
         self.mounts = mounts^
+        self.thread_index = -1
+
+    @staticmethod
+    def mounts_for(opts: ServeOptions) -> List[StaticFiles]:
+        """The static mounts `opts` names, in order."""
+        var mounts = List[StaticFiles]()
+        for i in range(len(opts.static_prefixes)):
+            mounts.append(
+                StaticFiles(
+                    opts.static_dirs[i], opts.static_prefixes[i],
+                    cache_control=opts.static_cache_control,
+                )
+            )
+        return mounts^
+
+    @staticmethod
+    def make(ctx: ThreadContext) raises -> Self:
+        """Build this thread's handler from the `ServeOptions` at `ctx.user`.
+
+        The module was imported on the main thread before any thread
+        existed, so `WSGIApp` here is a `sys.modules` hit plus a fresh shim
+        namespace; `project_path` is left empty for that reason (the path is
+        already on `sys.path`, and appending it again per thread would only
+        grow the list).
+        """
+        var opts = Pointer[ServeOptions, MutUntrackedOrigin](
+            unsafe_from_address=ctx.user
+        )
+        var app = WSGIApp(
+            opts[].module,
+            server_name=opts[].host,
+            server_port=String(opts[].port),
+            attribute=opts[].attribute,
+            multiprocess=False,
+            multithread=True,
+        )
+        var handler = Self(app^, Self.mounts_for(opts[]))
+        handler.thread_index = ctx.index
+        return handler^
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         for i in range(len(self.mounts)):
@@ -53,7 +106,8 @@ struct WSGIHandler(HTTPService):
     def after_response(
         mut self, req_method: String, req_path: String, mut resp: HTTPResponse
     ):
-        pass
+        if self.thread_index >= 0:
+            resp.headers["x-thread"] = String(self.thread_index)
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return List[UInt8]()
