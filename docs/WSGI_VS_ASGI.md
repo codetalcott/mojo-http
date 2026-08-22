@@ -100,7 +100,8 @@ response headers, and publishes through a control channel. Fastly runs this as
 a paid service; Centrifugo and uWSGI's offload engine are the same shape. Here
 the "proxy" is the server the app is already embedded in, so the whole
 pattern collapses into one process. `apps/django_realtime` is the working
-demo; `poe smoke-django-realtime` pins it in CI.
+demo; `poe smoke-django-realtime` and `poe smoke-django-realtime-ws` pin it
+in CI, SSE and WebSockets respectively.
 
 **Subscribing** is an ordinary Django view answering with two headers:
 
@@ -111,10 +112,10 @@ response["M0-Channel"] = channel
 ```
 
 The view runs auth, sessions, anything — it is a normal request to Django.
-`take_stream_hold` (`packages/m0-wsgi/src/hold.mojo`) consumes the
-instruction headers from the returned response, converts it into an SSE hold
-(the view's body becomes the head of the stream), and the handler subscribes
-the connection's slot to the channel. Under a server that has never heard of
+`take_hold` (`packages/m0-wsgi/src/hold.mojo`) consumes the instruction
+headers from the returned response, converts it into an SSE hold (the view's
+body becomes the head of the stream), and the handler subscribes the
+connection's slot to the channel. Under a server that has never heard of
 these headers, the same view degrades to a short buffered response — the GRIP
 property. The headers are M0-prefixed because this is GRIP-shaped, not
 GRIP-compatible; wire-level GRIP (and with it django-eventstream) is possible
@@ -137,17 +138,67 @@ pinned on two different workers, ONE `POST /publish` handled by sync Django,
 and the frame arrives on both — WebSocket-era fan-out from WSGI-era
 application code.
 
+**WebSockets** are the same seam with one asymmetry. A view gates them
+identically:
+
+```python
+response = HttpResponse("", content_type="text/plain")
+response["M0-Hold"] = "websocket"
+response["M0-Channel"] = channel
+```
+
+but its response cannot *become* the reply. A WebSocket handshake answers
+`101 Switching Protocols` with a `Sec-WebSocket-Accept` derived from the
+client's key, and a WSGI response is fully buffered and re-encoded before a
+byte leaves the process — Django has no way to emit either. So it does not
+try. It **approves** the upgrade, having run whatever auth it likes on a
+request that reached it as a perfectly ordinary `GET`, and the Mojo handler
+**performs** the handshake with `websocket_upgrade(req)` against the original
+request. That split is the whole trick by which a synchronous framework
+gates a protocol it cannot speak.
+
+Inbound frames make the return trip as ordinary requests. `ws_message` fires
+on the event loop with a complete message (fragments assembled, pings already
+answered), `ws_message_request` gives it the shape of a `POST` — payload as
+the body, channel/slot/opcode as `M0-`headers — and a plain synchronous view
+handles it. This is Pushpin's WebSocket-over-HTTP, and the view is
+unremarkable: it reads `request.body` and may do anything a view may do.
+
+Outbound, both transports share one bus. The datagram carries a complete SSE
+frame; a WebSocket subscriber needs the payload rather than the framing, so
+delivery re-encodes per slot — `sse_data_payload` recovers exactly what a
+browser's `EventSource` hands to `onmessage`, and `encode_ws_frame` wraps it.
+One publish, one frame on the wire, and an `EventSource` client and a
+WebSocket client on the same channel see byte-identical messages.
+`smoke-django-realtime-ws` asserts precisely that, with four held connections
+across two workers and one `POST /publish`.
+
+**Event ids are numbered**, which is what makes `Last-Event-ID` mean
+something. Each publish fetch-adds one `Int64` on the `MAP_SHARED` page the
+server allocates before forking, so ids increase globally across every
+worker; the number goes both into the datagram's id field and onto the wire
+as an `id:` line. The registry's delivery filter (`event_id >
+last_event_ids[slot]`) then declines to re-send what a reconnecting client
+already has, and the SSE hold seeds that value from the request's
+`Last-Event-ID` header. Python cannot do the fetch-and-add itself — there is
+no atomic read-modify-write over a raw address in the stdlib, and a racy one
+would hand two workers the same id — so `m0_shared_fetch_add` is exported
+from m0-core's C ABI and called through `ctypes`, which never crosses the
+WSGI bridge and so leaves the leak rule and the RSS guard untouched.
+
 Honest limits, all documented at the source: one channel per connection
-(`SSERegistry` stores one filter URL per slot); Python-published frames carry
-no event id, so they always deliver but get no `Last-Event-ID` replay or
-duplicate suppression (numbered ids need an atomic the shared page provides
-and Python cannot fetch-and-add; future work); bus frames cap at 64KB;
-fan-out is best-effort under backpressure, like the bus itself; and a slow
-Django view still stalls its worker's event loop — the hold pattern removes
-the *connection* cost from Python, not the *request* cost. WebSockets are the
-unbuilt half: the loop already parses frames and `ws_message` could feed them
-to Django as synthetic requests (Pushpin's WebSocket-over-HTTP does exactly
-this), but the demo is SSE-only today.
+(`SSERegistry` stores one filter URL per slot); **suppression, not replay** —
+a client resuming at id 12 is not re-sent event 12, but events 13..N are gone
+unless it was connected, because catching up needs a journal
+(`DatastarStream` has one, the raw registry does not); numbering degrades to
+unnumbered frames when `M0_CORE_LIB`/`M0_SHARED_ID_ADDR` are absent, which is
+what happens under any plain WSGI host; a WebSocket subscriber receives an
+event's *data*, not its `event:` name, since a frame has no field for one;
+bus frames cap at 64KB; fan-out is best-effort under backpressure, like the
+bus itself; and a slow Django view still stalls its worker's event loop — the
+hold pattern removes the *connection* cost from Python, not the *request*
+cost, and that applies to a `ws_message` view exactly as it does to any
+other.
 
 ## 5. The free-threading path for m0-wsgi itself
 
@@ -249,10 +300,11 @@ and both currently say go.
   threads are the credible successor, and the canary keeps that path measured
   as Mojo, CPython, and Django all move. An asyncio bridge would be the most
   complex of the three options and obsolete-on-arrival if threads land.
-- For *realtime*: the hold/publish pattern gives sync Django the SSE surface
-  people adopt ASGI for, on infrastructure this repo already maintains, with
-  no Python event loop. WebSocket holds are an increment on the same seam,
-  not a new architecture.
+- For *realtime*: the hold/publish pattern gives sync Django the SSE **and
+  WebSocket** surface people adopt ASGI for, on infrastructure this repo
+  already maintains, with no Python event loop. WebSocket holds landed as an
+  increment on the same seam — one new mode value and a synthetic request —
+  which is the evidence for the claim, not a new architecture.
 - Revisit only if a workload genuinely requires Django Channels' consumer
   model or an async-native framework (FastAPI/Starlette) — that is an "ASGI
   host as a separate package" decision, to be taken with the canary's

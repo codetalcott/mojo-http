@@ -287,7 +287,7 @@ struct URI(Copyable, Writable):
 
     def __str__(self) -> String:
         var result = String(self.scheme, URIDelimiters.SCHEMA, self.host, self.path)
-        if len(self.query_string) > 0:
+        if self.query_string.byte_length() > 0:
             result.write(QueryDelimiters.STRING_START, self.query_string)
         return result^
 
@@ -329,4 +329,4 @@ struct URI(Copyable, Writable):
         return self.scheme == https
 
     def is_http(self) -> Bool:
-        return self.scheme == http or len(self.scheme) == 0
+        return self.scheme == http or self.scheme.byte_length() == 0

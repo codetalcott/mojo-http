@@ -170,6 +170,13 @@ jobs:
       # subscribers held by both workers -- ASGI's realtime surface without ASGI.
       - name: Smoke test the Django realtime example
         run: uv run poe smoke-django-realtime
+      # The other half of the hybrid row. Django cannot emit a 101 -- its
+      # response is buffered and re-encoded -- so it approves the upgrade with
+      # a header and the Mojo layer performs the handshake; inbound frames come
+      # back to it as ordinary POSTs. One publish then reaches SSE streams AND
+      # WebSockets on both workers, which is the claim worth a CI step.
+      - name: Smoke test the Django realtime example over WebSockets
+        run: uv run poe smoke-django-realtime-ws
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -187,4 +194,9 @@ jobs:
             django3.log
             wsgi.log
             flask.log
+            rt.log
+            rt2.log
+            rt3.log
+            ws1.log
+            ws2.log
           if-no-files-found: ignore

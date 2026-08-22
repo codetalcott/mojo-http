@@ -206,12 +206,17 @@ Where the WSGI work is headed, and what gates each step — the full analysis
 with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 
 - **No ASGI host for now.** The realtime surface people adopt ASGI for is
-  covered by the in-process GRIP pattern (`apps/django_realtime`,
-  `take_stream_hold`, `m0pub.py`; `smoke-django-realtime` pins it, including
-  cross-worker fan-out from a sync Django view). WebSocket holds are the
-  unbuilt increment on the same seam. An ASGI host remains a deliberate
-  separate package, warranted only by a Channels- or async-framework-shaped
-  workload.
+  covered by the in-process GRIP pattern (`apps/django_realtime`, `take_hold`,
+  `m0pub.py`), and it now covers **both** transports. A sync Django view
+  gates an SSE subscription with `M0-Hold: stream` and a WebSocket with
+  `M0-Hold: websocket` — it cannot emit the `101` itself, so it approves and
+  the Mojo layer performs the handshake; inbound frames return to it as
+  ordinary POSTs (`ws_message_request`). One publish reaches both transports
+  on every worker, and events are numbered from a shared atomic
+  (`m0_shared_fetch_add` over the C ABI), so `Last-Event-ID` and duplicate
+  suppression work. `smoke-django-realtime` and `smoke-django-realtime-ws`
+  pin all of it. An ASGI host remains a deliberate separate package,
+  warranted only by a Channels- or async-framework-shaped workload.
 - **Free-threaded CPython is the successor to prefork, pending maturity.**
   `poe py-canary` swaps the venv onto 3.14t from the same lock and runs the
   whole WSGI suite; its first run (2026-08-21, macOS/arm64) passed every

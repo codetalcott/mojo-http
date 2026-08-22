@@ -20,7 +20,9 @@ from std.memory import Pointer
 from std.testing import assert_equal, assert_true, TestSuite
 
 from src.hashing import fnv1a, xxhash32, format_hash32
-from ffi_exports import m0_fnv1a, m0_xxhash32, m0_format_hash
+from ffi_exports import (
+    m0_fnv1a, m0_xxhash32, m0_format_hash, m0_shared_fetch_add,
+)
 
 
 def _any_origin(p: Pointer[UInt8, _]) -> Pointer[UInt8, MutAnyOrigin]:
@@ -91,6 +93,51 @@ def test_exported_format_hash_refuses_a_short_buffer() raises:
         ),
         0,
     )
+
+
+# --- m0_shared_fetch_add: the one export with a side effect ------------------
+#
+# The address form is the whole point: `m0-http`'s SharedAtomics hands out
+# raw addresses into an mmap'd MAP_SHARED page so processes that cannot pass
+# each other pointers can still share a counter. A `List[Int64]` here is that
+# same shape locally — an 8-byte-aligned Int64 named by its address — which
+# is all the export can see, so it exercises the identical code path.
+
+
+def _cell(value: Int) -> List[Int64]:
+    """One 8-byte-aligned Int64, addressable — a SharedAtomics slot's shape."""
+    var c = List[Int64](unsafe_uninit_length=1)
+    c[0] = Int64(value)
+    return c^
+
+
+def test_shared_fetch_add_returns_the_previous_value() raises:
+    var cell = _cell(0)
+    var addr = UInt64(Int(cell.unsafe_ptr()))
+    assert_equal(Int(m0_shared_fetch_add(addr, Int64(1))), 0)
+    assert_equal(Int(m0_shared_fetch_add(addr, Int64(1))), 1)
+    assert_equal(Int(m0_shared_fetch_add(addr, Int64(1))), 2)
+    assert_equal(Int(cell[0]), 3)
+
+
+def test_shared_fetch_add_writes_through_to_the_word() raises:
+    """The caller's memory is the state; nothing is cached in the library."""
+    var cell = _cell(41)
+    var addr = UInt64(Int(cell.unsafe_ptr()))
+    assert_equal(Int(m0_shared_fetch_add(addr, Int64(1))), 41)
+    assert_equal(Int(cell[0]), 42)
+
+
+def test_shared_fetch_add_accepts_a_negative_delta() raises:
+    var cell = _cell(10)
+    var addr = UInt64(Int(cell.unsafe_ptr()))
+    assert_equal(Int(m0_shared_fetch_add(addr, Int64(-4))), 10)
+    assert_equal(Int(cell[0]), 6)
+
+
+def test_shared_fetch_add_answers_a_null_address_with_zero() raises:
+    """An unwired caller degrades to `no numbering`, not a segfault."""
+    assert_equal(Int(m0_shared_fetch_add(UInt64(0), Int64(1))), 0)
 
 
 def main() raises:

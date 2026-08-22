@@ -40,6 +40,9 @@ expected.bin
 got.bin
 rt.log
 rt2.log
+rt3.log
+ws1.log
+ws2.log
 .venv-pinned/
 py-canary.log
 probe.out

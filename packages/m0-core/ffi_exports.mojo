@@ -43,6 +43,8 @@ warning-free spelling on this toolchain, so `ABI="C"` stays until one
 ships. It is the same situation as `alloc` without a `Layout`.
 """
 
+from std.atomic import Atomic
+
 from src.hashing import _fnv1a_ptr, _xxhash32_ptr
 
 
@@ -81,3 +83,40 @@ def m0_format_hash(
         out_buf[unsafe_offset=i] = hex.as_bytes()[nibble]
 
     return 8
+
+
+@export("m0_shared_fetch_add", ABI="C")
+def m0_shared_fetch_add(addr: UInt64, delta: Int64) -> Int64:
+    """Atomically add `delta` to the Int64 at `addr`; returns the PREVIOUS value.
+
+    The one export that is not a pure function: it exists so a foreign
+    caller can take a number from a counter another *process* is also
+    taking from. `m0-http`'s `SharedAtomics` mmaps a `MAP_SHARED` page
+    before forking, and `SharedAtomics.addr(i)` names a slot on it; every
+    worker — and any interpreter embedded in one — addresses the same
+    physical word, so a fetch-add here is globally ordered across the whole
+    worker set.
+
+    That is what lets `apps/django_realtime`'s `m0pub.py` number the events
+    it publishes: Python has no atomic fetch-and-add over a raw address,
+    `ctypes` cannot express one, and a non-atomic read-modify-write would
+    hand two workers the same id under any concurrency at all.
+
+    Deliberately a byte-level mirror of `m0_http.multiworker.shared_fetch_add`
+    rather than a call to it — m0-core depends on nothing, and importing
+    m0-http here would invert the dependency direction the whole repo is
+    arranged around. What keeps the two honest is that both are the only
+    thing they can be: `Atomic[DType.int64].fetch_add` on the address.
+
+    `addr` is 0-checked and answered with 0, so an unwired caller — one whose
+    server never exported a slot — degrades to "no numbering" instead of
+    dereferencing null. Any other address is trusted: it must come from
+    `SharedAtomics.addr`, and a bad one is a segfault exactly as it would be
+    in C.
+    """
+    if addr == UInt64(0):
+        return Int64(0)
+    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+        unsafe_from_address=Int(addr)
+    )
+    return slot[].fetch_add(delta)

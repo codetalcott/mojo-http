@@ -224,6 +224,21 @@ never exercises: the `write()` callable, a second `start_response`, multi-chunk
 iterables, `wsgi.input` read patterns, and the CGI environ transform. See
 [docs/WSGI_CONFORMANCE.md](docs/WSGI_CONFORMANCE.md).
 
+[apps/django_realtime/](apps/django_realtime/) is the row that answers the
+question WSGI is usually retired over. A synchronous Django view holds a
+connection by *answering with headers* — `M0-Hold: stream` for SSE,
+`M0-Hold: websocket` for a WebSocket — and the Mojo layer takes it from
+there: the 101 handshake Django cannot emit, the heartbeats, the disconnect
+cleanup, the fan-out. Inbound WebSocket messages come back to Django as
+ordinary `POST`s. Publishing is `os.write` from pure Python onto the
+server's broadcast bus, so one line in a sync view reaches SSE clients *and*
+WebSocket clients on every worker, with numbered event ids that make
+`Last-Event-ID` work. No ASGI, no Channels, no async. The pattern is
+Pushpin's GRIP collapsed into one process; the reasoning, the measurements,
+and the remaining limits are in
+[docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md). Run it with `uv run poe
+serve-django-realtime`.
+
 **Why the boundary looks the way it does.** WSGI hands the application a
 `start_response` callable that the *server* supplies, and building a Python
 callable that closes over Mojo state is the hardest thing at this boundary — so
