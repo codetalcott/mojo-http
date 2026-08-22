@@ -211,9 +211,13 @@ Three conclusions, each isolated by a pair of rows:
   located to the object.** The same `PyRun_SimpleString` path scores 3.52x
   when the loop's state lives in function locals and 0.81x when it lives in
   `__main__`'s dict; giving every thread its own *keys* in that one dict
-  (0.71x) does not help — it is the dict's per-object lock, not the keys.
-  A closure hammering one shared list through the interop path (0.75x) shows
-  the same cliff in the shape a shared cache or counter would take.
+  (0.71x) does not help — it is the dict's per-object lock (a `PyMutex`,
+  taken via the critical-section API), not the keys. A closure hammering one
+  shared list through the interop path (0.75x) shows the same cliff in the
+  shape a shared cache or counter would take. Contended `PyMutex` acquires
+  park threads and ping-pong cache lines, and cross-thread object traffic
+  drops off biased refcounting's fast path — which is how "serialized"
+  becomes "below serial".
 - **Thread-*local* state parallelizes; hot shared mutable Python objects
   anti-scale below the serial baseline.** Per-request WSGI state is
   naturally thread-local — the right shape — and the shared-object cliff is
@@ -225,7 +229,11 @@ bound the design work. What remains is engineering, not discovery: the
 bridge's per-process singletons (one transfer bytearray, one `_body` global,
 "state attached to main forever") must become per-thread, and shared Python
 state above the bridge (Django's own caches — the contention Sam Gross is
-patching upstream) is the scaling risk to measure. The prize is unchanged:
+patching upstream) is the scaling risk to measure. One rule to carry into
+that design: a thread that blocks on a raw OS mutex *while attached to the
+interpreter* stalls every thread's stop-the-world pauses — blocking waits on
+the Mojo side must either detach first or use `PyMutex` (public C API since
+3.14), which parks cooperatively. The prize is unchanged:
 threads would eventually *replace* `M0_WORKERS` forking — one process, shared
 memory, no per-worker RSS duplication, no bus needed for fan-out, and the
 entire class of fork-after-init hazards (the macOS `_scproxy`/objc abort,
