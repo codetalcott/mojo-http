@@ -47,8 +47,8 @@ Mojo 1.0 interop imposes and that the code depends on:
   other call assumes the calling thread holds it, which is true only because
   `Py_Initialize` leaves it held on the thread that ran `main()`. This is safe
   today purely because each server process is single-threaded. `WorkerSupervisor`
-  is wired in (`apps/django_wsgi/server.mojo`, via `M0_WORKERS`) and the rule it
-  obeys is load-bearing: **fork before the first Python call, never after.**
+  is wired in (`packages/m0-wsgi/m0serve.mojo`, via `--workers`/`M0_WORKERS`)
+  and the rule it obeys is load-bearing: **fork before the first Python call, never after.**
   Mojo initializes the interpreter lazily, so each worker's own `WSGIApp`
   construction after `fork_all()` returns is that first call — keep it there.
 
@@ -89,6 +89,12 @@ from the entry module (its docstring records the dead ends). `@export` cannot
 be applied to a parametric function, so the entry points name a concrete
 pointer origin, and Mojo-side callers erase the origin explicitly — see
 `test_ffi_exports.mojo`.
+
+`m0-wsgi/m0serve.mojo` is the second package-root entry file, for the same
+reasons: it is the `m0serve` CLI binary (`poe build-serve` → `bin/m0serve`),
+`precompile src` must never see it, and it imports `m0_wsgi` through the
+`.mojoc` rather than `src.*`. The three WSGI example apps are Python-only
+projects it serves; there is no `server.mojo` in them to edit.
 
 ## The lightbug fork
 
@@ -299,9 +305,10 @@ Properties of the design, not defects to fix in passing:
   installed and the default signal behaviour stands, because a handler over a
   dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
   happened and `test_lifecycle.mojo` asserts it.
-- Configuration is env vars, all `M0_`-prefixed: `M0_PORT`, `M0_BASE_URL`,
-  `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
-  `M0_APP_TICK_MS`.
+- Configuration is env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`,
+  `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`,
+  `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`. `m0serve` layers flags on top
+  (flag > env > default) and is strict where the env loader is lenient.
 
 ## Mojo 1.0 patterns
 

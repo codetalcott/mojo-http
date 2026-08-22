@@ -206,17 +206,43 @@ def main() raises:
     Server().listen_and_serve("0.0.0.0:8080", DjangoHandler(app^))
 ```
 
-Run [apps/django_wsgi/](apps/django_wsgi/) with `uv run poe serve-django`.
+That handler is written once, as `WSGIHandler`, and **`m0serve`** is the
+binary that runs it — the uvicorn-shaped entry point:
 
-[apps/flask_wsgi/](apps/flask_wsgi/) is the same server running Flask instead,
-and the two `server.mojo` files differ only in the module name and the default
-port. Both rows run the same assertions —
+```bash
+uv run poe build-serve                                     # -> bin/m0serve
+bin/m0serve myproject.wsgi:application --app-dir /path/to/project \
+    --host 0.0.0.0 --port 8000 --workers 4 \
+    --static /static/=/path/to/static --static-cache-control 'public, max-age=3600'
+```
+
+`MODULE[:ATTR]` names the WSGI callable (`ATTR` defaults to `application`);
+`--app-dir` is prepended to `sys.path` so the module imports, relative to the
+current directory and defaulting to `.`. Every `M0_*` variable keeps its
+meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
+matching flag winning over it, and flags are strict: `--port 80eighty` is a
+usage error, not a silent default. `--max-body` and `--metrics` reach two
+server tunings the environment cannot. `--help` has the rest; exit codes are
+2 for a bad command line and 1 for an application that would not load —
+including under `--workers N`, where a supervisor that gives up on respawning
+says so instead of exiting 0.
+
+The binary resolves libpython from the `python3` on `PATH`: run it from a
+virtualenv that has your framework installed, or set `MOJO_PYTHON_LIBRARY` to
+the shared library. Build once, serve anywhere the interpreter is.
+
+[apps/django_wsgi/](apps/django_wsgi/) is a real Django project with no Mojo
+in it, served by exactly that command (`uv run poe serve-django`).
+
+[apps/flask_wsgi/](apps/flask_wsgi/) is the same binary running Flask instead.
+Both rows run the same assertions —
 [scripts/wsgi_framework_contract.sh](scripts/wsgi_framework_contract.sh) — because
 routing, cookies in both directions, body round trips and error handling are
 things every WSGI framework does identically. Adding Flask needed no change to
-`m0-wsgi` at all.
+`m0-wsgi` at all, and the rows are now Python-only: one binary serves all
+three, which is the host-is-framework-agnostic claim made structural.
 
-[apps/wsgi_bare/](apps/wsgi_bare/) is the same server with no framework at all —
+[apps/wsgi_bare/](apps/wsgi_bare/) is the same binary with no framework at all —
 a plain PEP 3333 callable, zero third-party imports. It is what makes the claim
 above demonstrable rather than merely asserted, and it is the conformance target
 for `uv run poe smoke-wsgi`, which checks the parts of the spec a framework

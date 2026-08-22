@@ -115,6 +115,21 @@ help = "Build all packages in dependency order, then the C-ABI shared library"
 sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite", "build-ffi"]
 default_item_type = "ref"
 
+# The serve CLI. Its entry file sits at the package root, outside src/, for
+# the same reasons as m0-core/ffi_exports.mojo (see that docstring): precompile
+# never sees it, so it cannot land in m0_wsgi.mojoc, and it imports m0_wsgi
+# through the .mojoc rather than src.* so -I order cannot rebind it. No
+# -I apps/: the CLI has no sibling modules. Consequence worth knowing: a change
+# to packages/m0-wsgi/src/cli.mojo reaches bin/m0serve only after build-wsgi.
+[tool.poe.tasks.build-serve]
+help = "Build the m0serve CLI (bin/m0serve) — a uvicorn-shaped WSGI server"
+shell = """
+mkdir -p bin
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
+  packages/m0-wsgi/m0serve.mojo -o bin/m0serve || exit 1
+echo "built bin/m0serve"
+"""
+
 # The C-ABI surface. ffi_exports.mojo sits at the package root because a
 # shared-lib entry file cannot use relative imports and @export symbols are
 # only emitted from the entry module — see its docstring for the dead ends.
@@ -214,7 +229,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-sqlite", "build-apps"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-sqlite", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -230,9 +245,13 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
 help = "Run the Datastar counter demo on :8080"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/datastar_counter/server.mojo"
 
+# The three WSGI rows are Python-only projects; one binary serves them all.
+# M0_WORKERS=4 (and every other M0_ variable) still applies — flags override.
 [tool.poe.tasks.serve-django]
-help = "Run the Django WSGI example on :8080 (needs the django dev dependency)"
-cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/django_wsgi/server.mojo"
+help = "Serve the Django example on :8080 with m0serve (needs the django dev dependency)"
+deps = ["build-serve"]
+cmd = "bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080"
+
 
 # M0_CORE_LIB is how m0pub finds the atomic it numbers events with: the
 # server exports the shared slot's ADDRESS (M0_SHARED_ID_ADDR, pre-fork), but
@@ -586,11 +605,12 @@ echo "smoke-counter OK"
 # concurrency assertions.
 [tool.poe.tasks.smoke-django]
 help = "Start the Django example, assert a real request/response cycle (single-worker, then M0_WORKERS=2), stop"
+deps = ["build-serve"]
 shell = """
 out=$(mktemp -d)
-srv="$out/django_server"
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
-  apps/django_wsgi/server.mojo -o "$srv" || exit 1
+# bin/m0serve is built by the deps entry above; SPEC is what the row serves.
+srv=bin/m0serve
+SPEC="djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080"
 
 cleanup() {
   kill $pid $worker_pids 2>/dev/null
@@ -598,7 +618,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$srv" > django.log 2>&1 &
+"$srv" $SPEC > django.log 2>&1 &
 pid=$!
 
 fail() {
@@ -735,7 +755,7 @@ wait $pid 2>/dev/null
 
 # --- M0_WORKERS=2: the prefork path -----------------------------------------
 
-M0_WORKERS=2 "$srv" > django2.log 2>&1 &
+M0_WORKERS=2 "$srv" $SPEC > django2.log 2>&1 &
 pid=$!
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
@@ -802,7 +822,7 @@ kill $pid $worker_pids 2>/dev/null
 wait $pid 2>/dev/null
 worker_pids=
 
-M0_WSGI_VALIDATE=1 "$srv" > django3.log 2>&1 &
+M0_WSGI_VALIDATE=1 "$srv" $SPEC > django3.log 2>&1 &
 pid=$!
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
@@ -1199,9 +1219,116 @@ rm -f ws1.log ws2.log
 echo "smoke-django-realtime-ws OK"
 """
 
+# The CLI itself, as a user meets it: what --help and --version say, which
+# exit code a mistake gets (2 usage, 1 startup, and 1 — not 0 — when a
+# supervisor gives up on an app that never loads), that a typed flag beats
+# the environment, and that the two server-only tunings a command line can
+# now reach (--max-body, --metrics) actually reach the server. The bare app
+# is the target because nothing in it can be blamed for a wrong answer.
+[tool.poe.tasks.smoke-serve]
+help = "The m0serve CLI: help/version/usage exit codes, flag-over-env precedence, a static mount, --max-body, --metrics, graceful stop"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare"
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -f serve.log serve_hdr.txt serve_body.txt
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f serve.log ]; then echo '=== serve.log ==='; cat serve.log; fi
+  exit 1
+}
+
+# --help and --version exit 0 and say what they must. The version is read
+# from pyproject so the two cannot drift apart silently.
+"$srv" --help > serve.log 2>&1 || fail '--help did not exit 0'
+for flag in --app-dir --static --max-body --workers --host --port --metrics; do
+  grep -q -- "$flag" serve.log || fail "--help does not mention $flag"
+done
+ver=$("$srv" --version) || fail '--version did not exit 0'
+want="m0serve $(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"//g')"
+[ "$ver" = "$want" ] || fail "--version printed '$ver', want '$want'"
+
+# Usage errors exit 2 and print usage. A flag typo is told, not defaulted —
+# unlike M0_PORT=80eighty, which the environment loader silently ignores.
+"$srv" > serve.log 2>&1; rc=$?
+[ "$rc" = "2" ] || fail "no positional: exit $rc, want 2"
+grep -q '^usage: m0serve' serve.log || fail 'no positional: usage not printed'
+"$srv" x.wsgi --bogus > serve.log 2>&1; rc=$?
+[ "$rc" = "2" ] || fail "--bogus: exit $rc, want 2"
+"$srv" x.wsgi --port 80eighty > serve.log 2>&1; rc=$?
+[ "$rc" = "2" ] || fail "--port 80eighty: exit $rc, want 2"
+grep -q 'must be a number' serve.log || fail '--port 80eighty: the message does not say why'
+
+# Startup failures exit 1 and name the thing. The directory checks run before
+# any interpreter starts; the module and attribute ones are Python's own words.
+"$srv" x.wsgi --app-dir /no/such/dir > serve.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "bad --app-dir: exit $rc, want 1"
+grep -q 'app dir does not exist: /no/such/dir' serve.log || fail 'bad --app-dir: message does not name it'
+"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "bad module: exit $rc, want 1"
+grep -q 'could not load nosuch.wsgi:application' serve.log || fail 'bad module: message does not name it'
+"$srv" bareapp.wsgi:nosuch --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "bad attribute: exit $rc, want 1"
+grep -q 'nosuch' serve.log || fail 'bad attribute: message does not name it'
+# Under --workers the supervisor must not report success for an application
+# that never loaded: every worker dies at once, the breaker trips, exit 1.
+"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare --workers 2 > serve.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "bad module under --workers 2: exit $rc, want 1 (0 means the supervisor hid the failure)"
+
+# Precedence: a typed flag beats the environment. M0_PORT says 8099 and
+# M0_HOST says everywhere; --port 8098 --host 127.0.0.1 win.
+M0_PORT=8099 M0_HOST=0.0.0.0 "$srv" $SPEC --host 127.0.0.1 --port 8098 > serve.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ | grep -q 'bare wsgi app' \
+  || fail '--host/--port did not win over M0_HOST/M0_PORT'
+curl --silent --fail http://localhost:8099/ > /dev/null 2>&1 && fail 'the server also answered on the env port'
+grep -q 'm0serve: bareapp.wsgi:application on http://127.0.0.1:8098' serve.log || fail 'startup line does not report the effective address'
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0 (the graceful drain)"
+
+# A static mount is answered in Mojo with the freshness policy given; a path
+# outside it still reaches the app; --max-body and --metrics reach the server.
+"$srv" $SPEC --port 8098 --static /assets/=apps/django_realtime/static \
+  --static-cache-control 'public, max-age=60' --max-body 1024 --metrics > serve.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null \
+  || fail 'the mounted server never became healthy'
+curl -s -D serve_hdr.txt http://127.0.0.1:8098/assets/app.css -o serve_body.txt
+grep -q 'font-family' serve_body.txt || fail 'the static file did not serve'
+grep -iq '^cache-control: public, max-age=60' serve_hdr.txt || fail '--static-cache-control was not applied'
+grep -iq '^etag' serve_hdr.txt || fail 'the static response carries no ETag'
+code=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8098/assets/../../wsgi_bare/bareapp/wsgi.py)
+[ "$code" = "404" ] || fail "traversal expected 404, got $code"
+curl -s http://127.0.0.1:8098/ | grep -q 'bare wsgi app' || fail 'a path outside the mount no longer reaches the app'
+code=$(python3 -c "print('a' * 2048, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+[ "$code" = "413" ] || fail "--max-body 1024: a 2 KB body expected 413, got $code"
+code=$(python3 -c "print('b' * 512, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+[ "$code" = "200" ] || fail "--max-body 1024: a 512 B body expected 200, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/__metrics)
+[ "$code" = "200" ] || fail "--metrics: /__metrics expected 200, got $code"
+kill $pid
+wait $pid 2>/dev/null
+
+# Without --metrics the path is the application's to answer (here: its 404).
+"$srv" $SPEC --port 8098 > serve.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/__metrics)
+[ "$code" = "404" ] || fail "without --metrics, /__metrics expected the app's 404, got $code"
+kill $pid
+wait $pid 2>/dev/null
+echo "smoke-serve OK"
+"""
+
 [tool.poe.tasks.serve-flask]
-help = "Run the Flask WSGI example on :8087 (needs the flask dev dependency)"
-cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/flask_wsgi/server.mojo"
+help = "Serve the Flask example on :8087 with m0serve (needs the flask dev dependency)"
+deps = ["build-serve"]
+cmd = "bin/m0serve flaskproj.wsgi:application --app-dir apps/flask_wsgi --port 8087"
 
 # The second framework row. Everything it asserts lives in the shared contract
 # script, because everything it asserts is true of any WSGI framework -- which
@@ -1212,13 +1339,14 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -
 # and nothing in packages/ imports it.
 [tool.poe.tasks.smoke-flask]
 help = "Run the WSGI framework contract against Flask (skips if flask is absent)"
+deps = ["build-serve"]
 shell = """
 python3 -c 'import flask' 2>/dev/null || { echo "flask not installed - skipping smoke-flask"; exit 0; }
 
 out=$(mktemp -d)
-srv="$out/flask_server"
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
-  apps/flask_wsgi/server.mojo -o "$srv" || exit 1
+# bin/m0serve is built by the deps entry above; SPEC is what the row serves.
+srv=bin/m0serve
+SPEC="flaskproj.wsgi:application --app-dir apps/flask_wsgi --port 8087"
 
 cleanup() {
   kill $pid 2>/dev/null
@@ -1226,7 +1354,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$srv" > flask.log 2>&1 &
+"$srv" $SPEC > flask.log 2>&1 &
 pid=$!
 
 if ! bash scripts/wsgi_framework_contract.sh http://localhost:8087 'hello from flask on mojo-http' flask; then
@@ -1241,23 +1369,18 @@ echo "smoke-flask OK"
 """
 
 [tool.poe.tasks.serve-wsgi-bare]
-help = "Run the bare WSGI example on :8086 (no framework, no third-party deps)"
-cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/wsgi_bare/server.mojo"
+help = "Serve the bare PEP 3333 example on :8086 with m0serve"
+deps = ["build-serve"]
+cmd = "bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8086"
 
-# PEP 3333 conformance against a bare WSGI callable. The Django example proves
-# a real framework survives the bridge; this proves the bridge implements the
-# spec, which is a different claim and needs a target with no framework in it
-# to be attributable. Every assertion below maps to one paragraph of PEP 3333.
-#
-# Runs M0_WORKERS=2 throughout, because /reentrant issues a request back into
-# this same server from inside a view and one worker cannot answer itself.
 [tool.poe.tasks.smoke-wsgi]
 help = "PEP 3333 conformance: write(), start_response, wsgi.input, CGI environ, validator"
+deps = ["build-serve"]
 shell = """
 out=$(mktemp -d)
-srv="$out/bare_server"
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
-  apps/wsgi_bare/server.mojo -o "$srv" || exit 1
+# bin/m0serve is built by the deps entry above; SPEC is what the row serves.
+srv=bin/m0serve
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8086"
 
 cleanup() {
   kill $pid 2>/dev/null
@@ -1272,7 +1395,7 @@ fail() {
 }
 
 B=http://localhost:8086
-M0_WORKERS=2 "$srv" > wsgi.log 2>&1 &
+M0_WORKERS=2 "$srv" $SPEC > wsgi.log 2>&1 &
 pid=$!
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
@@ -1412,7 +1535,7 @@ wait $pid 2>/dev/null
 # --- the same app under wsgiref.validate --------------------------------------
 # The stdlib's PEP 3333 checker, over routes chosen to exercise the spec rather
 # than the conventional slice a framework happens to use.
-M0_WSGI_VALIDATE=1 M0_WORKERS=2 "$srv" > wsgi.log 2>&1 &
+M0_WSGI_VALIDATE=1 M0_WORKERS=2 "$srv" $SPEC > wsgi.log 2>&1 &
 pid=$!
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \

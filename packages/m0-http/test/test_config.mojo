@@ -22,6 +22,7 @@ from lightbug_http.server_config import ServerConfig
 def _clear():
     """Empty every M0_ variable. The loader treats empty as unset."""
     for name in [
+        String("M0_HOST"),
         String("M0_PORT"),
         String("M0_BASE_URL"),
         String("M0_API_KEY"),
@@ -133,17 +134,45 @@ def test_app_tick_is_read_from_the_environment() raises:
 
 def test_address_binds_all_interfaces() raises:
     var c = _with("M0_PORT", "8081")
+    assert_equal(c.host, "0.0.0.0")
     assert_equal(c.address(), "0.0.0.0:8081")
+
+
+def test_host_is_read_from_the_environment() raises:
+    _clear()
+    _ = setenv("M0_HOST", "127.0.0.1", True)
+    _ = setenv("M0_PORT", "8081", True)
+    var c = AppConfig()
+    assert_equal(c.host, "127.0.0.1")
+    assert_equal(c.address(), "127.0.0.1:8081")
+    _clear()
+
+
+def test_host_localhost_means_loopback() raises:
+    """The listener is IPv4-only and resolves nothing; the one name everyone
+    types is mapped by hand so it binds rather than fails."""
+    var c = _with("M0_HOST", "localhost")
+    assert_equal(c.host, "127.0.0.1")
+
+
+def test_host_is_trimmed_and_otherwise_verbatim() raises:
+    assert_equal(_with("M0_HOST", " 10.0.0.5 ").host, "10.0.0.5")
+    assert_equal(_with("M0_HOST", "   ").host, "0.0.0.0")
 
 
 def test_config_is_copyable_and_movable() raises:
     """AppConfig is passed by value into handlers; both paths must hold."""
-    var c = _with("M0_PORT", "4242")
+    _clear()
+    _ = setenv("M0_HOST", "127.0.0.1", True)
+    _ = setenv("M0_PORT", "4242", True)
+    var c = AppConfig()
     var copied = c.copy()
     assert_equal(copied.port, 4242)
+    assert_equal(copied.host, "127.0.0.1")
     assert_equal(copied.base_url, "http://localhost:4242")
     var moved = copied^
     assert_equal(moved.port, 4242)
+    assert_equal(moved.address(), "127.0.0.1:4242")
     _clear()
 
 

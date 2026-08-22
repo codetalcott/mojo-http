@@ -105,6 +105,10 @@ jobs:
       # log_access` resolves against m0_http.mojoc at run time.
       - name: Compile every example app
         run: uv run poe build-apps
+      # The serve CLI: one binary for every WSGI row. Built here once; the
+      # smoke-wsgi/django/flask tasks below depend on it and reuse it.
+      - name: Build the serve CLI
+        run: uv run poe build-serve
       # Emits libm0core.so (.dylib on macOS) and drives it through ctypes —
       # the same dlopen path Bun or N-API takes — against public hash vectors.
       - name: Smoke test the C-ABI shared library
@@ -165,6 +169,11 @@ jobs:
       # happens to suit the single framework it was developed against.
       - name: Run the WSGI framework contract against Flask
         run: uv run poe smoke-flask
+      # The CLI as a user meets it: --help/--version, usage (2) and startup
+      # (1) exit codes — including a supervisor that gives up — a typed flag
+      # beating the environment, a static mount, --max-body, --metrics.
+      - name: Smoke test the serve CLI
+        run: uv run poe smoke-serve
       # The hybrid row: a sync Django view's M0-Hold response becomes a live
       # SSE subscription, and its publish (pure-Python bus datagrams) reaches
       # subscribers held by both workers -- ASGI's realtime surface without ASGI.
@@ -194,6 +203,7 @@ jobs:
             django3.log
             wsgi.log
             flask.log
+            serve.log
             rt.log
             rt2.log
             rt3.log

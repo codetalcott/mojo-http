@@ -24,7 +24,7 @@ middleware), same worker counts, same machine, same load generator.
   round and 3,406 in another, 1.7x from container load alone. Every table
   row was therefore measured by alternating against its comparator inside
   one session, and the ratios are what carry meaning.
-- mojo-http: `apps/django_wsgi/server.mojo` compiled with `mojo build`
+- mojo-http: `bin/m0serve` (`poe build-serve`) serving `apps/django_wsgi`
   (Mojo 1.0, the `uv.lock` pin), `M0_WORKERS=N`. Workers accept from one
   listener bound before the fork, the same model gunicorn uses — a busy
   worker simply doesn't accept, so connections land on free workers. (An
@@ -169,10 +169,9 @@ No poe task, because gunicorn is deliberately not a dependency of this repo.
 The shape of a run:
 
 ```bash
-uv run mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
-  -I apps/ apps/django_wsgi/server.mojo -o /tmp/django_server
+uv run poe build-serve               # -> bin/m0serve
 source .venv/bin/activate            # the embedded CPython must see Django
-M0_WORKERS=2 /tmp/django_server &
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --workers 2 &
 
 # A browser-shaped request; wrk's default sends only Host, which understates
 # the header-handling cost by roughly 2.4x (see the header-count table above).
