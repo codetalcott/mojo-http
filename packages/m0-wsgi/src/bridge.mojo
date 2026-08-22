@@ -68,7 +68,7 @@ def set_app(app):
     _app = app
 
 
-def set_base(name, port, multiprocess):
+def set_base(name, port, multiprocess, multithread):
     _base.update({
         'SERVER_NAME': name,
         'SERVER_PORT': port,
@@ -77,7 +77,7 @@ def set_base(name, port, multiprocess):
         'wsgi.version': (1, 0),
         'wsgi.url_scheme': 'http',
         'wsgi.errors': sys.stderr,
-        'wsgi.multithread': False,
+        'wsgi.multithread': bool(multithread),
         'wsgi.multiprocess': bool(multiprocess),
         'wsgi.run_once': False,
     })
@@ -155,9 +155,11 @@ def body_addr():
 
 
 struct PyBridge(Movable):
-    """Holds the interpreter-side helpers for one process.
+    """Holds the interpreter-side helpers for one serving thread.
 
-    Construct once at startup, never per request. Each request costs three
+    One per process under prefork, one per thread under `M0_THREADS`;
+    nothing in the namespace is shared between bridges. Construct once at
+    startup, never per request. Each request costs three
     zero-argument calls into Python: `buf_addr`, `handle`, and (for non-empty
     bodies) `body_addr`.
     """
@@ -186,14 +188,23 @@ struct PyBridge(Movable):
         _ = self._ns["set_app"](app)
 
     def set_base(
-        self, server_name: String, server_port: String, multiprocess: Bool
+        self,
+        server_name: String,
+        server_port: String,
+        multiprocess: Bool,
+        multithread: Bool = False,
     ) raises:
         """Install the request-invariant environ entries. Startup-only; the
-        same bounded argument-reference leak as `set_app` applies."""
+        same bounded argument-reference leak as `set_app` applies.
+
+        `multithread` is what `wsgi.multithread` reports: True when this
+        bridge is one of several serving threads in a process (the threaded
+        execution mode), False under prefork or a single loop."""
         _ = self._ns["set_base"](
             PythonObject(server_name),
             PythonObject(server_port),
             PythonObject(multiprocess),
+            PythonObject(multithread),
         )
 
     def handle(mut self, payload: Span[UInt8, _]) raises -> PythonObject:

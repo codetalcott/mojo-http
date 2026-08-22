@@ -43,14 +43,33 @@ Mojo 1.0 interop imposes and that the code depends on:
   bridge — it reintroduces an unbounded per-request leak that shows up as
   growing GC pauses, and `smoke-django`'s RSS guard will fail. Startup-only
   calls (`set_app`, `set_base`) are the deliberate, bounded exception.
-- **Mojo never acquires the GIL** except when destroying a `PythonObject`. Every
-  other call assumes the calling thread holds it, which is true only because
-  `Py_Initialize` leaves it held on the thread that ran `main()`. This is safe
-  today purely because each server process is single-threaded. `WorkerSupervisor`
-  is wired in (`packages/m0-wsgi/m0serve.mojo`, via `--workers`/`M0_WORKERS`)
-  and the rule it obeys is load-bearing: **fork before the first Python call, never after.**
-  Mojo initializes the interpreter lazily, so each worker's own `WSGIApp`
-  construction after `fork_all()` returns is that first call — keep it there.
+- **Mojo never acquires the GIL on its own** except when destroying a
+  `PythonObject`; every other `std.python` call assumes the calling thread is
+  *attached* (holds a Python thread state). There are two execution modes,
+  mutually exclusive (`threads_conflict`), and each keeps that true its own
+  way:
+  - **Prefork (`M0_WORKERS`, the default).** One thread per process, attached
+    since `Py_Initialize` ran on it. `WorkerSupervisor` is wired in
+    (`packages/m0-wsgi/m0serve.mojo`) and the rule it obeys is load-bearing:
+    **fork before the first Python call, never after.** Mojo initializes the
+    interpreter lazily, so each worker's own `WSGIApp` construction after
+    `fork_all()` returns is that first call — keep it there.
+  - **Threaded (`M0_THREADS`, free-threaded CPython only; `m0_wsgi.threaded`).**
+    N event loops on N pthreads, one interpreter. The main thread initializes
+    the interpreter and imports the app BEFORE spawning, then
+    `PyEval_SaveThread`s and touches no Python until after `pthread_join`.
+    Every serving thread `PyGILState_Ensure`s once for its lifetime, builds
+    and destroys its handler (so its `WSGIApp` and bridge) inside that
+    region, and **detaches around every blocking wait** — `DetachingBackend`
+    wraps `backend.wait()`; a thread that blocks while attached stalls every
+    other thread's stop-the-world. Never add a blocking call to the loop or
+    a handler without that wrapper. A GIL-enabled interpreter refuses to
+    start (exit 78) — never warns-and-runs. Per-thread, never shared across
+    threads: `WSGIApp`/`PyBridge`, `SSERegistry`/`WSHub`, `ProvisionPool`,
+    an m0-sqlite `Connection` (opened `NOMUTEX`). Shared mutable Python
+    objects are the measured 0.7x cliff (`docs/WSGI_VS_ASGI.md` §5); keep
+    per-request state thread-local. `print`/`log_access` from N threads can
+    interleave — `x-thread` is on every response for that reason.
 
 `m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
 flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
@@ -306,9 +325,8 @@ Properties of the design, not defects to fix in passing:
   dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
   happened and `test_lifecycle.mojo` asserts it.
 - Configuration is env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`,
-  `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_THREADS` (read and
-  validated — `threads_conflict` — ahead of the threaded execution mode that
-  will consume it; mutually exclusive with `M0_WORKERS>1`), `M0_ACCESS_LOG`,
+  `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_THREADS` (mutually
+  exclusive with `M0_WORKERS>1`; free-threaded CPython only), `M0_ACCESS_LOG`,
   `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`. `m0serve` layers flags on top
   (flag > env > default) and is strict where the env loader is lenient.
 

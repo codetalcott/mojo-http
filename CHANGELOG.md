@@ -9,6 +9,31 @@ versions may break the API**.
 
 ### Added
 
+- **`--threads N` / `M0_THREADS` — the threaded execution mode** (free-threaded
+  CPython only). N event loops on N pthreads in one process, one interpreter:
+  each thread runs its own `run_event_loop` with its own `WSGIHandler`, and
+  so its own `WSGIApp`, bridge and shim namespace — the bridge's per-process
+  singletons become per-thread without a line of the bridge changing, and
+  the event loop is untouched. What it buys: one RSS instead of N, the app
+  imported once, and the whole fork-after-init hazard class gone. What it
+  does not: a keep-alive connection stays pinned to its loop, exactly as
+  under prefork, so the keep-alive p99 shape is unchanged (the thread-pool
+  stage is recorded in ROADMAP.md). `m0_wsgi.threaded` is the choreography —
+  main initializes and imports before spawning and then detaches; every
+  thread attaches once, serves, and releases; `DetachingBackend` wraps the
+  loop's one blocking wait so a parked thread never stalls the others'
+  stop-the-world; the process-wide signal pipe wakes a coordinator that
+  pokes one shutdown pipe per thread. A GIL-enabled interpreter **refuses to
+  start** with exit 78 and a sentence naming the requirement — never
+  warns-and-runs. `--threads` and `--workers` are mutually exclusive.
+  `wsgi.multithread` is finally True somewhere; every response carries
+  `x-thread`. `smoke-threads` pins the guard on every runner and the mode
+  itself on the free-threaded canary (phase D of `py-canary`).
+- **`ThreadHandler`** (`m0-wsgi`): an `HTTPService` that constructs itself on
+  a serving thread via a static `make(ctx)`. A trait rather than a function
+  parameter because Mojo 1.0 cannot materialize a function-parameterized
+  `def` as the runtime value a pthread needs; `WSGIHandler` implements it
+  from the `ServeOptions` at `ctx.user`.
 - **`m0_http.threads`** — raw pthreads from Mojo, packaged: `ThreadSet`
   (malloc'd Int64 argument blocks, `pthread_create`/`pthread_join` through
   `external_call`, a `def`'s address as the start routine), `ThreadBlock`,

@@ -48,6 +48,7 @@ ws2.log
 flask.log
 wsgi.log
 serve.log
+threads.log
 .venv-pinned/
 py-canary.log
 probe.out

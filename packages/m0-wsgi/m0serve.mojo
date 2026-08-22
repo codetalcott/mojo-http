@@ -37,18 +37,22 @@ libdispatch, which is unusable in a process forked without exec.
 """
 
 from std.os.path import isdir
+from std.python import Python
 from std.sys.arg import argv
 
 from lightbug_http import Server
-from lightbug_http.connection import ListenConfig
+from lightbug_http.connection import ListenConfig, NoTLSListener
+from lightbug_http.address import NetworkType
 from lightbug_http.c.process import process_exit
 
 from m0_http import (
     StaticFiles, WorkerSupervisor, install_shutdown_signals, exit_worker,
+    threads_conflict,
 )
 from m0_http.config import AppConfig
 from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, usage,
+    ThreadedServer, require_free_threading,
     M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP,
 )
 
@@ -92,8 +96,23 @@ def main() raises:
         if not isdir(opts.static_dirs[i]):
             _fail("static dir does not exist: " + opts.static_dirs[i], EXIT_STARTUP)
 
+    var conflict = threads_conflict(opts.workers, opts.threads)
+    if conflict:
+        print(usage(), flush=True)
+        _fail(conflict.value(), EXIT_USAGE)
+
     # Bind before forking; every worker accepts from this one socket.
     var listener = ListenConfig().listen(opts.address())
+
+    if opts.threads > 1:
+        # The listener is borrowed, not reduced to its fd: its last use would
+        # otherwise be that read, and Mojo's destroy-at-last-use would close
+        # the listening socket before the threads dup it — the dup then lands
+        # on whatever descriptor number the kernel recycled, and four loops
+        # watch a pipe. Prefork never hits this because `serve_nonblocking`
+        # uses the listener itself, later.
+        _serve_threaded(opts, listener)
+        return
 
     # Fork before touching Python — see the module docstring. The parent
     # stays inside fork_all() supervising; only workers return here.
@@ -121,15 +140,7 @@ def main() raises:
         )
         return
 
-    var mounts = List[StaticFiles]()
-    for i in range(len(opts.static_prefixes)):
-        mounts.append(
-            StaticFiles(
-                opts.static_dirs[i], opts.static_prefixes[i],
-                cache_control=opts.static_cache_control,
-            )
-        )
-    var handler = WSGIHandler(app^, mounts^)
+    var handler = WSGIHandler(app^, WSGIHandler.mounts_for(opts))
 
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
@@ -142,3 +153,51 @@ def main() raises:
     server.serve_nonblocking(listener, handler, shutdown_read_fd=shutdown_fd)
     if multiprocess:
         exit_worker()
+
+
+def _serve_threaded(
+    opts: ServeOptions, listener: NoTLSListener[NetworkType.tcp4]
+) raises:
+    """`--threads N`: N event loops on N threads, one interpreter.
+
+    The order here is the threaded mode's load-bearing part, the mirror
+    image of the prefork rule above. The interpreter comes up on THIS
+    thread (`require_free_threading` is the first Python call, and the
+    place a GIL-enabled interpreter is refused), the application is
+    imported once here so Django's `setup()` runs single-threaded, the
+    signal pipe is armed once for the process — and only then does
+    `ThreadedServer.serve` detach this thread and spawn the loops, each of
+    which builds its own `WSGIHandler` from `opts` via `WSGIHandler.make`.
+    No fork, so `main` returns normally.
+    """
+    require_free_threading(opts.threads)
+    if opts.app_dir.byte_length() > 0:
+        Python.add_to_path(opts.app_dir)
+    try:
+        _ = Python.import_module(opts.module)
+    except e:
+        _fail(
+            "could not load " + opts.spec() + " from " + opts.app_dir + ": "
+            + String(e),
+            EXIT_STARTUP,
+        )
+        return
+
+    var shutdown_fd = install_shutdown_signals()
+    var opts_ptr = Pointer(to=opts)
+    var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
+    print(
+        "m0serve: " + opts.spec() + " on http://" + opts.address()
+        + " (threads=" + String(opts.threads) + ")",
+        flush=True,
+    )
+    var server = ThreadedServer(
+        opts.server_config(AppConfig(default_port=DEFAULT_PORT)),
+        opts.address(),
+        listener.socket.fd.value,
+    )
+    var failed = server.serve[WSGIHandler](opts.threads, opts_addr, shutdown_fd)
+    # `listener` must outlive `serve`; this use is what keeps it alive.
+    _ = listener.socket.fd.value
+    if failed > 0:
+        process_exit(EXIT_STARTUP)

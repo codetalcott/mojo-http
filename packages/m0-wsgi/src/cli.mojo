@@ -50,6 +50,8 @@ struct ServeOptions(Copyable, Movable):
     var host: String
     var port: Int
     var workers: Int
+    var threads: Int
+    """Serving threads in one process (free-threaded CPython only); 1 = off."""
     var app_dir: String
     """Prepended to `sys.path` so `module` can be imported; relative to cwd."""
     var static_prefixes: List[String]
@@ -70,6 +72,7 @@ struct ServeOptions(Copyable, Movable):
         self.host = String("0.0.0.0")
         self.port = DEFAULT_PORT
         self.workers = 1
+        self.threads = 1
         self.app_dir = String(".")
         self.static_prefixes = List[String]()
         self.static_dirs = List[String]()
@@ -86,6 +89,7 @@ struct ServeOptions(Copyable, Movable):
         self.host = copy.host
         self.port = copy.port
         self.workers = copy.workers
+        self.threads = copy.threads
         self.app_dir = copy.app_dir
         self.static_prefixes = copy.static_prefixes.copy()
         self.static_dirs = copy.static_dirs.copy()
@@ -102,6 +106,7 @@ struct ServeOptions(Copyable, Movable):
         self.host = move.host^
         self.port = move.port
         self.workers = move.workers
+        self.threads = move.threads
         self.app_dir = move.app_dir^
         self.static_prefixes = move.static_prefixes^
         self.static_dirs = move.static_dirs^
@@ -124,6 +129,7 @@ struct ServeOptions(Copyable, Movable):
         opts.host = config.host
         opts.port = config.port
         opts.workers = config.workers
+        opts.threads = config.threads
         opts.access_log = config.access_log
         return opts^
 
@@ -228,6 +234,7 @@ def _takes_value(name: String) -> Bool:
         name == "--host"
         or name == "--port"
         or name == "--workers"
+        or name == "--threads"
         or name == "--app-dir"
         or name == "--static"
         or name == "--static-cache-control"
@@ -261,6 +268,11 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         if workers < 1:
             raise Error("--workers must be at least 1, got " + value)
         opts.workers = workers
+    elif name == "--threads":
+        var threads = parse_int(value, "--threads")
+        if threads < 1:
+            raise Error("--threads must be at least 1, got " + value)
+        opts.threads = threads
     elif name == "--app-dir":
         if value.byte_length() == 0:
             raise Error("--app-dir must not be empty")
@@ -361,6 +373,8 @@ def usage() -> String:
         "  --host ADDR                 bind address (default 0.0.0.0; M0_HOST)\n"
         "  --port N                    port (default 8000; M0_PORT)\n"
         "  --workers N                 prefork worker processes (default 1; M0_WORKERS)\n"
+        "  --threads N                 serving threads in ONE process, free-threaded\n"
+        "                              CPython only; exclusive with --workers (M0_THREADS)\n"
         "  --app-dir DIR               prepended to sys.path (default .)\n"
         "  --static PREFIX=DIR         serve DIR at PREFIX from Mojo, never entering\n"
         "                              Python; repeatable\n"

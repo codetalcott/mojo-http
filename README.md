@@ -283,12 +283,18 @@ asserts a body of all 256 byte values returns unchanged.
 
 **Limits**, all inherited from the server rather than the bridge:
 
-- **One request at a time per process.** `HTTPService.func` is called
-  synchronously on the event loop, so a slow view blocks every other connection
-  in its process. Concurrency means more processes: `M0_WORKERS=N` preforks N
-  workers that all accept from one shared listener, gunicorn-style — and the
-  fork happens *before* the first Python call, never after, because forking a
-  live CPython is unsafe. Benchmarked against gunicorn at ~1.5–2x its
+- **One request at a time per event loop.** `HTTPService.func` is called
+  synchronously on the loop, so a slow view blocks every other connection
+  that loop holds. Concurrency is more loops: `--workers N` preforks N
+  processes that all accept from one shared listener, gunicorn-style — the
+  fork happens *before* the first Python call, never after, because forking
+  a live CPython is unsafe — or, on free-threaded CPython (3.13t+ with the
+  GIL off), `--threads N` runs N loops on N threads in **one** process: one
+  RSS, the app imported once, and none of the fork-after-init hazards. A
+  GIL-enabled interpreter refuses `--threads` outright (exit 78) rather than
+  run a thread pool that the GIL would serialize. Either way a keep-alive
+  connection stays pinned to the loop that accepted it; per-request
+  balancing is the recorded next step. Benchmarked against gunicorn at ~1.5–2x its
   throughput with comparable-or-better p99, in both keep-alive and
   close-per-request modes — methodology, history, and the leak that once made
   this paragraph less flattering:

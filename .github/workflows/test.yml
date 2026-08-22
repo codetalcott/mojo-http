@@ -174,6 +174,11 @@ jobs:
       # beating the environment, a static mount, --max-body, --metrics.
       - name: Smoke test the serve CLI
         run: uv run poe smoke-serve
+      # The threaded mode's guard: on these GIL-enabled runners M0_THREADS>1
+      # must refuse to start with exit 78 and a sentence naming the
+      # requirement. The mode itself is proven weekly by py-canary on 3.14t.
+      - name: Smoke test the threaded mode's guard
+        run: uv run poe smoke-threads
       # The hybrid row: a sync Django view's M0-Hold response becomes a live
       # SSE subscription, and its publish (pure-Python bus datagrams) reaches
       # subscribers held by both workers -- ASGI's realtime surface without ASGI.
@@ -204,6 +209,7 @@ jobs:
             wsgi.log
             flask.log
             serve.log
+            threads.log
             rt.log
             rt2.log
             rt3.log
