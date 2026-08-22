@@ -176,18 +176,43 @@ the `mojo` driver script itself when the pinned venv is still on PATH —
 which is why the canary scopes that variable strictly to the swapped
 environment.
 
-A green canary does **not** make m0-wsgi multithreaded; it opens the door to
-designing that. Thread-per-request m0-wsgi is a real project with real
-unknowns: every embedded thread needs its own attached thread state
-(free-threading removes the mutual exclusion, not the thread-state
-discipline); the bridge's "GIL held on main forever" assumption and its
-single transfer buffer are both per-process singletons; and Mojo's interop
-layer has no documented multi-thread embedding story. The prize is equally
-real: threads would eventually *replace* `M0_WORKERS` forking — one process,
-shared memory, no per-worker RSS duplication, no bus needed for fan-out, and
-the entire class of fork-after-init hazards (the macOS `_scproxy`/objc abort,
+**The multi-thread question is also measured** — `poe py-thread-probe`
+(`scripts/py_thread_probe.mojo`) spawns raw pthreads from Mojo, has each
+attach with `PyGILState_Ensure` (after the main thread's `PyEval_SaveThread`
+— on a GIL build workers would otherwise block forever against the state
+`Py_Initialize` left attached), and calls a `PythonObject` through
+`std.python` from every thread, checking results. First runs (2026-08-21,
+M4, 4P+6E):
+
+| Build | Mode | Threads | Speedup | Verdict |
+| --- | --- | --- | --- | --- |
+| 3.13.7 | interop | 4 | 0.98x | works, serialized — the GIL signature |
+| 3.14.2t | interop | 2 | 1.96x | essentially perfect parallelism |
+| 3.14.2t | interop | 4 | 2.75x | falloff matches P/E topology, not interop |
+| 3.14.2t | interop | 8 | 3.15x | E-core dilution |
+| 3.14.2t | raw, shared global | 4 | **0.68x** | shared-state loops serialize WORSE than the GIL |
+| either | naive (no Ensure) | 4 | — | process dies; the discipline is load-bearing |
+
+So Mojo 1.0's interop layer *is* usable from foreign threads — "Mojo never
+acquires the GIL" is the bridge's current design choice, not a toolchain
+limit — and free-threading genuinely parallelizes it. The 0.68x row is the
+sharpest lesson: threads hammering one shared Python object (the probe's raw
+mode writes a single `__main__` global) contend on per-object locks and lose
+to the serial baseline. Thread-*local* state parallelizes — and per-request
+WSGI state is naturally thread-local, which is exactly the right shape.
+
+The canary and the probe together do **not** make m0-wsgi multithreaded; they
+bound the design work. What remains is engineering, not discovery: the
+bridge's per-process singletons (one transfer bytearray, one `_body` global,
+"state attached to main forever") must become per-thread, and shared Python
+state above the bridge (Django's own caches — the contention Sam Gross is
+patching upstream) is the scaling risk to measure. The prize is unchanged:
+threads would eventually *replace* `M0_WORKERS` forking — one process, shared
+memory, no per-worker RSS duplication, no bus needed for fan-out, and the
+entire class of fork-after-init hazards (the macOS `_scproxy`/objc abort,
 `exit_worker`, fork-before-first-Python-call) simply disappears. That is the
-"WSGI thread pool" future, and the canary is its go/no-go gate.
+"WSGI thread pool" future; the canary plus this probe are its go/no-go gate,
+and both currently say go.
 
 ## 6. Verdict
 
