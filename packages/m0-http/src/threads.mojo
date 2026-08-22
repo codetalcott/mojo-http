@@ -165,10 +165,11 @@ def read_one_byte_blocking(fd: Int) -> Int:
     sleeps here until the signal pipe says stop. EINTR is retried — a caught
     signal is exactly what this fd reports, and the byte follows it.
     """
-    var buf = List[UInt8](capacity=8)
-    var ptr = buf.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
-        MutUntrackedOrigin
-    ]()
+    # An explicit allocation, not a `List(capacity=...)`: that constructor
+    # reserves but a write through its pointer before any append is a write
+    # the list does not own, and it corrupted the heap under a real build.
+    var buf = external_call["malloc", Int, Int](8)
+    var ptr = _OpaqueMut(unsafe_from_address=buf)
     var n: Int
     while True:
         n = external_call["read", Int, Int, _OpaqueMut, Int](fd, ptr, 1)
@@ -178,6 +179,7 @@ def read_one_byte_blocking(fd: Int) -> Int:
         if err != err.EINTR:
             n = 0
             break
+    external_call["free", NoneType, Int](buf)
     return n
 
 
