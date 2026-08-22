@@ -6,6 +6,7 @@ from .format import (
     format_sse_event_bytes,
     format_sse_heartbeat_bytes,
     split_sse_lines,
+    sse_data_payload,
     NO_EVENT_ID,
 )
 from .registry import SSERegistry, MAX_PENDING_BYTES

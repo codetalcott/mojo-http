@@ -6,6 +6,7 @@ from src.sse.format import (
     format_sse_event,
     format_sse_heartbeat,
     split_sse_lines,
+    sse_data_payload,
     NO_EVENT_ID,
 )
 from src.sse.registry import SSERegistry, MAX_PENDING_BYTES
@@ -466,6 +467,74 @@ def test_journal_compact() raises:
     j.compact("/a")
     assert_equal(j.since("/a", 0).type, "none")
     assert_equal(j.since("/b", 0).type, "patch")
+
+# --- sse_data_payload: the inverse, for cross-transport delivery ---
+
+def _payload(frame: String) -> String:
+    return String(unsafe_from_utf8=sse_data_payload(frame.as_bytes()))
+
+
+def test_data_payload_round_trips_format_sse_event() raises:
+    """What the formatter framed, the extractor recovers."""
+    assert_equal(_payload(format_sse_event(7, "message", "hello")), "hello")
+
+
+def test_data_payload_rejoins_multiline_data() raises:
+    """Multi-line data becomes several `data:` fields; the join undoes it."""
+    assert_equal(
+        _payload(format_sse_event(NO_EVENT_ID, "message", "one\ntwo\nthree")),
+        "one\ntwo\nthree",
+    )
+
+
+def test_data_payload_ignores_id_and_event_fields() raises:
+    """Only `data` fields contribute — the framing is not payload."""
+    assert_equal(_payload("id: 42\nevent: ping\ndata: body\n\n"), "body")
+
+
+def test_data_payload_of_a_comment_frame_is_empty() raises:
+    """A heartbeat carries no data field, and reads as no payload at all."""
+    assert_equal(_payload(": heartbeat\n\n"), "")
+
+
+def test_data_payload_strips_exactly_one_space() raises:
+    """One space after the colon is framing; a second is payload."""
+    assert_equal(_payload("data:  padded\n\n"), " padded")
+    assert_equal(_payload("data:tight\n\n"), "tight")
+
+
+def test_data_payload_handles_a_valueless_data_field() raises:
+    """A bare `data` line is a data field with an empty value."""
+    assert_equal(_payload("data\ndata: after\n\n"), "\nafter")
+
+
+def test_data_payload_stops_at_the_blank_line() raises:
+    """A frame is ONE event; bytes past its terminator belong to no event."""
+    assert_equal(_payload("data: first\n\ndata: second\n\n"), "first")
+
+
+def test_data_payload_accepts_crlf_terminators() raises:
+    """CRLF is a line terminator too, and must not land inside the payload."""
+    assert_equal(_payload("id: 1\r\ndata: crlf\r\n\r\n"), "crlf")
+
+
+# --- filter_url: which channel one slot joined ---
+
+def test_filter_url_reports_the_subscribed_url() raises:
+    var reg = SSERegistry(4)
+    reg.subscribe(2, "/news", 0)
+    assert_equal(reg.filter_url(2), "/news")
+
+
+def test_filter_url_is_empty_when_unsubscribed_or_out_of_range() raises:
+    var reg = SSERegistry(4)
+    reg.subscribe(1, "/news", 0)
+    reg.unsubscribe(1)
+    assert_equal(reg.filter_url(1), "")
+    assert_equal(reg.filter_url(0), "")
+    assert_equal(reg.filter_url(-1), "")
+    assert_equal(reg.filter_url(99), "")
+
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

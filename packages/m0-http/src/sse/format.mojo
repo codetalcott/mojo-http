@@ -76,3 +76,55 @@ def format_sse_heartbeat_bytes() -> List[UInt8]:
     """Format an SSE heartbeat comment as bytes."""
     var s = format_sse_heartbeat()
     return List[UInt8](s.as_bytes())
+
+
+def sse_data_payload(frame: Span[Byte, _]) -> List[UInt8]:
+    """The `data` payload of one SSE frame — the inverse of `format_sse_event`.
+
+    Returns exactly what a browser's `EventSource` hands to `onmessage` as
+    `event.data`: every `data` field's value, joined with a single `\\n`, with
+    no trailing newline. `id:`, `event:`, `retry:` and comment lines are
+    dropped; a frame carrying no `data` field at all (a `: heartbeat`
+    comment, say) yields an empty payload, which is how a caller tells the
+    two apart.
+
+    This exists because a frame that has already been *framed* as SSE
+    sometimes has to reach a subscriber on a different transport. The
+    `BroadcastBus` carries complete SSE frames, and a WebSocket subscriber
+    needs the payload, not the framing — `apps/django_realtime` re-encodes
+    exactly this with `encode_ws_frame`, so its WebSocket clients and its
+    `EventSource` clients see byte-identical messages from one publish.
+
+    Field parsing follows the WHATWG event-stream rules: the name runs to the
+    first colon, one optional space after the colon is stripped, and a line
+    with no colon is a field with an empty value. Line terminators are
+    CRLF, CR, or LF, as in `split_sse_lines`.
+    """
+    var text = String(StringSlice(unsafe_from_utf8=frame))
+    var lines = split_sse_lines(text)
+    var out = List[UInt8]()
+    var first = True
+    for i in range(len(lines)):
+        var line = lines[i]
+        if line.byte_length() == 0:
+            # The blank line ends the event; a frame is one event, so
+            # anything after it belongs to no event this function reports.
+            break
+        if line.as_bytes()[0] == UInt8(ord(":")):
+            continue  # comment
+        var colon = line.find(":")
+        var name = line if colon < 0 else String(StringSlice(line)[byte=0:colon])
+        if name != "data":
+            continue
+        var value = String("")
+        if colon >= 0:
+            var start = colon + 1
+            # Exactly one space after the colon is part of the framing.
+            if start < line.byte_length() and line.as_bytes()[start] == UInt8(ord(" ")):
+                start += 1
+            value = String(StringSlice(line)[byte=start:line.byte_length()])
+        if not first:
+            out.append(UInt8(ord("\n")))
+        out.extend(value.as_bytes())
+        first = False
+    return out^

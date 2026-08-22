@@ -138,10 +138,10 @@ Tests are `std.testing`: `test_*` functions in a `test_*.mojo`, dispatched by
 `TestSuite.discover_tests[__functions_in_module()]().run()` in `main()`. Adding
 a test means adding a function — there is no registration list to update.
 
-The 68 warnings the baseline records are not a backlog. 53 are doc-string
+The 69 warnings the baseline records are not a backlog. 53 are doc-string
 capitalisation lint on summaries that open with a real identifier (`fetch_add
 on...`, `wants_html`, `q=0`, `text/*`) — capitalising them would corrupt the
-name each documents. The other 15 warn about APIs Mojo 1.0.0 does not ship:
+name each documents. The other 16 warn about APIs Mojo 1.0.0 does not ship:
 `alloc` without a `Layout` suggests an `unsafe_alloc` that does not exist, and
 `ABI="C"` suggests an `abi("C")` that is not a declaration in any position.
 Both are recorded in NOTICE and in `m0-core/ffi_exports.mojo`'s docstring. Do

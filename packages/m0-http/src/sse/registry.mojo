@@ -122,6 +122,19 @@ struct SSERegistry:
                 count += 1
         return count
 
+    def filter_url(self, slot: Int) -> String:
+        """The url a slot subscribed to, or "" — the inverse of `subscribe`.
+
+        The fan-out paths never need this: they are handed a url and look for
+        matching slots. A handler that must answer *about* one connection
+        does — `apps/django_realtime` reads the channel a WebSocket joined
+        when a message arrives on it, because the frame itself carries no
+        channel and the subscription is the only record of one.
+        """
+        if slot < 0 or slot >= self._capacity:
+            return String("")
+        return self.filter_urls[slot]
+
     def is_slot_streaming(self, slot: Int) -> Bool:
         """Whether a slot is in SSE streaming mode. Bounds-safe."""
         if slot < 0 or slot >= self._capacity:

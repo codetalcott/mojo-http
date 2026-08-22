@@ -23,6 +23,7 @@ from .sse import (
     format_sse_event,
     format_sse_heartbeat,
     split_sse_lines,
+    sse_data_payload,
     NO_EVENT_ID,
     SSERegistry,
     PatchJournal,

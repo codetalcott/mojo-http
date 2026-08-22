@@ -26,4 +26,16 @@ from .bridge import PyBridge, SHIM_SOURCE
 from .environ import cgi_header_name, serialize_request
 from .response import build_response, split_status
 from .app import WSGIApp
-from .hold import HoldResult, take_stream_hold
+from .hold import (
+    HoldResult,
+    take_hold,
+    take_stream_hold,
+    request_last_event_id,
+    ws_message_request,
+    HOLD_NONE,
+    HOLD_STREAM,
+    HOLD_WEBSOCKET,
+    CHANNEL_HEADER,
+    SLOT_HEADER,
+    OPCODE_HEADER,
+)

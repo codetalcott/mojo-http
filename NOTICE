@@ -138,6 +138,15 @@ lightbug_http
         than unfixed, both warning about APIs Mojo 1.0.0 does not ship:
         `alloc` without a Layout (12 sites here) and `ABI="C"` on
         @export (in m0-core, outside the fork)
+      - Three latent name/deprecation faults fixed, each only reachable when
+        the import graph is entered from a particular direction and so
+        invisible to every build until one was: cookie/request_cookie_jar.mojo
+        used `Headers` in parse_cookies without importing it (it happened to
+        resolve through the header <-> http.parsing cycle on the usual entry
+        path), and uri.mojo's __str__ and is_http still called
+        `len(String)`, which Mojo 1.0 rejects outright. Bodies elaborate on
+        demand, so all three compiled cleanly until a consumer reached them.
+        Behaviour-preserving; byte_length() is what len() meant
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
