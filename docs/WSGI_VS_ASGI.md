@@ -180,26 +180,45 @@ environment.
 (`scripts/py_thread_probe.mojo`) spawns raw pthreads from Mojo, has each
 attach with `PyGILState_Ensure` (after the main thread's `PyEval_SaveThread`
 — on a GIL build workers would otherwise block forever against the state
-`Py_Initialize` left attached), and calls a `PythonObject` through
-`std.python` from every thread, checking results. First runs (2026-08-21,
-M4, 4P+6E):
+`Py_Initialize` left attached), and calls into the interpreter from every
+thread, checking results. Its mode matrix varies exactly one thing at a
+time — which layer makes the call, and where the loop's state lives — so an
+anomaly can be attributed, not guessed at. Measured 2026-08-21/22 on an M4
+(4P+6E), CPython 3.14.7t, baselines warmed (the first call pays bytecode
+specialization; timing it as the baseline made workers look super-linear):
 
-| Build | Mode | Threads | Speedup | Verdict |
-| --- | --- | --- | --- | --- |
-| 3.13.7 | interop | 4 | 0.98x | works, serialized — the GIL signature |
-| 3.14.2t | interop | 2 | 1.96x | essentially perfect parallelism |
-| 3.14.2t | interop | 4 | 2.75x | falloff matches P/E topology, not interop |
-| 3.14.2t | interop | 8 | 3.15x | E-core dilution |
-| 3.14.2t | raw, shared global | 4 | **0.68x** | shared-state loops serialize WORSE than the GIL |
-| either | naive (no Ensure) | 4 | — | process dies; the discipline is load-bearing |
+| Build | Mode — where the loop's state lives | Threads | Speedup |
+| --- | --- | --- | --- |
+| 3.13.7 | every variant | 4 | ~1.0x — works, serialized: the GIL signature |
+| 3.14.7t | interop — function locals | 2 | ~2.1x |
+| 3.14.7t | interop — function locals | 4 | **3.96x** |
+| 3.14.7t | interop — function locals | 8 | 3.64x — E-core dilution past the 4 P-cores |
+| 3.14.7t | rawfn — `PyRun_SimpleString`, function locals | 4 | 3.52x |
+| 3.14.7t | raw — `PyRun_SimpleString`, `__main__` globals | 4 | **0.81x** |
+| 3.14.7t | rawnames — same dict, per-thread distinct keys | 4 | 0.71x |
+| 3.14.7t | sharedobj — interop closure mutating one shared list | 4 | 0.75x |
+| either | naive — no `PyGILState_Ensure` | 4 | process dies; the discipline is load-bearing |
 
-So Mojo 1.0's interop layer *is* usable from foreign threads — "Mojo never
-acquires the GIL" is the bridge's current design choice, not a toolchain
-limit — and free-threading genuinely parallelizes it. The 0.68x row is the
-sharpest lesson: threads hammering one shared Python object (the probe's raw
-mode writes a single `__main__` global) contend on per-object locks and lose
-to the serial baseline. Thread-*local* state parallelizes — and per-request
-WSGI state is naturally thread-local, which is exactly the right shape.
+Three conclusions, each isolated by a pair of rows:
+
+- **Mojo 1.0's interop layer is usable from foreign threads and
+  parallelizes essentially perfectly** (3.96x on 4 threads) — "Mojo never
+  acquires the GIL" is the bridge's current design choice, not a toolchain
+  limit. Patch level matters: the identical run on 3.14.2t measured 2.75x,
+  so free-threading contention fixes landing in 3.14.x patches are worth
+  ~1.2x here all by themselves.
+- **The anti-scaling mechanism is confirmed to be shared-object contention,
+  located to the object.** The same `PyRun_SimpleString` path scores 3.52x
+  when the loop's state lives in function locals and 0.81x when it lives in
+  `__main__`'s dict; giving every thread its own *keys* in that one dict
+  (0.71x) does not help — it is the dict's per-object lock, not the keys.
+  A closure hammering one shared list through the interop path (0.75x) shows
+  the same cliff in the shape a shared cache or counter would take.
+- **Thread-*local* state parallelizes; hot shared mutable Python objects
+  anti-scale below the serial baseline.** Per-request WSGI state is
+  naturally thread-local — the right shape — and the shared-object cliff is
+  precisely why Django's own free-threading contention work (the
+  `Field.creation_counter` class of fix) matters to real throughput.
 
 The canary and the probe together do **not** make m0-wsgi multithreaded; they
 bound the design work. What remains is engineering, not discovery: the
