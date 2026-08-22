@@ -35,8 +35,8 @@ from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
 
 from m0_http import (
-    AppConfig, SSERegistry, WorkerSupervisor, install_shutdown_signals,
-    exit_worker,
+    AppConfig, SSERegistry, StaticFiles, WorkerSupervisor,
+    install_shutdown_signals, exit_worker,
 )
 from m0_wsgi import WSGIApp, take_stream_hold
 
@@ -44,14 +44,24 @@ from m0_wsgi import WSGIApp, take_stream_hold
 struct RealtimeHandler(HTTPService):
     var app: WSGIApp
     var registry: SSERegistry
+    var static: StaticFiles
 
-    def __init__(out self, var app: WSGIApp):
+    def __init__(out self, var app: WSGIApp, var static: StaticFiles):
         self.app = app^
+        self.static = static^
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
         self.registry = SSERegistry(1024)
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        # Static assets are answered here, before the bridge: the other half
+        # of the hybrid's pitch. Django never sees these requests, so a slow
+        # view queue cannot delay a stylesheet — and WhiteNoise has nothing
+        # left to do.
+        var hit = self.static.serve(req)
+        if hit:
+            return hit.take()
+
         if req.uri.path == "/health":
             # Answered in Mojo, never enters Django: the live subscriber
             # count is how the smoke asserts a vanished client is actually
@@ -157,10 +167,17 @@ def main() raises:
         "djangoproj.wsgi",
         server_name="0.0.0.0",
         server_port=port,
-        project_path=project_path,
         multiprocess=multiprocess,
+        project_path=project_path,
     )
-    var handler = RealtimeHandler(app^)
+    # The static mount lives beside the Django project and is served by the
+    # Mojo layer with a real freshness policy — Django's staticfiles pipeline
+    # (and WhiteNoise) are simply not involved.
+    var static = StaticFiles(
+        project_path + "/static", "/static/",
+        cache_control="public, max-age=3600",
+    )
+    var handler = RealtimeHandler(app^, static^)
 
     print("Starting Django realtime server on 0.0.0.0:" + port)
     var server = Server(config.server_config())

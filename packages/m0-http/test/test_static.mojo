@@ -336,3 +336,49 @@ def test_plain_200_advertises_accept_ranges() raises:
     var static = StaticFiles(root, "/static/")
     var resp = _serve(static, _get("/static/style.css"))
     assert_equal(resp.headers["Accept-Ranges"], "bytes")
+
+
+# --- Cache-Control -----------------------------------------------------------
+
+def test_no_cache_control_by_default() raises:
+    """Freshness policy belongs to the deployment; unset sends nothing."""
+    var static = StaticFiles(_fixture_root())
+    var resp = _serve(static, _get("/static/style.css"))
+    assert_false("cache-control" in resp.headers)
+
+
+def test_cache_control_on_200_and_304() raises:
+    """The 304 carries it too — a validator response that drops freshness
+    makes every revalidation immediately stale again."""
+    var static = StaticFiles(
+        _fixture_root(), cache_control=String("public, max-age=3600")
+    )
+    var first = _serve(static, _get("/static/style.css"))
+    assert_equal(first.headers["cache-control"], "public, max-age=3600")
+    var req = _get("/static/style.css")
+    req.headers["if-none-match"] = first.headers["etag"]
+    var second = _serve(static, req^)
+    assert_equal(second.status_code, 304)
+    assert_equal(second.headers["cache-control"], "public, max-age=3600")
+
+
+def test_cache_control_on_206() raises:
+    var static = StaticFiles(
+        _fixture_root(), cache_control=String("public, max-age=60")
+    )
+    var req = _get("/static/data.bin")
+    req.headers["range"] = "bytes=0-2"
+    var resp = _serve(static, req^)
+    assert_equal(resp.status_code, 206)
+    assert_equal(resp.headers["cache-control"], "public, max-age=60")
+
+
+def test_cache_control_not_on_404() raises:
+    """An error is not the asset; it must not inherit the asset's freshness."""
+    var static = StaticFiles(
+        _fixture_root(), cache_control=String("public, max-age=3600")
+    )
+    var hit = static.serve(_get("/static/missing.css"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 404)
+    assert_false("cache-control" in resp.headers)

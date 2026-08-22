@@ -948,6 +948,22 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 done
 [ "$subs" = "0" ] || fail "dead SSE clients still subscribed (subscribers=$subs)"
 
+# Static assets: the other half of the hybrid. Served by the Mojo layer with
+# type, ETag revalidation, and a freshness policy — the request never enters
+# Python, which is the WhiteNoise/nginx replacement claim, asserted.
+curl -s -D "$out/static_hdr" http://localhost:8080/static/app.css -o "$out/static_body"
+grep -q 'font-family' "$out/static_body" || fail 'static css did not serve'
+grep -iq '^content-type: text/css' "$out/static_hdr" || fail 'static css content type wrong'
+grep -iq '^cache-control: public, max-age=3600' "$out/static_hdr" || fail 'static cache-control missing'
+setag=$(grep -i '^etag' "$out/static_hdr" | cut -d' ' -f2- | tr -d '\r')
+[ -n "$setag" ] || fail 'static file served without an ETag'
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8080/static/app.css)
+[ "$code" = "304" ] || fail "static revalidation expected 304, got $code"
+# A traversal probe answers 404 — and 404 specifically: no confirmation
+# that it was even understood.
+code=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://localhost:8080/static/../m0pub.py)
+[ "$code" = "404" ] || fail "traversal expected 404, got $code"
+
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
 

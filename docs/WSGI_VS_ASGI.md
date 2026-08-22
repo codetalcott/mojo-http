@@ -267,12 +267,16 @@ of Gunicorn-style forks"** aim is gated on exactly what `py-canary` measures
 GIL, so the canary is that aim's standing go/no-go probe. The **"ASGI
 bridge"** aim exists mostly to serve realtime and async codebases; the
 hold/publish pattern covers the realtime half without it, narrowing the
-bridge to genuinely-async codebases and making it deferrable. Auto-detection
-of ASGI vs WSGI applications, native static-file serving (`sendfile`),
-PyPI-wheel distribution with a uvicorn-style CLI, hot reload, and the
-Granian benchmark suite are follow-ups recorded in
-[ROADMAP.md](ROADMAP.md)'s orbit — none of them depend on the ASGI decision
-made here.
+bridge to genuinely-async codebases and making it deferrable. The
+**static-files** aim is covered: `m0_http.StaticFiles` (ETags, ranges,
+traversal-hardened) fronts the Django rows — `apps/django_realtime` serves
+its assets from the Mojo layer with a `Cache-Control` policy, and those
+requests never enter Python; only the zero-copy `sendfile` optimization
+remains recorded (it needs event-loop support for fd-backed bodies).
+Auto-detection of ASGI vs WSGI applications, PyPI-wheel distribution with a
+uvicorn-style CLI, hot reload, and the Granian benchmark suite are
+follow-ups recorded in [ROADMAP.md](ROADMAP.md)'s orbit — none of them
+depend on the ASGI decision made here.
 
 ## Sources
 

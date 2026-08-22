@@ -26,10 +26,11 @@ TOKEN = "letmein"
 
 def index(request):
     return HttpResponse(
-        "django_realtime — sync Django, live SSE.\n"
+        "django_realtime — sync Django, live SSE, Mojo-served static files.\n"
         "\n"
         "  GET  /events?channel=news&token=letmein   subscribe (SSE)\n"
-        "  POST /publish  channel=news msg=hello     broadcast to subscribers\n",
+        "  POST /publish  channel=news msg=hello     broadcast to subscribers\n"
+        "  GET  /static/app.css                      served in Mojo, never enters Python\n",
         content_type="text/plain",
     )
 
