@@ -234,6 +234,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datasta
 help = "Run the Django WSGI example on :8080 (needs the django dev dependency)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/django_wsgi/server.mojo"
 
+[tool.poe.tasks.serve-django-realtime]
+help = "Run the Django realtime example on :8080 — sync Django views, live SSE held by the server"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ apps/django_realtime/server.mojo"
+
 [tool.poe.tasks.serve-notes]
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
@@ -708,7 +712,12 @@ PYEOF
 [ $? = 0 ] || fail 'leak-check load loop could not complete 10k requests'
 rss1=$(ps -o rss= -p $pid | tr -d ' ')
 growth=$((rss1 - rss0))
-[ "$growth" -lt 12288 ] || fail "bridge leaked ${growth}KB of RSS over 10k requests"
+# The limit is parameterized for py-canary only (free-threaded builds carry a
+# documented +15-20% memory baseline); the default here IS the production
+# guard and must not be weakened. The measured number is echoed on success so
+# a drift stays visible in CI logs and canary reports.
+echo "rss growth over 10k requests: ${growth}KB (limit ${M0_RSS_LIMIT_KB:-12288}KB)"
+[ "$growth" -lt "${M0_RSS_LIMIT_KB:-12288}" ] || fail "bridge leaked ${growth}KB of RSS over 10k requests"
 
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
@@ -846,6 +855,142 @@ wait $pid 2>/dev/null
 
 rm -f django.log django2.log django3.log
 echo "smoke-django OK"
+"""
+
+# The hybrid row: sync Django under m0-wsgi, with the server's native SSE doing
+# what Django users otherwise adopt ASGI for. A view answers with M0-Hold /
+# M0-Channel and the server converts that buffered response into a live SSE
+# subscription (take_stream_hold); a view publishes by writing bus datagrams
+# from pure Python (m0pub.py) — no ASGI, no Python event loop, no per-request
+# PythonObject traffic. Phase 1 pins the hold/publish mechanics on one worker;
+# phase 2 is the headline: ONE publish from a sync Django view reaches SSE
+# clients held by BOTH workers.
+[tool.poe.tasks.smoke-django-realtime]
+help = "Realtime demo: Django-gated SSE holds, Django-originated publish, channel isolation, cleanup, cross-worker fan-out"
+shell = """
+out=$(mktemp -d)
+srv="$out/realtime_server"
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
+  apps/django_realtime/server.mojo -o "$srv" || exit 1
+
+cleanup() {
+  kill $pid $worker_pids 2>/dev/null
+  rm -rf "$out" rt.log rt2.log
+}
+trap cleanup EXIT
+
+fail() {
+  echo "$1"
+  for log in rt.log rt2.log; do
+    if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
+  done
+  exit 1
+}
+
+# Phase 1: single worker. The heartbeat cadence is set low so the stream
+# provably stays alive under the loop's timer, not by accident.
+M0_SSE_HEARTBEAT_MS=500 "$srv" > rt.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || fail 'server never became healthy'
+
+# Django gates the subscription: no token means a plain 403 — and no hold, so
+# nothing may appear in the registry.
+code=$(curl -s -o /dev/null -w '%{http_code}' 'http://localhost:8080/events?channel=news')
+[ "$code" = "403" ] || fail "expected 403 without token, got $code"
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || fail "a refused subscribe still registered (subscribers=$subs)"
+
+# Two subscribers on different channels: A hears news, B must not.
+curl -sN --max-time 8 -D "$out/hdr_a" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/sse_a" &
+sse_a=$!
+curl -sN --max-time 8 'http://localhost:8080/events?channel=other&token=letmein' > "$out/sse_b" &
+sse_b=$!
+sleep 2
+
+# The instruction headers were consumed by the server, never served: leaking
+# them would advertise an internal control surface to every client.
+grep -iq '^content-type: text/event-stream' "$out/hdr_a" || fail 'held response is not SSE'
+grep -iq '^m0-hold' "$out/hdr_a" && fail 'M0-Hold leaked to the client'
+grep -iq '^m0-channel' "$out/hdr_a" && fail 'M0-Channel leaked to the client'
+grep -iq '^content-length' "$out/hdr_a" && fail 'a held response still carries Content-Length'
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "2" ] || fail "expected 2 subscribers, health says $subs"
+
+# ONE publish from a synchronous Django view. Its response reports how many
+# worker channels the os.write reached — delivery to subscribers is the
+# server's business and is asserted on the stream below.
+resp=$(curl -s -X POST -d channel=news -d msg=hello-realtime http://localhost:8080/publish)
+echo "$resp" | grep -q '"workers": 1' || fail "publish did not reach the worker channel: $resp"
+sleep 2
+kill $sse_a $sse_b 2>/dev/null
+wait $sse_a $sse_b 2>/dev/null
+
+# The Django body led the stream, the published frame followed, and the
+# other channel heard nothing.
+grep -q '^: connected' "$out/sse_a" || fail 'the Django body did not lead the stream'
+grep -q '^data: hello-realtime' "$out/sse_a" || fail 'publish never reached the subscriber'
+grep -q 'hello-realtime' "$out/sse_b" && fail 'channel isolation failed: the other channel got the frame'
+
+# Repeating heartbeats, bounded: fewer than 2 means the one-shot timer never
+# re-armed; an absurd count is the level-triggered storm. Same bounds as
+# smoke-counter, same failure shapes.
+beats=$(grep -c '^: heartbeat' "$out/sse_a")
+[ "$beats" -ge 2 ] || { echo "expected repeating heartbeats, saw $beats"; cat "$out/sse_a"; exit 1; }
+[ "$beats" -le 40 ] || fail "heartbeat storm: $beats beats in ~6s at 500ms cadence"
+
+# Both clients were killed, not closed politely; every close path must
+# unsubscribe them from the registry.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+  [ "$subs" = "0" ] && break
+  sleep 1
+done
+[ "$subs" = "0" ] || fail "dead SSE clients still subscribed (subscribers=$subs)"
+
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+# Phase 2: cross-worker fan-out. One stream is pinned on EACH worker with the
+# SIGSTOP technique from smoke-counter (accept is not fair; racing it flakes),
+# then ONE Django-handled publish must reach both — the stream on the other
+# worker receives it over the BroadcastBus.
+M0_WORKERS=2 M0_SSE_HEARTBEAT_MS=500 "$srv" > rt2.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
+  || fail 'two-worker server never became healthy'
+worker_pids=$(grep -oE 'pid=[0-9]+' rt2.log | cut -d= -f2 | sort -u)
+trap 'kill $pid $worker_pids 2>/dev/null; rm -rf "$out" rt.log rt2.log' EXIT
+
+curl -sN --max-time 60 -D "$out/mw_hdr_1" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/mw_sse_1" &
+sleep 2
+w_a=$(grep -i '^x-worker' "$out/mw_hdr_1" | tr -dc '0-9')
+[ -n "$w_a" ] || fail 'first stream never opened (no x-worker header)'
+
+kill -STOP "$w_a" 2>/dev/null
+trap 'kill -CONT $w_a 2>/dev/null; kill $pid $worker_pids 2>/dev/null; rm -rf "$out" rt.log rt2.log' EXIT
+curl -sN --max-time 60 -D "$out/mw_hdr_2" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/mw_sse_2" &
+sleep 3
+w_b=$(grep -i '^x-worker' "$out/mw_hdr_2" | tr -dc '0-9')
+kill -CONT "$w_a" 2>/dev/null
+trap 'kill $pid $worker_pids 2>/dev/null; rm -rf "$out" rt.log rt2.log' EXIT
+
+[ -n "$w_b" ] || fail "second stream never opened while worker $w_a was stopped"
+[ "$w_a" != "$w_b" ] || fail "both streams landed on worker $w_a even though it was SIGSTOPped"
+
+# The publish view reports both worker channels written; each held stream —
+# one per worker — must then carry the frame.
+resp=$(curl -s -X POST -d channel=news -d msg=cross-worker-hello http://localhost:8080/publish)
+echo "$resp" | grep -q '"workers": 2' || fail "publish did not reach both worker channels: $resp"
+sleep 2
+grep -q '^data: cross-worker-hello' "$out/mw_sse_1" \
+  || fail "stream on worker $w_a missed the cross-worker publish"
+grep -q '^data: cross-worker-hello' "$out/mw_sse_2" \
+  || fail "stream on worker $w_b missed the cross-worker publish"
+
+kill $pid $worker_pids 2>/dev/null
+rm -f rt.log rt2.log
+echo "smoke-django-realtime OK"
 """
 
 [tool.poe.tasks.serve-flask]
@@ -1422,4 +1567,154 @@ poe build-all || exit 1
 poe test-all || exit 1
 echo ""
 echo "CANARY PASSED against $(mojo --version)"
+"""
+
+# --- Free-threaded Python canary ---------------------------------------------
+#
+# Like the Mojo nightly canary above, but probing the OTHER half of the
+# toolchain: can this stack run on free-threaded CPython 3.14t (PEP 703/779)?
+# The design swaps the whole .venv rather than the interpreter inside it: the
+# poe executor targets .venv and prepends .venv/bin to PATH, so a swapped venv
+# consistently switches BOTH the embedded libpython (Mojo resolves it from
+# PATH's python3) AND the smoke tasks' client-side python3 probes, with zero
+# smoke-task edits. The same uv.lock resolves under 3.14t (Django, asgiref,
+# and Flask ship py3-none wheels; mojo==1.0.0 is py3-none-<platform>), so
+# `uv sync --frozen --python 3.14t` builds an identically-locked venv without
+# touching the lock. Unlike the nightly canary there is nothing to rebuild:
+# .mojoc artifacts are compiler-locked, and both venvs install the same
+# compiler.
+#
+# The traps, learned the way the nightly canary's were:
+# 1. While swapped, every task must be invoked as bare `poe` - a plain
+#    `uv run` re-syncs .venv to the lock's 3.13 resolution and the canary
+#    then reports a green *stable* run that means nothing.
+# 2. PYTHON_GIL=0 (honest mode: an extension that needs the GIL fails loudly
+#    instead of silently re-enabling it and voiding the measurement) applies
+#    to EVERY CPython that starts under it, including poe and the mojo driver
+#    script themselves. On the 3.14t venv that is fine; exported into a 3.13
+#    process it is an instant "Disabling the GIL is not supported by this
+#    build" abort - so py-canary never sets it before the swap, and the
+#    restore path unsets it first.
+# 3. Target 3.14t only, never 3.13t: 3.13t systematically immortalizes
+#    objects (a known leak; Django dropped 3.13t from its own CI over it).
+
+[tool.poe.tasks.py314t-try]
+help = "Swap .venv onto free-threaded CPython 3.14t from the same uv.lock (then: bare poe only, never uv run)"
+shell = """
+[ ! -e .venv-pinned ] || { echo 'py314t-try: .venv-pinned already exists - a previous canary did not restore. Run: uv run poe py314t-restore' >&2; exit 2; }
+uv python install 3.14t || exit 1
+mv .venv .venv-pinned || exit 2
+if ! uv sync --frozen --python 3.14t; then
+  echo 'py314t-try: the 3.14t venv could not be built from uv.lock - restoring the pinned venv' >&2
+  rm -rf .venv
+  mv .venv-pinned .venv || exit 2
+  exit 1
+fi
+.venv/bin/python3 -VV
+echo 'Now on 3.14t. Run tasks as: poe <task> (bare poe - a plain uv run re-syncs back to 3.13).'
+"""
+
+[tool.poe.tasks.py314t-restore]
+help = "Restore the pinned 3.13 venv (no artifact rebuild needed - both venvs install the same mojo compiler)"
+shell = """
+if [ -d .venv-pinned ]; then
+  rm -rf .venv || exit 2
+  mv .venv-pinned .venv || exit 2
+else
+  uv sync || exit 2
+fi
+.venv/bin/python3 --version 2>&1 | grep -q ' 3.13' || { echo 'py314t-restore: restore left the wrong python in .venv' >&2; exit 2; }
+.venv/bin/mojo --version >/dev/null || exit 2
+echo "restored $(.venv/bin/python3 --version 2>&1)"
+"""
+
+# One command for the whole free-threaded probe. Exit codes match the nightly
+# canary: 0 the 3.14t path is open, 1 free-threaded Python broke something
+# (the signal - the environment is restored), 2 the environment could not be
+# put back and needs a hand. Each phase is a distinguishable failure class;
+# the report at the end names the phase that failed, and py-canary.log holds
+# the full output.
+[tool.poe.tasks.py-canary]
+help = "Run the WSGI stack against free-threaded CPython 3.14t, then restore the pinned venv"
+shell = """
+set -u
+: > py-canary.log
+report=$(mktemp)
+phase=provision
+
+restore() {
+  code=$?
+  # PYTHON_GIL=0 aborts any 3.13 interpreter at startup - clear it before
+  # anything from the restored venv runs.
+  unset PYTHON_GIL MOJO_PYTHON_LIBRARY M0_RSS_LIMIT_KB
+  echo ''
+  echo '--- restoring the pinned 3.13 venv ---'
+  # Inlined rather than `poe py314t-restore`: poe itself runs on the venv
+  # being deleted, and uv/mv/grep do not.
+  if [ -d .venv-pinned ]; then
+    rm -rf .venv && mv .venv-pinned .venv || { echo 'PY-CANARY: restore FAILED - recover with: uv run poe py314t-restore' >&2; exit 2; }
+  fi
+  .venv/bin/python3 --version 2>&1 | grep -q ' 3.13' || { echo 'PY-CANARY: restore left the wrong python - recover with: uv run poe py314t-restore' >&2; exit 2; }
+  git diff --quiet -- uv.lock .python-version || { echo 'PY-CANARY: the pin files changed during the canary' >&2; exit 2; }
+  echo ''
+  echo '--- PY-CANARY REPORT (full log: py-canary.log) ---'
+  cat "$report"
+  rm -f "$report"
+  [ $code -eq 0 ] || echo "failed during phase: $phase"
+  exit $code
+}
+
+# Artifacts are built on the PINNED toolchain before the swap: the same
+# compiler serves both sides, and a pre-existing build failure must not be
+# misread as a 3.14t finding.
+poe build-all >> py-canary.log 2>&1 || { echo 'PY-CANARY: build-all failed on the pinned toolchain - fix that first'; exit 1; }
+trap restore EXIT
+poe py314t-try >> py-canary.log 2>&1 || { echo 'PY-CANARY: could not provision the 3.14t venv (see py-canary.log)'; exit 1; }
+echo "provision: OK ($(.venv/bin/python3 --version 2>&1))" >> "$report"
+
+# MOJO_PYTHON_LIBRARY is belt-and-braces: PATH resolution already finds the
+# swapped venv's python3, but auto-discovery of free-threaded builds has a
+# history (modular/modular#6366), and naming the dylib is harmless when
+# redundant.
+pylib=$(.venv/bin/python3 -c 'import sysconfig, os; print(os.path.join(sysconfig.get_config_var("LIBDIR") or "", sysconfig.get_config_var("INSTSONAME") or ""))')
+[ -f "$pylib" ] || { echo "PY-CANARY: FAIL(libpython-discovery): $pylib not found"; exit 1; }
+export MOJO_PYTHON_LIBRARY="$pylib"
+export PYTHON_GIL=0
+export M0_RSS_LIMIT_KB=24576
+
+phase=A0-driver-and-artifacts
+poe test-wsgi >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the mojo driver or the pinned-compiler artifacts break under the 3.14t venv (see py-canary.log)"; exit 1; }
+echo 'A0 test-wsgi (driver + artifacts, no interpreter): OK' >> "$report"
+
+phase=A1-interpreter-probe
+if ! mojo run scripts/py_canary_probe.mojo > probe.out 2>&1; then
+  cat probe.out; cat probe.out >> py-canary.log
+  echo 'retrying with PYTHON_GIL=1 to split "3.14 breaks us" from "free-threading breaks us":'
+  PYTHON_GIL=1 mojo run scripts/py_canary_probe.mojo || true
+  echo "PY-CANARY: FAIL($phase)"; exit 1
+fi
+cat probe.out >> py-canary.log
+grep -q 'free_threaded_build=1' probe.out || { echo 'PY-CANARY: FAIL(not-actually-free-threaded): the embedded interpreter is not a free-threaded build'; cat probe.out; exit 1; }
+grep -q 'gil_enabled=False' probe.out || { echo 'PY-CANARY: FAIL(gil-still-enabled): free-threaded build, but the GIL is on'; cat probe.out; exit 1; }
+echo "A1 probe: OK ($(grep 'python_version=' probe.out), embedded GIL off)" >> "$report"
+rm -f probe.out
+
+phase=B-smoke-wsgi
+poe smoke-wsgi >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): PEP 3333 conformance or the first fork (see py-canary.log)"; exit 1; }
+echo 'B smoke-wsgi (PEP 3333 + fork, M0_WORKERS=2): OK' >> "$report"
+
+phase=C-smoke-django
+poe smoke-django >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase) (see py-canary.log)"; exit 1; }
+echo "C smoke-django: OK ($(grep -o 'rss growth over 10k requests: [0-9-]*KB' py-canary.log | tail -1) vs 12288KB production limit)" >> "$report"
+
+phase=C2-smoke-flask
+poe smoke-flask >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase) (see py-canary.log)"; exit 1; }
+echo 'C2 smoke-flask: OK' >> "$report"
+
+phase=C3-smoke-django-realtime
+poe smoke-django-realtime >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the hybrid hold/publish path (see py-canary.log)"; exit 1; }
+echo 'C3 smoke-django-realtime (hybrid SSE under free-threading): OK' >> "$report"
+
+echo ''
+echo "PY-CANARY PASSED against $(.venv/bin/python3 --version 2>&1) (free-threaded)"
 """
