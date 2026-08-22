@@ -245,8 +245,11 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   boundaries) and another as the completion channel registered like
   `bus_read_fd`, workers blocking in `recv` *detached* and attaching per job,
   completion re-entering the existing `RESPONDING` write path exactly as the
-  outbox drain does. ~8 touchpoints in `event_loop.mojo`; gated on Stage A's
-  benchmark row showing the pinned keep-alive p99 as the remaining gap.
+  outbox drain does. ~8 touchpoints in `event_loop.mojo`. Stage A's
+  benchmark row exists ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md), 3.14.7t):
+  threads at throughput parity with prefork at ~60% of its RSS, ~3.5x
+  gunicorn on the same interpreter; the keep-alive tail did not excite under
+  `ab`, so a `wrk` run is the measurement that would gate Stage B.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it

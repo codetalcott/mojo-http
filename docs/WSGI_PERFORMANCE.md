@@ -78,6 +78,57 @@ Two things in that table are worth reading carefully rather than skimming:
   taken by alternating the two binaries within one session, and the ratios
   are what carry meaning.
 
+## Threads vs prefork, on one free-threaded interpreter
+
+Measured 2026-08-22 on an M4 (4P+6E), **CPython 3.14.7t with the GIL off**
+for all three servers — mojo-http's prefork mode, its threaded mode, and
+gunicorn 26.1.0 — serving `apps/django_wsgi`'s hello route with the same
+browser-shaped request as above. ApacheBench this time (`ab -c16 -n20000`,
+with `-k` for keep-alive), because it ships with macOS and `wrk` does not;
+the table is ratios within one session, which either tool gives. Two
+alternating rounds; both shown, because the spread *is* the finding's
+error bar. `scripts/bench_wsgi_modes.sh` is the run.
+
+Requests per second, `ab` p50 / p99 in ms, RSS of the whole process tree:
+
+| loops | `m0serve --workers N` | `m0serve --threads N` | `gunicorn -w N` | RSS prefork / threads / gunicorn |
+|------:|----------------------:|----------------------:|----------------:|---------------------------------:|
+| 2, keep-alive | 12,759 · 14,734 (1 / 2–3) | 11,055 · 14,127 (1 / 3–4) | 3,748 · 4,096 (4 / 8–14) | 44–94 MB / 25–38 MB / 53 MB |
+| 2, close      | 8,777 · 12,599 (1–2 / 2–5) | 7,984 · 13,128 (1 / 2–8) | 4,075 · 3,979 (3–4 / 9–12) | |
+| 4, keep-alive | 21,458 · 20,565 (1 / 2) | 20,587 · 21,638 (1 / 2) | 5,841 · 6,178 (2 / 5–7) | 79–83 MB / 48–49 MB / 92–93 MB |
+| 4, close      | 16,480 · 16,469 (1 / 3) | 16,303 · 16,088 (1 / 3) | 5,977 · 6,129 (2 / 4–6) | |
+
+What the table says, and what it does not:
+
+- **Threads are at throughput parity with prefork.** 0.92–1.05x across the
+  eight pairings, inside the round-to-round spread. This is the expected
+  answer for Stage A: each thread runs the same event loop and the same
+  bridge a worker does, so per-request cost is unchanged; what the mode
+  changes is the process model. It is also the answer that matters — the
+  free-threaded build's single-thread overhead did not eat the parallelism.
+- **One process costs ~60% of N processes.** 48 MB against 79–83 MB at four
+  loops; the application is imported once and the interpreter's heap is
+  shared. (The 94 MB prefork figure in round 2 at two workers is an outlier
+  — a respawned or lingering worker caught by the process-tree sum — and is
+  reported rather than dropped.)
+- **~3.5x gunicorn at four loops, ~3.3x at two**, on the same free-threaded
+  interpreter. gunicorn's sync workers gain nothing from free-threading
+  (they are processes), so this is the same ratio shape as the 3.13 table,
+  measured through a different tool.
+- **The keep-alive tail did not reproduce here.** p99 sits at 2–4 ms for
+  both mojo-http modes where the 2026-08-18 `wrk` run saw 84 ms at two
+  workers. `ab -k` keeps 16 connections open the same way, so the
+  difference is most likely load shape (ab's fixed request count and
+  slower client) rather than a server change — and the pinning mechanism
+  is unchanged: a keep-alive connection still belongs to whichever loop
+  accepted it, in both modes. The honest statement is that this run did
+  not excite the tail, not that the tail is gone; Stage B (ROADMAP.md)
+  remains the fix for it, and a `wrk` run on the same box is the next
+  measurement worth making.
+- **Not in the table:** 3.13 vs 3.14t. Every row is 3.14.7t; the 3.13
+  numbers above were a different day, tool and container and do not
+  chain to these.
+
 ## What the server-layer work bought the WSGI path
 
 The span-based headers landed a **+72%** throughput win on `apps/hello`,
@@ -164,6 +215,15 @@ teardown, visible server-side and identical with the leak fixed; it is a
 boundary artifact of switching load patterns, not steady-state behavior.
 
 ## Reproducing
+
+For the threads-vs-prefork row: `uv run poe py314t-try`, export
+`MOJO_PYTHON_LIBRARY` (from `sysconfig`'s `LIBDIR`/`INSTSONAME`) and
+`PYTHON_GIL=0`, `uv pip install --python .venv/bin/python gunicorn`,
+`.venv/bin/poe build-serve` (a Mojo binary carries an `@rpath` into the venv
+it was built in, so rebuild inside the swap), then
+`scripts/bench_wsgi_modes.sh`; `uv run poe py314t-restore` afterwards. Bare
+`.venv/bin/poe`, never `uv run`, while swapped — a `uv run` re-syncs the venv
+back to 3.13 mid-run.
 
 No poe task, because gunicorn is deliberately not a dependency of this repo.
 The shape of a run:

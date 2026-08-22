@@ -29,6 +29,10 @@ versions may break the API**.
   `wsgi.multithread` is finally True somewhere; every response carries
   `x-thread`. `smoke-threads` pins the guard on every runner and the mode
   itself on the free-threaded canary (phase D of `py-canary`).
+- **The threads-vs-prefork benchmark row** (`docs/WSGI_PERFORMANCE.md`,
+  `scripts/bench_wsgi_modes.sh`): on 3.14.7t, `--threads N` is at throughput
+  parity with `--workers N` (0.92–1.05x) at ~60% of its RSS, ~3.5x gunicorn
+  on the same free-threaded interpreter.
 - **`ThreadHandler`** (`m0-wsgi`): an `HTTPService` that constructs itself on
   a serving thread via a static `make(ctx)`. A trait rather than a function
   parameter because Mojo 1.0 cannot materialize a function-parameterized
