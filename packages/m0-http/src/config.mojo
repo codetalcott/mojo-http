@@ -4,6 +4,10 @@ Provides sensible defaults for all fields. No config file parsing —
 env vars are the container convention.
 
 Env vars:
+    M0_HOST       — Listen address: an IPv4 literal, or "localhost" for
+                    127.0.0.1 (default: 0.0.0.0 — every interface). Not
+                    resolved: the listener is IPv4-only, and a hostname
+                    would need DNS the server deliberately does not do.
     M0_PORT       — HTTP listen port (default: 8080)
     M0_BASE_URL   — Public base URL (default: http://localhost:{port})
     M0_API_KEY    — API key for mutation auth (default: "" = disabled)
@@ -23,6 +27,7 @@ from lightbug_http.server_config import ServerConfig
 
 struct AppConfig(Copyable, Movable):
     """Application configuration loaded from environment."""
+    var host: String
     var port: Int
     var base_url: String
     var api_key: String
@@ -33,6 +38,7 @@ struct AppConfig(Copyable, Movable):
 
     def __init__(out self, default_port: Int = 8080):
         """Load configuration from M0_-prefixed env vars with defaults."""
+        self.host = _parse_host(getenv("M0_HOST", ""))
         self.port = _parse_int_env("M0_PORT", default_port)
         self.api_key = getenv("M0_API_KEY", "")
         self.workers = _parse_int_env("M0_WORKERS", 1)
@@ -48,6 +54,7 @@ struct AppConfig(Copyable, Movable):
             self.base_url = "http://localhost:" + String(self.port)
 
     def __init__(out self, *, copy: Self):
+        self.host = copy.host
         self.port = copy.port
         self.base_url = copy.base_url
         self.api_key = copy.api_key
@@ -57,6 +64,7 @@ struct AppConfig(Copyable, Movable):
         self.app_tick_ms = copy.app_tick_ms
 
     def __init__(out self, *, deinit move: Self):
+        self.host = move.host^
         self.port = move.port
         self.base_url = move.base_url^
         self.api_key = move.api_key^
@@ -67,7 +75,7 @@ struct AppConfig(Copyable, Movable):
 
     def address(self) -> String:
         """Return listen address string (e.g. '0.0.0.0:8080')."""
-        return "0.0.0.0:" + String(self.port)
+        return self.host + ":" + String(self.port)
 
     def server_config(self) -> ServerConfig:
         """A `ServerConfig` carrying every field this config shares with it.
@@ -87,6 +95,22 @@ struct AppConfig(Copyable, Movable):
         sc.sse_heartbeat_ms = self.sse_heartbeat_ms
         sc.app_tick_ms = self.app_tick_ms
         return sc^
+
+
+def _parse_host(raw: String) -> String:
+    """Normalize a listen address; empty means every interface.
+
+    `localhost` becomes `127.0.0.1` because the listener is IPv4-only and
+    does no name resolution — a user who types the word expects the loopback
+    bind it names everywhere else, not a bind failure. Anything else is
+    passed through verbatim for the socket layer to accept or reject.
+    """
+    var host = raw.strip()
+    if host.byte_length() == 0:
+        return String("0.0.0.0")
+    if host == "localhost":
+        return String("127.0.0.1")
+    return String(host)
 
 
 def _parse_int_env(name: String, default: Int) -> Int:

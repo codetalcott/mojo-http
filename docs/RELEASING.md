@@ -10,7 +10,11 @@ The steps, in order:
 1. **Update [CHANGELOG.md](../CHANGELOG.md).** Add a `## [X.Y.Z] — date`
    section at the top and a link reference at the bottom. The release notes
    point here, so this is the document of record.
-2. **Bump `version` in `pyproject.toml`** to match.
+2. **Bump `version` in `pyproject.toml`** to match, and `M0SERVE_VERSION`
+   in `packages/m0-wsgi/src/cli.mojo` — `smoke-serve` asserts the two agree,
+   so CI catches a bump that forgot one. Then run `uv lock` so `uv.lock`'s
+   own project version follows (a bare `uv run` later will rewrite it
+   otherwise).
 3. **Land those changes on `main`** through an ordinary PR — CI green first,
    like any change.
 4. **Tag and release**, either way:

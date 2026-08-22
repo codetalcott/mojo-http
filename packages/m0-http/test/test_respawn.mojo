@@ -84,5 +84,39 @@ def test_respawned_worker_returns_to_the_callers_startup_path() raises:
     remove(ok_marker)
 
 
+def _hopeless_scenario():
+    """A worker that cannot start, ever: crashes immediately every time.
+
+    Five rapid crashes trip the supervisor's breaker. The question is what
+    the supervisor then tells the world — and it used to say 0.
+    """
+    try:
+        var supervisor = WorkerSupervisor(1)
+        supervisor.fork_all()
+        # Every incarnation reaches here and dies at once — the shape of a
+        # worker whose first Python call fails (a bad module path, say).
+        process_exit(9)
+    except:
+        process_exit(7)
+
+
+def test_supervisor_exits_nonzero_when_respawn_budget_is_spent() raises:
+    """A supervisor that gave up has not succeeded, and its exit code says so.
+
+    Pinned because `m0serve --workers N` with a mistyped `module:attr` is
+    exactly this scenario, and a CLI that exits 0 after failing to load the
+    application misreports to everything that launches it.
+    """
+    var pid = fork()
+    if pid == 0:
+        _hopeless_scenario()
+        process_exit(99)  # unreachable
+
+    var result = waitpid_blocking(pid)
+    var status = result[1]
+    assert_false(was_signaled(status), "supervisor process died on a signal")
+    assert_equal(exit_code(status), 1)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

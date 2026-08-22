@@ -20,6 +20,8 @@ __pycache__/
 
 # Compiled app binaries (rebuild with `mojo build`)
 apps/hello/hello
+# The serve CLI (rebuild with `uv run poe build-serve`)
+bin/
 
 # warning ratchet input (CI tees build output here; see scripts/warning_ratchet.py)
 compile.log
@@ -43,6 +45,9 @@ rt2.log
 rt3.log
 ws1.log
 ws2.log
+flask.log
+wsgi.log
+serve.log
 .venv-pinned/
 py-canary.log
 probe.out

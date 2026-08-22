@@ -223,6 +223,15 @@ struct WorkerSupervisor:
     var rapid_crash_count: Int
     var last_fork_ns: Int
     var _last_freed_index: Int
+    var _gave_up: Bool
+    """Whether the respawn budget ran out with a worker still dead.
+
+    A supervisor that stops respawning has lost capacity it was asked for,
+    and a worker that crashed on every attempt usually could not start at
+    all — a bad module path, an import error. Exiting 0 there reported
+    success to whatever launched the server; the exit code now says
+    otherwise.
+    """
 
     def __init__(out self, num_workers: Int):
         self.child_pids = List[Int]()
@@ -233,6 +242,7 @@ struct WorkerSupervisor:
         self.rapid_crash_count = 0
         self.last_fork_ns = 0
         self._last_freed_index = -1
+        self._gave_up = False
 
     def fork_all(mut self) raises:
         """Fork all workers. Children return. Parent enters supervise loop and exits.
@@ -259,7 +269,7 @@ struct WorkerSupervisor:
             # Respawned child: unwind to the caller's server startup path,
             # exactly as an initially-forked child does above.
             return
-        process_exit(0)
+        process_exit(1 if self._gave_up else 0)
 
     def _supervise(mut self) raises -> Bool:
         """Parent supervision loop: respawn crashes, propagate signals.
@@ -320,6 +330,7 @@ struct WorkerSupervisor:
         """
         if self.respawn_count >= self.max_respawns:
             print("[parent] max respawns ({}) reached, not respawning".format(self.max_respawns))
+            self._gave_up = True
             return _RESPAWN_FAILED
 
         # Rapid crash detection: if child died within 1 second of last fork
@@ -329,6 +340,7 @@ struct WorkerSupervisor:
             self.rapid_crash_count += 1
             if self.rapid_crash_count >= 5:
                 print("[parent] 5 rapid crashes detected, stopping respawn")
+                self._gave_up = True
                 return _RESPAWN_FAILED
         else:
             self.rapid_crash_count = 0

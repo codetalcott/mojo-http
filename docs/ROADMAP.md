@@ -151,8 +151,8 @@ implemented in an embedded Python shim rather than as a Mojo callable, and
 bodies moved as raw addresses because Mojo 1.0's `std.python` binds no `bytes`
 API at all.
 
-Concurrency is prefork, and it exists now: `M0_WORKERS=N` makes
-`apps/django_wsgi/server.mojo` fork N workers through `WorkerSupervisor`
+Concurrency is prefork, and it exists now: `M0_WORKERS=N` (or `m0serve
+--workers N`) forks N workers through `WorkerSupervisor`
 *before* the first Python call — forking a live CPython is not safe, and Mojo
 initializes the interpreter lazily, so each worker makes its own first Python
 call by constructing its own `WSGIApp` after returning from `fork_all()`.
@@ -238,10 +238,20 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   smoke-asserted (type, ETag revalidation, freshness, traversal 404). The
   zero-copy `sendfile` step remains recorded — it needs event-loop support
   for fd-backed response bodies, a deliberate change, not a tweak.
-- **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in a
-  single entry point; PyPI-wheel distribution with a uvicorn-style CLI and
-  a native file-watcher for reload; a published benchmark suite against
-  gunicorn/uvicorn/Granian.
+- **The uvicorn-shaped CLI exists.** `m0serve MODULE[:ATTR]` with `--host`,
+  `--port`, `--workers`, `--app-dir`, `--static PREFIX=DIR`, `--max-body`,
+  `--metrics` (`packages/m0-wsgi/m0serve.mojo`, `poe build-serve` →
+  `bin/m0serve`). The three WSGI rows are Python-only projects served by that
+  one binary; `smoke-serve` pins the exit codes, flag-over-env precedence,
+  and the server tunings a command line can now reach. Flags are strict
+  where `M0_*` is lenient.
+- **Recorded follow-ups, not yet scoped:** the realtime hold/publish
+  machinery behind `m0serve` flags (retiring `apps/django_realtime`'s own
+  `server.mojo`); hot reload as a supervisor-side mtime poller that kills and
+  re-forks workers (the supervisor never touches Python, so fork-without-exec
+  stays safe there); ASGI/WSGI auto-detection in the entry point;
+  PyPI-wheel distribution (the binary links libpython and carries the Mojo
+  runtime); a published benchmark suite against gunicorn/uvicorn/Granian.
 
 ## Known issues
 

@@ -10,6 +10,12 @@ on the link line of every build in the repo.
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         return self.app.serve(req)
 
+`WSGIHandler` is that handler, written once, with static mounts in front of
+it; `m0serve` (the package-root entry file, built by `poe build-serve`) is the
+uvicorn-shaped binary that runs it:
+
+    bin/m0serve myproject.wsgi:application --app-dir /path/to/project --port 8000
+
 Known limits, all inherited from the server rather than the bridge:
 
 - **Responses are fully buffered.** `HTTPResponse` always emits
@@ -26,6 +32,19 @@ from .bridge import PyBridge, SHIM_SOURCE
 from .environ import cgi_header_name, serialize_request
 from .response import build_response, split_status
 from .app import WSGIApp
+from .handler import WSGIHandler
+from .cli import (
+    ServeOptions,
+    parse_args,
+    parse_app_spec,
+    parse_size,
+    parse_int,
+    usage,
+    M0SERVE_VERSION,
+    DEFAULT_PORT,
+    EXIT_USAGE,
+    EXIT_STARTUP,
+)
 from .hold import (
     HoldResult,
     take_hold,

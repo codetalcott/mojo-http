@@ -5,6 +5,56 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+### Added
+
+- **`m0serve` — the uvicorn-shaped serve CLI.** One built binary
+  (`poe build-serve` → `bin/m0serve`) serves any WSGI application:
+  `m0serve MODULE[:ATTR] --host --port --workers --app-dir --static
+  PREFIX=DIR --static-cache-control --access-log --max-body --metrics`.
+  `ATTR` defaults to `application`; `--app-dir` (default `.`) is prepended to
+  `sys.path`. Every `M0_*` variable keeps its meaning with the matching flag
+  winning over it, and flags are strict where the environment loader is
+  lenient — `--port 80eighty` is a usage error (exit 2), not a silent
+  default. Startup failures exit 1 and name the thing (a missing app dir is
+  caught before any interpreter starts; a module or attribute that will not
+  import is reported in Python's own words). `--max-body` and `--metrics`
+  are the first two server-only `ServerConfig` tunings a command line can
+  reach. The entry file lives at the package root
+  (`packages/m0-wsgi/m0serve.mojo`), outside `src/`, for the reasons
+  `m0-core/ffi_exports.mojo` documents; the parser (`src/cli.mojo`) is pure
+  and interpreter-free, tested in `test-wsgi`.
+- **`WSGIHandler`** (`m0-wsgi`): the one copy of the handler three example
+  apps used to carry identically, with static mounts (`List[StaticFiles]`)
+  answered in Mojo ahead of the bridge.
+- **`M0_HOST`**: the listen address, read by `AppConfig` and honoured by
+  `address()`. An IPv4 literal, or `localhost` for `127.0.0.1`; the listener
+  is IPv4-only and resolves nothing.
+- `poe smoke-serve`: `--help`/`--version`, the usage and startup exit codes
+  (including a supervisor that gives up under `--workers`), flag-over-env
+  precedence, a static mount with its `Cache-Control`, `--max-body` → 413,
+  `--metrics`, and a graceful SIGTERM.
+
+### Changed
+
+- The Django, Flask and bare-WSGI rows are Python-only projects served by
+  `m0serve`; `serve-django`, `serve-flask`, `serve-wsgi-bare` and the three
+  smokes build the CLI once and reuse it. What the rows assert is unchanged.
+- `WorkerSupervisor` exits **1**, not 0, when its respawn budget runs out
+  with a worker still dead — a worker that crashes on every attempt usually
+  could not start at all (a bad module path), and exiting 0 reported success
+  to whatever launched the server. `test_respawn.mojo` pins it.
+
+### Removed
+
+- `apps/django_wsgi/server.mojo`, `apps/flask_wsgi/server.mojo` and
+  `apps/wsgi_bare/server.mojo`, and with them the `M0_FLASK_PROJECT` and
+  `M0_WSGI_PROJECT` variables — replaced by `m0serve … --app-dir`.
+  `apps/django_realtime/server.mojo` keeps its own `main()` and
+  `M0_DJANGO_PROJECT` until the hold/publish machinery moves behind
+  `m0serve` flags.
+
 ## [0.4.0] — 2026-08-22
 
 The release the WSGI host grew up in. `m0-wsgi` went from a spike to a

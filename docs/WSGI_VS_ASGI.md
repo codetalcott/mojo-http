@@ -325,10 +325,12 @@ traversal-hardened) fronts the Django rows — `apps/django_realtime` serves
 its assets from the Mojo layer with a `Cache-Control` policy, and those
 requests never enter Python; only the zero-copy `sendfile` optimization
 remains recorded (it needs event-loop support for fd-backed bodies).
-Auto-detection of ASGI vs WSGI applications, PyPI-wheel distribution with a
-uvicorn-style CLI, hot reload, and the Granian benchmark suite are
-follow-ups recorded in [ROADMAP.md](ROADMAP.md)'s orbit — none of them
-depend on the ASGI decision made here.
+The uvicorn-style CLI exists: `m0serve MODULE[:ATTR] --host --port
+--workers --app-dir --static` is one built binary serving every WSGI row.
+Auto-detection of ASGI vs WSGI applications, PyPI-wheel distribution, hot
+reload, and the Granian benchmark suite are follow-ups recorded in
+[ROADMAP.md](ROADMAP.md)'s orbit — none of them depend on the ASGI decision
+made here.
 
 ## Sources
 

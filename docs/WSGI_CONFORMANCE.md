@@ -51,9 +51,10 @@ worth reading once for assertions to port, and nothing more.
 
 [`apps/wsgi_bare/`](../apps/wsgi_bare/) — a plain PEP 3333 callable with zero
 third-party dependencies, 19 routes, each pinning one paragraph of the spec.
-`apps/wsgi_bare/server.mojo` is `apps/django_wsgi/server.mojo` with the
-framework removed, and the diff between them is the point: it is empty apart
-from the module name. It is the primary conformance target because a
+It is served by the same `m0serve` binary as the Django and Flask rows —
+`bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare` — so the rows
+are Python-only and the diff between them is the point: there is none on the
+server side at all. It is the primary conformance target because a
 failure against it is unambiguously the server's: there is no framework in
 between to blame. It also gives CI a WSGI smoke test that runs whether or not
 Django is installed, and it makes the README's "any WSGI app" claim
@@ -165,7 +166,7 @@ dependency and not a line of the contract. Flask is a dev dependency and
 | | |
 |---|---|
 | `apps/wsgi_bare/` — 19 routes, no third-party imports | built |
-| `apps/wsgi_bare/server.mojo` | built |
+| served by `m0serve` (no per-row `server.mojo`) | built |
 | `poe smoke-wsgi`, `poe serve-wsgi-bare` | built |
 | `write()` + double-`start_response` fixes in `bridge.mojo` | fixed |
 | CI step ahead of `smoke-django`, `wsgi.log` in failure artifacts | wired |
