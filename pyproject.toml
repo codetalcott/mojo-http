@@ -1598,6 +1598,30 @@ echo "CANARY PASSED against $(mojo --version)"
 # 3. Target 3.14t only, never 3.13t: 3.13t systematically immortalizes
 #    objects (a known leak; Django dropped 3.13t from its own CI over it).
 
+# The instrument behind the thread-pool go/no-go (docs/WSGI_VS_ASGI.md §5):
+# spawns raw pthreads from Mojo and has each attach to the embedded
+# interpreter and run Python, measuring correctness and parallel speedup.
+# It BUILDS against the active venv's libpython rather than `mojo run`ning:
+# the C-API symbols it calls directly (PyGILState_*, PyEval_*Thread) are not
+# resolvable by the JIT before std.python's lazy dlopen — the same
+# build-then-run rule m0-sqlite lives by. It therefore probes whichever
+# interpreter the venv holds: the 3.13 pin, or 3.14t after `poe py314t-try`
+# (invoke as bare `poe py-thread-probe` while swapped).
+# Knobs: M0_PROBE_MODE=interop|raw|naive, M0_PROBE_THREADS, M0_PROBE_N.
+[tool.poe.tasks.py-thread-probe]
+help = "Build and run the multi-thread embedding probe against the active venv's Python"
+shell = """
+libdir=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
+ldver=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("LDVERSION"))')
+out=$(mktemp -d)
+mojo build scripts/py_thread_probe.mojo -o "$out/probe" \
+  -Xlinker -L"$libdir" -Xlinker -lpython"$ldver" -Xlinker -rpath -Xlinker "$libdir" || exit 1
+"$out/probe"
+rc=$?
+rm -rf "$out"
+exit $rc
+"""
+
 [tool.poe.tasks.py314t-try]
 help = "Swap .venv onto free-threaded CPython 3.14t from the same uv.lock (then: bare poe only, never uv run)"
 shell = """

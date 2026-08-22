@@ -215,11 +215,13 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 - **Free-threaded CPython is the successor to prefork, pending maturity.**
   `poe py-canary` swaps the venv onto 3.14t from the same lock and runs the
   whole WSGI suite; its first run (2026-08-21, macOS/arm64) passed every
-  phase, with the RSS guard measuring *negative* growth. A thread-per-request
-  m0-wsgi (replacing `M0_WORKERS` forking, and with it the fork-safety
-  hazards) is the eventual design that a sustained green canary unlocks —
-  per-thread interpreter states and the bridge's single-buffer assumption are
-  the known unknowns.
+  phase, with the RSS guard measuring *negative* growth. `poe py-thread-probe`
+  answered the follow-on question: Mojo-spawned pthreads calling Python
+  through `std.python` work on both builds and genuinely parallelize on
+  3.14t (1.96x at 2 threads; shared-state loops invert to 0.68x — the
+  design lesson). A thread-per-request m0-wsgi (replacing `M0_WORKERS`
+  forking, and with it the fork-safety hazards) is now bounded engineering:
+  the bridge's per-process singletons must become per-thread.
 - **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in a
   single entry point; native static-file serving (`sendfile`, the
   WhiteNoise/nginx replacement); PyPI-wheel distribution with a
