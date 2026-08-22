@@ -1,0 +1,72 @@
+name: Free-Threaded Python Canary
+
+on:
+  schedule:
+    # Weekly, offset from the Mojo nightly canary (Tuesday). This is the
+    # standing go/no-go gate for the thread-pool successor to M0_WORKERS
+    # forking (docs/WSGI_VS_ASGI.md §5): it keeps "the 3.14t path is open"
+    # a measured fact as CPython patches, Django, and Mojo all move, rather
+    # than a one-time result from August 2026.
+    - cron: '0 22 * * 3'  # Wednesday 10pm UTC
+  workflow_dispatch:  # Allow manual trigger
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  py-canary:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    # The canary runs the full WSGI suite twice-ish (pinned build, then the
+    # 3.14t smokes, including smoke-django's 10k-request RSS loop).
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # Same reason as test.yml: m0-sqlite links libsqlite3, and build-all
+      # (the canary's first step) compiles every package. macOS resolves it
+      # from the dyld shared cache with no setup.
+      - name: Install libsqlite3 (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
+
+      - name: Install pinned dependencies
+        run: uv sync
+
+      # The task owns the whole probe: builds on the pinned toolchain, swaps
+      # .venv onto free-threaded 3.14t from the same uv.lock, runs the WSGI
+      # suite under PYTHON_GIL=0, and restores the pin in an EXIT trap.
+      # Exit 1 is the signal (3.14t broke something); exit 2 means the
+      # runner's environment could not be put back, which is disposable here.
+      - name: Run the free-threaded canary
+        run: uv run poe py-canary
+
+      - name: Upload canary log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: py-canary-log-${{ matrix.os }}
+          path: py-canary.log
+
+      - name: Create issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Free-threaded canary failed (${{ matrix.os }})" \
+            --label "freethreading-breakage" \
+            --body "The weekly free-threaded Python canary failed on ${{ matrix.os }}.
+
+          [View failed run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — py-canary.log is attached as an artifact, and the job output ends with the phase-by-phase report naming which failure class this is (provision, libpython discovery, probe, conformance, Django/Flask, realtime hybrid, or restore).
+
+          This likely means a CPython 3.14t patch, a dependency release, or a Mojo change moved under the free-threaded embedding path. docs/WSGI_VS_ASGI.md §5 records what the canary gates and why."
