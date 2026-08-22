@@ -215,13 +215,16 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 - **Free-threaded CPython is the successor to prefork, pending maturity.**
   `poe py-canary` swaps the venv onto 3.14t from the same lock and runs the
   whole WSGI suite; its first run (2026-08-21, macOS/arm64) passed every
-  phase, with the RSS guard measuring *negative* growth. `poe py-thread-probe`
-  answered the follow-on question: Mojo-spawned pthreads calling Python
-  through `std.python` work on both builds and genuinely parallelize on
-  3.14t (1.96x at 2 threads; shared-state loops invert to 0.68x — the
-  design lesson). A thread-per-request m0-wsgi (replacing `M0_WORKERS`
-  forking, and with it the fork-safety hazards) is now bounded engineering:
-  the bridge's per-process singletons must become per-thread.
+  phase, with the RSS guard measuring *negative* growth (re-confirmed on
+  3.14.7t). `poe py-thread-probe` answered the follow-on question:
+  Mojo-spawned pthreads calling Python through `std.python` work on both
+  builds and parallelize essentially perfectly on 3.14.7t (3.96x at 4
+  threads), while loops over shared mutable Python objects invert to
+  0.7-0.8x — a confirmed per-object-lock mechanism, and the design lesson:
+  thread-local state scales, hot shared objects anti-scale. A
+  thread-per-request m0-wsgi (replacing `M0_WORKERS` forking, and with it
+  the fork-safety hazards) is now bounded engineering: the bridge's
+  per-process singletons must become per-thread.
 - **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in a
   single entry point; native static-file serving (`sendfile`, the
   WhiteNoise/nginx replacement); PyPI-wheel distribution with a

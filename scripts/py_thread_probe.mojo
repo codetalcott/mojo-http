@@ -26,10 +26,17 @@ Modes (`M0_PROBE_MODE`):
 
 - `interop` (default): worker threads call a `PythonObject` through Mojo's
   `std.python` — the layer `m0-wsgi`'s bridge is built on, and therefore the
-  layer whose thread-safety actually decides the thread-pool question.
-- `raw`: worker threads use only `PyRun_SimpleString` — pure C API, no Mojo
-  interop involvement. If `interop` fails and `raw` passes, the blocker is
-  Mojo's interop layer, not CPython embedding.
+  layer whose thread-safety actually decides the thread-pool question. The
+  loop runs in function locals: fully thread-local state.
+- `raw` / `rawfn` / `rawnames`: workers use only `PyRun_SimpleString` — pure
+  C API, no Mojo interop involvement. The three variants differ in exactly
+  one thing, where the loop's state lives (see `_raw_code`), and together
+  they locate the sharing cost: `raw` puts it in `__main__`'s one shared
+  dict, `rawfn` in fast locals, `rawnames` in the shared dict under
+  per-thread keys.
+- `sharedobj`: like `interop`, but the closure's loop mutates ONE shared
+  Python list every iteration — the shape of a shared cache or counter under
+  a thread pool, measured through the same interop path.
 - `naive`: workers skip `PyGILState_Ensure`. Expected to crash the process —
   run it only to demonstrate the discipline is load-bearing.
 
@@ -63,6 +70,18 @@ def work(n):
     for i in range(n):
         s += i * i
     return s
+
+
+_cell = [0]
+
+
+def make_shared(m):
+    def f():
+        c = _cell
+        for i in range(m):
+            c[0] += 1
+        return str(m)
+    return f
 """
 
 
@@ -155,12 +174,42 @@ def _slot_u8(addr: Int) -> Pointer[Int8, MutUntrackedOrigin]:
     return Pointer[Int8, MutUntrackedOrigin](unsafe_from_address=addr)
 
 
+def _raw_code(mode: String, n: Int, suffix: String) -> String:
+    """The Python source a raw-family thread executes, chosen to isolate ONE
+    variable between variants — where the loop's state lives.
+
+    raw       module-level: `s`/`i` are __main__ globals, so every iteration
+              reads and writes ONE shared dict from every thread at once.
+    rawfn     the same loop wrapped in a function: state moves to fast
+              locals, no dict traffic — if this scales where `raw` did not,
+              the shared dict was the whole story.
+    rawnames  module-level, but per-thread variable names: same shared dict,
+              different keys — discriminates same-dict contention (the
+              dict's per-object lock) from same-key contention.
+    """
+    if mode == "rawfn":
+        return String(
+            "def _f():\n    s = 0\n    for i in range(", n,
+            "):\n        s += i * i\n    return s\n_f()\n",
+        )
+    if mode == "rawnames":
+        return String(
+            "s_", suffix, " = 0\nfor i_", suffix, " in range(", n,
+            "):\n    s_", suffix, " += i_", suffix, " * i_", suffix, "\n",
+        )
+    return String("s = 0\nfor i in range(", n, "):\n    s += i * i\n")
+
+
 def main() raises:
     var threads = _int_env("M0_PROBE_THREADS", 4)
     var n = _int_env("M0_PROBE_N", 4_000_000)
     var mode = getenv("M0_PROBE_MODE", "interop")
-    if mode != "interop" and mode != "raw" and mode != "naive":
-        raise Error("M0_PROBE_MODE must be interop, raw, or naive")
+    var is_raw = mode == "raw" or mode == "rawfn" or mode == "rawnames"
+    if not is_raw and mode != "interop" and mode != "sharedobj" and mode != "naive":
+        raise Error(
+            "M0_PROBE_MODE must be interop, raw, rawfn, rawnames, sharedobj,"
+            " or naive"
+        )
 
     # --- Interpreter up, on the main thread, exactly like the bridge -------
     var builtins = Python.import_module("builtins")
@@ -175,20 +224,37 @@ def main() raises:
     # Zero-argument thereafter: bind n into a closure once, startup-only, so
     # worker calls carry no arguments (the bridge's leak rule, same reason).
     # The closure answers str() because String(py=...) is the measured-clean
-    # way to read a call result back into Mojo.
-    _ = builtins.exec(
-        PythonObject("_bound = (lambda m: (lambda: str(work(m))))(" + String(n) + ")"),
-        ns,
-    )
+    # way to read a call result back into Mojo. sharedobj swaps the closure
+    # for one whose loop mutates ONE shared list every iteration — the shape
+    # of a shared cache under a thread pool — and answers a constant, since
+    # racing increments have no expected value.
+    if mode == "sharedobj":
+        _ = builtins.exec(
+            PythonObject("_bound = make_shared(" + String(n) + ")"), ns
+        )
+    else:
+        _ = builtins.exec(
+            PythonObject(
+                "_bound = (lambda m: (lambda: str(work(m))))(" + String(n) + ")"
+            ),
+            ns,
+        )
     var work_obj = ns["_bound"]
 
     # Baseline and expected value, measured the same way the workers work.
+    # One unmeasured warmup first: the first call pays bytecode
+    # specialization, and timing it as the baseline made worker threads look
+    # super-linear (wall below baseline at 2 threads, reproducibly).
     var code_addr = 0
     var expect_str = String("")
+    if is_raw:
+        code_addr = _c_string(_raw_code(mode, n, "b"))
+        if external_call["PyRun_SimpleString", c_int, Int](code_addr) != c_int(0):
+            raise Error("warmup PyRun_SimpleString failed")
+    else:
+        _ = work_obj()
     var t0 = perf_counter_ns()
-    if mode == "raw":
-        var code = String("s = 0\nfor i in range(", n, "):\n    s += i * i\n")
-        code_addr = _c_string(code)
+    if is_raw:
         if external_call["PyRun_SimpleString", c_int, Int](code_addr) != c_int(0):
             raise Error("baseline PyRun_SimpleString failed")
     else:
@@ -223,8 +289,14 @@ def main() raises:
         _slot(blk + _BLK_WORK_ADDR * 8)[] = work_addr
         _slot(blk + _BLK_USE_ENSURE * 8)[] = 0 if mode == "naive" else 1
         _slot(blk + _BLK_EXPECT * 8)[] = expect_addr
-        _slot(blk + _BLK_RAW_MODE * 8)[] = 1 if mode == "raw" else 0
-        _slot(blk + _BLK_CODE_ADDR * 8)[] = code_addr
+        _slot(blk + _BLK_RAW_MODE * 8)[] = 1 if is_raw else 0
+        # rawnames gives every thread its own source (distinct names in the
+        # one shared dict); the other raw variants share one string.
+        _slot(blk + _BLK_CODE_ADDR * 8)[] = (
+            _c_string(_raw_code(mode, n, String(i)))
+            if mode == "rawnames"
+            else code_addr
+        )
         _slot(blk + _BLK_STATUS * 8)[] = -3
         _slot(blk + _BLK_ELAPSED * 8)[] = 0
         _slot(blk + _BLK_RESULT * 8)[] = 0
