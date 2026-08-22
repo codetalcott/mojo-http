@@ -225,9 +225,9 @@ it quick), and `ws_message`, which receives complete WebSocket messages
 WebSocket slots identically — a WS handler queues `encode_ws_frame(...)`
 bytes and returns them from `sse_drain_slot`. A handler that streams
 nothing and schedules nothing returns the empty defaults. Adding a method
-to the trait breaks every handler in the repo at once: all six apps, plus
-the five demo services inside `service.mojo` itself, plus the example in
-README.md.
+to the trait breaks every handler in the repo at once: every app under
+`apps/`, plus the five demo services inside `service.mojo` itself, plus the
+example in README.md.
 
 **SSE and WebSockets require `listen_and_serve_nonblocking`,** not
 `listen_and_serve`. Only the non-blocking event loop assigns `req.slot_id`,

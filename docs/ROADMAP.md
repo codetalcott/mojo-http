@@ -200,6 +200,32 @@ a framework-neutral suite over a bare WSGI callable, plus a shared framework
 contract that Django and Flask both run — see
 [WSGI_CONFORMANCE.md](WSGI_CONFORMANCE.md).
 
+## Next: the Django server aims
+
+Where the WSGI work is headed, and what gates each step — the full analysis
+with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
+
+- **No ASGI host for now.** The realtime surface people adopt ASGI for is
+  covered by the in-process GRIP pattern (`apps/django_realtime`,
+  `take_stream_hold`, `m0pub.py`; `smoke-django-realtime` pins it, including
+  cross-worker fan-out from a sync Django view). WebSocket holds are the
+  unbuilt increment on the same seam. An ASGI host remains a deliberate
+  separate package, warranted only by a Channels- or async-framework-shaped
+  workload.
+- **Free-threaded CPython is the successor to prefork, pending maturity.**
+  `poe py-canary` swaps the venv onto 3.14t from the same lock and runs the
+  whole WSGI suite; its first run (2026-08-21, macOS/arm64) passed every
+  phase, with the RSS guard measuring *negative* growth. A thread-per-request
+  m0-wsgi (replacing `M0_WORKERS` forking, and with it the fork-safety
+  hazards) is the eventual design that a sustained green canary unlocks —
+  per-thread interpreter states and the bridge's single-buffer assumption are
+  the known unknowns.
+- **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in a
+  single entry point; native static-file serving (`sendfile`, the
+  WhiteNoise/nginx replacement); PyPI-wheel distribution with a
+  uvicorn-style CLI and a native file-watcher for reload; a published
+  benchmark suite against gunicorn/uvicorn/Granian.
+
 ## Known issues
 
 - Negotiation covers `Accept`, `Accept-Encoding` (`negotiate_encoding` —
