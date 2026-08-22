@@ -1818,6 +1818,17 @@ echo "CANARY PASSED against $(mojo --version)"
 # 3. Target 3.14t only, never 3.13t: 3.13t systematically immortalizes
 #    objects (a known leak; Django dropped 3.13t from its own CI over it).
 
+# The same question through the stdlib's own bindings, under plain `mojo
+# run`: `Python().cpython()` exposes PyEval_SaveThread / PyGILState_Ensure on
+# the dlopen'd handle, so a threaded server needs no libpython on its link
+# line — the rule m0-wsgi lives by. Also proves `print` from a pthread and a
+# parametric `def` as a start routine, the two things the threaded execution
+# mode (docs/WSGI_VS_ASGI.md §5) spawns. A GIL build answers ~1.0x; 3.14t
+# parallelizes (run it as bare `poe` after `py314t-try`).
+[tool.poe.tasks.py-thread-probe-stdpy]
+help = "Thread probe via std.python's CPython bindings — no -lpython, plain mojo run"
+cmd = "mojo run scripts/py_thread_stdpy_probe.mojo"
+
 # The instrument behind the thread-pool go/no-go (docs/WSGI_VS_ASGI.md §5):
 # spawns raw pthreads from Mojo and has each attach to the embedded
 # interpreter and run Python, measuring correctness and parallel speedup.
