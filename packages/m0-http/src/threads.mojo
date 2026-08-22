@@ -52,6 +52,13 @@ def _slot(addr: Int) -> Pointer[Int, MutUntrackedOrigin]:
     return Pointer[Int, MutUntrackedOrigin](unsafe_from_address=addr)
 
 
+comptime _OpaqueMut = Pointer[NoneType, MutUntrackedOrigin]
+"""The buffer type `read(2)` is declared with — matching the stdlib's own
+emitted declaration exactly, as `pipe.mojo`'s `_write` must: a second
+`external_call["read"]` with a different signature is a conflicting
+declaration in any build that links both."""
+
+
 struct ThreadBlock(Copyable, Movable):
     """A view over one thread's argument block (`BLK_INTS` Int64 slots)."""
 
@@ -91,6 +98,10 @@ struct ThreadSet(Movable):
         self.count = count
         self._blocks = external_call["malloc", Int, Int](count * BLK_INTS * 8)
         self._tids = external_call["malloc", Int, Int](count * 8)
+        # malloc does not zero. `join_all` treats a zero tid as "never
+        # spawned"; an unzeroed slot would be joined as a garbage thread id.
+        for i in range(count):
+            _slot(self._tids + i * 8)[] = 0
         for i in range(count):
             for s in range(BLK_INTS):
                 _slot(self._blocks + (i * BLK_INTS + s) * 8)[] = 0
@@ -154,17 +165,19 @@ def read_one_byte_blocking(fd: Int) -> Int:
     sleeps here until the signal pipe says stop. EINTR is retried — a caught
     signal is exactly what this fd reports, and the byte follows it.
     """
-    var buf = external_call["malloc", Int, Int](1)
+    var buf = List[UInt8](capacity=8)
+    var ptr = buf.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
+        MutUntrackedOrigin
+    ]()
     var n: Int
     while True:
-        n = external_call["read", Int, c_int, Int, Int](c_int(fd), buf, 1)
+        n = external_call["read", Int, Int, _OpaqueMut, Int](fd, ptr, 1)
         if n >= 0:
             break
         var err = get_errno()
         if err != err.EINTR:
             n = 0
             break
-    external_call["free", NoneType, Int](buf)
     return n
 
 
