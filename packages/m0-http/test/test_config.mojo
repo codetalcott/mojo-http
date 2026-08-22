@@ -15,7 +15,7 @@ refusing to start.
 from std.os import setenv
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.config import AppConfig
+from src.config import AppConfig, threads_conflict
 from lightbug_http.server_config import ServerConfig
 
 
@@ -27,6 +27,7 @@ def _clear():
         String("M0_BASE_URL"),
         String("M0_API_KEY"),
         String("M0_WORKERS"),
+        String("M0_THREADS"),
         String("M0_ACCESS_LOG"),
         String("M0_SSE_HEARTBEAT_MS"),
         String("M0_APP_TICK_MS"),
@@ -77,6 +78,32 @@ def test_a_negative_port_falls_back_to_the_default() raises:
 def test_workers_is_read_from_the_environment() raises:
     var c = _with("M0_WORKERS", "4")
     assert_equal(c.workers, 4)
+
+
+def test_threads_defaults_to_one() raises:
+    _clear()
+    assert_equal(AppConfig().threads, 1)
+
+
+def test_threads_is_read_from_the_environment() raises:
+    assert_equal(_with("M0_THREADS", "4").threads, 4)
+
+
+def test_a_non_numeric_threads_falls_back_to_one() raises:
+    assert_equal(_with("M0_THREADS", "four").threads, 1)
+
+
+def test_threads_and_workers_conflict_only_when_both_exceed_one() raises:
+    """One of each mode is the default and fine; asking for both is not."""
+    assert_true(threads_conflict(2, 2))
+    assert_true(threads_conflict(4, 2))
+    assert_false(threads_conflict(1, 4))
+    assert_false(threads_conflict(4, 1))
+    assert_false(threads_conflict(1, 1))
+    var msg = threads_conflict(2, 3)
+    assert_true(msg.value().find("mutually exclusive") >= 0)
+    assert_true(msg.value().find("workers=2") >= 0)
+    assert_true(msg.value().find("threads=3") >= 0)
 
 
 def test_api_key_is_taken_verbatim() raises:
@@ -173,6 +200,7 @@ def test_config_is_copyable_and_movable() raises:
     var moved = copied^
     assert_equal(moved.port, 4242)
     assert_equal(moved.address(), "127.0.0.1:4242")
+    assert_equal(moved.threads, 1)
     _clear()
 
 

@@ -32,6 +32,11 @@ from .sse import (
     SSE_CONTENT_TYPE,
 )
 from .multiworker import WorkerSupervisor, exit_worker
+from .threads import (
+    ThreadSet, ThreadBlock, ShutdownFanout, dup_fd, read_one_byte_blocking,
+    BLK_INDEX, BLK_LISTEN_FD, BLK_SHUTDOWN_FD, BLK_BUS_FD, BLK_USER, BLK_STATUS,
+    STATUS_OK, STATUS_RAISED, STATUS_NEVER_RAN,
+)
 from .ws import WSHub
 from .cors import CorsConfig, apply_cors_headers
 from .auth import check_api_key
@@ -42,5 +47,5 @@ from .signal import (
     install_shutdown_signals, shutdown_signals_active,
 )
 from .health import HealthRegistry
-from .config import AppConfig
+from .config import AppConfig, threads_conflict
 from .client import Client

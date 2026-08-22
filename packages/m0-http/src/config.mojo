@@ -12,6 +12,9 @@ Env vars:
     M0_BASE_URL   — Public base URL (default: http://localhost:{port})
     M0_API_KEY    — API key for mutation auth (default: "" = disabled)
     M0_WORKERS    — Worker count for multi-worker mode (default: 1)
+    M0_THREADS    — Serving threads in ONE process, free-threaded CPython
+                    only (default: 1). Mutually exclusive with M0_WORKERS>1;
+                    see `threads_conflict`.
     M0_ACCESS_LOG — Enable access logging: "true" or "1" (default: false)
     M0_SSE_HEARTBEAT_MS — Milliseconds between SSE heartbeat comments on idle
                     streams; "0" disables them (default: 15000)
@@ -32,6 +35,7 @@ struct AppConfig(Copyable, Movable):
     var base_url: String
     var api_key: String
     var workers: Int
+    var threads: Int
     var access_log: Bool
     var sse_heartbeat_ms: Int
     var app_tick_ms: Int
@@ -42,6 +46,7 @@ struct AppConfig(Copyable, Movable):
         self.port = _parse_int_env("M0_PORT", default_port)
         self.api_key = getenv("M0_API_KEY", "")
         self.workers = _parse_int_env("M0_WORKERS", 1)
+        self.threads = _parse_int_env("M0_THREADS", 1)
         var access_log_str = getenv("M0_ACCESS_LOG", "")
         self.access_log = access_log_str == "true" or access_log_str == "1"
         self.sse_heartbeat_ms = _parse_int_env("M0_SSE_HEARTBEAT_MS", 15000)
@@ -59,6 +64,7 @@ struct AppConfig(Copyable, Movable):
         self.base_url = copy.base_url
         self.api_key = copy.api_key
         self.workers = copy.workers
+        self.threads = copy.threads
         self.access_log = copy.access_log
         self.sse_heartbeat_ms = copy.sse_heartbeat_ms
         self.app_tick_ms = copy.app_tick_ms
@@ -69,6 +75,7 @@ struct AppConfig(Copyable, Movable):
         self.base_url = move.base_url^
         self.api_key = move.api_key^
         self.workers = move.workers
+        self.threads = move.threads
         self.access_log = move.access_log
         self.sse_heartbeat_ms = move.sse_heartbeat_ms
         self.app_tick_ms = move.app_tick_ms
@@ -95,6 +102,24 @@ struct AppConfig(Copyable, Movable):
         sc.sse_heartbeat_ms = self.sse_heartbeat_ms
         sc.app_tick_ms = self.app_tick_ms
         return sc^
+
+
+def threads_conflict(workers: Int, threads: Int) -> Optional[String]:
+    """The one message for asking for both execution modes at once.
+
+    Prefork (`M0_WORKERS`) and threads (`M0_THREADS`) are mutually
+    exclusive in this release: a process that forked would have to fork
+    before its first Python call and then spawn threads that each make
+    one, and nothing has measured that shape. Both > 1 is a configuration
+    error, answered identically by the environment and by `m0serve`'s
+    flags so a user sees one sentence wherever they set it.
+    """
+    if workers > 1 and threads > 1:
+        return String(
+            "M0_THREADS and M0_WORKERS are mutually exclusive; set one of them"
+            " (workers=" + String(workers) + ", threads=" + String(threads) + ")"
+        )
+    return None
 
 
 def _parse_host(raw: String) -> String:

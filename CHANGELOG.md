@@ -9,6 +9,21 @@ versions may break the API**.
 
 ### Added
 
+- **`m0_http.threads`** — raw pthreads from Mojo, packaged: `ThreadSet`
+  (malloc'd Int64 argument blocks, `pthread_create`/`pthread_join` through
+  `external_call`, a `def`'s address as the start routine), `ThreadBlock`,
+  `ShutdownFanout` (one shutdown pipe per thread, poked together — the
+  event loop never drains its pipe, so N loops cannot share one), `dup_fd`
+  and `read_one_byte_blocking`. The idiom `scripts/py_thread_probe.mojo`
+  proved, now importable under `mojo run` and tested without an interpreter
+  (`test_threads.mojo`). Knows nothing about Python; that discipline belongs
+  to `m0-wsgi`. The substrate for the threaded execution mode — nothing
+  consumes it yet.
+- **`M0_THREADS`** is read by `AppConfig` (default 1) and
+  `threads_conflict(workers, threads)` answers the one message for asking
+  for both execution modes at once. Mutually exclusive with `M0_WORKERS>1`.
+  Read and validated ahead of the mode that will consume it, so the
+  environment and `m0serve --threads` will say the same sentence.
 - **`m0serve` — the uvicorn-shaped serve CLI.** One built binary
   (`poe build-serve` → `bin/m0serve`) serves any WSGI application:
   `m0serve MODULE[:ATTR] --host --port --workers --app-dir --static
