@@ -51,8 +51,21 @@ struct StaticFiles(Copyable, Movable):
 
     var root: String
     var prefix: String
+    var cache_control: String
+    """Emitted verbatim as `Cache-Control` on 200, 206, and 304 when
+    non-empty. On 304 deliberately: RFC 9110 has the validator response
+    carry the same freshness the full response would, and omitting it there
+    makes every revalidation immediately stale again. Empty (the default)
+    sends no header — freshness policy belongs to the deployment, not this
+    module."""
 
-    def __init__(out self, var root: String, var prefix: String = "/static/"):
+    def __init__(
+        out self,
+        var root: String,
+        var prefix: String = "/static/",
+        *,
+        var cache_control: String = "",
+    ):
         # Root never ends in "/", prefix always does: the join below then
         # has exactly one shape.
         while root.byte_length() > 1 and root.endswith("/"):
@@ -64,14 +77,22 @@ struct StaticFiles(Copyable, Movable):
             prefix = "/" + prefix
         self.root = root^
         self.prefix = prefix^
+        self.cache_control = cache_control^
 
     def __init__(out self, *, copy: Self):
         self.root = copy.root
         self.prefix = copy.prefix
+        self.cache_control = copy.cache_control
 
     def __init__(out self, *, deinit move: Self):
         self.root = move.root^
         self.prefix = move.prefix^
+        self.cache_control = move.cache_control^
+
+    def _with_cache_control(self, var resp: HTTPResponse) -> HTTPResponse:
+        if self.cache_control.byte_length() > 0:
+            resp.headers[HeaderKey.CACHE_CONTROL] = self.cache_control
+        return resp^
 
     def matches(self, path: String) -> Bool:
         """Whether `path` is under this mount (serve() would not answer None)."""
@@ -123,7 +144,7 @@ struct StaticFiles(Copyable, Movable):
                     status_code=304,
                     status_text="Not Modified",
                 )
-                return not_modified^
+                return self._with_cache_control(not_modified^)
 
         # A single satisfiable byte range gets its slice; If-Range never
         # matches (strong comparison, weak ETags), so a conditional range
@@ -162,7 +183,7 @@ struct StaticFiles(Copyable, Movable):
                     status_code=206,
                     status_text="Partial Content",
                 )
-                return partial^
+                return self._with_cache_control(partial^)
 
         var resp = HTTPResponse(
             body_bytes=contents,
@@ -174,7 +195,7 @@ struct StaticFiles(Copyable, Movable):
             status_code=200,
             status_text="OK",
         )
-        return resp^
+        return self._with_cache_control(resp^)
 
 
 comptime RANGE_NONE = 0

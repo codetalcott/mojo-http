@@ -225,11 +225,18 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   thread-per-request m0-wsgi (replacing `M0_WORKERS` forking, and with it
   the fork-safety hazards) is now bounded engineering: the bridge's
   per-process singletons must become per-thread.
+- **Static files front the Django rows.** `StaticFiles` grew a
+  `Cache-Control` policy (emitted on 200/206/304 — the validator response
+  carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
+  ahead of the bridge: asset requests are answered in Mojo and never enter
+  Python, which is the WhiteNoise/nginx replacement claim,
+  smoke-asserted (type, ETag revalidation, freshness, traversal 404). The
+  zero-copy `sendfile` step remains recorded — it needs event-loop support
+  for fd-backed response bodies, a deliberate change, not a tweak.
 - **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in a
-  single entry point; native static-file serving (`sendfile`, the
-  WhiteNoise/nginx replacement); PyPI-wheel distribution with a
-  uvicorn-style CLI and a native file-watcher for reload; a published
-  benchmark suite against gunicorn/uvicorn/Granian.
+  single entry point; PyPI-wheel distribution with a uvicorn-style CLI and
+  a native file-watcher for reload; a published benchmark suite against
+  gunicorn/uvicorn/Granian.
 
 ## Known issues
 
