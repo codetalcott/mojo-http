@@ -275,7 +275,14 @@ Three conclusions, each isolated by a pair of rows:
   precisely why Django's own free-threading contention work (the
   `Field.creation_counter` class of fix) matters to real throughput.
 
-The canary and the probe together do **not** make m0-wsgi multithreaded; they
+A third probe, `poe py-thread-probe-stdpy`, closes the last toolchain
+question: the pinned stdlib's `Python().cpython()` exposes `PyEval_SaveThread`
+/ `PyGILState_Ensure` on the dlopen'd handle, so the attach/detach discipline
+needs **no libpython on the link line** — it runs under plain `mojo run`,
+prints from its pthreads, and uses a parametric `def` as the start routine,
+which is exactly the shape a threaded server spawns.
+
+The canary and the probes together do **not** make m0-wsgi multithreaded; they
 bound the design work. What remains is engineering, not discovery: the
 bridge's per-process singletons (one transfer bytearray, one `_body` global,
 "state attached to main forever") must become per-thread, and shared Python

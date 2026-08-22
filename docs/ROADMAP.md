@@ -226,10 +226,12 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   builds and parallelize essentially perfectly on 3.14.7t (3.96x at 4
   threads), while loops over shared mutable Python objects invert to
   0.7-0.8x — a confirmed per-object-lock mechanism, and the design lesson:
-  thread-local state scales, hot shared objects anti-scale. A
-  thread-per-request m0-wsgi (replacing `M0_WORKERS` forking, and with it
-  the fork-safety hazards) is now bounded engineering: the bridge's
-  per-process singletons must become per-thread.
+  thread-local state scales, hot shared objects anti-scale. `poe
+  py-thread-probe-stdpy` then showed the stdlib's own `CPython` bindings
+  carry the attach/detach discipline with no `-lpython` on the link line. A
+  threaded m0-wsgi (replacing `M0_WORKERS` forking, and with it the
+  fork-safety hazards) is now bounded engineering: the bridge's per-process
+  singletons must become per-thread.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
