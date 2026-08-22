@@ -186,8 +186,14 @@ comptime _OpaqueMut = Pointer[NoneType, MutUntrackedOrigin]
 
 
 def _read_one(fd: Int) -> Int:
-    """Read one byte, returning the count. Only the count is asserted on."""
-    var buf = List[UInt8](capacity=8)
+    """Read one byte, returning the count. Only the count is asserted on.
+
+    Into an explicit allocation: a `List(capacity=8)` reserves, but a write
+    through its pointer before any append is a write the list does not own
+    — it passed here under the JIT and corrupted the heap in a real build
+    (the same helper in `src/threads.mojo` found it).
+    """
+    var buf = List[UInt8](length=8, fill=0)
     return external_call["read", Int, Int, _OpaqueMut, Int](
         fd,
         buf.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[

@@ -306,7 +306,9 @@ Properties of the design, not defects to fix in passing:
   dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
   happened and `test_lifecycle.mojo` asserts it.
 - Configuration is env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`,
-  `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_ACCESS_LOG`,
+  `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_THREADS` (read and
+  validated — `threads_conflict` — ahead of the threaded execution mode that
+  will consume it; mutually exclusive with `M0_WORKERS>1`), `M0_ACCESS_LOG`,
   `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`. `m0serve` layers flags on top
   (flag > env > default) and is strict where the env loader is lenient.
 
