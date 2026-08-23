@@ -553,16 +553,64 @@ Fast-route p99, by how many slow requests are in flight (both rounds):
 - **It costs throughput, and the cost is not the same in both modes.** At
   slow=0, two-round means: prefork gives up **7.3%** (34.9k → 32.3k rps) and
   threads **21.3%** (32.7k → 25.7k). The extra hop is one datagram each way per
-  request, which is the 7%; the rest is oversubscription — `--threads 4
-  --blocking-threads 4` is four loops *plus* sixteen handler threads on four
-  performance cores, where the prefork row is four processes of five threads
-  each and the OS scheduler is not asked to keep twenty runnable threads on
-  four cores. Size the pool to the box, not to the loop count.
+  request, and that is the 7% both modes pay. The remaining 14% is *not*
+  explained by thread count: `--threads 4 --blocking-threads 4` is four loops
+  plus sixteen handler threads, and `--workers 4 --blocking-threads 4` is four
+  processes of five — **twenty threads either way**, on four performance
+  cores. What differs is four independent interpreters against one shared
+  between twenty threads. See "Sizing the pool" below, which also says why no
+  startup warning fires on a large pool.
 - **So the flag is a trade, and that is why it is off by default**: a few
   percent of peak throughput, and a p99 that stops depending on what other
   requests are doing. An application whose views are uniformly fast should
   not take it; one with a single slow report, an upstream call or a large
   query should.
+
+### Sizing the pool
+
+The measurement above says what oversubscription costs but not what to
+choose, so: **size `B` to the number of requests you expect to be *waiting*
+at once, not to the core count.**
+
+The arithmetic first, because it is easy to get wrong in the other
+direction. Both modes create the same total:
+
+    --workers W --blocking-threads B   →  W × (B + 1) threads, across W processes
+    --threads T --blocking-threads B   →  T × (B + 1) threads, in one process
+
+`+ 1` because each loop keeps its own acceptor thread. `--workers 4
+--blocking-threads 4` and `--threads 4 --blocking-threads 4` are both twenty
+threads. That matters because it means **thread count alone does not explain
+the 7.3% against 21.3%** — the two rows above have identical thread counts.
+What differs is that four processes are four independent interpreters, and
+four loops are twenty threads contending on one interpreter's shared
+structures. Recorded as the honest limit of this measurement: the mechanism
+is inferred, not measured, and separating them would need a profile rather
+than a throughput number.
+
+The rule that follows from what the pool is *for*:
+
+- **A thread waiting on a database, an upstream call or a `sleep` is not
+  runnable**, and costs no core. That is the entire workload the pool exists
+  to isolate. So `B` tracks *concurrent waits*, and a pool much larger than
+  the core count is correct when views genuinely wait — which is why
+  gunicorn's `--threads` is routinely 4–8 per worker against far fewer cores.
+- **A thread running Python bytecode is runnable**, and there the cost above
+  is real. The benchmark's fast view does no waiting at all, which is exactly
+  why it shows the penalty so cleanly — it is the worst case for the flag,
+  not the typical one.
+- **A starting point**, when the mix is unknown: `B = 4` with `W` or `T` at
+  the core count, then raise `B` only while p99 under mixed load keeps
+  improving. Past that, more threads buy queueing rather than concurrency.
+- **Prefer `--workers W --blocking-threads B` to `--threads T
+  --blocking-threads B`** at the same total, on this evidence: same thread
+  count, a third of the throughput cost, and it needs no free-threaded
+  interpreter.
+
+No startup warning is emitted for a large `T × (B + 1)`. A pool sized for
+waiting views is *supposed* to exceed the core count, so the server cannot
+tell an oversubscribed configuration from a correctly-sized one without
+knowing what the views do.
 
 ## What the server-layer work bought the WSGI path
 
