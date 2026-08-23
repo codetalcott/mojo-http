@@ -48,6 +48,13 @@ lightbug_http
       - header.mojo: `Headers.keys()` added, so headers can be enumerated
         without reaching into the private `_inner` dict from another package
         (needed to project them into a WSGI environ)
+      - header.mojo: `name_span`/`value_span` made public (they were
+        `_name_span`/`_value_span`). `keys()` + `get()` is the allocating
+        way to enumerate headers — a String per name, another per value, and
+        a linear scan per lookup — which measured 48us per request
+        projecting twelve headers into the WSGI blob, 77% of that bridge's
+        whole per-request cost. Walking `count()` with these two spans
+        allocates nothing; the projection now runs in 0.44us
       - fcntl F_SETFL fixed on ARM64 macOS: fcntl is variadic, Darwin
         passes variadic arguments on the stack while external_call used
         registers, so set_nonblocking silently did nothing there for the

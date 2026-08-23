@@ -233,6 +233,39 @@ struct PyBridge(Movable):
             ptr[unsafe_offset=i + 8] = payload[i]
         return self._ns["handle"]()
 
+    # --- diagnostic probes -------------------------------------------------
+    #
+    # `scripts/bench_bridge_parts.mojo` uses these to split the per-request
+    # cost into its parts. They are the same operations `handle` performs,
+    # exposed individually; nothing in the serving path calls them.
+
+    def probe_buf_addr(self) raises:
+        """One zero-argument call into Python, and nothing else."""
+        var addr = self._ns["buf_addr"]()
+        _ = addr
+
+    def probe_copy(mut self, payload: Span[UInt8, _]) raises:
+        """The address fetch and the byte copy, without calling `handle`.
+
+        Refuses a payload the buffer cannot hold rather than growing it:
+        `handle` owns the grow protocol, and a probe that silently wrote
+        past a `bytearray` would corrupt the interpreter's heap for a
+        measurement.
+        """
+        if len(payload) + 8 > self._buf_cap:
+            raise Error(
+                "probe_copy: payload larger than the shim buffer; call"
+                " handle() first to grow it"
+            )
+        var addr = self._ns["buf_addr"]()
+        var ptr = addr.unsafe_get_as_pointer[DType.uint8]()
+        for i in range(len(payload)):
+            ptr[unsafe_offset=i + 8] = payload[i]
+
+    def probe_handle(mut self) raises -> PythonObject:
+        """`handle()` alone, over whatever is already in the buffer."""
+        return self._ns["handle"]()
+
     def body_bytes(self, body: PythonObject) raises -> List[UInt8]:
         """Copy the response body into a Mojo list, binary-safe.
 

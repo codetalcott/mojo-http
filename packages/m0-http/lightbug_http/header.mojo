@@ -498,12 +498,22 @@ struct Headers(Copyable, Writable):
         return -1
 
     @always_inline
-    def _value_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
+    def value_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
+        """Header `i`'s value, as bytes in place. Allocates nothing.
+
+        Public for the same reason `keys()` is: something has to project
+        these headers into another representation. `keys()` + `get()` costs
+        two String allocations per header and a linear scan per lookup —
+        measured at 48us per request projecting twelve headers into a WSGI
+        blob, which was 77% of that bridge's entire per-request cost. Walking
+        `count()` with these two spans allocates nothing at all.
+        """
         var off = Int(self._val_off[i])
         return Span(self._buf)[off : off + Int(self._val_len[i])]
 
     @always_inline
-    def _name_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
+    def name_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
+        """Header `i`'s name, lowercased, as bytes in place. See `value_span`."""
         var off = Int(self._name_off[i])
         return Span(self._buf)[off : off + Int(self._name_len[i])]
 
@@ -516,14 +526,14 @@ struct Headers(Copyable, Writable):
         var i = self._find(key.as_bytes())
         if i < 0:
             raise HeaderKeyNotFoundError()
-        return String(unsafe_from_utf8=self._value_span(i))
+        return String(unsafe_from_utf8=self.value_span(i))
 
     @always_inline
     def get(self, key: String) -> Optional[String]:
         var i = self._find(key.as_bytes())
         if i < 0:
             return None
-        return String(unsafe_from_utf8=self._value_span(i))
+        return String(unsafe_from_utf8=self.value_span(i))
 
     def value_equals_ignore_case(self, key: String, expected: String) -> Bool:
         """Whether `key`'s value equals `expected`, case-insensitively.
@@ -535,7 +545,7 @@ struct Headers(Copyable, Writable):
         var i = self._find(key.as_bytes())
         if i < 0:
             return False
-        var value = self._value_span(i)
+        var value = self.value_span(i)
         var want = expected.as_bytes()
         if len(value) != len(want):
             return False
@@ -553,7 +563,7 @@ struct Headers(Copyable, Writable):
         """
         var out = List[String](capacity=len(self._name_off))
         for i in range(len(self._name_off)):
-            out.append(String(unsafe_from_utf8=self._name_span(i)))
+            out.append(String(unsafe_from_utf8=self.name_span(i)))
         return out^
 
     def set_bytes(mut self, name: Span[Byte, _], value: Span[Byte, _]):
@@ -610,7 +620,7 @@ struct Headers(Copyable, Writable):
         var i = self._find(HeaderKey.CONTENT_LENGTH.as_bytes())
         if i < 0:
             return 0
-        var value = self._value_span(i)
+        var value = self.value_span(i)
         if len(value) == 0:
             return 0
         var total = 0
@@ -624,17 +634,17 @@ struct Headers(Copyable, Writable):
     def write_to[T: Writer, //](self, mut writer: T):
         for i in range(len(self._name_off)):
             writer.write(
-                StringSlice(unsafe_from_utf8=self._name_span(i)),
+                StringSlice(unsafe_from_utf8=self.name_span(i)),
                 ": ",
-                StringSlice(unsafe_from_utf8=self._value_span(i)),
+                StringSlice(unsafe_from_utf8=self.value_span(i)),
                 lineBreak,
             )
 
     def write_latin1_to(self, mut writer: ByteWriter):
         """Write headers with values transcoded to ISO-8859-1 for the wire."""
         for i in range(len(self._name_off)):
-            writer.write(StringSlice(unsafe_from_utf8=self._name_span(i)), ": ")
-            var value = self._value_span(i)
+            writer.write(StringSlice(unsafe_from_utf8=self.name_span(i)), ": ")
+            var value = self.value_span(i)
             var all_ascii = True
             for j in range(len(value)):
                 if value[j] >= 0x80:
@@ -655,11 +665,11 @@ struct Headers(Copyable, Writable):
         if len(self._name_off) != len(other._name_off):
             return False
         for i in range(len(self._name_off)):
-            var j = other._find(self._name_span(i))
+            var j = other._find(self.name_span(i))
             if j < 0:
                 return False
-            var a = self._value_span(i)
-            var b = other._value_span(j)
+            var a = self.value_span(i)
+            var b = other.value_span(j)
             if len(a) != len(b):
                 return False
             for k in range(len(a)):

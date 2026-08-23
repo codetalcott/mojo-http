@@ -115,6 +115,28 @@ versions may break the API**.
 
 ### Changed
 
+- **The WSGI bridge is 2.35x faster: 12,289 → 28,911 rps** on
+  `apps/wsgi_bare` at one worker, p50 1.21 ms → 508 µs, p99 2.47 ms →
+  1.07 ms (same interpreter, two rounds). `serialize_request` cost **48 µs
+  per request — 77% of the bridge's whole per-request cost**, and six times
+  what the Python shim it feeds costs. Enumerating headers with `keys()` +
+  `get()` allocated a String per name and per value and linear-scanned for
+  each, and `cgi_header_name` allocated three more per header: ~70 String
+  allocations to move twelve headers. The projection now walks `count()`
+  with the header map's own spans and writes the CGI name's bytes directly,
+  uppercasing and mapping `-` to `_` in place — **48.10 µs → 0.44 µs**. PEP
+  3333 conformance green; `smoke-django`'s RSS guard still 0 KB over 10k
+  requests.
+
+  Recorded because the suspicion was wrong: the Python shim's environ parse
+  looked like the culprit and is only 11.5 µs. `scripts/bench_bridge_parts.mojo`
+  is the split that found it, and `handle()` is now five-sixths of what
+  remains.
+- `Headers.name_span`/`value_span` are public (were `_name_span`/
+  `_value_span`), so headers can be projected into another representation
+  without allocating. `keys()` is unchanged and still right for callers that
+  want owned Strings. A fork change; see [NOTICE](NOTICE).
+
 - **Stage B is justified — reversing the no-go recorded earlier in this
   release cycle.** That verdict came from a keep-alive benchmark on a hello
   route, which cannot produce the failure Stage B is half designed for, and

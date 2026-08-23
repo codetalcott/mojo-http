@@ -247,7 +247,9 @@ construction and `M0_WORKERS` does nothing there.)
 
 - **The bridge costs ~1 ms per request.** Same HTTP layer, same machine:
   178 µs without Python, 1.18 ms with. A 6.3x drop, against a Python
-  callable that does essentially nothing.
+  callable that does essentially nothing. *(Since fixed — see "What the
+  bridge is actually doing" below: 12,421 → 28,911 rps. The rows in this
+  table are the pre-fix measurement that located the problem.)*
 - **Granian on one worker beats m0serve on four** (124.6k vs 35.0k, 3.6x),
   and beats mojo-http serving *no Python at all* (1.6x). The Django-based
   1.4–2.0x understated the gap by roughly 5x.
@@ -255,7 +257,55 @@ construction and `M0_WORKERS` does nothing there.)
   HTTP layer.** mojo-http's HTTP layer is within 1.6x of Granian's
   *including* Granian's Python work; its bridge then gives all of that away.
 
-### What the bridge is actually doing
+### What the bridge is actually doing — measured, not assumed
+
+Reading the code suggested the Python shim's environ parse. Splitting the
+~1 ms by part (`scripts/bench_bridge_parts.mojo`, 20k iterations, a
+twelve-header GET producing a 636-byte blob) put it somewhere else:
+
+| part | before | after |
+|------|-------:|------:|
+| `serialize_request` (Mojo) | **48.10 µs** | **0.44 µs** |
+| `buf_addr()` zero-arg call | 0.33 µs | 0.30 µs |
+| copy blob into the shim's buffer | 0.91 µs | 0.90 µs |
+| `handle()` — the call plus the whole Python shim | 12.31 µs | 12.35 µs |
+| full round trip (copy + handle + body) | 14.59 µs | 14.46 µs |
+
+**The Python shim was never the bottleneck.** A standalone microbenchmark
+of `handle()` puts its blob parse at 11.5 µs of that 12.3 µs — real, but a
+sixth of the total. The cost was `serialize_request`, in Mojo: `keys()`
+allocated a String per header name, `get()` allocated another per value and
+linear-scanned to find it, and `cgi_header_name` allocated three more
+(`upper()`, `replace()`, and the `HTTP_`-prefixed result). Seventy-odd
+String allocations per request to move twelve headers.
+
+The fix allocates nothing: walk `count()` with `Headers`' own
+`name_span`/`value_span` (made public for this — see NOTICE) and write the
+CGI name's bytes straight into the blob, uppercasing and mapping `-` to `_`
+in place. The reserve is computed from the same spans, so filling the blob
+never reallocates. The rule now exists in two forms — `cgi_header_name`
+states it readably, `_append_cgi_name` writes it — so `test_environ.mojo`
+asserts the two agree on every shape the rule distinguishes.
+
+**End to end, same interpreter, two rounds** (`m0serve` + `apps/wsgi_bare`,
+one worker, browser-shaped request):
+
+| | rps | p50 | p99 |
+|---|---:|---:|---:|
+| before | 12,289 · 12,280 | 1.21 ms | 2.47 ms |
+| after | **28,911 · 28,915** | **508 µs** | **1.07 ms** |
+
+**2.35x throughput, p50 and p99 both down ~57%.** `smoke-wsgi` (PEP 3333
+conformance) green, and `smoke-django`'s RSS guard still reports 0 KB growth
+over 10k requests — that guard is the right instrument for any change to
+this boundary, for the reason the next paragraphs give.
+
+Against Granian's 124.6k on the same row the gap is now 4.3x rather than
+10x. The remaining bridge cost is ~14.5 µs, of which `handle()` is
+five-sixths — so the Python-side environ build described next is now the
+live target, which it was not before.
+
+### The Python-side environ build
 
 `bridge.mojo`'s shim rebuilds the WSGI environ **in pure Python on every
 request**, by parsing the binary blob Mojo just wrote. For a twelve-header
