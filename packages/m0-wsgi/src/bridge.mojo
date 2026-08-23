@@ -79,7 +79,11 @@ from .environ import (
 )
 
 
-# The initial bytearray size below must match _INITIAL_BUF_CAP in PyBridge.
+# The `bytearray(65536)` below must match `_INITIAL_BUF_CAP`, declared under
+# this string. The two are written out separately because a comptime String
+# cannot interpolate into a triple-quoted literal, so this comment is the
+# only thing holding them together; `PyBridge` tracks the Python side's
+# capacity from that constant and the two move in lockstep through `grow()`.
 comptime SHIM_SOURCE = """
 import ctypes, io, sys
 
