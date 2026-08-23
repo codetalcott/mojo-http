@@ -234,7 +234,11 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   (`m0_wsgi.threaded`; `m0_http.threads` is the pthread substrate), each
   with its own handler and bridge, the event loop untouched, a GIL-enabled
   interpreter refused with exit 78. It retires the fork-after-init hazards
-  and the per-worker RSS for anyone who opts in. **Stage B, recorded:** per-
+  and the per-worker RSS for anyone who opts in. Proven on **both**
+  event-loop backends (`py-canary` phase D, 2026-08-23): kqueue on macOS and
+  epoll on Linux, each with all four loops accepting — a listener dup'd into
+  N epoll instances under `EPOLLET` wakes every one of them, so the
+  `EPOLLEXCLUSIVE` contingency the design held in reserve is not needed. **Stage B, recorded:** per-
   request balancing and slow-view isolation need an acceptor loop feeding a
   Python thread pool with deferred responses — `HTTPResponse.deferred` (the
   `sse_streaming` precedent), the request parked in
