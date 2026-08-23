@@ -443,11 +443,36 @@ would move the 4.3x row, and until that happens the row stands as measured.
 
 **What is left, and it is a different shape.** Of the 3.5 µs, 1.78 µs is the
 environ build and 0.65 µs is the shim; the remaining **1.07 µs is getting the
-response body back out** — `body_bytes`, which pays a `len()` and a
-`body_addr()` crossing and then copies byte at a time. That is now 31% of the
-bridge, against 5% of it before, purely because everything around it got
-smaller. It is the next thing worth splitting, and the same discipline
-applies: measure it by part before believing that description of it.
+response body back out**, in `body_bytes`. That is now 31% of the bridge,
+against 5% of it before, purely because everything around it got smaller.
+
+That description first read "a `len()`, a `body_addr()` crossing, and a
+byte-at-a-time copy", which was a reading of the code rather than a
+measurement — so it was measured, and it is **almost entirely one of those
+three**:
+
+| part | cost |
+|------|-----:|
+| `Int(len(body))` | 0.003 µs |
+| `self._ns["body_addr"]` — the namespace lookup | 0.065 µs |
+| **`self._ns["body_addr"]()` — lookup *and* call** | **1.095 µs** |
+| `body_bytes` in total | 1.07 µs |
+
+The `len()` is three nanoseconds and the byte copy of a 13-byte body is
+noise. **The cost is the `body_addr()` call**, and specifically what that
+function does — two `ctypes` object constructions per request:
+
+    return ctypes.cast(ctypes.c_char_p(_body), ctypes.c_void_p).value or 0
+
+which is the last per-request Python-level operation left in the bridge. The
+fix is the one the request path already uses: have the shim copy the response
+into a persistent `bytearray` whose address Mojo caches once, so no `ctypes`
+call happens per request at all. Same grow protocol, same cached-address
+discipline — and a cached address into a `bytearray` is only safe while
+nothing resizes it, which is why that protocol exists.
+
+Recorded because the first description named three things and the answer was
+one of them. Measuring by part is what this document keeps being right about.
 
 ## A slow view strands the connections pinned behind it
 
