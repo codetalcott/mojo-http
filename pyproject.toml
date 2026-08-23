@@ -359,7 +359,22 @@ done
 grep -q 'exited cleanly' shutdown2.log   || { echo 'no worker reported a clean exit'; cat shutdown2.log; exit 1; }
 grep -q 'respawn' shutdown2.log && { echo 'a worker was respawned during shutdown'; cat shutdown2.log; exit 1; }
 trap - EXIT
-rm -f shutdown1.log shutdown2.log
+rm -f shutdown2.log
+
+# Idle keep-alive connections must not hold the drain open. `active_count`
+# counts a merely-open connection the same as one mid-request, so before the
+# shutdown path closed finished slots this waited the full 5s DRAIN_TIMEOUT_NS
+# for clients that had already been answered -- 5.02s to exit against 0.02s
+# idle, in every execution mode. The in-flight half of the contract (a request
+# running at SIGTERM is answered, not dropped) is pinned by
+# smoke-blocking-threads; this is the other half.
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > shutdown3.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null   || { echo '=== shutdown3.log ==='; cat shutdown3.log; exit 1; }
+python3 scripts/drain_idle_probe.py 8080 $pid 8   || { echo '=== shutdown3.log ==='; cat shutdown3.log; exit 1; }
+trap - EXIT
+rm -f shutdown1.log shutdown3.log
 echo "smoke-shutdown OK"
 """
 

@@ -31,18 +31,33 @@ Mojo 1.0 interop imposes and that the code depends on:
 
 - **`std.python` has no `bytes` bindings at all** — no `PyBytes_*`, no buffer
   protocol, and `PythonObject` has no `Span[Byte]` constructor. Bodies cross as
-  raw addresses through `ctypes` (see `bridge.mojo`). Do not "simplify" this to
-  a `String` round trip; Mojo strings are UTF-8 and it corrupts every byte above
-  0x7F.
+  raw addresses through `ctypes` (see `bridge.mojo`), and are now the *only*
+  thing that does: everything else in the environ is built as Python objects
+  through the C API, which cannot build a `bytes`. Do not "simplify" the body
+  path to a `String` round trip; Mojo strings are UTF-8 and it corrupts every
+  byte above 0x7F. There is no `PyUnicode_DecodeLatin1` either, which is why
+  `environ.mojo` encodes latin-1 text as UTF-8 for `PyUnicode_DecodeUTF8` to
+  decode — the same `str`, reached the long way round.
 - **`PythonObject` interop leaks a reference per call argument and per
   `__setitem__` value** (Mojo 1.0, measured; zero-argument calls, call
-  results, `len()`, and `String(py=...)` are clean). This is why the bridge
-  ships each request as a byte blob through a persistent Python-side
-  bytearray and takes everything back as call results. Never add a
+  results, `len()`, and `String(py=...)` are clean). Never add a
   per-request `PythonObject` call argument or dict/attr assignment to the
   bridge — it reintroduces an unbounded per-request leak that shows up as
   growing GC pauses, and `smoke-django`'s RSS guard will fail. Startup-only
-  calls (`set_app`, `set_base`) are the deliberate, bounded exception.
+  calls (`set_app`) are the deliberate, bounded exception.
+
+  **The way around it is the raw C API, not avoidance.** `Python().cpython()`
+  reaches `PyDict_New`, `PyDict_SetItem`, `PyUnicode_DecodeUTF8`,
+  `PyTuple_New`/`SetItem` and `PyObject_CallObject`, which refcount
+  explicitly and so are not the leaking path. The bridge builds each
+  request's whole environ that way and hands it over as a stolen tuple
+  slot — which is what let the environ stop being rebuilt in Python and
+  took the bridge from 14.9 µs/request to 3.5. Two rules come with it:
+  `PyDict_SetItem` does **not** steal, so every string built for it must be
+  `Py_DecRef`'d after the store, and `PyTuple_SetItem` **does**, so the
+  value must not be. Get either backwards and it is a leak or a
+  double-free; `smoke-django`'s RSS guard is the instrument, and it must
+  stay at 0 KB over 10k requests.
 - **Mojo never acquires the GIL on its own** except when destroying a
   `PythonObject`; every other `std.python` call assumes the calling thread is
   *attached* (holds a Python thread state). There are two execution modes,

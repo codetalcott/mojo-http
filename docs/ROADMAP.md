@@ -327,6 +327,25 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   named the wrong sixth: the split reproduces at `handle()` = 12.1 µs of a
   14.2 µs round trip, **85% of what remains**, with all three Mojo-side
   parts together at 1.6 µs. The target is the right one.
+
+  **Done.** The environ is built in Mojo through the C API now, and the same
+  split says it worked: the bridge is **3.5 µs per request instead of 14.9,
+  4.2x**, and one worker on `apps/wsgi_bare` serves **45.7k rps instead of
+  28.9k, 1.57x**, p50 508 → 315 µs. `smoke-django`'s RSS guard still reports
+  0 KB over 10k requests, which is what says the explicit refcounting is
+  right. The blob and `serialize_request` are gone; the request *body* still
+  crosses as bytes because Mojo 1.0 has no `PyBytes_*` binding at all. The
+  Granian row above is deliberately not restated: it was measured on 3.14.7t
+  and this pair on 3.13, and dividing across two interpreters would be
+  arithmetic rather than measurement. Re-running `bench_layer_split.sh` on
+  3.14.7t is what would move it.
+
+  **What is left of the bridge is a different shape.** Of the 3.5 µs, 1.78 is
+  the environ build and 0.65 the shim; **1.07 µs is getting the response body
+  back out** (`body_bytes`: a `len()`, a `body_addr()` crossing, then a
+  byte-at-a-time copy). That is 31% of the bridge now, against 5% before,
+  purely because everything around it shrank. Same discipline applies —
+  split it by part before believing that description.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
@@ -383,13 +402,17 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   per `__setitem__` value.** Upstream toolchain bug, measured directly (a
   dict passed to a no-op Python function 1000 times gains 1000 references).
   `m0-wsgi` works around it by never letting a per-request Python object
-  cross through those operations — requests are serialized into a persistent
-  Python-side bytearray instead (see `bridge.mojo`). Any new bridge code must
-  hold the same line, and the workaround can be retired if a future toolchain
-  fixes the leak (re-test with `smoke-django`'s RSS guard).
-- **Graceful shutdown always waits the full 5 s drain when idle keep-alive
-  connections are open**, in every execution mode. Measured 2026-08-23 on
-  3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
+  cross through those operations. The environ is built through the raw C
+  API instead — `PyDict_SetItem`, `PyTuple_SetItem`, `PyObject_CallObject`,
+  which refcount explicitly — and the request body through a persistent
+  Python-side bytearray, because no C-API `bytes` binding exists (see
+  `bridge.mojo`). Any new bridge code must hold the same line, and the
+  workaround can be retired if a future toolchain fixes the leak (re-test
+  with `smoke-django`'s RSS guard, which must stay at 0 KB over 10k
+  requests).
+- ~~**Graceful shutdown always waits the full 5 s drain when idle keep-alive
+  connections are open**~~ — **fixed.** It did, in every execution mode.
+  Measured 2026-08-23 on 3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
 
   | | idle | 8 idle keep-alive connections |
   |---|---:|---:|
@@ -397,18 +420,36 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   | `--threads 4` | 0.02 s | **5.02 s** |
   | `--threads 4 --blocking-threads 4` | 0.02 s | **5.02 s** |
 
-  This retires the suspicion that `--threads` shuts down slowly: it does not,
-  and neither does the pool. What is slow is the drain, identically
+  This retired the suspicion that `--threads` shuts down slowly: it does not,
+  and neither does the pool. What was slow was the drain, identically
   everywhere, because `active_count` counts a connection that is merely *open*
-  the same as one with a request in flight — so the loop waits out
-  `DRAIN_TIMEOUT_NS` for connections that are already finished. A connection
-  sitting in `READING_HEADERS` with an empty receive buffer has nothing to
-  drain and could be closed immediately, leaving the budget for connections
-  genuinely mid-request or mid-response. Worth fixing on its own, not as a
-  rider: it changes which connections are dropped at shutdown, which is what
-  `smoke-shutdown` pins. It also explains the earlier observation that two
-  `--threads 4` processes "outlived a SIGTERM + 5 s wait" — they exit at
-  5.02 s, and a 5 s wait loses that race.
+  the same as one with a request in flight — so the loop waited out
+  `DRAIN_TIMEOUT_NS` for connections that were already finished. It also
+  explains the earlier observation that two `--threads 4` processes
+  "outlived a SIGTERM + 5 s wait": they exited at 5.02 s, and a 5 s wait
+  loses that race.
+
+  The shutdown path now closes slots in `READING_HEADERS` whose receive
+  buffer is empty — "between requests" — before it starts the drain clock.
+  Such a connection could never have been served by the drain loop anyway:
+  that loop dispatches `EVFILT_WRITE` only, so a request arriving during a
+  drain is not read there. Re-measured on 3.13 with the same harness, which
+  reproduces the 5.02 s before the change:
+
+  | | idle | 8 idle keep-alive connections |
+  |---|---:|---:|
+  | `--workers 4` | 0.03 s | **5.02 → 0.03 s** |
+  | `--blocking-threads 4` | 0.02 s | **5.02 → 0.03 s** |
+  | default (one loop) | 0.02 s | **5.02 → 0.03 s** |
+
+  The two halves of the contract are pinned separately, because this changes
+  *which* connections are dropped at shutdown: `smoke-blocking-threads`
+  already asserted that a request in flight at SIGTERM is answered rather
+  than dropped, and `smoke-shutdown` gained a phase asserting that idle
+  keep-alive connections no longer hold the drain open. That new phase was
+  checked against the unfixed loop and fails there at 5.01 s, so it is a
+  guard rather than a decoration. A slot mid-request, mid-response, or with a
+  job in a pool thread is deliberately left alone.
 - The blocking `listen_and_serve` loop serves one accepted keep-alive
   connection exclusively until timeout or the `max_keepalive_requests` cap
   (measured p99 ~140 ms under 16 persistent connections). No in-repo app

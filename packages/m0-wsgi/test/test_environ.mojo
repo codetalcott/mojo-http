@@ -1,37 +1,35 @@
 """Tests for the pure parts of the WSGI mapping.
 
-Deliberately no interpreter here: `cgi_header_name`, `serialize_request`, and
-`split_status` are plain byte/string transforms, and keeping them testable
-without Python is why they are separate from the bridge and `build_response`.
+Deliberately no interpreter here: `cgi_header_name`, the CGI/latin-1 byte
+transforms, and `split_status` are plain byte/string transforms, and keeping
+them testable without Python is why they are separate from `bridge.mojo`,
+where the environ dict is actually built.
 """
 
-from std.testing import assert_equal, assert_true, TestSuite
+from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http import HTTPRequest
-from lightbug_http.uri import URI
-
-from src.environ import cgi_header_name, serialize_request
+from src.environ import (
+    all_ascii,
+    append_cgi_name_as_utf8,
+    append_latin1_as_utf8,
+    cgi_header_name,
+    cgi_name_utf8,
+)
 from src.response import split_status
 
 
-def _read_u32(blob: List[UInt8], off: Int) -> Tuple[Int, Int]:
-    var n = (
-        Int(blob[off])
-        | (Int(blob[off + 1]) << 8)
-        | (Int(blob[off + 2]) << 16)
-        | (Int(blob[off + 3]) << 24)
-    )
-    return (n, off + 4)
+def _text(b: List[UInt8]) -> String:
+    """The bytes as a Mojo String — valid because everything here is UTF-8."""
+    return String(StringSlice(unsafe_from_utf8=Span(b)))
 
 
-def _read_str(blob: List[UInt8], off: Int) -> Tuple[String, Int]:
-    var pair = _read_u32(blob, off)
-    var n = pair[0]
-    var start = pair[1]
-    var out = String()
-    for i in range(n):
-        out += String(chr(Int(blob[start + i])))
-    return (out^, start + n)
+def _bytes(var s: String) -> List[UInt8]:
+    var out = List[UInt8](capacity=s.byte_length())
+    out.extend(s.as_bytes())
+    return out^
+
+
+# --- cgi_header_name, the readable statement of the rule ---------------------
 
 
 def test_cgi_header_name_prefixes_ordinary_headers() raises:
@@ -53,66 +51,20 @@ def test_cgi_header_name_is_case_insensitive() raises:
     assert_equal(cgi_header_name("USER-AGENT"), "HTTP_USER_AGENT")
 
 
-# --- serialize_request -------------------------------------------------------
-# The blob is the whole request's trip across the interpreter boundary; the
-# shim parses it positionally, so field order and framing are contract.
+# --- the two implementations must never disagree -----------------------------
 
 
-def test_serialize_request_line_fields_in_order() raises:
-    """method, path, query, protocol — each u32-length-prefixed, in order."""
-    var req = HTTPRequest(
-        URI.parse("http://localhost:8080/widgets?name=ada"), method="GET"
-    )
-    var blob = serialize_request(req)
-    var off = 0
-    var method = _read_str(blob, off)
-    assert_equal(method[0], "GET")
-    var path = _read_str(blob, method[1])
-    assert_equal(path[0], "/widgets")
-    var query = _read_str(blob, path[1])
-    assert_equal(query[0], "name=ada")
-    var protocol = _read_str(blob, query[1])
-    assert_true(protocol[0].startswith("HTTP/"))
-
-
-def test_serialize_request_headers_use_cgi_names() raises:
-    """Headers cross already CGI-transformed, so the shim stays dumb."""
-    var req = HTTPRequest(
-        URI.parse("http://localhost:8080/"), method="GET"
-    )
-    req.headers["content-type"] = "text/plain"
-    var blob = serialize_request(req)
-    # Skip the four request-line strings, then the header count.
-    var off = 0
-    for _ in range(4):
-        off = _read_str(blob, off)[1]
-    var count_pair = _read_u32(blob, off)
-    off = count_pair[1]
-    var found = False
-    for _ in range(count_pair[0]):
-        var k = _read_str(blob, off)
-        var v = _read_str(blob, k[1])
-        off = v[1]
-        if k[0] == "CONTENT_TYPE":
-            assert_equal(v[0], "text/plain")
-            found = True
-    assert_true(found, "CONTENT_TYPE header did not cross")
-
-
-def test_blob_header_names_match_cgi_header_name() raises:
-    """The serializer and `cgi_header_name` must never disagree.
+def test_cgi_name_utf8_matches_cgi_header_name() raises:
+    """The byte writer and `cgi_header_name` must never drift apart.
 
     The rule is implemented twice on purpose: `cgi_header_name` is the
-    readable statement of it, and the serializer writes the same bytes
-    without allocating three Strings per header to do so (see
-    `_append_cgi_name`). Two implementations can drift, so this asserts
-    they agree on every shape the rule distinguishes — the `HTTP_` prefix,
-    the two unprefixed names, dashes, and a name that merely starts like a
-    content header.
+    readable statement of it, and `append_cgi_name_as_utf8` writes the same
+    bytes into a reused buffer without building three Strings per header to
+    do so. Two implementations can drift, so this asserts they agree on
+    every shape the rule distinguishes — the `HTTP_` prefix, the two
+    unprefixed names, dashes, a name that merely *starts* like a content
+    header, and a one-character name.
     """
-    var req = HTTPRequest(URI.parse("http://localhost:8080/"), method="GET")
-    # `connection` is not set here: HTTPRequest adds it itself, along with
-    # `host` and `content-length`. It is listed so the count below is exact.
     var names = [
         String("connection"),
         String("host"),
@@ -122,34 +74,15 @@ def test_blob_header_names_match_cgi_header_name() raises:
         String("content-length"),
         String("content-disposition"),
         String("a"),
+        String("x"),
+        String("sec-fetch-mode"),
     ]
     for name in names:
-        if name != "connection":
-            req.headers[name] = "v"
-    var blob = serialize_request(req)
-
-    var off = 0
-    for _ in range(4):
-        off = _read_str(blob, off)[1]
-    var count_pair = _read_u32(blob, off)
-    off = count_pair[1]
-    assert_equal(count_pair[0], len(names))
-
-    var seen = 0
-    for _ in range(count_pair[0]):
-        var k = _read_str(blob, off)
-        var v = _read_str(blob, k[1])
-        off = v[1]
-        # Whatever name this is, the blob's spelling of it must be the one
-        # `cgi_header_name` would have produced.
-        var matched = False
-        for name in names:
-            if cgi_header_name(name) == k[0]:
-                matched = True
-                break
-        assert_true(matched, "blob name has no cgi_header_name source: " + k[0])
-        seen += 1
-    assert_equal(seen, len(names))
+        assert_equal(
+            _text(cgi_name_utf8(name.as_bytes())),
+            cgi_header_name(name),
+            "disagreement on " + name,
+        )
 
     # And the distinguishing cases specifically, so a change that made every
     # name agree by making them all wrong would still fail.
@@ -157,23 +90,103 @@ def test_blob_header_names_match_cgi_header_name() raises:
     assert_equal(cgi_header_name("a"), "HTTP_A")
 
 
-def test_serialize_request_body_is_last_and_binary() raises:
-    """The body is the final field: u32 length + raw bytes, untouched."""
-    var req = HTTPRequest(
-        URI.parse("http://localhost:8080/echo"), method="POST"
-    )
-    req.body_raw = List[UInt8]()
-    req.body_raw.append(0)
-    req.body_raw.append(127)
-    req.body_raw.append(255)
-    var blob = serialize_request(req)
-    var n = len(blob)
-    assert_equal(Int(blob[n - 3]), 0)
-    assert_equal(Int(blob[n - 2]), 127)
-    assert_equal(Int(blob[n - 1]), 255)
-    # the u32 immediately before the body says 3
-    var len_pair = _read_u32(blob, n - 7)
-    assert_equal(len_pair[0], 3)
+# --- latin-1 → UTF-8, the mapping the C API needs ----------------------------
+
+
+def test_all_ascii_discriminates() raises:
+    """The fast-path test: True only when every byte is below 0x80."""
+    assert_true(all_ascii("plain text".as_bytes()))
+    assert_true(all_ascii("".as_bytes()))
+    var high = List[UInt8](capacity=2)
+    high.append(UInt8(ord("a")))
+    high.append(0x80)
+    assert_false(all_ascii(Span(high)))
+    var top = List[UInt8](capacity=1)
+    top.append(0xFF)
+    assert_false(all_ascii(Span(top)))
+
+
+def test_append_latin1_leaves_ascii_alone() raises:
+    """Below 0x80 the mapping is the identity — ASCII is its own UTF-8."""
+    var out = List[UInt8]()
+    append_latin1_as_utf8(out, "GET /widgets?q=1".as_bytes())
+    assert_equal(_text(out), "GET /widgets?q=1")
+
+
+def test_append_latin1_encodes_high_bytes_as_two() raises:
+    """Byte 0xNN above 0x7F becomes the two-byte UTF-8 for codepoint U+00NN.
+
+    This is the whole reason the transform exists: Mojo 1.0 has no
+    `PyUnicode_DecodeLatin1` binding, so the bytes are re-encoded here and
+    decoded as UTF-8 there. `0xE9` is é — U+00E9 — which UTF-8 spells
+    `C3 A9`.
+    """
+    var src = List[UInt8](capacity=3)
+    src.append(UInt8(ord("c")))
+    src.append(0xE9)
+    src.append(UInt8(ord("s")))
+    var out = List[UInt8]()
+    append_latin1_as_utf8(out, Span(src))
+    assert_equal(len(out), 4)
+    assert_equal(Int(out[0]), ord("c"))
+    assert_equal(Int(out[1]), 0xC3)
+    assert_equal(Int(out[2]), 0xA9)
+    assert_equal(Int(out[3]), ord("s"))
+    assert_equal(_text(out), "cés")
+
+
+def test_append_latin1_covers_every_byte() raises:
+    """All 256 byte values survive the round trip to their own codepoint.
+
+    Decoding this as UTF-8 must give exactly what `bytes.decode('latin-1')`
+    gives, so the property is checked over the whole domain rather than on
+    a sample: one byte below 0x80, two above, and nothing else.
+    """
+    var src = List[UInt8](capacity=256)
+    for i in range(256):
+        src.append(UInt8(i))
+    var out = List[UInt8]()
+    append_latin1_as_utf8(out, Span(src))
+    assert_equal(len(out), 128 + 128 * 2)
+    var off = 0
+    for i in range(256):
+        if i < 0x80:
+            assert_equal(Int(out[off]), i)
+            off += 1
+        else:
+            assert_equal(Int(out[off]), 0xC0 | (i >> 6))
+            assert_equal(Int(out[off + 1]), 0x80 | (i & 0x3F))
+            off += 2
+    assert_equal(off, len(out))
+
+
+def test_cgi_name_high_bytes_stay_valid_utf8() raises:
+    """A header name with a byte above 0x7F must still produce valid UTF-8.
+
+    Nothing on the wire guarantees an ASCII header name, and
+    `PyUnicode_DecodeUTF8` is strict — an invalid sequence would fail the
+    whole request rather than the one header. The CGI transform still
+    applies around it: prefix, uppercase, dash to underscore.
+    """
+    var name = List[UInt8](capacity=4)
+    name.append(UInt8(ord("x")))
+    name.append(UInt8(ord("-")))
+    name.append(0xE9)
+    name.append(UInt8(ord("z")))
+    var out = cgi_name_utf8(Span(name))
+    # HTTP_ + X + _ + C3 A9 + Z
+    assert_equal(len(out), 5 + 1 + 1 + 2 + 1)
+    assert_equal(_text(out), "HTTP_X_éZ")
+
+
+def test_cgi_name_appends_without_clearing() raises:
+    """The writer appends: `PyBridge` reuses one buffer and clears it itself."""
+    var out = _bytes(String("KEEP:"))
+    append_cgi_name_as_utf8(out, "host".as_bytes())
+    assert_equal(_text(out), "KEEP:HTTP_HOST")
+
+
+# --- split_status ------------------------------------------------------------
 
 
 def test_split_status_ordinary() raises:

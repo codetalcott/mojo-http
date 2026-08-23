@@ -92,6 +92,76 @@ versions may break the API**.
   asserts. Measured at **1 ms against a 400 ms gate**, so the row fails on a
   broken pool rather than on a busy machine.
 
+### Changed
+
+- **The WSGI environ is built in Mojo through the CPython C API — the bridge
+  costs 3.5 µs/request instead of 14.9.** `PyDict_New` and `PyDict_SetItem`
+  build the dict, `PyUnicode_DecodeUTF8` builds every key and value, and
+  `PyTuple_New`/`PyTuple_SetItem`/`PyObject_CallObject` hand the finished
+  dict to the shim. End to end on one worker serving `apps/wsgi_bare` with a
+  browser-shaped keep-alive request: **28,853 → 45,715 rps, 1.57x**, p50
+  508 → 315 µs, p99 1.06 ms → 681 µs.
+
+  This retires the last large measured item in the Granian gap. The shim
+  used to rebuild the environ in **pure Python on every request**, parsing a
+  binary blob Mojo had just written — 28 `_read_str` calls for a
+  twelve-header request, 12.09 µs of the bridge's 14.23, 85% of it.
+
+  The blob existed because Mojo 1.0's `PythonObject` leaks a reference per
+  call argument, so the environ could not be passed as one. The raw C API
+  refcounts explicitly and is not that path, which is what made this
+  possible at all. `smoke-django`'s RSS guard — the instrument for any
+  change to this boundary — still reports **0 KB over 10k requests**.
+
+  The **request body still crosses as bytes** through the persistent
+  bytearray, because Mojo 1.0 has no `PyBytes_*` binding of any kind and a
+  `bytes` object therefore cannot be built from Mojo. A request with no body
+  now skips that path entirely — `buf_addr()` is not called and nothing is
+  copied. There is no `PyUnicode_DecodeLatin1` either, so PEP 3333's
+  latin-1 tunneling is spelled as a UTF-8 encode in `environ.mojo` and
+  decoded by `PyUnicode_DecodeUTF8` into exactly the same `str`; ASCII, the
+  overwhelming case, is its own UTF-8 and costs no copy.
+
+### Removed
+
+- **`serialize_request` and the request blob format.** Nothing crosses the
+  boundary positionally any more except the request body, which needs no
+  framing because its length is passed as an argument. `environ.mojo` keeps
+  the pure half — `cgi_header_name` and the CGI/latin-1 byte transforms —
+  so the mapping stays testable without an interpreter, and
+  `test_environ.mojo` still asserts the two statements of the CGI rule
+  agree on every shape it distinguishes.
+
+### Fixed
+
+- **Graceful shutdown no longer waits the full 5 s drain for connections
+  that are already finished.** `active_count` counts a connection that is
+  merely *open* the same as one with a request in flight, so a server
+  holding idle keep-alive connections waited out the whole
+  `DRAIN_TIMEOUT_NS` budget at SIGTERM — **5.02 s to exit against 0.02 s
+  idle, in every execution mode**, which is most of what `docker stop`
+  allows before it escalates to SIGKILL.
+
+  The shutdown path now closes slots in `READING_HEADERS` whose receive
+  buffer is empty — "between requests" — before it starts the drain clock.
+  Those connections could never have been served by the drain loop anyway:
+  it dispatches `EVFILT_WRITE` only, so a request arriving mid-drain is not
+  read there. **5.02 s → 0.03 s** under `--workers 4`, under
+  `--blocking-threads 4`, and on a single loop.
+
+  A slot mid-request, mid-response, or with a job in a pool thread is left
+  alone, and the SSE/WebSocket farewell still runs first, so streaming
+  clients get their close comment or 1001 frame. Both halves of the
+  contract are pinned: `smoke-blocking-threads` already asserted that a
+  request in flight at SIGTERM is answered rather than dropped, and
+  `smoke-shutdown` gained a phase (`scripts/drain_idle_probe.py`) asserting
+  idle keep-alive connections do not hold the drain open — checked against
+  the unfixed loop, where it fails at 5.01 s.
+
+  This also retires the standing suspicion that `--threads` shuts down
+  slowly. It does not, and neither does the pool: every mode exited at
+  5.02 s, and a 5 s wait loses that race.
+
 ## [0.6.0] — 2026-08-23
 
 The release that finished moving the WSGI examples off their own

@@ -872,6 +872,42 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_sse, slot_ws, slot_ws_state,
                     )
 
+            # Close the connections that have nothing to drain, before timing
+            # anything. `active_count` counts a connection that is merely
+            # *open* the same as one with a request in flight, so without this
+            # a server holding idle keep-alive connections waited out the
+            # whole DRAIN_TIMEOUT_NS budget for clients that had already been
+            # answered — measured at 5.02 s to exit against 0.02 s idle, in
+            # every execution mode, which is most of `docker stop`'s 10 s.
+            #
+            # A slot in READING_HEADERS with an empty receive buffer is
+            # between requests: `prepare_for_new_request` clears the buffer
+            # after each response, and the first byte of the next request
+            # both refills it and moves the state on. Such a connection
+            # cannot be served by the drain loop under any circumstance —
+            # that loop dispatches EVFILT_WRITE only, so a request arriving
+            # during the drain is not read there today either. Closing it now
+            # therefore drops nothing that waiting would have delivered, and
+            # leaves the whole budget to connections genuinely mid-request or
+            # mid-response.
+            #
+            # Skipped, for the reasons the idle and header sweeps skip them:
+            # a slot with a job in a pool thread is working, not idle, and its
+            # provision is still borrowed by another thread.
+            for s in range(max_conns):
+                if slot_fds[s] == UNUSED or offload.offloaded[s]:
+                    continue
+                if (
+                    provision_pool.provisions[s].state.kind
+                    == ConnectionState.READING_HEADERS
+                    and len(provision_pool.provisions[s].recv_buffer) == 0
+                ):
+                    _close_slot(
+                        backend, handler, s, slot_fds[s],
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+
             # Drain in-flight: wait for active non-SSE connections (max 5s).
             #
             # `offload.inflight` is in the condition as well as `active_count`,

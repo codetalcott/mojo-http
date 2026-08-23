@@ -1,10 +1,10 @@
-"""Where the ~1ms per request in the WSGI bridge actually goes.
+"""Where the WSGI bridge's per-request cost actually goes.
 
-`docs/WSGI_PERFORMANCE.md` measures the bridge at ~1ms/request against a
-Python callable that does nothing. A standalone Python microbenchmark of the
-shim's `handle()` — the blob parse, the app call, the joins — costs only
-~12us of that. So most of the cost is on the Mojo side of the boundary or in
-the crossing itself, and this splits it.
+`docs/WSGI_PERFORMANCE.md` splits the bridge by part rather than guessing at
+it, because guessing was wrong once: the ~1 ms per request was "obviously"
+the Python shim, and it was 48 µs of `serialize_request` in Mojo. This is
+the instrument that settled that, and every later change to the boundary is
+measured with it before and after.
 
     uv run mojo run -I packages/m0-wsgi -I packages/m0-http -I packages/m0-core \\
       scripts/bench_bridge_parts.mojo
@@ -21,7 +21,6 @@ from lightbug_http.header import Headers, Header
 from lightbug_http.uri import URI
 
 from src.bridge import PyBridge
-from src.environ import serialize_request
 
 
 comptime N = 20000
@@ -54,9 +53,10 @@ def _browser_request() raises -> HTTPRequest:
     return HTTPRequest(uri=URI.parse("http://127.0.0.1:8080/"), headers=h^)
 
 
-def _report(label: String, ns_total: Int):
+def _report(label: String, ns_total: Int) -> Float64:
     var us = Float64(ns_total) / Float64(N) / 1000.0
     print(label, ":", us, "us")
+    return us
 
 
 def main() raises:
@@ -78,41 +78,44 @@ def main() raises:
     )
     bridge.set_app(ns["app"])
 
-    var blob = serialize_request(req)
-    print("blob bytes:", len(blob))
+    print("headers:", req.headers.count())
     print("iterations:", N)
     print("")
 
-    # 1. Mojo-side blob construction.
+    # 1. One zero-argument call into Python, nothing else. The serving path
+    #    pays this only for a request that HAS a body -- it is the address
+    #    fetch for the body buffer -- so it is here as the unit cost of a
+    #    Python-level crossing, not as something every request pays.
     var t0 = perf_counter_ns()
     for _ in range(N):
-        var b = serialize_request(req)
-        _ = len(b)
-    _report("serialize_request        ", perf_counter_ns() - t0)
-
-    # 2. One zero-argument call into Python, nothing else.
-    t0 = perf_counter_ns()
-    for _ in range(N):
         bridge.probe_buf_addr()
-    _report("buf_addr() zero-arg call ", perf_counter_ns() - t0)
+    var us_call = _report("buf_addr() zero-arg call  ", perf_counter_ns() - t0)
 
-    # 3. The blob copy into the shim's buffer (address fetch + byte loop).
+    # 2. The whole environ dict, built in Mojo through the CPython C API:
+    #    PyDict_New, the base replay, four request-line fields and twelve
+    #    CGI-transformed headers. No Python bytecode runs here at all.
     t0 = perf_counter_ns()
     for _ in range(N):
-        bridge.probe_copy(Span(blob))
-    _report("copy blob into buffer    ", perf_counter_ns() - t0)
+        bridge.probe_build_environ(req)
+    var us_env = _report("build_environ (C API)     ", perf_counter_ns() - t0)
 
-    # 4. handle() alone — the call plus everything Python does inside it.
+    # 3. build_environ + the args tuple + PyObject_CallObject + everything
+    #    the shim does: wsgi.input, start_response, the app, the joins.
     t0 = perf_counter_ns()
     for _ in range(N):
-        var r = bridge.probe_handle()
+        var r = bridge.run(req)
         _ = r
-    _report("handle() call + shim     ", perf_counter_ns() - t0)
+    var us_run = _report("run() = environ + shim    ", perf_counter_ns() - t0)
 
-    # 5. The whole round trip a request actually pays.
+    # 4. The whole round trip a request actually pays.
     t0 = perf_counter_ns()
     for _ in range(N):
-        var result = bridge.handle(Span(blob))
+        var result = bridge.run(req)
         var body = bridge.body_bytes(result[2])
         _ = len(body)
-    _report("FULL round trip          ", perf_counter_ns() - t0)
+    var us_full = _report("FULL round trip           ", perf_counter_ns() - t0)
+
+    print("")
+    print("derived: shim + call      :", us_run - us_env, "us")
+    print("derived: response body out:", us_full - us_run, "us")
+    _ = us_call

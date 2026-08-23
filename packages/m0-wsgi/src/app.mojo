@@ -5,7 +5,6 @@ from std.python import Python, PythonObject
 from lightbug_http import HTTPRequest, HTTPResponse
 
 from .bridge import PyBridge
-from .environ import serialize_request
 from .response import build_response
 
 
@@ -84,8 +83,7 @@ struct WSGIApp(Movable):
         generic 500 instead can simply let it propagate — the event loop
         catches handler exceptions and answers `InternalError()`.
         """
-        var payload = serialize_request(req)
-        var result = self._bridge.handle(Span(payload))
+        var result = self._bridge.run(req)
         return build_response(
             self._bridge, String(py=result[0]), result[1], result[2]
         )

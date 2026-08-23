@@ -274,17 +274,27 @@ whole server side of it. Run it with `uv run poe serve-django-realtime`.
 `start_response` callable that the *server* supplies, and building a Python
 callable that closes over Mojo state is the hardest thing at this boundary — so
 a small Python shim does it instead. The shim is a string `exec`'d at startup,
-not a file, so there is nothing to locate at run time. Each request crosses as
-a length-prefixed byte blob written into a persistent Python-side `bytearray`,
-and the shim's zero-argument `handle()` parses it, builds the environ natively,
-and returns `(status, headers, body)`. The blob is not an optimization: Mojo
-1.0's `PythonObject` interop leaks a reference per call argument and per
+not a file, so there is nothing to locate at run time. Mojo builds each
+request's WSGI environ itself, through the raw CPython C API — `PyDict_New`,
+`PyDict_SetItem`, `PyUnicode_DecodeUTF8` — and hands the finished dict to the
+shim, which supplies `start_response`, calls the application, and returns
+`(status, headers, body)`.
+
+The C API is not a micro-optimization but the only door available: Mojo 1.0's
+`PythonObject` interop leaks a reference per call argument and per
 `__setitem__` value, so any per-request Python object passed the obvious way
-is pinned forever — the blob is the shape that survives a million requests
-with flat memory, and `poe smoke-django` asserts exactly that. Bodies come
-back as raw addresses via `ctypes`: `std.python` binds no `bytes` API at all,
-and a `String` round trip would corrupt any byte above 0x7F; the same smoke
-asserts a body of all 256 byte values returns unchanged.
+is pinned forever. The C API refcounts explicitly, which is what lets the
+environ be built at all — and it is why every string is `Py_DecRef`'d after
+`PyDict_SetItem` takes its own reference. `poe smoke-django` asserts the
+result: flat memory across 10k requests. Building the environ here rather
+than in Python is also worth 1.57x end to end
+([docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md)).
+
+Bodies are the exception, in both directions: `std.python` binds no `bytes`
+API at all, so the request body crosses through a persistent `bytearray` and
+the response body comes back as a raw address via `ctypes`. A `String` round
+trip would corrupt any byte above 0x7F; the same smoke asserts a body of all
+256 byte values returns unchanged.
 
 **Limits**, all inherited from the server rather than the bridge:
 

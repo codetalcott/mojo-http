@@ -350,6 +350,9 @@ path. `PyDict_New` and `PyDict_SetItem` are reachable today through
 before this was written down. `smoke-django`'s RSS guard is the instrument
 that would prove such a change does not reintroduce the leak.
 
+*(This section is the diagnosis. It was acted on — see "Built in Mojo through
+the C API" below for what it cost and what it bought.)*
+
 **Re-measured before acting on it**, because this exact recommendation was
 wrong once already — it named the shim when the cost was `serialize_request`,
 and only splitting the total by part caught that. The split reproduces:
@@ -365,6 +368,86 @@ and only splitting the total by part caught that. The split reproduces:
 `handle()` is **85% of what is left**, and the three Mojo-side parts together
 are 1.6 µs. So the target above is the right one — which is a statement this
 document has now earned rather than assumed.
+
+### Built in Mojo through the C API: 14.9 µs → 3.5 µs
+
+Done, and the split above is what says it worked rather than a guess that it
+would. The environ dict is built in Mojo now: `PyDict_New` and
+`PyDict_SetItem` for the dict, `PyUnicode_DecodeUTF8` for every key and
+value, and `PyTuple_New`/`PyTuple_SetItem`/`PyObject_CallObject` to hand the
+finished dict to the shim, which is left holding only the parts that have to
+be Python — `start_response`, the application call, the joins, and `close()`.
+
+The blob is gone entirely, and with it `serialize_request` and the 28
+`_read_str` calls that parsed it back. **The request body is the one thing
+that still crosses as bytes**, because Mojo 1.0 has no `PyBytes_*` binding
+of any kind, so a `bytes` object cannot be built from Mojo at all: the body
+goes through the same persistent bytearray as before and the shim makes the
+`BytesIO`. A request with no body — every GET, and so every row in this
+document — now skips that path completely: `buf_addr()` is never called and
+nothing is copied.
+
+Two constraints shaped it rather than merely being respected by it:
+
+- **The environ could never have been passed as an argument.** That is the
+  leak. `PyTuple_SetItem` steals a reference and `PyObject_CallObject` takes
+  a tuple, so the C API hands the dict over with the refcount accounted for
+  by hand. `PyDict_SetItem` does *not* steal, which is the mirror-image rule:
+  every string built for it is `Py_DecRef`'d as soon as the dict has taken
+  its own reference.
+- **There is no `PyUnicode_DecodeLatin1` binding.** PEP 3333 tunnels raw
+  request bytes through `str` as latin-1. Encoding those same codepoints as
+  UTF-8 is a two-line transform — one byte below 0x80, two above — so the
+  bytes are re-encoded here and decoded as UTF-8 there, producing exactly the
+  `str` a latin-1 decode would. ASCII, which is nearly everything, is its own
+  UTF-8 and needs no copy at all. `PATH_INFO` is why this is not academic: it
+  arrives percent-*decoded*, so a non-ASCII path carries real high bytes.
+
+Same instrument, 20k iterations, the same twelve-header GET, two runs:
+
+| part | before | after |
+|------|-------:|------:|
+| `serialize_request` (Mojo) | 0.43 µs | — |
+| `buf_addr()` zero-arg call | 0.30 µs | not called on a GET |
+| copy blob into the shim's buffer | 0.88 µs | not called on a GET |
+| `build_environ` — the whole dict, C API | — | **1.78 / 1.75 µs** |
+| `handle()` / `run()` — the call plus the shim | 12.09 µs | **0.64 / 0.65 µs** |
+| full round trip | 14.23 µs | **3.52 / 3.47 µs** |
+
+**14.9 µs → 3.5 µs, 4.2x.** The Python shim, which this document twice had
+to stop itself from blaming prematurely, really was the cost this time — and
+it is now 0.65 µs.
+
+**End to end, one worker on `apps/wsgi_bare`**, browser-shaped keep-alive
+request, `wrk -t2 -c16 -d10s`, CPython 3.13, two rounds per server start.
+The `before` run is bracketed by two separate `after` starts, so the
+comparison is not an artifact of ordering or of one warm process:
+
+| | rps | p50 | p99 |
+|---|---:|---:|---:|
+| before | 28,853 · 29,123 | 508 µs | 1.06 ms |
+| after | **45,715 · 45,734** | **315 µs** | **681 µs** |
+| after, again | 45,525 · 45,182 | 317 µs | 704 µs |
+
+**1.57x throughput, p50 down 38%, p99 down 35%.** `smoke-django`'s RSS guard
+— the instrument for any change to this boundary, because a missed
+`Py_DecRef` is exactly the unbounded leak the design exists to avoid — still
+reports **0 KB over 10k requests**.
+
+**The Granian ratio is deliberately not restated here.** The layer-split
+table above was measured on **3.14.7t** and this pair on **3.13**, so
+dividing one by the other would be arithmetic across two interpreters. What
+the numbers above support is the delta on one box with one interpreter and
+one variable. Re-running `scripts/bench_layer_split.sh` on 3.14.7t is what
+would move the 4.3x row, and until that happens the row stands as measured.
+
+**What is left, and it is a different shape.** Of the 3.5 µs, 1.78 µs is the
+environ build and 0.65 µs is the shim; the remaining **1.07 µs is getting the
+response body back out** — `body_bytes`, which pays a `len()` and a
+`body_addr()` crossing and then copies byte at a time. That is now 31% of the
+bridge, against 5% of it before, purely because everything around it got
+smaller. It is the next thing worth splitting, and the same discipline
+applies: measure it by part before believing that description of it.
 
 ## A slow view strands the connections pinned behind it
 
@@ -470,16 +553,64 @@ Fast-route p99, by how many slow requests are in flight (both rounds):
 - **It costs throughput, and the cost is not the same in both modes.** At
   slow=0, two-round means: prefork gives up **7.3%** (34.9k → 32.3k rps) and
   threads **21.3%** (32.7k → 25.7k). The extra hop is one datagram each way per
-  request, which is the 7%; the rest is oversubscription — `--threads 4
-  --blocking-threads 4` is four loops *plus* sixteen handler threads on four
-  performance cores, where the prefork row is four processes of five threads
-  each and the OS scheduler is not asked to keep twenty runnable threads on
-  four cores. Size the pool to the box, not to the loop count.
+  request, and that is the 7% both modes pay. The remaining 14% is *not*
+  explained by thread count: `--threads 4 --blocking-threads 4` is four loops
+  plus sixteen handler threads, and `--workers 4 --blocking-threads 4` is four
+  processes of five — **twenty threads either way**, on four performance
+  cores. What differs is four independent interpreters against one shared
+  between twenty threads. See "Sizing the pool" below, which also says why no
+  startup warning fires on a large pool.
 - **So the flag is a trade, and that is why it is off by default**: a few
   percent of peak throughput, and a p99 that stops depending on what other
   requests are doing. An application whose views are uniformly fast should
   not take it; one with a single slow report, an upstream call or a large
   query should.
+
+### Sizing the pool
+
+The measurement above says what oversubscription costs but not what to
+choose, so: **size `B` to the number of requests you expect to be *waiting*
+at once, not to the core count.**
+
+The arithmetic first, because it is easy to get wrong in the other
+direction. Both modes create the same total:
+
+    --workers W --blocking-threads B   →  W × (B + 1) threads, across W processes
+    --threads T --blocking-threads B   →  T × (B + 1) threads, in one process
+
+`+ 1` because each loop keeps its own acceptor thread. `--workers 4
+--blocking-threads 4` and `--threads 4 --blocking-threads 4` are both twenty
+threads. That matters because it means **thread count alone does not explain
+the 7.3% against 21.3%** — the two rows above have identical thread counts.
+What differs is that four processes are four independent interpreters, and
+four loops are twenty threads contending on one interpreter's shared
+structures. Recorded as the honest limit of this measurement: the mechanism
+is inferred, not measured, and separating them would need a profile rather
+than a throughput number.
+
+The rule that follows from what the pool is *for*:
+
+- **A thread waiting on a database, an upstream call or a `sleep` is not
+  runnable**, and costs no core. That is the entire workload the pool exists
+  to isolate. So `B` tracks *concurrent waits*, and a pool much larger than
+  the core count is correct when views genuinely wait — which is why
+  gunicorn's `--threads` is routinely 4–8 per worker against far fewer cores.
+- **A thread running Python bytecode is runnable**, and there the cost above
+  is real. The benchmark's fast view does no waiting at all, which is exactly
+  why it shows the penalty so cleanly — it is the worst case for the flag,
+  not the typical one.
+- **A starting point**, when the mix is unknown: `B = 4` with `W` or `T` at
+  the core count, then raise `B` only while p99 under mixed load keeps
+  improving. Past that, more threads buy queueing rather than concurrency.
+- **Prefer `--workers W --blocking-threads B` to `--threads T
+  --blocking-threads B`** at the same total, on this evidence: same thread
+  count, a third of the throughput cost, and it needs no free-threaded
+  interpreter.
+
+No startup warning is emitted for a large `T × (B + 1)`. A pool sized for
+waiting views is *supposed* to exceed the core count, so the server cannot
+tell an oversubscribed configuration from a correctly-sized one without
+knowing what the views do.
 
 ## What the server-layer work bought the WSGI path
 
