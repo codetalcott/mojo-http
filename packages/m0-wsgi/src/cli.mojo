@@ -69,6 +69,14 @@ struct ServeOptions(Copyable, Movable):
     and a `SharedAtomics` page, and it makes `M0-Hold` a header the server
     consumes rather than one the application may emit for its own reasons.
     """
+    var reload: Bool
+    """Restart workers when a watched `.py` changes. A development flag.
+
+    Forces a supervisor even for one worker and under `--threads`, because
+    something has to outlive the process it restarts.
+    """
+    var reload_dirs: List[String]
+    """Directories `--reload` watches; empty means `--app-dir` alone."""
     var health_path: String
     """Path answered in Mojo with a liveness JSON; empty = the app owns it.
 
@@ -94,6 +102,8 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = -1
         self.metrics = False
         self.realtime = False
+        self.reload = False
+        self.reload_dirs = List[String]()
         self.health_path = String("")
         self.show_help = False
         self.show_version = False
@@ -113,6 +123,8 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = copy.max_body
         self.metrics = copy.metrics
         self.realtime = copy.realtime
+        self.reload = copy.reload
+        self.reload_dirs = copy.reload_dirs.copy()
         self.health_path = copy.health_path
         self.show_help = copy.show_help
         self.show_version = copy.show_version
@@ -132,6 +144,8 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = move.max_body
         self.metrics = move.metrics
         self.realtime = move.realtime
+        self.reload = move.reload
+        self.reload_dirs = move.reload_dirs^
         self.health_path = move.health_path^
         self.show_help = move.show_help
         self.show_version = move.show_version
@@ -259,6 +273,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--static-cache-control"
         or name == "--max-body"
         or name == "--health-path"
+        or name == "--reload-dir"
     )
 
 
@@ -267,6 +282,7 @@ def _is_bool(name: String) -> Bool:
         name == "--access-log"
         or name == "--metrics"
         or name == "--realtime"
+        or name == "--reload"
         or name == "--help"
         or name == "--version"
     )
@@ -315,6 +331,11 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         opts.static_cache_control = value
     elif name == "--max-body":
         opts.max_body = parse_size(value)
+    elif name == "--reload-dir":
+        var watched = String(value.strip())
+        if watched.byte_length() == 0:
+            raise Error("--reload-dir must not be empty")
+        opts.reload_dirs.append(watched^)
     elif name == "--health-path":
         var path = String(value.strip())
         if not path.startswith("/"):
@@ -363,6 +384,8 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
                     opts.access_log = True
                 elif name == "--realtime":
                     opts.realtime = True
+                elif name == "--reload":
+                    opts.reload = True
                 else:
                     opts.metrics = True
             elif _takes_value(name):
@@ -417,6 +440,10 @@ def usage() -> String:
         "                              approves with M0-Hold; publish with m0pub.py\n"
         "  --health-path PATH          answer PATH in Mojo with a liveness JSON,\n"
         "                              never entering the application\n"
+        "  --reload                    restart workers when a watched .py changes\n"
+        "                              (development; forces a supervisor)\n"
+        "  --reload-dir DIR            directory --reload watches; repeatable,\n"
+        "                              defaults to --app-dir\n"
         "  -h, --help                  show this help and exit\n"
         "  -V, --version               show the version and exit\n"
         "\n"

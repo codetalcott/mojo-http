@@ -32,12 +32,62 @@ versions may break the API**.
   phase 4 pins it where the GIL is off (`py-canary` C3): six streams spread
   over four loops, one publish from one thread's Django reaching all six
   with numbered ids, then a clean four-loop drain on SIGTERM.
+- **`m0serve --reload [--reload-dir DIR]` — hot reload.** A changed `.py`
+  under a watched directory stops the workers and forks replacements onto
+  the new module, in ~300 ms plus a drain. The flag forces a supervisor even
+  at one worker and even under `--threads N`, and that composes with both
+  execution modes for one reason: the supervisor never touches Python. It
+  watches with `listdir` and `stat` — libc, and therefore safe in a process
+  forked without `exec` — and the fork still precedes the first Python call
+  because the supervisor never makes one. A reload is a graceful shutdown
+  followed by a fork: workers leave through the existing `SIGTERM` →
+  drain → `exit_worker()` path, unchanged, and the exits are accounted as a
+  reload rather than a retirement, so the crash-respawn budget is untouched.
+  Stragglers past a 5 s drain deadline get `SIGKILL`. What reloads is the
+  worker; the Mojo binary is never re-exec'd, so a changed `.mojo` still
+  needs a rebuild.
+- **`--reload` sets `PYTHONDONTWRITEBYTECODE=1`,** which is not a tidiness
+  choice. CPython validates a cached `.pyc` against its source's mtime in
+  whole **seconds** and its size, so a rewrite landing in the same second at
+  the same length looks unchanged to the import system. The reloader sees it
+  — it compares nanoseconds — re-forks, and the fresh worker imports the old
+  bytecode: a reload that visibly happened and changed nothing. Writing no
+  bytecode means there is never a cache to go stale. `smoke-reload` pins it
+  by editing same-length versions in the same second, and asserts no
+  `__pycache__` appears.
+- **`scheme_separator`** (`lightbug_http/uri.mojo`, so also in
+  [NOTICE](NOTICE)). See Fixed.
+- **`MtimeScanner`** (`m0-http`): the change detector, suffix-filtered with
+  the suffix supplied by the caller so `m0-http` keeps no notion of what a
+  source file is. One number per pass — newest mtime *and* file count,
+  because deleting the newest file leaves the maximum in the past — compared
+  against the previous pass rather than a high-water mark. `__pycache__`,
+  `.git`, `node_modules` and dotfiles are skipped; the first pass records
+  and never reports. `waitpid_nonblocking` (`WNOHANG`) is what lets the
+  supervisor poll instead of parking in `wait`.
 - **`--health-path PATH`** answers `PATH` in Mojo with a liveness JSON —
   under `--realtime`, with the live `subscribers` and `sockets` counts, which
   is how the smokes assert that a vanished client was actually unsubscribed.
   Opt-in, and separate from `--realtime`, for the mirror-image reason: an
   application may already route `/health`, and a server that took the path
   silently would shadow it.
+
+### Fixed
+
+- **A bare `://` anywhere in a request target was read as a scheme**, so a
+  query parameter carrying an unencoded URL (`/go?url=http://x`) was parsed
+  as a URI whose scheme was `/go?url=http` and answered `400` before
+  reaching the application. `URI.parse` searched the whole target for `://`;
+  `scheme_separator` now accepts one only when everything before it is a
+  scheme as RFC 3986 §3.1 defines it — ALPHA, then ALPHA / DIGIT / `+` /
+  `-` / `.` — a character set that by construction cannot contain `/`, `?`
+  or `#`. It is computed before the `ByteReader` borrows the string: a
+  second interior reference taken while the reader holds one invalidates
+  it. Clients that percent-encode — every browser form, every `urlencode` —
+  never hit this, which is what kept it a Known issue rather than a bug
+  report. `test_uri_scheme.mojo` covers both directions and `smoke-wsgi` now
+  sends its `/reentrant?url=` unencoded as well as encoded, so a real server
+  proves it.
 
 ### Removed
 

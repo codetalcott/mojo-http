@@ -281,24 +281,24 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   `m0pub.py` reaches N threads with the N `os.write`s it used to reach N
   processes — it never learns which it is talking to. No `apps/*/server.mojo`
   remains under a WSGI row.
-- **Recorded follow-ups, not yet scoped:** hot reload as a supervisor-side
-  mtime poller that kills and re-forks workers (the supervisor never touches
-  Python, so fork-without-exec stays safe there); ASGI/WSGI auto-detection in
+- **Hot reload exists.** `m0serve --reload [--reload-dir DIR]` polls watched
+  directories every 300 ms with `MtimeScanner` and, on a changed `.py`,
+  stops the workers and forks replacements onto the new module. The flag
+  forces a supervisor even at one worker and even under `--threads N`; the
+  supervisor never touches Python, so fork-without-exec stays safe and the
+  fork still precedes the first Python call. A reload reuses the existing
+  `SIGTERM` → drain → `exit_worker()` path and is accounted separately from
+  a crash, so it spends no respawn budget. It also sets
+  `PYTHONDONTWRITEBYTECODE=1`: CPython validates a `.pyc` against source
+  mtime in whole *seconds* plus size, so without it a same-second,
+  same-length edit reloads into stale bytecode. The Mojo binary is never
+  re-exec'd — a changed `.mojo` still needs a rebuild.
+- **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in
   the entry point;
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.
 
 ## Known issues
-
-- **A bare `://` anywhere in a request target is read as a scheme**, and the
-  request answers `400` before reaching the application. `URI.parse` decides
-  "this is an absolute URI" by searching the whole string for `://`, so a
-  query parameter carrying an unencoded URL (`/go?url=http://x`) is
-  misparsed. Clients that percent-encode — every browser form, every
-  `urlencode` — never hit it; `smoke-wsgi` and `smoke-threads` encode their
-  `/reentrant?url=` for this reason. The fix is to look for `://` only
-  before the first `/` or `?`; recorded here because it is in the fork's
-  parser, where a change wants its own tests.
 
 - Negotiation covers `Accept`, `Accept-Encoding` (`negotiate_encoding` —
   codec-agnostic, for callers with precompressed variants; the framework
@@ -321,6 +321,24 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   everything else — but it remains in the fork for the simplest embeddings.
 
 ## Recently resolved
+
+- **A bare `://` anywhere in a request target was read as a scheme**, and the
+  request answered `400` before reaching the application. `URI.parse` decided
+  "this is an absolute URI" by searching the whole target for `://`, so a
+  query parameter carrying an unencoded URL (`/go?url=http://x`) was parsed
+  as a URI whose scheme was `/go?url=http`. Clients that percent-encode —
+  every browser form, every `urlencode` — never hit it, which is what kept it
+  rare enough to live in a Known-issues list.
+
+  `scheme_separator` replaces the search: the `://` counts only when
+  everything before it is a scheme as RFC 3986 §3.1 defines one — ALPHA, then
+  ALPHA / DIGIT / `+` / `-` / `.` — a character set that by construction
+  cannot contain `/`, `?` or `#`. It is computed before the `ByteReader`
+  borrows the string, because a second interior reference taken while the
+  reader holds one invalidates it. `test_uri_scheme.mojo` covers both
+  directions, and `smoke-wsgi` now sends its `/reentrant?url=` unencoded as
+  well as encoded, so a real server proves it. In the fork, so it is in
+  [NOTICE](../NOTICE) too.
 
 - **Request cookies never reached a WSGI application.** The parser diverted
   `Cookie` out of the header map into `RequestCookieJar`; the WSGI environ is

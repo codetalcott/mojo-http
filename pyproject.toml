@@ -1422,6 +1422,173 @@ echo "smoke-serve OK"
 # 3.14t venv) and proves the mode serves: the conformance routes, the
 # reentrant sub-request (which another thread now answers), connections
 # spread across threads, and a clean SIGTERM with every thread reporting.
+# Hot reload. What reloads is the WORKER — a fresh interpreter importing the
+# changed .py — not this binary; a changed .mojo still needs a rebuild. The
+# supervisor is what makes it safe: it has forked without exec and never
+# touches Python, so watching files is `listdir` + `stat` and nothing more.
+# The row edits a throwaway app in a temp directory rather than anything in
+# the repo, so a failed run cannot leave a modified source file behind.
+[tool.poe.tasks.smoke-reload]
+help = "--reload: a changed .py is served by a NEW worker pid within seconds, at one worker and at two"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+out=$(mktemp -d)
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -rf "$out" reload.log
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f reload.log ]; then echo '=== reload.log ==='; cat reload.log; fi
+  exit 1
+}
+
+write_app() {
+  cat > "$out/myapp.py" <<PYAPP
+import os
+VERSION = "$1"
+def application(environ, start_response):
+    body = ("%s pid=%d" % (VERSION, os.getpid())).encode()
+    start_response("200 OK", [("Content-Type", "text/plain"),
+                              ("Content-Length", str(len(body)))])
+    return [body]
+PYAPP
+}
+
+# A directory that does not exist is caught before any interpreter starts.
+"$srv" myapp:application --app-dir "$out" --reload --reload-dir /no/such/dir \
+  > reload.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "--reload-dir /no/such/dir: exit $rc, want 1"
+grep -q 'reload dir does not exist' reload.log || fail 'the message does not name the missing reload dir'
+
+# Phase 1: one worker. --reload forces a supervisor even here, which is the
+# whole point -- something has to outlive the process it restarts.
+write_app one
+"$srv" myapp:application --app-dir "$out" --port 8095 --reload > reload.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8095/ > "$out/before" \
+  || fail 'the reloading server never became healthy'
+grep -q '^one ' "$out/before" || fail "expected version one, got $(cat "$out/before")"
+before_pid=$(cut -d= -f2 "$out/before")
+grep -q 'supervising 1 workers' reload.log || fail '--reload did not force a supervisor at one worker'
+grep -q 'watching .* for changes' reload.log || fail 'the watcher did not announce itself'
+
+# The edit. A new worker must be serving the new body within ~2s of the
+# 300ms scan noticing it.
+write_app two
+served=
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  sleep 0.5
+  served=$(curl -s --max-time 5 http://127.0.0.1:8095/ || true)
+  case "$served" in "two "*) break ;; esac
+done
+case "$served" in
+  "two "*) ;;
+  *) fail "the edit never reached a worker within 5s (last: '$served')" ;;
+esac
+after_pid=$(echo "$served" | cut -d= -f2)
+[ -n "$after_pid" ] || fail "no pid in the reloaded response: '$served'"
+[ "$after_pid" != "$before_pid" ] \
+  || fail "the same worker pid $after_pid served the change -- nothing was re-forked"
+grep -q 'reload 1 complete' reload.log || fail 'the supervisor did not report the reload'
+
+# The versions above are the same length and are written in the same second,
+# which is the case that catches a reloader out: CPython validates a cached
+# .pyc against the source's mtime in whole SECONDS and its size, so this
+# rewrite looks unchanged to the import system. The reloader sees it (it
+# compares nanoseconds) and re-forks, and without PYTHONDONTWRITEBYTECODE
+# the fresh worker imports the old bytecode -- a reload that happened and
+# changed nothing. Keep 'one' and 'two' the same length: that is the point.
+[ ! -d "$out/__pycache__" ] || fail '--reload wrote bytecode; a stale .pyc can outlive an edit'
+
+# A reload is a graceful shutdown followed by a fork, so the drained workers
+# must not have been counted as crashes: the respawn path never ran.
+grep -q 'crashed' reload.log && fail 'a reloaded worker was accounted as a crash'
+grep -q 'respawned worker' reload.log && fail 'a reload went through the respawn path'
+
+# And the supervisor still stops on SIGTERM, reaping the reloaded worker.
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM to a reloading supervisor: exit $rc, want 0"
+pid=
+
+# Phase 2: two workers. Both indices must be re-forked, and both must serve
+# the new body -- a reload that replaced only one worker would leave the
+# other answering from the old module.
+write_app three
+"$srv" myapp:application --app-dir "$out" --port 8095 --reload --workers 2 > reload.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8095/ > /dev/null \
+  || fail 'the two-worker reloading server never became healthy'
+write_app four
+ok=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  sleep 0.5
+  seen=$(for n in 1 2 3 4 5 6 7 8; do curl -s --max-time 5 http://127.0.0.1:8095/; echo; done)
+  fours=$(echo "$seen" | grep -c '^four ' || true)
+  pids=$(echo "$seen" | grep '^four ' | cut -d= -f2 | sort -u | wc -l | tr -d ' ')
+  if [ "$fours" = "8" ] && [ "$pids" -ge 2 ]; then ok=1; break; fi
+done
+[ "$ok" = "1" ] || fail "both workers did not come back on the new module (last: $seen)"
+grep -q 'reload 1 complete' reload.log || fail 'the two-worker supervisor did not report the reload'
+
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM after a two-worker reload: exit $rc, want 0"
+pid=
+
+# Phase 3: --reload in front of --threads, where the GIL is off.
+#
+# The two modes compose because the supervisor is orthogonal to what its
+# child does: it forks ONE child, which then brings up an interpreter and
+# spawns N loops on it. The fork still precedes the first Python call --
+# the supervisor never makes one -- so the threaded child is born the same
+# way an unsupervised one is.
+gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
+if [ "$gil_off" = "1" ]; then
+  write_app five
+  "$srv" myapp:application --app-dir "$out" --port 8095 --reload --threads 2 \
+    > reload.log 2>&1 &
+  pid=$!
+  curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8095/ > "$out/t_before" \
+    || fail 'the threaded reloading server never became healthy'
+  grep -q '^five ' "$out/t_before" || fail "expected version five, got $(cat "$out/t_before")"
+  grep -q 'supervising 1 workers' reload.log \
+    || fail '--reload did not put a supervisor in front of --threads'
+  grep -q 'threaded: 2 loops' reload.log || fail 'the supervised child did not start 2 loops'
+  t_before_pid=$(cut -d= -f2 "$out/t_before")
+
+  write_app six
+  served=
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    served=$(curl -s --max-time 5 http://127.0.0.1:8095/ || true)
+    case "$served" in "six "*) break ;; esac
+  done
+  case "$served" in
+    "six "*) ;;
+    *) fail "the edit never reached the threaded child within 5s (last: '$served')" ;;
+  esac
+  t_after_pid=$(echo "$served" | cut -d= -f2)
+  [ "$t_after_pid" != "$t_before_pid" ] \
+    || fail "the same process $t_after_pid served the change under --threads"
+  # The replacement is a whole new interpreter with its own N loops.
+  n=$(grep -c 'threaded: 2 loops' reload.log)
+  [ "$n" = "2" ] || fail "expected 2 'threaded: 2 loops' lines (one per generation), saw $n"
+
+  kill $pid
+  wait $pid; rc=$?
+  [ "$rc" = "0" ] || fail "SIGTERM after a threaded reload: exit $rc, want 0"
+  pid=
+  echo "phase 3: --reload in front of --threads 2 re-forked the interpreter"
+fi
+
+rm -f reload.log
+echo "smoke-reload OK (1 worker, then 2, each re-forked onto the changed module)"
+"""
+
 [tool.poe.tasks.smoke-threads]
 help = "Threaded mode: refuses a GIL-enabled interpreter (exit 78); on free-threaded CPython serves across threads and drains cleanly"
 deps = ["build-serve"]
@@ -1474,8 +1641,9 @@ grep -q 'threaded: 4 loops' threads.log || fail 'startup did not report 4 loops'
 curl -s http://127.0.0.1:8096/write | grep -q 'written-body' || fail 'write() route broke under threads'
 # /reentrant issues a request back into this server from inside a view:
 # under prefork a second WORKER answers it; here a second THREAD does. The
-# url is percent-encoded as smoke-wsgi does: the URI parser reads a bare
-# `://` anywhere in the target as a scheme and answers 400.
+# url is percent-encoded, which is what every browser form sends anyway;
+# smoke-wsgi carries the unencoded twin, since that is the shape URI.parse
+# used to misread as a scheme.
 got=$(curl -s --max-time 20 'http://127.0.0.1:8096/reentrant?url=http%3A%2F%2F127.0.0.1%3A8096')
 [ "$got" = "reentrant: subview" ] || fail "/reentrant did not get an answer from another thread: got '$got'"
 # Spread: 16 keep-alive connections opened in a burst must land on >= 2
@@ -1710,6 +1878,14 @@ PYEOF
 # it -- measured at a 10s timeout and a 504. Two workers answer in ~14ms.
 got=$(curl -s "$B/reentrant?url=http%3A%2F%2Flocalhost%3A8086")
 [ "$got" = "reentrant: subview" ] || fail "re-entrant request failed: got '$got'"
+
+# The same request with the url NOT percent-encoded, which is the shape that
+# used to answer 400: URI.parse searched the whole target for `://` and read
+# `/reentrant?url=http` as a scheme. It now accepts a `://` only when what
+# precedes it is a scheme per RFC 3986 3.1, and a query string cannot be one.
+got=$(curl -s --path-as-is "$B/reentrant?url=http://localhost:8086")
+[ "$got" = "reentrant: subview" ] \
+  || fail "an unencoded url in the query is still misparsed: got '$got'"
 
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
@@ -2288,6 +2464,12 @@ echo 'C4 smoke-django-realtime-ws (WebSocket holds + ctypes atomic under free-th
 phase=D-smoke-threads
 poe smoke-threads >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the threaded execution mode (see py-canary.log)"; exit 1; }
 echo "D smoke-threads ($(grep -o 'threads seen: .*' py-canary.log | tail -1)): OK" >> "$report"
+
+# Phase 3 of smoke-reload -- --reload in front of --threads -- is gated the
+# same way, so this is where the two modes are proven to compose.
+phase=E-smoke-reload
+poe smoke-reload >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): hot reload (see py-canary.log)"; exit 1; }
+echo "E smoke-reload (1 worker, 2 workers, and --reload in front of --threads): OK" >> "$report"
 
 echo ''
 echo "PY-CANARY PASSED against $(.venv/bin/python3 --version 2>&1) (free-threaded)"

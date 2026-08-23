@@ -90,6 +90,58 @@ def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
     return (Int(result), status_val)
 
 
+comptime WNOHANG = 1
+"""`waitpid` option: report a stopped or exited child, but never block.
+
+The same value on macOS and Linux, and on every other POSIX in practice —
+it is one of the handful of constants the standard fixes rather than leaves
+to the implementation.
+"""
+
+
+def waitpid_nonblocking() raises -> Tuple[Int, Int]:
+    """Reap one exited child if there is one; otherwise return immediately.
+
+    Returns:
+        `(child_pid, exit_status)` for a child that has exited, `(0, 0)` when
+        children exist but none has exited, and `(-1, 0)` when there are no
+        children left to wait for (`ECHILD`).
+
+    Raises:
+        Error: If `waitpid()` fails for any other reason.
+
+    The blocking twin is the right call for a supervisor whose only job is
+    to outlive its workers. A supervisor that must also do something on a
+    timer — watch files, for one — cannot afford to be parked in `wait`, so
+    it polls with this and sleeps between passes. `ECHILD` is a return value
+    rather than an error for the same reason: to a poller it means "nothing
+    left to supervise", which is an ordinary end of the loop.
+    """
+    # A stack local rather than `alloc`, unlike the blocking twin: a poller
+    # calls this several times a second for the life of the process, and a
+    # heap allocation freed on every return is the wrong shape for that. It
+    # also keeps the deprecated `alloc`-without-a-Layout out of a new call
+    # site — see the note in `waitpid_blocking` for why that spelling is
+    # still there at all.
+    var status = c_int(0)
+    # The origin has to be erased for the FFI signature; the round trip
+    # through the address is the idiom this repo already uses for that.
+    var local = Pointer(to=status)
+    var status_ptr = Pointer[c_int, MutUntrackedOrigin](
+        unsafe_from_address=Pointer(to=local).unsafe_bitcast[Int]()[]
+    )
+    var result = _waitpid(c_int(-1), status_ptr, c_int(WNOHANG))
+    var err = get_errno()
+    while result == -1 and err == err.EINTR:
+        result = _waitpid(c_int(-1), status_ptr, c_int(WNOHANG))
+        err = get_errno()
+    if result == -1:
+        if err == err.ECHILD:
+            return (-1, 0)
+        raise Error("waitpid(WNOHANG) failed, errno: ", err)
+    return (Int(result), Int(status))
+
+
 def process_exit(status: Int):
     """Immediately terminate the current process.
 
@@ -108,6 +160,12 @@ def getpid() -> Int:
 
 comptime SIGTERM = 15
 comptime SIGINT = 2
+comptime SIGKILL = 9
+"""The signal a process cannot catch, block or ignore.
+
+Only ever the second half of a pair here: a supervisor asks with SIGTERM,
+waits out a drain deadline, and uses this on whatever is still standing.
+"""
 
 comptime _SIG_ERR = -1
 """What signal(2) returns when it refuses — SIGKILL and SIGSTOP always do."""

@@ -34,6 +34,16 @@ serves one request at a time and a slow view stalls its whole process;
 concurrency is `--workers`. A forked worker must end with `exit_worker()`,
 never by returning from `main` — the runtime's teardown reaches into
 libdispatch, which is unusable in a process forked without exec.
+
+**`--reload` forces a supervisor**, even at one worker and even under
+`--threads N`, because something has to outlive the process it restarts.
+That composes with both modes for one reason: the supervisor never touches
+Python. It watches files with `listdir` and `stat`, which is libc and
+therefore allowed in a process forked without exec, and the fork still
+precedes the first Python call because the supervisor never makes one. What
+reloads is the *worker* — a fresh interpreter importing the changed module.
+The Mojo binary is never re-exec'd, so a changed `.mojo` still needs a
+rebuild and a restart.
 """
 
 from std.os import getenv, setenv
@@ -104,6 +114,20 @@ def _discover_core_lib() -> String:
     return String("")
 
 
+def _reload_dirs(opts: ServeOptions) -> List[String]:
+    """What `--reload` watches: `--reload-dir` if given, else `--app-dir`.
+
+    `--app-dir` is the right default because it is already the directory the
+    application is imported from — the one place a `.py` edit can change
+    what a worker serves.
+    """
+    if len(opts.reload_dirs) > 0:
+        return opts.reload_dirs.copy()
+    var dirs = List[String]()
+    dirs.append(opts.app_dir)
+    return dirs^
+
+
 def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
     """Everything `--realtime` must create BEFORE the fork and before Python.
 
@@ -169,6 +193,9 @@ def main() raises:
     for i in range(len(opts.static_dirs)):
         if not isdir(opts.static_dirs[i]):
             _fail("static dir does not exist: " + opts.static_dirs[i], EXIT_STARTUP)
+    for i in range(len(opts.reload_dirs)):
+        if not isdir(opts.reload_dirs[i]):
+            _fail("reload dir does not exist: " + opts.reload_dirs[i], EXIT_STARTUP)
 
     var conflict = threads_conflict(opts.workers, opts.threads)
     if conflict:
@@ -183,6 +210,42 @@ def main() raises:
     var channels = opts.threads if opts.threads > 1 else opts.workers
     var bus = _prepare_realtime(opts, channels)
 
+    # Fork before touching Python — see the module docstring. The parent
+    # stays inside fork_all() supervising; only workers return here.
+    #
+    # `--reload` forces a supervisor even for one worker and even under
+    # `--threads`, because something has to outlive the process it
+    # restarts. That is safe for exactly the reason the prefork rule is:
+    # the supervisor never touches Python. It watches files with `listdir`
+    # and `stat`, which are libc, and a process forked without `exec` may
+    # use those. `--threads` and `--workers>1` are mutually exclusive, so
+    # `opts.workers` is 1 under threads and the supervisor manages the one
+    # multi-threaded child.
+    var multiprocess = opts.workers > 1
+    var supervised = multiprocess or opts.reload
+    var worker = 0
+    if opts.reload:
+        # Set before the fork and before the first Python call, because the
+        # interpreter reads it once at startup.
+        #
+        # Without it `--reload` can serve stale code, and the way it does is
+        # not obvious. CPython validates a cached `.pyc` against the source's
+        # mtime **in whole seconds** and its size; a rewrite that lands in
+        # the same second at the same length therefore looks unchanged to the
+        # import system even though the file on disk is different. The
+        # reloader notices (it compares nanoseconds), re-forks, and the fresh
+        # worker imports the *old* bytecode — a reload that visibly happened
+        # and changed nothing. Writing no bytecode at all means there is
+        # never a cache to go stale. The cost is slower imports on a
+        # development-only flag.
+        _ = setenv("PYTHONDONTWRITEBYTECODE", "1", True)
+    if supervised:
+        var supervisor = WorkerSupervisor(opts.workers)
+        if opts.reload:
+            supervisor.enable_reload(_reload_dirs(opts), String(".py"))
+        supervisor.fork_all()
+        worker = supervisor.worker_index
+
     if opts.threads > 1:
         # The listener is borrowed, not reduced to its fd: its last use would
         # otherwise be that read, and Mojo's destroy-at-last-use would close
@@ -191,16 +254,11 @@ def main() raises:
         # watch a pipe. Prefork never hits this because `serve_nonblocking`
         # uses the listener itself, later.
         _serve_threaded(opts, listener, bus)
+        if supervised:
+            # Forked, so it must leave through `exit_worker()` — returning
+            # from `main` runs a teardown that reaches into libdispatch.
+            exit_worker()
         return
-
-    # Fork before touching Python — see the module docstring. The parent
-    # stays inside fork_all() supervising; only workers return here.
-    var multiprocess = opts.workers > 1
-    var worker = 0
-    if multiprocess:
-        var supervisor = WorkerSupervisor(opts.workers)
-        supervisor.fork_all()
-        worker = supervisor.worker_index
 
     # The first Python call in this process.
     var app: WSGIApp
@@ -226,7 +284,8 @@ def main() raises:
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
         + " (workers=" + String(opts.workers) + ")"
-        + (" realtime" if opts.realtime else ""),
+        + (" realtime" if opts.realtime else "")
+        + (" reload" if opts.reload else ""),
         flush=True,
     )
     var server = Server(opts.server_config(AppConfig(default_port=DEFAULT_PORT)))
@@ -242,7 +301,7 @@ def main() raises:
         shutdown_read_fd=shutdown_fd,
         bus_read_fd=bus.read_fd(worker),
     )
-    if multiprocess:
+    if supervised:
         exit_worker()
 
 
@@ -289,7 +348,8 @@ def _serve_threaded(
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
         + " (threads=" + String(opts.threads) + ")"
-        + (" realtime" if opts.realtime else ""),
+        + (" realtime" if opts.realtime else "")
+        + (" reload" if opts.reload else ""),
         flush=True,
     )
     var server = ThreadedServer(
