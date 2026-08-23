@@ -303,13 +303,22 @@ the weekly canary (phase D).
 What Stage A does **not** buy, stated plainly: per-request balancing. A
 keep-alive connection stays pinned to the loop that accepted it, exactly as
 under prefork, so the keep-alive p99 tail in
-[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) is unchanged by it. That is Stage
-B — an acceptor loop feeding a Python thread pool with deferred responses,
-Granian's inner `--blocking-threads` shape — recorded in
-[ROADMAP.md](ROADMAP.md) with its design, and gated on Stage A's benchmark
-row showing that tail as the remaining gap. Shared Python state above the
-bridge (Django's own caches — the contention Sam Gross is patching upstream)
-is the scaling risk that row measures. The prize Stage A already pays out:
+[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) is unchanged by it — and a slow
+view stops every connection its loop holds, which the mixed-workload row in
+that document measures at ~120x on fast-request p99, identically under
+`--threads` and `--workers`.
+
+**Stage B is that fix and it has shipped**: `--blocking-threads N`, an
+acceptor loop feeding a pool of handler threads, which is Granian's inner
+`--blocking-threads` shape. It is orthogonal to Stage A rather than a
+successor — one pool per loop, so it composes with prefork and with threads
+alike — and it is the one piece of this that pays off on a GIL-enabled
+interpreter too, because a view waiting on a database or a socket releases
+the GIL. [ROADMAP.md](ROADMAP.md) carries the design and the three places
+the implementation departed from it. Shared Python state above the bridge
+(Django's own caches — the contention Sam Gross is patching upstream) is the
+scaling risk the free-threaded rows measure. The prize Stage A already pays
+out:
 one process, shared memory, no per-worker RSS duplication, no bus needed for
 in-process fan-out, and the entire class of fork-after-init hazards (the
 macOS `_scproxy`/objc abort, `exit_worker`, fork-before-first-Python-call)
@@ -337,9 +346,12 @@ gone for anyone who opts in.
 
 Against the project's Django-server aims (hybrid gateway, static files, DX,
 benchmarks), this work slots in as follows: the **"WSGI thread pool instead
-of Gunicorn-style forks"** aim is gated on exactly what `py-canary` measures
-— a native thread pool running Python is real parallelism only without the
-GIL, so the canary is that aim's standing go/no-go probe. The **"ASGI
+of Gunicorn-style forks"** aim has landed in both of its halves —
+`--threads N` for the loops (gated on exactly what `py-canary` measures, since
+a native thread pool running Python is real parallelism only without the GIL,
+so the canary is that half's standing go/no-go probe) and
+`--blocking-threads N` for the handlers, which needs no such gate because the
+parallelism it buys is *waiting*, not computing. The **"ASGI
 bridge"** aim exists mostly to serve realtime and async codebases; the
 hold/publish pattern covers the realtime half without it, narrowing the
 bridge to genuinely-async codebases and making it deferrable. The

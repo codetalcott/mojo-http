@@ -52,6 +52,17 @@ struct ServeOptions(Copyable, Movable):
     var workers: Int
     var threads: Int
     """Serving threads in one process (free-threaded CPython only); 1 = off."""
+    var blocking_threads: Int
+    """Handler threads per event loop; 0 = off, and the loop calls handlers itself.
+
+    Stage B. The loop becomes an acceptor: it parses the request, hands it to
+    a pool thread, and goes back to `wait()`, so one slow view no longer holds
+    the keep-alive connections that loop happens to own. Off by default
+    because it costs N threads and N interpreters' worth of per-thread handler
+    state per loop, and because a server whose views are all fast gains
+    nothing from it. Composes with `--workers` and with `--threads`; refused
+    with `--realtime`, whose streaming hooks run on the loop's handler.
+    """
     var app_dir: String
     """Prepended to `sys.path` so `module` can be imported; relative to cwd."""
     var static_prefixes: List[String]
@@ -94,6 +105,7 @@ struct ServeOptions(Copyable, Movable):
         self.port = DEFAULT_PORT
         self.workers = 1
         self.threads = 1
+        self.blocking_threads = 0
         self.app_dir = String(".")
         self.static_prefixes = List[String]()
         self.static_dirs = List[String]()
@@ -115,6 +127,7 @@ struct ServeOptions(Copyable, Movable):
         self.port = copy.port
         self.workers = copy.workers
         self.threads = copy.threads
+        self.blocking_threads = copy.blocking_threads
         self.app_dir = copy.app_dir
         self.static_prefixes = copy.static_prefixes.copy()
         self.static_dirs = copy.static_dirs.copy()
@@ -136,6 +149,7 @@ struct ServeOptions(Copyable, Movable):
         self.port = move.port
         self.workers = move.workers
         self.threads = move.threads
+        self.blocking_threads = move.blocking_threads
         self.app_dir = move.app_dir^
         self.static_prefixes = move.static_prefixes^
         self.static_dirs = move.static_dirs^
@@ -163,6 +177,7 @@ struct ServeOptions(Copyable, Movable):
         opts.port = config.port
         opts.workers = config.workers
         opts.threads = config.threads
+        opts.blocking_threads = config.blocking_threads
         opts.access_log = config.access_log
         return opts^
 
@@ -268,6 +283,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--port"
         or name == "--workers"
         or name == "--threads"
+        or name == "--blocking-threads"
         or name == "--app-dir"
         or name == "--static"
         or name == "--static-cache-control"
@@ -310,6 +326,11 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         if threads < 1:
             raise Error("--threads must be at least 1, got " + value)
         opts.threads = threads
+    elif name == "--blocking-threads":
+        var blocking = parse_int(value, "--blocking-threads")
+        if blocking < 0:
+            raise Error("--blocking-threads cannot be negative, got " + value)
+        opts.blocking_threads = blocking
     elif name == "--app-dir":
         if value.byte_length() == 0:
             raise Error("--app-dir must not be empty")
@@ -427,6 +448,7 @@ def usage() -> String:
         "  --port N                    port (default 8000; M0_PORT)\n"
         "  --workers N                 prefork worker processes (default 1; M0_WORKERS)\n"
         "  --threads N                 serving threads in ONE process, free-threaded\n"
+        "  --blocking-threads N        handler threads per loop; isolates slow views\n"
         "                              CPython only; exclusive with --workers (M0_THREADS)\n"
         "  --app-dir DIR               prepended to sys.path (default .)\n"
         "  --static PREFIX=DIR         serve DIR at PREFIX from Mojo, never entering\n"

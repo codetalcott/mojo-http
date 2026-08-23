@@ -47,7 +47,7 @@ Mojo 1.0 interop imposes and that the code depends on:
   `PythonObject`; every other `std.python` call assumes the calling thread is
   *attached* (holds a Python thread state). There are two execution modes,
   mutually exclusive (`threads_conflict`), and each keeps that true its own
-  way:
+  way — plus a handler pool that composes with either:
   - **Prefork (`M0_WORKERS`, the default).** One thread per process, attached
     since `Py_Initialize` ran on it. `WorkerSupervisor` is wired in
     (`packages/m0-wsgi/m0serve.mojo`) and the rule it obeys is load-bearing:
@@ -70,6 +70,35 @@ Mojo 1.0 interop imposes and that the code depends on:
     objects are the measured 0.7x cliff (`docs/WSGI_VS_ASGI.md` §5); keep
     per-request state thread-local. `print`/`log_access` from N threads can
     interleave — `x-thread` is on every response for that reason.
+  - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
+    `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
+    two above, not a third alternative: it puts N handler threads behind
+    *each* event loop, so `--workers W` is W processes of N and `--threads T`
+    is T loops of N. The loop stops calling `HTTPService.func` and becomes an
+    acceptor; that is what stops one slow view holding the keep-alive
+    connections pinned to its loop (measured: p99 1.6 ms → ~194 ms without
+    it, in **both** modes). Rules, all load-bearing:
+    - **One pool per loop.** A job names a slot, and a slot indexes one loop's
+      `ProvisionPool`. A pool shared between loops would answer the wrong
+      connection.
+    - **The loop must detach while it waits.** `DetachingBackend` is not
+      optional here even under prefork: a loop attached inside
+      `kevent`/`epoll_wait` keeps every pool thread out, which under a
+      GIL-enabled interpreter is a deadlock rather than a slowdown.
+    - **Pool threads detach around the blocking `recv` and attach per job**,
+      and build and destroy their handler inside an outer attached region.
+      Same discipline as a serving thread, same reason.
+    - **A slot with a job in flight is untouchable and unrecyclable.** The
+      idle and header sweeps skip it, the read path refuses it (clearing
+      `slot_read_armed` so a pipelined request is not stranded by the edge it
+      consumed), and a client that disconnects detaches the fd but leaves the
+      provision borrowed — `_close_slot(..., release_provision=False)` — until
+      the completion releases it.
+    - **Refused with `--realtime`.** The streaming hooks run on the loop's
+      handler; `func` would run against a pool thread's own registries.
+    - Not refused on a GIL-enabled interpreter, unlike `--threads`: a waiting
+      view releases the GIL, so the isolation is real there. That is the
+      difference, and it is why the two refusals differ.
 
 `m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
 flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
@@ -137,6 +166,7 @@ uv run poe test-all         # builds first, then runs all tests
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers
+uv run poe smoke-blocking-threads  # a slow view must not stall what is behind it
 uv run poe test-sqlite      # needs libsqlite3 on the system
 uv run poe canary           # full suite against the Mojo nightly, then restore
 
@@ -328,9 +358,11 @@ Properties of the design, not defects to fix in passing:
   happened and `test_lifecycle.mojo` asserts it.
 - Configuration is env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`,
   `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_THREADS` (mutually
-  exclusive with `M0_WORKERS>1`; free-threaded CPython only), `M0_ACCESS_LOG`,
-  `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`. `m0serve` layers flags on top
-  (flag > env > default) and is strict where the env loader is lenient.
+  exclusive with `M0_WORKERS>1`; free-threaded CPython only),
+  `M0_BLOCKING_THREADS` (handler threads per loop; composes with either of
+  those, refused with `--realtime`), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
+  `M0_APP_TICK_MS`. `m0serve` layers flags on top (flag > env > default) and
+  is strict where the env loader is lenient.
 
 ## Mojo 1.0 patterns
 

@@ -238,29 +238,29 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   event-loop backends (`py-canary` phase D, 2026-08-23): kqueue on macOS and
   epoll on Linux, each with all four loops accepting — a listener dup'd into
   N epoll instances under `EPOLLET` wakes every one of them, so the
-  `EPOLLEXCLUSIVE` contingency the design held in reserve is not needed. **Stage B, recorded:** per-
-  request balancing and slow-view isolation need an acceptor loop feeding a
-  Python thread pool with deferred responses — `HTTPResponse.deferred` (the
-  `sse_streaming` precedent), the request parked in
-  `ConnectionProvision.request` (a field that exists and is dead), a
-  slot-generation array so a late completion for a recycled slot is dropped,
-  `PROCESSING` surviving a loop pass (the idle/header sweeps must skip it),
-  a `SOCK_DGRAM` socketpair as the work queue (kernel-locked, message
-  boundaries) and another as the completion channel registered like
-  `bus_read_fd`, workers blocking in `recv` *detached* and attaching per job,
-  completion re-entering the existing `RESPONDING` write path exactly as the
-  outbox drain does. ~8 touchpoints in `event_loop.mojo`. Stage A's
-  benchmark row exists ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md), 3.14.7t):
-  threads at throughput parity with prefork at ~60% of its RSS, ~3.5x
-  gunicorn on the same interpreter.
+  `EPOLLEXCLUSIVE` contingency the design held in reserve is not needed. **Stage B shipped: `--blocking-threads N`.**
+  The loop no longer calls `HTTPService.func`. It parses the request, parks
+  it in `lightbug_http.offload`, submits a `SOCK_DGRAM` datagram naming the
+  slot, and returns to `wait()`; one of N handler threads takes the job,
+  calls its OWN handler (its own `WSGIApp`, bridge and shim namespace), parks
+  the response, and pokes a completion channel the loop registers exactly as
+  it registers `bus_read_fd` — from which the response re-enters the same
+  `RESPONDING` write path every other response takes.
+  `m0_wsgi.blocking_pool` is the thread side; the queue itself knows nothing
+  about Python. Composes with both execution modes: one pool per loop, so
+  `--workers W` is W processes of N threads and `--threads T` is T loops of
+  N each. Stage A's benchmark row stands
+  ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md), 3.14.7t): threads at
+  throughput parity with prefork at ~60% of its RSS, ~3.5x gunicorn on the
+  same interpreter.
 
-  **Stage B is justified, and the measurement that justifies it exists.**
-  The `wrk` keep-alive run came first and could not settle it: p99 is
-  1.6–2.9 ms across both modes and both sizes, with one non-recurring
-  excursion, in *prefork* of all places. But a hello route cannot produce
-  the failure Stage B is half designed for, so the gate became a
-  mixed-workload run — and that run is decisive
-  ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md), 3.14.7t, two rounds).
+  **What justified it, measured before it was built.** The `wrk` keep-alive
+  run came first and could not settle it: p99 is 1.6–2.9 ms across both
+  modes and both sizes, with one non-recurring excursion, in *prefork* of
+  all places. But a hello route cannot produce the failure Stage B is half
+  designed for, so the gate became a mixed-workload run — and that run is
+  decisive ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md), 3.14.7t, two
+  rounds).
 
   One slow view (`/slow?ms=200`) alongside fast traffic takes fast-request
   p99 from **1.6 ms to ~194 ms, a ~120x degradation**, while p50 does not
@@ -271,8 +271,38 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   keep-alive connection belongs to the loop that accepted it in both modes;
   Stage A changed the process model, not the pinning. And **Granian's
   `--blocking-threads` — which *is* the Stage B architecture — is flat
-  under the same load** (0.96 → 0.93 → 1.22 ms). So the design has a
-  working reference implementation showing what it buys.
+  under the same load** (0.96 → 0.93 → 1.22 ms), which is what gave the
+  design a working reference implementation.
+
+  **Three departures from the design as sketched here**, each because the
+  simpler thing turned out to be the safer thing:
+
+  - No `HTTPResponse.deferred`. The loop already knows which slots it
+    offloaded, so a flag on a type every handler constructs would carry no
+    information the loop lacks.
+  - The job storage is the pool's, not `ConnectionProvision.request`. The
+    provision pool is a local of `run_event_loop`, and publishing its
+    address to threads spawned before the loop starts is a lifetime hazard;
+    caller-owned storage outlives the loop by construction.
+  - No slot-generation array. A slot with a job in flight is never
+    *recycled*: a client that disconnects meanwhile detaches the fd but
+    leaves the provision borrowed, and the completion releases it. A
+    generation counter detects that race; holding the slot removes it.
+
+  The idle and header sweeps skip `PROCESSING`, the read path refuses to
+  touch an offloaded slot (clearing `slot_read_armed` so a pipelined request
+  arriving mid-flight is not stranded by the edge it consumed), and the
+  shutdown path drains outstanding jobs before tearing connections down.
+  `HTTPService` did not gain a method — `ThreadHandler` extends it, which is
+  the seam.
+
+  **What it does not do.** It is refused with `--realtime`: the streaming
+  hooks run on the loop's handler and `func` would run against a pool
+  thread's own registries. It does not make CPU-bound views concurrent under
+  a GIL-enabled interpreter — it makes *waiting* views concurrent, which is
+  what gunicorn's `--threads` does and what the workload actually is. And
+  it is off by default, because a server whose views are all fast pays N
+  threads for nothing.
 
   **The other finding, and it is the bigger number.** Splitting the Granian
   gap by layer (`scripts/bench_layer_split.sh`) shows it is almost entirely
@@ -286,6 +316,17 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   environ in Mojo through the raw CPython C API (`PyDict_New`,
   `PyDict_SetItem`, reachable through `Python().cpython()` and
   compile-checked) sidesteps the leak and is where that ~10x lives.
+
+  **Two doubts about that row, both since retired by measurement**
+  ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). The 78.3k could have been a
+  round-trip latency measurement rather than a ceiling — 16 connections at
+  178 µs is ~90k — but a concurrency sweep settles it: throughput moves 3%
+  from `-c16` to `-c256` while p50 rises 17x, which is queueing added to a
+  saturated service rate and nothing else. And the recommendation to attack
+  the shim was re-derived rather than trusted, since its previous version
+  named the wrong sixth: the split reproduces at `handle()` = 12.1 µs of a
+  14.2 µs round trip, **85% of what remains**, with all three Mojo-side
+  parts together at 1.6 µs. The target is the right one.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
@@ -346,6 +387,28 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   Python-side bytearray instead (see `bridge.mojo`). Any new bridge code must
   hold the same line, and the workaround can be retired if a future toolchain
   fixes the leak (re-test with `smoke-django`'s RSS guard).
+- **Graceful shutdown always waits the full 5 s drain when idle keep-alive
+  connections are open**, in every execution mode. Measured 2026-08-23 on
+  3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
+
+  | | idle | 8 idle keep-alive connections |
+  |---|---:|---:|
+  | `--workers 4` | 0.02 s | **5.02 s** |
+  | `--threads 4` | 0.02 s | **5.02 s** |
+  | `--threads 4 --blocking-threads 4` | 0.02 s | **5.02 s** |
+
+  This retires the suspicion that `--threads` shuts down slowly: it does not,
+  and neither does the pool. What is slow is the drain, identically
+  everywhere, because `active_count` counts a connection that is merely *open*
+  the same as one with a request in flight — so the loop waits out
+  `DRAIN_TIMEOUT_NS` for connections that are already finished. A connection
+  sitting in `READING_HEADERS` with an empty receive buffer has nothing to
+  drain and could be closed immediately, leaving the budget for connections
+  genuinely mid-request or mid-response. Worth fixing on its own, not as a
+  rider: it changes which connections are dropped at shutdown, which is what
+  `smoke-shutdown` pins. It also explains the earlier observation that two
+  `--threads 4` processes "outlived a SIGTERM + 5 s wait" — they exit at
+  5.02 s, and a 5 s wait loses that race.
 - The blocking `listen_and_serve` loop serves one accepted keep-alive
   connection exclusively until timeout or the `max_keepalive_requests` cap
   (measured p99 ~140 ms under 16 persistent connections). No in-repo app

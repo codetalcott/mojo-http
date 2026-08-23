@@ -179,6 +179,13 @@ jobs:
       # requirement. The mode itself is proven weekly by py-canary on 3.14t.
       - name: Smoke test the threaded mode's guard
         run: uv run poe smoke-threads
+      # Stage B, the part that does NOT need free-threading: a pool under a
+      # GIL-enabled interpreter still isolates a sleeping view, because a view
+      # that waits releases the GIL. The measurement -- a fast request answered
+      # while two 1.5s views are in flight -- is the whole reason the mode
+      # exists, so it is asserted here rather than only in a benchmark.
+      - name: Smoke test the blocking-threads pool
+        run: uv run poe smoke-blocking-threads
       # Hot reload: a changed .py must be served by a NEW worker pid, at one
       # worker and at two, without any of it going through the crash-respawn
       # path -- a reload is a graceful shutdown followed by a fork.

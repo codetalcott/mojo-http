@@ -44,6 +44,7 @@ from .threaded import (
     require_free_threading,
     EXIT_NOT_FREE_THREADED,
 )
+from .blocking_pool import BlockingPool
 from .cli import (
     ServeOptions,
     parse_args,

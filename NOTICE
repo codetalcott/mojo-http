@@ -131,6 +131,30 @@ lightbug_http
         macOS, 152 on glibc) and nothing here needs a flag signal(2) cannot
         reach. waitpid_blocking now retries on EINTR rather than raising —
         reachable for the first time now that the supervisor catches SIGTERM
+      - offload.mojo (new) and the event-loop changes behind it: the loop
+        can hand a parsed request to a pool of handler threads instead of
+        calling HTTPService.func itself. Two SOCK_DGRAM socketpairs — a
+        submit channel N threads receive on, and a completion channel the
+        loop registers with its backend exactly as it registers a broadcast
+        bus channel — plus per-slot request/response storage the two sides
+        hand between them, each handoff published by the socketpair syscall
+        that names it. run_event_loop gained an offload_addr argument
+        (0 = the behaviour it always had), and _process_request was split so
+        the synchronous path and the completion path converge on ONE
+        implementation of the wire rules rather than growing a second copy.
+        A slot with a job in flight is not touched by the loop and is not
+        recycled by it: a client that vanishes meanwhile detaches the fd but
+        leaves the provision borrowed, which is what _close_slot's new
+        release_provision=False is for. The HTTPService trait is unchanged,
+        which was a constraint rather than an accident
+      - c/socketpair.mojo (new) holds the socketpair(2) binding that
+        broadcast.mojo had privately. Both callers want an AF_UNIX
+        SOCK_DGRAM pair for the same reason (message boundaries, so
+        concurrent writers cannot interleave and concurrent readers each
+        dequeue one whole message) and differ only in what they do with the
+        ends afterwards, so the helper returns raw descriptors and sets no
+        options. Behaviour-preserving; it also keeps the deprecated-`alloc`
+        warning count at one site instead of two
       - c/pipe.mojo gained ShutdownHandle.notify(), a one-byte write(2) for
         signal handlers to call, and close_fd() for unwinding a half-built
         pipe. notify() exists because signal() closes the write end, and a

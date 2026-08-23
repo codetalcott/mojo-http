@@ -140,11 +140,14 @@ struct WSGIHandler(ThreadHandler):
     def make(ctx: ThreadContext) raises -> Self:
         """Build this thread's handler from the `ServeOptions` at `ctx.user`.
 
-        The module was imported on the main thread before any thread
-        existed, so `WSGIApp` here is a `sys.modules` hit plus a fresh shim
-        namespace; `project_path` is left empty for that reason (the path is
-        already on `sys.path`, and appending it again per thread would only
-        grow the list).
+        Two callers, and the same reasoning covers both: a `--threads N`
+        serving loop, and a `--blocking-threads N` handler in the pool behind
+        one. Either way the module was imported before any thread existed —
+        on main under `--threads`, in the forked worker under
+        `--blocking-threads` — so `WSGIApp` here is a `sys.modules` hit plus a
+        fresh shim namespace; `project_path` is left empty for that reason
+        (the path is already on `sys.path`, and appending it again per thread
+        would only grow the list).
 
         Under `--realtime` the registries are per-thread too, which is the
         whole point: a held connection belongs to the loop that accepted it,
@@ -160,7 +163,13 @@ struct WSGIHandler(ThreadHandler):
             server_name=opts[].host,
             server_port=String(opts[].port),
             attribute=opts[].attribute,
-            multiprocess=False,
+            # True under `--workers W --blocking-threads B`, where this thread
+            # really is one of B in one of W processes; False under
+            # `--threads`, which is mutually exclusive with `--workers > 1` and
+            # so always leaves `workers` at 1. PEP 3333 asks about the
+            # deployment, not about who is asking, and `smoke-django` checks
+            # both flags against the mode it started.
+            multiprocess=opts[].workers > 1,
             multithread=True,
         )
         var handler = Self.for_options(app^, opts[])

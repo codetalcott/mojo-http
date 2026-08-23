@@ -15,6 +15,11 @@ Env vars:
     M0_THREADS    — Serving threads in ONE process, free-threaded CPython
                     only (default: 1). Mutually exclusive with M0_WORKERS>1;
                     see `threads_conflict`.
+    M0_BLOCKING_THREADS — Handler threads per event loop (default: 0 = off).
+                    The loop hands requests to a pool instead of running them
+                    itself, so one slow view stops holding the keep-alive
+                    connections that loop owns. Composes with either of the
+                    two above.
     M0_ACCESS_LOG — Enable access logging: "true" or "1" (default: false)
     M0_SSE_HEARTBEAT_MS — Milliseconds between SSE heartbeat comments on idle
                     streams; "0" disables them (default: 15000)
@@ -36,6 +41,7 @@ struct AppConfig(Copyable, Movable):
     var api_key: String
     var workers: Int
     var threads: Int
+    var blocking_threads: Int
     var access_log: Bool
     var sse_heartbeat_ms: Int
     var app_tick_ms: Int
@@ -47,6 +53,7 @@ struct AppConfig(Copyable, Movable):
         self.api_key = getenv("M0_API_KEY", "")
         self.workers = _parse_int_env("M0_WORKERS", 1)
         self.threads = _parse_int_env("M0_THREADS", 1)
+        self.blocking_threads = _parse_int_env("M0_BLOCKING_THREADS", 0)
         var access_log_str = getenv("M0_ACCESS_LOG", "")
         self.access_log = access_log_str == "true" or access_log_str == "1"
         self.sse_heartbeat_ms = _parse_int_env("M0_SSE_HEARTBEAT_MS", 15000)
@@ -65,6 +72,7 @@ struct AppConfig(Copyable, Movable):
         self.api_key = copy.api_key
         self.workers = copy.workers
         self.threads = copy.threads
+        self.blocking_threads = copy.blocking_threads
         self.access_log = copy.access_log
         self.sse_heartbeat_ms = copy.sse_heartbeat_ms
         self.app_tick_ms = copy.app_tick_ms
@@ -76,6 +84,7 @@ struct AppConfig(Copyable, Movable):
         self.api_key = move.api_key^
         self.workers = move.workers
         self.threads = move.threads
+        self.blocking_threads = move.blocking_threads
         self.access_log = move.access_log
         self.sse_heartbeat_ms = move.sse_heartbeat_ms
         self.app_tick_ms = move.app_tick_ms

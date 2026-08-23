@@ -23,14 +23,14 @@ The frame bytes are the complete SSE frame, verbatim — the receiving worker
 queues them with `notify_frame` exactly as if it had broadcast them itself.
 """
 
-from std.ffi import c_int, external_call, get_errno
-from std.memory import alloc
+from std.ffi import c_int
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, setsockopt, SocketOption, SOL_SOCKET,
 )
+from lightbug_http.c.socketpair import socketpair_dgram
 
 # Per-call non-blocking I/O. `set_nonblocking` was a silent no-op on ARM64
 # macOS until `_fcntl` learned the Darwin variadic convention (see
@@ -52,25 +52,6 @@ comptime _AF_UNIX = 1
 comptime _SOCK_DGRAM = 2
 
 
-def _socketpair() raises -> Tuple[Int, Int]:
-    """One SOCK_DGRAM AF_UNIX pair. Returns (receive end, send end)."""
-    # NOTE: `alloc` without a Layout is deprecated — same story as c/pipe.mojo:
-    # the Layout form returns a non-subscriptable Allocation and `unsafe_alloc`
-    # does not exist in Mojo 1.0.
-    var fds = alloc[c_int](count=2)
-    var rc = external_call[
-        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
-    ](c_int(_AF_UNIX), c_int(_SOCK_DGRAM), c_int(0), fds)
-    if rc != 0:
-        var errno = get_errno()
-        fds.unsafe_free()
-        raise Error("socketpair() failed, errno: ", errno)
-    var read_end = Int(fds[unsafe_offset=0])
-    var write_end = Int(fds[unsafe_offset=1])
-    fds.unsafe_free()
-    return (read_end, write_end)
-
-
 struct BroadcastBus(Copyable, Movable):
     """One receive channel per worker, every worker holding every send end.
 
@@ -89,7 +70,7 @@ struct BroadcastBus(Copyable, Movable):
         self.read_fds = List[Int]()
         self.write_fds = List[Int]()
         for _ in range(num_workers):
-            var pair = _socketpair()
+            var pair = socketpair_dgram()
             # Belt (O_NONBLOCK on the fds) and braces (MSG_DONTWAIT on
             # every send/recv): either alone suffices now that fcntl works
             # on ARM64 macOS, and both together survive either regressing.
