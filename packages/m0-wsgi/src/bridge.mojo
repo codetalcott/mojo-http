@@ -245,7 +245,18 @@ struct PyBridge(Movable):
         _ = addr
 
     def probe_copy(mut self, payload: Span[UInt8, _]) raises:
-        """The address fetch and the byte copy, without calling `handle`."""
+        """The address fetch and the byte copy, without calling `handle`.
+
+        Refuses a payload the buffer cannot hold rather than growing it:
+        `handle` owns the grow protocol, and a probe that silently wrote
+        past a `bytearray` would corrupt the interpreter's heap for a
+        measurement.
+        """
+        if len(payload) + 8 > self._buf_cap:
+            raise Error(
+                "probe_copy: payload larger than the shim buffer; call"
+                " handle() first to grow it"
+            )
         var addr = self._ns["buf_addr"]()
         var ptr = addr.unsafe_get_as_pointer[DType.uint8]()
         for i in range(len(payload)):
