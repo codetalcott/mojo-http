@@ -253,19 +253,23 @@ deps = ["build-serve"]
 cmd = "bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080"
 
 
-# M0_CORE_LIB is how m0pub finds the atomic it numbers events with: the
-# server exports the shared slot's ADDRESS (M0_SHARED_ID_ADDR, pre-fork), but
-# nothing in the server knows where this repo's libm0core lives. Unset, m0pub
-# falls back to unnumbered frames — delivery unchanged, duplicate suppression
-# gone — so the variable is what turns Last-Event-ID semantics on.
+# m0serve --realtime discovers libm0core itself (beside the binary, then
+# `poe build-ffi`'s output relative to cwd) and exports M0_CORE_LIB, which is
+# how m0pub finds the atomic it numbers events with — the server exports the
+# shared slot's ADDRESS (M0_SHARED_ID_ADDR, pre-fork), but the address alone
+# says nothing about where the library holding the fetch-and-add is. Without
+# it m0pub falls back to unnumbered frames: delivery unchanged, duplicate
+# suppression gone. Building the library is still this task's job.
 [tool.poe.tasks.serve-django-realtime]
 help = "Run the Django realtime example on :8080 — sync Django views, live SSE and WebSockets held by the server"
+deps = ["build-serve"]
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 [ -f "packages/m0-core/libm0core.$ext" ] || uv run poe build-ffi || exit 1
-M0_CORE_LIB="packages/m0-core/libm0core.$ext" \
-  mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
-  apps/django_realtime/server.mojo
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port 8080 --realtime --health-path /health \
+  --static /static/=apps/django_realtime/static \
+  --static-cache-control "public, max-age=3600"
 """
 
 [tool.poe.tasks.serve-notes]
@@ -898,22 +902,35 @@ echo "smoke-django OK"
 # clients held by BOTH workers.
 [tool.poe.tasks.smoke-django-realtime]
 help = "Realtime demo: Django-gated SSE holds, Django-originated publish, channel isolation, cleanup, cross-worker fan-out"
+deps = ["build-serve"]
 shell = """
 out=$(mktemp -d)
-srv="$out/realtime_server"
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
-  apps/django_realtime/server.mojo -o "$srv" || exit 1
+# The row has no server.mojo of its own: --realtime is the whole of it.
+srv=bin/m0serve
+# No quoted value inside SPEC: it is deliberately unquoted at each use so the
+# shell word-splits it, and a value with a space would not survive that. The
+# one such flag is passed quoted at each invocation instead.
+SPEC="djangoproj.wsgi:application --app-dir apps/django_realtime --port 8080 \
+  --realtime --health-path /health \
+  --static /static/=apps/django_realtime/static"
+CC="public, max-age=3600"
 
 # m0pub numbers events by fetch-adding the server's shared atomic through
 # libm0core's C ABI; M0_CORE_LIB is how it finds the library. Without it the
 # frames are unnumbered and phase 3 fails -- which is what asserting it is for.
+# m0serve --realtime discovers and exports it too; passing it explicitly is
+# what keeps this row's assertion about numbering independent of that.
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 core_lib="$PWD/packages/m0-core/libm0core.$ext"
 [ -f "$core_lib" ] || uv run poe build-ffi || exit 1
 
+# Phase 4 (the threaded row) only runs where the GIL is genuinely off, which
+# is py-canary. Same gate, and same reason, as smoke-threads phase 2.
+gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
+
 cleanup() {
   kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" rt.log rt2.log rt3.log
+  rm -rf "$out" rt.log rt2.log rt3.log rt4.log
 }
 trap cleanup EXIT
 
@@ -927,7 +944,7 @@ fail() {
 
 # Phase 1: single worker. The heartbeat cadence is set low so the stream
 # provably stays alive under the loop's timer, not by accident.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" > rt.log 2>&1 &
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" > rt.log 2>&1 &
 pid=$!
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || fail 'server never became healthy'
@@ -1009,7 +1026,7 @@ wait $pid 2>/dev/null
 # SIGSTOP technique from smoke-counter (accept is not fair; racing it flakes),
 # then ONE Django-handled publish must reach both — the stream on the other
 # worker receives it over the BroadcastBus.
-M0_CORE_LIB="$core_lib" M0_WORKERS=2 M0_SSE_HEARTBEAT_MS=500 "$srv" > rt2.log 2>&1 &
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --workers 2 > rt2.log 2>&1 &
 pid=$!
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || fail 'two-worker server never became healthy'
@@ -1055,7 +1072,7 @@ worker_pids=""
 #
 # Self-calibrating: /publish reports the id it allocated, so the assertions
 # never assume where the counter happens to be after earlier phases.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" > rt3.log 2>&1 &
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" > rt3.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null; rm -rf "$out" rt.log rt2.log rt3.log' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
@@ -1095,8 +1112,73 @@ grep -q "^id: $del_id" "$out/dedup" \
 
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
-trap 'rm -rf "$out" rt.log rt2.log rt3.log' EXIT
-rm -f rt.log rt2.log rt3.log
+
+# Phase 4: the same fan-out across THREADS, where the GIL is off.
+#
+# The bus does not know what a thread is. Under --threads N, m0serve builds
+# BroadcastBus(N) on the main thread before spawning and hands read_fd(i) to
+# loop i, exactly as it hands read_fd(i) to worker i; m0pub still does N
+# os.writes to N inherited descriptors. So this phase asserts the phase-2
+# claim with processes replaced by threads and NOTHING else replaced: a
+# publish from one thread's Django reaches a stream held by another.
+#
+# It cannot use phase 2's SIGSTOP pinning — there is one process. Instead it
+# opens several streams and reads X-Thread off each held response, which is
+# the loop that accepted it; the assertion is that at least two distinct
+# loops are represented before the single publish goes out.
+if [ "$gil_off" = "1" ]; then
+  M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC \
+    --static-cache-control "$CC" --threads 4 > rt4.log 2>&1 &
+  pid=$!
+  trap 'kill $pid 2>/dev/null; rm -rf "$out" rt.log rt2.log rt3.log rt4.log' EXIT
+  curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail \
+    http://localhost:8080/health || fail 'threaded realtime server never became healthy'
+  grep -q 'threaded: 4 loops' rt4.log || fail 'startup did not report 4 loops'
+
+  sse_pids=""
+  for i in 1 2 3 4 5 6; do
+    curl -sN --max-time 10 -D "$out/th_hdr_$i" \
+      'http://localhost:8080/events?channel=threaded&token=letmein' > "$out/th_sse_$i" &
+    sse_pids="$sse_pids $!"
+  done
+  sleep 3
+
+  # Every one of them is a real held SSE stream, and between them they were
+  # accepted by more than one loop.
+  for i in 1 2 3 4 5 6; do
+    grep -iq '^content-type: text/event-stream' "$out/th_hdr_$i" \
+      || fail "threaded stream $i is not SSE"
+  done
+  loops=$(cat "$out"/th_hdr_* | grep -i '^x-thread:' | tr -dc '0-9\n' | sort -u | tr '\n' ' ')
+  n_loops=$(echo $loops | wc -w | tr -d ' ')
+  [ "$n_loops" -ge 2 ] \
+    || fail "6 streams landed on one loop ($loops); nothing cross-thread is being proven"
+
+  # ONE publish, from whichever thread's Django answers the POST.
+  resp=$(curl -s -X POST -d channel=threaded -d msg=cross-thread-hello \
+    http://localhost:8080/publish)
+  echo "$resp" | grep -q '"workers": 4' \
+    || fail "publish did not reach all 4 thread channels: $resp"
+  sleep 2
+  kill $sse_pids 2>/dev/null
+
+  for i in 1 2 3 4 5 6; do
+    grep -q '^data: cross-thread-hello' "$out/th_sse_$i" \
+      || { echo "=== stream $i ==="; cat "$out/th_sse_$i"; \
+           fail "stream $i (loop $(grep -i '^x-thread:' "$out/th_hdr_$i" | tr -dc '0-9')) missed the publish"; }
+    grep -q '^id: ' "$out/th_sse_$i" || fail "stream $i carried no numbered events"
+  done
+
+  kill $pid
+  wait $pid; rc=$?
+  [ "$rc" = "0" ] || fail "SIGTERM under --threads 4 --realtime: exit $rc, want 0"
+  n=$(grep -c 'exited cleanly' rt4.log)
+  [ "$n" = "4" ] || fail "expected 4 'exited cleanly' lines, saw $n"
+  echo "phase 4: cross-thread fan-out over loops $loops"
+fi
+
+trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log' EXIT
+rm -f rt.log rt2.log rt3.log rt4.log
 echo "smoke-django-realtime OK"
 """
 
@@ -1108,11 +1190,17 @@ echo "smoke-django-realtime OK"
 # an ordinary POST.
 [tool.poe.tasks.smoke-django-realtime-ws]
 help = "Realtime demo over WebSockets: Django-gated upgrades, messages as POSTs, and one publish reaching sockets AND streams on both workers"
+deps = ["build-serve"]
 shell = """
 out=$(mktemp -d)
-srv="$out/realtime_server"
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ -I apps/ \
-  apps/django_realtime/server.mojo -o "$srv" || exit 1
+srv=bin/m0serve
+# No quoted value inside SPEC: it is deliberately unquoted at each use so the
+# shell word-splits it, and a value with a space would not survive that. The
+# one such flag is passed quoted at each invocation instead.
+SPEC="djangoproj.wsgi:application --app-dir apps/django_realtime --port 8080 \
+  --realtime --health-path /health \
+  --static /static/=apps/django_realtime/static"
+CC="public, max-age=3600"
 
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 core_lib="$PWD/packages/m0-core/libm0core.$ext"
@@ -1137,7 +1225,7 @@ fail() {
 # upgrade, a real handshake on an authorised one, a message reaching a
 # synchronous view and coming back to every socket on the channel, and
 # another channel hearing none of it.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" > ws1.log 2>&1 &
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" > ws1.log 2>&1 &
 pid=$!
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || fail 'server never became healthy'
@@ -1172,7 +1260,7 @@ wait $pid 2>/dev/null
 # smoke-counter, then the probe pins a WebSocket on each worker the same way
 # and asserts its own half. Four held connections, two transports, two
 # processes — and one synchronous Django view reaching all of them.
-M0_CORE_LIB="$core_lib" M0_WORKERS=2 M0_SSE_HEARTBEAT_MS=500 "$srv" > ws2.log 2>&1 &
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --workers 2 > ws2.log 2>&1 &
 pid=$!
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || fail 'two-worker server never became healthy'
@@ -2185,7 +2273,7 @@ echo 'C2 smoke-flask: OK' >> "$report"
 
 phase=C3-smoke-django-realtime
 poe smoke-django-realtime >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the hybrid hold/publish path (see py-canary.log)"; exit 1; }
-echo 'C3 smoke-django-realtime (hybrid SSE + numbered ids under free-threading): OK' >> "$report"
+echo 'C3 smoke-django-realtime (hybrid SSE + numbered ids, and phase 4: cross-THREAD fan-out over one bus): OK' >> "$report"
 
 # The WebSocket half, and the only phase that drives a second shared library
 # into the embedded interpreter: m0pub ctypes-loads libm0core to fetch-add the

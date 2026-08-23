@@ -269,11 +269,22 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   one binary; `smoke-serve` pins the exit codes, flag-over-env precedence,
   and the server tunings a command line can now reach. Flags are strict
   where `M0_*` is lenient.
-- **Recorded follow-ups, not yet scoped:** the realtime hold/publish
-  machinery behind `m0serve` flags (retiring `apps/django_realtime`'s own
-  `server.mojo`); hot reload as a supervisor-side mtime poller that kills and
-  re-forks workers (the supervisor never touches Python, so fork-without-exec
-  stays safe there); ASGI/WSGI auto-detection in the entry point;
+- **The realtime machinery is behind `m0serve` flags.** `--realtime` carries
+  what `apps/django_realtime/server.mojo` used to: the two `SSERegistry`s,
+  `take_hold` on every application response, the WebSocket handshake the
+  application cannot emit for itself, `ws_message_request` for inbound
+  frames, and the pre-fork `BroadcastBus` + `SharedAtomics` with their
+  environment exports (`M0_CORE_LIB` discovered rather than demanded).
+  `--health-path` is separate and opt-in, because a pure row must not own a
+  path the application might route. Under `--threads N` the bus is built on
+  the main thread before spawning and each loop drains its own channel, so
+  `m0pub.py` reaches N threads with the N `os.write`s it used to reach N
+  processes — it never learns which it is talking to. No `apps/*/server.mojo`
+  remains under a WSGI row.
+- **Recorded follow-ups, not yet scoped:** hot reload as a supervisor-side
+  mtime poller that kills and re-forks workers (the supervisor never touches
+  Python, so fork-without-exec stays safe there); ASGI/WSGI auto-detection in
+  the entry point;
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.
 

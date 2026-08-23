@@ -262,8 +262,9 @@ WebSocket clients on every worker, with numbered event ids that make
 `Last-Event-ID` work. No ASGI, no Channels, no async. The pattern is
 Pushpin's GRIP collapsed into one process; the reasoning, the measurements,
 and the remaining limits are in
-[docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md). Run it with `uv run poe
-serve-django-realtime`.
+[docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md). Like the other WSGI rows it is
+a Python-only project: `m0serve --realtime --health-path /health` is the
+whole server side of it. Run it with `uv run poe serve-django-realtime`.
 
 **Why the boundary looks the way it does.** WSGI hands the application a
 `start_response` callable that the *server* supplies, and building a Python

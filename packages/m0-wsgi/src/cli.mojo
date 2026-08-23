@@ -62,6 +62,19 @@ struct ServeOptions(Copyable, Movable):
     var max_body: Int
     """Request body cap in bytes; -1 leaves `ServerConfig`'s default alone."""
     var metrics: Bool
+    var realtime: Bool
+    """Hold SSE streams and WebSockets that the application approves.
+
+    Off by default: it costs two `SSERegistry` slot arrays, a `BroadcastBus`
+    and a `SharedAtomics` page, and it makes `M0-Hold` a header the server
+    consumes rather than one the application may emit for its own reasons.
+    """
+    var health_path: String
+    """Path answered in Mojo with a liveness JSON; empty = the app owns it.
+
+    Opt-in for the same reason: a WSGI application may already route
+    `/health`, and a server that silently took the path would shadow it.
+    """
     var show_help: Bool
     var show_version: Bool
 
@@ -80,6 +93,8 @@ struct ServeOptions(Copyable, Movable):
         self.access_log = False
         self.max_body = -1
         self.metrics = False
+        self.realtime = False
+        self.health_path = String("")
         self.show_help = False
         self.show_version = False
 
@@ -97,6 +112,8 @@ struct ServeOptions(Copyable, Movable):
         self.access_log = copy.access_log
         self.max_body = copy.max_body
         self.metrics = copy.metrics
+        self.realtime = copy.realtime
+        self.health_path = copy.health_path
         self.show_help = copy.show_help
         self.show_version = copy.show_version
 
@@ -114,6 +131,8 @@ struct ServeOptions(Copyable, Movable):
         self.access_log = move.access_log
         self.max_body = move.max_body
         self.metrics = move.metrics
+        self.realtime = move.realtime
+        self.health_path = move.health_path^
         self.show_help = move.show_help
         self.show_version = move.show_version
 
@@ -239,6 +258,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--static"
         or name == "--static-cache-control"
         or name == "--max-body"
+        or name == "--health-path"
     )
 
 
@@ -246,6 +266,7 @@ def _is_bool(name: String) -> Bool:
     return (
         name == "--access-log"
         or name == "--metrics"
+        or name == "--realtime"
         or name == "--help"
         or name == "--version"
     )
@@ -294,6 +315,13 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         opts.static_cache_control = value
     elif name == "--max-body":
         opts.max_body = parse_size(value)
+    elif name == "--health-path":
+        var path = String(value.strip())
+        if not path.startswith("/"):
+            raise Error(
+                "--health-path must start with '/', got '" + value + "'"
+            )
+        opts.health_path = path^
     else:
         raise Error("unknown option " + name)
 
@@ -333,6 +361,8 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
                     opts.show_version = True
                 elif name == "--access-log":
                     opts.access_log = True
+                elif name == "--realtime":
+                    opts.realtime = True
                 else:
                     opts.metrics = True
             elif _takes_value(name):
@@ -383,6 +413,10 @@ def usage() -> String:
         "  --max-body SIZE             request body cap: bytes, or 512k / 64m / 1g\n"
         "                              (default 4m)\n"
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
+        "  --realtime                  hold SSE streams and WebSockets the app\n"
+        "                              approves with M0-Hold; publish with m0pub.py\n"
+        "  --health-path PATH          answer PATH in Mojo with a liveness JSON,\n"
+        "                              never entering the application\n"
         "  -h, --help                  show this help and exit\n"
         "  -V, --version               show the version and exit\n"
         "\n"

@@ -226,6 +226,29 @@ def test_access_log_and_metrics_are_boolean_flags() raises:
     assert_false(plain.metrics)
 
 
+def test_realtime_is_off_by_default() raises:
+    """The hold machinery costs two slot arrays; nobody gets it unasked."""
+    assert_false(_parse([String("m.wsgi")]).realtime)
+    assert_true(_parse([String("m.wsgi"), String("--realtime")]).realtime)
+
+
+def test_health_path_is_empty_until_asked_for() raises:
+    """Empty means the application owns every path, `/health` included."""
+    assert_equal(_parse([String("m.wsgi")]).health_path, String(""))
+    var opts = _parse(
+        [String("m.wsgi"), String("--health-path"), String("/healthz")]
+    )
+    assert_equal(opts.health_path, String("/healthz"))
+
+
+def test_health_path_must_be_a_path() raises:
+    """A value that is not rooted would never match a request target."""
+    assert_true(
+        _fails([String("m.wsgi"), String("--health-path"), String("health")])
+    )
+    assert_true(_fails([String("m.wsgi"), String("--health-path")]))
+
+
 def test_max_body_default_is_minus_one() raises:
     """-1 means "leave ServerConfig's default alone", not "no limit"."""
     assert_equal(_parse([String("m.wsgi")]).max_body, -1)
@@ -332,7 +355,8 @@ def test_usage_mentions_every_flag() raises:
     for flag in [
         String("--host"), String("--port"), String("--workers"), String("--threads"), String("--app-dir"),
         String("--static"), String("--static-cache-control"), String("--access-log"),
-        String("--max-body"), String("--metrics"), String("--help"), String("--version"),
+        String("--max-body"), String("--metrics"), String("--realtime"),
+        String("--health-path"), String("--help"), String("--version"),
         String("-h"), String("-V"), String("MODULE[:ATTR]"),
     ]:
         assert_true(text.find(flag) >= 0, "usage() does not mention " + flag)
