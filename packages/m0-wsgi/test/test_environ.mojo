@@ -99,6 +99,64 @@ def test_serialize_request_headers_use_cgi_names() raises:
     assert_true(found, "CONTENT_TYPE header did not cross")
 
 
+def test_blob_header_names_match_cgi_header_name() raises:
+    """The serializer and `cgi_header_name` must never disagree.
+
+    The rule is implemented twice on purpose: `cgi_header_name` is the
+    readable statement of it, and the serializer writes the same bytes
+    without allocating three Strings per header to do so (see
+    `_append_cgi_name`). Two implementations can drift, so this asserts
+    they agree on every shape the rule distinguishes — the `HTTP_` prefix,
+    the two unprefixed names, dashes, and a name that merely starts like a
+    content header.
+    """
+    var req = HTTPRequest(URI.parse("http://localhost:8080/"), method="GET")
+    # `connection` is not set here: HTTPRequest adds it itself, along with
+    # `host` and `content-length`. It is listed so the count below is exact.
+    var names = [
+        String("connection"),
+        String("host"),
+        String("accept-encoding"),
+        String("x-forwarded-proto"),
+        String("content-type"),
+        String("content-length"),
+        String("content-disposition"),
+        String("a"),
+    ]
+    for name in names:
+        if name != "connection":
+            req.headers[name] = "v"
+    var blob = serialize_request(req)
+
+    var off = 0
+    for _ in range(4):
+        off = _read_str(blob, off)[1]
+    var count_pair = _read_u32(blob, off)
+    off = count_pair[1]
+    assert_equal(count_pair[0], len(names))
+
+    var seen = 0
+    for _ in range(count_pair[0]):
+        var k = _read_str(blob, off)
+        var v = _read_str(blob, k[1])
+        off = v[1]
+        # Whatever name this is, the blob's spelling of it must be the one
+        # `cgi_header_name` would have produced.
+        var matched = False
+        for name in names:
+            if cgi_header_name(name) == k[0]:
+                matched = True
+                break
+        assert_true(matched, "blob name has no cgi_header_name source: " + k[0])
+        seen += 1
+    assert_equal(seen, len(names))
+
+    # And the distinguishing cases specifically, so a change that made every
+    # name agree by making them all wrong would still fail.
+    assert_equal(cgi_header_name("content-disposition"), "HTTP_CONTENT_DISPOSITION")
+    assert_equal(cgi_header_name("a"), "HTTP_A")
+
+
 def test_serialize_request_body_is_last_and_binary() raises:
     """The body is the final field: u32 length + raw bytes, untouched."""
     var req = HTTPRequest(
