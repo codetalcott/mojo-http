@@ -410,9 +410,9 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   workaround can be retired if a future toolchain fixes the leak (re-test
   with `smoke-django`'s RSS guard, which must stay at 0 KB over 10k
   requests).
-- **Graceful shutdown always waits the full 5 s drain when idle keep-alive
-  connections are open**, in every execution mode. Measured 2026-08-23 on
-  3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
+- ~~**Graceful shutdown always waits the full 5 s drain when idle keep-alive
+  connections are open**~~ — **fixed.** It did, in every execution mode.
+  Measured 2026-08-23 on 3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
 
   | | idle | 8 idle keep-alive connections |
   |---|---:|---:|
@@ -420,18 +420,36 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   | `--threads 4` | 0.02 s | **5.02 s** |
   | `--threads 4 --blocking-threads 4` | 0.02 s | **5.02 s** |
 
-  This retires the suspicion that `--threads` shuts down slowly: it does not,
-  and neither does the pool. What is slow is the drain, identically
+  This retired the suspicion that `--threads` shuts down slowly: it does not,
+  and neither does the pool. What was slow was the drain, identically
   everywhere, because `active_count` counts a connection that is merely *open*
-  the same as one with a request in flight — so the loop waits out
-  `DRAIN_TIMEOUT_NS` for connections that are already finished. A connection
-  sitting in `READING_HEADERS` with an empty receive buffer has nothing to
-  drain and could be closed immediately, leaving the budget for connections
-  genuinely mid-request or mid-response. Worth fixing on its own, not as a
-  rider: it changes which connections are dropped at shutdown, which is what
-  `smoke-shutdown` pins. It also explains the earlier observation that two
-  `--threads 4` processes "outlived a SIGTERM + 5 s wait" — they exit at
-  5.02 s, and a 5 s wait loses that race.
+  the same as one with a request in flight — so the loop waited out
+  `DRAIN_TIMEOUT_NS` for connections that were already finished. It also
+  explains the earlier observation that two `--threads 4` processes
+  "outlived a SIGTERM + 5 s wait": they exited at 5.02 s, and a 5 s wait
+  loses that race.
+
+  The shutdown path now closes slots in `READING_HEADERS` whose receive
+  buffer is empty — "between requests" — before it starts the drain clock.
+  Such a connection could never have been served by the drain loop anyway:
+  that loop dispatches `EVFILT_WRITE` only, so a request arriving during a
+  drain is not read there. Re-measured on 3.13 with the same harness, which
+  reproduces the 5.02 s before the change:
+
+  | | idle | 8 idle keep-alive connections |
+  |---|---:|---:|
+  | `--workers 4` | 0.03 s | **5.02 → 0.03 s** |
+  | `--blocking-threads 4` | 0.02 s | **5.02 → 0.03 s** |
+  | default (one loop) | 0.02 s | **5.02 → 0.03 s** |
+
+  The two halves of the contract are pinned separately, because this changes
+  *which* connections are dropped at shutdown: `smoke-blocking-threads`
+  already asserted that a request in flight at SIGTERM is answered rather
+  than dropped, and `smoke-shutdown` gained a phase asserting that idle
+  keep-alive connections no longer hold the drain open. That new phase was
+  checked against the unfixed loop and fails there at 5.01 s, so it is a
+  guard rather than a decoration. A slot mid-request, mid-response, or with a
+  job in a pool thread is deliberately left alone.
 - The blocking `listen_and_serve` loop serves one accepted keep-alive
   connection exclusively until timeout or the `max_keepalive_requests` cap
   (measured p99 ~140 ms under 16 persistent connections). No in-repo app

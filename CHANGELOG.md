@@ -132,6 +132,36 @@ versions may break the API**.
   `test_environ.mojo` still asserts the two statements of the CGI rule
   agree on every shape it distinguishes.
 
+### Fixed
+
+- **Graceful shutdown no longer waits the full 5 s drain for connections
+  that are already finished.** `active_count` counts a connection that is
+  merely *open* the same as one with a request in flight, so a server
+  holding idle keep-alive connections waited out the whole
+  `DRAIN_TIMEOUT_NS` budget at SIGTERM — **5.02 s to exit against 0.02 s
+  idle, in every execution mode**, which is most of what `docker stop`
+  allows before it escalates to SIGKILL.
+
+  The shutdown path now closes slots in `READING_HEADERS` whose receive
+  buffer is empty — "between requests" — before it starts the drain clock.
+  Those connections could never have been served by the drain loop anyway:
+  it dispatches `EVFILT_WRITE` only, so a request arriving mid-drain is not
+  read there. **5.02 s → 0.03 s** under `--workers 4`, under
+  `--blocking-threads 4`, and on a single loop.
+
+  A slot mid-request, mid-response, or with a job in a pool thread is left
+  alone, and the SSE/WebSocket farewell still runs first, so streaming
+  clients get their close comment or 1001 frame. Both halves of the
+  contract are pinned: `smoke-blocking-threads` already asserted that a
+  request in flight at SIGTERM is answered rather than dropped, and
+  `smoke-shutdown` gained a phase (`scripts/drain_idle_probe.py`) asserting
+  idle keep-alive connections do not hold the drain open — checked against
+  the unfixed loop, where it fails at 5.01 s.
+
+  This also retires the standing suspicion that `--threads` shuts down
+  slowly. It does not, and neither does the pool: every mode exited at
+  5.02 s, and a 5 s wait loses that race.
+
 ## [0.6.0] — 2026-08-23
 
 The release that finished moving the WSGI examples off their own
