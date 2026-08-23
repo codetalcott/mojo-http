@@ -37,6 +37,14 @@ lightbug_http
         memory/origin APIs
       - uri.mojo: implicit `hashlib` stdlib import corrected to `std.hashlib`,
         which any consumer importing the compiled package needed
+      - uri.mojo: `URI.parse` decided a target was an absolute URI by
+        searching the WHOLE string for `://`, so a request target carrying an
+        unencoded URL in a query parameter (`/go?url=http://x`) was parsed as
+        a URI whose scheme was `/go?url=http` and answered 400 before
+        reaching the application. `scheme_separator` now accepts the `://`
+        only when everything before it is a scheme as RFC 3986 §3.1 defines
+        one (ALPHA, then ALPHA/DIGIT/`+`/`-`/`.`), which by construction
+        excludes `/`, `?` and `#`. Tested in test_uri_scheme.mojo
       - header.mojo: `Headers.keys()` added, so headers can be enumerated
         without reaching into the private `_inner` dict from another package
         (needed to project them into a WSGI environ)
