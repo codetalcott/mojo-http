@@ -257,6 +257,29 @@ construction and `M0_WORKERS` does nothing there.)
   HTTP layer.** mojo-http's HTTP layer is within 1.6x of Granian's
   *including* Granian's Python work; its bridge then gives all of that away.
 
+**Is `apps/hello`'s 78.3k a ceiling, or just `-c16` divided by the
+round-trip?** Worth asking, because 16 connections at 178 µs is ~90k, close
+enough to the measured number that the two explanations are hard to tell
+apart — and if it were the latter, the whole row would be a latency
+measurement wearing a throughput label. Sweeping concurrency separates them:
+a latency-bound number rises with connections, a saturated one does not.
+`wrk -t4`, two rounds, same binary and box:
+
+| connections | rps | p50 |
+|------------:|----:|----:|
+| 16  | 76,522 / 76,296 | 185 µs / 185 µs |
+| 64  | 77,235 / 76,926 | 789 µs / 791 µs |
+| 128 | 78,737 / 78,723 | 1.61 ms / 1.61 ms |
+| 256 | 78,976 / 79,037 | 3.22 ms / 3.22 ms |
+
+**It is a ceiling.** Throughput moves 3% across a 16x range of concurrency
+while p50 tracks connection count almost exactly linearly (185 µs → 3.22 ms
+is 17.4x for 16x the connections) — which is queueing being added and
+nothing else, and is Little's Law with the service rate held constant. So
+the layer-split row means what it says, and the Granian comparison built on
+it stands. Recorded because the doubt was reasonable and only a measurement
+could retire it.
+
 ### What the bridge is actually doing — measured, not assumed
 
 Reading the code suggested the Python shim's environ parse. Splitting the
@@ -326,6 +349,22 @@ path. `PyDict_New` and `PyDict_SetItem` are reachable today through
 `PyEval_SaveThread` — and were compile-checked against the pinned toolchain
 before this was written down. `smoke-django`'s RSS guard is the instrument
 that would prove such a change does not reintroduce the leak.
+
+**Re-measured before acting on it**, because this exact recommendation was
+wrong once already — it named the shim when the cost was `serialize_request`,
+and only splitting the total by part caught that. The split reproduces:
+
+| part | at the fix | re-measured |
+|------|-----------:|------------:|
+| `serialize_request` (Mojo) | 0.44 µs | 0.43 µs |
+| `buf_addr()` zero-arg call | 0.30 µs | 0.29 µs |
+| copy blob into the shim's buffer | 0.90 µs | 0.88 µs |
+| `handle()` — the call plus the whole Python shim | 12.35 µs | 12.09 µs |
+| full round trip | 14.46 µs | 14.23 µs |
+
+`handle()` is **85% of what is left**, and the three Mojo-side parts together
+are 1.6 µs. So the target above is the right one — which is a statement this
+document has now earned rather than assumed.
 
 ## A slow view strands the connections pinned behind it
 

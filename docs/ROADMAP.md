@@ -316,6 +316,17 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   environ in Mojo through the raw CPython C API (`PyDict_New`,
   `PyDict_SetItem`, reachable through `Python().cpython()` and
   compile-checked) sidesteps the leak and is where that ~10x lives.
+
+  **Two doubts about that row, both since retired by measurement**
+  ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md)). The 78.3k could have been a
+  round-trip latency measurement rather than a ceiling — 16 connections at
+  178 µs is ~90k — but a concurrency sweep settles it: throughput moves 3%
+  from `-c16` to `-c256` while p50 rises 17x, which is queueing added to a
+  saturated service rate and nothing else. And the recommendation to attack
+  the shim was re-derived rather than trusted, since its previous version
+  named the wrong sixth: the split reproduces at `handle()` = 12.1 µs of a
+  14.2 µs round trip, **85% of what remains**, with all three Mojo-side
+  parts together at 1.6 µs. The target is the right one.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
