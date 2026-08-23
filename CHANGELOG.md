@@ -5,7 +5,17 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
-## [Unreleased]
+## [0.6.0] — 2026-08-23
+
+The release that finished moving the WSGI examples off their own
+`server.mojo`, and made the bridge 2.35x faster. `--realtime` and
+`--health-path` carry the hold machinery `apps/django_realtime` used to own,
+`--reload` re-forks workers onto changed Python in ~300 ms, and
+`serialize_request` — 77% of the bridge's per-request cost — went from 48 µs
+to 0.44 µs, taking `apps/wsgi_bare` from 12,289 to 28,911 rps. The
+benchmarking also settled what comes next: one slow view raises fast-request
+p99 by ~120x in *both* execution modes, which is the failure Stage B exists
+to remove.
 
 ### Added
 
@@ -86,33 +96,6 @@ versions may break the API**.
   application may already route `/health`, and a server that took the path
   silently would shadow it.
 
-### Fixed
-
-- **A bare `://` anywhere in a request target was read as a scheme**, so a
-  query parameter carrying an unencoded URL (`/go?url=http://x`) was parsed
-  as a URI whose scheme was `/go?url=http` and answered `400` before
-  reaching the application. `URI.parse` searched the whole target for `://`;
-  `scheme_separator` now accepts one only when everything before it is a
-  scheme as RFC 3986 §3.1 defines it — ALPHA, then ALPHA / DIGIT / `+` /
-  `-` / `.` — a character set that by construction cannot contain `/`, `?`
-  or `#`. It is computed before the `ByteReader` borrows the string: a
-  second interior reference taken while the reader holds one invalidates
-  it. Clients that percent-encode — every browser form, every `urlencode` —
-  never hit this, which is what kept it a Known issue rather than a bug
-  report. `test_uri_scheme.mojo` covers both directions and `smoke-wsgi` now
-  sends its `/reentrant?url=` unencoded as well as encoded, so a real server
-  proves it.
-
-### Removed
-
-- `apps/django_realtime/server.mojo`, and with it `M0_DJANGO_PROJECT`. The
-  row keeps `m0pub.py`, `djangoproj/`, `realtime_probe.py` and `static/`, and
-  is served by `bin/m0serve djangoproj.wsgi:application --app-dir
-  apps/django_realtime --realtime --health-path /health`. No WSGI row has a
-  `server.mojo` any more.
-
-## [Unreleased]
-
 ### Changed
 
 - **The WSGI bridge is 2.35x faster: 12,289 → 28,911 rps** on
@@ -162,6 +145,31 @@ versions may break the API**.
 - `apps/django_wsgi`'s `/slow` accepts `?ms=`, defaulting to the 1500 ms
   `smoke-django` expects. The mixed-workload benchmark needs a much shorter
   hold — 1.5 s swamps the signal instead of measuring it.
+
+### Fixed
+
+- **A bare `://` anywhere in a request target was read as a scheme**, so a
+  query parameter carrying an unencoded URL (`/go?url=http://x`) was parsed
+  as a URI whose scheme was `/go?url=http` and answered `400` before
+  reaching the application. `URI.parse` searched the whole target for `://`;
+  `scheme_separator` now accepts one only when everything before it is a
+  scheme as RFC 3986 §3.1 defines it — ALPHA, then ALPHA / DIGIT / `+` /
+  `-` / `.` — a character set that by construction cannot contain `/`, `?`
+  or `#`. It is computed before the `ByteReader` borrows the string: a
+  second interior reference taken while the reader holds one invalidates
+  it. Clients that percent-encode — every browser form, every `urlencode` —
+  never hit this, which is what kept it a Known issue rather than a bug
+  report. `test_uri_scheme.mojo` covers both directions and `smoke-wsgi` now
+  sends its `/reentrant?url=` unencoded as well as encoded, so a real server
+  proves it.
+
+### Removed
+
+- `apps/django_realtime/server.mojo`, and with it `M0_DJANGO_PROJECT`. The
+  row keeps `m0pub.py`, `djangoproj/`, `realtime_probe.py` and `static/`, and
+  is served by `bin/m0serve djangoproj.wsgi:application --app-dir
+  apps/django_realtime --realtime --health-path /health`. No WSGI row has a
+  `server.mojo` any more.
 
 ## [0.5.0] — 2026-08-22
 
@@ -708,6 +716,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.6.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.6.0
 [0.5.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.5.0
 [0.4.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.4.0
 [0.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.3.0
