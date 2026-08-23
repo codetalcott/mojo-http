@@ -179,6 +179,11 @@ jobs:
       # requirement. The mode itself is proven weekly by py-canary on 3.14t.
       - name: Smoke test the threaded mode's guard
         run: uv run poe smoke-threads
+      # Hot reload: a changed .py must be served by a NEW worker pid, at one
+      # worker and at two, without any of it going through the crash-respawn
+      # path -- a reload is a graceful shutdown followed by a fork.
+      - name: Smoke test hot reload
+        run: uv run poe smoke-reload
       # The hybrid row: a sync Django view's M0-Hold response becomes a live
       # SSE subscription, and its publish (pure-Python bus datagrams) reaches
       # subscribers held by both workers -- ASGI's realtime surface without ASGI.

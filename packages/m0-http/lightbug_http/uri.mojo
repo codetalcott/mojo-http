@@ -69,6 +69,48 @@ struct QueryDelimiters:
     comptime PLUS_ESCAPED_SPACE = "+"
 
 
+def scheme_separator(uri: StringSlice) -> Int:
+    """Index of the `://` that introduces a scheme, or -1 if there is none.
+
+    A request target may carry a URL of its own inside a query parameter, and
+    an unencoded one puts a literal `://` in the middle of the target:
+    `/go?url=http://example.test`. Searching the whole string for `://` reads
+    that as an absolute URI, and the parse then fails on a "scheme" of
+    `/go?url=http` — a `400` for a request the application never sees. The
+    encoded form every browser form and every `urlencode` produces was never
+    affected, which is what kept this rare.
+
+    So the `://` only counts when everything before it could actually be a
+    scheme. RFC 3986 §3.1 defines one as `ALPHA *( ALPHA / DIGIT / "+" / "-"
+    / "." )`, which cannot contain `/`, `?` or `#` — testing the character
+    set is therefore both the specified rule and the fix.
+    """
+    var sep = uri.find("://")
+    if sep <= 0:
+        # -1: no separator. 0: an empty scheme, which is not a scheme.
+        return -1
+    var bytes = uri.as_bytes()
+    for i in range(sep):
+        var c = bytes[i]
+        var alpha = (c >= UInt8(ord("a")) and c <= UInt8(ord("z"))) or (
+            c >= UInt8(ord("A")) and c <= UInt8(ord("Z"))
+        )
+        if i == 0:
+            if not alpha:
+                return -1  # a scheme must start with a letter
+            continue
+        var digit = c >= UInt8(ord("0")) and c <= UInt8(ord("9"))
+        if not (
+            alpha
+            or digit
+            or c == UInt8(ord("+"))
+            or c == UInt8(ord("-"))
+            or c == UInt8(ord("."))
+        ):
+            return -1
+    return sep
+
+
 struct URIDelimiters:
     comptime SCHEMA = "://"
     comptime PATH = "/"
@@ -145,12 +187,15 @@ struct URI(Copyable, Writable):
 
         `[scheme:][//[user_info@]host][/]path[?query][#fragment]`
         """
+        # Computed before the reader borrows `uri`: taking a second interior
+        # reference while the reader holds one invalidates it.
+        var scheme_sep = scheme_separator(uri)
         var reader = ByteReader(uri.as_bytes())
 
         # Parse the scheme, if exists.
         # Assume http if no scheme is provided, fairly safe given the context of lightbug.
         var scheme: String = "http"
-        if "://" in uri:
+        if scheme_sep >= 0:
             scheme = String(reader.read_until(UInt8(ord(URIDelimiters.SCHEME))))
             # `uri.as_bytes()` is now bound to an interior origin of `uri`,
             # so the reader's slices carry that origin rather than the whole

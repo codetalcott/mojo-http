@@ -241,6 +241,37 @@ def test_health_path_is_empty_until_asked_for() raises:
     assert_equal(opts.health_path, String("/healthz"))
 
 
+def test_reload_is_off_by_default() raises:
+    """A development flag: nobody gets a file watcher unasked."""
+    assert_false(_parse([String("m.wsgi")]).reload)
+    assert_true(_parse([String("m.wsgi"), String("--reload")]).reload)
+
+
+def test_reload_dirs_default_to_empty() raises:
+    """Empty means `--app-dir`; the entry point resolves that, not the parser.
+
+    The parser never reads the environment or the filesystem, so it cannot
+    substitute the default here without becoming impure.
+    """
+    assert_equal(len(_parse([String("m.wsgi")]).reload_dirs), 0)
+
+
+def test_reload_dirs_accumulate() raises:
+    var opts = _parse([
+        String("m.wsgi"),
+        String("--reload-dir"), String("/one"),
+        String("--reload-dir=/two"),
+    ])
+    assert_equal(len(opts.reload_dirs), 2)
+    assert_equal(opts.reload_dirs[0], String("/one"))
+    assert_equal(opts.reload_dirs[1], String("/two"))
+
+
+def test_reload_dir_rejects_an_empty_value() raises:
+    assert_true(_fails([String("m.wsgi"), String("--reload-dir"), String("")]))
+    assert_true(_fails([String("m.wsgi"), String("--reload-dir")]))
+
+
 def test_health_path_must_be_a_path() raises:
     """A value that is not rooted would never match a request target."""
     assert_true(
@@ -356,7 +387,8 @@ def test_usage_mentions_every_flag() raises:
         String("--host"), String("--port"), String("--workers"), String("--threads"), String("--app-dir"),
         String("--static"), String("--static-cache-control"), String("--access-log"),
         String("--max-body"), String("--metrics"), String("--realtime"),
-        String("--health-path"), String("--help"), String("--version"),
+        String("--health-path"), String("--reload"), String("--reload-dir"),
+        String("--help"), String("--version"),
         String("-h"), String("-V"), String("MODULE[:ATTR]"),
     ]:
         assert_true(text.find(flag) >= 0, "usage() does not mention " + flag)
