@@ -29,7 +29,13 @@ Known limits, all inherited from the server rather than the bridge:
 """
 
 from .bridge import PyBridge, SHIM_SOURCE
-from .environ import cgi_header_name, serialize_request
+from .environ import (
+    all_ascii,
+    append_cgi_name_as_utf8,
+    append_latin1_as_utf8,
+    cgi_header_name,
+    cgi_name_utf8,
+)
 from .response import build_response, split_status
 from .app import WSGIApp
 from .handler import WSGIHandler
