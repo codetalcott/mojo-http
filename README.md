@@ -222,7 +222,9 @@ current directory and defaulting to `.`. Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
 matching flag winning over it, and flags are strict: `--port 80eighty` is a
 usage error, not a silent default. `--max-body` and `--metrics` reach two
-server tunings the environment cannot. `--help` has the rest; exit codes are
+server tunings the environment cannot, and `--reload [--reload-dir DIR]`
+re-forks the workers onto changed Python in ~300 ms without re-exec'ing the
+binary. `--help` has the rest; exit codes are
 2 for a bad command line and 1 for an application that would not load —
 including under `--workers N`, where a supervisor that gives up on respawning
 says so instead of exiting 0.
@@ -294,11 +296,20 @@ asserts a body of all 256 byte values returns unchanged.
   RSS, the app imported once, and none of the fork-after-init hazards. A
   GIL-enabled interpreter refuses `--threads` outright (exit 78) rather than
   run a thread pool that the GIL would serialize. Either way a keep-alive
-  connection stays pinned to the loop that accepted it; per-request
-  balancing is the recorded next step. Benchmarked against gunicorn at ~1.5–2x its
-  throughput with comparable-or-better p99, in both keep-alive and
-  close-per-request modes — methodology, history, and the leak that once made
-  this paragraph less flattering:
+  connection stays pinned to the loop that accepted it, and that pinning is
+  measurable: one slow view beside fast traffic leaves fast-request p99
+  ~120x worse in *both* modes while p50 does not move at all — the
+  connections on the busy loop stop dead. Per-request balancing is the
+  recorded next step. Benchmarked against gunicorn at 1.4–1.5x its
+  throughput on a GIL-enabled 3.13 container and ~3.5x on free-threaded
+  3.14.7t, with comparable-or-better p99 in both keep-alive and
+  close-per-request modes. Against **Granian**, which already has that
+  thread pool, it runs the other way: on a bare WSGI callable m0serve is
+  ~4.3x *slower* (28.9k vs 124.6k rps at one worker), and Granian's p99
+  stays flat under the same slow view. That gap is the WSGI bridge, not the
+  HTTP layer — `apps/hello` serves the same 13-byte response at 78.3k rps
+  with no Python in the path. Methodology, the layer split, and the leak
+  that once made this paragraph less flattering:
   [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md).
 - **Responses are fully buffered.** There is no chunked encoding, so
   `StreamingHttpResponse` and `FileResponse` are materialized in memory.
