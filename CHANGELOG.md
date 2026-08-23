@@ -111,6 +111,36 @@ versions may break the API**.
   apps/django_realtime --realtime --health-path /health`. No WSGI row has a
   `server.mojo` any more.
 
+## [Unreleased]
+
+### Changed
+
+- **Stage B is justified — reversing the no-go recorded earlier in this
+  release cycle.** That verdict came from a keep-alive benchmark on a hello
+  route, which cannot produce the failure Stage B is half designed for, and
+  it named a mixed-workload run as the gate. That run
+  (`scripts/bench_mixed_workload.sh`, 3.14.7t, two rounds) is decisive: one
+  slow view alongside fast traffic takes fast-request p99 from **1.6 ms to
+  ~194 ms (~120x)** while p50 does not move — a subset of connections
+  stopped dead, not general slowdown. `--threads` is affected identically,
+  because a keep-alive connection belongs to the loop that accepted it in
+  both modes. Granian's `--blocking-threads`, which *is* the Stage B
+  architecture, is flat under the same load (0.96 → 1.22 ms).
+- **The Granian throughput gap is the WSGI bridge, not the HTTP layer or
+  the concurrency model** (`scripts/bench_layer_split.sh`). Three rows
+  differing by one layer, byte-identical 13-byte response: `apps/hello`
+  (zero Python) 78.3k rps at 178 µs, the same HTTP layer through the bridge
+  12.4k at 1.18 ms, Granian through its own bridge 124.6k at 109 µs. The
+  bridge costs ~1 ms per request because the shim rebuilds the WSGI environ
+  in pure Python every time (~28 string decodes for a twelve-header
+  request) — itself downstream of the `PythonObject` reference leak that
+  forced the blob design. Building the environ through the raw CPython C
+  API sidesteps the leak; `PyDict_New`/`PyDict_SetItem` were compile-checked
+  as reachable via `Python().cpython()`.
+- `apps/django_wsgi`'s `/slow` accepts `?ms=`, defaulting to the 1500 ms
+  `smoke-django` expects. The mixed-workload benchmark needs a much shorter
+  hold — 1.5 s swamps the signal instead of measuring it.
+
 ## [0.5.0] — 2026-08-22
 
 The release the server grew a command line and a second way to be
