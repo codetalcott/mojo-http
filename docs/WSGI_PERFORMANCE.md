@@ -170,7 +170,7 @@ Byte parity was checked before timing: both servers return the identical
   tighter p99, on the same free-threaded interpreter and a byte-identical
   response. That gap is the honest headline of this table.
 
-### Stage B: no-go, for a sharper reason than "the tail did not appear"
+### Stage B: this benchmark could not settle it — see the mixed-workload row
 
 Stage B (ROADMAP.md) is an acceptor loop feeding a Python thread pool with
 deferred responses — ~8 touchpoints in `event_loop.mojo`. It exists for two
@@ -182,17 +182,12 @@ precisely the failure Stage B removes. And on the first, which it *can*
 measure, there is no systematic tail to fix: p99 sits at 1.6–2.9 ms, and
 the single excursion was in the mode Stage B would not change.
 
-So Stage B is **not justified by this measurement**, and it is not merely
-un-provoked: the measurement that would justify it is a different one. The
-gate is a **mixed-workload run** — a deliberately slow view alongside fast
-ones on the same loop — where a keep-alive connection parked behind a slow
-request is the thing being measured. Until that run exists and shows fast
-requests suffering behind slow ones, the ~8 touchpoints stay unwritten.
-
-The more actionable finding is Granian's 1.4–2.0x. Same interpreter, same
-process model as `--threads`, same bytes on the wire — so the headroom is
-in the per-request path, not in the concurrency architecture. That is a
-better-evidenced target than Stage B, and a cheaper one.
+So the gate became a **mixed-workload run** — a deliberately slow view
+alongside fast ones on the same loop. **That run has since happened, and it
+justifies Stage B decisively**; see "A slow view strands the connections
+pinned behind it" below. The paragraph that used to stand here recorded a
+no-go on this table's evidence alone, which was the wrong question asked
+well: a hello route cannot produce the failure Stage B fixes.
 
 ### A methodology trap, recorded because it nearly produced a wrong answer
 
@@ -224,6 +219,118 @@ than anything else — the first run scored it at 81 and 0.20 rps. Measured
 fresh, it does 3,263 rps, consistent with the `ab` table's 3,748. A server
 that cannot speak keep-alive does not belong in a keep-alive tail table;
 the `ab -k` row above is the right place for that comparison.
+
+## Where the Granian gap lives: the bridge, not the HTTP layer
+
+The table above measures Granian at 1.4–2.0x either mode on Django. That is
+one number for two possible causes with completely different fixes, so this
+section splits it into three rows that differ by exactly one layer.
+`scripts/bench_layer_split.sh`, 3.14.7t, `wrk -t2 -c16 -d10s`, three rounds.
+
+Rows 2 and 3 run the SAME application — `apps/wsgi_bare`, a plain PEP 3333
+callable with no third-party imports — so the Python work is identical. The
+bare app rather than Django on purpose: Django's middleware is a large
+constant *both* servers pay, and it compresses the very ratio being
+resolved. All three roots return 13 bytes of `text/plain`, and byte parity
+between m0serve and Granian is asserted before any timing.
+
+| row | what it adds | rps (3-round mean) | p50 |
+|-----|--------------|-------------------:|----:|
+| `apps/hello` | mojo-http HTTP layer, **zero Python** | **78,290** | 178 µs |
+| `m0serve` + bare, 1 worker | …plus the WSGI bridge | **12,421** | 1.18 ms |
+| `granian` + bare, 1 worker | Granian's HTTP layer + its PyO3 bridge | **124,642** | 109 µs |
+| `m0serve` + bare, 4 workers | | 34,995 | ~400 µs |
+| `granian` + bare, 4 workers | | 99,187 | 130 µs |
+
+(`apps/hello` has no `WorkerSupervisor`, so it is single-process by
+construction and `M0_WORKERS` does nothing there.)
+
+- **The bridge costs ~1 ms per request.** Same HTTP layer, same machine:
+  178 µs without Python, 1.18 ms with. A 6.3x drop, against a Python
+  callable that does essentially nothing.
+- **Granian on one worker beats m0serve on four** (124.6k vs 35.0k, 3.6x),
+  and beats mojo-http serving *no Python at all* (1.6x). The Django-based
+  1.4–2.0x understated the gap by roughly 5x.
+- **So the headroom is in the bridge, not the concurrency model and not the
+  HTTP layer.** mojo-http's HTTP layer is within 1.6x of Granian's
+  *including* Granian's Python work; its bridge then gives all of that away.
+
+### What the bridge is actually doing
+
+`bridge.mojo`'s shim rebuilds the WSGI environ **in pure Python on every
+request**, by parsing the binary blob Mojo just wrote. For a twelve-header
+browser request that is a `dict(_base)` copy, **28 `_read_str` calls** (each
+a Python-level call, slice and decode), two `int.from_bytes`, and an
+`io.BytesIO` — comfortably tens of microseconds. Granian builds the environ
+in Rust and hands Python a finished dict.
+
+The irony is that this is downstream of a *correct* decision. The blob
+exists precisely because Mojo 1.0's `PythonObject` leaks a reference per
+call argument, so the bridge cannot simply pass a dict (see Known issues in
+ROADMAP.md). The leak workaround is what costs the throughput.
+
+The way out is to build the environ dict in Mojo through the raw CPython C
+API, which manages refcounts explicitly and is therefore not the leaking
+path. `PyDict_New` and `PyDict_SetItem` are reachable today through
+`Python().cpython()` — the same door `m0_wsgi.threaded` already uses for
+`PyEval_SaveThread` — and were compile-checked against the pinned toolchain
+before this was written down. `smoke-django`'s RSS guard is the instrument
+that would prove such a change does not reintroduce the leak.
+
+## A slow view strands the connections pinned behind it
+
+This is the mixed-workload measurement the `wrk` section named as Stage B's
+gate, and it is the one that settles it. `scripts/bench_mixed_workload.sh`,
+3.14.7t, two rounds. Foreground: `wrk -t2 -c16 -d10s` on Django's hello
+route. Background: N concurrent requests to `/slow?ms=200`, re-issued for
+the whole run. All three N levels run against **one warm server** per
+configuration, so the baseline is the same process, warmed the same way,
+seconds before the loaded rows.
+
+Fast-route p99, by how many slow requests are in flight:
+
+| configuration | slow=0 | slow=1 | slow=2 |
+|---------------|-------:|-------:|-------:|
+| `m0serve --workers 4` | 1.62 / 1.75 ms | **193.1 / 195.3 ms** | **198.5 / 201.4 ms** |
+| `m0serve --threads 4` | 1.61 / 1.97 ms | **195.2 / 194.2 ms** | **201.6 / 203.4 ms** |
+| `granian --blocking-threads 4` | 0.96 / 0.96 ms | 0.93 / 0.97 ms | 1.22 / 1.15 ms |
+
+Both rounds shown. What it says:
+
+- **One slow view raises fast-request p99 by ~120x**, from 1.6 ms to
+  ~194 ms — approximately the slow view's own hold time.
+- **p50 does not move at all** (617 µs → 617 µs at `--workers 4`). This is
+  not general slowdown; it is a subset of connections stopped dead. With
+  four loops and 16 keep-alive connections, the ~4 pinned to the busy loop
+  wait out the whole hold while the other twelve are served normally. p90
+  tracks that arithmetic: 82 ms at slow=1, 133 ms at slow=2.
+- **Stage A does not help.** `--threads` is affected identically, which is
+  expected and worth stating plainly: a keep-alive connection belongs to
+  the loop that accepted it in *both* modes. Threads changed the process
+  model, not the pinning.
+- **A thread pool removes it entirely.** Granian's p99 is flat under the
+  same load — 0.96 → 0.93 → 1.22 ms. `--blocking-threads` *is* the Stage B
+  architecture: an acceptor handing work to a pool, so no connection is
+  hostage to whichever request a particular loop happens to be running.
+
+**Stage B is justified.** Not by a tail that a fast route failed to
+produce, but by the failure it was actually designed for, measured directly
+— and with a working reference implementation of the same design showing
+what it buys.
+
+### Two harness bugs, recorded because each produced a confident wrong answer
+
+- **`seq 1 0` prints "1" and "0" on BSD/macOS.** `start_slow 0` therefore
+  launched *two* slow loops and the baseline silently carried the same load
+  as the treatment rows. Every row looked identical (p99 196 / 191 / 195 ms)
+  — which reads exactly like a null result. Had it not been checked against
+  the ~1.7 ms this configuration shows in the `wrk` table above, the
+  conclusion would have been "slow views harm nothing" and Stage B would
+  have been closed on a broken control.
+- **Restarting the server per row** gave every row its own Django lazy-import
+  transient, which is a 200 ms hole indistinguishable from a slow-view tail.
+  One warm server per configuration fixes it; the script now also greps the
+  supervisor log for crash/respawn, for the same reason.
 
 ## What the server-layer work bought the WSGI path
 
@@ -322,6 +429,19 @@ it was built in, so rebuild inside the swap), then
 back to 3.13 mid-run. **Rebuild `bin/m0serve` again after restoring**: the
 binary left behind by the swap has an `@rpath` into a venv that no longer
 exists and aborts on start.
+
+For the layer split and the mixed-workload row, the same setup plus
+`granian`, then `scripts/bench_layer_split.sh` or
+`scripts/bench_mixed_workload.sh`. The layer split also needs `apps/hello`
+built inside the swap (`mojo build ... apps/hello/server.mojo`), for the
+same `@rpath` reason as `bin/m0serve`.
+
+**Do not run any `uv run` command while swapped** — not even `uv run mojo
+run` on an unrelated scratch file. It re-syncs the venv back to 3.13
+underneath the benchmark, and the symptom is not an error message: the Mojo
+binaries start aborting on a stale `@rpath` and `.venv/bin/granian`
+disappears, so rows silently go missing rather than failing loudly. Bare
+`.venv/bin/poe` and `.venv/bin/mojo` are safe; `uv run` is not.
 
 For the tail row, the same setup plus `granian`, then
 `scripts/bench_wsgi_tail_ka.sh`. Use that one, not `bench_wsgi_tail.sh`, for

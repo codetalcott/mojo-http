@@ -254,28 +254,38 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   threads at throughput parity with prefork at ~60% of its RSS, ~3.5x
   gunicorn on the same interpreter.
 
-  **The `wrk` run that was to gate Stage B has happened, and the answer is
-  no-go.** Three rounds, keep-alive only, on 3.14.7t: keep-alive p99 is
-  1.6–2.9 ms across both modes and both sizes, with one excursion in
-  seventeen valid rows (`--workers 4`, 52 ms p99) that did not recur and
-  that appeared in *prefork* — the mode that already has N accept queues,
-  which is the opposite of what connection pinning predicts. Threads and
-  prefork are indistinguishable on the tail and at throughput parity under
-  a second tool.
+  **Stage B is justified, and the measurement that justifies it exists.**
+  The `wrk` keep-alive run came first and could not settle it: p99 is
+  1.6–2.9 ms across both modes and both sizes, with one non-recurring
+  excursion, in *prefork* of all places. But a hello route cannot produce
+  the failure Stage B is half designed for, so the gate became a
+  mixed-workload run — and that run is decisive
+  ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md), 3.14.7t, two rounds).
 
-  The reason is sharper than "the tail did not appear". Stage B is for
-  per-request balancing **and slow-view isolation**, and a hello-route
-  benchmark cannot exercise the second at all — there is never a slow
-  request for a fast one to be stuck behind. So the gate is now a
-  **mixed-workload run**: a deliberately slow view alongside fast ones on
-  the same loop, measuring whether fast requests suffer behind slow ones.
-  Until that exists and shows they do, the ~8 touchpoints stay unwritten.
+  One slow view (`/slow?ms=200`) alongside fast traffic takes fast-request
+  p99 from **1.6 ms to ~194 ms, a ~120x degradation**, while p50 does not
+  move at all. That shape is the whole story: it is not general slowdown
+  but a subset of connections stopped dead — with four loops and sixteen
+  keep-alive connections, the ~4 pinned to the busy loop wait out the
+  entire hold. **`--threads` is affected identically**, because a
+  keep-alive connection belongs to the loop that accepted it in both modes;
+  Stage A changed the process model, not the pinning. And **Granian's
+  `--blocking-threads` — which *is* the Stage B architecture — is flat
+  under the same load** (0.96 → 0.93 → 1.22 ms). So the design has a
+  working reference implementation showing what it buys.
 
-  The same table's more actionable finding: **Granian 2.8.1 is 1.4–2.0x
-  faster than either mode** on the same interpreter, serving a
-  byte-identical response, with a tighter p99. Same process model as
-  `--threads`, so the headroom is in the per-request path rather than the
-  concurrency architecture — better-evidenced than Stage B, and cheaper.
+  **The other finding, and it is the bigger number.** Splitting the Granian
+  gap by layer (`scripts/bench_layer_split.sh`) shows it is almost entirely
+  the **WSGI bridge**: `apps/hello` (zero Python) does 78.3k rps at 178 µs,
+  the same HTTP layer through the bridge does 12.4k at 1.18 ms, and Granian
+  through *its* bridge does 124.6k at 109 µs on the same 13-byte response.
+  The bridge costs ~1 ms per request because `bridge.mojo`'s shim rebuilds
+  the environ in pure Python every time — ~28 string decodes for a
+  twelve-header request — which is itself downstream of the
+  `PythonObject` reference leak that forced the blob design. Building the
+  environ in Mojo through the raw CPython C API (`PyDict_New`,
+  `PyDict_SetItem`, reachable through `Python().cpython()` and
+  compile-checked) sidesteps the leak and is where that ~10x lives.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it

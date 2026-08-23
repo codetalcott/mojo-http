@@ -89,8 +89,17 @@ def slow(request):
     require the pair to have been answered by two distinct workers — with the
     shared pre-fork listener a busy worker never accepts, so this holds on
     every attempt, but the test still retries rather than trust one race.
+
+    `?ms=` overrides the duration, defaulting to the 1500 the smoke expects.
+    `scripts/bench_mixed_workload.sh` uses a much shorter hold: the question
+    it asks is what a slow view does to *other* requests' latency, and 1.5s
+    is long enough to swamp that signal rather than measure it.
     """
-    time.sleep(1.5)
+    try:
+        held = float(request.GET.get("ms", 1500)) / 1000.0
+    except (TypeError, ValueError):
+        held = 1.5
+    time.sleep(held)
     return HttpResponse(f"slow done pid={os.getpid()}", content_type="text/plain")
 
 def pep3333_canary(request):
