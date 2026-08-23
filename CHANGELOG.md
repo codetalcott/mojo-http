@@ -5,7 +5,13 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
-## [Unreleased]
+## [0.5.0] — 2026-08-22
+
+The release the server grew a command line and a second way to be
+concurrent. `m0serve` is one built binary that serves any WSGI application,
+so three example apps stopped carrying a `server.mojo` each; `--threads N`
+runs N event loops on N pthreads in one process on free-threaded CPython,
+at throughput parity with prefork for ~60% of its RSS.
 
 ### Added
 
@@ -28,7 +34,11 @@ versions may break the API**.
   warns-and-runs. `--threads` and `--workers` are mutually exclusive.
   `wsgi.multithread` is finally True somewhere; every response carries
   `x-thread`. `smoke-threads` pins the guard on every runner and the mode
-  itself on the free-threaded canary (phase D of `py-canary`).
+  itself on the free-threaded canary (phase D of `py-canary`) — green on
+  **both** backends as of 2026-08-23: kqueue on macOS and epoll on Linux,
+  with all four loops accepting in each, so a listener dup'd into N epoll
+  instances under `EPOLLET` wakes every one of them and no `EPOLLEXCLUSIVE`
+  follow-up is owed.
 - **The threads-vs-prefork benchmark row** (`docs/WSGI_PERFORMANCE.md`,
   `scripts/bench_wsgi_modes.sh`): on 3.14.7t, `--threads N` is at throughput
   parity with `--workers N` (0.92–1.05x) at ~60% of its RSS, ~3.5x gunicorn
@@ -540,6 +550,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.5.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.5.0
 [0.4.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.4.0
 [0.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.3.0
 [0.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.2.0

@@ -50,10 +50,13 @@ main joins them all, reattaches, and reports.
 Per-process: the interpreter and `sys.modules`; signal dispositions and the
 shutdown slot; `SharedAtomics` (still just memory); the listener socket
 (one description, N dups — the loop closes its listener on shutdown, and a
-dup makes that a per-thread close). Per-thread: the event loop and every
-slot array, the kqueue/epoll fd, the `ProvisionPool`, `ServerMetrics` (so
-`/__metrics` is per-thread), the handler with everything it owns, the
-shutdown pipe, the Python thread state.
+dup makes that a per-thread close; on Linux those N dups land in N epoll
+instances under `EPOLLET`, and the canary's phase D shows every one of them
+waking, so `EPOLLEXCLUSIVE` is not needed to spread accepts). Per-thread:
+the event loop and every slot array, the kqueue/epoll fd, the
+`ProvisionPool`, `ServerMetrics` (so `/__metrics` is per-thread), the
+handler with everything it owns, the shutdown pipe, the Python thread
+state.
 """
 
 from std.python import Python, PythonObject
