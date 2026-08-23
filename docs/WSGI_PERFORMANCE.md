@@ -468,8 +468,8 @@ Fast-route p99, by how many slow requests are in flight (both rounds):
   dead, which is what "the connections pinned to the busy loop" means
   arithmetically. With the pool it stays ~1 ms throughout.
 - **It costs throughput, and the cost is not the same in both modes.** At
-  slow=0, two-round means: prefork gives up **7%** (34.9k → 32.3k rps) and
-  threads **23%** (32.7k → 25.7k). The extra hop is one datagram each way per
+  slow=0, two-round means: prefork gives up **7.3%** (34.9k → 32.3k rps) and
+  threads **21.3%** (32.7k → 25.7k). The extra hop is one datagram each way per
   request, which is the 7%; the rest is oversubscription — `--threads 4
   --blocking-threads 4` is four loops *plus* sixteen handler threads on four
   performance cores, where the prefork row is four processes of five threads

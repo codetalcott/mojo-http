@@ -1803,7 +1803,7 @@ wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --threads 2 --blocking-threads 4: exit $rc, want 0"
 n=$(grep -c 'exited cleanly' pool.log)
 [ "$n" = "2" ] || fail "expected 2 'exited cleanly' lines from the loops, saw $n"
-echo "smoke-blocking-threads OK (phase 2: 2 loops x 2 handler threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
+echo "smoke-blocking-threads OK (phase 2: 2 loops x 4 handler threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
 """
 
 [tool.poe.tasks.smoke-flask]

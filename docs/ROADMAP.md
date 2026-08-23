@@ -387,6 +387,28 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   Python-side bytearray instead (see `bridge.mojo`). Any new bridge code must
   hold the same line, and the workaround can be retired if a future toolchain
   fixes the leak (re-test with `smoke-django`'s RSS guard).
+- **Graceful shutdown always waits the full 5 s drain when idle keep-alive
+  connections are open**, in every execution mode. Measured 2026-08-23 on
+  3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
+
+  | | idle | 8 idle keep-alive connections |
+  |---|---:|---:|
+  | `--workers 4` | 0.02 s | **5.02 s** |
+  | `--threads 4` | 0.02 s | **5.02 s** |
+  | `--threads 4 --blocking-threads 4` | 0.02 s | **5.02 s** |
+
+  This retires the suspicion that `--threads` shuts down slowly: it does not,
+  and neither does the pool. What is slow is the drain, identically
+  everywhere, because `active_count` counts a connection that is merely *open*
+  the same as one with a request in flight — so the loop waits out
+  `DRAIN_TIMEOUT_NS` for connections that are already finished. A connection
+  sitting in `READING_HEADERS` with an empty receive buffer has nothing to
+  drain and could be closed immediately, leaving the budget for connections
+  genuinely mid-request or mid-response. Worth fixing on its own, not as a
+  rider: it changes which connections are dropped at shutdown, which is what
+  `smoke-shutdown` pins. It also explains the earlier observation that two
+  `--threads 4` processes "outlived a SIGTERM + 5 s wait" — they exit at
+  5.02 s, and a 5 s wait loses that race.
 - The blocking `listen_and_serve` loop serves one accepted keep-alive
   connection exclusively until timeout or the `max_keepalive_requests` cap
   (measured p99 ~140 ms under 16 persistent connections). No in-repo app

@@ -76,7 +76,8 @@ versions may break the API**.
   of four handler threads each, proving Stage B composes with Stage A — and
   deliberately loading only half a pool, because past saturation a request
   queues for a thread, which is what a thread pool is and not what the row
-  asserts.
+  asserts. Measured at **1 ms against a 400 ms gate**, so the row fails on a
+  broken pool rather than on a busy machine.
 
 ## [0.6.0] — 2026-08-23
 
