@@ -31,6 +31,7 @@ from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.io.bytes import Bytes
 from std.memory import unsafe_memcpy
 from lightbug_http.metrics import ServerMetrics
+from lightbug_http.offload import OffloadPool, OffloadLoopState
 from lightbug_http.server import (
     BodyReadState, ConnectionProvision, ProvisionPool,
 )
@@ -67,6 +68,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     tcp_keep_alive: Bool,
     shutdown_read_fd: Int = -1,
     bus_read_fd: Int = -1,
+    offload_addr: Int = 0,
 ) raises:
     """Run the IO-multiplexed event loop.
 
@@ -75,6 +77,16 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     handed to the handler through `sse_peer_frame` so it can queue them for
     its own subscribers. The subsequent outbox drain in the same loop pass
     then pushes them to the wire.
+
+    `offload_addr`, when non-zero, is the address of a caller-owned
+    `OffloadPool` (`--blocking-threads`): this loop becomes an acceptor that
+    parks requests for a pool of handler threads instead of calling
+    `HTTPService.func` itself, and is woken by the pool's completion channel
+    the same way it is woken by a bus channel. The streaming hooks are NOT
+    offloaded and cannot be — `sse_drain_slot`, `sse_slot_disconnected` and
+    `ws_message` are called on THIS thread's handler, while `func` would run
+    against a pool thread's own handler and its own registries. The caller
+    refuses the combination rather than letting the two drift.
 
     Parameters:
         T: The HTTP service handler type.
@@ -97,6 +109,14 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     # Cross-worker broadcast channel: register this worker's receive end.
     if bus_read_fd >= 0:
         backend.try_add_read(bus_read_fd)
+
+    # `--blocking-threads`: the pool's completion channel, registered exactly
+    # as a bus channel is — a readable fd that means "somebody else finished
+    # something; go look".
+    var offload = OffloadLoopState(offload_addr, config.max_connections)
+    var offload_complete_fd = offload.pool()[].complete_read if offload.enabled() else -1
+    if offload_complete_fd >= 0:
+        backend.try_add_read(offload_complete_fd)
 
     # Application tick: one loop-wide timer driving the handler's `tick`
     # hook. Opt-in — 0 means the hook never fires and costs nothing.
@@ -189,6 +209,21 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         peer_frames[f].event_id,
                         peer_frames[f].frame,
                     )
+                continue
+
+            # --- `--blocking-threads` completion channel ---
+            # A pool thread finished a request. Edge-triggered like the bus,
+            # so drain it fully; each completion re-enters the ordinary
+            # RESPONDING write path.
+            if offload_complete_fd >= 0 and Int(backend.event_ident(i)) == offload_complete_fd:
+                _service_completions(
+                    backend, handler, config, server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset, slot_header_start,
+                    fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache, offload,
+                )
                 continue
 
             # --- Listen socket: accept new connections ---
@@ -288,7 +323,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_header_start, fd_to_slot, provision_pool,
                         active_count, metrics, slot_sse, slot_ws, slot_ws_state,
                         slot_read_armed, slot_idle_deadline,
-                        date_cache_sec, date_cache,
+                        date_cache_sec, date_cache, offload,
                     )
 
                     # If the slot is still active and in reading_headers state,
@@ -420,6 +455,27 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 if slot == UNUSED:
                     continue
 
+                # A slot whose request is in a pool thread belongs to that
+                # thread: its job storage is being written right now. Detach
+                # the connection if the client left, but hold the provision
+                # until the completion arrives (see `_close_slot`).
+                if offload.offloaded[slot]:
+                    if (backend.event_flags(i) & EV_EOF) != 0:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                            release_provision=False,
+                        )
+                    else:
+                        # A pipelined request arrived mid-flight. Both backends
+                        # are edge-triggered, so consuming this event without
+                        # reading would lose the only edge those bytes ever
+                        # get; clearing the armed flag makes `_after_send`
+                        # re-register, which regenerates readiness for them.
+                        slot_read_armed[slot] = False
+                    continue
+
                 if (backend.event_flags(i) & EV_EOF) != 0:
                     _close_slot(
                         backend, handler, slot, fd_val,
@@ -510,7 +566,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_header_start, fd_to_slot, provision_pool,
                         active_count, metrics, slot_sse, slot_ws, slot_ws_state,
                         slot_read_armed, slot_idle_deadline,
-                        date_cache_sec, date_cache,
+                        date_cache_sec, date_cache, offload,
                     )
 
                 elif provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY:
@@ -602,7 +658,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                                     fd_to_slot, provision_pool, active_count, metrics,
                                     slot_sse, slot_ws, slot_ws_state,
                                     slot_read_armed, slot_idle_deadline,
-                                    date_cache_sec, date_cache,
+                                    date_cache_sec, date_cache, offload,
                                 )
                         # ret == -2 or empty: wait for more data via EVFILT_READ
                     elif body_st.bytes_read >= body_st.content_length:
@@ -619,7 +675,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse, slot_ws, slot_ws_state,
                             slot_read_armed, slot_idle_deadline,
-                            date_cache_sec, date_cache,
+                            date_cache_sec, date_cache, offload,
                         )
 
                     # One recv per event does not drain an edge-triggered
@@ -648,6 +704,9 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     continue
 
                 if provision_pool.provisions[slot].state.kind != ConnectionState.RESPONDING:
+                    continue
+
+                if offload.offloaded[slot]:
                     continue
 
                 var remaining = len(slot_response[slot]) - slot_send_offset[slot]
@@ -716,7 +775,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             ) or (
                 slot_ws[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
             )
-            if s_idle and slot_fds[s] != UNUSED:
+            if s_idle and slot_fds[s] != UNUSED and not offload.offloaded[s]:
                 var pending = handler.sse_drain_slot(s)
                 if len(pending) > 0:
                     slot_response[s] = Bytes(Span(pending))
@@ -747,6 +806,11 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 var header_ns = config.header_read_timeout * 1_000_000_000
                 for s in range(max_conns):
                     if slot_fds[s] == UNUSED:
+                        continue
+                    # A slot with a job in a pool thread is working, not idle,
+                    # and its request belongs to another thread — closing it
+                    # here would release a provision still in use.
+                    if offload.offloaded[s]:
                         continue
                     if (
                         config.idle_timeout > 0
@@ -788,6 +852,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             except:
                 pass
 
+
             # Tell every streaming client we're going: an SSE close comment,
             # or a WebSocket close frame (1001 going away).
             for s in range(max_conns):
@@ -807,13 +872,30 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_sse, slot_ws, slot_ws_state,
                     )
 
-            # Drain in-flight: wait for active non-SSE connections (max 5s)
+            # Drain in-flight: wait for active non-SSE connections (max 5s).
+            #
+            # `offload.inflight` is in the condition as well as `active_count`,
+            # and not redundantly: a client that vanished while its request was
+            # in a pool thread has already been subtracted from `active_count`,
+            # but its slot stays borrowed until the completion arrives. Without
+            # the second term a shutdown could leave that job unclaimed.
+            # Requests still inside a pool thread are answered here rather than
+            # dropped, on the same 5 s budget — `_service_completions` runs on
+            # every pass below, before the events are dispatched.
             var drain_start = perf_counter_ns()
             comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
-            while active_count > 0:
+            while active_count > 0 or offload.inflight > 0:
                 if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
                     break
                 var drain_events = backend.wait(100)
+                _service_completions(
+                    backend, handler, config, server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset, slot_header_start,
+                    fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache, offload,
+                )
                 for di in range(drain_events):
                     if (backend.event_flags(di) & EV_ERROR) != 0:
                         continue
@@ -854,6 +936,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
     mut date_cache: String,
+    mut offload: OffloadLoopState,
 ):
     """Read and parse HTTP request headers for a connection slot.
 
@@ -1035,7 +1118,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                         fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                         slot_read_armed, slot_idle_deadline,
-                        date_cache_sec, date_cache,
+                        date_cache_sec, date_cache, offload,
                     )
                     return
                 # ret == -2: incomplete, wait for EVFILT_READ to fire again
@@ -1050,7 +1133,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     fd_to_slot, provision_pool, active_count, metrics,
                     slot_sse, slot_ws, slot_ws_state,
                     slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache,
+                    date_cache_sec, date_cache, offload,
                 )
         else:
             provision_pool.provisions[slot].state = ConnectionState.processing()
@@ -1063,7 +1146,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 fd_to_slot, provision_pool, active_count, metrics,
                 slot_sse, slot_ws, slot_ws_state,
                 slot_read_armed, slot_idle_deadline,
-                date_cache_sec, date_cache,
+                date_cache_sec, date_cache, offload,
             )
 
     # Still short of a complete body: register read interest for the rest.
@@ -1109,6 +1192,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
     mut date_cache: String,
+    mut offload: OffloadLoopState,
 ):
     """Build request, call handler, encode response, register for write."""
     var parsed = provision_pool.provisions[slot].parsed_headers.take()
@@ -1149,6 +1233,14 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     var request_method = request.method
     var request_path = request.uri.path
 
+    # Recorded before the handler runs, because under `--blocking-threads` the
+    # request itself is about to belong to another thread and neither of these
+    # can be read back at completion time.
+    offload.is_head[slot] = request_method == "HEAD"
+    if config.access_log:
+        provision_pool.provisions[slot].log_method = request_method
+        provision_pool.provisions[slot].log_path = request_path
+
     var response: HTTPResponse
 
     # Phase 4e: intercept /__metrics before user handler
@@ -1164,6 +1256,28 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         response.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
         provision_pool.provisions[slot].should_close = False
     else:
+        # `--blocking-threads`: hand the request to a pool thread and go back
+        # to `wait()`. The slot stays in PROCESSING across loop passes — the
+        # idle and header sweeps skip it, the read path refuses to touch it,
+        # and `_finish_response` resumes here when the completion arrives.
+        # This is the whole point of the mode: no other connection on this
+        # loop waits for this handler.
+        if offload.accepting():
+            ref pool = offload.pool()[]
+            pool.park_request(slot, request^)
+            if pool.submit(slot):
+                offload.offloaded[slot] = True
+                offload.inflight += 1
+                # A stale deadline from the PREVIOUS request on this
+                # connection would sweep the slot closed while a pool thread
+                # still owned it. The connection is not idle; it is working.
+                slot_idle_deadline[slot] = 0
+                return
+            # Queue full: take the request back and run it here. Degrading to
+            # the loop is exactly the behaviour of a server without the flag,
+            # and it never drops a request.
+            request = pool.unpark_request(slot)
+
         # Before hook: short-circuit if it returns a response
         var early = handler.before_request(request)
         if early:
@@ -1179,6 +1293,129 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         # After hook: add headers, log, etc.
         handler.after_response(request_method, request_path, response)
 
+    _finish_response(
+        backend, slot, fd_val, handler, config, server_address, tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset, slot_header_start,
+        fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, slot_read_armed, slot_idle_deadline,
+        date_cache_sec, date_cache, offload, response^,
+    )
+
+
+def _service_completions[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+) raises:
+    """Take every finished job off the completion channel and answer it.
+
+    Two outcomes per slot. The ordinary one hands the response to
+    `_finish_response`, which is the same code the synchronous path runs. The
+    other is a slot whose client vanished while the job was out: the fd is
+    already closed and `slot_fds[slot]` is UNUSED, so the response is dropped
+    and the provision — deliberately kept borrowed by `_close_slot` — is
+    released here, where nothing else can be holding it.
+    """
+    if not offload.enabled():
+        return
+    ref pool = offload.pool()[]
+    var finished = pool.drain_completions()
+    for f in range(len(finished)):
+        var slot = finished[f]
+        if slot < 0 or slot >= len(slot_fds):
+            continue
+        if not offload.offloaded[slot]:
+            continue
+        offload.offloaded[slot] = False
+        offload.inflight -= 1
+        if not pool.has_response(slot):
+            # A pool thread completed without parking a response. Nothing can
+            # produce this today; if it ever does, the slot is freed rather
+            # than leaked and the connection is closed rather than hung.
+            pool.discard(slot)
+            if slot_fds[slot] == UNUSED:
+                provision_pool.release(slot)
+            else:
+                _close_slot(
+                    backend, handler, slot, slot_fds[slot],
+                    slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                )
+            continue
+        var response = pool.take_response(slot)
+        # The synchronous path sets this when `func` raises; the pool thread
+        # cannot reach the provision, so it reports and the loop applies it.
+        if pool.raised(slot):
+            provision_pool.provisions[slot].should_close = True
+        if slot_fds[slot] == UNUSED:
+            # Abandoned mid-flight: the response has nowhere to go, and this
+            # is the point at which the slot is finally safe to reuse.
+            pool.discard(slot)
+            provision_pool.release(slot)
+            continue
+        _finish_response(
+            backend, slot, slot_fds[slot], handler, config, server_address,
+            tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset, slot_header_start,
+            fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state, slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload, response^,
+        )
+
+
+def _finish_response[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    slot: Int,
+    fd_val: Int,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+    var response: HTTPResponse,
+):
+    """Turn a finished response into bytes on the wire.
+
+    Split out of `_process_request` so the two ways a response can arrive —
+    the handler returning on this thread, or a `--blocking-threads` pool
+    thread completing a job several loop passes later — converge on ONE
+    implementation of the wire rules (stream flags, upgrade, keep-alive cap,
+    HEAD, Date, encode, eager send). Every response the server has ever sent
+    went through this code; the pool path did not get a second copy of it.
+    """
     if response.sse_streaming:
         slot_sse[slot] = True
         provision_pool.provisions[slot].should_close = False
@@ -1199,7 +1436,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             provision_pool.provisions[slot].should_close = True
 
     # RFC 9110 §9.3.2: HEAD response must not contain a body
-    if request_method == "HEAD":
+    if offload.is_head[slot]:
         response.body_raw = Bytes()
 
     if upgraded_ws:
@@ -1242,10 +1479,8 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     slot_response[slot] = response^.encode_into(scratch^)
     slot_send_offset[slot] = 0
 
-    # Phase 4d: populate access log fields (emitted after send)
-    if config.access_log:
-        provision_pool.provisions[slot].log_method = request_method
-        provision_pool.provisions[slot].log_path = request_path
+    # The access log's method and path were recorded in `_process_request`,
+    # before the request could leave this thread.
     provision_pool.provisions[slot].state = ConnectionState.responding()
 
     var response_len = len(slot_response[slot])
@@ -1441,6 +1676,7 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
     mut slot_ws_state: OwningList[WSState],
+    release_provision: Bool = True,
 ):
     """Close a connection and release its slot.
 
@@ -1450,6 +1686,16 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     the handler's subscriber registry from retaining a stale subscription
     (and, once the slot is reused, misdirecting queued bytes) after a client
     vanishes without the clean recv→0 the read path handles.
+
+    `release_provision=False` is the one exception, and it exists for exactly
+    one caller: a client that vanishes while its request is in a
+    `--blocking-threads` pool thread. Everything here still runs — the fd is
+    closed, the registrations dropped, the slot marked UNUSED — but the
+    provision stays borrowed, because a pool thread still holds a reference
+    into this slot's job storage. Releasing it here would hand the slot to the
+    next connection while another thread was still writing into it. The
+    completion, when it arrives, finds `slot_fds[slot] == UNUSED` and releases
+    it then.
     """
     if slot_sse[slot] or slot_ws[slot]:
         # One disconnect hook serves both stream kinds — the handler-side
@@ -1475,7 +1721,8 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
         fd_to_slot[fd_val] = UNUSED
     provision_pool.provisions[slot].prepare_for_new_request()
     provision_pool.provisions[slot].keepalive_count = 0
-    provision_pool.release(slot)
+    if release_provision:
+        provision_pool.release(slot)
     active_count -= 1
     metrics.closes_total += 1
 

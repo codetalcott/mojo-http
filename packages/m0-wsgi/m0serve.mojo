@@ -54,9 +54,12 @@ from std.sys.info import CompilationTarget
 
 from lightbug_http import Server
 from lightbug_http.broadcast import BroadcastBus
+from lightbug_http.event_loop import run_event_loop
+from lightbug_http.offload import OffloadPool
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType
 from lightbug_http.c.process import process_exit
+from lightbug_http.server_config import ServerConfig
 
 from m0_http import (
     StaticFiles, WorkerSupervisor, install_shutdown_signals, exit_worker,
@@ -66,7 +69,7 @@ from m0_http.config import AppConfig
 from m0_http.multiworker import SharedAtomics
 from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, usage,
-    ThreadedServer, require_free_threading,
+    ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
     M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP,
 )
 
@@ -202,6 +205,21 @@ def main() raises:
         print(usage(), flush=True)
         _fail(conflict.value(), EXIT_USAGE)
 
+    # `--blocking-threads` moves `func` onto a pool thread, but the streaming
+    # hooks — `sse_drain_slot`, `sse_slot_disconnected`, `ws_message` — are
+    # called on the LOOP's handler, which owns a different `SSERegistry` and a
+    # different `WSHub`. A stream opened by a pool thread's handler would be
+    # invisible to the loop that has to feed it. Refused rather than half-wired,
+    # which is the same call `--threads` makes about a GIL-enabled interpreter.
+    if opts.blocking_threads > 0 and opts.realtime:
+        print(usage(), flush=True)
+        _fail(
+            "--blocking-threads and --realtime are mutually exclusive:"
+            " the streaming hooks run on the event loop's handler, and a pool"
+            " thread's handler has its own registries. Drop one.",
+            EXIT_USAGE,
+        )
+
     # Bind before forking; every worker accepts from this one socket.
     var listener = ListenConfig().listen(opts.address())
 
@@ -284,13 +302,27 @@ def main() raises:
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
         + " (workers=" + String(opts.workers) + ")"
+        + (" blocking-threads=" + String(opts.blocking_threads) if opts.blocking_threads > 0 else "")
         + (" realtime" if opts.realtime else "")
         + (" reload" if opts.reload else ""),
         flush=True,
     )
-    var server = Server(opts.server_config(AppConfig(default_port=DEFAULT_PORT)))
+    var server_config = opts.server_config(AppConfig(default_port=DEFAULT_PORT))
     # After fork_all — each worker arms its own pipe.
     var shutdown_fd = install_shutdown_signals()
+
+    if opts.blocking_threads > 0:
+        # Stage B under prefork: this process gets one acceptor loop and a
+        # pool. The threads are spawned AFTER `fork_all()` returned and after
+        # the `WSGIApp` above made this process's first Python call, so the
+        # prefork rule is untouched — a forked child that then makes threads is
+        # fine; a threaded parent that then forks is not.
+        _serve_pooled(opts, listener, handler, server_config, shutdown_fd)
+        if supervised:
+            exit_worker()
+        return
+
+    var server = Server(server_config^)
     # `bus.read_fd` answers -1 off the flag, which is what "no bus" means to
     # the loop. Passed unconditionally under `--realtime`, single worker
     # included: draining our own channel IS local delivery, because `m0pub`
@@ -303,6 +335,63 @@ def main() raises:
     )
     if supervised:
         exit_worker()
+
+
+def _serve_pooled(
+    opts: ServeOptions,
+    listener: NoTLSListener[NetworkType.tcp4],
+    mut handler: WSGIHandler,
+    config: ServerConfig,
+    shutdown_fd: Int,
+) raises:
+    """`--blocking-threads N` without `--threads`: one loop, one pool.
+
+    `Server.serve_nonblocking` is bypassed for one reason — the backend has to
+    be a `DetachingBackend`. A loop that sits in `kevent`/`epoll_wait` while
+    attached to the interpreter holds a thread state the pool threads need,
+    and under a GIL-enabled CPython that is not a slowdown but a deadlock: the
+    pool would never run at all. The wrapper is two calls per loop *pass*.
+
+    No bus channel is passed, because `--realtime` and `--blocking-threads`
+    are refused together and the bus exists only for `--realtime`.
+    """
+    var pool = OffloadPool(config.max_connections)
+    var pool_threads = BlockingPool(opts.blocking_threads)
+    var opts_ptr = Pointer(to=opts)
+    var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
+    pool_threads.start[WSGIHandler](pool.addr(), opts_addr)
+
+    comptime if CompilationTarget.is_macos():
+        from lightbug_http.c.kqueue_backend import KqueueBackend
+        var backend = DetachingBackend[KqueueBackend](KqueueBackend())
+        run_event_loop(
+            listener.socket.fd, handler, backend, config, opts.address(), True,
+            shutdown_fd, -1, pool.addr(),
+        )
+    else:
+        from lightbug_http.c.epoll_backend import EpollBackend
+        var backend = DetachingBackend[EpollBackend](EpollBackend())
+        run_event_loop(
+            listener.socket.fd, handler, backend, config, opts.address(), True,
+            shutdown_fd, -1, pool.addr(),
+        )
+
+    pool.stop(opts.blocking_threads)
+    # Detached across the join, for the reason the pool body details: a thread
+    # finishing its last job has to attach, and it cannot while this thread
+    # holds a state and blocks in `pthread_join`.
+    ref cpy = Python().cpython()
+    var join_ts = cpy.PyEval_SaveThread()
+    var failed = pool_threads.join()
+    cpy.PyEval_RestoreThread(join_ts)
+    if failed > 0:
+        print(
+            String(failed) + " blocking thread(s) did not exit cleanly",
+            flush=True,
+        )
+    # `pool` must outlive the join: a thread still finishing a job writes into
+    # it. This use is what stops destroy-at-last-use freeing it above.
+    _ = pool.capacity
 
 
 def _serve_threaded(
@@ -348,6 +437,7 @@ def _serve_threaded(
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
         + " (threads=" + String(opts.threads) + ")"
+        + (" blocking-threads=" + String(opts.blocking_threads) if opts.blocking_threads > 0 else "")
         + (" realtime" if opts.realtime else "")
         + (" reload" if opts.reload else ""),
         flush=True,
@@ -357,6 +447,7 @@ def _serve_threaded(
         opts.address(),
         listener.socket.fd.value,
     )
+    server.blocking_threads = opts.blocking_threads
     for i in range(bus.size()):
         server.bus_read_fds.append(bus.read_fd(i))
     var failed = server.serve[WSGIHandler](opts.threads, opts_addr, shutdown_fd)

@@ -19,6 +19,12 @@
 #   p99 barely moves as slow load is added
 #     -> N loops already isolate well enough; Stage B stays unbuilt
 #
+# Stage B is now built (`--blocking-threads N`), so this script is no longer
+# a decision but a REGRESSION GATE: the `+bt=N` rows must stay flat under slow
+# load the way granian's row does, and the rows without the flag must keep
+# showing the degradation — a control that stops failing is a control that
+# stopped measuring anything.
+#
 # Foreground: wrk on `/` (fast). Background: SLOW concurrent requests to
 # `/slow?ms=$HOLD`, re-issued for the whole run. Baseline is the same wrk run
 # with zero slow requests, so each row is its own control.
@@ -117,6 +123,15 @@ for round in $(seq 1 $ROUNDS); do
     : > "$SRVLOG"
     bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --threads $n > "$SRVLOG" 2>&1 & pid=$!
     sweep "r$round --threads $n"; stop
+    # The same two configurations with a handler pool behind each loop. Same
+    # loop count, same machine, same minute: the flag is the only variable, so
+    # the pair of rows is the measurement.
+    : > "$SRVLOG"
+    bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --workers $n --blocking-threads $n > "$SRVLOG" 2>&1 & pid=$!
+    sweep "r$round --workers $n +bt=$n"; stop
+    : > "$SRVLOG"
+    bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --threads $n --blocking-threads $n > "$SRVLOG" 2>&1 & pid=$!
+    sweep "r$round --threads $n +bt=$n"; stop
     if [ -x .venv/bin/granian ]; then
       : > "$SRVLOG"
       ( cd apps/django_wsgi && exec ../../.venv/bin/granian --interface wsgi --workers 1 \

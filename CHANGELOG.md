@@ -5,6 +5,79 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+### Added
+
+- **`m0serve --blocking-threads N` / `M0_BLOCKING_THREADS` — Stage B, the
+  acceptor and its handler pool.** The event loop stops calling
+  `HTTPService.func`. It parses the request, hands it to one of N handler
+  threads, and returns to `wait()`; the thread calls the handler and pokes
+  the loop back, which encodes and writes the response through the same
+  `RESPONDING` path every other response takes. **One slow view no longer
+  stalls the connections pinned behind it**: on `apps/wsgi_bare`, a fast
+  request answered in **1 ms** with two 1.5 s views in flight, against
+  **2.7 s** for the identical server without the flag — the same code, the
+  same load, the flag as the only variable.
+
+  This is the failure the mixed-workload benchmark measured and Stage A did
+  not touch (fast-request p99 1.6 ms → ~194 ms, ~120x, under `--workers`
+  *and* `--threads` alike), because a keep-alive connection belongs to the
+  loop that accepted it in both modes and adding loops does not change that.
+  Granian's `--blocking-threads` is the same architecture and the reason the
+  design had a working reference.
+
+  Composes with both execution modes — `--workers W` gives W processes of N
+  handler threads, `--threads T` gives T loops of N each, one pool per loop
+  because a job names a slot and a slot means nothing outside the loop whose
+  provision pool it indexes. Off by default: it costs N threads and N
+  handlers' worth of per-thread state per loop, and a server whose views are
+  all fast gains nothing.
+
+  Unlike `--threads`, it is **not** refused on a GIL-enabled interpreter. A
+  pool under the GIL is what gunicorn's `--threads` is: CPU-bound views
+  serialize, but a view waiting on a database, a socket or a sleep releases
+  the GIL and the isolation is real — which is the workload the mode exists
+  for. It **is** refused together with `--realtime`, because the streaming
+  hooks (`sse_drain_slot`, `sse_slot_disconnected`, `ws_message`) are called
+  on the loop's handler while `func` would run against a pool thread's own
+  registries; half-wiring that would fail quietly.
+
+- **`lightbug_http.offload`** — the queue itself, and it knows nothing about
+  Python. Two `SOCK_DGRAM` socketpairs (submit, and a completion channel the
+  loop registers exactly as it registers a `BroadcastBus` channel) plus
+  per-slot request/response storage. Datagrams because they preserve message
+  boundaries: N threads receiving on one channel each dequeue one whole job,
+  so the kernel is the queue and there is no mutex to write. Each handoff is
+  published by the socketpair syscall that names it, which is the whole
+  memory-ordering argument. `m0_wsgi.blocking_pool` is the thread side —
+  the only half that attaches to an interpreter, which is what keeps
+  libpython off everything else's link line.
+
+  Three things a slot in flight is *not*: touched by the loop, swept by the
+  idle or header timeout, or recycled. A client that disconnects mid-job
+  detaches the fd but leaves the provision borrowed until the completion
+  arrives, so a late completion has nowhere wrong to land — a generation
+  counter would detect that race, holding the slot removes it. Past 256
+  jobs in flight the loop runs requests inline rather than queueing them,
+  which is a bound on what the channels must hold and degrades to exactly
+  the behaviour of a server without the flag.
+
+- **`c/socketpair.mojo`**, extracted from `broadcast.mojo` — one binding, two
+  callers, and one deprecated-`alloc` warning site instead of two. See
+  [NOTICE](NOTICE).
+
+- **`poe smoke-blocking-threads`.** Phase 1 runs everywhere: the `--realtime`
+  refusal, the isolation measurement, four clients abandoned mid-job leaving
+  every slot recovered, HEAD through the pool (the loop has to remember it —
+  by completion time the request belongs to another thread), a raising
+  handler, and SIGTERM answering an in-flight request rather than dropping
+  it. Phase 2 needs the GIL off and is `py-canary`'s new phase F: two loops
+  of four handler threads each, proving Stage B composes with Stage A — and
+  deliberately loading only half a pool, because past saturation a request
+  queues for a thread, which is what a thread pool is and not what the row
+  asserts.
+
 ## [0.6.0] — 2026-08-23
 
 The release that finished moving the WSGI examples off their own
@@ -14,8 +87,8 @@ The release that finished moving the WSGI examples off their own
 `serialize_request` — 77% of the bridge's per-request cost — went from 48 µs
 to 0.44 µs, taking `apps/wsgi_bare` from 12,289 to 28,911 rps. The
 benchmarking also settled what comes next: one slow view raises fast-request
-p99 by ~120x in *both* execution modes, which is the failure Stage B exists
-to remove.
+p99 by ~120x in *both* execution modes, which is the failure Stage B was
+built to remove.
 
 ### Added
 

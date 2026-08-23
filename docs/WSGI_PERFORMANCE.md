@@ -366,9 +366,11 @@ Both rounds shown. What it says:
 **Stage B is justified.** Not by a tail that a fast route failed to
 produce, but by the failure it was actually designed for, measured directly
 — and with a working reference implementation of the same design showing
-what it buys.
+what it buys. **It has since been built** (`--blocking-threads N`); the next
+section is the same measurement with the flag on, and this one is now its
+control.
 
-### Two harness bugs, recorded because each produced a confident wrong answer
+### Three harness bugs, recorded because each produced a confident wrong answer
 
 - **`seq 1 0` prints "1" and "0" on BSD/macOS.** `start_slow 0` therefore
   launched *two* slow loops and the baseline silently carried the same load
@@ -381,6 +383,64 @@ what it buys.
   transient, which is a 200 ms hole indistinguishable from a slow-view tail.
   One warm server per configuration fixes it; the script now also greps the
   supervisor log for crash/respawn, for the same reason.
+- **Forgetting the post-swap rebuild reports as `never healthy`, on every
+  row.** "Reproducing" below already says to rebuild `bin/m0serve` inside the
+  swap; what is worth recording is what it looks like when you do not. The
+  binary dies in `dyld` before reaching `main`, so the benchmark sees a port
+  that never answers and prints `never healthy` — which reads like a port
+  conflict or a bad flag, and the actual message
+  (`Library not loaded: @rpath/libKGENCompilerRTShared.dylib`) is in a server
+  log nobody opens when the row simply says "unhealthy". `py-canary` is immune
+  by accident: every one of its `poe smoke-*` tasks declares `build-serve` as a
+  dependency, so the rebuild happens whether or not anyone remembered it. A
+  hand-driven benchmark script has no such dependency and must do it itself.
+
+## Stage B, measured: the pool removes it
+
+The section above is the *before*. This is the same script, the same
+`/slow?ms=200`, and the same three slow levels, with `--blocking-threads 4`
+added to each configuration — the flag as the only variable, both halves in
+one run so the control has to keep failing for the treatment to mean
+anything.
+
+**Different machine from the table above** (an M4, 4P+6E, macOS, 3.14.7t, two
+rounds) so the absolutes are not comparable to the Linux-container rows; the
+rows here are comparable to *each other*, which is the whole design of the
+run. `granian` is absent because it is not in this repo's lock file and a
+swapped venv therefore has none — its flat row is recorded in the section
+above and was the reference the design copied, not part of this gate.
+
+Fast-route p99, by how many slow requests are in flight (both rounds):
+
+| configuration | slow=0 | slow=1 | slow=2 |
+|---------------|-------:|-------:|-------:|
+| `--workers 4` | 0.99 / 1.15 ms | **190.4 / 190.7 ms** | **196.1 / 195.8 ms** |
+| `--threads 4` | 1.14 / 1.16 ms | **194.5 / 195.6 ms** | **200.6 / 200.6 ms** |
+| `--workers 4 --blocking-threads 4` | 2.51 / 2.58 ms | 2.29 / 2.38 ms | 2.30 / 2.44 ms |
+| `--threads 4 --blocking-threads 4` | 1.78 / 2.12 ms | 1.78 / 1.83 ms | 1.88 / 1.85 ms |
+
+- **The pool removes the failure, in both execution modes.** p99 does not
+  move as slow load is added — it is the same 2 ms with two slow views in
+  flight as with none. The rows without the flag, measured minutes apart on
+  the same machine, still climb to ~195 ms. That is the gate this work was
+  given, and it is the shape granian's `--blocking-threads` row has.
+- **p90 is the clearer tell.** Without the pool it goes 0.70 ms → 78 ms →
+  133 ms: by two slow views, more than a tenth of all requests are stopped
+  dead, which is what "the connections pinned to the busy loop" means
+  arithmetically. With the pool it stays ~1 ms throughout.
+- **It costs throughput, and the cost is not the same in both modes.** At
+  slow=0, two-round means: prefork gives up **7%** (34.9k → 32.3k rps) and
+  threads **23%** (32.7k → 25.7k). The extra hop is one datagram each way per
+  request, which is the 7%; the rest is oversubscription — `--threads 4
+  --blocking-threads 4` is four loops *plus* sixteen handler threads on four
+  performance cores, where the prefork row is four processes of five threads
+  each and the OS scheduler is not asked to keep twenty runnable threads on
+  four cores. Size the pool to the box, not to the loop count.
+- **So the flag is a trade, and that is why it is off by default**: a few
+  percent of peak throughput, and a p99 that stops depending on what other
+  requests are doing. An application whose views are uniformly fast should
+  not take it; one with a single slow report, an upstream call or a large
+  query should.
 
 ## What the server-layer work bought the WSGI path
 
@@ -485,6 +545,14 @@ For the layer split and the mixed-workload row, the same setup plus
 `scripts/bench_mixed_workload.sh`. The layer split also needs `apps/hello`
 built inside the swap (`mojo build ... apps/hello/server.mojo`), for the
 same `@rpath` reason as `bin/m0serve`.
+
+`bench_mixed_workload.sh` is now a **regression gate** rather than a
+decision: its `+bt=N` rows must stay flat under slow load, and its rows
+without the flag must keep showing the ~120x degradation. A control that
+stops failing has stopped measuring anything, which is why both halves are
+in one script and one run. `granian` is not in this repo's lock file, so a
+swapped venv has none and its row is skipped; that row is a reference, not
+the gate.
 
 **Do not run any `uv run` command while swapped** — not even `uv run mojo
 run` on an unrelated scratch file. It re-syncs the venv back to 3.13

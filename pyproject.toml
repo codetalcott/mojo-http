@@ -1687,6 +1687,125 @@ cmd = "bin/m0serve flaskproj.wsgi:application --app-dir apps/flask_wsgi --port 8
 #
 # Skips cleanly when flask is absent: it is a dev dependency for this example
 # and nothing in packages/ imports it.
+[tool.poe.tasks.smoke-blocking-threads]
+help = "Stage B: a slow view must not stall the connections pinned behind it"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare"
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -f pool.log
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f pool.log ]; then echo '=== pool.log ==='; cat pool.log; fi
+  exit 1
+}
+
+# The refusal first, because it must be quick and it costs nothing.
+# `--realtime` calls the streaming hooks on the LOOP's handler while `func`
+# would run on a pool thread's, with its own registries.
+"$srv" $SPEC --port 8099 --blocking-threads 4 --realtime > pool.log 2>&1; rc=$?
+[ "$rc" = "2" ] || fail "--blocking-threads with --realtime: exit $rc, want 2"
+grep -q 'mutually exclusive' pool.log || fail 'the refusal does not say what is wrong'
+
+# The measurement this whole mode exists for. `apps/wsgi_bare`'s /slow sleeps
+# 1.5 s, so two of them in flight is 3 s of handler time. A loop that runs
+# handlers itself answers / after both; a loop with a pool answers it now.
+#
+# The gate is deliberately loose (250 ms against a 1.5 s hold) because CI
+# machines are shared and slow: the failure this catches is 1500 ms and up,
+# and anything in between would be a flake rather than a finding.
+"$srv" $SPEC --port 8099 --blocking-threads 4 > pool.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8099/ > /dev/null \
+  || fail 'never became healthy'
+
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+slow1=$!
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+slow2=$!
+sleep 0.4
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 http://127.0.0.1:8099/)
+# `wait $slow1 $slow2`, never a bare `wait`: the server is a background job of
+# this shell too, and waiting on it waits forever.
+wait $slow1 $slow2
+ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
+[ "$ms" -lt 250 ] || fail "a fast request waited ${ms}ms behind two slow views; the pool is not isolating them"
+echo "fast request served in ${ms}ms with two 1.5s views in flight"
+
+# The abandoned-slot path: a client that vanishes mid-job must not leak the
+# provision it borrowed. Every slot has to come back once the jobs finish.
+before=$(curl -s http://127.0.0.1:8099/ -o /dev/null -w '%{http_code}')
+[ "$before" = "200" ] || fail "server not serving before the abandon test"
+for i in 1 2 3 4; do curl -s -o /dev/null --max-time 0.3 http://127.0.0.1:8099/slow 2>/dev/null & done
+sleep 4
+curl -s --fail --max-time 10 http://127.0.0.1:8099/ > /dev/null \
+  || fail 'server stopped serving after four clients vanished mid-request'
+echo "four abandoned in-flight requests left the server healthy"
+
+# HEAD, which the pool path has to remember on the loop's behalf: by the time
+# the response comes back the request belongs to another thread.
+len=$(curl -s -I --max-time 10 http://127.0.0.1:8099/ | tr -d '\\r' | awk -F': ' '/^content-length:/ {print $2}')
+[ "$len" = "13" ] || fail "HEAD lost its content-length through the pool: got '$len'"
+body=$(curl -s -I --max-time 10 http://127.0.0.1:8099/ | tail -1 | tr -d '\\r')
+[ -z "$body" ] || fail "HEAD returned a body through the pool: '$body'"
+
+# A handler that raises must still answer 500 and close, not hang the slot.
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8099/start-twice)
+[ -n "$code" ] || fail 'a raising handler produced no response at all'
+curl -s --fail --max-time 10 http://127.0.0.1:8099/ > /dev/null \
+  || fail 'server died after a raising handler'
+
+# SIGTERM with a job in flight: the in-flight request is answered, not dropped.
+curl -s --max-time 20 -o slowbody.txt -w '%{http_code}' http://127.0.0.1:8099/slow > slowcode.txt &
+inflight=$!
+sleep 0.4
+kill -TERM $pid
+wait $inflight
+wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM with a job in flight: exit $rc, want 0"
+grep -q 'slow done' slowbody.txt || fail 'a request in flight at SIGTERM was dropped'
+[ "$(cat slowcode.txt)" = "200" ] || fail "in-flight request at SIGTERM answered $(cat slowcode.txt), want 200"
+rm -f slowbody.txt slowcode.txt
+echo "smoke-blocking-threads OK (phase 1: prefork, 4 handler threads)"
+
+# Phase 2: the pool in front of `--threads N`, which needs free-threaded
+# CPython for the loops themselves. Each loop must build its OWN pool -- a job
+# names a slot, and a slot means nothing outside the loop whose provision pool
+# it indexes -- so a failure to do that shows up as a stalled fast request.
+gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
+[ "$gil_off" = "1" ] || exit 0
+
+"$srv" $SPEC --port 8099 --threads 2 --blocking-threads 4 > pool.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8099/ > /dev/null \
+  || fail 'never became healthy under --threads 2 --blocking-threads 4'
+
+# TWO slow views against four handler threads PER LOOP. Deliberately not
+# enough to saturate a pool: past that a request queues for a thread, which is
+# what a thread pool is for and not what this asserts. Two is also the number
+# that survives the worst placement -- both landing on the same loop still
+# leaves that loop two free threads -- so the row is not a coin flip on which
+# loop accepted what.
+for i in 1 2; do curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow & done
+sleep 0.4
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 http://127.0.0.1:8099/)
+wait $(jobs -p | grep -v "^$pid$") 2>/dev/null || true
+ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
+[ "$ms" -lt 400 ] || fail "under --threads, a fast request waited ${ms}ms behind two slow views"
+echo "threads+pool: fast request served in ${ms}ms with two 1.5s views in flight"
+
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --threads 2 --blocking-threads 4: exit $rc, want 0"
+n=$(grep -c 'exited cleanly' pool.log)
+[ "$n" = "2" ] || fail "expected 2 'exited cleanly' lines from the loops, saw $n"
+echo "smoke-blocking-threads OK (phase 2: 2 loops x 2 handler threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
+"""
+
 [tool.poe.tasks.smoke-flask]
 help = "Run the WSGI framework contract against Flask (skips if flask is absent)"
 deps = ["build-serve"]
@@ -2470,6 +2589,13 @@ echo "D smoke-threads ($(grep -o 'threads seen: .*' py-canary.log | tail -1)): O
 phase=E-smoke-reload
 poe smoke-reload >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): hot reload (see py-canary.log)"; exit 1; }
 echo "E smoke-reload (1 worker, 2 workers, and --reload in front of --threads): OK" >> "$report"
+
+# Stage B composed with Stage A. Phase 1 of smoke-blocking-threads runs on
+# every CI machine; phase 2 -- a pool per loop under --threads N -- only runs
+# where the loops themselves can, which is here.
+phase=F-smoke-blocking-threads
+poe smoke-blocking-threads >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the blocking-threads pool (see py-canary.log)"; exit 1; }
+echo "F smoke-blocking-threads ($(grep -o 'threads+pool: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 echo ''
 echo "PY-CANARY PASSED against $(.venv/bin/python3 --version 2>&1) (free-threaded)"

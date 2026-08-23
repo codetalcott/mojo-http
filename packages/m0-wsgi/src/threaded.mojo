@@ -66,7 +66,11 @@ from lightbug_http import HTTPService
 from lightbug_http.c.process import process_exit
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.event_loop_backend import EventLoopBackend
+from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig
+
+from .blocking_pool import BlockingPool
+from .thread_handler import ThreadContext, ThreadHandler
 
 from m0_http import (
     ThreadSet, ThreadBlock, ShutdownFanout, dup_fd, read_one_byte_blocking,
@@ -157,35 +161,6 @@ def require_free_threading(threads: Int) raises:
         process_exit(EXIT_NOT_FREE_THREADED)
 
 
-trait ThreadHandler(HTTPService, Movable, Deinitable):
-    """An `HTTPService` that can construct itself on a serving thread.
-
-    `make` is called ON each thread, inside its attached region, with the
-    thread's index and the address the app passed to `ThreadedServer.serve`
-    (its own spec). Everything the handler owns — the `WSGIApp`, its
-    bridge — is therefore created and destroyed on the thread that uses it.
-    A trait rather than a function parameter because Mojo 1.0 cannot
-    materialize a function-parameterized `def` as a runtime value (the
-    address a pthread needs); a type parameter it can.
-    """
-
-    @staticmethod
-    def make(ctx: ThreadContext) raises -> Self:
-        ...
-
-
-struct ThreadContext(Copyable, Movable):
-    """What a handler factory is handed: which thread, and the app's spec."""
-
-    var index: Int
-    var user: Int
-    """The address passed to `ThreadedServer.serve` — the app's own spec."""
-
-    def __init__(out self, index: Int, user: Int):
-        self.index = index
-        self.user = user
-
-
 struct DetachingBackend[B: EventLoopBackend & Movable & Deinitable](EventLoopBackend, Movable):
     """An event-loop backend whose `wait` releases the thread state.
 
@@ -274,17 +249,27 @@ struct ThreadedServer(Movable):
     var bus_read_fds: List[Int]
     """Per-thread bus channels for in-process fan-out; empty = no bus."""
 
+    var blocking_threads: Int
+    """Handler threads EACH loop spawns (`--blocking-threads`); 0 = off.
+
+    Per loop rather than per process: a job names a slot, and a slot means
+    nothing outside the loop whose provision pool it indexes. `--threads 4
+    --blocking-threads 4` is therefore four pools of four, not one of four.
+    """
+
     def __init__(out self, var config: ServerConfig, var address: String, listen_fd: Int):
         self.config = config^
         self.address = address^
         self.listen_fd = listen_fd
         self.bus_read_fds = List[Int]()
+        self.blocking_threads = 0
 
     def __init__(out self, *, deinit move: Self):
         self.config = move.config^
         self.address = move.address^
         self.listen_fd = move.listen_fd
         self.bus_read_fds = move.bus_read_fds^
+        self.blocking_threads = move.blocking_threads
 
     def serve[
         T: ThreadHandler
@@ -353,20 +338,51 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var handler = T.make(ctx)
     print("thread[" + String(ctx.index) + "] serving", flush=True)
     var listen = FileDescriptor(block.get(BLK_LISTEN_FD))
+
+    # `--blocking-threads`: this loop's own queue and its own handler threads.
+    # Built before the loop because the threads hold the pool's address for
+    # their whole lives, and retired after it, so an in-flight job always has
+    # somewhere to land.
+    var blocking = server[].blocking_threads
+    var pool = OffloadPool(server[].config.max_connections if blocking > 0 else 0)
+    var pool_addr = pool.addr() if blocking > 0 else 0
+    var pool_threads = BlockingPool(blocking)
+    if blocking > 0:
+        pool_threads.start[T](pool_addr, ctx.user)
+
     comptime if CompilationTarget.is_macos():
         from lightbug_http.c.kqueue_backend import KqueueBackend
         var backend = DetachingBackend[KqueueBackend](KqueueBackend())
         run_event_loop(
             listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), block.get(BLK_BUS_FD),
+            block.get(BLK_SHUTDOWN_FD), block.get(BLK_BUS_FD), pool_addr,
         )
     else:
         from lightbug_http.c.epoll_backend import EpollBackend
         var backend = DetachingBackend[EpollBackend](EpollBackend())
         run_event_loop(
             listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), block.get(BLK_BUS_FD),
+            block.get(BLK_SHUTDOWN_FD), block.get(BLK_BUS_FD), pool_addr,
         )
+
+    if blocking > 0:
+        pool.stop(blocking)
+        # Detached across the join: a pool thread finishing its last job needs
+        # to attach, and it cannot while this thread holds a state and blocks.
+        ref cpy = Python().cpython()
+        var join_ts = cpy.PyEval_SaveThread()
+        var failed = pool_threads.join()
+        cpy.PyEval_RestoreThread(join_ts)
+        if failed > 0:
+            print(
+                "thread[" + String(ctx.index) + "] " + String(failed)
+                + " blocking thread(s) did not exit cleanly",
+                flush=True,
+            )
+    # `pool` must outlive the join — a thread still finishing a job writes
+    # into it. This use is what keeps destroy-at-last-use from freeing it
+    # somewhere above.
+    _ = pool.capacity
 
 
 def _thread_body[T: ThreadHandler](arg: Int) -> Int:

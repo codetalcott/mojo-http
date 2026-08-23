@@ -13,9 +13,9 @@ from lightbug_http.broadcast import (
     BroadcastBus, BUS_MAX_FRAME,
     encode_bus_frame, decode_bus_frame, drain_bus_channel,
     publish_to_channels,
-    _socketpair,
 )
 from lightbug_http.c.kqueue import set_nonblocking, is_nonblocking
+from lightbug_http.c.socketpair import socketpair_dgram
 
 from src.multiworker import SharedAtomics, shared_fetch_add, shared_load, shared_store
 
@@ -127,7 +127,7 @@ def test_set_nonblocking_takes_effect() raises:
     and it probes via F_GETFL, which never had the bug, rather than by
     recv-blocking, which would hang the suite instead of failing it.
     """
-    var pair = _socketpair()
+    var pair = socketpair_dgram()
     var a = FileDescriptor(pair[0])
     assert_false(is_nonblocking(a))
     set_nonblocking(a)
