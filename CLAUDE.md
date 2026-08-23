@@ -112,8 +112,10 @@ pointer origin, and Mojo-side callers erase the origin explicitly — see
 `m0-wsgi/m0serve.mojo` is the second package-root entry file, for the same
 reasons: it is the `m0serve` CLI binary (`poe build-serve` → `bin/m0serve`),
 `precompile src` must never see it, and it imports `m0_wsgi` through the
-`.mojoc` rather than `src.*`. The three WSGI example apps are Python-only
-projects it serves; there is no `server.mojo` in them to edit.
+`.mojoc` rather than `src.*`. All four WSGI example apps — `django_realtime`
+included, since `--realtime` moved its hold machinery into `WSGIHandler` —
+are Python-only projects it serves; there is no `server.mojo` in them to
+edit.
 
 ## The lightbug fork
 

@@ -36,11 +36,14 @@ never by returning from `main` — the runtime's teardown reaches into
 libdispatch, which is unusable in a process forked without exec.
 """
 
-from std.os.path import isdir
+from std.os import getenv, setenv
+from std.os.path import isdir, isfile
 from std.python import Python
 from std.sys.arg import argv
+from std.sys.info import CompilationTarget
 
 from lightbug_http import Server
+from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType
 from lightbug_http.c.process import process_exit
@@ -50,6 +53,7 @@ from m0_http import (
     threads_conflict,
 )
 from m0_http.config import AppConfig
+from m0_http.multiworker import SharedAtomics
 from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, usage,
     ThreadedServer, require_free_threading,
@@ -67,6 +71,76 @@ def _fail(message: String, code: Int):
     """
     print("m0serve: " + message, flush=True)
     process_exit(code)
+
+
+def _discover_core_lib() -> String:
+    """Where `libm0core` is, for `m0pub`'s `ctypes` lookup. Empty = not found.
+
+    Only consulted under `--realtime`, and only when `M0_CORE_LIB` is not
+    already set. The library holds `m0_shared_fetch_add`, which is how a
+    Python publisher takes a globally unique event id from the shared slot —
+    Python has no atomic read-modify-write over a raw address, and a racy one
+    would hand two workers the same id. Without it publishing still works;
+    frames go out unnumbered, which costs duplicate suppression on reconnect.
+
+    Two candidates, most specific first: beside the binary (how a built
+    `bin/m0serve` ships), then `poe build-ffi`'s output relative to the
+    working directory (how the repo runs). `m0pub` has the same fallbacks,
+    so an unset variable is not a failure — exporting it just means the
+    lookup cannot be defeated by the working directory.
+    """
+    var ext = String(".dylib") if CompilationTarget.is_macos() else String(".so")
+    var candidates = List[String]()
+    var exe = String(argv()[0])
+    var slash = exe.rfind("/")
+    if slash >= 0:
+        candidates.append(
+            String(StringSlice(exe)[byte = :slash]) + "/libm0core" + ext
+        )
+    candidates.append(String("packages/m0-core/libm0core") + ext)
+    for i in range(len(candidates)):
+        if isfile(candidates[i]):
+            return candidates[i]
+    return String("")
+
+
+def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
+    """Everything `--realtime` must create BEFORE the fork and before Python.
+
+    Returns the bus (size 0, and therefore inert, when the mode is off).
+
+    Three exports, and the ordering rule is the same for all of them: they
+    must precede the fork so every worker's environment agrees, and they must
+    precede any Python touch because CPython snapshots the C environ at
+    interpreter init. Under `--threads` there is no fork, but the second half
+    still binds — the interpreter comes up inside `require_free_threading`.
+
+    `channels` is `--workers` under prefork and `--threads` under the threaded
+    mode. The bus does not care which: a `SOCK_DGRAM` socketpair delivers the
+    same whether the peer draining it is another process or another thread.
+    """
+    if not opts.realtime:
+        return BroadcastBus(0)
+
+    var bus = BroadcastBus(channels)
+    var fds_csv = String("")
+    for i in range(len(bus.write_fds)):
+        if i > 0:
+            fds_csv += ","
+        fds_csv += String(bus.write_fds[i])
+    _ = setenv("M0_BUS_WRITE_FDS", fds_csv, True)
+
+    # One MAP_SHARED slot: the event id every publish takes a number from.
+    # Shared memory across processes, and plain memory across threads.
+    var shared = SharedAtomics(1)
+    _ = setenv("M0_SHARED_ID_ADDR", String(shared.addr(0)), True)
+
+    if getenv("M0_CORE_LIB", "").byte_length() == 0:
+        var lib = _discover_core_lib()
+        if lib.byte_length() > 0:
+            _ = setenv("M0_CORE_LIB", lib, True)
+
+    return bus^
 
 
 def main() raises:
@@ -104,6 +178,11 @@ def main() raises:
     # Bind before forking; every worker accepts from this one socket.
     var listener = ListenConfig().listen(opts.address())
 
+    # Then everything `--realtime` shares, still before the fork and still
+    # before the first Python call. Inert without the flag.
+    var channels = opts.threads if opts.threads > 1 else opts.workers
+    var bus = _prepare_realtime(opts, channels)
+
     if opts.threads > 1:
         # The listener is borrowed, not reduced to its fd: its last use would
         # otherwise be that read, and Mojo's destroy-at-last-use would close
@@ -111,15 +190,17 @@ def main() raises:
         # on whatever descriptor number the kernel recycled, and four loops
         # watch a pipe. Prefork never hits this because `serve_nonblocking`
         # uses the listener itself, later.
-        _serve_threaded(opts, listener)
+        _serve_threaded(opts, listener, bus)
         return
 
     # Fork before touching Python — see the module docstring. The parent
     # stays inside fork_all() supervising; only workers return here.
     var multiprocess = opts.workers > 1
+    var worker = 0
     if multiprocess:
         var supervisor = WorkerSupervisor(opts.workers)
         supervisor.fork_all()
+        worker = supervisor.worker_index
 
     # The first Python call in this process.
     var app: WSGIApp
@@ -140,23 +221,35 @@ def main() raises:
         )
         return
 
-    var handler = WSGIHandler(app^, WSGIHandler.mounts_for(opts))
+    var handler = WSGIHandler.for_options(app^, opts)
 
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
-        + " (workers=" + String(opts.workers) + ")",
+        + " (workers=" + String(opts.workers) + ")"
+        + (" realtime" if opts.realtime else ""),
         flush=True,
     )
     var server = Server(opts.server_config(AppConfig(default_port=DEFAULT_PORT)))
     # After fork_all — each worker arms its own pipe.
     var shutdown_fd = install_shutdown_signals()
-    server.serve_nonblocking(listener, handler, shutdown_read_fd=shutdown_fd)
+    # `bus.read_fd` answers -1 off the flag, which is what "no bus" means to
+    # the loop. Passed unconditionally under `--realtime`, single worker
+    # included: draining our own channel IS local delivery, because `m0pub`
+    # writes every channel including the publisher's. There is no second
+    # delivery path to keep in sync with this one.
+    server.serve_nonblocking(
+        listener, handler,
+        shutdown_read_fd=shutdown_fd,
+        bus_read_fd=bus.read_fd(worker),
+    )
     if multiprocess:
         exit_worker()
 
 
 def _serve_threaded(
-    opts: ServeOptions, listener: NoTLSListener[NetworkType.tcp4]
+    opts: ServeOptions,
+    listener: NoTLSListener[NetworkType.tcp4],
+    bus: BroadcastBus,
 ) raises:
     """`--threads N`: N event loops on N threads, one interpreter.
 
@@ -169,6 +262,13 @@ def _serve_threaded(
     `ThreadedServer.serve` detach this thread and spawn the loops, each of
     which builds its own `WSGIHandler` from `opts` via `WSGIHandler.make`.
     No fork, so `main` returns normally.
+
+    Under `--realtime` each thread also drains its own bus channel, exactly
+    as a worker drains its own. `bus` was built on the main thread before
+    any of this, so `M0_BUS_WRITE_FDS` is already in the environment the
+    interpreter is about to snapshot, and `m0pub` reaches N threads with the
+    same N `os.write`s it used to reach N processes — it never learns which
+    it is talking to.
     """
     require_free_threading(opts.threads)
     if opts.app_dir.byte_length() > 0:
@@ -188,7 +288,8 @@ def _serve_threaded(
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
-        + " (threads=" + String(opts.threads) + ")",
+        + " (threads=" + String(opts.threads) + ")"
+        + (" realtime" if opts.realtime else ""),
         flush=True,
     )
     var server = ThreadedServer(
@@ -196,6 +297,8 @@ def _serve_threaded(
         opts.address(),
         listener.socket.fd.value,
     )
+    for i in range(bus.size()):
+        server.bus_read_fds.append(bus.read_fd(i))
     var failed = server.serve[WSGIHandler](opts.threads, opts_addr, shutdown_fd)
     # `listener` must outlive `serve`; this use is what keeps it alive.
     _ = listener.socket.fd.value

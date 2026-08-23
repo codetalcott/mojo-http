@@ -5,6 +5,48 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+### Added
+
+- **`m0serve --realtime` — the hold machinery behind a flag.**
+  `apps/django_realtime` was the last example carrying its own
+  `server.mojo`; everything in it now lives in `WSGIHandler`. The flag turns
+  on two `SSERegistry`s (streams and sockets, holding disjoint slots),
+  `take_hold` on every application response, the WebSocket handshake a
+  buffered WSGI response cannot produce, `ws_message_request` for inbound
+  frames, and — created before the fork and before the first Python call —
+  the `BroadcastBus` and the `SharedAtomics` id slot with their
+  `M0_BUS_WRITE_FDS` / `M0_SHARED_ID_ADDR` exports. `M0_CORE_LIB` is
+  *discovered* rather than demanded: beside the binary first, then
+  `poe build-ffi`'s output, and left alone if already set. Off by default,
+  because it costs two slot arrays and because it makes `M0-Hold` a header
+  the server consumes rather than one an application may emit for its own
+  reasons.
+- **`--realtime` works under `--threads N`.** The bus is built on the main
+  thread before spawning and loop `i` drains `read_fd(i)`, exactly as worker
+  `i` does. A `SOCK_DGRAM` socketpair does not care whether the peer is a
+  process or a thread, so `m0pub.py` and `sse_peer_frame` are unchanged —
+  the publisher reaches N threads with the N `os.write`s it used to reach N
+  processes and never learns which it is talking to. `smoke-django-realtime`
+  phase 4 pins it where the GIL is off (`py-canary` C3): six streams spread
+  over four loops, one publish from one thread's Django reaching all six
+  with numbered ids, then a clean four-loop drain on SIGTERM.
+- **`--health-path PATH`** answers `PATH` in Mojo with a liveness JSON —
+  under `--realtime`, with the live `subscribers` and `sockets` counts, which
+  is how the smokes assert that a vanished client was actually unsubscribed.
+  Opt-in, and separate from `--realtime`, for the mirror-image reason: an
+  application may already route `/health`, and a server that took the path
+  silently would shadow it.
+
+### Removed
+
+- `apps/django_realtime/server.mojo`, and with it `M0_DJANGO_PROJECT`. The
+  row keeps `m0pub.py`, `djangoproj/`, `realtime_probe.py` and `static/`, and
+  is served by `bin/m0serve djangoproj.wsgi:application --app-dir
+  apps/django_realtime --realtime --health-path /health`. No WSGI row has a
+  `server.mojo` any more.
+
 ## [0.5.0] — 2026-08-22
 
 The release the server grew a command line and a second way to be
