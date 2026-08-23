@@ -252,8 +252,30 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   outbox drain does. ~8 touchpoints in `event_loop.mojo`. Stage A's
   benchmark row exists ([WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md), 3.14.7t):
   threads at throughput parity with prefork at ~60% of its RSS, ~3.5x
-  gunicorn on the same interpreter; the keep-alive tail did not excite under
-  `ab`, so a `wrk` run is the measurement that would gate Stage B.
+  gunicorn on the same interpreter.
+
+  **The `wrk` run that was to gate Stage B has happened, and the answer is
+  no-go.** Three rounds, keep-alive only, on 3.14.7t: keep-alive p99 is
+  1.6–2.9 ms across both modes and both sizes, with one excursion in
+  seventeen valid rows (`--workers 4`, 52 ms p99) that did not recur and
+  that appeared in *prefork* — the mode that already has N accept queues,
+  which is the opposite of what connection pinning predicts. Threads and
+  prefork are indistinguishable on the tail and at throughput parity under
+  a second tool.
+
+  The reason is sharper than "the tail did not appear". Stage B is for
+  per-request balancing **and slow-view isolation**, and a hello-route
+  benchmark cannot exercise the second at all — there is never a slow
+  request for a fast one to be stuck behind. So the gate is now a
+  **mixed-workload run**: a deliberately slow view alongside fast ones on
+  the same loop, measuring whether fast requests suffer behind slow ones.
+  Until that exists and shows they do, the ~8 touchpoints stay unwritten.
+
+  The same table's more actionable finding: **Granian 2.8.1 is 1.4–2.0x
+  faster than either mode** on the same interpreter, serving a
+  byte-identical response, with a tighter p99. Same process model as
+  `--threads`, so the headroom is in the per-request path rather than the
+  concurrency architecture — better-evidenced than Stage B, and cheaper.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it

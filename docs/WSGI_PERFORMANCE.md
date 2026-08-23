@@ -124,10 +124,106 @@ What the table says, and what it does not:
   accepted it, in both modes. The honest statement is that this run did
   not excite the tail, not that the tail is gone; Stage B (ROADMAP.md)
   remains the fix for it, and a `wrk` run on the same box is the next
-  measurement worth making.
+  measurement worth making. **That run has now happened — the next section
+  is the one that settles it, and it revises this bullet's conclusion.**
 - **Not in the table:** 3.13 vs 3.14t. Every row is 3.14.7t; the 3.13
   numbers above were a different day, tool and container and do not
   chain to these.
+
+## The keep-alive tail under wrk, and the Stage B decision
+
+`ab` could not settle the tail question, because `ab` is the tool that
+failed to provoke it. This is the `wrk` twin: same box (M4, 4P+6E), same
+**CPython 3.14.7t with the GIL off**, same `apps/django_wsgi` hello route,
+same twelve-header browser request. `wrk -t2 -c16 -d10s --latency`, three
+rounds, keep-alive only. `scripts/bench_wsgi_tail_ka.sh` is the run.
+
+Requests/sec, with the latency distribution wrk reports:
+
+| config | round 1 | round 2 | round 3 |
+|--------|--------:|--------:|--------:|
+| `--workers 2` | *(row lost — see below)* | 14,087 · p99 **5.74** ms · max 46.0 | 14,978 · p99 **2.22** ms · max 9.9 |
+| `--threads 2` | 14,814 · p99 **2.21** ms · max 13.1 | 14,023 · p99 **2.89** ms · max 18.5 | 14,887 · p99 **2.19** ms · max 12.2 |
+| `--workers 4` | 24,087 · p99 **1.61** ms · max 10.3 | 18,614 · p99 **52.21** ms · max 184.6 | 20,829 · p99 **1.75** ms · max 10.6 |
+| `--threads 4` | 22,909 · p99 **1.65** ms · max 14.2 | 20,786 · p99 **1.82** ms · max 12.5 | 20,201 · p99 **2.02** ms · max 12.6 |
+| granian `bt=2` | 28,446 · p99 0.94 ms | 28,042 · p99 1.03 ms | 27,199 · p99 1.08 ms |
+| granian `bt=4` | 31,967 · p99 1.01 ms | 30,534 · p99 0.94 ms | 29,921 · p99 0.96 ms |
+
+Granian 2.8.1, one process, N blocking threads, on the same interpreter.
+Byte parity was checked before timing: both servers return the identical
+30-byte response.
+
+### What it says
+
+- **The 84 ms tail did not reproduce as a property of the design.** Typical
+  keep-alive p99 is **1.6–2.9 ms** across both modes and both sizes.
+- **One excursion in seventeen valid rows**: `--workers 4`, round 2, p99
+  52 ms and max 185 ms. It did not recur in the other two rounds of that
+  configuration, and `--threads` never produced one in five rows. So the
+  tail is real and rare — and it appeared in **prefork**, the mode that
+  already has N processes with N accept queues. That is the opposite of
+  what "connections are pinned to one loop" predicts.
+- **Threads and prefork are indistinguishable on the tail**, and at
+  throughput parity under `wrk` too (0.95–1.0x), which confirms the `ab`
+  row with a second tool.
+- **Granian is 1.4–2.0x faster than either mode**, with a consistently
+  tighter p99, on the same free-threaded interpreter and a byte-identical
+  response. That gap is the honest headline of this table.
+
+### Stage B: no-go, for a sharper reason than "the tail did not appear"
+
+Stage B (ROADMAP.md) is an acceptor loop feeding a Python thread pool with
+deferred responses — ~8 touchpoints in `event_loop.mojo`. It exists for two
+things: **per-request balancing** and **slow-view isolation**.
+
+This benchmark cannot speak to the second at all. Its view is trivial, so
+there is never a slow request for a fast one to be stuck behind — which is
+precisely the failure Stage B removes. And on the first, which it *can*
+measure, there is no systematic tail to fix: p99 sits at 1.6–2.9 ms, and
+the single excursion was in the mode Stage B would not change.
+
+So Stage B is **not justified by this measurement**, and it is not merely
+un-provoked: the measurement that would justify it is a different one. The
+gate is a **mixed-workload run** — a deliberately slow view alongside fast
+ones on the same loop — where a keep-alive connection parked behind a slow
+request is the thing being measured. Until that run exists and shows fast
+requests suffering behind slow ones, the ~8 touchpoints stay unwritten.
+
+The more actionable finding is Granian's 1.4–2.0x. Same interpreter, same
+process model as `--threads`, same bytes on the wire — so the headroom is
+in the per-request path, not in the concurrency architecture. That is a
+better-evidenced target than Stage B, and a cheaper one.
+
+### A methodology trap, recorded because it nearly produced a wrong answer
+
+The first `wrk` table (`scripts/bench_wsgi_tail.sh`, which measures
+keep-alive *and* close-per-request in each row) reported a clean 8–10x tail
+gap between threads and prefork — `--threads` p99 17–22 ms against
+prefork's 2.3 ms — and five rows with no numbers at all. Both were the
+same artifact.
+
+macOS's ephemeral port range is 49152–65535: **16,384 ports**. A
+close-per-request run at ~16k rps for 10 s opens ~160k connections, and
+every one lands in `TIME_WAIT` for the 15 s MSL. Within one row the range
+is exhausted, so the *next* row's keep-alive run cannot open even its 16
+connections — and every keep-alive row except the very first ran
+immediately after a close run. The rows that reported nothing were
+`connect 16` failures; the rows that reported a tail were measuring port
+pressure, not the server.
+
+`bench_wsgi_tail_ka.sh` is the fix: keep-alive only, a cooldown between
+rows, a `TIME_WAIT` drain gate before the first row, and — most
+importantly — **wrk's `Socket errors` line is reported in every row**, with
+a `<-- MEASUREMENT FAILED (ports)` marker, so a failed measurement can
+never again be read as a slow server.
+
+The same artifact is why **gunicorn is not in this table**. Its sync worker
+answers `Connection: close` on every response, so a keep-alive benchmark
+against it is pure connection churn and it exhausts the port range faster
+than anything else — the first run scored it at 81 and 0.20 rps. Measured
+fresh, it does 3,263 rps, consistent with the `ab` table's 3,748. A server
+that cannot speak keep-alive does not belong in a keep-alive tail table;
+the `ab -k` row above is the right place for that comparison.
 
 ## What the server-layer work bought the WSGI path
 
@@ -223,7 +319,17 @@ For the threads-vs-prefork row: `uv run poe py314t-try`, export
 it was built in, so rebuild inside the swap), then
 `scripts/bench_wsgi_modes.sh`; `uv run poe py314t-restore` afterwards. Bare
 `.venv/bin/poe`, never `uv run`, while swapped — a `uv run` re-syncs the venv
-back to 3.13 mid-run.
+back to 3.13 mid-run. **Rebuild `bin/m0serve` again after restoring**: the
+binary left behind by the swap has an `@rpath` into a venv that no longer
+exists and aborts on start.
+
+For the tail row, the same setup plus `granian`, then
+`scripts/bench_wsgi_tail_ka.sh`. Use that one, not `bench_wsgi_tail.sh`, for
+any keep-alive question: the close-per-request runs in the latter exhaust
+the ephemeral port range and poison every row after the first. Never edit
+either script while it is running — bash reads a script by byte offset, and
+a mid-run edit shifts it (that is what produced the stray syntax error at
+the end of the recorded run, after all its rows had been written).
 
 No poe task, because gunicorn is deliberately not a dependency of this repo.
 The shape of a run:

@@ -55,6 +55,20 @@ versions may break the API**.
   bytecode means there is never a cache to go stale. `smoke-reload` pins it
   by editing same-length versions in the same second, and asserts no
   `__pycache__` appears.
+- **The `wrk` keep-alive tail row, and the Stage B go/no-go**
+  (`docs/WSGI_PERFORMANCE.md`, `scripts/bench_wsgi_tail.sh` +
+  `scripts/bench_wsgi_tail_ka.sh`). Three rounds on 3.14.7t:
+  keep-alive p99 is 1.6–2.9 ms across `--workers` and `--threads` at both
+  2 and 4, so the 84 ms tail does not reproduce as a property of the
+  design; the single excursion in seventeen valid rows was in *prefork*.
+  **Stage B is a no-go on this evidence**, and the gate is restated as a
+  mixed-workload run, because a hello-route benchmark cannot exercise the
+  slow-view isolation Stage B is half about. Granian 2.8.1 measured at
+  1.4–2.0x either mode on the same interpreter with a byte-identical
+  response — recorded as the better-evidenced target. Also recorded: the
+  ephemeral-port exhaustion that made the first `wrk` table report a
+  spurious 8–10x threads-vs-prefork tail gap and five empty rows, and why
+  gunicorn cannot appear in a keep-alive table at all.
 - **`scheme_separator`** (`lightbug_http/uri.mojo`, so also in
   [NOTICE](NOTICE)). See Fixed.
 - **`MtimeScanner`** (`m0-http`): the change detector, suffix-filtered with
