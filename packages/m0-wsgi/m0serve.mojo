@@ -376,13 +376,12 @@ def _serve_pooled(
             shutdown_fd, -1, pool.addr(),
         )
 
-    pool.stop(opts.blocking_threads)
-    # Detached across the join, for the reason the pool body details: a thread
+    # Detached across it, for the reason the pool body details: a thread
     # finishing its last job has to attach, and it cannot while this thread
     # holds a state and blocks in `pthread_join`.
     ref cpy = Python().cpython()
     var join_ts = cpy.PyEval_SaveThread()
-    var failed = pool_threads.join()
+    var failed = pool_threads.stop_and_join(pool)
     cpy.PyEval_RestoreThread(join_ts)
     if failed > 0:
         print(

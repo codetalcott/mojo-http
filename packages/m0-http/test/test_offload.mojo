@@ -114,15 +114,18 @@ def test_stop_poisons_every_waiting_thread() raises:
     """`stop(n)` must release exactly `n` blocked receivers.
 
     A thread only ever leaves `next_job` on a negative slot, so one pill per
-    thread is what makes `BlockingPool.join` terminate rather than hang. The
-    close that follows is the backstop, and it is why a fourth read here also
-    reports stop rather than blocking forever.
+    thread is the entire reason `BlockingPool.stop_and_join` terminates.
+
+    Exactly `n` reads, never `n + 1`. An earlier version of this test read a
+    fourth time to prove the close was a backstop — it is not, and the fourth
+    read blocked forever on Linux while passing on macOS, which cost a
+    20-minute CI timeout. `next_job` has no timeout by design, so a test that
+    reads more pills than were sent cannot fail; it can only hang.
     """
     var pool = OffloadPool(4)
     pool.stop(3)
     for _ in range(3):
         assert_equal(pool.next_job(), -1)
-    assert_equal(pool.next_job(), -1)
 
 
 def test_a_disabled_pool_builds_and_is_inert() raises:

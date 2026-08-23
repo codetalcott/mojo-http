@@ -366,12 +366,11 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         )
 
     if blocking > 0:
-        pool.stop(blocking)
-        # Detached across the join: a pool thread finishing its last job needs
-        # to attach, and it cannot while this thread holds a state and blocks.
+        # Detached across it: a pool thread finishing its last job needs to
+        # attach, and it cannot while this thread holds a state and blocks.
         ref cpy = Python().cpython()
         var join_ts = cpy.PyEval_SaveThread()
-        var failed = pool_threads.join()
+        var failed = pool_threads.stop_and_join(pool)
         cpy.PyEval_RestoreThread(join_ts)
         if failed > 0:
             print(

@@ -296,12 +296,22 @@ struct OffloadPool(Movable):
         self.errored[slot] = False
 
     def stop(mut self, threads: Int):
-        """Retire the pool: one poison job per thread, then close the queue.
+        """Retire the pool: exactly one poison job per thread, then close.
 
-        A poison datagram rather than relying on EOF alone, because a blocking
-        `recv` woken by a closed peer is the sort of thing that differs
-        between kernels; `_POISON` is unambiguous on both. The close follows
-        so a thread that somehow missed its pill still ends.
+        **The pills are the whole mechanism, and `threads` must equal the
+        number of receivers.** `next_job` blocks, and a thread that gets no
+        pill blocks forever — which is a hung `pthread_join`, not a slow one.
+        `BlockingPool.stop_and_join` is what makes the count structural rather
+        than a coincidence between two call sites; prefer it to calling this
+        directly.
+
+        The close that follows is NOT a backstop, whatever it looks like. An
+        earlier version of this docstring claimed it was, and the claim cost a
+        20-minute CI timeout: on Linux, closing the write end of a connected
+        AF_UNIX SOCK_DGRAM pair does not wake a peer already blocked in
+        `recv`, so a thread that missed its pill stays blocked. macOS returns
+        0 and looks fine, which is exactly how the wrong belief survived
+        local testing. The close exists to release the descriptor.
         """
         var pill = _encode_job(_POISON)
         for _ in range(threads):
@@ -323,10 +333,12 @@ struct OffloadPool(Movable):
     def next_job(self) -> Int:
         """Block until a job arrives. Returns the slot, or -1 to stop.
 
-        BLOCKS. A pool thread must detach from the interpreter around this
-        call — an attached thread asleep in a syscall stalls every other
-        thread's stop-the-world pause. `m0_wsgi`'s pool body is the only
-        caller and does exactly that.
+        BLOCKS, and there is no timeout: the only thing that ever wakes it is
+        a datagram. A pool thread must therefore detach from the interpreter
+        around this call — an attached thread asleep in a syscall stalls every
+        other thread's stop-the-world pause — and `stop` must send it a pill,
+        because closing the queue will not (see `stop`). `m0_wsgi`'s pool body
+        is the only caller and does both.
         """
         var buf = List[UInt8](capacity=_JOB_BYTES)
         for _ in range(_JOB_BYTES):

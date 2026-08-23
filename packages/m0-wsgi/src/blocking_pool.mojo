@@ -68,11 +68,13 @@ struct BlockingPool(Movable):
         var threads = BlockingPool(count)
         threads.start[MyHandler](pool.addr(), spec_addr)
         run_event_loop(..., offload_addr=pool.addr())   # with a DetachingBackend
-        pool.stop(count)                                # poison + close
-        threads.join()
+        threads.stop_and_join(pool)
 
-    `start` must precede the loop and `stop` must precede `join`, because a
-    thread only leaves `next_job` when the queue is poisoned or closed.
+    `stop_and_join` rather than a separate `OffloadPool.stop(n)` + `join()`:
+    the pill count must equal the thread count exactly, because `next_job`
+    blocks with no timeout and a thread that gets no pill hangs the join
+    forever. Keeping both under one method makes that a property of the type
+    rather than an agreement between two call sites that could drift.
     """
 
     var count: Int
@@ -101,14 +103,24 @@ struct BlockingPool(Movable):
             self._set.spawn(i, body_addr)
         self._started = True
 
-    def join(mut self) raises -> Int:
-        """Wait for every thread; returns how many did not end cleanly.
+    def stop_and_join(mut self, mut pool: OffloadPool) raises -> Int:
+        """Poison the queue with one pill per thread, then join. Returns the
+        count that did not end cleanly.
 
-        The caller must have poisoned the queue (`OffloadPool.stop`) first —
-        this blocks, and a thread still parked in `recv` never returns.
+        BLOCKS — detach from the interpreter around it, because a pool thread
+        finishing its last job has to attach and cannot while this thread
+        holds a state and sleeps in `pthread_join`.
+
+        The two halves are one method on purpose: `OffloadPool.stop(n)` sends
+        `n` pills, `next_job` has no timeout, and a thread that receives no
+        pill blocks forever. Closing the queue does not rescue it — on Linux a
+        closed peer does not wake a blocked `recv` on a connected SOCK_DGRAM
+        pair (see `OffloadPool.stop`). So the only safe `n` is `self.count`,
+        and this is where that is guaranteed.
         """
         if not self._started:
             return 0
+        pool.stop(self.count)
         self._set.join_all()
         var failed = 0
         for i in range(self.count):

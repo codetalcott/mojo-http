@@ -54,6 +54,19 @@ versions may break the API**.
   the only half that attaches to an interpreter, which is what keeps
   libpython off everything else's link line.
 
+  **Retiring the pool is one method, `BlockingPool.stop_and_join`, and that
+  is a safety property rather than tidiness.** `next_job` blocks with no
+  timeout, so the poison-pill count must equal the thread count exactly: a
+  thread that receives no pill blocks forever, which is a hung
+  `pthread_join`. Closing the queue does not rescue it — on Linux, closing
+  the write end of a connected `AF_UNIX` `SOCK_DGRAM` pair does **not** wake
+  a peer already blocked in `recv`, while macOS returns 0 and looks fine.
+  That asymmetry cost a 20-minute CI timeout: `test_offload.mojo` read one
+  pill more than `stop` had sent, to "prove" the close was a backstop, and
+  passed locally while hanging ubuntu. The claim is gone from the code and
+  the count is now a property of the type instead of an agreement between
+  call sites.
+
   Three things a slot in flight is *not*: touched by the loop, swept by the
   idle or header timeout, or recycled. A client that disconnects mid-job
   detaches the fd but leaves the provision borrowed until the completion
