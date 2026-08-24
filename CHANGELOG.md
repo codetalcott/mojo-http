@@ -9,6 +9,27 @@ versions may break the API**.
 
 ### Changed
 
+- **The WSGI response path was never measured, and was 10x the request
+  path. `build_response` now costs 3.30 µs instead of 22.97** for a
+  six-header Django-shaped response; `serve()` 25.51 → 5.65 µs. End to end
+  on `apps/wsgi_bare` — one response header, the *least* favourable shape —
+  **49,517 → 56,896 rps (+14.5%)**, p50 291 → 252 µs.
+
+  The cause was not the Python boundary. Splitting it put the
+  `PythonObject` header read at 1.27 µs (5%) and `name.lower()` at
+  **19.36 µs (84%)** — a Unicode-lowercased copy of every header name,
+  allocated solely to compare against one constant. `name_is` was already in
+  the repo doing this correctly for the identical Set-Cookie dispatch on the
+  request side, and its docstring already named the mistake. The fix is that
+  one call.
+
+  `scripts/bench_bridge_parts.mojo` now covers both directions, at one, six,
+  and six-plus-two-cookie response headers, so this cannot go unpriced
+  again. `name_is` and `ascii_lower_byte` gained unit tests
+  (`test_headers.mojo`) — they had none despite being the whole of header
+  case folding, now in both directions; the boundary test was verified to
+  fail when the `A`–`Z` range is widened by one byte.
+
 - **The Granian layer split is re-measured on 3.14.7t, and the gap it was
   written to explain is spent.** After five bridge changes, the row that has
   driven every roadmap priority since it was taken: **at four workers

@@ -1,5 +1,12 @@
 """WSGI `(status, headers, body)` → `HTTPResponse`.
 
+**This is the response half of the bridge, and it was unmeasured until
+2026-08-24.** `scripts/bench_bridge_parts.mojo` split the request side five
+times over while stopping short of this file, so a six-header Django-shaped
+response cost **22.97 µs here against 2.18 µs for the entire request side** —
+ten times the thing that had been optimised five times. See
+docs/WSGI_PERFORMANCE.md; the bench now covers both directions.
+
 The header half is where the interesting bug lives. `Headers` is a
 `Dict[String, String]`, so writing `Set-Cookie` through it keeps only the last
 one — and Django routinely sets two (`sessionid` and `csrftoken`) on the same
@@ -11,6 +18,7 @@ asserts the count.
 from std.python import PythonObject
 
 from lightbug_http import HTTPResponse, Headers, HeaderKey
+from lightbug_http.header import name_is
 from lightbug_http.cookie import ResponseCookieJar
 
 from .bridge import PyBridge
@@ -47,7 +55,14 @@ def build_response(
     for pair in headers:
         var name = String(py=pair[0])
         var value = String(py=pair[1])
-        if name.lower() == HeaderKey.SET_COOKIE:
+        # `name_is`, not `name.lower() == ...`. The lowercase copy this used
+        # to allocate — once per header, purely to test one constant — was
+        # measured at **3.2 µs per header**, 84% of everything this function
+        # did for a six-header Django response. The parser on the REQUEST
+        # side learned this already; `name_is`' own docstring names the
+        # mistake, and header.mojo dispatches the identical Set-Cookie test
+        # through it. This is the same fix, applied in the other direction.
+        if name_is(name.as_bytes(), HeaderKey.SET_COOKIE):
             cookie_lines.append(value)
         else:
             out_headers[name] = value

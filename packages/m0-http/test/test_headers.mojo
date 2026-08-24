@@ -10,7 +10,14 @@ case folding, last-value-wins on duplicates, index shifting after a `pop`,
 and reading a value without materializing a String.
 """
 
-from lightbug_http.header import Headers, Header, HeaderKey, parse_request_headers
+from lightbug_http.header import (
+    Headers,
+    Header,
+    HeaderKey,
+    ascii_lower_byte,
+    name_is,
+    parse_request_headers,
+)
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 
@@ -531,6 +538,69 @@ def test_no_cookie_header_leaves_none_behind() raises:
     var parsed = parse_request_headers(raw.as_bytes())
 
     assert_false("cookie" in parsed.headers)
+
+
+# --- name_is / ascii_lower_byte ----------------------------------------------
+#
+# These had no direct tests despite being the whole of header-name case
+# folding, and they now have two callers rather than one: the request parser
+# dispatches Set-Cookie through `name_is`, and `m0-wsgi`'s `build_response`
+# does the same on the way back out (where it replaced a `.lower()` that cost
+# 3.2 us per header). A silent break here would misroute Set-Cookie in both
+# directions at once.
+
+
+def test_name_is_matches_regardless_of_case() raises:
+    """The point of the function: no allocation, no case sensitivity."""
+    assert_true(name_is("set-cookie".as_bytes(), HeaderKey.SET_COOKIE))
+    assert_true(name_is("Set-Cookie".as_bytes(), HeaderKey.SET_COOKIE))
+    assert_true(name_is("SET-COOKIE".as_bytes(), HeaderKey.SET_COOKIE))
+    assert_true(name_is("sEt-CoOkIe".as_bytes(), HeaderKey.SET_COOKIE))
+
+
+def test_name_is_rejects_near_misses() raises:
+    """Length and content both matter — a prefix is not a match."""
+    assert_false(name_is("set-cooki".as_bytes(), HeaderKey.SET_COOKIE))
+    assert_false(name_is("set-cookies".as_bytes(), HeaderKey.SET_COOKIE))
+    assert_false(name_is("".as_bytes(), HeaderKey.SET_COOKIE))
+    assert_false(name_is("cookie".as_bytes(), HeaderKey.SET_COOKIE))
+    assert_false(name_is("xet-cookie".as_bytes(), HeaderKey.SET_COOKIE))
+
+
+def test_ascii_lower_byte_boundaries() raises:
+    """The classic off-by-one: `@` and `[` bracket A-Z and must NOT fold.
+
+    `ascii_lower_byte` ORs in 0x20 for bytes in [0x41, 0x5A]. Widen that
+    range by one in either direction and `@` (0x40) becomes a backtick,
+    `[` (0x5B) becomes `{` — which no test above would notice, because
+    neither character appears in a header name anyone writes.
+    """
+    assert_equal(Int(ascii_lower_byte(0x40)), 0x40)  # @  just below 'A'
+    assert_equal(Int(ascii_lower_byte(0x41)), 0x61)  # A -> a
+    assert_equal(Int(ascii_lower_byte(0x5A)), 0x7A)  # Z -> z
+    assert_equal(Int(ascii_lower_byte(0x5B)), 0x5B)  # [  just above 'Z'
+
+
+def test_ascii_lower_byte_leaves_non_letters_alone() raises:
+    """Digits, hyphens and already-lowercase bytes pass through unchanged."""
+    for b in ["-", "0", "9", "_", "a", "z", "~"]:
+        var raw = b.as_bytes()[0]
+        assert_equal(Int(ascii_lower_byte(raw)), Int(raw))
+
+
+def test_name_is_is_ascii_only_by_design() raises:
+    """A byte above 0x7F is passed through, not Unicode-folded.
+
+    RFC 9110 section 5.1 defines field names as ASCII tokens, so this is
+    correct rather than a limitation — and it is the one way `name_is`
+    differs from the `String.lower()` it replaced in `build_response`.
+    """
+    var high = List[UInt8](capacity=2)
+    high.append(0xC3)
+    high.append(0x89)  # U+00C9, 'E' with acute, in UTF-8
+    assert_equal(Int(ascii_lower_byte(high[0])), 0xC3)
+    assert_equal(Int(ascii_lower_byte(high[1])), 0x89)
+    assert_false(name_is(Span(high), HeaderKey.SET_COOKIE))
 
 
 def main() raises:
