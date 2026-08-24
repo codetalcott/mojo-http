@@ -44,6 +44,30 @@ async def application(scope, receive, send):
                 return
         return
 
+    if scope["type"] == "websocket":
+        # The echo server: accept, prefix-echo text, byte-echo binary,
+        # close(1000) on "bye", reject any path but /ws.
+        if scope["path"] != "/ws":
+            await send({"type": "websocket.close"})
+            return
+        await send({"type": "websocket.accept"})
+        while True:
+            message = await receive()
+            t = message["type"]
+            if t == "websocket.disconnect":
+                return
+            if t == "websocket.receive":
+                text = message.get("text")
+                if text == "bye":
+                    await send({"type": "websocket.close", "code": 1000})
+                    return
+                if text is not None:
+                    await send({"type": "websocket.send",
+                                "text": "echo:" + text})
+                else:
+                    await send({"type": "websocket.send",
+                                "bytes": bytes(message.get("bytes") or b"")})
+
     assert scope["type"] == "http"
     path = scope["path"]
 

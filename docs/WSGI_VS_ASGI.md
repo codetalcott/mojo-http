@@ -474,14 +474,27 @@ that make it correct, each pinned by `smoke-asgi`:
   The buffered escape hatch (`--blocking-threads N` with ASGI) keeps its
   10 s watchdog refusal.
 
-**Phase 3b — next: `websocket` scopes.** The same seam: `websocket.accept`
-becomes the approve/perform split M0-Hold uses (the executor holds the
-original request, so it performs the RFC 6455 handshake and releases the
-101 through the completion channel), outbound frames ride the chunk
-channel into the `sockets` registry, and inbound `ws_message` payloads
-travel as tagged submit-channel datagrams into per-slot queues behind
-`receive()`. The disconnect tag from 3a already carries the
-`websocket.disconnect` half.
+**Phase 3b — shipped: `websocket` scopes.** The same seam, and the same
+correctness arguments. The executor probes each parked request with
+`websocket_upgrade` (the loop's own validator); a handshake gets a
+`websocket` scope, and the ready 101 is **held** until the application's
+`websocket.accept` — the approve/perform split M0-Hold uses, because the
+accept value comes from the original request's key. A begin frame anchors
+the FIFO before the 101 completes (exactly as a stream's head), outbound
+`websocket.send` frames are RFC 6455-encoded executor-side and ride the
+chunk channel into the loop handler's `sockets` registry, and
+`websocket.close` queues the close frame plus the end marker so the loop
+closes after both land. Inbound messages the loop's parser assembled are
+forwarded by `ws_message` as tagged submit-channel datagrams into
+per-slot queues behind `receive()` (bounded by `max_message_size`, under
+the channel's frame cap); 3a's disconnect tag doubles as
+`websocket.disconnect` and cancels the task. An app that returns without
+accepting — or that raised first — resolves its held 101 as a 403, so no
+slot leaks. `smoke-asgi` drives a raw RFC 6455 probe (verified accept,
+both echo directions, close(1000) through to the FIN, then an abrupt
+vanish after the 101); `smoke-fasthtml` proves `app.ws` end to end.
+**FastHTML's full surface — pages, SSE EventStream, WebSockets — now runs
+on `m0serve` with zero configuration.**
 
 The M0-Hold/GRIP path is untouched by all three phases and remains the
 recommended realtime surface for synchronous WSGI codebases.

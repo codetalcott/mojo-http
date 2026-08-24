@@ -309,7 +309,18 @@ struct WSGIHandler(ThreadHandler):
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         if self.sockets.is_slot_streaming(slot):
-            return self.sockets.drain(slot)
+            var ws_out = self.sockets.drain(slot)
+            if (
+                slot < len(self.asgi_done)
+                and self.asgi_done[slot]
+                and not self.sockets.has_pending(slot)
+            ):
+                # The app closed the WebSocket and these bytes end with
+                # its close frame: unsubscribing lets the loop close the
+                # connection once they land.
+                self.sockets.unsubscribe(slot)
+                self.asgi_done[slot] = False
+            return ws_out^
         var out = self.streams.drain(slot)
         if (
             slot < len(self.asgi_done)
@@ -334,6 +345,7 @@ struct WSGIHandler(ThreadHandler):
         # the executor still has a task for?
         var was_asgi = self.asgi_notify_fd >= 0 and (
             self.streams.is_slot_streaming(slot)
+            or self.sockets.is_slot_streaming(slot)
             or (slot < len(self.asgi_done) and self.asgi_done[slot])
         )
         self.streams.unsubscribe(slot)
@@ -378,6 +390,27 @@ struct WSGIHandler(ThreadHandler):
                         self.asgi_done[slot] = True
                 else:
                     self.streams.unsubscribe(slot)
+            elif ub[1] == UInt8(ord("B")):
+                # A WebSocket's begin: sent before its held 101 completes,
+                # same FIFO anchor as a stream's begin — but into the
+                # sockets registry.
+                self.sockets.subscribe(slot, url, NO_EVENT_ID)
+                if slot < len(self.asgi_done):
+                    self.asgi_done[slot] = False
+            elif ub[1] == UInt8(ord("w")):
+                # An outbound WS frame, already RFC 6455-encoded by the
+                # executor. Subscribed slots only, same recycled-slot
+                # safety rule as 's'.
+                if self.sockets.is_slot_streaming(slot):
+                    self.sockets.queue_frame(slot, NO_EVENT_ID, frame)
+            elif ub[1] == UInt8(ord("x")):
+                # WebSocket end (the close frame is already queued ahead
+                # of this on the same channel).
+                if self.sockets.has_pending(slot):
+                    if slot < len(self.asgi_done):
+                        self.asgi_done[slot] = True
+                else:
+                    self.sockets.unsubscribe(slot)
             return
         # Every published GRIP frame arrives here — from peer workers or
         # threads AND from this one's own application, because `m0pub`
@@ -398,10 +431,16 @@ struct WSGIHandler(ThreadHandler):
         pass
 
     def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        # An inbound message, handed to a plain synchronous view as a POST.
-        # This runs ON the event loop thread, so it costs exactly what any
-        # other view costs — the hold pattern removes the *connection* cost
-        # from Python, not the *request* cost.
+        # Executor mode: the message belongs to the app's own
+        # `websocket.receive` loop — forward it to the executor thread as
+        # a tagged datagram and never enter Python on the loop thread.
+        if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
+            _send_ws_message_tag(self.asgi_notify_fd, slot, opcode, payload)
+            return
+        # GRIP mode: an inbound message, handed to a plain synchronous view
+        # as a POST. This runs ON the event loop thread, so it costs
+        # exactly what any other view costs — the hold pattern removes the
+        # *connection* cost from Python, not the *request* cost.
         var channel = self.sockets.filter_url(slot)
         if channel.byte_length() == 0:
             return  # not a held socket of ours; nothing names its channel
@@ -486,6 +525,30 @@ def _parse_stream_slot(url_bytes: Span[Byte, _]) -> Int:
             return -1
         value = value * 10 + (c - ord("0"))
     return value
+
+
+def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):
+    """One `[tag=2 u8][slot i64 LE][opcode u8][payload]` datagram.
+
+    The payload rides IN the datagram, so it is bounded by the channel's
+    frame size; the loop's own `max_message_size` keeps assembled messages
+    under it. Retried like the disconnect tag — a lost inbound message is
+    an app-visible gap."""
+    var msg = List[UInt8](capacity=10 + len(payload))
+    msg.append(2)
+    var bits = UInt64(Int64(slot))
+    for shift in range(0, 64, 8):
+        msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    msg.append(UInt8(opcode))
+    for b in payload:
+        msg.append(b)
+    for _ in range(64):
+        var rc = external_call["send", Int](
+            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
+        )
+        if rc == len(msg):
+            return
+        _ = external_call["sched_yield", c_int]()
 
 
 def _send_disconnect_tag(fd: Int, slot: Int):

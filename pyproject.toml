@@ -1920,6 +1920,10 @@ n=$(timeout 3 curl -sN --max-time 3 $B/sse | grep -c 'tick')
 [ "$n" -ge 2 ] || fail "expected >=2 live EventStream ticks from /sse, got $n"
 curl -s --fail $B/ > /dev/null || fail 'server died after the EventStream client vanished'
 
+# And app.ws: FastHTML's WebSocket handler echoes through the executor.
+M0_PORT=8097 python3 apps/fasthtml_demo/ws_probe.py || fail 'the FastHTML WebSocket probe failed'
+curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
+
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
@@ -2290,6 +2294,14 @@ got=$(curl -s "$B/stream?size=1048576" | md5sum | cut -d' ' -f1)
 hb_want=86bb66cab11c93043981f0eff7ff3586
 hb_got=$(curl -sN --max-time 10 $B/stream-events | md5sum | cut -d' ' -f1)
 [ "$hb_got" = "$hb_want" ] || fail 'a split SSE event was corrupted (heartbeat injection?)'
+
+# --- WebSockets (Phase 3b) ---------------------------------------------------
+# The raw RFC 6455 probe: handshake with verified accept, prefixed text
+# echo, binary echo, app-initiated close(1000) through to the FIN — then a
+# second connection that vanishes abruptly after the 101, whose disconnect
+# must cancel the app task and leave the server healthy.
+M0_PORT=8088 python3 apps/asgi_bare/ws_probe.py || fail 'the ASGI WebSocket probe failed'
+curl -s --fail $B/ > /dev/null || fail 'server died after an abrupt WebSocket disconnect'
 
 # Graceful stop with a live stream in flight: drains and exits 0.
 timeout 10 curl -sN $B/stream-forever > /dev/null &

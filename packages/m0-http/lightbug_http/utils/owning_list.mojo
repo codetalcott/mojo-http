@@ -2,7 +2,6 @@ from std.collections import Optional
 from std.collections._asan_annotations import __sanitizer_annotate_contiguous_container
 from std.os import abort
 from std.sys import size_of
-from std.sys.intrinsics import _type_is_eq
 
 from std.collections.span import Span
 from std.memory import Pointer, memcpy
@@ -125,23 +124,12 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
     # Operator dunders
     # ===-------------------------------------------------------------------===#
 
-    def __contains__[U: Equatable & Movable, //](self: OwningList[U, ...], value: U) -> Bool:
-        """Verify if a given value is present in the list.
-
-        Parameters:
-            U: The type of the elements in the list. Must implement the
-              traits `Equatable`, `Copyable`, and `Movable`.
-
-        Args:
-            value: The value to find.
-
-        Returns:
-            True if the value is contained in the list, False otherwise.
-        """
-        for i in range(len(self)):
-            if self[i] == value:
-                return True
-        return False
+    # __contains__ was removed rather than fixed: it was dead (nothing
+    # in the repo asks an OwningList for membership), its `self:
+    # OwningList[U, ...]` signature is invalid on the pinned toolchain,
+    # and — like kevent_register before it — the parametric body was
+    # only ever type-checked once a new instantiation context
+    # elaborated it.
 
     # fn __iter__(ref self) -> _OwningListIter[T, origin_of(self)]:
     #     """Iterate over elements of the list, returning immutable references.
@@ -171,69 +159,9 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
         """
         return len(self) > 0
 
-    @no_inline
-    def __str__[U: Writable & Movable, //](self: OwningList[U, ...]) -> String:
-        """Returns a string representation of a `List`.
-
-        When the compiler supports conditional methods, then a simple `String(my_list)` will
-        be enough.
-
-        The elements' type must implement the `__repr__()` method for this to work.
-
-        Parameters:
-            U: The type of the elements in the list. Must implement the
-              traits `Writable` and `Movable`.
-
-        Returns:
-            A string representation of the list.
-        """
-        var output = String()
-        self.write_to(output)
-        return output^
-
-    @no_inline
-    def write_to[W: Writer, U: Writable & Movable, //](self: OwningList[U, ...], mut writer: W):
-        """Write `my_list.__str__()` to a `Writer`.
-
-        Parameters:
-            W: A type conforming to the Writable trait.
-            U: The type of the List elements. Must have the trait `Writable & Movable`.
-
-        Args:
-            writer: The object to write to.
-        """
-        writer.write("[")
-        for i in range(len(self)):
-            writer.write(repr(self[i]))
-            if i < len(self) - 1:
-                writer.write(", ")
-        writer.write("]")
-
-    @no_inline
-    def __repr__[U: Writable & Movable, //](self: OwningList[U, ...]) -> String:
-        """Returns a string representation of a `List`.
-
-        Note that since we can't condition methods on a trait yet,
-        the way to call this method is a bit special. Here is an example below:
-
-        ```mojo
-        var my_list = List[Int](1, 2, 3)
-        print(my_list.__repr__())
-        ```
-
-        When the compiler supports conditional methods, then a simple `repr(my_list)` will
-        be enough.
-
-        The elements' type must implement the `__repr__()` for this to work.
-
-        Parameters:
-            U: The type of the elements in the list. Must implement the
-              traits `Writable` and `Movable`.
-
-        Returns:
-            A string representation of the list.
-        """
-        return self.__str__()
+    # __str__/write_to/__repr__ were removed with __contains__ (see
+    # above): dead, and their `self: OwningList[U, ...]` signatures are
+    # invalid on the pinned toolchain once anything elaborates them.
 
     # ===-------------------------------------------------------------------===#
     # Methods
@@ -399,57 +327,8 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
         self.size = new_size
         self.reserve(new_size)
 
-    # TODO: Remove explicit self type when issue 1876 is resolved.
-    def index[
-        C: Equatable & Movable, //
-    ](ref self: OwningList[C, ...], value: C, start: Int = 0, stop: Optional[Int] = None,) raises -> Int:
-        """
-        Returns the index of the first occurrence of a value in a list
-        restricted by the range given the start and stop bounds.
-
-        ```mojo
-        var my_list = List[Int](1, 2, 3)
-        print(my_list.index(2)) # prints `1`
-        ```
-
-        Args:
-            value: The value to search for.
-            start: The starting index of the search, treated as a slice index
-                (defaults to 0).
-            stop: The ending index of the search, treated as a slice index
-                (defaults to None, which means the end of the list).
-
-        Parameters:
-            C: The type of the elements in the list. Must implement the
-                `Equatable & Movable` trait.
-
-        Returns:
-            The index of the first occurrence of the value in the list.
-
-        Raises:
-            ValueError: If the value is not found in the list.
-        """
-        var start_normalized = start
-
-        var stop_normalized: Int
-        if stop is None:
-            # Default end
-            stop_normalized = len(self)
-        else:
-            stop_normalized = stop.value()
-
-        if start_normalized < 0:
-            start_normalized += len(self)
-        if stop_normalized < 0:
-            stop_normalized += len(self)
-
-        start_normalized = _clip(start_normalized, 0, len(self))
-        stop_normalized = _clip(stop_normalized, 0, len(self))
-
-        for i in range(start_normalized, stop_normalized):
-            if self[i] == value:
-                return i
-        raise "ValueError: Given element is not in list"
+    # `index` was removed with the other explicit-self-typed methods
+    # above: dead, and invalid on the pinned toolchain once elaborated.
 
     def clear(mut self):
         """Clears the elements in the list."""

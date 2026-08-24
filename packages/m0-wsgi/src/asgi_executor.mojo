@@ -34,11 +34,19 @@ Streaming is still refused here (the Phase-1 watchdog rides along in
 
 from std.python import Python, PythonObject
 
+from std.collections import Optional
+
 from lightbug_http.broadcast import encode_bus_frame
 from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
 from lightbug_http.offload import OffloadPool
+from lightbug_http.utils.owning_list import OwningList
+from lightbug_http.websocket import (
+    websocket_upgrade, encode_ws_frame,
+    WS_OP_TEXT, WS_OP_BINARY, WS_OP_CLOSE,
+)
 
 from m0_http.sse.format import NO_EVENT_ID
 
@@ -149,19 +157,23 @@ def _executor_serve(block: ThreadBlock) raises:
     handler.app._bridge.executor_init(pool.submit_read, pool.stream_ack_read)
 
     # Parallel to the slots: what `after_response` needs after the request
-    # itself has crossed into Python. Only ever touched by this thread.
+    # itself has crossed into Python, and — for a WebSocket handshake —
+    # the ready 101 held until the application's `websocket.accept` comes
+    # back. Only ever touched by this thread.
     var methods = List[String](capacity=pool.capacity)
     var paths = List[String](capacity=pool.capacity)
+    var pending_101 = OwningList[Optional[HTTPResponse]](capacity=pool.capacity)
     for _ in range(pool.capacity):
         methods.append(String(""))
         paths.append(String(""))
+        pending_101.append(None)
 
     var stopping = False
     while True:
         # Parked attached, inside the shim loop's selector — which is where
         # CPython releases the GIL — while every spawned task progresses.
         var events = handler.app._bridge.wait_events()
-        _pump_events(pool, handler, events, methods, paths, stopping)
+        _pump_events(pool, handler, events, methods, paths, pending_101, stopping)
         if stopping:
             break
 
@@ -171,7 +183,7 @@ def _executor_serve(block: ThreadBlock) raises:
     handler.app._bridge.finish_executor()
     var leftover = handler.app._bridge.drain_events_nowait()
     var ignored = False
-    _pump_events(pool, handler, leftover, methods, paths, ignored)
+    _pump_events(pool, handler, leftover, methods, paths, pending_101, ignored)
     handler.shutdown()
 
 
@@ -181,6 +193,7 @@ def _pump_events(
     events: PythonObject,
     mut methods: List[String],
     mut paths: List[String],
+    mut pending_101: OwningList[Optional[HTTPResponse]],
     mut stopping: Bool,
 ) raises:
     """Answer one batch of shim events.
@@ -218,6 +231,30 @@ def _pump_events(
                 handler.after_response(methods[slot], paths[slot], response)
                 pool.put_response(slot, response^, False)
                 pool.complete(slot)
+                continue
+            # A WebSocket handshake gets a `websocket` scope. The 101 the
+            # loop's validator built is held here — the application
+            # APPROVES with websocket.accept, this thread PERFORMS, the
+            # same split as M0-Hold, for the same reason: the accept value
+            # comes from the original request's key.
+            var upgrade = websocket_upgrade(request)
+            if upgrade:
+                var probe = upgrade.take()
+                if probe.status_code != 101:
+                    # Malformed or wrong-version handshake: 400/426 verbatim.
+                    handler.after_response(methods[slot], paths[slot], probe)
+                    pool.put_response(slot, probe^, False)
+                    pool.complete(slot)
+                    continue
+                pending_101[slot] = probe^
+                try:
+                    handler.app._bridge.spawn_asgi_ws(slot, request)
+                except:
+                    pending_101[slot] = None
+                    var response = InternalError()
+                    handler.after_response(methods[slot], paths[slot], response)
+                    pool.put_response(slot, response^, True)
+                    pool.complete(slot)
                 continue
             try:
                 handler.app._bridge.spawn_asgi(slot, request)
@@ -307,6 +344,68 @@ def _pump_events(
                 + String(py=ev[2]),
                 flush=True,
             )
+        elif kind == "ws_accept":
+            # Begin frame before the 101 — the same FIFO anchor as a
+            # stream's head, for the sockets registry this time.
+            if pending_101[slot]:
+                var begin = List[UInt8]()
+                var begin_frame = encode_bus_frame(
+                    asgi_stream_url(String("B"), slot), NO_EVENT_ID,
+                    Span(begin),
+                )
+                pool.send_stream_chunk(Span(begin_frame))
+                var held = pending_101[slot].take()
+                handler.after_response(methods[slot], paths[slot], held)
+                pool.put_response(slot, held^, False)
+                pool.complete(slot)
+        elif kind == "ws_reject":
+            # The application refused (or never answered) the handshake.
+            if pending_101[slot]:
+                _ = pending_101[slot].take()
+                var response = _ws_forbidden()
+                handler.after_response(methods[slot], paths[slot], response)
+                pool.put_response(slot, response^, False)
+                pool.complete(slot)
+        elif kind == "ws_send":
+            var opcode = Int(py=ev[2])
+            var payload = handler.app._bridge.body_bytes(ev[3])
+            var frame_bytes = encode_ws_frame(
+                WS_OP_TEXT if opcode == 1 else WS_OP_BINARY, Span(payload)
+            )
+            var frame = encode_bus_frame(
+                asgi_stream_url(String("w"), slot), NO_EVENT_ID,
+                Span(frame_bytes),
+            )
+            pool.send_stream_chunk(Span(frame))
+        elif kind == "ws_close":
+            # A close frame with the app's code, then the end marker that
+            # lets the loop close after it lands.
+            var code = Int(py=ev[2])
+            var close_body = List[UInt8]()
+            close_body.append(UInt8((code >> 8) & 0xFF))
+            close_body.append(UInt8(code & 0xFF))
+            var close_frame = encode_ws_frame(WS_OP_CLOSE, Span(close_body))
+            var f1 = encode_bus_frame(
+                asgi_stream_url(String("w"), slot), NO_EVENT_ID,
+                Span(close_frame),
+            )
+            pool.send_stream_chunk(Span(f1))
+            var empty = List[UInt8]()
+            var f2 = encode_bus_frame(
+                asgi_stream_url(String("x"), slot), NO_EVENT_ID, Span(empty)
+            )
+            pool.send_stream_chunk(Span(f2))
+
+
+def _ws_forbidden() -> HTTPResponse:
+    return HTTPResponse(
+        body_bytes=String(
+            '{"error":"the application refused the WebSocket handshake"}'
+        ).as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=403,
+        status_text="Forbidden",
+    )
 
 
 def _executor_body(arg: Int) -> Int:

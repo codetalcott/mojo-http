@@ -436,10 +436,10 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   ([WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) §8). No adapter was needed: `m0serve`
   now detects ASGI applications and serves them with real
   await-concurrency, so `m0serve main:app --app-dir apps/fasthtml_demo`
-  serves FastHTML pages today, and its SSE `EventStream` **streams live**
-  (Phase 3a — `poe smoke-fasthtml` pins both, skipping where
-  python-fasthtml is absent). The remaining piece is `app.ws`: WebSocket
-  scopes land with Phase 3b.
+  serves FastHTML pages today, its SSE `EventStream` **streams live**
+  (Phase 3a), and `app.ws` **works** (Phase 3b) — the full FastHTML
+  surface, zero-config, pinned by `poe smoke-fasthtml` (skipping where
+  python-fasthtml is absent).
 - **The ASGI gateway's next phase** (design in WSGI_VS_ASGI.md §8):
   Phase 2 — the per-loop asyncio executor over the unchanged
   `OffloadPool` — **shipped**: zero-config ASGI gets real

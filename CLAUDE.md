@@ -131,7 +131,11 @@ Mojo 1.0 interop imposes and that the code depends on:
     drains -- never emit without credit, and never switch the chunk or
     ack sends to a drop-on-EAGAIN policy); and comment heartbeats stay
     suppressed on ASGI streams (a chunk-split SSE event with a comment
-    inside is corrupt). The buffered escape hatch keeps its send()-side
+    inside is corrupt). WebSocket scopes use the same seam — the held
+    101 is only released behind its begin frame, outbound frames ride
+    the chunk channel, inbound ones are tagged submit-channel datagrams
+    — and a handshake the app never answers must resolve as a 403, never
+    a leaked slot. The buffered escape hatch keeps its send()-side
     watchdog — do not "fix" it by lengthening the
     grace (docs/WSGI_VS_ASGI.md §8).
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;

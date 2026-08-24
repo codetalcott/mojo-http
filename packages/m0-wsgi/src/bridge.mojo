@@ -422,18 +422,28 @@ _ASGI_CHUNK_SPLIT = 32 * 1024
 
 # Tags on the submit channel beyond the plain 8-byte job datagram.
 _TAG_DISCONNECT = 1
+_TAG_WS_MESSAGE = 2
+
+# WebSocket state, keyed by slot, owned by this thread: the inbound
+# message queue behind receive(), and the accepted-set that decides
+# whether a close means "reject the handshake" or "close the socket".
+_exec_ws_inbox = {}
+_exec_ws_accepted = set()
 
 
 def _exec_on_disconnect(slot):
     # The loop closed this slot (client vanished, or end-of-stream close
-    # raced): resolve the pending receive() into http.disconnect, wake any
-    # credit waiter, and cancel the task -- uvicorn's contract. The
-    # cancellation is what stops an EventStream generator; frameworks
-    # handle CancelledError as cleanup.
+    # raced): resolve the pending receive() into http.disconnect (or
+    # queue websocket.disconnect), wake any credit waiter, and cancel the
+    # task -- uvicorn's contract. The cancellation is what stops an
+    # EventStream generator; frameworks handle CancelledError as cleanup.
     _exec_disconnected.add(slot)
     fut = _exec_disconnects.get(slot)
     if fut is not None and not fut.done():
         fut.set_result(True)
+    inbox = _exec_ws_inbox.get(slot)
+    if inbox is not None:
+        inbox.put_nowait({'type': 'websocket.disconnect', 'code': 1006})
     evt = _exec_credit_evts.get(slot)
     if evt is not None:
         evt.set()
@@ -442,12 +452,28 @@ def _exec_on_disconnect(slot):
         task.cancel()
 
 
+def _exec_on_ws_message(slot, opcode, payload):
+    # An inbound frame the loop's parser assembled, forwarded by the
+    # handler as a tagged datagram. Opcode 1 is text (the loop already
+    # validated UTF-8), 2 is binary.
+    inbox = _exec_ws_inbox.get(slot)
+    if inbox is None:
+        return
+    if opcode == 1:
+        inbox.put_nowait({'type': 'websocket.receive',
+                          'text': payload.decode('utf-8', 'replace')})
+    else:
+        inbox.put_nowait({'type': 'websocket.receive', 'bytes': payload})
+
+
 def _exec_cleanup_slot(slot):
     _exec_credits.pop(slot, None)
     _exec_credit_evts.pop(slot, None)
     _exec_disconnects.pop(slot, None)
     _exec_disconnected.discard(slot)
     _exec_stream_tasks.pop(slot, None)
+    _exec_ws_inbox.pop(slot, None)
+    _exec_ws_accepted.discard(slot)
 
 
 def asgi_executor_init(fd, ack_fd):
@@ -463,7 +489,7 @@ def asgi_executor_init(fd, ack_fd):
     def _on_submit():
         while True:
             try:
-                data = os.read(fd, 16)
+                data = os.read(fd, 65546)
             except (BlockingIOError, InterruptedError):
                 return
             except OSError:
@@ -476,6 +502,11 @@ def asgi_executor_init(fd, ack_fd):
             elif len(data) == 9 and data[0] == _TAG_DISCONNECT:
                 _exec_on_disconnect(
                     int.from_bytes(data[1:9], 'little', signed=True))
+            elif len(data) >= 10 and data[0] == _TAG_WS_MESSAGE:
+                # [tag u8][slot i64 LE][opcode u8][payload...]
+                _exec_on_ws_message(
+                    int.from_bytes(data[1:9], 'little', signed=True),
+                    data[9], data[10:])
             else:
                 _loop.remove_reader(fd)
                 _exec_queue.put_nowait(('job', -1))
@@ -695,7 +726,10 @@ def spawn(slot, method, path, query, protocol, headers, body):
     scope['state'] = dict(_lifespan_state)
     task = _loop.create_task(_serve_one_exec(slot, scope, body))
     _exec_tasks.add(task)
+    task.add_done_callback(_task_done(slot))
 
+
+def _task_done(slot):
     def _done(t):
         _exec_tasks.discard(t)
         was_streaming = getattr(t, '_m0_streaming', False)
@@ -721,8 +755,98 @@ def spawn(slot, method, path, query, protocol, headers, body):
             return
         status, headers, body_bytes = t.result()
         _exec_queue.put_nowait(('done', slot, status, headers, body_bytes))
+    return _done
 
-    task.add_done_callback(_done)
+
+async def _serve_one_ws(slot, scope):
+    # One WebSocket connection: the loop already validated the handshake
+    # and holds the ready 101; the application decides. accept releases
+    # the 101 through the completion channel (via the pump); frames go
+    # out as 'w' chunk-channel datagrams and come in as tagged
+    # submit-channel datagrams the handler forwards from ws_message.
+    import asyncio
+    inbox = asyncio.Queue()
+    _exec_ws_inbox[slot] = inbox
+    connected = [False]
+    resolved = [False]  # accept or reject reached the pump
+
+    async def receive():
+        if not connected[0]:
+            connected[0] = True
+            return {'type': 'websocket.connect'}
+        return await inbox.get()
+
+    async def send(message):
+        t = message.get('type', '')
+        if slot in _exec_disconnected:
+            return
+        if t == 'websocket.accept':
+            _exec_ws_accepted.add(slot)
+            resolved[0] = True
+            _exec_queue.put_nowait(('ws_accept', slot))
+        elif t == 'websocket.send':
+            if slot not in _exec_ws_accepted:
+                raise RuntimeError('websocket.send before websocket.accept')
+            data = message.get('bytes')
+            if data is None:
+                text = message.get('text') or ''
+                _exec_queue.put_nowait(
+                    ('ws_send', slot, 1, text.encode('utf-8')))
+            else:
+                _exec_queue.put_nowait(('ws_send', slot, 2, bytes(data)))
+        elif t == 'websocket.close':
+            if slot in _exec_ws_accepted:
+                _exec_queue.put_nowait(
+                    ('ws_close', slot, int(message.get('code', 1000))))
+                _exec_ws_accepted.discard(slot)
+            else:
+                resolved[0] = True
+                _exec_queue.put_nowait(('ws_reject', slot))
+
+    try:
+        await _app(scope, receive, send)
+    finally:
+        if slot not in _exec_disconnected:
+            if slot in _exec_ws_accepted:
+                # The app returned with the socket open: close it for it,
+                # uvicorn's contract.
+                _exec_queue.put_nowait(('ws_close', slot, 1000))
+            elif not resolved[0]:
+                # Returned (or raised) without ever answering the
+                # handshake: the held 101 must not leak its slot.
+                _exec_queue.put_nowait(('ws_reject', slot))
+    return None
+
+
+def spawn_ws(slot, path, query, protocol, headers):
+    scope = {
+        'type': 'websocket',
+        'asgi': {'version': '3.0', 'spec_version': '2.3'},
+        'scheme': 'ws',
+        'root_path': '',
+        'server': _scope_base['server'],
+        'client': None,
+        'http_version': protocol.split('/')[-1],
+        'path': path,
+        'raw_path': path.encode('utf-8', 'replace'),
+        'query_string': query,
+        'headers': headers,
+        'subprotocols': _ws_subprotocols(headers),
+        'state': dict(_lifespan_state),
+    }
+    task = _loop.create_task(_serve_one_ws(slot, scope))
+    task._m0_streaming = True
+    _exec_tasks.add(task)
+    _exec_stream_tasks[slot] = task
+    task.add_done_callback(_task_done(slot))
+
+
+def _ws_subprotocols(headers):
+    for name, value in headers:
+        if name == b'sec-websocket-protocol':
+            return [p.strip() for p in
+                    value.decode('latin-1').split(',') if p.strip()]
+    return []
 
 
 def finish_executor():
@@ -857,6 +981,8 @@ struct PyBridge(Movable):
     var _spawn: PythonObject
     """The shim's `spawn` (executor mode), resolved once for the same
     reason: it is called per request, so the lookup must not be."""
+    var _spawn_ws: PythonObject
+    """The shim's `spawn_ws`: one WebSocket connection as a task."""
     var _wait_events: PythonObject
     var _drain_events: PythonObject
     """`wait_events` / `drain_events_nowait`: zero-argument calls, the
@@ -896,6 +1022,7 @@ struct PyBridge(Movable):
         builtins.exec(PythonObject(SHIM_SOURCE), self._ns)
         self._run = self._ns["run"]
         self._spawn = self._ns["spawn"]
+        self._spawn_ws = self._ns["spawn_ws"]
         self._wait_events = self._ns["wait_events"]
         self._drain_events = self._ns["drain_events_nowait"]
 
@@ -923,6 +1050,7 @@ struct PyBridge(Movable):
         self._ns = move._ns^
         self._run = move._run^
         self._spawn = move._spawn^
+        self._spawn_ws = move._spawn_ws^
         self._wait_events = move._wait_events^
         self._drain_events = move._drain_events^
         self._base = move._base^
@@ -1036,6 +1164,73 @@ struct PyBridge(Movable):
             raise cpy.get_error()
         return b
 
+    def _py_headers(
+        mut self, ref cpy: CPython, req: HTTPRequest
+    ) raises -> PyObjectPtr:
+        """The request's headers as a ready ASGI list of lowercase
+        `(bytes, bytes)` pairs (the header map normalized names on
+        insert). New reference; `PyList_SetItem` steals each pair."""
+        var count = req.headers.count()
+        var headers = cpy.PyList_New(count)
+        if not headers:
+            raise cpy.get_error()
+        for i in range(count):
+            var pair = cpy.PyTuple_New(2)
+            if not pair:
+                cpy.Py_DecRef(headers)
+                raise cpy.get_error()
+            try:
+                _ = cpy.PyTuple_SetItem(
+                    pair, 0,
+                    self._py_bytes_span(cpy, req.headers.name_span(i)),
+                )
+                _ = cpy.PyTuple_SetItem(
+                    pair, 1,
+                    self._py_bytes_span(cpy, req.headers.value_span(i)),
+                )
+            except e:
+                cpy.Py_DecRef(pair)
+                cpy.Py_DecRef(headers)
+                raise e
+            # PyList_SetItem steals: the list owns the pair now.
+            _ = cpy.PyList_SetItem(headers, i, pair)
+        return headers
+
+    def spawn_asgi_ws(mut self, slot: Int, req: HTTPRequest) raises:
+        """Hand one validated WebSocket handshake to the shim as a task.
+
+        Same crossing discipline as `spawn_asgi`, minus the body: the
+        `websocket` scope's variable half rides one stolen args tuple.
+        The caller holds the ready 101 until the app's `websocket.accept`
+        comes back as a `('ws_accept', slot)` event."""
+        ref cpy = Python().cpython()
+
+        var args = cpy.PyTuple_New(5)
+        if not args:
+            raise cpy.get_error()
+        _ = cpy.PyTuple_SetItem(args, 0, cpy.PyLong_FromSsize_t(slot))
+        try:
+            _ = cpy.PyTuple_SetItem(
+                args, 1, self._py_text(cpy, req.uri.path.as_bytes())
+            )
+            _ = cpy.PyTuple_SetItem(
+                args, 2,
+                self._py_bytes_span(cpy, req.uri.query_string.as_bytes()),
+            )
+            _ = cpy.PyTuple_SetItem(
+                args, 3, self._py_text(cpy, req.protocol.as_bytes())
+            )
+            _ = cpy.PyTuple_SetItem(args, 4, self._py_headers(cpy, req))
+        except e:
+            cpy.Py_DecRef(args)
+            raise e
+
+        var result = cpy.PyObject_CallObject(self._spawn_ws._obj_ptr, args)
+        cpy.Py_DecRef(args)
+        if not result:
+            raise cpy.get_error()
+        cpy.Py_DecRef(result)
+
     def spawn_asgi(mut self, slot: Int, req: HTTPRequest) raises:
         """Hand one parked request to the shim's loop as a task.
 
@@ -1074,31 +1269,7 @@ struct PyBridge(Movable):
                 args, 4, self._py_text(cpy, req.protocol.as_bytes())
             )
 
-            var count = req.headers.count()
-            var headers = cpy.PyList_New(count)
-            if not headers:
-                raise cpy.get_error()
-            for i in range(count):
-                var pair = cpy.PyTuple_New(2)
-                if not pair:
-                    cpy.Py_DecRef(headers)
-                    raise cpy.get_error()
-                try:
-                    _ = cpy.PyTuple_SetItem(
-                        pair, 0,
-                        self._py_bytes_span(cpy, req.headers.name_span(i)),
-                    )
-                    _ = cpy.PyTuple_SetItem(
-                        pair, 1,
-                        self._py_bytes_span(cpy, req.headers.value_span(i)),
-                    )
-                except e:
-                    cpy.Py_DecRef(pair)
-                    cpy.Py_DecRef(headers)
-                    raise e
-                # PyList_SetItem steals: the list owns the pair now.
-                _ = cpy.PyList_SetItem(headers, i, pair)
-            _ = cpy.PyTuple_SetItem(args, 5, headers)
+            _ = cpy.PyTuple_SetItem(args, 5, self._py_headers(cpy, req))
 
             _ = cpy.PyTuple_SetItem(
                 args, 6, self._py_bytes_span(cpy, Span(req.body_raw))
