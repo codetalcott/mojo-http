@@ -36,6 +36,25 @@ responses stream for real — see the executor bullet below for the three
 load-bearing rules; only the buffered escape hatch still refuses an
 infinite stream with its 10s watchdog (docs/WSGI_VS_ASGI.md §8), and that
 refusal is not to be "fixed" by lengthening the grace.
+`m0serve --mount PREFIX=SPEC` hosts **several applications in one
+process**, routed by longest prefix (on segment boundaries, so `/app` never
+swallows `/application`; the root mount is the empty prefix and needs no
+special case). Each mount detects its own protocol and gets its own bridge
+— free, because `PyBridge` already execs the shim into a fresh namespace
+dict per instance. The prefix reaches both protocols through
+`PyBridge.set_base` and **only** there, because they disagree about it:
+WSGI gets `SCRIPT_NAME` with `PATH_INFO` trimmed to the remainder, ASGI
+gets `root_path` with `path` left whole (Django's `ASGIHandler` strips it
+itself). Backwards, every direct request still works and every generated
+URL breaks — invisible until someone clicks something, which is why
+`smoke-hybrid` compares `reverse()`/`url_for()` byte for byte.
+`WSGIHandler.build` is the one place applications are constructed, so the
+mounted and unmounted shapes cannot drift. Three refusals, all deliberate:
+mixed WSGI/ASGI mounts, `--mount` with `--realtime` (an inbound WS message
+has no defensible destination among several urlconfs), and a mounted
+server taking the asyncio executor (one submit channel cannot say which
+mount a job is for — per-mount submit channels are the next stage).
+
 Zero-config: with no topology flag or `M0_*` topology variable, `m0serve`
 defaults to `--blocking-threads min(cores,8)` — an explicitly-set variable,
 at any value, disables that (`AppConfig`'s `*_set` fields carry the

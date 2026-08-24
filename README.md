@@ -238,11 +238,28 @@ object** — a coroutine-function callable is served as ASGI, anything else as
 WSGI, `--protocol` overrides — so `bin/m0serve main:app` runs a FastHTML,
 Starlette, or FastAPI app from the same binary, with real await-concurrency
 on a per-loop asyncio executor — requests overlap wherever the application
-awaits (infinite SSE streams are still refused with an explanatory error
-until the streaming surface lands —
-[docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md) §8).
+awaits, streaming responses stream for real, and `websocket` scopes work,
+so FastHTML's whole surface runs with no configuration
+([docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md) §8).
 `--app-dir` is prepended to `sys.path` so the module imports, relative to the
-current directory and defaulting to `.`. Every `M0_*` variable keeps its
+current directory and defaulting to `.`.
+
+**`--mount PREFIX=SPEC` hosts several applications in one process**, routed
+by longest prefix before either sees the request:
+
+```bash
+bin/m0serve --mount /=shop.wsgi --mount /portal=portal.wsgi:app \
+    --app-dir apps/hybrid_mix --port 8099
+```
+
+Each mount detects its own protocol and gets its own bridge, and the prefix
+reaches the application the way its protocol expects it — `SCRIPT_NAME` with
+`PATH_INFO` trimmed for WSGI, `root_path` with the whole `path` for ASGI —
+so `reverse()` and `url_for()` generate links that actually work. A path no
+mount claims is a 404 answered in Mojo, never entering Python. Mixed
+WSGI/ASGI mounts are refused for now, with a message: routing them is done,
+but giving each its native execution mode is the next stage
+([§9](docs/WSGI_VS_ASGI.md)). Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
 matching flag winning over it, and flags are strict: `--port 80eighty` is a
 usage error, not a silent default. `--max-body` and `--metrics` reach two

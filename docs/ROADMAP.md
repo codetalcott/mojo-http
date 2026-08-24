@@ -446,9 +446,26 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   await-concurrency and no handler pool, `bench-asgi` is the standing
   uvicorn gate (mixed-tail passing; hello-world 0.88–0.94x with the gap
   located in WSGI_PERFORMANCE.md §"The ASGI executor vs uvicorn").
-  Remaining: Phase 3, ASGI streaming and `websocket` scopes over the
-  existing bus/registry transport, plus the recorded executor fix paths
-  (wrk-based bench, N executors per pool under free-threading).
+  Phase 3 — ASGI streaming and `websocket` scopes over the existing
+  bus/registry transport — **shipped** in v0.9.0, which is the release
+  that made FastHTML's whole surface work zero-config.
+- **Mounts: several applications in one process.** `m0serve --mount
+  PREFIX=SPEC` routes by longest prefix in Mojo before either application
+  sees the request, each mount detecting its own protocol and getting its
+  own bridge. This is the hybrid advantage rather than a convenience:
+  uvicorn, daphne and Granian each host exactly one callable, so mixing
+  today means two processes behind a proxy or a Python-side composite
+  (Starlette `Mount` + `WSGIMiddleware`, which drops the sync app onto the
+  event loop's threadpool). Stage 1 routes them and pins the prefix
+  semantics (`docs/WSGI_VS_ASGI.md` §9, `apps/hybrid_mix`,
+  `poe smoke-hybrid`); **stage 2 is the payoff** — each mount in its own
+  native execution mode, the asyncio executor for the async one and the
+  handler pool for the sync one, sharing one listener and one shutdown.
+  That needs per-mount submit channels on `OffloadPool`; one
+  `ProvisionPool` per loop stays, since a slot indexes that loop's
+  provisions.
+- Recorded executor fix paths, unchanged: a wrk-based bench, and N
+  executors per pool under free-threading.
 - **Recorded follow-ups, not yet scoped:**
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.
