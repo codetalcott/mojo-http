@@ -23,6 +23,7 @@ from src.cli import (
     use_asgi_executor,
     effective_cpus,
     discovery_specs,
+    match_mount,
     DEFAULT_PORT,
     M0SERVE_VERSION,
     MAX_AUTO_BLOCKING_THREADS,
@@ -33,6 +34,17 @@ from m0_http.config import AppConfig
 def _seed() -> ServeOptions:
     """Hard defaults only; the environment is never consulted by these tests."""
     return ServeOptions()
+
+
+def _prefixes(a: String, b: String = String("\x00none")) -> List[String]:
+    """Mount-prefix lists for the matcher tests. Built by append: an
+    `Array[String, N]` cannot be materialised at run time on this toolchain
+    (see the note above `_takes_value` in cli.mojo)."""
+    var out = List[String]()
+    out.append(a)
+    if b != String("\x00none"):
+        out.append(b)
+    return out^
 
 
 def _parse(args: List[String]) raises -> ServeOptions:
@@ -536,6 +548,140 @@ def test_discovery_specs_all_parse() raises:
 def test_version_is_a_dotted_triple() raises:
     var parts = M0SERVE_VERSION.split(".")
     assert_equal(len(parts), 3)
+
+
+def test_mount_parses_prefix_and_spec() raises:
+    var opts = _parse([String("--mount"), String("/app=main:app")])
+    assert_equal(len(opts.mount_prefixes), 1)
+    assert_equal(opts.mount_prefixes[0], String("/app"))
+    assert_equal(opts.mount_modules[0], String("main"))
+    assert_equal(opts.mount_attributes[0], String("app"))
+    assert_true(opts.mount_explicit[0])
+
+
+def test_mount_bare_module_keeps_discovery() raises:
+    """A mount without `:ATTR` falls back exactly as a positional spec does."""
+    var opts = _parse([String("--mount=/app=djangoproj")])
+    assert_equal(opts.mount_modules[0], String("djangoproj"))
+    assert_equal(opts.mount_attributes[0], String("application"))
+    assert_false(opts.mount_explicit[0])
+
+
+def test_mount_root_prefix_is_empty_string() raises:
+    """`/` is stored as '', which is SCRIPT_NAME and root_path for an app at
+    the root -- so the matcher and both protocols see one shape."""
+    var opts = _parse([String("--mount"), String("/=djangoproj.wsgi")])
+    assert_equal(len(opts.mount_prefixes), 1)
+    assert_equal(opts.mount_prefixes[0], String(""))
+
+
+def test_mount_strips_trailing_slash() raises:
+    var opts = _parse([String("--mount"), String("/app/=main:app")])
+    assert_equal(opts.mount_prefixes[0], String("/app"))
+
+
+def test_mount_is_repeatable() raises:
+    var opts = _parse(
+        [
+            String("--mount"),
+            String("/=djangoproj.wsgi"),
+            String("--mount"),
+            String("/app=main:app"),
+        ]
+    )
+    assert_equal(len(opts.mount_prefixes), 2)
+    assert_equal(opts.mount_prefixes[0], String(""))
+    assert_equal(opts.mount_prefixes[1], String("/app"))
+
+
+def test_mount_prefix_must_be_absolute() raises:
+    var failed = False
+    try:
+        _ = _parse([String("--mount"), String("app=main:app")])
+    except:
+        failed = True
+    assert_true(failed)
+
+
+def test_mount_needs_a_spec() raises:
+    var failed = False
+    try:
+        _ = _parse([String("--mount"), String("/app")])
+    except:
+        failed = True
+    assert_true(failed)
+
+
+def test_mount_refuses_a_duplicate_prefix() raises:
+    """Two apps on one prefix is a typo with no defensible reading; '/app/'
+    and '/app' are the same mount after normalisation."""
+    var failed = False
+    try:
+        _ = _parse(
+            [
+                String("--mount"),
+                String("/app=main:app"),
+                String("--mount"),
+                String("/app/=other:app"),
+            ]
+        )
+    except:
+        failed = True
+    assert_true(failed)
+
+
+def test_mount_and_positional_are_exclusive() raises:
+    var failed = False
+    try:
+        _ = _parse([String("--mount"), String("/app=main:app"), String("djangoproj.wsgi")])
+    except:
+        failed = True
+    assert_true(failed)
+
+
+def test_mount_alone_satisfies_the_missing_spec_rule() raises:
+    """--mount IS the application spec, so no positional is required."""
+    var opts = _parse([String("--mount"), String("/app=main:app")])
+    assert_equal(opts.module, String(""))
+    assert_equal(len(opts.mount_prefixes), 1)
+
+
+def test_no_mounts_and_no_positional_still_fails() raises:
+    var failed = False
+    try:
+        _ = _parse([String("--port"), String("8080")])
+    except:
+        failed = True
+    assert_true(failed)
+
+
+def test_match_mount_longest_prefix_wins() raises:
+    var prefixes = _prefixes(String(""), String("/app"))
+    assert_equal(match_mount(prefixes, String("/app/page")), 1)
+    assert_equal(match_mount(prefixes, String("/app")), 1)
+    assert_equal(match_mount(prefixes, String("/admin")), 0)
+    assert_equal(match_mount(prefixes, String("/")), 0)
+
+
+def test_match_mount_respects_segment_boundaries() raises:
+    """The bug this exists to prevent: /app must not swallow /application."""
+    var prefixes = _prefixes(String("/app"))
+    assert_equal(match_mount(prefixes, String("/application")), -1)
+    assert_equal(match_mount(prefixes, String("/app")), 0)
+    assert_equal(match_mount(prefixes, String("/app/")), 0)
+
+
+def test_match_mount_reports_a_miss() raises:
+    var prefixes = _prefixes(String("/app"), String("/api"))
+    assert_equal(match_mount(prefixes, String("/other")), -1)
+
+
+def test_match_mount_order_does_not_matter() raises:
+    """Longest-wins must not degrade into first-wins when the deeper mount
+    is declared first."""
+    var prefixes = _prefixes(String("/app"), String(""))
+    assert_equal(match_mount(prefixes, String("/app/x")), 0)
+    assert_equal(match_mount(prefixes, String("/elsewhere")), 1)
 
 
 def main() raises:

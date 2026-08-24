@@ -67,6 +67,22 @@ struct ServeOptions(Copyable, Movable):
     """Whether the user wrote `:ATTR` themselves. A bare MODULE may fall back
     to the discovery conventions (`discovery_specs`) when the default
     attribute is not there; an explicit one never does."""
+    var mount_prefixes: List[String]
+    """URL prefixes of mounted applications, parallel to `mount_modules`,
+    `mount_attributes` and `mount_explicit`. Empty when the server hosts the
+    one application the positional spec names — the ordinary case.
+
+    A prefix is stored **without** its trailing slash, so the root mount `/`
+    is the empty string: exactly PEP 3333's `SCRIPT_NAME` for an application
+    at the root, and exactly ASGI's `root_path`. Longest match wins, which is
+    what lets `/` and `/app` coexist without either shadowing the other.
+    """
+    var mount_modules: List[String]
+    var mount_attributes: List[String]
+    var mount_explicit: List[Bool]
+    """Per mount, whether the user wrote `:ATTR`. Discovery applies to a
+    mount exactly as it does to a positional spec, and for the same reason:
+    an explicit attribute never falls back."""
     var protocol: String
     """`auto` (detect from the object), or a forced `wsgi` / `asgi`."""
     var host: String
@@ -144,6 +160,10 @@ struct ServeOptions(Copyable, Movable):
         self.module = String("")
         self.attribute = String(DEFAULT_ATTRIBUTE)
         self.attribute_explicit = False
+        self.mount_prefixes = List[String]()
+        self.mount_modules = List[String]()
+        self.mount_attributes = List[String]()
+        self.mount_explicit = List[Bool]()
         self.protocol = String(PROTOCOL_AUTO)
         self.host = String("0.0.0.0")
         self.port = DEFAULT_PORT
@@ -173,6 +193,10 @@ struct ServeOptions(Copyable, Movable):
         self.module = copy.module
         self.attribute = copy.attribute
         self.attribute_explicit = copy.attribute_explicit
+        self.mount_prefixes = copy.mount_prefixes.copy()
+        self.mount_modules = copy.mount_modules.copy()
+        self.mount_attributes = copy.mount_attributes.copy()
+        self.mount_explicit = copy.mount_explicit.copy()
         self.protocol = copy.protocol
         self.host = copy.host
         self.port = copy.port
@@ -202,6 +226,10 @@ struct ServeOptions(Copyable, Movable):
         self.module = move.module^
         self.attribute = move.attribute^
         self.attribute_explicit = move.attribute_explicit
+        self.mount_prefixes = move.mount_prefixes^
+        self.mount_modules = move.mount_modules^
+        self.mount_attributes = move.mount_attributes^
+        self.mount_explicit = move.mount_explicit^
         self.protocol = move.protocol^
         self.host = move.host^
         self.port = move.port
@@ -440,6 +468,33 @@ def discovery_specs(module: String) -> List[String]:
 # `usage()` names every one of them, so the help text cannot drift from the
 # parser. (Plain comparisons rather than a comptime list of Strings: an
 # `Array[String, N]` cannot be materialized at run time on this toolchain.)
+def match_mount(prefixes: List[String], path: String) -> Int:
+    """Index of the mount serving `path`, or -1 when none does.
+
+    Longest prefix wins, and a prefix matches only on a segment boundary:
+    `/app` serves `/app` and `/app/x`, never `/application`. The root mount
+    is the empty prefix (see `ServeOptions.mount_prefixes`) and needs no
+    special case here — every request target starts with `/`, so it matches
+    at length 0 and any deeper mount outranks it. That is what lets a Django
+    project at `/` coexist with a FastHTML app at `/app` instead of
+    shadowing it.
+    """
+    var best = -1
+    var best_len = -1
+    for i in range(len(prefixes)):
+        ref prefix = prefixes[i]
+        var n = prefix.byte_length()
+        if n <= best_len:
+            continue
+        if not path.startswith(prefix):
+            continue
+        if path.byte_length() > n and path.as_bytes()[n] != UInt8(ord("/")):
+            continue
+        best = i
+        best_len = n
+    return best
+
+
 def _takes_value(name: String) -> Bool:
     return (
         name == "--host"
@@ -454,6 +509,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--health-path"
         or name == "--reload-dir"
         or name == "--protocol"
+        or name == "--mount"
     )
 
 
@@ -526,6 +582,34 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
             raise Error("--static expects PREFIX=DIR, got '" + value + "'")
         opts.static_prefixes.append(prefix^)
         opts.static_dirs.append(directory^)
+    elif name == "--mount":
+        # PREFIX=SPEC, split on the FIRST '=': a spec never contains one, but
+        # splitting last would make a typo'd prefix silently become the spec.
+        var meq = value.find("=")
+        if meq < 0:
+            raise Error("--mount expects PREFIX=MODULE[:ATTR], got '" + value + "'")
+        var raw = String(StringSlice(value)[byte = :meq])
+        var spec = String(StringSlice(value)[byte = meq + 1 :])
+        if not raw.startswith("/"):
+            raise Error("--mount prefix must start with '/', got '" + raw + "'")
+        # Stored without the trailing slash, so '/' becomes '' -- PEP 3333's
+        # SCRIPT_NAME and ASGI's root_path for an app at the root are both
+        # the empty string, and the matcher gets one shape to compare.
+        var prefix = raw
+        while prefix.endswith("/"):
+            prefix = String(
+                StringSlice(prefix)[byte = : prefix.byte_length() - 1]
+            )
+        for m in range(len(opts.mount_prefixes)):
+            if opts.mount_prefixes[m] == prefix:
+                raise Error(
+                    "--mount prefix '" + raw + "' is mounted twice"
+                )
+        var mount_pair = parse_app_spec(spec)
+        opts.mount_prefixes.append(prefix^)
+        opts.mount_modules.append(mount_pair[0])
+        opts.mount_attributes.append(mount_pair[1])
+        opts.mount_explicit.append(spec.find(":") >= 0)
     elif name == "--static-cache-control":
         opts.static_cache_control = value
     elif name == "--max-body":
@@ -609,7 +693,17 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
             have_module = True
         i += 1
 
-    if not have_module and not opts.show_help and not opts.show_version:
+    if have_module and len(opts.mount_prefixes) > 0:
+        raise Error(
+            "--mount and a positional MODULE[:ATTR] are exclusive; give one"
+            " --mount per application"
+        )
+    if (
+        not have_module
+        and len(opts.mount_prefixes) == 0
+        and not opts.show_help
+        and not opts.show_version
+    ):
         raise Error("missing MODULE[:ATTR]")
     return opts^
 
@@ -636,6 +730,10 @@ def usage() -> String:
         "  --protocol P                auto (default), wsgi, or asgi — force the\n"
         "                              application protocol instead of detecting it\n"
         "  --app-dir DIR               prepended to sys.path (default .)\n"
+        "  --mount PREFIX=SPEC         mount an application at PREFIX instead of\n"
+        "                              taking one positional spec; repeatable, and\n"
+        "                              each application's protocol is detected on\n"
+        "                              its own (longest prefix wins)\n"
         "  --static PREFIX=DIR         serve DIR at PREFIX from Mojo, never entering\n"
         "                              Python; repeatable\n"
         "  --static-cache-control V    Cache-Control for static responses\n"
