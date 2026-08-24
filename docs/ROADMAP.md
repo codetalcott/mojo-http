@@ -363,10 +363,15 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   48,852 rps (+6.7%)**, RSS guard still 0 KB. Cumulative against the
   pre-bridge-work baseline: **1.69x**.
 
-  **The obvious follow-on:** `PyBytes_FromStringAndSize` is reachable by the
-  same route, which would let the *request* body cross without the shim's
-  bytearray, `buf_addr()` or the grow protocol — retiring the last piece of
-  the blob design.
+  **The follow-on is done too:** the *request* body now becomes a real
+  `bytes` via `PyBytes_FromStringAndSize` and rides to the shim as a stolen
+  tuple slot; `io.BytesIO(bytes)` shares the buffer copy-on-write, so the
+  path has ONE copy where the bytearray protocol had two. Staging a 1 KB
+  body: **1.6 µs → 0.07 µs (~23x)**; POST e2e with a 1 KB body on
+  `apps/wsgi_bare`'s `/input/read`: **42.1k → 47.3k rps (+12%)**, with GET
+  unchanged. The shim's transfer bytearray, `buf_addr()` and the grow
+  protocol are deleted — the last piece of the blob design — and the shim
+  imports nothing but `io`.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it

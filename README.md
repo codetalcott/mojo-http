@@ -290,11 +290,13 @@ result: flat memory across 10k requests. Building the environ here rather
 than in Python is also worth 1.57x end to end
 ([docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md)).
 
-Bodies are the exception, in both directions: `std.python` binds no `bytes`
-API at all, so the request body crosses through a persistent `bytearray` and
-the response body comes back as a raw address via `ctypes`. A `String` round
-trip would corrupt any byte above 0x7F; the same smoke asserts a body of all
-256 byte values returns unchanged.
+Bodies cross through the same door: `std.python` binds no `bytes` API, but
+the stdlib's own symbol loader reaches the functions it left out, so the
+request body becomes a real `bytes` via `PyBytes_FromStringAndSize` (one
+copy, and `io.BytesIO(bytes)` shares it rather than copying again) and the
+response body is read back through `PyBytes_AsString`. A `String` round trip
+would corrupt any byte above 0x7F; a smoke asserts a body of all 256 byte
+values returns unchanged.
 
 **Limits**, all inherited from the server rather than the bridge:
 

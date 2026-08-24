@@ -36,9 +36,30 @@ versions may break the API**.
   **0 KB over 10k requests** — reading through a raw pointer takes no
   reference.
 
-  The **request** body still crosses through the shim's bytearray.
-  `PyBytes_FromStringAndSize` is reachable the same way and would retire it,
-  along with `buf_addr()` and the grow protocol; that is not done here.
+  The **request** body followed in the next entry — see below.
+
+- **The request body crosses as a real `bytes` via
+  `PyBytes_FromStringAndSize` — the blob design is fully retired.** Mojo
+  builds the `bytes` straight from the request's own buffer (one copy,
+  inside the call) and hands it to the shim as a stolen tuple slot;
+  `io.BytesIO(bytes)` shares the buffer copy-on-write, so `wsgi.input`
+  costs no second copy where the old bytearray protocol always paid one.
+  Staging a 1 KB body: **1.6 µs → 0.07 µs (~23x)**; end to end, a 1 KB POST
+  to `apps/wsgi_bare`'s `/input/read`: **42.1k → 47.3k rps (+12%)**, GETs
+  unchanged. Deleted outright: the shim's 64 KB transfer bytearray,
+  `buf_addr()`, the grow protocol, and the shim's `ctypes` and `sys`
+  imports — it now imports nothing but `io`. Every request costs exactly
+  one call into Python, the `PyObject_CallObject` that runs
+  `run(environ, body)`.
+
+### Fixed
+
+- **`body_bytes` no longer swallows a pending exception.** `PyObject_Length`
+  answers -1 with the exception *set*; folding that into the empty-body case
+  returned an empty list and left the error pending, poisoning whatever
+  C-API call ran next. Unreachable through the shim contract today (`_body`
+  is always `bytes`), found by review, fixed before it could become
+  reachable.
 
 ## [0.7.0] — 2026-08-23
 
