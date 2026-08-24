@@ -113,6 +113,14 @@ jobs:
       # the same dlopen path Bun or N-API takes — against public hash vectors.
       - name: Smoke test the C-ABI shared library
         run: uv run poe smoke-ffi
+      # The property smoke-ffi cannot test: that the artifact loads somewhere
+      # OTHER than the machine that built it. smoke-ffi dlopens it in the
+      # build tree, where the venv it linked against still exists, so it
+      # passes on exactly the machine where the defect cannot appear — which
+      # is how a broken asset shipped in seven releases. This asserts the
+      # bundle is self-contained, and fails if it ever regresses.
+      - name: Assert the C-ABI bundle is self-contained
+        run: uv run poe bundle-ffi
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
       # Both stop paths: SIGTERM draining a single process, and a SIGTERM aimed

@@ -182,6 +182,54 @@ both linked from the wheel's own metadata. A definitive answer costs nothing
 and unblocks the last step; the mechanism is already proven and
 `check-ffi-portable --require-self-contained` already validates the result.
 
+## Resolved, 2026-08-24: the bundle ships
+
+All three defects are fixed. `poe bundle-ffi` assembles
+`dist/libm0core-<platform>/` containing the artifact, the Mojo runtime it
+loads, and both licences — and **refuses to finish unless the result is
+self-contained**, so the assembly step and the assertion cannot drift apart.
+Verified by loading it from `/tmp` with `DYLD_LIBRARY_PATH` and
+`DYLD_FALLBACK_LIBRARY_PATH` unset: every public vector passes.
+
+**The closure is discovered, not listed.** `bundle_ffi.py` walks the
+dependency graph, so a toolchain bump that adds a fourth library is picked up
+instead of silently producing a broken bundle — which is exactly the failure
+the first hand-written attempt hit, shipping only the library named in the
+error message and then failing on its dependency.
+
+CI runs `bundle-ffi` on every commit, and the release workflow ships the
+bundle as `<asset>.tar.gz` beside the bare library (kept so existing download
+URLs keep working). A release can no longer publish an asset that only loads
+on the runner.
+
+### Why proceeding was reasonable, and what it does not rest on
+
+The evidence is not unanimous, so the position is stated rather than implied:
+
+- The `mojo_compiler` wheel contains **only** `modular/bin`, `modular/lib`
+  and `mojo` — the compiler and its runtime, **no MAX components**. That is
+  precisely the scope open sourced on 2026-08-18.
+- It ships **no licence file of its own**, so its `License:` metadata field
+  is the only contrary signal — and a packaging field is weak evidence
+  against the `LICENSE` actually governing the sources.
+- The same runtime code is *already* redistributed by this project, embedded,
+  in the statically linked Linux artifact. macOS differs only because
+  Modular's toolchain links it dynamically there; a licence outcome should
+  not turn on their linking strategy.
+
+**Nothing here rests on the LLVM Exception.** That exception excuses Apache
+sections 4(a), 4(b) and 4(d) for portions embedded into Object form by
+compiling one's own source — which describes `libm0core` itself and the
+Linux artifact, and was never in doubt. Rather than argue it stretches to
+separate files, the bundle simply **complies with section 4 in full**: the
+Apache text ships as `LICENSE.mojo-runtime.txt`, and `NOTICE.txt` carries
+attribution plus an explicit 4(b) modification notice (install name, rpath
+and ad-hoc re-signing changed; executable code byte-for-byte as built).
+
+If Modular later states that the prebuilt binaries are *not* Apache-licensed,
+the remedy is one line — drop the copy step — and everything else here still
+stands.
+
 ## Recommended sequence
 
 1. ~~**Fix defects 1 and 2.**~~ **Done** — see the update above. macOS is

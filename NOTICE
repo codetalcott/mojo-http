@@ -7,38 +7,51 @@ This project's own source is licensed under the MIT License; see LICENSE.
 
 --------------------------------------------------------------------------------
 
-Mojo toolchain and runtime (NOT redistributed)
+Mojo runtime libraries (redistributed in the macOS libm0core bundle)
+    Path        licenses/LICENSE.mojo-runtime.txt
     Upstream    https://github.com/modular/modular
+    License     Apache License 2.0 with LLVM Exceptions
     Copyright   Modular Inc
 
-    This project is COMPILED BY Mojo and links its runtime, but ships no
-    Modular binary. Recorded here because the published `libm0core` release
-    artifacts depend on three Modular runtime libraries at load time —
-    libKGENCompilerRTShared, libMSupportGlobals, libAsyncRTRuntimeGlobals —
-    which are NOT included in those releases and must come from the
-    consumer's own Mojo installation. See docs/FFI_DISTRIBUTION.md.
+    The macOS `libm0core` release bundle contains three Mojo runtime
+    libraries, because the C-ABI artifact resolves them at load time and is
+    useless without them:
 
-    Licensing, as of 2026-08-24, is unresolved in a way that matters if that
-    ever changes:
+        libKGENCompilerRTShared.dylib
+        libMSupportGlobals.dylib
+        libAsyncRTRuntimeGlobals.dylib
 
-      - Mojo's compiler and tooling were open sourced on 2026-08-18 under
-        Apache License 2.0 with LLVM Exceptions, and modular/modular's root
-        LICENSE states exactly that with no carve-out for the runtime. The
-        runtime sources (KGEN/, AsyncRT/, Support/lib/) are in that repo.
-      - The wheel that actually ships those prebuilt binaries,
-        mojo_compiler 1.0.0, declares
-        `License: LicenseRef-MAX-Platform-Software-License` — Modular's
-        proprietary MAX Platform license.
+    MODIFIED, minimally and mechanically: each library's Mach-O install name
+    and rpath are rewritten so the set resolves beside itself rather than in
+    the directory it was built in, and each is re-signed ad-hoc because arm64
+    invalidates a signature on any Mach-O edit. No source was changed and no
+    code was recompiled. `licenses/NOTICE.bundle.txt` travels inside the
+    bundle and states this, which is Apache section 4(b).
 
-    Sources Apache-2.0, binaries-as-distributed proprietary. Probably stale
-    wheel metadata (Mojo 1.0.0 shipped the same day as the relicensing), but
-    that is a guess, and it is why no Modular binary is redistributed here.
-    Resolve it before adding one.
+    Linux bundles contain NO Modular binary: that artifact is statically
+    linked, has no DT_NEEDED entries, and resolves nothing at load time.
 
-    The LLVM Exception is not the answer to that question. It covers portions
-    of the Software embedded into Object form by compiling one's own source —
-    which describes libm0core.dylib itself, and is not in doubt — not the
-    redistribution of runtime libraries as separate files.
+    ON THE LICENCE, because the evidence is not unanimous. Mojo's compiler
+    and tooling were open sourced on 2026-08-18 under Apache 2.0 with LLVM
+    Exceptions; modular/modular's root LICENSE says exactly that with no
+    carve-out, and the runtime sources (KGEN/, AsyncRT/, Support/lib/) are in
+    that repository. Against that, the wheel shipping the prebuilt binaries
+    — mojo_compiler, checked again at 1.1.0.dev2026082305, five days after
+    the relicensing — still declares
+    `License: LicenseRef-MAX-Platform-Software-License`, and ships no licence
+    file of its own. That wheel contains only modular/bin, modular/lib and
+    mojo: the compiler and its runtime, no MAX components, which is exactly
+    the scope that was open sourced.
+
+    Proceeding on the basis that these binaries are builds of the
+    Apache-licensed sources, and complying with Apache section 4 IN FULL —
+    licence text above, attribution and modification notice in the bundle —
+    rather than relying on the LLVM Exception to excuse sections 4(a), 4(b)
+    and 4(d). That exception covers portions embedded into Object form by
+    compiling one's own source, which describes libm0core itself and the
+    statically linked Linux artifact; it does not obviously reach shipping
+    runtime libraries as separate files, so nothing here depends on it
+    doing so.
 
 --------------------------------------------------------------------------------
 
