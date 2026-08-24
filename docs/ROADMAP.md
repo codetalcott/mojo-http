@@ -372,6 +372,16 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   unchanged. The shim's transfer bytearray, `buf_addr()` and the grow
   protocol are deleted — the last piece of the blob design — and the shim
   imports nothing but `io`.
+
+  **And the environ build after it: 1.78 → 1.56 µs, bridge 2.35 µs.** The
+  base entries live in a finished template dict and each request starts
+  from `PyDict_Copy` (58 ns against 214 for the replay). The bigger result
+  is negative: interning recurring header names/values loses — the intern
+  cache's hit-path byte-compares (245 ns) cost more than the decodes they
+  skip (180 ns; short-ASCII `DecodeUTF8` is 15 ns) — so it was never built.
+  What remains is ~26 mandated `PyDict_SetItem`s and sixteen genuinely
+  dynamic decodes: **the bridge is near its structural floor**, and the
+  next real move is re-measuring the Granian gap on 3.14.7t.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
