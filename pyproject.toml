@@ -2082,6 +2082,15 @@ echo "smoke-client OK"
 # load and answer through ctypes — the same dlopen path Bun or N-API takes.
 # Vectors are the public known answers test_hashing.mojo also pins, so the
 # .so is checked against the algorithm, not against itself.
+[tool.poe.tasks.check-ffi-portable]
+help = "Assert the C-ABI artifact does not depend on the machine that built it"
+shell = """
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+lib=${FFI_LIB:-packages/m0-core/libm0core.$ext}
+[ -f "$lib" ] || { echo "check-ffi-portable: $lib not built - run: poe build-ffi"; exit 2; }
+python3 scripts/ffi_portability_check.py "$lib"
+"""
+
 [tool.poe.tasks.smoke-ffi]
 help = "Build the C-ABI shared library, load it via ctypes, assert known vectors"
 shell = """

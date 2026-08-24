@@ -7,6 +7,32 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The published `libm0core` artifacts do not load off the machine that
+  built them, and now there is a check that says so.** Every release from
+  v0.1.0 has shipped a C-ABI library whose recorded search path is the CI
+  runner's own directory, so `dlopen` — the entire point of the artifact —
+  fails for anyone who downloads it. `smoke-ffi` could never catch this: it
+  loads the library **in the build tree**, where the venv it was linked
+  against still exists, so it passes on exactly the machine where the defect
+  cannot appear.
+
+  `poe check-ffi-portable` checks what a load attempt cannot — that every
+  recorded search path is self-relative and every dependency is a system
+  library or shipped alongside — and fails on the current artifact and on
+  every published one, which is how it was verified. The README no longer
+  claims the prebuilt artifacts are usable as-is.
+
+  The fix is demonstrated in [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md)
+  (the bundled artifact loads from an unrelated directory with a clean
+  environment) but not yet applied: two of the three defects are ours and
+  need no permission, while shipping the Mojo runtime's 1.57 MB
+  three-file closure turns on a licensing question that is genuinely
+  unresolved — Mojo's sources went Apache-2.0 with LLVM Exceptions on
+  2026-08-18, but the wheel shipping those prebuilt binaries still declares
+  the proprietary MAX Platform license. Recorded in NOTICE.
+
 ### Changed
 
 - **The WSGI response path was never measured, and was 10x the request
