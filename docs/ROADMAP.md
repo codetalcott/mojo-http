@@ -346,13 +346,27 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   before, purely because everything around it shrank.
 
   That was first described as "a `len()`, a `body_addr()` crossing, then a
-  byte-at-a-time copy" — a reading of the code. Measured, it is **one of the
+  byte-at-a-time copy" — a reading of the code. Measured, it was **one of the
   three**: the `len()` is 0.003 µs and the copy is noise, while
-  `body_addr()` is **1.095 µs**, because that shim function builds two
-  `ctypes` objects per request. It is the last per-request Python-level
-  operation in the bridge. The fix is the one the request path already uses —
-  a persistent `bytearray` whose address Mojo caches once, so no `ctypes`
-  call happens per request. Expected to take the bridge to ~2.5 µs.
+  `body_addr()` was **1.095 µs**, because that shim function built two
+  `ctypes` objects per request.
+
+  **Done, and not the way this entry predicted.** The recorded plan — a
+  persistent `bytearray` whose address Mojo caches — rested on the premise
+  that a `bytes` object is unreachable from Mojo. It is not. `external_call`
+  cannot reach `PyBytes_*` because **libpython is not on the link line**, but
+  the stdlib's own `ExternalFunction[name, type].load(cpy.lib.borrow())`
+  can, and that is how `CPython` populates its own bindings. **The whole C
+  API is reachable, not only the wrapped part** — a more useful fact than the
+  optimisation it produced. `body_bytes` now runs no Python at all:
+  **1.07 µs → 0.13 µs**, bridge **3.52 → 2.50 µs**, end to end **45,891 →
+  48,852 rps (+6.7%)**, RSS guard still 0 KB. Cumulative against the
+  pre-bridge-work baseline: **1.69x**.
+
+  **The obvious follow-on:** `PyBytes_FromStringAndSize` is reachable by the
+  same route, which would let the *request* body cross without the shim's
+  bytearray, `buf_addr()` or the grow protocol — retiring the last piece of
+  the blob design.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
