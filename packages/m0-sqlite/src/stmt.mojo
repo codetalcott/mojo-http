@@ -255,6 +255,11 @@ struct Statement(Movable):
         it was handed, so a database written elsewhere can legally hold
         invalid UTF-8 — and it lands in the returned String as-is. Validation
         belongs to the caller who knows the data's provenance.
+
+        **Scanning many rows?** The String built here is the dominant cost of
+        a text scan — 2.1x at both 64 B and 4 KB (`bench_sqlite.mojo`). A
+        zero-allocation read already exists: `column_blob_into` works on a
+        TEXT column too, handing the UTF-8 bytes into a reused buffer.
         """
         self._check_column(index)
         var p = external_call["sqlite3_column_text", CharPtr](
@@ -305,6 +310,13 @@ struct Statement(Movable):
         one buffer can be reused across every row of a scan instead of
         allocating a fresh `List` per row. Returns 0 for NULL and for a
         zero-length blob alike — see `is_null` to tell them apart.
+
+        **Works on TEXT columns too**, and is the zero-allocation text scan:
+        SQLite converts TEXT to blob bytes on request, and for TEXT stored as
+        UTF-8 that conversion is a pointer handoff, not a copy. Measured 2.1x
+        over `column_text` at 64 B and at 4 KB — the whole difference is the
+        per-row String. The bytes arrive without a terminating NUL, exactly
+        as `column_text` would have seen them.
         """
         self._check_column(index)
         # Pointer before length, as in `column_blob` — SQLite documents that
