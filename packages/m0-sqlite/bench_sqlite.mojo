@@ -46,20 +46,28 @@ def _column_blob_byteloop(stmt: Statement, index: Int) -> List[UInt8]:
 
 def _seed(mut db: Connection, blob_size: Int) raises:
     db.execute(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, f REAL, v BLOB)"
+        "CREATE TABLE t"
+        " (id INTEGER PRIMARY KEY, n INTEGER, f REAL, v BLOB, s TEXT)"
     )
     var payload = List[UInt8](capacity=blob_size)
     for i in range(blob_size):
         payload.append(UInt8(i & 0xFF))
+    # Text payload of the same size, printable so it is honest TEXT.
+    var text = String()
+    for i in range(blob_size):
+        text += String(chr(ord("a") + (i % 26)))
 
     db.begin()
-    var ins = db.prepare("INSERT INTO t (id, n, f, v) VALUES (?, ?, ?, ?)")
+    var ins = db.prepare(
+        "INSERT INTO t (id, n, f, v, s) VALUES (?, ?, ?, ?, ?)"
+    )
     for i in range(ROWS):
         ins.reset()
         ins.bind_int(1, i)
         ins.bind_int(2, i * 3)
         ins.bind_float(3, Float64(i) * 1.5)
         ins.bind_blob(4, payload)
+        ins.bind_text(5, text)
         _ = ins.step()
     _ = ins^
     db.commit()
@@ -169,6 +177,55 @@ def bench_blob_scan(mut db: Connection, size: Int) raises:
         if r == 0 or dt < best_into:
             best_into = dt
     _report("column_blob_into (reused)  ", best_into)
+
+
+def bench_text_scan(mut db: Connection, size: Int) raises:
+    """What the per-row String allocation in a text scan costs.
+
+    The third row is the zero-allocation read that ALREADY exists:
+    `column_blob_into` on a TEXT column hands back the UTF-8 bytes into a
+    reused buffer — SQLite converts TEXT to blob bytes on request, and for
+    TEXT stored as UTF-8 that conversion is a pointer handoff. The delta
+    between rows one and three is therefore pure String alloc/free.
+    """
+    print("\n---", size, "-byte TEXT column,", ROWS, "rows ---")
+
+    var best_text = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT s FROM t")
+        var t0 = perf_counter_ns()
+        var acc = 0
+        while q.step():
+            var v = q.column_text(0)
+            acc += v.byte_length()
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_text:
+            best_text = dt
+    _report("column_text (String/row)   ", best_text)
+
+    var best_bulk = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT s FROM t")
+        var out = List[String](capacity=ROWS)
+        var t0 = perf_counter_ns()
+        _ = q.fetch_texts(0, out)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_bulk:
+            best_bulk = dt
+    _report("fetch_texts                ", best_bulk)
+
+    var best_into = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT s FROM t")
+        var buf = List[UInt8]()
+        var t0 = perf_counter_ns()
+        var acc = 0
+        while q.step():
+            acc += q.column_blob_into(0, buf)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_into:
+            best_into = dt
+    _report("column_blob_into on TEXT   ", best_into)
 
 
 def bench_ingest(n: Int) raises:
@@ -290,6 +347,7 @@ def main() raises:
             bench_int_scan(db)
             bench_float_scan(db)
         bench_blob_scan(db, size)
+        bench_text_scan(db, size)
 
     bench_ingest(10_000)
     bench_ingest(200_000)

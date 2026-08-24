@@ -233,6 +233,47 @@ Integer addition reassociates exactly, so these agree bit for bit at every
 length, which `test_reduce.mojo` asserts from 0 to 80 elements and against
 SQLite over 1,000 rows.
 
+## The WSGI-bridge techniques, checked against this package
+
+The bridge work (docs/WSGI_PERFORMANCE.md) distilled into a short method:
+split a cost by part before designing against it; check whether a missing
+API is missing or merely unbound; eliminate copies; hoist per-call
+overhead; and measure a cache's *hit* path before building it. Checked here
+deliberately, item by item:
+
+| technique | status here |
+|-----------|-------------|
+| reach the unbound C API | **no analog** — libsqlite3 is on the link line, `external_call` already reaches all of it; `carray()` is absent from the *library binary*, which no loader trick fixes |
+| replace interpreted work with C calls | **no analog** — there is no interpreter boundary |
+| batch N calls into one (`PyDict_Copy`) | **no analog** — SQLite has no bulk row API (`sqlite3_step` is per row; already recorded at the SoA readers) |
+| eliminate copies on the hot path | **already applied** — `column_blob` memcpy (13–20x), `column_blob_into` reuse, `m0_array` borrow-by-shape (3.4x) |
+| measure a cache's hit path first | **already practiced** — the statement cache was rejected twice by measurement |
+| hoist hidden per-call work | **checked, nothing there** — the `StringLiteral` → `String` conversion every binder pays on its happy path (`_check(rc, "bind_int")`) measures at **0.0 ns** in an optimized build; the compiler hoists it |
+
+Two things did come out of the check.
+
+**A text scan pays 2.1x for its per-row `String`, and the zero-allocation
+read already existed — undocumented.** The bench had int, float and blob
+rows but no TEXT row, so `column_text`'s per-row allocation had never been
+priced. Now it is (`bench_sqlite.mojo`, 100k rows, best of 5):
+
+| read | 64 B | 4096 B |
+|------|-----:|-------:|
+| `column_text` (String per row) | 111.5 ns/row | 971.7 ns/row |
+| `fetch_texts` | 134.9 ns/row | 1233.8 ns/row |
+| **`column_blob_into` on the TEXT column** | **51.9 ns/row** | **463.7 ns/row** |
+
+`column_blob_into` works on TEXT because SQLite converts TEXT to blob bytes
+on request, and for TEXT stored as UTF-8 that conversion is a pointer
+handoff. No new API was added — the fix is the two docstrings that now
+point at each other, per this package's own rule: add the variant the day
+something needs it, not speculatively.
+
+**The verdict on the package**: it already embodies the method. The
+remaining per-row cost of a scan is SQLite's own VM (`sqlite3_step`), which
+is the same kind of floor the WSGI bridge just reached — the boundary code
+is direct calls and single copies, and what is left is the engine itself.
+
 ## Recommendations
 
 1. **Document batching prominently.** A `README` example that inserts in a loop

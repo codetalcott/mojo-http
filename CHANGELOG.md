@@ -9,6 +9,19 @@ versions may break the API**.
 
 ### Changed
 
+- **m0-sqlite: the text-scan cost is measured, and the zero-allocation read
+  is documented.** `bench_sqlite.mojo` gained TEXT rows — the one column
+  type it never priced — showing `column_text` pays **2.1x** for its
+  per-row `String` at 64 B and at 4 KB alike. The fast path already
+  existed: `column_blob_into` works on TEXT columns (SQLite's UTF-8
+  TEXT→blob conversion is a pointer handoff), and the two docstrings now
+  point at each other. No new API, per the package's own rule. Also
+  recorded in SQLITE_PERFORMANCE.md: the WSGI-bridge techniques checked
+  item-by-item against this package — most already applied or without an
+  analog, and the one fresh suspect (a hidden `StringLiteral` → `String`
+  conversion on every binder's happy path) measured at 0.0 ns and was
+  left alone.
+
 - **Each request's environ starts as `PyDict_Copy` of a finished base
   template — `build_environ` 1.78 → 1.56 µs, the bridge 2.35 µs.** One C
   call replaces ten per-request hash-and-stores (58 ns vs 214 measured),
