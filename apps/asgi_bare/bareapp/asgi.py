@@ -92,6 +92,41 @@ async def application(scope, receive, send):
                         "body": b"data: %d\n\n" % n, "more_body": True})
             n += 1
             await asyncio.sleep(0.05)
+    elif path == "/stream":
+        # A finite streamed body larger than the credit window: pins the
+        # chunk split, backpressure, byte-exactness, and the end-close.
+        # Deterministic content so the smoke can hash it.
+        size = 1024 * 1024
+        for pair in scope["query_string"].decode("latin-1").split("&"):
+            if pair.startswith("size="):
+                size = int(pair[5:] or 0)
+        await _send_start(send, 200, [(b"content-type", b"application/octet-stream")])
+        block = bytes(range(256)) * 256  # 64 KB
+        sent_total = 0
+        while sent_total < size:
+            piece = block[: min(len(block), size - sent_total)]
+            await send({"type": "http.response.body", "body": piece,
+                        "more_body": True})
+            sent_total += len(piece)
+        await send({"type": "http.response.body", "body": b""})
+    elif path == "/stream-events":
+        # Datastar-shaped named events — and one event deliberately split
+        # across two sends mid-line: a protocol heartbeat landing between
+        # them would corrupt the frame, which is exactly what the smoke
+        # asserts cannot happen.
+        await _send_start(send, 200, [(b"content-type", b"text/event-stream")])
+        await send({"type": "http.response.body",
+                    "body": b"event: datastar-patch-elements\n"
+                            b"data: elements <div id=\"n1\">one</div>\n\n",
+                    "more_body": True})
+        await send({"type": "http.response.body",
+                    "body": b"event: datastar-patch-sig",
+                    "more_body": True})
+        await asyncio.sleep(0.7)  # longer than the smoke's heartbeat cadence
+        await send({"type": "http.response.body",
+                    "body": b"nals\ndata: signals {\"n\": 2}\n\n",
+                    "more_body": True})
+        await send({"type": "http.response.body", "body": b""})
     else:
         await _text(send, 404, b"not found")
 

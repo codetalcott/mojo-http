@@ -9,6 +9,28 @@ versions may break the API**.
 
 ### Added
 
+- **ASGI streaming responses (Phase 3a): SSE actually streams.**
+  FastHTML's `EventStream`, Starlette's `StreamingResponse`, and Datastar
+  patch streams now stream live through the asyncio executor instead of
+  meeting the buffered watchdog's 500. Response chunks travel from the
+  executor thread to the event loop as datagrams on a private per-loop
+  channel and ride the existing `SSERegistry` per-slot outboxes under
+  reserved channel names (a leading control byte no HTTP header value can
+  carry, so GRIP channels cannot collide). Correctness is ordering and
+  credit, both smoke-pinned: a stream's begin frame precedes its head on
+  one FIFO channel (so a recycled slot can never receive another
+  stream's chunks), a 64 KB credit window with 32 KB chunk split means
+  the loop's drain acks pace the producer (a 100 MB stream behind a slow
+  reader grows server RSS ~2 MB), bodies are close-delimited and the
+  loop closes on end-of-stream via the previously-uncalled
+  `sse_is_streaming` hook, client disconnects cancel the app task
+  (uvicorn's contract), and comment heartbeats are suppressed on ASGI
+  streams so an SSE event split across chunks can never be corrupted —
+  asserted byte-exact under a 300 ms cadence, alongside an md5-checked
+  1 MB streamed body. `smoke-fasthtml` now asserts live `/sse` ticks;
+  the buffered escape hatch (`--blocking-threads` + ASGI) keeps its
+  watchdog refusal. WebSocket scopes are Phase 3b.
+
 - **The asyncio executor: real await-concurrency for ASGI (Phase 2).**
   Zero-config ASGI now serves through one executor thread per event loop
   (`m0_wsgi.asgi_executor`) running the bridge's persistent asyncio loop:

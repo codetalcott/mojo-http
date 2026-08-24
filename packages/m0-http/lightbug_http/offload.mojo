@@ -162,6 +162,20 @@ struct OffloadPool(Movable):
     which it cannot infer from a 500 that a handler might have returned
     deliberately."""
 
+    var stream_chunk_read: Int
+    var stream_chunk_write: Int
+    var stream_ack_read: Int
+    var stream_ack_write: Int
+    """The ASGI streaming channel, -1 until `enable_stream_channel` (only
+    the asyncio-executor mode calls it). Chunks travel executor→loop as
+    bus-shaped datagrams — `stream_chunk_read` is what the wiring passes to
+    `run_event_loop` as its `bus_read_fd` — and drain acks travel
+    loop→executor as `(slot: i32, bytes: i32)` datagrams, which is what
+    makes the producer's `await send(...)` mean something. `stream_active`
+    is also the loop's marker that streaming slots are ASGI streams (with
+    end-of-stream close and no comment heartbeats), which is sound because
+    `--realtime` is refused with every offload mode."""
+
     var capacity: Int
 
     def __init__(out self, capacity: Int) raises:
@@ -190,6 +204,11 @@ struct OffloadPool(Movable):
             self.responses.append(None)
             self.errored.append(False)
         self.capacity = capacity if capacity > 0 else 0
+
+        self.stream_chunk_read = -1
+        self.stream_chunk_write = -1
+        self.stream_ack_read = -1
+        self.stream_ack_write = -1
 
         if capacity <= 0:
             self.submit_read = -1
@@ -220,10 +239,79 @@ struct OffloadPool(Movable):
         self.submit_write = move.submit_write
         self.complete_read = move.complete_read
         self.complete_write = move.complete_write
+        self.stream_chunk_read = move.stream_chunk_read
+        self.stream_chunk_write = move.stream_chunk_write
+        self.stream_ack_read = move.stream_ack_read
+        self.stream_ack_write = move.stream_ack_write
         self.requests = move.requests^
         self.responses = move.responses^
         self.errored = move.errored^
         self.capacity = move.capacity
+
+    def enable_stream_channel(mut self) raises:
+        """Create the ASGI streaming pairs. Executor wiring only, once,
+        before the executor thread spawns.
+
+        All four ends are non-blocking: the loop must never park in a
+        send, and the executor's asyncio loop watches its two ends with
+        `add_reader`. The writers therefore need the retry-with-yield
+        policy (`send_stream_chunk`, `ack_stream`) rather than blocking —
+        a dropped chunk is a corrupt body and a dropped ack is a stalled
+        stream, so neither may use the bus's drop-on-EAGAIN policy.
+        """
+        var chunks = socketpair_dgram()
+        var acks = socketpair_dgram()
+        self.stream_chunk_read = chunks[0]
+        self.stream_chunk_write = chunks[1]
+        self.stream_ack_read = acks[0]
+        self.stream_ack_write = acks[1]
+        for fd in [
+            self.stream_chunk_read, self.stream_chunk_write,
+            self.stream_ack_read, self.stream_ack_write,
+        ]:
+            _size_socket(fd)
+            _set_nonblocking_fd(fd)
+
+    def stream_active(self) -> Bool:
+        """Whether the ASGI streaming channel exists (executor mode)."""
+        return self.stream_ack_write >= 0
+
+    def send_stream_chunk(self, frame: Span[Byte, _]):
+        """One bus-shaped chunk datagram, executor side. Retried, never
+        dropped — same policy and rationale as `complete`."""
+        for _ in range(64):
+            try:
+                _ = send(
+                    FileDescriptor(self.stream_chunk_write),
+                    frame, UInt(len(frame)), 0,
+                )
+                return
+            except:
+                _sched_yield()
+
+    def ack_stream(self, slot: Int, bytes_flushed: Int):
+        """One drain-ack datagram, loop side: `(slot: i32, bytes: i32)` LE.
+
+        Called after a streaming slot's buffer fully lands in the kernel;
+        the executor replenishes that slot's credit by `bytes_flushed`.
+        Retried like `complete` — bounded, and the ack channel is sized
+        far beyond the credit window so it cannot stay full."""
+        var msg = List[UInt8](capacity=8)
+        var s = UInt32(slot)
+        var b = UInt32(bytes_flushed)
+        for i in range(4):
+            msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
+        for i in range(4):
+            msg.append(UInt8((b >> UInt32(8 * i)) & 0xFF))
+        for _ in range(64):
+            try:
+                _ = send(
+                    FileDescriptor(self.stream_ack_write),
+                    Span(msg), UInt(len(msg)), 0,
+                )
+                return
+            except:
+                _sched_yield()
 
     def addr(mut self) -> Int:
         """This pool's address, for `run_event_loop` and the thread blocks."""

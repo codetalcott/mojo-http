@@ -34,10 +34,13 @@ Streaming is still refused here (the Phase-1 watchdog rides along in
 
 from std.python import Python, PythonObject
 
+from lightbug_http.broadcast import encode_bus_frame
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
 from lightbug_http.offload import OffloadPool
+
+from m0_http.sse.format import NO_EVENT_ID
 
 from m0_http import (
     ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS,
@@ -47,7 +50,7 @@ from m0_http import (
 from .app import WSGIApp
 from .blocking_pool import BLK_POOL
 from .cli import ServeOptions
-from .handler import WSGIHandler
+from .handler import WSGIHandler, asgi_stream_url
 from .response import build_response
 from .thread_handler import ThreadContext
 
@@ -139,9 +142,11 @@ def _executor_serve(block: ThreadBlock) raises:
     # The shim's loop reads the submit channel itself from here on. The fd
     # must be non-blocking: `add_reader` fires level-ish per readability,
     # and the drain-until-EAGAIN read inside the shim must never park the
-    # whole loop in a blocking `read`.
+    # whole loop in a blocking `read`. The ack fd (streaming credit) was
+    # made non-blocking by `enable_stream_channel`, in the wiring, before
+    # this thread existed.
     set_nonblocking(FileDescriptor(pool.submit_read))
-    handler.app._bridge.executor_init(pool.submit_read)
+    handler.app._bridge.executor_init(pool.submit_read, pool.stream_ack_read)
 
     # Parallel to the slots: what `after_response` needs after the request
     # itself has crossed into Python. Only ever touched by this thread.
@@ -246,6 +251,62 @@ def _pump_events(
             handler.after_response(methods[slot], paths[slot], response)
             pool.put_response(slot, response^, True)
             pool.complete(slot)
+        elif kind == "stream_start":
+            # ORDER IS THE CORRECTNESS HERE. The begin frame goes out on
+            # the chunk channel BEFORE the head completion: its send
+            # syscall returns before the completion's begins, so any loop
+            # pass that can see the head can already see the begin — the
+            # handler is subscribed before the slot ever shows up
+            # streaming in a drain pass, which is what makes
+            # "not subscribed" an unambiguous end-of-stream signal and
+            # closes the wrongful-early-close race. It also anchors the
+            # FIFO that keeps a recycled slot safe: every frame of this
+            # stream sits between its begin and its end on one channel.
+            var begin = List[UInt8]()
+            var begin_frame = encode_bus_frame(
+                asgi_stream_url(String("b"), slot), NO_EVENT_ID, Span(begin)
+            )
+            pool.send_stream_chunk(Span(begin_frame))
+            # The head: an ordinary completion whose response is marked
+            # streaming — _finish_response pops content-length, keeps the
+            # connection, and flips the slot into streaming state once the
+            # head is on the wire. From here this slot's bytes travel ONLY
+            # as chunk frames; the completion channel is done with it.
+            var response: HTTPResponse
+            var raised = False
+            try:
+                response = build_response(
+                    handler.app._bridge, String(py=ev[2]), ev[3], ev[4]
+                )
+                response.sse_streaming = True
+            except:
+                response = InternalError()
+                raised = True
+            handler.after_response(methods[slot], paths[slot], response)
+            pool.put_response(slot, response^, raised)
+            pool.complete(slot)
+        elif kind == "stream_chunk":
+            # Park-then-poke does not apply here: the chunk's bytes ride
+            # IN the datagram, so the send is both the publish and the
+            # happens-before edge. Retried, never dropped — a lost chunk
+            # is a corrupt body.
+            var chunk = handler.app._bridge.body_bytes(ev[2])
+            var frame = encode_bus_frame(
+                asgi_stream_url(String("s"), slot), NO_EVENT_ID, Span(chunk)
+            )
+            pool.send_stream_chunk(Span(frame))
+        elif kind == "stream_end":
+            var empty = List[UInt8]()
+            var frame = encode_bus_frame(
+                asgi_stream_url(String("e"), slot), NO_EVENT_ID, Span(empty)
+            )
+            pool.send_stream_chunk(Span(frame))
+        elif kind == "stream_note":
+            print(
+                "asgi-executor: stream raised after its head: "
+                + String(py=ev[2]),
+                flush=True,
+            )
 
 
 def _executor_body(arg: Int) -> Int:

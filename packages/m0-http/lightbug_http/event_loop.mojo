@@ -384,6 +384,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # expired-and-unrearmed timer would be returned by every
                     # subsequent epoll_wait: a heartbeat storm at loop speed.
                     backend.try_add_timer(timer_ident, config.sse_heartbeat_ms)
+                    # ASGI streams (the executor's streaming channel is
+                    # active): no comment injection. An SSE event may span
+                    # two chunks, and a `: heartbeat` landing between them
+                    # corrupts the frame for any parser (Datastar's
+                    # included). Dead clients are still discovered — by
+                    # chunk-send failures and read-EOF, both of which close
+                    # the slot. WS pings are frame-atomic and stay.
+                    if not hb_is_ws and offload.enabled() and offload.pool()[].stream_active():
+                        continue
                     var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
                     if provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
                         # Mid-send of a real event; skip this beat, keep the next.
@@ -746,6 +755,13 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 slot_send_offset[slot] += Int(sent)
 
                 if slot_send_offset[slot] >= len(slot_response[slot]):
+                    # The partial-send completion of a streaming buffer:
+                    # ack the whole buffer here (the drain pass acked
+                    # nothing for it). The stream head's flush also lands
+                    # here once per stream and inflates the credit window
+                    # by its header bytes — bounded and harmless.
+                    if slot_sse[slot] and offload.enabled() and offload.pool()[].stream_active():
+                        offload.pool()[].ack_stream(slot, len(slot_response[slot]))
                     _after_send(
                         backend, slot, fd_val,
                         handler, config, server_address, tcp_keep_alive,
@@ -776,6 +792,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 slot_ws[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
             )
             if s_idle and slot_fds[s] != UNUSED and not offload.offloaded[s]:
+                # An active streaming channel means every streaming slot is
+                # an ASGI stream (the executor mode refuses --realtime):
+                # drained bytes are acked back to the producer's credit
+                # window, and `sse_is_streaming` — unread by the loop
+                # anywhere else — becomes the end-of-stream signal: the
+                # handler unsubscribes once the final chunk has been handed
+                # out, and the loop closes after those bytes land. Close is
+                # how a content-length-free streamed body ends.
+                var asgi_stream = offload.enabled() and offload.pool()[].stream_active()
                 var pending = handler.sse_drain_slot(s)
                 if len(pending) > 0:
                     slot_response[s] = Bytes(Span(pending))
@@ -789,10 +814,33 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     except:
                         pass
                     if slot_send_offset[s] >= len(slot_response[s]):
+                        if asgi_stream:
+                            offload.pool()[].ack_stream(s, len(slot_response[s]))
+                            if not handler.sse_is_streaming(s):
+                                _close_slot(
+                                    backend, handler, s, slot_fds[s],
+                                    slot_fds, fd_to_slot, provision_pool,
+                                    active_count, metrics,
+                                    slot_sse, slot_ws, slot_ws_state,
+                                )
+                                continue
                         provision_pool.provisions[s].state = ConnectionState.streaming_ws() if slot_ws[s] else ConnectionState.streaming_sse()
                     else:
+                        if asgi_stream and not handler.sse_is_streaming(s):
+                            # The rest of the final buffer flushes through
+                            # the write-ready path; _after_send's existing
+                            # should_close branch closes it there.
+                            provision_pool.provisions[s].should_close = True
                         backend.try_add_write_oneshot(slot_fds[s])
                         slot_read_armed[s] = False
+                elif asgi_stream and not handler.sse_is_streaming(s):
+                    # End marked with nothing left to send.
+                    _close_slot(
+                        backend, handler, s, slot_fds[s],
+                        slot_fds, fd_to_slot, provision_pool,
+                        active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
 
         # Idle-timeout sweep. Replaces the old per-request timerfd re-arm
         # (one timerfd_settime per keep-alive request) with a once-a-second

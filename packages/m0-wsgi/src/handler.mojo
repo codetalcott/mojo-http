@@ -37,7 +37,10 @@ from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame, WS_OP_TEXT,
 )
 
+from std.ffi import c_int, external_call
+
 from m0_http import SSERegistry, StaticFiles, sse_data_payload
+from m0_http.sse.format import NO_EVENT_ID
 
 from .app import WSGIApp
 from .cli import ServeOptions
@@ -95,6 +98,16 @@ struct WSGIHandler(ThreadHandler):
     Reported as `x-thread` on every response when >= 0 — the `X-Worker`
     precedent, and what `smoke-threads` reads to prove connections spread.
     """
+    var asgi_done: List[Bool]
+    """ASGI stream slots whose end frame arrived while bytes were still
+    pending: the final `sse_drain_slot` hands those bytes out and then
+    unsubscribes, which is what flips `sse_is_streaming` and lets the loop
+    close the connection after they land."""
+    var asgi_notify_fd: Int
+    """Executor mode only (-1 otherwise): the submit channel's write end,
+    used to send the executor a disconnect tag when a streaming slot
+    closes — what resolves the app's `receive()` into `http.disconnect`
+    and cancels its task."""
 
     def __init__(
         out self,
@@ -102,19 +115,26 @@ struct WSGIHandler(ThreadHandler):
         var mounts: List[StaticFiles],
         realtime: Bool = False,
         var health_path: String = String(""),
+        asgi_streaming: Bool = False,
     ):
         self.app = app^
         self.mounts = mounts^
         self.realtime = realtime
         self.health_path = health_path^
         self.thread_index = -1
-        # Capacity 0 when the mode is off. Every `SSERegistry` method already
-        # guards on `slot >= _capacity`, so the hooks below stay correct
-        # unconditionally and a non-realtime deployment pays nothing for
+        self.asgi_notify_fd = -1
+        # Capacity 0 when neither mode is on. Every `SSERegistry` method
+        # already guards on `slot >= _capacity`, so the hooks below stay
+        # correct unconditionally and a plain deployment pays nothing for
         # them — no branch in the hot path, and no branch to get wrong.
-        var slots = REALTIME_SLOTS if realtime else 0
+        # `asgi_streaming` (the executor mode) needs the same registries:
+        # they are the per-slot outboxes ASGI response chunks ride.
+        var slots = REALTIME_SLOTS if (realtime or asgi_streaming) else 0
         self.streams = SSERegistry(slots)
         self.sockets = SSERegistry(slots)
+        self.asgi_done = List[Bool](capacity=slots)
+        for _ in range(slots):
+            self.asgi_done.append(False)
 
     @staticmethod
     def mounts_for(opts: ServeOptions) -> List[StaticFiles]:
@@ -133,7 +153,8 @@ struct WSGIHandler(ThreadHandler):
     def for_options(var app: WSGIApp, opts: ServeOptions) raises -> Self:
         """The handler `opts` describes, around an already-built `WSGIApp`."""
         return Self(
-            app^, Self.mounts_for(opts), opts.realtime, opts.health_path
+            app^, Self.mounts_for(opts), opts.realtime, opts.health_path,
+            asgi_streaming=opts.asgi_streaming,
         )
 
     @staticmethod
@@ -180,6 +201,10 @@ struct WSGIHandler(ThreadHandler):
         var handler = Self.for_options(app^, opts[])
         handler.thread_index = ctx.index
         return handler^
+
+    def set_asgi_notify(mut self, fd: Int):
+        """Executor-mode wiring: where stream disconnect tags are sent."""
+        self.asgi_notify_fd = fd
 
     def shutdown(mut self):
         """The application's teardown (ASGI lifespan shutdown; WSGI no-op)."""
@@ -285,7 +310,19 @@ struct WSGIHandler(ThreadHandler):
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         if self.sockets.is_slot_streaming(slot):
             return self.sockets.drain(slot)
-        return self.streams.drain(slot)
+        var out = self.streams.drain(slot)
+        if (
+            slot < len(self.asgi_done)
+            and self.asgi_done[slot]
+            and not self.streams.has_pending(slot)
+        ):
+            # The end frame arrived and these are the stream's last bytes:
+            # unsubscribing here flips `sse_is_streaming`, and the loop
+            # closes the connection once they land — how a
+            # content-length-free streamed body ends.
+            self.streams.unsubscribe(slot)
+            self.asgi_done[slot] = False
+        return out^
 
     def sse_is_streaming(self, slot: Int) -> Bool:
         return self.streams.is_slot_streaming(
@@ -293,13 +330,58 @@ struct WSGIHandler(ThreadHandler):
         ) or self.sockets.is_slot_streaming(slot)
 
     def sse_slot_disconnected(mut self, slot: Int):
+        # Read before the unsubscribes erase it: was this an ASGI stream
+        # the executor still has a task for?
+        var was_asgi = self.asgi_notify_fd >= 0 and (
+            self.streams.is_slot_streaming(slot)
+            or (slot < len(self.asgi_done) and self.asgi_done[slot])
+        )
         self.streams.unsubscribe(slot)
         self.sockets.unsubscribe(slot)
+        if slot < len(self.asgi_done):
+            self.asgi_done[slot] = False
+        if was_asgi:
+            _send_disconnect_tag(self.asgi_notify_fd, slot)
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        # Every published frame arrives here — from peer workers or threads
-        # AND from this one's own application, because `m0pub` writes every
-        # channel, ours included. `url` is the channel name.
+        # The executor's ASGI stream frames first: their channel names open
+        # with a control byte no HTTP header value can carry, so collision
+        # with an application's GRIP channel is structurally impossible,
+        # and the early return skips both O(capacity) scans below.
+        var ub = url.as_bytes()
+        if len(ub) >= 3 and ub[0] == ASGI_URL_CONTROL:
+            var slot = _parse_stream_slot(ub)
+            if slot < 0:
+                return
+            if ub[1] == UInt8(ord("b")):
+                # Begin: sent before the stream's head completion, so this
+                # subscription exists before the loop ever drains the slot
+                # as a stream.
+                self.streams.subscribe(slot, url, NO_EVENT_ID)
+                if slot < len(self.asgi_done):
+                    self.asgi_done[slot] = False
+            elif ub[1] == UInt8(ord("s")):
+                # A response chunk — for a SUBSCRIBED slot only. Never
+                # subscribe here: a chunk that outlived its connection
+                # (sent before the disconnect tag reached the executor)
+                # must be dropped, not injected into whatever request the
+                # recycled slot serves now. The channel's FIFO guarantees
+                # a new stream's begin frame sorts after every frame of
+                # the old one.
+                if self.streams.is_slot_streaming(slot):
+                    self.streams.queue_frame(slot, NO_EVENT_ID, frame)
+            elif ub[1] == UInt8(ord("e")):
+                # End of stream: hand out anything still pending, then
+                # stop being a stream (which is what lets the loop close).
+                if self.streams.has_pending(slot):
+                    if slot < len(self.asgi_done):
+                        self.asgi_done[slot] = True
+                else:
+                    self.streams.unsubscribe(slot)
+            return
+        # Every published GRIP frame arrives here — from peer workers or
+        # threads AND from this one's own application, because `m0pub`
+        # writes every channel, ours included. `url` is the channel name.
         self.streams.notify_frame(url, event_id, frame)
         if self.sockets.has_subscribers(url):
             # The bus carries SSE frames; a socket needs an RFC 6455 frame.
@@ -360,3 +442,70 @@ def _upgrade_required() -> HTTPResponse:
         status_code=426,
         status_text="Upgrade Required",
     )
+
+
+# --- the executor's ASGI stream channel names --------------------------------
+#
+# Chunks and stream-ends travel from the executor thread to the loop as
+# bus-shaped datagrams whose "url" is a slot-addressed channel name opening
+# with a control byte (0x01). HTTP header values cannot carry control bytes,
+# and GRIP channel names come from the application's M0-Channel header, so a
+# collision with a real channel is structurally impossible. Kinds: 's' — a
+# response chunk for the slot's outbox; 'e' — end of stream.
+
+comptime ASGI_URL_CONTROL = UInt8(1)
+
+
+def asgi_stream_url(kind: String, slot: Int) -> String:
+    """Build a reserved channel name: `\\x01<kind>/<slot>`."""
+    var b = List[UInt8]()
+    b.append(ASGI_URL_CONTROL)
+    for ch in kind.as_bytes():
+        b.append(ch)
+    b.append(UInt8(ord("/")))
+    for ch in String(slot).as_bytes():
+        b.append(ch)
+    return String(StringSlice(unsafe_from_utf8=Span(b)))
+
+
+def _parse_stream_slot(url_bytes: Span[Byte, _]) -> Int:
+    """The slot number after the `/` of a reserved channel name; -1 if
+    malformed. Digits only — anything else is a frame to drop, not raise
+    over (`sse_peer_frame` must not raise)."""
+    var slash = -1
+    for i in range(len(url_bytes)):
+        if url_bytes[i] == UInt8(ord("/")):
+            slash = i
+            break
+    if slash < 0 or slash + 1 >= len(url_bytes):
+        return -1
+    var value = 0
+    for i in range(slash + 1, len(url_bytes)):
+        var c = Int(url_bytes[i])
+        if c < ord("0") or c > ord("9"):
+            return -1
+        value = value * 10 + (c - ord("0"))
+    return value
+
+
+def _send_disconnect_tag(fd: Int, slot: Int):
+    """One `[tag=1 u8][slot i64 LE]` datagram on the submit channel.
+
+    A raw libc `send` rather than the socket module's wrapper: this is
+    nine bytes on a connected SOCK_DGRAM pair, and `sse_slot_disconnected`
+    must not raise. Retried briefly rather than dropped — a lost
+    disconnect is a leaked task holding state until shutdown — but
+    bounded, because this runs on the event loop thread and must never
+    park."""
+    var msg = List[UInt8](capacity=9)
+    msg.append(1)
+    var bits = UInt64(Int64(slot))
+    for shift in range(0, 64, 8):
+        msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    for _ in range(64):
+        var rc = external_call["send", Int](
+            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
+        )
+        if rc == len(msg):
+            return
+        _ = external_call["sched_yield", c_int]()
