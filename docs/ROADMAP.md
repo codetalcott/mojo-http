@@ -342,10 +342,17 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 
   **What is left of the bridge is a different shape.** Of the 3.5 µs, 1.78 is
   the environ build and 0.65 the shim; **1.07 µs is getting the response body
-  back out** (`body_bytes`: a `len()`, a `body_addr()` crossing, then a
-  byte-at-a-time copy). That is 31% of the bridge now, against 5% before,
-  purely because everything around it shrank. Same discipline applies —
-  split it by part before believing that description.
+  back out** (`body_bytes`). That is 31% of the bridge now, against 5%
+  before, purely because everything around it shrank.
+
+  That was first described as "a `len()`, a `body_addr()` crossing, then a
+  byte-at-a-time copy" — a reading of the code. Measured, it is **one of the
+  three**: the `len()` is 0.003 µs and the copy is noise, while
+  `body_addr()` is **1.095 µs**, because that shim function builds two
+  `ctypes` objects per request. It is the last per-request Python-level
+  operation in the bridge. The fix is the one the request path already uses —
+  a persistent `bytearray` whose address Mojo caches once, so no `ctypes`
+  call happens per request. Expected to take the bridge to ~2.5 µs.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
