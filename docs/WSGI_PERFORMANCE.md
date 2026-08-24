@@ -234,28 +234,47 @@ constant *both* servers pay, and it compresses the very ratio being
 resolved. All three roots return 13 bytes of `text/plain`, and byte parity
 between m0serve and Granian is asserted before any timing.
 
-| row | what it adds | rps (3-round mean) | p50 |
-|-----|--------------|-------------------:|----:|
-| `apps/hello` | mojo-http HTTP layer, **zero Python** | **78,290** | 178 µs |
-| `m0serve` + bare, 1 worker | …plus the WSGI bridge | **12,421** | 1.18 ms |
-| `granian` + bare, 1 worker | Granian's HTTP layer + its PyO3 bridge | **124,642** | 109 µs |
-| `m0serve` + bare, 4 workers | | 34,995 | ~400 µs |
-| `granian` + bare, 4 workers | | 99,187 | 130 µs |
+| row | what it adds | 2026-08-23 | **re-measured 2026-08-24** |
+|-----|--------------|-----------:|---------------------------:|
+| `apps/hello` | mojo-http HTTP layer, **zero Python** | 78,290 | **77,484** · 180 µs |
+| `m0serve` + bare, 1 worker | …plus the WSGI bridge | 12,421 | **48,921** · 292 µs |
+| `granian` + bare, 1 worker | Granian's HTTP layer + its PyO3 bridge | 124,642 | **122,314** · 111 µs |
+| `m0serve` + bare, 4 workers | | 34,995 | **101,892** · 120 µs |
+| `granian` + bare, 4 workers | | 99,187 | **98,489** · 131 µs |
 
 (`apps/hello` has no `WorkerSupervisor`, so it is single-process by
 construction and `M0_WORKERS` does nothing there.)
 
-- **The bridge costs ~1 ms per request.** Same HTTP layer, same machine:
-  178 µs without Python, 1.18 ms with. A 6.3x drop, against a Python
-  callable that does essentially nothing. *(Since fixed — see "What the
-  bridge is actually doing" below: 12,421 → 28,911 rps. The rows in this
-  table are the pre-fix measurement that located the problem.)*
-- **Granian on one worker beats m0serve on four** (124.6k vs 35.0k, 3.6x),
-  and beats mojo-http serving *no Python at all* (1.6x). The Django-based
-  1.4–2.0x understated the gap by roughly 5x.
-- **So the headroom is in the bridge, not the concurrency model and not the
-  HTTP layer.** mojo-http's HTTP layer is within 1.6x of Granian's
-  *including* Granian's Python work; its bridge then gives all of that away.
+**The re-measurement is trustworthy because the controls held.** Nothing in
+this repo touched the HTTP layer or Granian, and all three rows that should
+not have moved reproduced within 2% — `apps/hello` 0.99x, Granian 0.98x at
+one worker and 0.99x at four — across a five-week gap and a Granian bump
+from 2.8.1 to 2.8.2. The two rows that *did* move are exactly the two the
+bridge work touched: **m0serve 3.94x at one worker and 2.91x at four.** A
+run where the controls had drifted would not support any of what follows.
+
+- **At four workers, m0serve is now ahead of Granian** — 101,892 against
+  98,489, a 1.035x lead where Granian was 2.83x ahead. Read honestly, that
+  is two effects: m0serve gained 2.91x, *and* Granian gives up 19% going
+  from one worker to four (122.3k → 98.5k) on a box with four performance
+  cores, which is oversubscription rather than anything mojo-http did.
+  m0serve scales 2.08x over the same step.
+- **At one worker the gap is 2.50x**, down from 4.31x against the
+  post-#76 number. This is the row that still favours Granian, and it is no
+  longer mainly the bridge.
+- **The remaining gap is now half HTTP layer, half bridge — and they are
+  almost exactly equal.** `apps/hello` → m0serve w1 is 1.58x (the bridge);
+  Granian w1 → `apps/hello` is also 1.58x (the HTTP layer, since Granian
+  serves *with* its Python work faster than mojo-http serves with none).
+  1.58 × 1.58 = 2.50, which is the whole w1 gap and nothing else.
+
+**That last line is the strategic result.** When this section was written the
+bridge was 6.30x of the stack and the HTTP layer 1.59x, so the bridge was the
+only sane target — which is what the five changes since then acted on, taking
+it to 1.58x. There is now no lopsided target left: further bridge work can
+recover at most 1.58x, and the HTTP layer is worth exactly as much. The
+original conclusion — *"the headroom is in the bridge, not the HTTP layer"* —
+was right when measured and is now spent.
 
 **Is `apps/hello`'s 78.3k a ceiling, or just `-c16` divided by the
 round-trip?** Worth asking, because 16 connections at 178 µs is ~90k, close
@@ -326,7 +345,9 @@ this boundary, for the reason the next paragraphs give.
 Against Granian's 124.6k on the same row the gap is now 4.3x rather than
 10x. The remaining bridge cost is ~14.5 µs, of which `handle()` is
 five-sixths — so the Python-side environ build described next is now the
-live target, which it was not before.
+live target, which it was not before. *(The 4.3x has since been
+re-measured at **2.50x** — see the re-measured column in the layer-split
+table above.)*
 
 ### The Python-side environ build
 
@@ -434,12 +455,16 @@ comparison is not an artifact of ordering or of one warm process:
 `Py_DecRef` is exactly the unbounded leak the design exists to avoid — still
 reports **0 KB over 10k requests**.
 
-**The Granian ratio is deliberately not restated here.** The layer-split
-table above was measured on **3.14.7t** and this pair on **3.13**, so
-dividing one by the other would be arithmetic across two interpreters. What
-the numbers above support is the delta on one box with one interpreter and
-one variable. Re-running `scripts/bench_layer_split.sh` on 3.14.7t is what
-would move the 4.3x row, and until that happens the row stands as measured.
+**The Granian ratio was deliberately not restated from this pair.** The
+layer-split table was measured on **3.14.7t** and this pair on **3.13**, so
+dividing one by the other would have been arithmetic across two
+interpreters. *(`scripts/bench_layer_split.sh` has since been re-run on
+3.14.7t — see the re-measured column above. It puts m0serve at one worker at
+48,921 rps, against the 48,852 measured here on 3.13: the two interpreters
+agree to within 0.2% on this row, which is why the cross-interpreter
+division would in fact have been close. Refusing to do it was still right —
+that agreement was not knowable in advance, and is itself now a
+measurement.)*
 
 **What is left, and it is a different shape.** Of the 3.5 µs, 1.78 µs is the
 environ build and 0.65 µs is the shim; the remaining **1.07 µs is getting the
