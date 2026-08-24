@@ -110,19 +110,90 @@ being corrected in a later Mojo release; a statement from Modular about
 redistributing prebuilt runtime binaries; or building the runtime from the
 Apache-licensed source ourselves rather than shipping Modular's build.
 
+## Update, 2026-08-24: the two owned defects are fixed
+
+`build-ffi` now rewrites both paths after the link (they cannot be
+suppressed with a linker flag, because `mojo build` adds them itself):
+
+| | before | after |
+|---|---|---|
+| install name | `packages/m0-core/libm0core.dylib` | `@rpath/libm0core.dylib` |
+| search path | `/Users/runner/work/.../modular/lib` | `@loader_path` |
+| state | **BROKEN** | **SATISFIABLE** |
+
+macOS uses `install_name_tool` plus an ad-hoc `codesign` — arm64 invalidates
+the signature on any Mach-O edit, and an unsigned dylib will not load at all.
+
+**`smoke-ffi` was silently undoing this.** It ran its own `mojo build` into
+the same output path, so it overwrote whatever `build-ffi` produced and
+tested an unfixed artifact. It now takes `build-ffi` as a dependency and
+tests what that task actually emits, supplying the Mojo runtime through
+`DYLD_LIBRARY_PATH` — which is the documented consumer requirement, so the
+smoke exercises it rather than accidentally depending on a baked-in path.
+
+### Linux was never broken in the way macOS is
+
+Parsing the published `.so` (the checker reads ELF itself, so a macOS
+checkout can inspect it) shows **no `DT_NEEDED` entries at all** and no `.so`
+references anywhere in the file: the Linux artifact is statically linked and
+resolves nothing at load time. Its `DT_RUNPATH` was inert debris — it named
+`/home/runner/work/...` but nothing was ever looked up through it.
+
+So **the missing-runtime problem is macOS-only**, and the Linux artifact has
+been loadable all along. That is worth stating plainly because the original
+report implied both were broken.
+
+The checker reports three states rather than pass/fail, which is what makes
+it gateable: `BROKEN` (only loads where it was built), `SATISFIABLE` (loads
+once named files are placed beside it), `SELF-CONTAINED` (loads with nothing
+else). `--require-self-contained` demands the strongest. Today macOS is
+satisfiable and Linux is self-contained; neither is broken.
+
+## The licensing question, re-checked 2026-08-24
+
+**The nightly metadata has not changed.** `mojo_compiler-1.1.0.dev2026082305`
+— built five days *after* the relicensing — still declares:
+
+    License: LicenseRef-MAX-Platform-Software-License
+
+(read via HTTP range requests against the 71.6 MB wheel's central directory,
+so this costs one request rather than a download.)
+
+So the discrepancy is not a same-day packaging slip that has since been
+corrected. It has persisted across five nightlies. That does not make
+redistribution impermissible — the sources really are Apache-2.0 — but it
+does remove the "obviously just stale" reading, and it is not a question to
+answer by inference.
+
+### Building the runtime from source: assessed, not recommended
+
+The sources are Apache-2.0 and the repo ships `bazelw` and `MODULE.bazel`, so
+it is possible in principle. In practice `KGEN/BUILD.bazel` is an MLIR-based
+compiler stack (`CODialect`, `HLCFDialect`, TableGen targets), so this means
+building LLVM/MLIR — hours and gigabytes, per platform, in CI, kept in step
+with the pinned Mojo version, and re-done on every pin move. For a 1.57 MB
+bundle that only affects macOS, that is far more machinery than the problem
+justifies.
+
+**Ask Modular instead.** The question is one line — *are the prebuilt runtime
+libraries in the `mojo-compiler` wheel covered by the Apache-2.0 relicensing,
+or still under the MAX Platform license?* — and the forum and Discord are
+both linked from the wheel's own metadata. A definitive answer costs nothing
+and unblocks the last step; the mechanism is already proven and
+`check-ffi-portable --require-self-contained` already validates the result.
+
 ## Recommended sequence
 
-1. **Fix defects 1 and 2 now.** They are ours, need no permission, and are
-   strictly an improvement: the artifact stops looking in a directory that
-   exists on nobody's machine and starts looking beside itself — which a
-   consumer can satisfy by dropping in three files from their own Mojo
-   install. Requires post-link `install_name_tool` (macOS) / `patchelf`
-   (Linux), because the offending rpath is added by `mojo build` and cannot
-   be suppressed with a linker flag.
-2. **Document the three files** a consumer must supply, until (3).
-3. **Ship the runtime alongside once the licensing question is answered.**
-   The mechanism is proven and `check-ffi-portable` already validates the
-   result; it becomes a release-workflow step and a CI gate at that point.
+1. ~~**Fix defects 1 and 2.**~~ **Done** — see the update above. macOS is
+   `SATISFIABLE`, Linux is `SELF-CONTAINED`, neither is `BROKEN`.
+2. **Document the three files** a consumer must supply on macOS. Done in the
+   README; the release notes should say it too.
+3. **Ship the runtime alongside once the licensing question is answered** —
+   by asking Modular, not by inferring from the Apache-2.0 sources while the
+   shipped binaries say otherwise. The mechanism is proven and
+   `check-ffi-portable --require-self-contained` already validates it.
 
-Until (1) lands, `check-ffi-portable` is a diagnostic rather than a gate —
-gating on a known-failing property would only block releases.
+`check-ffi-portable` can now be a **gate** rather than a diagnostic: it
+passes today on both platforms, and fails if either regresses to `BROKEN`.
+It is not yet wired into CI as one — that belongs with the release workflow
+change in (3).

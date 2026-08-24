@@ -137,9 +137,34 @@ echo "built bin/m0serve"
 help = "Emit the C-ABI shared library (packages/m0-core/libm0core.so|.dylib)"
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+lib="packages/m0-core/libm0core.$ext"
 mojo build --emit shared-lib -I packages/m0-core \
-  packages/m0-core/ffi_exports.mojo -o "packages/m0-core/libm0core.$ext" || exit 1
-echo "built packages/m0-core/libm0core.$ext"
+  packages/m0-core/ffi_exports.mojo -o "$lib" || exit 1
+
+# `mojo build` records the venv it was built in as a search path, and the
+# output path as the install name. Both are the BUILD MACHINE's, which is
+# meaningless to anyone who downloads the artifact -- and neither can be
+# suppressed with a linker flag, so they are rewritten after the link.
+# See docs/FFI_DISTRIBUTION.md; `poe check-ffi-portable` asserts the result.
+if [ "$(uname)" = "Darwin" ]; then
+  install_name_tool -id "@rpath/libm0core.dylib" "$lib" || exit 1
+  otool -l "$lib" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}' | while read -r rp; do
+    [ "$rp" = "@loader_path" ] || install_name_tool -delete_rpath "$rp" "$lib"
+  done
+  otool -l "$lib" | grep -q "@loader_path" || install_name_tool -add_rpath "@loader_path" "$lib" || exit 1
+  # arm64 macOS invalidates the signature on any Mach-O edit; an unsigned
+  # dylib will not load at all, so re-sign ad-hoc.
+  codesign -f -s - "$lib" >/dev/null 2>&1 || true
+else
+  # The Linux .so is statically linked (no DT_NEEDED at all), so its RUNPATH
+  # resolves nothing and cannot break a load -- but it still publishes the
+  # build directory, so it is cleared when patchelf is available. Not a hard
+  # dependency precisely because nothing depends on it.
+  if command -v patchelf >/dev/null 2>&1; then
+    patchelf --remove-rpath "$lib" || true
+  fi
+fi
+echo "built $lib"
 """
 
 # The warning ratchet. `mojo` has no per-warning suppression — only
@@ -2092,11 +2117,22 @@ python3 scripts/ffi_portability_check.py "$lib"
 """
 
 [tool.poe.tasks.smoke-ffi]
-help = "Build the C-ABI shared library, load it via ctypes, assert known vectors"
+help = "Load the C-ABI shared library via ctypes and assert known vectors"
+deps = ["build-ffi"]
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
-mojo build --emit shared-lib -I packages/m0-core \
-  packages/m0-core/ffi_exports.mojo -o "packages/m0-core/libm0core.$ext" || exit 1
+# Built by the `build-ffi` dependency above, NOT here. This task used to run
+# its own `mojo build`, which silently overwrote build-ffi's output -- so the
+# artifact this smoke tested was never the artifact build-ffi produced, and
+# the post-link fixups were undone before the smoke ever saw them.
+#
+# The Mojo runtime is supplied explicitly rather than through a search path
+# baked into the library, which is the whole point of the fixups: the
+# artifact now looks beside itself, so a consumer (and this smoke) has to say
+# where the runtime is. That is the documented requirement, exercised here.
+modlib=$(ls -d .venv/lib/python*/site-packages/modular/lib 2>/dev/null | head -1)
+export DYLD_LIBRARY_PATH="$modlib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$modlib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 python3 - "packages/m0-core/libm0core.$ext" <<'PYEOF'
 import ctypes, sys
 

@@ -84,28 +84,90 @@ def inspect_macho(path):
 
 
 def inspect_elf(path):
-    """(search_paths, dependencies, soname) from an ELF file."""
-    out = _run(["readelf", "-d", path]) or _run(["objdump", "-p", path])
-    if out is None:
-        print(
-            "ffi-portability: neither readelf nor objdump is available",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    search = []
-    for key in ("RUNPATH", "RPATH"):
-        for m in re.finditer(key + r"\)?\s*.*?\[(.*?)\]", out):
-            search.extend(p for p in m.group(1).split(":") if p)
-    deps = re.findall(r"NEEDED\)?\s*.*?\[(.*?)\]", out)
-    soname_m = re.search(r"SONAME\)?\s*.*?\[(.*?)\]", out)
-    return search, deps, (soname_m.group(1) if soname_m else None)
+    """(search_paths, dependencies, soname) from a 64-bit ELF file.
+
+    Parsed here rather than shelled out to `readelf`, for two reasons. The
+    release workflow should not depend on binutils being installed — and
+    more sharply, the shell-out version was **wrong in the dangerous
+    direction**: `llvm-objdump` exists on macOS and prints ELF dynamic
+    entries in a different format, so the regexes matched nothing, the
+    function returned three empty lists, and the check reported a Linux
+    artifact as *portable*. A guard that answers "fine" when it cannot read
+    the file is worse than no guard.
+    """
+    import struct
+
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if data[:4] != b"\x7fELF" or data[4] != 2:
+        raise ValueError(f"{path}: not a 64-bit ELF")
+
+    end = "<" if data[5] == 1 else ">"
+    (e_phoff,) = struct.unpack_from(end + "Q", data, 0x20)
+    e_phentsize, e_phnum = struct.unpack_from(end + "HH", data, 0x36)
+
+    # PT_DYNAMIC (2) holds the entries; PT_LOAD (1) segments translate the
+    # string table's virtual address into a file offset.
+    dyn = None
+    loads = []
+    for i in range(e_phnum):
+        base = e_phoff + i * e_phentsize
+        (p_type,) = struct.unpack_from(end + "I", data, base)
+        p_offset, p_vaddr = struct.unpack_from(end + "QQ", data, base + 8)
+        (p_filesz,) = struct.unpack_from(end + "Q", data, base + 32)
+        if p_type == 2:
+            dyn = (p_offset, p_filesz)
+        elif p_type == 1:
+            loads.append((p_vaddr, p_filesz, p_offset))
+    if dyn is None:
+        raise ValueError(f"{path}: no PT_DYNAMIC segment")
+
+    def vaddr_to_off(v):
+        for p_vaddr, p_filesz, p_offset in loads:
+            if p_vaddr <= v < p_vaddr + p_filesz:
+                return p_offset + (v - p_vaddr)
+        raise ValueError(f"{path}: address {v:#x} is in no PT_LOAD segment")
+
+    DT_NEEDED, DT_STRTAB, DT_SONAME, DT_RPATH, DT_RUNPATH = 1, 5, 14, 15, 29
+    dyn_off, dyn_size = dyn
+    entries = []
+    strtab_v = None
+    for off in range(dyn_off, dyn_off + dyn_size, 16):
+        d_tag, d_val = struct.unpack_from(end + "qQ", data, off)
+        if d_tag == 0:
+            break
+        if d_tag == DT_STRTAB:
+            strtab_v = d_val
+        entries.append((d_tag, d_val))
+    if strtab_v is None:
+        raise ValueError(f"{path}: dynamic section has no DT_STRTAB")
+    strtab = vaddr_to_off(strtab_v)
+
+    def s_at(idx):
+        stop = data.index(b"\x00", strtab + idx)
+        return data[strtab + idx : stop].decode("utf-8", "replace")
+
+    search, deps, soname = [], [], None
+    for d_tag, d_val in entries:
+        if d_tag == DT_NEEDED:
+            deps.append(s_at(d_val))
+        elif d_tag == DT_SONAME:
+            soname = s_at(d_val)
+        elif d_tag in (DT_RPATH, DT_RUNPATH):
+            search.extend(q for q in s_at(d_val).split(":") if q)
+    return search, deps, soname
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(__doc__.strip().splitlines()[-1], file=sys.stderr)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    require_self_contained = "--require-self-contained" in sys.argv
+    if len(args) != 1:
+        print(
+            "usage: ffi_portability_check.py [--require-self-contained] <library>",
+            file=sys.stderr,
+        )
         return 2
-    path = sys.argv[1]
+    path = args[0]
     if not os.path.exists(path):
         print(f"ffi-portability: {path} does not exist", file=sys.stderr)
         return 2
@@ -131,67 +193,94 @@ def main() -> int:
     print(f"search paths  : {search or '(none)'}")
     print(f"dependencies  : {deps or '(none)'}")
 
-    problems = []
+    # Three honest states, because "portable" is not one bit of information:
+    #
+    #   broken         only loads on the machine that built it
+    #   satisfiable    loads once the named files are placed beside it
+    #   self-contained loads with nothing else present
+    #
+    # The distinction is what makes this gateable. A build can be fixed to
+    # `satisfiable` without anyone's permission; reaching `self-contained`
+    # means redistributing the Mojo runtime, which is a licensing question
+    # (see docs/FFI_DISTRIBUTION.md). Failing the build for not having
+    # answered that would just block releases.
+    self_relative_search = [p for p in search if p.startswith(SELF_RELATIVE)]
+    foreign_search = [p for p in search if not p.startswith(SELF_RELATIVE)]
 
-    # A search path that names an absolute location on the build machine is
-    # the defect itself: it is meaningless anywhere else.
-    for p in search:
-        if not p.startswith(SELF_RELATIVE):
-            problems.append(
-                f"search path is not relative to the artifact: {p!r}"
-                " — this is the build machine's own directory, and nothing"
-                " resolves through it on a consumer's machine"
-            )
-
-    # A dependency must be a system library, self-relative, or shipped beside
-    # the artifact. Anything else cannot be satisfied by the release.
     here = os.path.dirname(os.path.abspath(path)) or "."
+    unresolved, missing_beside = [], []
     for d in deps:
         if d.startswith(SELF_RELATIVE) or d.startswith(SYSTEM_PREFIXES):
             continue
         if d.startswith("@rpath/") or not os.path.isabs(d):
-            beside = os.path.join(here, os.path.basename(d))
-            if os.path.exists(beside):
+            if os.path.exists(os.path.join(here, os.path.basename(d))):
                 continue
-            problems.append(
-                f"dependency {d!r} is resolved through the search path above"
-                f" and is not shipped beside the artifact"
-                f" ({os.path.basename(d)} is absent from {here})"
-            )
+            # Resolvable by the consumer only if the artifact looks beside
+            # itself; otherwise it can only ever find it on the build box.
+            (missing_beside if self_relative_search else unresolved).append(d)
         else:
-            problems.append(f"dependency names an absolute non-system path: {d!r}")
+            unresolved.append(d)
 
-    # Not a load-time failure -- `dlopen` ignores the install name -- but it is
-    # recorded into anything that LINKS against this library, so a relative
-    # build path here hands the same defect to the next consumer along.
-    # `@rpath/libfoo.dylib` is the idiomatic install name for a
-    # redistributable library — the consumer's rpath resolves it — so it is
-    # correct, not a defect. A bare filename is fine too. What is wrong is a
-    # path from the build tree.
-    if install_name and not (
-        install_name.startswith(SELF_RELATIVE)
-        or install_name.startswith("@rpath/")
-        or install_name.startswith(SYSTEM_PREFIXES)
-        or "/" not in install_name
-    ):
-        problems.append(
-            f"install name is a build-tree path: {install_name!r} — dlopen"
-            " ignores it, but anything that LINKS against this library"
-            " records it and then fails to find it"
+    bad_install_name = bool(
+        install_name
+        and not (
+            install_name.startswith(SELF_RELATIVE)
+            or install_name.startswith("@rpath/")
+            or install_name.startswith(SYSTEM_PREFIXES)
+            or "/" not in install_name
         )
+    )
 
-    if problems:
+    # `dlopen` ignores the install name, so it cannot break loading — but it
+    # is recorded into anything that LINKS against this library, which then
+    # inherits the same defect.
+    broken = bool(unresolved) or bad_install_name
+    print("")
+
+    if broken:
+        print("BROKEN — this artifact only works on the machine that built it:")
+        for d in unresolved:
+            print(
+                f"  - dependency {d!r} resolves only through {foreign_search or '(no search path)'},"
+                " which is the build machine's own directory"
+            )
+        if bad_install_name:
+            print(
+                f"  - install name is a build-tree path: {install_name!r} —"
+                " dlopen ignores it, but anything that LINKS against this"
+                " library records it and then cannot find it"
+            )
+        if foreign_search and not unresolved:
+            for p in foreign_search:
+                print(f"  - build-machine search path recorded: {p!r}")
         print("")
-        print("NOT PORTABLE — this artifact only loads on the machine that built it:")
-        for p in problems:
-            print(f"  - {p}")
-        print("")
-        print("A consumer who downloads this from a GitHub release cannot dlopen it.")
+        print("A consumer who downloads this from a GitHub release cannot use it.")
         return 1
 
-    print("")
-    print("portable: every search path is self-relative and every dependency"
-          " is a system library or shipped alongside")
+    if missing_beside:
+        print("SATISFIABLE — loads once these are placed beside it:")
+        for d in missing_beside:
+            print(f"  - {os.path.basename(d)}")
+        print(f"  (search path is {self_relative_search}, so the consumer can supply them)")
+        if foreign_search:
+            print("")
+            print("  note: a build-machine path is also recorded and is inert here,")
+            print(f"  but leaks the build directory: {foreign_search}")
+        if require_self_contained:
+            print("")
+            print("--require-self-contained was given: this is not self-contained.")
+            return 1
+        return 0
+
+    if foreign_search:
+        # Nothing resolves through it, so it cannot cause a load failure —
+        # a statically linked ELF with a leftover RUNPATH looks like this.
+        print("SELF-CONTAINED — nothing is resolved at load time.")
+        print(f"  note: an inert build-machine path is recorded: {foreign_search}")
+        return 0
+
+    print("SELF-CONTAINED — every search path is self-relative and every"
+          " dependency is a system library or shipped alongside.")
     return 0
 
 
