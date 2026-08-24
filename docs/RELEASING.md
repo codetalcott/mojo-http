@@ -49,6 +49,8 @@ The steps, in order:
    (`git push origin :vX.Y.Z`), and re-run.
 
 Versioning is SemVer with the standard pre-1.0 caveat, stated in the
-README: minor versions may break the API. The version lives only in
-`pyproject.toml` and the changelog — packages carry no version constant to
-drift out of sync.
+README: minor versions may break the API. The version lives in
+`pyproject.toml`, the changelog, and `M0SERVE_VERSION` — the one constant
+a package carries, because `m0serve --version` has to answer something.
+Nothing else may add one: `smoke-serve` cross-checks exactly that pair, so
+a fourth copy would drift silently.
