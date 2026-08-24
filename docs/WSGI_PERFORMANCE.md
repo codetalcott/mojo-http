@@ -640,6 +640,70 @@ no cleverness at this boundary removes without changing what an environ
 Granian re-measurement on 3.14.7t, which the layer-split row has been owed
 since three bridge improvements ago.
 
+### The response half, which no split had ever covered
+
+Every split in this document measured the *request* side. `serve()` is
+`run()` plus `build_response`, and `bench_bridge_parts.mojo` stopped after
+`run()` — so after five rounds of optimising the request path, the response
+path had never been priced at all.
+
+It was **ten times larger than the thing being optimised.** With Django's
+default six response headers:
+
+| | before | after |
+|---|---:|---:|
+| request side (`run()`, GET) | 2.18 µs | 2.16 µs |
+| **response side (`build_response`, 6 headers)** | **22.97 µs** | **3.30 µs** |
+| `serve()` = both | 25.51 µs | **5.65 µs** |
+| per response header | 3.72 µs | **0.29 µs** |
+
+**And the cause was not what the arithmetic suggested.** The gap was found by
+subtracting the microbenchmark from the end-to-end number — `apps/hello` at
+12.91 µs/request against `m0serve` at 20.44, a 7.53 µs WSGI path where the
+bench only accounted for 2.36 — and the obvious suspect was the one thing
+`build_response` does that the request side had already purged: reading the
+app's headers through `PythonObject` iteration, two `String(py=…)` per pair.
+
+Split by part, that idiom is **1.27 µs — 5% of it**. The cost was
+`name.lower()`, a Mojo-side call, at **19.36 µs per response**: a fresh
+Unicode-lowercased copy of every header name, allocated for the sole purpose
+of testing one constant.
+
+    if name.lower() == HeaderKey.SET_COOKIE:      # 3.2 µs per header
+    if name_is(name.as_bytes(), HeaderKey.SET_COOKIE):   # 2.6 ns per header
+
+`name_is` was already in the repo, already used for the identical Set-Cookie
+dispatch on the request side, and its own docstring names the mistake:
+*"lets the parser dispatch on field names without calling `.lower()`, which
+allocated a copy of every header name on every request."* The request parser
+learned this; the response builder never did. The fix is that one call.
+
+End to end on `apps/wsgi_bare` — which returns **one** header, the least
+favourable case for this change — the `before` bracketed by two `after`
+runs:
+
+| | rps | p50 |
+|---|---:|---:|
+| before | 49,517 · 49,436 | 291 µs |
+| after | **56,896 · 56,591** | **252 µs** |
+| after, again | 56,541 · 56,429 | 253 µs |
+
+**+14.5%, p50 −13%**, on the shape that benefits least; a six-header Django
+response saves 19.7 µs rather than 2.5.
+
+`name_is` and `ascii_lower_byte` now have direct unit tests
+(`test_headers.mojo`) — they had none, and they are now the whole of header
+case folding in *both* directions. The boundary test was checked by widening
+the `A`–`Z` range by one byte, which makes it fail.
+
+**What is left of `build_response`**, measured and not yet acted on: the
+`PythonObject` read is 1.27 µs (38% of the remaining 3.30) and would be
+~0.32 µs through `PyList_GetItem`/`PyTuple_GetItem`/`PyUnicode_AsUTF8AndSize`
+— all already bound, no `dlsym` needed. `Headers()` plus six stores is
+1.39 µs. Neither is done here: the first belongs in `bridge.mojo` rather
+than `response.mojo` if CLAUDE.md's "everything touching the interpreter
+lives in one file" is to hold, and that is a design decision, not a tweak.
+
 ## A slow view strands the connections pinned behind it
 
 This is the mixed-workload measurement the `wrk` section named as Stage B's
