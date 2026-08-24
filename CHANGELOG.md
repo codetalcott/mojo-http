@@ -5,7 +5,7 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
-## [Unreleased]
+## [0.9.0] — 2026-08-24
 
 ### Added
 
@@ -1197,6 +1197,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.9.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.9.0
 [0.8.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.8.0
 [0.7.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.7.0
 [0.6.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.6.0
