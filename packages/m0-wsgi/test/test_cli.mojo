@@ -684,5 +684,39 @@ def test_match_mount_order_does_not_matter() raises:
     assert_equal(match_mount(prefixes, String("/elsewhere")), 1)
 
 
+def test_mounted_asgi_does_not_take_the_executor() raises:
+    """Stage-1 rule: one submit channel cannot say which mount a job is
+    for, so a mounted server stays on the buffered path even all-ASGI."""
+    var opts = _parse([String("--mount"), String("/app=main:app")])
+    opts.blocking_threads = 0
+    assert_false(use_asgi_executor(opts, True))
+
+
+def test_unmounted_asgi_still_takes_the_executor() raises:
+    var opts = _parse([String("main:app")])
+    opts.blocking_threads = 0
+    assert_true(use_asgi_executor(opts, True))
+
+
+def test_served_names_every_mount() raises:
+    var opts = _parse(
+        [
+            String("--mount"),
+            String("/=djangoproj.wsgi"),
+            String("--mount"),
+            String("/app=main:app"),
+        ]
+    )
+    assert_equal(
+        opts.served(),
+        String("/=djangoproj.wsgi:application,/app=main:app"),
+    )
+
+
+def test_served_falls_back_to_the_positional_spec() raises:
+    var opts = _parse([String("djangoproj.wsgi")])
+    assert_equal(opts.served(), String("djangoproj.wsgi:application"))
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

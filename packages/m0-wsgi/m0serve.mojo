@@ -126,6 +126,15 @@ comptime _REALTIME_ASGI_CONFLICT = (
     " --realtime."
 )
 
+comptime _REALTIME_MOUNT_CONFLICT = (
+    "--realtime cannot be combined with --mount: M0-Hold subscribes the"
+    " connection to registries the loop's handler owns, and an inbound"
+    " WebSocket message is delivered back into ONE application's urlconf."
+    " Which mount should receive it has no defensible answer, so it is"
+    " refused rather than guessed. Serve the realtime application on its"
+    " own."
+)
+
 
 def _specs_tried(specs: List[String]) -> String:
     """The discovery candidates as one comma-separated list, for errors."""
@@ -170,6 +179,59 @@ def _resolve_spec(mut opts: ServeOptions) raises -> Bool:
             if i == 0:
                 first_error = String(e)
     raise Error(first_error + " (tried " + _specs_tried(specs) + ")")
+
+
+def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
+    """Detect every mount's protocol; returns True when they are all ASGI.
+
+    Each mount resolves independently — discovery included, so
+    `--mount /=djangoproj` finds `djangoproj.wsgi` exactly as a positional
+    spec would — and the winner is written back so the banner and every
+    handler name what is actually served.
+
+    A mixed pair is refused here rather than served badly: routing them is
+    done, but giving each its native execution mode (the asyncio executor
+    for the async one, the handler pool for the sync one) is stage 2, and
+    running an ASGI app through the buffered bridge beside a WSGI app
+    would quietly cost it its streaming.
+    """
+    var asgi_count = 0
+    for i in range(len(opts.mount_prefixes)):
+        var module = opts.mount_modules[i]
+        var attribute = opts.mount_attributes[i]
+        var is_asgi: Bool
+        if opts.mount_explicit[i]:
+            is_asgi = detect_protocol(module, attribute, opts.protocol)
+        else:
+            var specs = discovery_specs(module)
+            var first_error = String("")
+            var found = False
+            is_asgi = False
+            for k in range(len(specs)):
+                var pair = parse_app_spec(specs[k])
+                try:
+                    is_asgi = detect_protocol(pair[0], pair[1], opts.protocol)
+                    opts.mount_modules[i] = pair[0]
+                    opts.mount_attributes[i] = pair[1]
+                    found = True
+                    break
+                except e:
+                    if k == 0:
+                        first_error = String(e)
+            if not found:
+                raise Error(
+                    first_error + " (tried " + _specs_tried(specs) + ")"
+                )
+        if is_asgi:
+            asgi_count += 1
+    if asgi_count > 0 and asgi_count < len(opts.mount_prefixes):
+        raise Error(
+            "mixed WSGI and ASGI mounts are not served yet: every --mount"
+            " must be the same protocol for now (see docs/WSGI_VS_ASGI.md"
+            " section 9). Serving each in its own native execution mode is"
+            " the next stage."
+        )
+    return asgi_count > 0
 
 
 def _reload_dirs(opts: ServeOptions) -> List[String]:
@@ -347,10 +409,13 @@ def main() raises:
     try:
         if opts.app_dir.byte_length() > 0:
             Python.add_to_path(opts.app_dir)
-        is_asgi = _resolve_spec(opts)
+        if len(opts.mount_prefixes) > 0:
+            is_asgi = _resolve_mounts(opts)
+        else:
+            is_asgi = _resolve_spec(opts)
     except e:
         _fail(
-            "could not load " + opts.spec() + " from " + opts.app_dir + ": "
+            "could not load " + opts.served() + " from " + opts.app_dir + ": "
             + String(e),
             EXIT_STARTUP,
         )
@@ -358,6 +423,8 @@ def main() raises:
 
     if is_asgi and opts.realtime:
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
+    if len(opts.mount_prefixes) > 0 and opts.realtime:
+        _fail(_REALTIME_MOUNT_CONFLICT, EXIT_STARTUP)
 
     # Zero-config: with no topology flag or M0_* topology variable at all,
     # the protocol picks the concurrency — a pool for WSGI, the asyncio
@@ -376,29 +443,24 @@ def main() raises:
     opts.handler_lifespan = not executor_mode
     opts.asgi_streaming = executor_mode
 
-    var app: WSGIApp
+    var handler: WSGIHandler
     try:
-        app = WSGIApp(
-            opts.module,
-            server_name=opts.host,
-            server_port=String(opts.port),
-            attribute=opts.attribute,
+        handler = WSGIHandler.build(
+            opts,
             multiprocess=multiprocess,
-            protocol=opts.protocol,
+            multithread=False,
             lifespan=not executor_mode,
         )
     except e:
         _fail(
-            "could not load " + opts.spec() + " from " + opts.app_dir + ": "
+            "could not load " + opts.served() + " from " + opts.app_dir + ": "
             + String(e),
             EXIT_STARTUP,
         )
         return
 
-    var handler = WSGIHandler.for_options(app^, opts)
-
     print(
-        "m0serve: " + opts.spec() + " on http://" + opts.address()
+        "m0serve: " + opts.served() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " workers=" + String(opts.workers) + ")"
         + (" asgi-loop" if executor_mode else "")
@@ -560,16 +622,21 @@ def _serve_threaded(
     # hits for every serving thread.
     var is_asgi: Bool
     try:
-        is_asgi = _resolve_spec(opts)
+        if len(opts.mount_prefixes) > 0:
+            is_asgi = _resolve_mounts(opts)
+        else:
+            is_asgi = _resolve_spec(opts)
     except e:
         _fail(
-            "could not load " + opts.spec() + " from " + opts.app_dir + ": "
+            "could not load " + opts.served() + " from " + opts.app_dir + ": "
             + String(e),
             EXIT_STARTUP,
         )
         return
     if is_asgi and opts.realtime:
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
+    if len(opts.mount_prefixes) > 0 and opts.realtime:
+        _fail(_REALTIME_MOUNT_CONFLICT, EXIT_STARTUP)
     var auto_pool = zero_config_topology(opts)
     opts.blocking_threads = resolve_blocking_threads(
         opts, is_asgi, effective_cpus()
@@ -585,7 +652,7 @@ def _serve_threaded(
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
     print(
-        "m0serve: " + opts.spec() + " on http://" + opts.address()
+        "m0serve: " + opts.served() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " threads=" + String(opts.threads) + ")"
         + (" asgi-loop" if executor_mode else "")

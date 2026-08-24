@@ -179,6 +179,71 @@ struct WSGIHandler(ThreadHandler):
         )
 
     @staticmethod
+    def build(
+        opts: ServeOptions,
+        multiprocess: Bool,
+        multithread: Bool,
+        lifespan: Bool,
+        project_path: String = String(""),
+    ) raises -> Self:
+        """The handler `opts` describes, applications and all.
+
+        The one place applications are constructed, so the mounted and
+        unmounted shapes cannot drift: without `--mount` this builds the
+        single positional app at the empty prefix, and with it, one app per
+        mount carrying its prefix as `script_name`. Every caller that needs
+        a handler — m0serve's own path, a `--threads` serving thread, a
+        `--blocking-threads` pool thread — comes through here.
+        """
+        if len(opts.mount_prefixes) == 0:
+            var app = WSGIApp(
+                opts.module,
+                server_name=opts.host,
+                server_port=String(opts.port),
+                attribute=opts.attribute,
+                project_path=project_path,
+                multiprocess=multiprocess,
+                multithread=multithread,
+                protocol=opts.protocol,
+                lifespan=lifespan,
+            )
+            return Self.for_options(app^, opts)
+
+        var first = WSGIApp(
+            opts.mount_modules[0],
+            server_name=opts.host,
+            server_port=String(opts.port),
+            attribute=opts.mount_attributes[0],
+            project_path=project_path,
+            multiprocess=multiprocess,
+            multithread=multithread,
+            protocol=opts.protocol,
+            lifespan=lifespan,
+            script_name=opts.mount_prefixes[0],
+        )
+        var handler = Self(
+            first^, Self.mounts_for(opts), opts.realtime, opts.health_path,
+            asgi_streaming=opts.asgi_streaming,
+            root_prefix=opts.mount_prefixes[0],
+        )
+        for i in range(1, len(opts.mount_prefixes)):
+            handler.mount(
+                opts.mount_prefixes[i],
+                WSGIApp(
+                    opts.mount_modules[i],
+                    server_name=opts.host,
+                    server_port=String(opts.port),
+                    attribute=opts.mount_attributes[i],
+                    multiprocess=multiprocess,
+                    multithread=multithread,
+                    protocol=opts.protocol,
+                    lifespan=lifespan,
+                    script_name=opts.mount_prefixes[i],
+                ),
+            )
+        return handler^
+
+    @staticmethod
     def make(ctx: ThreadContext) raises -> Self:
         """Build this thread's handler from the `ServeOptions` at `ctx.user`.
 
@@ -200,11 +265,8 @@ struct WSGIHandler(ThreadHandler):
         var opts = Pointer[ServeOptions, MutUntrackedOrigin](
             unsafe_from_address=ctx.user
         )
-        var app = WSGIApp(
-            opts[].module,
-            server_name=opts[].host,
-            server_port=String(opts[].port),
-            attribute=opts[].attribute,
+        var handler = Self.build(
+            opts[],
             # True under `--workers W --blocking-threads B`, where this thread
             # really is one of B in one of W processes; False under
             # `--threads`, which is mutually exclusive with `--workers > 1` and
@@ -213,13 +275,11 @@ struct WSGIHandler(ThreadHandler):
             # both flags against the mode it started.
             multiprocess=opts[].workers > 1,
             multithread=True,
-            protocol=opts[].protocol,
             # False only in executor mode, where this handler is the
             # queue-overflow fallback and the loop's executor owns the one
             # lifespan.
             lifespan=opts[].handler_lifespan,
         )
-        var handler = Self.for_options(app^, opts[])
         handler.thread_index = ctx.index
         return handler^
 

@@ -283,6 +283,24 @@ struct ServeOptions(Copyable, Movable):
         """The `module:attribute` pair as the user would write it."""
         return self.module + ":" + self.attribute
 
+    def served(self) -> String:
+        """What this server hosts, as the banner reports it.
+
+        The positional `module:attribute`, or every mount as
+        `PREFIX=module:attribute` joined by commas (the root mount shown as
+        `/`, since the empty string it is stored as would read as a typo).
+        """
+        if len(self.mount_prefixes) == 0:
+            return self.spec()
+        var out = String("")
+        for i in range(len(self.mount_prefixes)):
+            if i > 0:
+                out += ","
+            ref shown = self.mount_prefixes[i]
+            out += ("/" if shown.byte_length() == 0 else shown) + "="
+            out += self.mount_modules[i] + ":" + self.mount_attributes[i]
+        return out^
+
     def server_config(self, base: AppConfig) -> ServerConfig:
         """`base.server_config()` with the flags that reach `ServerConfig` applied.
 
@@ -430,6 +448,13 @@ def use_asgi_executor(opts: ServeOptions, is_asgi: Bool) -> Bool:
     `resolve_blocking_threads`'s answer has been written back into
     `opts.blocking_threads`.
     """
+    # Mounted servers stay on the buffered path for now. The executor is
+    # one asyncio loop owning one application's bridge, so N ASGI mounts
+    # would be N executor threads fed by one submit channel that cannot
+    # say which of them a job is for -- per-mount submit channels are
+    # stage 2, and serving the wrong app is not a tradeoff worth taking.
+    if len(opts.mount_prefixes) > 0:
+        return False
     return is_asgi and not opts.realtime and opts.blocking_threads == 0
 
 
