@@ -31,6 +31,14 @@ trait ThreadHandler(HTTPService, Movable, Deinitable):
     def make(ctx: ThreadContext) raises -> Self:
         ...
 
+    def set_asgi_notify(mut self, fd: Int):
+        """Where ASGI stream disconnect tags go (the submit channel's
+        write end), set by the executor-mode wiring after the pool exists
+        — per loop, which is why it cannot ride the shared options. A
+        handler with no ASGI streams ignores it.
+        """
+        ...
+
     def shutdown(mut self):
         """Teardown the handler owes its application before destruction.
 

@@ -47,3 +47,8 @@ async def _counter():
 @rt("/sse")
 async def sse():
     return EventStream(_counter())
+
+
+@app.ws("/ws")
+async def ws(msg: str, send):
+    await send(f"ws-echo:{msg}")

@@ -435,16 +435,66 @@ recorded in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) §"The ASGI executor
 vs uvicorn". The executor opportunistically uses uvloop for its own loop
 where installed, stdlib asyncio otherwise.
 
-**Phase 3 — after: the ASGI realtime surface.** Streaming responses and
-`websocket` scopes, by reusing the §4 transport rather than building one: the
-executor publishes response chunks and WS frames as bus-shaped datagrams on a
-private per-loop channel (`bus_read_fd` is free, since `--realtime` is
-refused for ASGI), delivered through the existing `drain_bus_channel` →
-`sse_peer_frame` path into the loop-owned `SSERegistry`; `websocket.accept`
-becomes the same approve/perform split M0-Hold uses. Open questions recorded
-in the plan: end-of-stream slot close, body backpressure (the registry's
-64 KB drop policy is right for fan-out, wrong for bodies), and the inbound WS
-mailbox shape.
+**Phase 3a — shipped: streaming ASGI responses.** An `http.response.body`
+sequence with `more_body=True` now actually streams — FastHTML's
+`EventStream`, Starlette's `StreamingResponse`, Datastar patch streams —
+by reusing the §4 transport rather than building one. The executor
+publishes response chunks as bus-shaped datagrams on a private per-loop
+channel (`OffloadPool.enable_stream_channel`; the chunk pair's read end is
+the loop's `bus_read_fd`, free since `--realtime` is refused for ASGI),
+delivered through the existing `drain_bus_channel` → `sse_peer_frame`
+path into the loop-owned `SSERegistry` under reserved channel names that
+open with a control byte no HTTP header value can carry. The mechanics
+that make it correct, each pinned by `smoke-asgi`:
+
+- **Order is a FIFO property, not a hope.** A stream's begin frame is
+  sent on the chunk channel *before* its head rides the completion
+  channel, so the handler is subscribed before the loop ever drains the
+  slot as a stream — and every frame of a stream sits between its begin
+  and end on one FIFO channel, which is what makes a recycled slot safe:
+  chunks that outlive their connection arrive unsubscribed and are
+  dropped, never injected into the next request.
+- **Backpressure is credit, not drops.** A second private pair carries
+  drain acks loop→executor — `(slot, bytes)` after each fully flushed
+  buffer — and the shim's `send()` awaits credit (64 KB window, 32 KB
+  chunk split) before emitting. The registry's 64 KB drop threshold is
+  therefore never reached, and a 100 MB stream behind a slow reader
+  holds server RSS growth to ~2 MB.
+- **End of stream is a close.** The head goes out without
+  content-length, so the body is close-delimited; the handler
+  unsubscribes after handing out the final bytes, and the loop — reading
+  `sse_is_streaming`, the hook nothing had ever called — closes once
+  they land. A disconnect tag on the submit channel resolves the app's
+  `receive()` into `http.disconnect` and cancels its task, uvicorn's
+  contract.
+- **No comment heartbeats on ASGI streams**: an SSE event may span two
+  chunks, and a `: heartbeat` between them corrupts the frame (the smoke
+  splits a Datastar event mid-word under a 300 ms cadence and asserts
+  byte-exactness). Dead clients are found by send failure and read-EOF.
+  The buffered escape hatch (`--blocking-threads N` with ASGI) keeps its
+  10 s watchdog refusal.
+
+**Phase 3b — shipped: `websocket` scopes.** The same seam, and the same
+correctness arguments. The executor probes each parked request with
+`websocket_upgrade` (the loop's own validator); a handshake gets a
+`websocket` scope, and the ready 101 is **held** until the application's
+`websocket.accept` — the approve/perform split M0-Hold uses, because the
+accept value comes from the original request's key. A begin frame anchors
+the FIFO before the 101 completes (exactly as a stream's head), outbound
+`websocket.send` frames are RFC 6455-encoded executor-side and ride the
+chunk channel into the loop handler's `sockets` registry, and
+`websocket.close` queues the close frame plus the end marker so the loop
+closes after both land. Inbound messages the loop's parser assembled are
+forwarded by `ws_message` as tagged submit-channel datagrams into
+per-slot queues behind `receive()` (bounded by `max_message_size`, under
+the channel's frame cap); 3a's disconnect tag doubles as
+`websocket.disconnect` and cancels the task. An app that returns without
+accepting — or that raised first — resolves its held 101 as a 403, so no
+slot leaks. `smoke-asgi` drives a raw RFC 6455 probe (verified accept,
+both echo directions, close(1000) through to the FIN, then an abrupt
+vanish after the 101); `smoke-fasthtml` proves `app.ws` end to end.
+**FastHTML's full surface — pages, SSE EventStream, WebSockets — now runs
+on `m0serve` with zero configuration.**
 
 The M0-Hold/GRIP path is untouched by all three phases and remains the
 recommended realtime surface for synchronous WSGI codebases.

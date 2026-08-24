@@ -31,9 +31,11 @@ hosts **both protocols**: the shim detects WSGI vs ASGI at `set_app`
 (`--protocol` forces it), and an ASGI app runs buffered on a persistent
 per-bridge asyncio loop — the protocol dispatch lives entirely inside the
 shim, so the per-request Mojo path is identical for both and the leak rules
-below apply unchanged. ASGI streaming is deliberately refused (a 10s
-watchdog answers an explanatory 500 — see docs/WSGI_VS_ASGI.md §8 for the
-phased design); do not "fix" an infinite stream by lengthening the grace.
+below apply unchanged. Under the executor (the ASGI default) streaming
+responses stream for real — see the executor bullet below for the three
+load-bearing rules; only the buffered escape hatch still refuses an
+infinite stream with its 10s watchdog (docs/WSGI_VS_ASGI.md §8), and that
+refusal is not to be "fixed" by lengthening the grace.
 Zero-config: with no topology flag or `M0_*` topology variable, `m0serve`
 defaults to `--blocking-threads min(cores,8)` — an explicitly-set variable,
 at any value, disables that (`AppConfig`'s `*_set` fields carry the
@@ -120,8 +122,21 @@ Mojo 1.0 interop imposes and that the code depends on:
     thread; the loop's fallback handler is built with `lifespan=False` so
     exactly one lifespan runs per loop; `spawn_asgi` crosses the scope
     C-API-only (PyList/PyTuple steal discipline — same rules as the
-    environ build). Streaming is refused by the send()-side watchdog
-    until the Phase 3 surface exists — do not "fix" it by lengthening the
+    environ build). Streaming responses ride a private per-loop chunk
+    channel into the loop handler's `SSERegistry` under reserved channel
+    names (leading 0x01 byte), and three rules there are load-bearing: a
+    stream's **begin frame goes out before its head completion** (one
+    FIFO channel is what makes a recycled slot safe -- never reorder
+    them); chunks are **credit-gated** (64 KB window, acked by the loop's
+    drains -- never emit without credit, and never switch the chunk or
+    ack sends to a drop-on-EAGAIN policy); and comment heartbeats stay
+    suppressed on ASGI streams (a chunk-split SSE event with a comment
+    inside is corrupt). WebSocket scopes use the same seam — the held
+    101 is only released behind its begin frame, outbound frames ride
+    the chunk channel, inbound ones are tagged submit-channel datagrams
+    — and a handshake the app never answers must resolve as a 403, never
+    a leaked slot. The buffered escape hatch keeps its send()-side
+    watchdog — do not "fix" it by lengthening the
     grace (docs/WSGI_VS_ASGI.md §8).
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the

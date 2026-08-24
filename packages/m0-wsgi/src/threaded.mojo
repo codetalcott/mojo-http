@@ -363,23 +363,29 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var pool_threads = BlockingPool(0 if executor_mode else blocking)
     var exec_thread = AsgiExecutor()
     if executor_mode:
+        # Streaming channel before the executor thread exists; the chunk
+        # pair's read end becomes this loop's bus fd, and the handler
+        # learns where disconnect tags go.
+        pool.enable_stream_channel()
+        handler.set_asgi_notify(pool.submit_write)
         exec_thread.start(pool_addr, ctx.user)
     elif blocking > 0:
         pool_threads.start[T](pool_addr, ctx.user)
+    var loop_bus_fd = pool.stream_chunk_read if executor_mode else block.get(BLK_BUS_FD)
 
     comptime if CompilationTarget.is_macos():
         from lightbug_http.c.kqueue_backend import KqueueBackend
         var backend = DetachingBackend[KqueueBackend](KqueueBackend())
         run_event_loop(
             listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), block.get(BLK_BUS_FD), pool_addr,
+            block.get(BLK_SHUTDOWN_FD), loop_bus_fd, pool_addr,
         )
     else:
         from lightbug_http.c.epoll_backend import EpollBackend
         var backend = DetachingBackend[EpollBackend](EpollBackend())
         run_event_loop(
             listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), block.get(BLK_BUS_FD), pool_addr,
+            block.get(BLK_SHUTDOWN_FD), loop_bus_fd, pool_addr,
         )
 
     if use_offload:

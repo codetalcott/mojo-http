@@ -371,8 +371,10 @@ def main() raises:
     var executor_mode = use_asgi_executor(opts, is_asgi)
     # In executor mode the loop's own handler is the queue-overflow
     # fallback: its bridge gets a loop but no lifespan, so the executor's
-    # app owns the one lifespan this process runs.
+    # app owns the one lifespan this process runs. Its registries do size
+    # up, though — they are the outboxes ASGI response chunks ride.
     opts.handler_lifespan = not executor_mode
+    opts.asgi_streaming = executor_mode
 
     var app: WSGIApp
     try:
@@ -478,23 +480,30 @@ def _serve_offloaded(
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
     if executor:
+        # The streaming channel exists before the executor thread does, so
+        # its fds are plain fields by the time anything reads them; the
+        # chunk pair's read end is this loop's bus fd, and the handler
+        # learns where to send disconnect tags.
+        pool.enable_stream_channel()
+        handler.set_asgi_notify(pool.submit_write)
         exec_thread.start(pool.addr(), opts_addr)
     else:
         pool_threads.start[WSGIHandler](pool.addr(), opts_addr)
+    var stream_bus_fd = pool.stream_chunk_read if executor else -1
 
     comptime if CompilationTarget.is_macos():
         from lightbug_http.c.kqueue_backend import KqueueBackend
         var backend = DetachingBackend[KqueueBackend](KqueueBackend())
         run_event_loop(
             listener.socket.fd, handler, backend, config, opts.address(), True,
-            shutdown_fd, -1, pool.addr(),
+            shutdown_fd, stream_bus_fd, pool.addr(),
         )
     else:
         from lightbug_http.c.epoll_backend import EpollBackend
         var backend = DetachingBackend[EpollBackend](EpollBackend())
         run_event_loop(
             listener.socket.fd, handler, backend, config, opts.address(), True,
-            shutdown_fd, -1, pool.addr(),
+            shutdown_fd, stream_bus_fd, pool.addr(),
         )
 
     # Detached across it, for the reason the pool body details: a thread
@@ -568,8 +577,9 @@ def _serve_threaded(
     var executor_mode = use_asgi_executor(opts, is_asgi)
     # Each serving thread's own loop handler is only the fallback in
     # executor mode; the one lifespan per loop belongs to that loop's
-    # executor.
+    # executor. Registries size up for the ASGI chunk outboxes.
     opts.handler_lifespan = not executor_mode
+    opts.asgi_streaming = executor_mode
 
     var shutdown_fd = install_shutdown_signals()
     var opts_ptr = Pointer(to=opts)
@@ -594,6 +604,7 @@ def _serve_threaded(
         listener.socket.fd.value,
     )
     server.blocking_threads = opts.blocking_threads
+    server.asgi_executor = executor_mode
     for i in range(bus.size()):
         server.bus_read_fds.append(bus.read_fd(i))
     var failed = server.serve[WSGIHandler](opts.threads, opts_addr, shutdown_fd)

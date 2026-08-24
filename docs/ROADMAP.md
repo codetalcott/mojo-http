@@ -434,13 +434,12 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 - **Can m0serve host FastHTML?** Asked 2026-08-24; **answered the same
   week: yes** — it was the case that justified the ASGI path
   ([WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) §8). No adapter was needed: `m0serve`
-  now detects ASGI applications and runs them on the buffered per-bridge
-  asyncio loop, so `m0serve main:app --app-dir apps/fasthtml_demo` serves
-  FastHTML pages today (`poe smoke-fasthtml` pins it, skipping where
-  python-fasthtml is absent). Its SSE `EventStream` and `app.ws` features
-  are the remaining part: an infinite stream is currently refused with an
-  explanatory 500 by the buffered bridge's watchdog, and lands with the
-  Phase 3 realtime surface below.
+  now detects ASGI applications and serves them with real
+  await-concurrency, so `m0serve main:app --app-dir apps/fasthtml_demo`
+  serves FastHTML pages today, its SSE `EventStream` **streams live**
+  (Phase 3a), and `app.ws` **works** (Phase 3b) — the full FastHTML
+  surface, zero-config, pinned by `poe smoke-fasthtml` (skipping where
+  python-fasthtml is absent).
 - **The ASGI gateway's next phase** (design in WSGI_VS_ASGI.md §8):
   Phase 2 — the per-loop asyncio executor over the unchanged
   `OffloadPool` — **shipped**: zero-config ASGI gets real

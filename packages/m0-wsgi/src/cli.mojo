@@ -101,6 +101,10 @@ struct ServeOptions(Copyable, Movable):
     so per-loop fallback handlers do not run a second lifespan beside the
     executor's — the executor's own app is built with lifespan on,
     explicitly."""
+    var asgi_streaming: Bool
+    """Internal, never a flag: executor mode with the streaming channel —
+    handlers built from these options size their registries so ASGI
+    response chunks have per-slot outboxes to ride."""
     var app_dir: String
     """Prepended to `sys.path` so `module` can be imported; relative to cwd."""
     var static_prefixes: List[String]
@@ -150,6 +154,7 @@ struct ServeOptions(Copyable, Movable):
         self.threads_set = False
         self.blocking_threads_set = False
         self.handler_lifespan = True
+        self.asgi_streaming = False
         self.app_dir = String(".")
         self.static_prefixes = List[String]()
         self.static_dirs = List[String]()
@@ -178,6 +183,7 @@ struct ServeOptions(Copyable, Movable):
         self.threads_set = copy.threads_set
         self.blocking_threads_set = copy.blocking_threads_set
         self.handler_lifespan = copy.handler_lifespan
+        self.asgi_streaming = copy.asgi_streaming
         self.app_dir = copy.app_dir
         self.static_prefixes = copy.static_prefixes.copy()
         self.static_dirs = copy.static_dirs.copy()
@@ -206,6 +212,7 @@ struct ServeOptions(Copyable, Movable):
         self.threads_set = move.threads_set
         self.blocking_threads_set = move.blocking_threads_set
         self.handler_lifespan = move.handler_lifespan
+        self.asgi_streaming = move.asgi_streaming
         self.app_dir = move.app_dir^
         self.static_prefixes = move.static_prefixes^
         self.static_dirs = move.static_dirs^

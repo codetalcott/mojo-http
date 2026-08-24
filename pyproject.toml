@@ -1914,11 +1914,15 @@ curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
 grep -q 'protocol=asgi' fasthtml.log || fail 'FastHTML was not detected as ASGI'
 curl -s $B/plain | grep -q 'plain text from fasthtml' || fail '/plain did not answer'
 
-# The EventStream route is an infinite stream: under the buffered bridge it
-# must be the watchdog's 500, and the server must survive it.
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/sse)
-[ "$code" = "500" ] || fail "/sse expected the buffered bridge's 500, got $code"
-curl -s --fail $B/ > /dev/null || fail 'server died after the streaming refusal'
+# FastHTML's EventStream actually streams now: ticks arrive live, the
+# client walks away, the server shrugs.
+n=$(curl -sN --max-time 3 $B/sse | grep -c 'tick')
+[ "$n" -ge 2 ] || fail "expected >=2 live EventStream ticks from /sse, got $n"
+curl -s --fail $B/ > /dev/null || fail 'server died after the EventStream client vanished'
+
+# And app.ws: FastHTML's WebSocket handler echoes through the executor.
+M0_PORT=8097 python3 apps/fasthtml_demo/ws_probe.py || fail 'the FastHTML WebSocket probe failed'
+curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
 
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
@@ -2179,8 +2183,10 @@ fail() {
 # --- phase 1: zero-config against the bare app -------------------------------
 # No topology flag, no M0_* topology variable: detection must answer asgi and
 # the asyncio executor must be serving — the out-of-box ASGI shape. No pool:
-# the executor IS the concurrency, so no x-thread header either.
-"$srv" $SPEC > asgi.log 2>&1 &
+# the executor IS the concurrency, so no x-thread header either. The short
+# heartbeat cadence arms the split-event assert below: ASGI streams must
+# never see a comment injected mid-frame, whatever the cadence.
+M0_SSE_HEARTBEAT_MS=300 "$srv" $SPEC > asgi.log 2>&1 &
 pid=$!
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
@@ -2264,17 +2270,47 @@ growth=$((rss1 - rss0))
 echo "asgi rss growth over 10k requests: ${growth}KB (limit ${M0_RSS_LIMIT_KB:-12288}KB)"
 [ "$growth" -lt "${M0_RSS_LIMIT_KB:-12288}" ] || fail "asgi bridge leaked ${growth}KB of RSS over 10k requests"
 
-# The streaming watchdog: an infinite stream is a clean, explanatory 500 —
-# never a hang — and the server stays healthy after it. Last in this phase
-# because it costs the 10s grace.
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/stream-forever)
-[ "$code" = "500" ] || fail "infinite stream expected the watchdog's 500, got $code"
-curl -s --fail $B/ > /dev/null || fail 'server died after the streaming watchdog fired'
+# --- the streaming surface (Phase 3a) ----------------------------------------
+# An infinite SSE stream actually STREAMS: events arrive incrementally,
+# the client walks away, and the server notices (disconnect tag → task
+# cancelled) and stays healthy.
+n=$(curl -sN --max-time 3 $B/stream-forever | head -6 | grep -c '^data:')
+[ "$n" -ge 3 ] || fail "expected >=3 live SSE events from /stream-forever, got $n"
+curl -s --fail $B/ > /dev/null || fail 'server died after a streaming client vanished'
 
-# Graceful stop, lifespan shutdown included.
+# A 1 MB streamed body arrives byte-exact through the 32 KB chunk split
+# and the credit window — hash-compared, because a truncated-in-the-middle
+# body is the failure mode a drop-based path would produce.
+want=$(python3 -c "import hashlib; b=bytes(range(256))*256; print(hashlib.md5(b*16).hexdigest())")
+got=$(curl -s "$B/stream?size=1048576" | md5sum | cut -d' ' -f1)
+[ "$got" = "$want" ] || fail "streamed 1MB body corrupt: $got != $want"
+
+# Datastar-shaped named events, one split mid-word across two sends with a
+# pause longer than the heartbeat cadence: the loop must NOT inject a
+# ': heartbeat' comment inside the frame. Byte-exact or bust — this is
+# what keeps signals-based patterns (Datastar, htmx SSE) safe. The hash
+# is of the two fixed events /stream-events emits, precomputed (a TOML
+# multiline string mangles inline-python backslash escapes).
+hb_want=86bb66cab11c93043981f0eff7ff3586
+hb_got=$(curl -sN --max-time 10 $B/stream-events | md5sum | cut -d' ' -f1)
+[ "$hb_got" = "$hb_want" ] || fail 'a split SSE event was corrupted (heartbeat injection?)'
+
+# --- WebSockets (Phase 3b) ---------------------------------------------------
+# The raw RFC 6455 probe: handshake with verified accept, prefixed text
+# echo, binary echo, app-initiated close(1000) through to the FIN — then a
+# second connection that vanishes abruptly after the 101, whose disconnect
+# must cancel the app task and leave the server healthy.
+M0_PORT=8088 python3 apps/asgi_bare/ws_probe.py || fail 'the ASGI WebSocket probe failed'
+curl -s --fail $B/ > /dev/null || fail 'server died after an abrupt WebSocket disconnect'
+
+# Graceful stop with a live stream in flight: drains and exits 0.
+curl -sN --max-time 10 $B/stream-forever > /dev/null &
+stream_pid=$!
+sleep 0.5
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
-[ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
+kill $stream_pid 2>/dev/null; wait $stream_pid 2>/dev/null
+[ "$rc" = "0" ] || fail "SIGTERM with a live stream: exit $rc, want 0"
 
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
@@ -2288,6 +2324,11 @@ grep -q 'blocking-threads=3 (auto)' asgi.log && fail 'an explicit pool is marked
 grep -q 'asgi-loop' asgi.log && fail 'the executor started despite an explicit pool'
 curl -s -D "$out/hdr" $B/ -o /dev/null
 grep -qi '^x-thread' "$out/hdr" || fail 'no x-thread: the explicit pool is not serving'
+# The buffered pool path keeps its watchdog: an infinite stream is a
+# clean, explanatory 500 there — never a hang — and the server survives.
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/stream-forever)
+[ "$code" = "500" ] || fail "buffered-pool infinite stream expected the watchdog's 500, got $code"
+curl -s --fail $B/ > /dev/null || fail 'server died after the buffered watchdog fired'
 kill -TERM $pid
 wait $pid 2>/dev/null
 
