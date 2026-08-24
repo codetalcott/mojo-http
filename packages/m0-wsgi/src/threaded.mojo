@@ -384,6 +384,10 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     # somewhere above.
     _ = pool.capacity
 
+    # After the loop and the pool join, before the handler's destructors:
+    # attached, idle, and still owning the app.
+    handler.shutdown()
+
 
 def _thread_body[T: ThreadHandler](arg: Int) -> Int:
     """pthread start routine: attach, serve, release, report."""

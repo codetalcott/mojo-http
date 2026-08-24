@@ -73,7 +73,7 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 66 |
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 360 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
-| `m0-wsgi` | WSGI host — run Django, Flask, or any WSGI app on this server | 11 |
+| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 11 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 108 |
 | **Total** | | **618** |
 
@@ -231,7 +231,14 @@ bin/m0serve myproject.wsgi:application --app-dir /path/to/project \
     --static /static/=/path/to/static --static-cache-control 'public, max-age=3600'
 ```
 
-`MODULE[:ATTR]` names the WSGI callable (`ATTR` defaults to `application`);
+`MODULE[:ATTR]` names the callable (`ATTR` defaults to `application`, and a
+bare `MODULE` also tries `MODULE.asgi`, `MODULE.wsgi`, `MODULE:app` and
+`MODULE.main:app` by convention); **the protocol is detected from the
+object** — a coroutine-function callable is served as ASGI, anything else as
+WSGI, `--protocol` overrides — so `bin/m0serve main:app` runs a FastHTML,
+Starlette, or FastAPI app from the same binary (buffered request/response
+today; infinite SSE streams are refused with an explanatory error until the
+streaming surface lands — [docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md) §8).
 `--app-dir` is prepended to `sys.path` so the module imports, relative to the
 current directory and defaulting to `.`. Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
@@ -239,7 +246,10 @@ matching flag winning over it, and flags are strict: `--port 80eighty` is a
 usage error, not a silent default. `--max-body` and `--metrics` reach two
 server tunings the environment cannot; `--blocking-threads N` puts a pool of
 handler threads behind each event loop so a slow view stops holding the
-connections pinned behind it; and `--reload [--reload-dir DIR]` re-forks the
+connections pinned behind it — and when no topology flag or variable is
+given at all, a pool of `min(cores, 8)` is on **by default** (any explicit
+value wins, `M0_BLOCKING_THREADS=0` turns it off, `--realtime` keeps the
+single loop); and `--reload [--reload-dir DIR]` re-forks the
 workers onto changed Python in ~300 ms without re-exec'ing the binary.
 `--help` has the rest; exit codes are
 2 for a bad command line and 1 for an application that would not load —

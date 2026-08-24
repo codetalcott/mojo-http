@@ -342,6 +342,9 @@ gone for anyone who opts in.
   host as a separate package" decision, to be taken with the canary's
   findings in hand.
 
+*(That condition fired in August 2026 — see §8 for the revisit and what was
+actually built.)*
+
 ## 7. Where this fits the larger aims
 
 Against the project's Django-server aims (hybrid gateway, static files, DX,
@@ -366,6 +369,68 @@ Auto-detection of ASGI vs WSGI applications, PyPI-wheel distribution, hot
 reload, and the Granian benchmark suite are follow-ups recorded in
 [ROADMAP.md](ROADMAP.md)'s orbit — none of them depend on the ASGI decision
 made here.
+
+## 8. The revisit (2026-08): the hybrid gateway
+
+§6's revisit condition fired: an async-native framework became a real
+workload — FastHTML (Starlette-based ASGI) — and with it the entry point's
+recorded follow-ups (auto-detection, zero-config defaults) stopped being
+deferrable. The decision taken is a **phased hybrid gateway inside
+`m0-wsgi`**, not the separate asyncio host §3 warned about; each phase keeps
+every invariant this document defends (fork before first Python, no
+per-request `PythonObject` traffic, Mojo never acquiring the GIL, thread-local
+Python state).
+
+**Phase 1 — shipped: detection + the buffered ASGI bridge.**
+`m0serve` detects WSGI vs ASGI from the application object at load
+(coroutine-function duck typing, uvicorn/asgiref's rule; `--protocol`
+overrides), and a bare `MODULE` also discovers `MODULE.asgi:application`,
+`MODULE.wsgi:application`, `MODULE:app`, `MODULE.main:app` by convention. An
+ASGI app runs on a persistent per-bridge asyncio loop, one request at a time
+to completion (`run_until_complete`), with the scope built in the shim from
+the same C-API environ and `send()` events buffered into the same
+`(status, headers, body)` tuple the WSGI path returns — zero new Mojo code on
+the per-request path, and `smoke-asgi`'s RSS guard measured **356 KB over 10k
+requests** on day one. Lifespan runs at startup with uvicorn's "auto"
+semantics (an app that errors on the scope doesn't speak it; an explicit
+`startup.failed` refuses to serve). Two honest limits, both enforced loudly
+rather than silently: a streaming response (`more_body=True`) that has not
+finished in 10 s is answered with an explanatory 500 naming this section (an
+infinite SSE/EventStream cannot ride a buffered bridge), and a second
+`receive()` waits — uvicorn parity — so Starlette's streaming responses meet
+that watchdog instead of returning accidentally-truncated 200s.
+Zero-config also landed here: when no topology flag or `M0_*` topology
+variable is given at all, `m0serve` starts `--blocking-threads
+min(cores, 8)` by default (either protocol), so one slow view no longer
+stalls the out-of-box server; `--realtime` keeps the single-loop shape, and
+any explicit topology value — including `M0_BLOCKING_THREADS=0` — wins.
+
+**Phase 2 — next: the per-loop asyncio executor.** Real await-concurrency
+(uvicorn's shape) without a coexisting-loop architecture: one Python thread
+per Mojo event loop runs a persistent asyncio loop, fed through the
+**unchanged** `OffloadPool` — the loop parks the request and submits the slot
+exactly as `--blocking-threads` does, the executor's `loop.add_reader` on the
+submit fd turns each slot into a task, and task completion answers through
+`put_response`/`complete`, which any producer holding the pool address may
+drive. Every Python object stays touched by exactly one thread (the §5 cliff
+is avoided structurally), and on a GIL build the selector inside
+`run_until_complete` releases the GIL, so the detached Mojo loop and the
+executor interleave. ASGI then stops defaulting to a pool — the executor is
+its concurrency.
+
+**Phase 3 — after: the ASGI realtime surface.** Streaming responses and
+`websocket` scopes, by reusing the §4 transport rather than building one: the
+executor publishes response chunks and WS frames as bus-shaped datagrams on a
+private per-loop channel (`bus_read_fd` is free, since `--realtime` is
+refused for ASGI), delivered through the existing `drain_bus_channel` →
+`sse_peer_frame` path into the loop-owned `SSERegistry`; `websocket.accept`
+becomes the same approve/perform split M0-Hold uses. Open questions recorded
+in the plan: end-of-stream slot close, body backpressure (the registry's
+64 KB drop policy is right for fan-out, wrong for bodies), and the inbound WS
+mailbox shape.
+
+The M0-Hold/GRIP path is untouched by all three phases and remains the
+recommended realtime surface for synchronous WSGI codebases.
 
 ## Sources
 

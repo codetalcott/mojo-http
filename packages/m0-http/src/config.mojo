@@ -42,6 +42,9 @@ struct AppConfig(Copyable, Movable):
     var workers: Int
     var threads: Int
     var blocking_threads: Int
+    var workers_set: Bool
+    var threads_set: Bool
+    var blocking_threads_set: Bool
     var access_log: Bool
     var sse_heartbeat_ms: Int
     var app_tick_ms: Int
@@ -54,6 +57,12 @@ struct AppConfig(Copyable, Movable):
         self.workers = _parse_int_env("M0_WORKERS", 1)
         self.threads = _parse_int_env("M0_THREADS", 1)
         self.blocking_threads = _parse_int_env("M0_BLOCKING_THREADS", 0)
+        # An explicitly-set topology variable counts as explicit for the
+        # zero-config default, even when it names today's default value:
+        # M0_WORKERS=1 means "one worker, and I chose that".
+        self.workers_set = _env_present("M0_WORKERS")
+        self.threads_set = _env_present("M0_THREADS")
+        self.blocking_threads_set = _env_present("M0_BLOCKING_THREADS")
         var access_log_str = getenv("M0_ACCESS_LOG", "")
         self.access_log = access_log_str == "true" or access_log_str == "1"
         self.sse_heartbeat_ms = _parse_int_env("M0_SSE_HEARTBEAT_MS", 15000)
@@ -73,6 +82,9 @@ struct AppConfig(Copyable, Movable):
         self.workers = copy.workers
         self.threads = copy.threads
         self.blocking_threads = copy.blocking_threads
+        self.workers_set = copy.workers_set
+        self.threads_set = copy.threads_set
+        self.blocking_threads_set = copy.blocking_threads_set
         self.access_log = copy.access_log
         self.sse_heartbeat_ms = copy.sse_heartbeat_ms
         self.app_tick_ms = copy.app_tick_ms
@@ -85,6 +97,9 @@ struct AppConfig(Copyable, Movable):
         self.workers = move.workers
         self.threads = move.threads
         self.blocking_threads = move.blocking_threads
+        self.workers_set = move.workers_set
+        self.threads_set = move.threads_set
+        self.blocking_threads_set = move.blocking_threads_set
         self.access_log = move.access_log
         self.sse_heartbeat_ms = move.sse_heartbeat_ms
         self.app_tick_ms = move.app_tick_ms
@@ -145,6 +160,11 @@ def _parse_host(raw: String) -> String:
     if host == "localhost":
         return String("127.0.0.1")
     return String(host)
+
+
+def _env_present(name: String) -> Bool:
+    """Whether an env var is set to a non-empty value."""
+    return getenv(name, "").byte_length() > 0
 
 
 def _parse_int_env(name: String, default: Int) -> Int:

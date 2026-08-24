@@ -177,6 +177,19 @@ jobs:
       # happens to suit the single framework it was developed against.
       - name: Run the WSGI framework contract against Flask
         run: uv run poe smoke-flask
+      # The ASGI row, wsgi_bare's sibling: protocol auto-detection, the
+      # buffered bridge's scope/receive/send contract, lifespan startup and
+      # state, the streaming watchdog's clean refusal, spec discovery, the
+      # zero-config handler pool (and its explicit-topology escape hatch),
+      # and the same 10k-request RSS guard the Django row carries.
+      - name: Conformance test the ASGI bridge
+        run: uv run poe smoke-asgi
+      # The flagship ASGI framework row: a FastHTML (Starlette) app served
+      # as main:app. Pages render under the buffered bridge; its infinite
+      # EventStream is pinned to the watchdog's refusal until the streaming
+      # surface lands. Skips cleanly where python-fasthtml is absent.
+      - name: Serve a FastHTML app through the ASGI bridge
+        run: uv run poe smoke-fasthtml
       # The CLI as a user meets it: --help/--version, usage (2) and startup
       # (1) exit codes — including a supervisor that gives up — a typed flag
       # beating the environment, a static mount, --max-body, --metrics.

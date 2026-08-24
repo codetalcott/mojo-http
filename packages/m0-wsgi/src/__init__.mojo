@@ -37,7 +37,7 @@ from .environ import (
     cgi_name_utf8,
 )
 from .response import build_response, split_status
-from .app import WSGIApp
+from .app import WSGIApp, detect_protocol
 from .handler import WSGIHandler
 from .threaded import (
     ThreadedServer,
@@ -58,10 +58,19 @@ from .cli import (
     parse_size,
     parse_int,
     usage,
+    zero_config_topology,
+    default_blocking_threads,
+    resolve_blocking_threads,
+    effective_cpus,
+    discovery_specs,
     M0SERVE_VERSION,
     DEFAULT_PORT,
     EXIT_USAGE,
     EXIT_STARTUP,
+    PROTOCOL_AUTO,
+    PROTOCOL_WSGI,
+    PROTOCOL_ASGI,
+    MAX_AUTO_BLOCKING_THREADS,
 )
 from .hold import (
     HoldResult,
