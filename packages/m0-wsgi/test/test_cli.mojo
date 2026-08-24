@@ -20,6 +20,7 @@ from src.cli import (
     zero_config_topology,
     default_blocking_threads,
     resolve_blocking_threads,
+    use_asgi_executor,
     effective_cpus,
     discovery_specs,
     DEFAULT_PORT,
@@ -468,9 +469,26 @@ def test_default_blocking_threads_floor_and_cap() raises:
 def test_resolve_blocking_threads_zero_config_picks_a_pool() raises:
     var opts = _parse([String("x.wsgi")])
     assert_equal(resolve_blocking_threads(opts, False, 4), 4)
-    # Phase 1: ASGI gets the same pool default; the asyncio executor will
-    # change this answer, which is why the parameter already exists.
-    assert_equal(resolve_blocking_threads(opts, True, 4), 4)
+    # ASGI gets NO pool: its zero-config concurrency is the asyncio
+    # executor (`use_asgi_executor`), not handler threads.
+    assert_equal(resolve_blocking_threads(opts, True, 4), 0)
+
+
+def test_use_asgi_executor_truth_table() raises:
+    var zero = _parse([String("x")])
+    zero.blocking_threads = resolve_blocking_threads(zero, True, 4)
+    assert_true(use_asgi_executor(zero, True))
+    assert_false(use_asgi_executor(zero, False))
+    # The escape hatch: an explicit pool keeps the buffered bridge.
+    var pooled = _parse([String("x"), String("--blocking-threads"), String("3")])
+    assert_false(use_asgi_executor(pooled, True))
+    # An explicit zero still means the executor for ASGI — "no pool", not
+    # "no concurrency".
+    var bare = _parse([String("x"), String("--blocking-threads"), String("0")])
+    assert_true(use_asgi_executor(bare, True))
+    # Explicit workers compose: the executor runs per worker process.
+    var workers = _parse([String("x"), String("--workers"), String("2")])
+    assert_true(use_asgi_executor(workers, True))
 
 
 def test_resolve_blocking_threads_explicit_wins() raises:

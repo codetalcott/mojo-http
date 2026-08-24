@@ -108,6 +108,21 @@ Mojo 1.0 interop imposes and that the code depends on:
     objects are the measured 0.7x cliff (`docs/WSGI_VS_ASGI.md` §5); keep
     per-request state thread-local. `print`/`log_access` from N threads can
     interleave — `x-thread` is on every response for that reason.
+  - **The asyncio executor (`m0_wsgi.asgi_executor`; the ASGI default).**
+    One Python thread per event loop runs the bridge's persistent asyncio
+    loop, fed through the same `OffloadPool` the handler pool speaks — the
+    loop parks and submits, `add_reader` on the submit fd turns slots into
+    tasks, completions answer via `put_response`/`complete`. Rules:
+    attach once for the thread's life like a pool thread, but park
+    ATTACHED inside `run_until_complete` (CPython's selector releases the
+    GIL there — that is the executor's detach); the Mojo loop still needs
+    `DetachingBackend`; every Python object stays owned by the executor
+    thread; the loop's fallback handler is built with `lifespan=False` so
+    exactly one lifespan runs per loop; `spawn_asgi` crosses the scope
+    C-API-only (PyList/PyTuple steal discipline — same rules as the
+    environ build). Streaming is refused by the send()-side watchdog
+    until the Phase 3 surface exists — do not "fix" it by lengthening the
+    grace (docs/WSGI_VS_ASGI.md §8).
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind

@@ -70,8 +70,8 @@ from m0_http.multiworker import SharedAtomics
 from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
-    detect_protocol, discovery_specs, resolve_blocking_threads,
-    zero_config_topology, effective_cpus,
+    AsgiExecutor, detect_protocol, discovery_specs, resolve_blocking_threads,
+    zero_config_topology, use_asgi_executor, effective_cpus,
     M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
 
@@ -137,48 +137,35 @@ def _specs_tried(specs: List[String]) -> String:
     return joined^
 
 
-def _load_app(mut opts: ServeOptions, multiprocess: Bool) raises -> WSGIApp:
-    """Import the application, discovering the spec when it was bare.
+def _resolve_spec(mut opts: ServeOptions) raises -> Bool:
+    """Import, resolve discovery, and detect the protocol — no lifespan.
 
-    An explicit `MODULE:ATTR` loads exactly what it names. A bare `MODULE`
-    tries the `discovery_specs` conventions in order — Django's
+    An explicit `MODULE:ATTR` detects exactly what it names. A bare
+    `MODULE` tries the `discovery_specs` conventions in order — Django's
     `asgi.py`/`wsgi.py` and the `main:app` shape — and the first one that
-    loads wins; `opts` is updated to the winner so the banner and the
-    per-thread handlers name what is actually being served. On a total
-    miss, the primary spec's own error leads and every candidate tried is
-    listed.
+    imports and classifies wins; `opts` is updated to the winner so the
+    banner and the per-thread handlers name what is actually being served.
+    On a total miss, the primary spec's own error leads and every
+    candidate tried is listed.
 
-    `sys.path` gets `--app-dir` exactly once, here, so retried candidates
-    do not grow it; the `WSGIApp`s are therefore built with an empty
-    `project_path`.
+    Detection is deliberately separate from `WSGIApp` construction: the
+    executor mode's decision needs the protocol BEFORE any bridge exists,
+    so that exactly one lifespan runs per event loop (the executor's), not
+    one per candidate tried. The caller must have put `--app-dir` on
+    `sys.path`; the imports here are `sys.modules` hits for everything
+    that follows.
     """
-    if opts.app_dir.byte_length() > 0:
-        Python.add_to_path(opts.app_dir)
     if opts.attribute_explicit:
-        return WSGIApp(
-            opts.module,
-            server_name=opts.host,
-            server_port=String(opts.port),
-            attribute=opts.attribute,
-            multiprocess=multiprocess,
-            protocol=opts.protocol,
-        )
+        return detect_protocol(opts.module, opts.attribute, opts.protocol)
     var specs = discovery_specs(opts.module)
     var first_error = String("")
     for i in range(len(specs)):
         var pair = parse_app_spec(specs[i])
         try:
-            var app = WSGIApp(
-                pair[0],
-                server_name=opts.host,
-                server_port=String(opts.port),
-                attribute=pair[1],
-                multiprocess=multiprocess,
-                protocol=opts.protocol,
-            )
+            var is_asgi = detect_protocol(pair[0], pair[1], opts.protocol)
             opts.module = pair[0]
             opts.attribute = pair[1]
-            return app^
+            return is_asgi
         except e:
             if i == 0:
                 first_error = String(e)
@@ -353,10 +340,14 @@ def main() raises:
             exit_worker()
         return
 
-    # The first Python call in this process.
-    var app: WSGIApp
+    # The first Python call in this process: put --app-dir on sys.path and
+    # resolve the spec + protocol, WITHOUT building a bridge — the executor
+    # decision below needs the protocol before any lifespan may run.
+    var is_asgi: Bool
     try:
-        app = _load_app(opts, multiprocess)
+        if opts.app_dir.byte_length() > 0:
+            Python.add_to_path(opts.app_dir)
+        is_asgi = _resolve_spec(opts)
     except e:
         _fail(
             "could not load " + opts.spec() + " from " + opts.app_dir + ": "
@@ -364,19 +355,43 @@ def main() raises:
             EXIT_STARTUP,
         )
         return
-    var is_asgi = app.is_asgi
 
     if is_asgi and opts.realtime:
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
 
     # Zero-config: with no topology flag or M0_* topology variable at all,
-    # the protocol picks the pool — detection had to run first, which is
-    # why this sits after the app loads (and, under prefork, inside each
-    # worker; every worker resolves the same app to the same answer).
+    # the protocol picks the concurrency — a pool for WSGI, the asyncio
+    # executor for ASGI. Detection had to run first, which is why this
+    # sits after the resolve (and, under prefork, inside each worker;
+    # every worker resolves the same app to the same answer).
     var auto_pool = zero_config_topology(opts)
     opts.blocking_threads = resolve_blocking_threads(
         opts, is_asgi, effective_cpus()
     )
+    var executor_mode = use_asgi_executor(opts, is_asgi)
+    # In executor mode the loop's own handler is the queue-overflow
+    # fallback: its bridge gets a loop but no lifespan, so the executor's
+    # app owns the one lifespan this process runs.
+    opts.handler_lifespan = not executor_mode
+
+    var app: WSGIApp
+    try:
+        app = WSGIApp(
+            opts.module,
+            server_name=opts.host,
+            server_port=String(opts.port),
+            attribute=opts.attribute,
+            multiprocess=multiprocess,
+            protocol=opts.protocol,
+            lifespan=not executor_mode,
+        )
+    except e:
+        _fail(
+            "could not load " + opts.spec() + " from " + opts.app_dir + ": "
+            + String(e),
+            EXIT_STARTUP,
+        )
+        return
 
     var handler = WSGIHandler.for_options(app^, opts)
 
@@ -384,6 +399,7 @@ def main() raises:
         "m0serve: " + opts.spec() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " workers=" + String(opts.workers) + ")"
+        + (" asgi-loop" if executor_mode else "")
         + (
             " blocking-threads=" + String(opts.blocking_threads)
             + (" (auto)" if auto_pool else "")
@@ -397,15 +413,19 @@ def main() raises:
     # After fork_all — each worker arms its own pipe.
     var shutdown_fd = install_shutdown_signals()
 
-    if opts.blocking_threads > 0:
-        # Stage B under prefork: this process gets one acceptor loop and a
-        # pool. The threads are spawned AFTER `fork_all()` returned and after
-        # the `WSGIApp` above made this process's first Python call, so the
-        # prefork rule is untouched — a forked child that then makes threads is
-        # fine; a threaded parent that then forks is not.
-        _serve_pooled(opts, listener, handler, server_config, shutdown_fd)
-        # The loop's own handler ran lifespan startup too (it serves the
-        # inline fallback); pool handlers shut down in _pool_serve.
+    if executor_mode or opts.blocking_threads > 0:
+        # Offloaded serving under prefork: this process gets one acceptor
+        # loop and either the asyncio executor (ASGI) or a handler pool.
+        # The threads are spawned AFTER `fork_all()` returned and after the
+        # resolve above made this process's first Python call, so the
+        # prefork rule is untouched — a forked child that then makes
+        # threads is fine; a threaded parent that then forks is not.
+        _serve_offloaded(
+            opts, listener, handler, server_config, shutdown_fd,
+            executor_mode,
+        )
+        # The loop's own handler serves the inline fallback; in executor
+        # mode its lifespan never ran, and shutdown just closes its loop.
         handler.shutdown()
         if supervised:
             exit_worker()
@@ -427,29 +447,40 @@ def main() raises:
         exit_worker()
 
 
-def _serve_pooled(
+def _serve_offloaded(
     opts: ServeOptions,
     listener: NoTLSListener[NetworkType.tcp4],
     mut handler: WSGIHandler,
     config: ServerConfig,
     shutdown_fd: Int,
+    executor: Bool,
 ) raises:
-    """`--blocking-threads N` without `--threads`: one loop, one pool.
+    """One acceptor loop feeding either a handler pool or the executor.
+
+    `--blocking-threads N` (WSGI, or the ASGI escape hatch) puts N handler
+    threads behind the loop; `executor` puts the one asyncio-executor
+    thread there instead — both speak the same `OffloadPool`, so the loop
+    is identical either way.
 
     `Server.serve_nonblocking` is bypassed for one reason — the backend has to
     be a `DetachingBackend`. A loop that sits in `kevent`/`epoll_wait` while
-    attached to the interpreter holds a thread state the pool threads need,
-    and under a GIL-enabled CPython that is not a slowdown but a deadlock: the
-    pool would never run at all. The wrapper is two calls per loop *pass*.
+    attached to the interpreter holds a thread state the receiving threads
+    need, and under a GIL-enabled CPython that is not a slowdown but a
+    deadlock: nothing behind the queue would ever run. The wrapper is two
+    calls per loop *pass*.
 
-    No bus channel is passed, because `--realtime` and `--blocking-threads`
-    are refused together and the bus exists only for `--realtime`.
+    No bus channel is passed, because `--realtime` is refused with both of
+    these modes and the bus exists only for `--realtime`.
     """
     var pool = OffloadPool(config.max_connections)
-    var pool_threads = BlockingPool(opts.blocking_threads)
+    var pool_threads = BlockingPool(0 if executor else opts.blocking_threads)
+    var exec_thread = AsgiExecutor()
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
-    pool_threads.start[WSGIHandler](pool.addr(), opts_addr)
+    if executor:
+        exec_thread.start(pool.addr(), opts_addr)
+    else:
+        pool_threads.start[WSGIHandler](pool.addr(), opts_addr)
 
     comptime if CompilationTarget.is_macos():
         from lightbug_http.c.kqueue_backend import KqueueBackend
@@ -467,46 +498,25 @@ def _serve_pooled(
         )
 
     # Detached across it, for the reason the pool body details: a thread
-    # finishing its last job has to attach, and it cannot while this thread
-    # holds a state and blocks in `pthread_join`.
+    # finishing its last job (or the executor draining its tasks) has to
+    # attach, and it cannot while this thread holds a state and blocks in
+    # `pthread_join`.
     ref cpy = Python().cpython()
     var join_ts = cpy.PyEval_SaveThread()
-    var failed = pool_threads.stop_and_join(pool)
+    var failed: Int
+    if executor:
+        failed = exec_thread.stop_and_join(pool)
+    else:
+        failed = pool_threads.stop_and_join(pool)
     cpy.PyEval_RestoreThread(join_ts)
     if failed > 0:
         print(
-            String(failed) + " blocking thread(s) did not exit cleanly",
+            String(failed) + " offload thread(s) did not exit cleanly",
             flush=True,
         )
     # `pool` must outlive the join: a thread still finishing a job writes into
     # it. This use is what stops destroy-at-last-use freeing it above.
     _ = pool.capacity
-
-
-def _resolve_spec_threaded(mut opts: ServeOptions) raises -> Bool:
-    """Resolve discovery and detect the protocol, on the main thread.
-
-    The threaded mode's mirror of `_load_app`: the interpreter comes up on
-    main and every serving thread re-imports through `sys.modules`, so
-    detection can (and must) run here — the per-loop pool default needs
-    the answer before the threads spawn. Returns whether the app is ASGI;
-    `opts` is updated to the discovered spec.
-    """
-    if opts.attribute_explicit:
-        return detect_protocol(opts.module, opts.attribute, opts.protocol)
-    var specs = discovery_specs(opts.module)
-    var first_error = String("")
-    for i in range(len(specs)):
-        var pair = parse_app_spec(specs[i])
-        try:
-            var is_asgi = detect_protocol(pair[0], pair[1], opts.protocol)
-            opts.module = pair[0]
-            opts.attribute = pair[1]
-            return is_asgi
-        except e:
-            if i == 0:
-                first_error = String(e)
-    raise Error(first_error + " (tried " + _specs_tried(specs) + ")")
 
 
 def _serve_threaded(
@@ -541,7 +551,7 @@ def _serve_threaded(
     # hits for every serving thread.
     var is_asgi: Bool
     try:
-        is_asgi = _resolve_spec_threaded(opts)
+        is_asgi = _resolve_spec(opts)
     except e:
         _fail(
             "could not load " + opts.spec() + " from " + opts.app_dir + ": "
@@ -555,6 +565,11 @@ def _serve_threaded(
     opts.blocking_threads = resolve_blocking_threads(
         opts, is_asgi, effective_cpus()
     )
+    var executor_mode = use_asgi_executor(opts, is_asgi)
+    # Each serving thread's own loop handler is only the fallback in
+    # executor mode; the one lifespan per loop belongs to that loop's
+    # executor.
+    opts.handler_lifespan = not executor_mode
 
     var shutdown_fd = install_shutdown_signals()
     var opts_ptr = Pointer(to=opts)
@@ -563,6 +578,7 @@ def _serve_threaded(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " threads=" + String(opts.threads) + ")"
+        + (" asgi-loop" if executor_mode else "")
         + (
             " blocking-threads=" + String(opts.blocking_threads)
             + (" (auto)" if auto_pool else "")

@@ -51,6 +51,7 @@ from .threaded import (
     EXIT_NOT_FREE_THREADED,
 )
 from .blocking_pool import BlockingPool
+from .asgi_executor import AsgiExecutor
 from .cli import (
     ServeOptions,
     parse_args,
@@ -61,6 +62,7 @@ from .cli import (
     zero_config_topology,
     default_blocking_threads,
     resolve_blocking_threads,
+    use_asgi_executor,
     effective_cpus,
     discovery_specs,
     M0SERVE_VERSION,

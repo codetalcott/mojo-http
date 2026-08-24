@@ -441,12 +441,15 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   are the remaining part: an infinite stream is currently refused with an
   explanatory 500 by the buffered bridge's watchdog, and lands with the
   Phase 3 realtime surface below.
-- **The ASGI gateway's next phases** (design in WSGI_VS_ASGI.md §8):
-  Phase 2, the per-loop asyncio executor over the unchanged `OffloadPool` —
-  real await-concurrency, after which ASGI stops defaulting to a handler
-  pool; Phase 3, ASGI streaming and `websocket` scopes over the existing
-  bus/registry transport. Gate both on `bench-asgi` numbers against uvicorn
-  (single process, no uvloop), recorded in WSGI_PERFORMANCE.md.
+- **The ASGI gateway's next phase** (design in WSGI_VS_ASGI.md §8):
+  Phase 2 — the per-loop asyncio executor over the unchanged
+  `OffloadPool` — **shipped**: zero-config ASGI gets real
+  await-concurrency and no handler pool, `bench-asgi` is the standing
+  uvicorn gate (mixed-tail passing; hello-world 0.88–0.94x with the gap
+  located in WSGI_PERFORMANCE.md §"The ASGI executor vs uvicorn").
+  Remaining: Phase 3, ASGI streaming and `websocket` scopes over the
+  existing bus/registry transport, plus the recorded executor fix paths
+  (wrk-based bench, N executors per pool under free-threading).
 - **Recorded follow-ups, not yet scoped:**
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.

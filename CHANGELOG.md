@@ -9,6 +9,28 @@ versions may break the API**.
 
 ### Added
 
+- **The asyncio executor: real await-concurrency for ASGI (Phase 2).**
+  Zero-config ASGI now serves through one executor thread per event loop
+  (`m0_wsgi.asgi_executor`) running the bridge's persistent asyncio loop:
+  the loop parks each request and submits its slot through the unchanged
+  `OffloadPool` datagram channel, `loop.add_reader` turns slots into
+  tasks, and completions answer through `put_response`/`complete`.
+  Requests overlap wherever the application awaits — eight concurrent
+  1.5 s awaits complete in 1.51 s on one loop with zero threads — and the
+  banner says `asgi-loop`. The executor path crosses method, path, query,
+  headers (ready lowercase byte-pairs), and body straight through the C
+  API as stolen tuple slots — no environ, no CGI names, no Python-side
+  re-transform — and the RSS guard reads 20 KB over 10k requests. Exactly
+  one lifespan runs per loop (fallback handlers are built with
+  `lifespan=False`); the executor picks uvloop for its own loop where
+  installed. An explicit `--blocking-threads N` keeps the Phase-1
+  buffered pool as the escape hatch; `--threads N` composes (one executor
+  per loop, free-threaded CPython only, as before). `poe bench-asgi` is
+  the standing gate against uvicorn: the mixed slow/fast fast-request p99
+  passes (2.87 ms vs 3.27 ms); hello-world throughput stands at
+  0.88–0.94x with the remainder located and its fix paths recorded in
+  docs/WSGI_PERFORMANCE.md §"The ASGI executor vs uvicorn".
+
 - **`m0serve` is now a hybrid WSGI/ASGI gateway with zero-config
   detection.** The protocol is detected from the application object at load
   (coroutine-function duck typing — the rule uvicorn and asgiref share;

@@ -128,7 +128,7 @@ def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
     for i in range(n):
         cl[i] = changes[i]
 
-    var result = _kevent(kq.value, cl, c_int(n), None, c_int(0), None)
+    var result = _kevent(Int32(kq.value), cl, c_int(n), None, c_int(0), None)
     cl.unsafe_free()
 
     if result == -1:

@@ -172,6 +172,10 @@ struct WSGIHandler(ThreadHandler):
             multiprocess=opts[].workers > 1,
             multithread=True,
             protocol=opts[].protocol,
+            # False only in executor mode, where this handler is the
+            # queue-overflow fallback and the loop's executor owns the one
+            # lifespan.
+            lifespan=opts[].handler_lifespan,
         )
         var handler = Self.for_options(app^, opts[])
         handler.thread_index = ctx.index
@@ -181,19 +185,30 @@ struct WSGIHandler(ThreadHandler):
         """The application's teardown (ASGI lifespan shutdown; WSGI no-op)."""
         self.app.shutdown()
 
-    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+    def serve_local(mut self, req: HTTPRequest) raises -> Optional[HTTPResponse]:
+        """A static-mount or health answer, entirely in Mojo — or None.
+
+        Split out of `func` for the asyncio executor, whose pump must
+        answer these itself (never entering Python) while everything else
+        becomes a task on the shim's loop.
+        """
         # Static assets first: answered in Mojo, never entering Python, so a
         # slow view queue cannot delay a stylesheet.
         for i in range(len(self.mounts)):
             var hit = self.mounts[i].serve(req)
             if hit:
-                return hit.take()
-
+                return hit^
         if (
             self.health_path.byte_length() > 0
             and req.uri.path == self.health_path
         ):
             return self._health()
+        return None
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        var local = self.serve_local(req)
+        if local:
+            return local.take()
 
         if not self.realtime:
             return self.app.serve(req)

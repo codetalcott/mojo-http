@@ -95,6 +95,12 @@ struct ServeOptions(Copyable, Movable):
     """
     var threads_set: Bool
     var blocking_threads_set: Bool
+    var handler_lifespan: Bool
+    """Internal, never a flag: whether handlers built from these options
+    run ASGI lifespan in their own bridge. The executor mode sets it False
+    so per-loop fallback handlers do not run a second lifespan beside the
+    executor's — the executor's own app is built with lifespan on,
+    explicitly."""
     var app_dir: String
     """Prepended to `sys.path` so `module` can be imported; relative to cwd."""
     var static_prefixes: List[String]
@@ -143,6 +149,7 @@ struct ServeOptions(Copyable, Movable):
         self.workers_set = False
         self.threads_set = False
         self.blocking_threads_set = False
+        self.handler_lifespan = True
         self.app_dir = String(".")
         self.static_prefixes = List[String]()
         self.static_dirs = List[String]()
@@ -170,6 +177,7 @@ struct ServeOptions(Copyable, Movable):
         self.workers_set = copy.workers_set
         self.threads_set = copy.threads_set
         self.blocking_threads_set = copy.blocking_threads_set
+        self.handler_lifespan = copy.handler_lifespan
         self.app_dir = copy.app_dir
         self.static_prefixes = copy.static_prefixes.copy()
         self.static_dirs = copy.static_dirs.copy()
@@ -197,6 +205,7 @@ struct ServeOptions(Copyable, Movable):
         self.workers_set = move.workers_set
         self.threads_set = move.threads_set
         self.blocking_threads_set = move.blocking_threads_set
+        self.handler_lifespan = move.handler_lifespan
         self.app_dir = move.app_dir^
         self.static_prefixes = move.static_prefixes^
         self.static_dirs = move.static_dirs^
@@ -359,17 +368,34 @@ def resolve_blocking_threads(
     any value, keeps `opts.blocking_threads` verbatim. `--realtime` keeps
     the single-loop shape (the streaming hooks run on the loop's handler,
     which is exactly what a pool breaks — the existing refusal, extended to
-    the default). Otherwise both protocols get a small pool: one slow view
-    must not stall every connection out of the box. `is_asgi` is accepted
-    now so the call sites do not change when the asyncio executor lands and
-    ASGI stops wanting a pool at all.
+    the default). A zero-config WSGI app gets a small pool: one slow view
+    must not stall every connection out of the box. A zero-config ASGI app
+    gets NO pool, because it gets the asyncio executor instead
+    (`use_asgi_executor`) — its concurrency is the application's own
+    awaits, and pool threads would only multiply interpreter-side handler
+    state for nothing.
     """
-    _ = is_asgi
     if not zero_config_topology(opts):
         return opts.blocking_threads
-    if opts.realtime:
+    if opts.realtime or is_asgi:
         return 0
     return default_blocking_threads(cpus)
+
+
+def use_asgi_executor(opts: ServeOptions, is_asgi: Bool) -> Bool:
+    """Whether this deployment runs the per-loop asyncio executor.
+
+    The executor is ASGI's default concurrency: requests overlap wherever
+    the application awaits, uvicorn's shape. It engages whenever the app
+    is ASGI and no handler pool is in play — which zero-config guarantees
+    (`resolve_blocking_threads` answers 0 for ASGI) and an explicit
+    `--blocking-threads 0` also selects. An explicit `--blocking-threads
+    N>0` with an ASGI app keeps the Phase-1 buffered pool instead — the
+    documented escape hatch while the executor is young. Call AFTER
+    `resolve_blocking_threads`'s answer has been written back into
+    `opts.blocking_threads`.
+    """
+    return is_asgi and not opts.realtime and opts.blocking_threads == 0
 
 
 def effective_cpus() -> Int:
