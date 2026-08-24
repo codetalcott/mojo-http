@@ -464,15 +464,61 @@ function does — two `ctypes` object constructions per request:
 
     return ctypes.cast(ctypes.c_char_p(_body), ctypes.c_void_p).value or 0
 
-which is the last per-request Python-level operation left in the bridge. The
-fix is the one the request path already uses: have the shim copy the response
-into a persistent `bytearray` whose address Mojo caches once, so no `ctypes`
-call happens per request at all. Same grow protocol, same cached-address
-discipline — and a cached address into a `bytearray` is only safe while
-nothing resizes it, which is why that protocol exists.
+which was the last per-request Python-level operation left in the bridge.
 
-Recorded because the first description named three things and the answer was
-one of them. Measuring by part is what this document keeps being right about.
+### The unbound C API is reachable, and that is the fix
+
+The plan recorded here was to have the shim copy the response into a
+persistent `bytearray` whose address Mojo caches — the request path's trick,
+run backwards. That would have worked, at the cost of a second copy for large
+bodies. It was not needed, because the premise underneath it was wrong.
+
+`Python().cpython()` binds no `PyBytes_*` at all, and `external_call` cannot
+reach them either — **libpython is not on the link line**. Mojo `dlopen`s it,
+which is exactly why `CPython` is a struct of loaded function pointers rather
+than a header. But that struct exposes its handle, and the stdlib's own
+
+    ExternalFunction[name, type].load(cpy.lib.borrow())
+
+is how it populates every one of its bindings. It works just as well for the
+ones it omitted. So the whole CPython C API is available, not only the part
+the stdlib chose to wrap — which is a considerably more useful fact than this
+one optimisation.
+
+`body_bytes` now runs no Python whatsoever: `PyObject_Length` for the length,
+`PyBytes_AsString` for the address, one `memcpy` for the copy. The pointer is
+resolved once at construction — loading is a `dlsym`, but the call it returns
+is **1.0 ns**, against 1,095 ns for the `ctypes` round trip. `PyBytes_AsString`
+is stable-ABI and *checked*: it returns NULL and sets `TypeError` on a
+non-`bytes`, where the `PyBytes_AS_STRING` macro would read the wrong offsets
+— and a macro is not a symbol in any case.
+
+| part | before | after |
+|------|-------:|------:|
+| response body out | 1.07 µs | **0.13 µs** |
+| full round trip | 3.52 µs | **2.50 µs** |
+
+**8.3x on that part, and the bridge is now 2.50 µs** — down from 3.52, and
+from 14.9 before the environ builder. End to end, one worker on
+`apps/wsgi_bare`, browser-shaped keep-alive request, the `before` bracketed by
+two separate `after` server starts on the same box:
+
+| | rps | p50 | p99 |
+|---|---:|---:|---:|
+| before | 45,891 · 45,441 | 315 µs | 690 µs |
+| after | **48,852 · 48,871** | **295 µs** | **640 µs** |
+| after, again | 48,516 · 48,872 | 295 µs | 691 µs |
+
+**+6.7%**, and **1.69x cumulative** against the 28,853 rps this document
+measured before any of the bridge work. `smoke-django`'s RSS guard still
+reports **0 KB over 10k requests**: reading through a raw pointer takes no
+reference, and the guard is what says it took none.
+
+Recorded twice over, because both halves were instructive. The first
+description named three costs and the answer was one of them — measure by
+part. The fix that followed from that measurement was then also wrong, and
+only checking whether the constraint was real rather than assumed found the
+better one.
 
 ## A slow view strands the connections pinned behind it
 

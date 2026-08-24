@@ -5,6 +5,41 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+### Changed
+
+- **The response body is read through `PyBytes_AsString` instead of
+  `ctypes` — the bridge costs 2.50 µs per request instead of 3.52.**
+  `body_bytes` was 31% of what the bridge had left, and the split named one
+  cause: the shim's `body_addr()`, which built two `ctypes` objects per
+  request. It now runs **no Python at all** — `PyObject_Length` for the
+  length, `PyBytes_AsString` for the address, one `memcpy` for the copy.
+  **1.07 µs → 0.13 µs**, and end to end on one worker serving
+  `apps/wsgi_bare`: **45,891 → 48,852 rps, +6.7%**, p50 315 → 295 µs. That
+  is **1.69x cumulative** against the 28,853 rps measured before any of the
+  bridge work.
+
+  **The general finding matters more than the optimisation.**
+  `Python().cpython()` binds no `PyBytes_*` and no `PyUnicode_DecodeLatin1`,
+  and `external_call` cannot reach them either, because libpython is not on
+  the link line — Mojo `dlopen`s it, which is why `CPython` is a struct of
+  loaded function pointers. But that struct exposes its handle, and the
+  stdlib's own `ExternalFunction[name, type].load(cpy.lib.borrow())` opens
+  the functions it omitted. **The whole CPython C API is reachable**, which
+  retires "there is no binding for it" as a constraint on this boundary.
+
+  `PyBytes_AsString` is stable-ABI and checked — NULL plus `TypeError` on a
+  non-`bytes`, where the `PyBytes_AS_STRING` macro would read wrong offsets
+  and is not a symbol anyway. The pointer is resolved once at construction;
+  the call it returns is 1.0 ns. `smoke-django`'s RSS guard still reports
+  **0 KB over 10k requests** — reading through a raw pointer takes no
+  reference.
+
+  The **request** body still crosses through the shim's bytearray.
+  `PyBytes_FromStringAndSize` is reachable the same way and would retire it,
+  along with `buf_addr()` and the grow protocol; that is not done here.
+
 ## [0.7.0] — 2026-08-23
 
 ### Added

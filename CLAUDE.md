@@ -29,15 +29,24 @@ every build in the repo. Everything touching the interpreter lives in
 `src/bridge.mojo`; the rest of the package works in Mojo types. Two rules the
 Mojo 1.0 interop imposes and that the code depends on:
 
-- **`std.python` has no `bytes` bindings at all** — no `PyBytes_*`, no buffer
-  protocol, and `PythonObject` has no `Span[Byte]` constructor. Bodies cross as
-  raw addresses through `ctypes` (see `bridge.mojo`), and are now the *only*
-  thing that does: everything else in the environ is built as Python objects
-  through the C API, which cannot build a `bytes`. Do not "simplify" the body
+- **`std.python` binds no `bytes` API and no latin-1 decoder — but the
+  unbound C API is still reachable.** `Python().cpython()` has no
+  `PyBytes_*` of any kind and no `PyUnicode_DecodeLatin1`, and
+  `external_call` cannot reach them either: **libpython is not on the link
+  line**, which is precisely why `CPython` is a struct of `dlopen`'d function
+  pointers rather than a header. The way in is the stdlib's own mechanism —
+  `ExternalFunction[name, type].load(cpy.lib.borrow())`, the same call it
+  uses to populate its bindings. `bridge.mojo`'s `_PyBytes_AsString` is the
+  worked example; resolve once at construction, never per request.
+
+  Prefer a bound function when one exists, and prefer a *checked* C function
+  to a macro: `PyBytes_AsString` returns NULL on a non-`bytes` where
+  `PyBytes_AS_STRING` would read wrong offsets (and macros are not symbols).
+  Where a function genuinely cannot be reached, `environ.mojo` shows the
+  other tactic: latin-1 text is encoded as UTF-8 in Mojo so
+  `PyUnicode_DecodeUTF8` produces the same `str`. Do not "simplify" any body
   path to a `String` round trip; Mojo strings are UTF-8 and it corrupts every
-  byte above 0x7F. There is no `PyUnicode_DecodeLatin1` either, which is why
-  `environ.mojo` encodes latin-1 text as UTF-8 for `PyUnicode_DecodeUTF8` to
-  decode — the same `str`, reached the long way round.
+  byte above 0x7F.
 - **`PythonObject` interop leaks a reference per call argument and per
   `__setitem__` value** (Mojo 1.0, measured; zero-argument calls, call
   results, `len()`, and `String(py=...)` are clean). Never add a
