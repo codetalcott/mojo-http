@@ -405,18 +405,35 @@ min(cores, 8)` by default (either protocol), so one slow view no longer
 stalls the out-of-box server; `--realtime` keeps the single-loop shape, and
 any explicit topology value — including `M0_BLOCKING_THREADS=0` — wins.
 
-**Phase 2 — next: the per-loop asyncio executor.** Real await-concurrency
-(uvicorn's shape) without a coexisting-loop architecture: one Python thread
-per Mojo event loop runs a persistent asyncio loop, fed through the
-**unchanged** `OffloadPool` — the loop parks the request and submits the slot
-exactly as `--blocking-threads` does, the executor's `loop.add_reader` on the
-submit fd turns each slot into a task, and task completion answers through
-`put_response`/`complete`, which any producer holding the pool address may
-drive. Every Python object stays touched by exactly one thread (the §5 cliff
-is avoided structurally), and on a GIL build the selector inside
-`run_until_complete` releases the GIL, so the detached Mojo loop and the
-executor interleave. ASGI then stops defaulting to a pool — the executor is
-its concurrency.
+**Phase 2 — shipped: the per-loop asyncio executor.** Real
+await-concurrency (uvicorn's shape) without a coexisting-loop architecture:
+one Python thread per Mojo event loop runs a persistent asyncio loop, fed
+through the **unchanged** `OffloadPool` — the loop parks the request and
+submits the slot exactly as `--blocking-threads` does, the executor's
+`loop.add_reader` on the submit fd turns each slot into a task, and task
+completion answers through `put_response`/`complete`, which any producer
+holding the pool address may drive (`m0_wsgi.asgi_executor`; the pump
+batch-drains events so one `run_until_complete` enter/exit amortizes over
+everything ready). Every Python object stays touched by exactly one thread
+(the §5 cliff is avoided structurally), and on a GIL build the selector
+inside `run_until_complete` releases the GIL, so the detached Mojo loop and
+the executor interleave. ASGI no longer defaults to a pool — the executor
+is its concurrency (`use_asgi_executor`; an explicit `--blocking-threads
+N>0` keeps the buffered pool as the escape hatch) — and the banner says
+`asgi-loop`. Measured on day one: **eight concurrent 1.5 s awaits complete
+in 1.51 s on one loop with zero threads** (the buffered bridge takes 12 s),
+the RSS guard stays flat — 20 KB to ~1.7 MB over 10k requests across runs,
+allocator/arena noise (uvloop's included) rather than growth, against the
+12 MB limit (the executor path crosses method/path/query/headers directly
+through the C API — no environ, no CGI names, no Python-side
+re-transform) — and exactly one lifespan runs per event loop (the loop's
+fallback handler is built with `lifespan=False`).
+The bench-asgi gate against uvicorn: the mixed slow/fast tail **passes**
+(fast p99 2.87 ms vs 3.27 ms) and hello-world throughput stands at
+0.88–0.94x across runs — the located remainder and its fix paths are
+recorded in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) §"The ASGI executor
+vs uvicorn". The executor opportunistically uses uvloop for its own loop
+where installed, stdlib asyncio otherwise.
 
 **Phase 3 — after: the ASGI realtime surface.** Streaming responses and
 `websocket` scopes, by reusing the §4 transport rather than building one: the

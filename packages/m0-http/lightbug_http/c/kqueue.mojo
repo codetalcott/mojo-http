@@ -122,18 +122,17 @@ def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
 
 
 def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
-    """Submit kevent changes without polling for events."""
-    var n = len(changes)
-    var cl = alloc[kevent_t](count=n)
-    for i in range(n):
-        cl[i] = changes[i]
+    """Submit kevent changes without polling for events.
 
-    var result = _kevent(kq.value, cl, c_int(n), None, c_int(0), None)
-    cl.unsafe_free()
-
-    if result == -1:
-        var errno = get_errno()
-        raise Error("kevent_register failed, errno: " + String(errno))
+    One syscall per change rather than a batched changelist: nothing in
+    the repo calls this (the loop registers one event at a time), and the
+    batched body it replaced carried a heap allocation plus two latent
+    bugs that sat unnoticed exactly because the function was dead — its
+    parametric signature meant the body was only ever type-checked once
+    something instantiated it.
+    """
+    for i in range(len(changes)):
+        kevent_register_one(kq, changes[i])
 
 
 def kevent_poll(

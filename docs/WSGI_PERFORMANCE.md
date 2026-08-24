@@ -900,6 +900,59 @@ small and now-smaller slice of it. The header work is worth more to
 is here. The place to spend effort on *this* path remains the bridge and the
 worker count, not the request parser.
 
+## The ASGI executor vs uvicorn
+
+The Phase-2 gate from [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) §8, measured
+2026-08-24 with `poe bench-asgi` (Linux CI-shaped container, 4 logical
+cores). **Client caveat first**: the container carries neither wrk nor ab,
+so the harness is a stdlib `http.client` keep-alive loop on 8 threads —
+the client is a large share of each round trip, which compresses every
+server difference and makes the numbers meaningful only as ratios under
+the identical client (and this container's absolutes swing ±10% between
+runs; SERVER_PERFORMANCE.md records 1.7x swings between sessions).
+
+`apps/asgi_bare`, single process each, 15 s rounds. "mixed" is 4 fast
+threads measuring `/` latency while 2 threads hammer `/slow?ms=200`:
+
+| target                              | hello rps | mixed fast p50 | mixed fast p99 |
+|-------------------------------------|----------:|---------------:|---------------:|
+| m0serve, asyncio executor           |     3,818 |        1.29 ms |    **2.87 ms** |
+| uvicorn (asyncio loop, C httptools) |     4,192 |        1.13 ms |        3.27 ms |
+| uvicorn (uvloop, C httptools)       |     4,344 |        1.02 ms |        3.34 ms |
+| m0serve, WSGI `--blocking-threads 4`|     4,530 |        1.04 ms |        3.14 ms |
+| m0serve, buffered bridge on pool-4  |     2,199 |        1.71 ms |        3.91 ms |
+
+Three findings:
+
+- **The mixed-tail half of the gate passes**: the executor's fast-request
+  p99 beats uvicorn's in every run (awaits overlap on the loop; the Mojo
+  acceptor never runs application code). The await-concurrency itself is
+  unambiguous — eight concurrent 1.5 s awaits complete in 1.51 s on one
+  loop with zero threads, where the buffered bridge takes 12 s.
+- **Hello-world throughput stands at 0.88–0.94x uvicorn across runs.** The
+  gap is *located*, not mysterious: the WSGI pool row proves the offload
+  machinery itself clears uvicorn (4,530), so the remainder is the
+  executor being ONE thread doing pump + scope hand-off + task + response
+  assembly for every request, plus the four datagram syscalls and the
+  cross-thread handoff each request pays — partially offset by the HTTP
+  parse it never does. Per-request executor-side work already crosses the
+  boundary once, C-API only (the environ-based spawn and its Python-side
+  scope re-transform were replaced by direct method/path/query/headers
+  hand-off, worth ~5%; the 10k-request RSS guard reads 20 KB–1.7 MB across
+  runs — allocator/arena noise, not growth — against the 12 MB limit).
+- **Recorded fix paths**, in expected-value order: run the bench under wrk
+  where available (the stdlib client understates the Mojo layer's edge on
+  parse-heavy traffic — see the header-count table above); N executor
+  threads per pool on free-threaded builds (the datagram channel already
+  delivers to any number of receivers — the same shape as
+  `--blocking-threads`, but for tasks); further pump batching. None of
+  these block Phase 3, which changes this path's shape anyway.
+
+The executor uses uvloop for its own loop where installed (stdlib asyncio
+otherwise); the uvicorn baseline row stays `--loop asyncio` per this
+repo's standing benchmark configuration, with the uvloop row shown for
+honesty.
+
 ## History: three fixes, and what the tails actually were
 
 **Keep-alive p99 ~140 ms — the blocking accept loop.** The first benchmarked

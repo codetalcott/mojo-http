@@ -126,7 +126,11 @@ _ASGI_BUFFER_CAP = 16 * 1024 * 1024
 _ASGI_STREAM_GRACE = 10.0
 
 
-def set_app(app, forced='auto'):
+def set_app(app, forced='auto', run_lifespan=True):
+    # run_lifespan=False builds an ASGI bridge whose loop exists but whose
+    # lifespan never ran: the executor mode's fallback shape, where the
+    # event loop's own handler serves only queue-overflow requests and the
+    # executor's bridge owns the one real lifespan per loop.
     global _app, _is_asgi
     _app = app
     if forced == 'auto':
@@ -134,7 +138,7 @@ def set_app(app, forced='auto'):
     else:
         _is_asgi = (forced == 'asgi')
     if _is_asgi:
-        _asgi_init()
+        _asgi_init(run_lifespan)
     return 'asgi' if _is_asgi else 'wsgi'
 
 
@@ -168,15 +172,26 @@ def detect_spec(module_name, attribute):
     return _detect(getattr(importlib.import_module(module_name), attribute))
 
 
-def _asgi_init():
+def _asgi_init(run_lifespan=True):
     global _loop
     import asyncio
     if _loop is None:
-        _loop = asyncio.new_event_loop()
+        # Opportunistic uvloop: strictly faster where installed, and the
+        # interface this bridge uses (run_until_complete, create_task,
+        # add_reader, futures) is identical. Zero-config means picking the
+        # best loop available, not shipping one -- stdlib asyncio is the
+        # unconditional fallback (and the free-threaded canary's path,
+        # where uvloop may not import).
+        try:
+            import uvloop
+            _loop = uvloop.new_event_loop()
+        except Exception:
+            _loop = asyncio.new_event_loop()
         # Thread-local, so per-bridge loops never collide across serving
         # threads.
         asyncio.set_event_loop(_loop)
-    _lifespan_startup()
+    if run_lifespan:
+        _lifespan_startup()
 
 
 def _lifespan_startup():
@@ -290,17 +305,32 @@ def _scope_from_environ(environ):
     }
 
 
-def _run_asgi(environ, body):
-    global _body
-    import asyncio
+async def _serve_one_buffered(scope, body):
+    # One request through the app, buffered: returns the same
+    # (status, headers, body) triple the WSGI path returns, or raises what
+    # the application raised. Shared by the per-request bridge (which runs
+    # it to completion) and the executor (which runs many as tasks).
+    #
+    # Deliberately ONE coroutine awaiting the app directly -- no inner
+    # task, no asyncio.wait arbiter, no per-request futures. An earlier
+    # version arbitrated app-vs-streaming with ensure_future +
+    # wait(FIRST_COMPLETED) + wait_for(shield(...)), and that scaffolding
+    # (two tasks and three futures per request, streaming or not) was a
+    # measured seven percent of hello-world throughput under the executor.
+    # The watchdog moved into send(): a streaming response that is still
+    # sending after the grace gets the explanatory error at its next
+    # send(). The one shape that arbiter caught and this does not -- an
+    # app that sends more_body=True once and then never sends again --
+    # hangs exactly as a hung WSGI view does, which is the bridge's
+    # documented parity everywhere else.
     from http.client import responses as _reasons
+    from time import monotonic as _now
 
-    scope = _scope_from_environ(environ)
     delivered = []
     captured = {'status': None, 'headers': []}
     chunks = []
     total = [0]
-    streaming = _loop.create_future()
+    stream_deadline = [None]
 
     async def receive():
         # The whole body in one message -- the buffered bridge's contract.
@@ -332,32 +362,18 @@ def _run_asgi(environ, body):
                     raise RuntimeError(
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP)
-            if message.get('more_body', False) and not streaming.done():
-                streaming.set_result(True)
+            if message.get('more_body', False):
+                if stream_deadline[0] is None:
+                    stream_deadline[0] = _now() + _ASGI_STREAM_GRACE
+                elif _now() > stream_deadline[0]:
+                    raise RuntimeError(
+                        'ASGI streaming response did not complete within '
+                        '%.0fs -- infinite streams (SSE/EventStream) are '
+                        'not supported by the buffered ASGI bridge; see '
+                        'docs/WSGI_VS_ASGI.md section 8'
+                        % _ASGI_STREAM_GRACE)
 
-    task = _loop.create_task(_app(scope, receive, send))
-
-    async def drive():
-        await asyncio.wait({task, streaming},
-                           return_when=asyncio.FIRST_COMPLETED)
-        if not task.done():
-            # A streaming response: give a finite chunked body its grace,
-            # and call an unfinished one what it is.
-            try:
-                await asyncio.wait_for(asyncio.shield(task),
-                                       _ASGI_STREAM_GRACE)
-            except asyncio.TimeoutError:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-                raise RuntimeError(
-                    'ASGI streaming response did not complete within '
-                    '%.0fs -- infinite streams (SSE/EventStream) are not '
-                    'supported by the buffered ASGI bridge; see '
-                    'docs/WSGI_VS_ASGI.md section 8'
-                    % _ASGI_STREAM_GRACE) from None
-        await task
-
-    _loop.run_until_complete(drive())
+    await _app(scope, receive, send)
 
     if captured['status'] is None:
         raise RuntimeError(
@@ -366,8 +382,156 @@ def _run_asgi(environ, body):
     status = captured['status']
     headers = [(n.decode('latin-1'), v.decode('latin-1'))
                for n, v in captured['headers']]
-    _body = b''.join(chunks)
-    return ('%d %s' % (status, _reasons.get(status, '')), headers, _body)
+    return ('%d %s' % (status, _reasons.get(status, '')), headers,
+            b''.join(chunks))
+
+
+def _run_asgi(environ, body):
+    global _body
+    result = _loop.run_until_complete(
+        _serve_one_buffered(_scope_from_environ(environ), body))
+    _body = result[2]
+    return result
+
+
+# --- the executor mode -------------------------------------------------
+# One Python thread per Mojo event loop runs this namespace's `_loop`
+# persistently: the loop parks each request and submits its slot through
+# the OffloadPool's datagram channel exactly as `--blocking-threads`
+# does, `add_reader` on the submit fd turns each slot into a task, and
+# task completion hands a ('done', ...) event back to the Mojo pump,
+# which answers through the pool's completion channel. Requests overlap
+# wherever the application awaits -- uvicorn's shape -- while every
+# Python object stays owned by this one thread.
+
+_exec_queue = None
+_exec_tasks = set()
+
+
+def asgi_executor_init(fd):
+    # `fd` is the OffloadPool's submit_read end, already non-blocking.
+    # One datagram = one 8-byte little-endian slot; -1 is the poison pill.
+    global _exec_queue
+    import asyncio, os
+    _exec_queue = asyncio.Queue()
+
+    def _on_submit():
+        while True:
+            try:
+                data = os.read(fd, 8)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                _loop.remove_reader(fd)
+                _exec_queue.put_nowait(('job', -1))
+                return
+            if len(data) < 8:
+                _loop.remove_reader(fd)
+                _exec_queue.put_nowait(('job', -1))
+                return
+            _exec_queue.put_nowait(
+                ('job', int.from_bytes(data, 'little', signed=True)))
+
+    _loop.add_reader(fd, _on_submit)
+
+
+def wait_events():
+    # One await, then drain without blocking: a single run_until_complete
+    # enter/exit amortizes over every event that is already ready, and the
+    # spawned tasks make progress the whole time this thread is parked
+    # inside it.
+    import asyncio
+
+    async def batch():
+        first = await _exec_queue.get()
+        out = [first]
+        while True:
+            try:
+                out.append(_exec_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                return out
+
+    return _loop.run_until_complete(batch())
+
+
+# The request-invariant half of every executor scope, built once by
+# set_scope_base. The executor path never builds a WSGI environ at all:
+# Mojo hands over method/path/query/headers directly (headers as ready
+# lowercase (bytes, bytes) pairs -- no CGI names, no latin-1 re-encodes,
+# no Python-side re-transform), which is what closed the measured gap to
+# uvicorn's parser-to-scope path.
+_scope_base = None
+
+
+def set_scope_base(server_name, server_port):
+    global _scope_base
+    try:
+        port = int(server_port)
+    except ValueError:
+        port = 0
+    _scope_base = {
+        'type': 'http',
+        'asgi': {'version': '3.0', 'spec_version': '2.3'},
+        'scheme': 'http',
+        'root_path': '',
+        'server': (server_name, port),
+        'client': None,
+    }
+
+
+def spawn(slot, method, path, query, protocol, headers, body):
+    # Called from the pump; every argument arrived as a stolen tuple slot
+    # through one PyObject_CallObject -- the same crossing discipline as
+    # the per-request path. Completion is an event, never a callback into
+    # Mojo (there is no such thing): ('done', slot, status, headers,
+    # body_bytes) or ('err', slot, message).
+    scope = dict(_scope_base)
+    scope['method'] = method
+    scope['path'] = path
+    scope['raw_path'] = path.encode('utf-8', 'replace')
+    scope['query_string'] = query
+    scope['http_version'] = protocol.split('/')[-1]
+    scope['headers'] = headers
+    scope['state'] = dict(_lifespan_state)
+    task = _loop.create_task(_serve_one_buffered(scope, body))
+    _exec_tasks.add(task)
+
+    def _done(t):
+        _exec_tasks.discard(t)
+        if t.cancelled():
+            _exec_queue.put_nowait(('err', slot, 'cancelled'))
+            return
+        exc = t.exception()
+        if exc is not None:
+            _exec_queue.put_nowait(
+                ('err', slot, '%s: %s' % (type(exc).__name__, exc)))
+            return
+        status, headers, body_bytes = t.result()
+        _exec_queue.put_nowait(('done', slot, status, headers, body_bytes))
+
+    task.add_done_callback(_done)
+
+
+def finish_executor():
+    # After the poison pill: the submit channel is quiet (the pill is FIFO
+    # behind every job), so run the in-flight tasks to completion and let
+    # their done-callbacks queue the final events; the extra sleep(0)
+    # flushes callbacks scheduled by the gather itself.
+    import asyncio
+    if _exec_tasks:
+        _loop.run_until_complete(
+            asyncio.gather(*list(_exec_tasks), return_exceptions=True))
+    _loop.run_until_complete(asyncio.sleep(0))
+
+
+def drain_events_nowait():
+    import asyncio
+    out = []
+    while True:
+        try:
+            out.append(_exec_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return out
 
 
 def run(environ, body):
@@ -477,6 +641,14 @@ struct PyBridge(Movable):
     var _run: PythonObject
     """The shim's `run`, resolved once. Called through `PyObject_CallObject`,
     never as a `PythonObject` call — see the module docstring."""
+    var _spawn: PythonObject
+    """The shim's `spawn` (executor mode), resolved once for the same
+    reason: it is called per request, so the lookup must not be."""
+    var _wait_events: PythonObject
+    var _drain_events: PythonObject
+    """`wait_events` / `drain_events_nowait`: zero-argument calls, the
+    measured non-leaking `PythonObject` operation, so these two may be
+    called as ordinary `PythonObject`s per pump pass."""
     var _base: PythonObject
     """The request-invariant environ entries, held as one finished Python
     dict. Built in `set_base`; every request starts from
@@ -510,6 +682,9 @@ struct PyBridge(Movable):
         self._ns = Python.dict()
         builtins.exec(PythonObject(SHIM_SOURCE), self._ns)
         self._run = self._ns["run"]
+        self._spawn = self._ns["spawn"]
+        self._wait_events = self._ns["wait_events"]
+        self._drain_events = self._ns["drain_events_nowait"]
 
         self._k_method = _py_str("REQUEST_METHOD")
         self._k_path = _py_str("PATH_INFO")
@@ -534,6 +709,9 @@ struct PyBridge(Movable):
     def __init__(out self, *, deinit move: Self):
         self._ns = move._ns^
         self._run = move._run^
+        self._spawn = move._spawn^
+        self._wait_events = move._wait_events^
+        self._drain_events = move._drain_events^
         self._base = move._base^
         self._k_method = move._k_method^
         self._k_path = move._k_path^
@@ -545,19 +723,28 @@ struct PyBridge(Movable):
         self._scratch_name = move._scratch_name^
         self._scratch_value = move._scratch_value^
 
-    def set_app(self, app: PythonObject, forced: String = "auto") raises -> String:
+    def set_app(
+        self,
+        app: PythonObject,
+        forced: String = "auto",
+        run_lifespan: Bool = True,
+    ) raises -> String:
         """Install the application callable and resolve its protocol.
 
         `forced` is `auto` (detect from the object), `wsgi`, or `asgi`;
         the return value is the protocol the shim resolved. For an ASGI
         application this also creates the bridge's persistent asyncio loop
-        and runs lifespan startup, so a `lifespan.startup.failed` raises
-        here — at startup, where it belongs.
+        and — unless `run_lifespan` is False (the executor mode's fallback
+        bridge, which serves only queue-overflow requests) — runs lifespan
+        startup, so a `lifespan.startup.failed` raises here, at startup,
+        where it belongs.
 
-        Startup-only: passing `app` and `forced` as call arguments leaks
-        one reference each (see module docstring), which is harmless for a
-        bounded number of calls at construction."""
-        var result = self._ns["set_app"](app, PythonObject(forced))
+        Startup-only: each call argument leaks one reference (see module
+        docstring), which is harmless for a bounded number of calls at
+        construction."""
+        var result = self._ns["set_app"](
+            app, PythonObject(forced), PythonObject(run_lifespan)
+        )
         return String(py=result)
 
     def lifespan_shutdown(self) raises:
@@ -567,6 +754,147 @@ struct PyBridge(Movable):
         teardown, on the thread that owns this bridge, inside its attached
         region — never per request."""
         _ = self._ns["lifespan_shutdown"]()
+
+    # --- the executor mode -------------------------------------------------
+
+    def executor_init(self, submit_read_fd: Int) raises:
+        """Register the OffloadPool's submit channel with the shim's loop.
+
+        Startup-only (the fd argument leaks one reference, bounded). From
+        here the asyncio loop reads job datagrams itself via `add_reader`;
+        the caller must have made the fd non-blocking first."""
+        _ = self._ns["asgi_executor_init"](PythonObject(submit_read_fd))
+
+    def wait_events(mut self) raises -> PythonObject:
+        """Park in the shim's loop until at least one event is ready.
+
+        Returns the batch as a Python list of tuples — `('job', slot)`,
+        `('done', slot, status, headers, body)`, `('err', slot, message)`.
+        A zero-argument call, so per-pass and leak-free; while this thread
+        is parked inside it, every spawned request task makes progress."""
+        return self._wait_events()
+
+    def drain_events_nowait(mut self) raises -> PythonObject:
+        """Every event already queued, without blocking. For shutdown."""
+        return self._drain_events()
+
+    def finish_executor(self) raises:
+        """Run the in-flight tasks to completion after the poison pill.
+
+        Their completion events are queued for `drain_events_nowait`; call
+        `lifespan_shutdown` after processing them, not before."""
+        _ = self._ns["finish_executor"]()
+
+    def _py_text(
+        mut self, ref cpy: CPython, value: Span[Byte, _]
+    ) raises -> PyObjectPtr:
+        """A Python `str` of raw request bytes: UTF-8 when they are, the
+        latin-1 tunnel when they are not. Returns a new reference."""
+        var s = cpy.PyUnicode_DecodeUTF8(StringSlice(unsafe_from_utf8=value))
+        if not s:
+            # Not valid UTF-8: clear the pending decode error, tunnel as
+            # latin-1 (the same re-encode the environ path uses).
+            _ = cpy.get_error()
+            self._scratch_value.clear()
+            append_latin1_as_utf8(self._scratch_value, value)
+            s = cpy.PyUnicode_DecodeUTF8(
+                StringSlice(unsafe_from_utf8=Span(self._scratch_value))
+            )
+            if not s:
+                raise cpy.get_error()
+        return s
+
+    def _py_bytes_span(
+        self, ref cpy: CPython, value: Span[Byte, _]
+    ) raises -> PyObjectPtr:
+        """A Python `bytes` straight from a request span. New reference."""
+        var b = self._bytes_from(
+            value.unsafe_ptr()
+            .unsafe_bitcast[c_char]()
+            .as_imm()
+            .as_unsafe_any_origin(),
+            Py_ssize_t(len(value)),
+        )
+        if not b:
+            raise cpy.get_error()
+        return b
+
+    def spawn_asgi(mut self, slot: Int, req: HTTPRequest) raises:
+        """Hand one parked request to the shim's loop as a task.
+
+        No environ: the scope's variable half crosses directly — method,
+        path and protocol as `str`, the query as `bytes`, the headers as a
+        ready list of lowercase `(bytes, bytes)` pairs (the header map
+        already normalized names on insert), the body as `bytes`. Every
+        object rides as a stolen slot of one args tuple through one
+        `PyObject_CallObject`, so a single `Py_DecRef` of the tuple frees
+        the lot on every path and nothing leaks per request. A half-filled
+        tuple is safe to release: tuple dealloc skips NULL slots.
+
+        This replaced spawning through `build_environ` + a Python-side
+        environ→scope transform, which did the header work twice (CGI
+        names built here, unbuilt there) and was the measured gap to
+        uvicorn's parser-to-scope path."""
+        ref cpy = Python().cpython()
+
+        var args = cpy.PyTuple_New(7)
+        if not args:
+            raise cpy.get_error()
+        _ = cpy.PyTuple_SetItem(args, 0, cpy.PyLong_FromSsize_t(slot))
+
+        try:
+            _ = cpy.PyTuple_SetItem(
+                args, 1, self._py_text(cpy, req.method.as_bytes())
+            )
+            _ = cpy.PyTuple_SetItem(
+                args, 2, self._py_text(cpy, req.uri.path.as_bytes())
+            )
+            _ = cpy.PyTuple_SetItem(
+                args, 3,
+                self._py_bytes_span(cpy, req.uri.query_string.as_bytes()),
+            )
+            _ = cpy.PyTuple_SetItem(
+                args, 4, self._py_text(cpy, req.protocol.as_bytes())
+            )
+
+            var count = req.headers.count()
+            var headers = cpy.PyList_New(count)
+            if not headers:
+                raise cpy.get_error()
+            for i in range(count):
+                var pair = cpy.PyTuple_New(2)
+                if not pair:
+                    cpy.Py_DecRef(headers)
+                    raise cpy.get_error()
+                try:
+                    _ = cpy.PyTuple_SetItem(
+                        pair, 0,
+                        self._py_bytes_span(cpy, req.headers.name_span(i)),
+                    )
+                    _ = cpy.PyTuple_SetItem(
+                        pair, 1,
+                        self._py_bytes_span(cpy, req.headers.value_span(i)),
+                    )
+                except e:
+                    cpy.Py_DecRef(pair)
+                    cpy.Py_DecRef(headers)
+                    raise e
+                # PyList_SetItem steals: the list owns the pair now.
+                _ = cpy.PyList_SetItem(headers, i, pair)
+            _ = cpy.PyTuple_SetItem(args, 5, headers)
+
+            _ = cpy.PyTuple_SetItem(
+                args, 6, self._py_bytes_span(cpy, Span(req.body_raw))
+            )
+        except e:
+            cpy.Py_DecRef(args)
+            raise e
+
+        var result = cpy.PyObject_CallObject(self._spawn._obj_ptr, args)
+        cpy.Py_DecRef(args)
+        if not result:
+            raise cpy.get_error()
+        cpy.Py_DecRef(result)
 
     def set_base(
         mut self,
@@ -618,6 +946,12 @@ struct PyBridge(Movable):
         _base_set(d, "wsgi.run_once", _py_bool(False))
 
         self._base = base^
+
+        # The executor's scope template, same request-invariant idea as the
+        # environ base. Startup-only PythonObject call.
+        _ = self._ns["set_scope_base"](
+            _py_str(server_name), _py_str(server_port)
+        )
 
     # --- the per-request path ---------------------------------------------
 

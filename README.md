@@ -236,9 +236,11 @@ bare `MODULE` also tries `MODULE.asgi`, `MODULE.wsgi`, `MODULE:app` and
 `MODULE.main:app` by convention); **the protocol is detected from the
 object** — a coroutine-function callable is served as ASGI, anything else as
 WSGI, `--protocol` overrides — so `bin/m0serve main:app` runs a FastHTML,
-Starlette, or FastAPI app from the same binary (buffered request/response
-today; infinite SSE streams are refused with an explanatory error until the
-streaming surface lands — [docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md) §8).
+Starlette, or FastAPI app from the same binary, with real await-concurrency
+on a per-loop asyncio executor — requests overlap wherever the application
+awaits (infinite SSE streams are still refused with an explanatory error
+until the streaming surface lands —
+[docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md) §8).
 `--app-dir` is prepended to `sys.path` so the module imports, relative to the
 current directory and defaulting to `.`. Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
@@ -247,9 +249,10 @@ usage error, not a silent default. `--max-body` and `--metrics` reach two
 server tunings the environment cannot; `--blocking-threads N` puts a pool of
 handler threads behind each event loop so a slow view stops holding the
 connections pinned behind it — and when no topology flag or variable is
-given at all, a pool of `min(cores, 8)` is on **by default** (any explicit
-value wins, `M0_BLOCKING_THREADS=0` turns it off, `--realtime` keeps the
-single loop); and `--reload [--reload-dir DIR]` re-forks the
+given at all, the protocol picks the default: WSGI gets a pool of
+`min(cores, 8)`, ASGI gets the asyncio executor (any explicit value wins,
+`M0_BLOCKING_THREADS=0` restores the WSGI single loop, `--realtime` keeps
+the single loop); and `--reload [--reload-dir DIR]` re-forks the
 workers onto changed Python in ~300 ms without re-exec'ing the binary.
 `--help` has the rest; exit codes are
 2 for a bad command line and 1 for an application that would not load —

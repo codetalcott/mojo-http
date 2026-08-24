@@ -81,6 +81,7 @@ struct WSGIApp(Movable):
         multiprocess: Bool = False,
         multithread: Bool = False,
         protocol: String = "auto",
+        lifespan: Bool = True,
     ) raises:
         """Import `module_name` and take its application callable.
 
@@ -100,6 +101,10 @@ struct WSGIApp(Movable):
             protocol: `auto` to detect WSGI vs ASGI from the object, or a
                 forced `wsgi`/`asgi` for pathological callables the
                 detection misreads.
+            lifespan: False builds an ASGI bridge whose lifespan never
+                runs — the executor mode's fallback shape, where this app
+                serves only queue-overflow requests and the executor's own
+                app owns the one lifespan per loop. Ignored for WSGI.
         """
         self._bridge = PyBridge()
         self.is_asgi = False
@@ -113,7 +118,7 @@ struct WSGIApp(Movable):
         # and runs lifespan startup, so a failing startup raises out of
         # this constructor.
         var resolved = self._bridge.set_app(
-            module.__getattr__(attribute), protocol
+            module.__getattr__(attribute), protocol, lifespan
         )
         self.is_asgi = resolved == "asgi"
         self._bridge.set_base(

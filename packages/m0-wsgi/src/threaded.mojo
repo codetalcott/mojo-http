@@ -70,6 +70,7 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig
 
+from .asgi_executor import AsgiExecutor
 from .blocking_pool import BlockingPool
 from .thread_handler import ThreadContext, ThreadHandler
 
@@ -258,12 +259,21 @@ struct ThreadedServer(Movable):
     --blocking-threads 4` is therefore four pools of four, not one of four.
     """
 
+    var asgi_executor: Bool
+    """EACH loop spawns one asyncio-executor thread instead of a pool.
+
+    The ASGI serving shape: per loop for the same slot-locality reason as
+    `blocking_threads`, and mutually exclusive with it (`use_asgi_executor`
+    only answers True at zero pool threads).
+    """
+
     def __init__(out self, var config: ServerConfig, var address: String, listen_fd: Int):
         self.config = config^
         self.address = address^
         self.listen_fd = listen_fd
         self.bus_read_fds = List[Int]()
         self.blocking_threads = 0
+        self.asgi_executor = False
 
     def __init__(out self, *, deinit move: Self):
         self.config = move.config^
@@ -271,6 +281,7 @@ struct ThreadedServer(Movable):
         self.listen_fd = move.listen_fd
         self.bus_read_fds = move.bus_read_fds^
         self.blocking_threads = move.blocking_threads
+        self.asgi_executor = move.asgi_executor
 
     def serve[
         T: ThreadHandler
@@ -340,15 +351,20 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     print("thread[" + String(ctx.index) + "] serving", flush=True)
     var listen = FileDescriptor(block.get(BLK_LISTEN_FD))
 
-    # `--blocking-threads`: this loop's own queue and its own handler threads.
-    # Built before the loop because the threads hold the pool's address for
-    # their whole lives, and retired after it, so an in-flight job always has
-    # somewhere to land.
+    # `--blocking-threads` or the asyncio executor: this loop's own queue
+    # and its own receiver thread(s). Built before the loop because the
+    # receivers hold the pool's address for their whole lives, and retired
+    # after it, so an in-flight job always has somewhere to land.
     var blocking = server[].blocking_threads
-    var pool = OffloadPool(server[].config.max_connections if blocking > 0 else 0)
-    var pool_addr = pool.addr() if blocking > 0 else 0
-    var pool_threads = BlockingPool(blocking)
-    if blocking > 0:
+    var executor_mode = server[].asgi_executor
+    var use_offload = blocking > 0 or executor_mode
+    var pool = OffloadPool(server[].config.max_connections if use_offload else 0)
+    var pool_addr = pool.addr() if use_offload else 0
+    var pool_threads = BlockingPool(0 if executor_mode else blocking)
+    var exec_thread = AsgiExecutor()
+    if executor_mode:
+        exec_thread.start(pool_addr, ctx.user)
+    elif blocking > 0:
         pool_threads.start[T](pool_addr, ctx.user)
 
     comptime if CompilationTarget.is_macos():
@@ -366,17 +382,22 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
             block.get(BLK_SHUTDOWN_FD), block.get(BLK_BUS_FD), pool_addr,
         )
 
-    if blocking > 0:
-        # Detached across it: a pool thread finishing its last job needs to
-        # attach, and it cannot while this thread holds a state and blocks.
+    if use_offload:
+        # Detached across it: a receiver finishing its last job (or the
+        # executor draining its tasks) needs to attach, and it cannot
+        # while this thread holds a state and blocks.
         ref cpy = Python().cpython()
         var join_ts = cpy.PyEval_SaveThread()
-        var failed = pool_threads.stop_and_join(pool)
+        var failed: Int
+        if executor_mode:
+            failed = exec_thread.stop_and_join(pool)
+        else:
+            failed = pool_threads.stop_and_join(pool)
         cpy.PyEval_RestoreThread(join_ts)
         if failed > 0:
             print(
                 "thread[" + String(ctx.index) + "] " + String(failed)
-                + " blocking thread(s) did not exit cleanly",
+                + " offload thread(s) did not exit cleanly",
                 flush=True,
             )
     # `pool` must outlive the join — a thread still finishing a job writes
