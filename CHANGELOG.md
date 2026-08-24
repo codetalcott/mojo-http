@@ -7,6 +7,37 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **`poe bundle-ffi` — a self-contained, redistributable `libm0core`.** The
+  macOS artifact resolves the Mojo runtime at load time and is useless
+  without it, so releases now ship `<asset>.tar.gz` containing the library,
+  the runtime it loads, and both licences — 1.65 MB, verified to `dlopen`
+  from an unrelated directory with `DYLD_LIBRARY_PATH` and
+  `DYLD_FALLBACK_LIBRARY_PATH` unset. The bare library remains a separate
+  asset so existing download URLs keep working; the Linux `.so` is
+  statically linked and self-contained already.
+
+  The dependency closure is **discovered, not listed** — a hand-written
+  first attempt shipped only the library named in the error message and
+  then failed on *its* dependency, so `bundle_ffi.py` walks the graph and a
+  toolchain bump that adds a fourth library is picked up rather than
+  silently producing a broken bundle. The task refuses to finish unless the
+  result is self-contained, so assembly and assertion cannot drift apart,
+  and CI runs it on every commit: **a release can no longer publish an asset
+  that only loads on the build machine.**
+
+  The Mojo runtime is Apache 2.0 with LLVM Exceptions. Rather than rely on
+  the exception excusing attribution for separately shipped files, the
+  bundle **complies with section 4 in full** — licence text, attribution,
+  and an explicit 4(b) notice that install name, rpath and code signature
+  were changed while the executable code is byte-for-byte as built. See
+  `NOTICE` and [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md), which
+  also record the one piece of contrary evidence: the `mojo_compiler` wheel
+  still declares the proprietary MAX licence, though it contains only the
+  compiler and runtime — no MAX components — and ships no licence file of
+  its own.
+
 ### Fixed
 
 - **The C-ABI artifact no longer records the machine that built it.**

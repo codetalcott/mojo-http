@@ -64,12 +64,28 @@ jobs:
       # asset that fails this must not ship.
       - name: Prove the artifact through ctypes
         run: uv run poe smoke-ffi
-      - name: Stage the asset under its platform name
-        run: cp packages/m0-core/${{ matrix.artifact }} ${{ matrix.asset }}
+      # A bare .dylib is not usable on macOS: it resolves the Mojo runtime
+      # beside itself, so the runtime has to travel with it. `bundle-ffi`
+      # assembles that (discovering the dependency closure rather than naming
+      # it) with both licences, and refuses to finish unless the result is
+      # self-contained — so a release cannot ship an asset that only loads on
+      # the runner. See docs/FFI_DISTRIBUTION.md.
+      - name: Assemble the self-contained bundle
+        run: uv run poe bundle-ffi
+      - name: Stage the bundle under its platform name
+        run: |
+          dir=$(ls -d dist/libm0core-*)
+          tar -czf "${{ matrix.asset }}.tar.gz" -C "$(dirname "$dir")" "$(basename "$dir")"
+          # The bare library stays a separate asset: it is what anyone
+          # building against a Mojo install already has, and removing it
+          # would break existing download URLs.
+          cp packages/m0-core/${{ matrix.artifact }} ${{ matrix.asset }}
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.tar.gz
           if-no-files-found: error
 
   publish:

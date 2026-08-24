@@ -431,6 +431,17 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   mtime in whole *seconds* plus size, so without it a same-second,
   same-length edit reloads into stale bytecode. The Mojo binary is never
   re-exec'd — a changed `.mojo` still needs a rebuild.
+- **Can m0serve host FastHTML?** Asked 2026-08-24, unanswered. Django and
+  Flask are both served today and both are WSGI; **FastHTML is ASGI**
+  (Starlette underneath), so it is almost certainly not a drop-in — the
+  question is really whether it is the case that justifies an ASGI path, or
+  whether FastHTML's synchronous handlers can be driven through a WSGI
+  adapter (`asgiref`'s `AsgiToWsgi` direction, already a dependency) at a
+  cost worth paying. Worth an afternoon's spike before any design: a
+  hello-world FastHTML app under `m0serve` via an adapter would settle
+  whether the framework or the protocol is the obstacle. FastHTML's
+  server-sent-events and WebSocket features would then be the interesting
+  part, since `--realtime` already holds both for Django.
 - **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in
   the entry point;
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
