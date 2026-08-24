@@ -9,6 +9,18 @@ versions may break the API**.
 
 ### Changed
 
+- **Each request's environ starts as `PyDict_Copy` of a finished base
+  template — `build_environ` 1.78 → 1.56 µs, the bridge 2.35 µs.** One C
+  call replaces ten per-request hash-and-stores (58 ns vs 214 measured),
+  and `Python().cpython()` is acquired once per request instead of sixteen
+  times. The template is copy-isolated: an app may overwrite or delete
+  anything in its environ without touching the next request's, probed with
+  ten vandal/inspect cycles and a second `set_base`. The decision that
+  *didn't* ship matters as much: an intern cache for recurring header
+  names/values measured as a net loss — its hit-path byte-compares cost
+  more than the 15 ns decodes they would skip — so it was never built, and
+  the bridge is now near the structural floor WSGI's environ shape sets.
+
 - **The response body is read through `PyBytes_AsString` instead of
   `ctypes` — the bridge costs 2.50 µs per request instead of 3.52.**
   `body_bytes` was 31% of what the bridge had left, and the split named one

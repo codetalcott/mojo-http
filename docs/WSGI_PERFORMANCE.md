@@ -565,6 +565,56 @@ bridge — the shape that would catch a stale shared buffer. `smoke-django`'s
 RSS guard still reports **0 KB over 10k requests**, which is what says the
 stolen-reference accounting is right.
 
+### build_environ, split — and the fix the measurement killed
+
+With both bodies retired, `build_environ` was 71% of the bridge (1.78 µs of
+2.50), so it was split into constituents before anything was designed
+against it. 50k iterations each, request-realistic counts:
+
+| operation | cost |
+|-----------|-----:|
+| `PyDict_New` + free | 11 ns |
+| base replay: 10 × `PyDict_SetItem`, cached objects | 214 ns |
+| **`PyDict_Copy` of the same 10-entry base** | **58 ns** |
+| 12 header-name decodes (`PyUnicode_DecodeUTF8` + free) | 180 ns |
+| 12 header-value decodes | 154 ns |
+| 12 × `PyDict_SetItem` into a fresh dict | 260 ns |
+| 12 × byte-compare, all hits — an intern cache's lookup | **245 ns** |
+| `Python().cpython()` re-acquisition | 2.3 ns |
+
+**The obvious fix was a net loss, and only the split caught it.** The plan
+was to intern the recurring header names and values — `HTTP_USER_AGENT` and
+its value are byte-identical on every request of a connection — but the
+byte-comparisons an intern cache pays on its *hit* path (245 ns) cost more
+than the decodes it would skip (180 ns). Short-ASCII `DecodeUTF8` is 15 ns;
+there is nothing to save. The cache was never built.
+
+What survived the measurement: the base entries now live in a **finished
+template dict** and each request starts from `PyDict_Copy` of it — one C
+call instead of ten hash-and-stores — and `Python().cpython()` is acquired
+once per request instead of sixteen times (2.3 ns each; real, just small).
+The template is copy-isolated by construction: an app that vandalizes its
+environ — overwrites `SERVER_NAME`, deletes `wsgi.version` — mutates its own
+copy, and a probe drives ten vandal/inspect cycles plus a second `set_base`
+to prove the template stays pristine and replaceable.
+
+| part | before | after |
+|------|-------:|------:|
+| `build_environ` | 1.78 µs | **1.57 / 1.55 µs** |
+| full GET round trip | 2.57 µs | **2.37 / 2.33 µs** |
+
+End to end this is **within wrk's noise** (~48k rps either side, p50
+294 → 292 µs) — 0.2 µs against a ~20 µs total service time is ~1%, and the
+part-split is the instrument that can resolve it.
+
+**And this is close to the floor.** What remains in `build_environ` is ~26
+`PyDict_SetItem`s at ~21 ns that WSGI's environ shape mandates, sixteen
+decodes of genuinely per-request text, and the copy — roughly 1.1 µs that
+no cleverness at this boundary removes without changing what an environ
+*is*. The bridge work is at diminishing returns; the next real move is the
+Granian re-measurement on 3.14.7t, which the layer-split row has been owed
+since three bridge improvements ago.
+
 ## A slow view strands the connections pinned behind it
 
 This is the mixed-workload measurement the `wrk` section named as Stage B's
