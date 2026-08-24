@@ -34,13 +34,22 @@ Python. That was correct and leak-free, but the parse was 28 Python-level
 `_read_str` calls for a twelve-header request and cost 12.09 µs of the
 bridge's 14.23 — 85% of it. See docs/WSGI_PERFORMANCE.md.
 
-**The body still crosses as bytes through a persistent bytearray**, because
-Mojo 1.0's CPython bindings have no `PyBytes_*` of any kind — no
-`PyBytes_FromStringAndSize`, nothing — so a `bytes` object cannot be built
-from Mojo at all. Mojo writes the body's raw bytes into the shim's buffer
-and passes the length as a C-API `int`; the shim makes the `BytesIO`. A
-request with no body (every GET) skips the buffer entirely: nothing is
-written and `buf_addr()` is not called.
+**The REQUEST body crosses as bytes through a persistent bytearray.** Mojo
+writes the raw bytes into the shim's buffer and passes the length as a C-API
+`int`; the shim makes the `BytesIO`. A request with no body (every GET) skips
+the buffer entirely: nothing is written and `buf_addr()` is not called. This
+is still a bytearray because building a `bytes` object needs
+`PyBytes_FromStringAndSize`, which is not bound — though see below: it is
+*reachable*, and doing so would retire the buffer.
+
+**The RESPONSE body is read straight out of the `bytes` object**, through
+`PyBytes_AsString` loaded from the interpreter's own handle — see
+`_PyBytes_AsString`. `Python().cpython()` binds no `PyBytes_*` at all, and
+`external_call` cannot reach them either because libpython is not on the link
+line; but the stdlib's own `ExternalFunction[name, type].load(lib.borrow())`
+is how `CPython` populates its bindings, and it works just as well for the
+ones it omits. The whole C-API surface is therefore available to this file,
+not only the part the stdlib chose to wrap.
 
 **The shim is a string, not a file.** `SHIM_SOURCE` is `exec`'d into a fresh
 namespace dict at startup. A `.py` file next to the source would have to be
@@ -66,9 +75,10 @@ re-encodes latin-1 and decodes UTF-8 itself. `environ.mojo` explains why
 that is spelled as a UTF-8 encode here.
 """
 
-from std.ffi import c_long
+from std.ffi import c_char, c_long, _CPointer
+from std.memory import unsafe_memcpy
 from std.python import Python, PythonObject
-from std.python._cpython import PyObjectPtr
+from std.python._cpython import ExternalFunction, PyObjectPtr
 
 from lightbug_http import HTTPRequest
 
@@ -89,6 +99,11 @@ import ctypes, io, sys
 
 _app = None
 _buf = bytearray(65536)
+
+# Keeps the last response body alive after `run` returns, so the pointer
+# Mojo takes into it stays valid until the next request replaces it. Mojo
+# reads the bytes through PyBytes_AsString, not through ctypes -- see
+# `_PyBytes_AsString` in this file.
 _body = b''
 
 
@@ -150,15 +165,33 @@ def run(environ, n_body):
             close()
     return (captured.get('status', '500 Internal Server Error'),
             captured.get('headers', []), _body)
-
-
-def body_addr():
-    return ctypes.cast(ctypes.c_char_p(_body), ctypes.c_void_p).value or 0
 """
 
 
 comptime _INITIAL_BUF_CAP = 65536
 """Must match the shim's `bytearray(65536)`."""
+
+
+comptime _PyBytes_AsString = ExternalFunction[
+    "PyBytes_AsString",
+    # char *PyBytes_AsString(PyObject *o)
+    def(PyObjectPtr) thin abi("C") -> _CPointer[c_char, ImmutAnyOrigin],
+]
+"""The one C-API function this file needs and `Python().cpython()` does not
+bind.
+
+`external_call` cannot reach it: libpython is **not on the link line**. Mojo
+`dlopen`s it, which is exactly why `CPython` is a struct of loaded function
+pointers rather than a header. But that struct exposes its handle, and
+`ExternalFunction[name, type].load(lib.borrow())` is how the stdlib populates
+every one of its own bindings — so the same door opens the ones it left out.
+
+`PyBytes_AsString` is stable-ABI and *checked*: it returns NULL and sets
+TypeError for a non-`bytes` argument, where the `PyBytes_AS_STRING` macro
+would read the wrong offsets. The macro is not a symbol anyway.
+
+Measured at **1.0 ns**, against 1,095 ns for the `ctypes` round trip through
+the shim that this replaced."""
 
 
 struct PyBridge(Movable):
@@ -200,6 +233,11 @@ struct PyBridge(Movable):
     building them per request would be four `PyUnicode_DecodeUTF8` calls
     and four frees for nothing."""
 
+    var _bytes_as_string: _PyBytes_AsString.type
+    """`PyBytes_AsString`, resolved once from the interpreter's own handle.
+    Loading is a `dlsym`; the call it returns is 1 ns, so it is resolved here
+    and never per request."""
+
     var _scratch_name: List[UInt8]
     var _scratch_value: List[UInt8]
     """Reused byte buffers for the two transforms that cannot be done in
@@ -222,6 +260,9 @@ struct PyBridge(Movable):
         self._k_query = _py_str("QUERY_STRING")
         self._k_protocol = _py_str("SERVER_PROTOCOL")
 
+        ref cpy = Python().cpython()
+        self._bytes_as_string = _PyBytes_AsString.load(cpy.lib.borrow())
+
         self._scratch_name = List[UInt8](capacity=64)
         self._scratch_value = List[UInt8](capacity=256)
 
@@ -235,6 +276,7 @@ struct PyBridge(Movable):
         self._k_path = move._k_path^
         self._k_query = move._k_query^
         self._k_protocol = move._k_protocol^
+        self._bytes_as_string = move._bytes_as_string
         self._scratch_name = move._scratch_name^
         self._scratch_value = move._scratch_value^
 
@@ -434,18 +476,35 @@ struct PyBridge(Movable):
 
         Reads straight out of the `bytes` object's buffer, so a response body
         that is a PNG or a gzip stream survives intact — a latin-1 round trip
-        through `String` would not, because Mojo strings are UTF-8. The
-        address comes from the zero-argument `body_addr()`; the shim's
-        `_body` global keeps the object alive until the next request.
+        through `String` would not, because Mojo strings are UTF-8.
+
+        **No Python runs here at all.** The length comes from
+        `PyObject_Length` and the address from `PyBytes_AsString`, both direct
+        C calls; the copy is one `memcpy`. This used to be `len(body)` plus a
+        zero-argument `body_addr()` into a shim function that built two
+        `ctypes` objects, and it cost **1.07 µs — 31% of the whole bridge**,
+        of which the call was 1.095 µs and the `len()` three nanoseconds. The
+        byte-at-a-time loop it also replaces mattered only for large bodies.
+
+        The shim's `_body` global keeps the object alive until the next
+        request, and `body` is held past the copy below for the same reason:
+        Mojo destroys at last use, so without it the last reference could be
+        released while the `memcpy` is still reading through the pointer.
         """
-        var n = Int(len(body))
-        var out = List[UInt8](capacity=n)
-        if n == 0:
-            return out^
-        var addr = self._ns["body_addr"]()
-        var ptr = addr.unsafe_get_as_pointer[DType.uint8]()
-        for i in range(n):
-            out.append(ptr[unsafe_offset=i])
+        ref cpy = Python().cpython()
+        var n = Int(cpy.PyObject_Length(body._obj_ptr))
+        if n <= 0:
+            # PyObject_Length answers -1 on error, which is not a body.
+            return List[UInt8]()
+        var maybe = self._bytes_as_string(body._obj_ptr)
+        if not maybe:
+            raise cpy.get_error()
+        var out = List[UInt8](unsafe_uninit_length=n)
+        unsafe_memcpy(
+            dest=out.unsafe_ptr(),
+            src=maybe.unsafe_value().unsafe_bitcast[UInt8](),
+            count=n,
+        )
         _ = body
         return out^
 
