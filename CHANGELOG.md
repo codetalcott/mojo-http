@@ -9,6 +9,26 @@ versions may break the API**.
 
 ### Changed
 
+- **The Granian layer split is re-measured on 3.14.7t, and the gap it was
+  written to explain is spent.** After five bridge changes, the row that has
+  driven every roadmap priority since it was taken: **at four workers
+  m0serve is now ahead of Granian, 101,892 rps against 98,489**; at one
+  worker the gap is **2.50x**, down from 4.31x.
+
+  The re-measurement carries its own validity check. Nothing here touched
+  the HTTP layer or Granian, and all three rows that should not have moved
+  reproduced within 2% — `apps/hello` 0.99x, Granian 0.98x at one worker and
+  0.99x at four — across five weeks and a Granian bump to 2.8.2. The two
+  rows that moved are the two the bridge work touched: **3.94x at one worker,
+  2.91x at four.**
+
+  What is left at one worker is **1.58x HTTP layer × 1.58x bridge** — dead
+  even, and their product is the whole 2.50x. The original conclusion, *"the
+  headroom is in the bridge, not the HTTP layer"*, was right when measured
+  (6.30x against 1.59x) and no longer is. Part of the four-worker result is
+  Granian's own 19% loss from one worker to four on a four-performance-core
+  box; m0serve scales 2.08x over the same step. Both stated.
+
 - **m0-sqlite: the text-scan cost is measured, and the zero-allocation read
   is documented.** `bench_sqlite.mojo` gained TEXT rows — the one column
   type it never priced — showing `column_text` pays **2.1x** for its

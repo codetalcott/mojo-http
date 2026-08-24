@@ -309,6 +309,16 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   the **WSGI bridge**: `apps/hello` (zero Python) does 78.3k rps at 178 µs,
   the same HTTP layer through the bridge does 12.4k at 1.18 ms, and Granian
   through *its* bridge does 124.6k at 109 µs on the same 13-byte response.
+
+  **Re-measured 2026-08-24, after five bridge changes** — and the conclusion
+  above is now spent. Controls held (hello 0.99x, Granian 0.98x/0.99x);
+  m0serve moved 3.94x at one worker and 2.91x at four. **At four workers
+  m0serve is ahead of Granian, 101.9k against 98.5k**; at one worker the gap
+  is **2.50x**, down from 4.31x. That remainder decomposes as 1.58x HTTP
+  layer × 1.58x bridge — dead even — so there is no lopsided target left,
+  and the HTTP layer is now worth as much as any further bridge work. Part
+  of the four-worker result is Granian's own 19% loss from w1 to w4 on a
+  four-performance-core box; m0serve scales 2.08x over the same step.
   The bridge costs ~1 ms per request because `bridge.mojo`'s shim rebuilds
   the environ in pure Python every time — ~28 string decodes for a
   twelve-header request — which is itself downstream of the

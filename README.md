@@ -329,13 +329,14 @@ values returns unchanged.
   3.13 container and ~3.5x on free-threaded 3.14.7t, with
   comparable-or-better p99 in both keep-alive and close-per-request modes.
   Against **Granian**, whose own `--blocking-threads` is the architecture
-  copied above, throughput runs the other way: on a bare WSGI callable
-  m0serve is ~4.3x *slower* (28.9k vs 124.6k rps at one worker). That gap is
-  the WSGI bridge, not the HTTP layer and not the concurrency model —
-  `apps/hello` serves the same 13-byte response at 78.3k rps with no Python
-  in the path. Methodology, the layer split, and
-  the leak that once made this paragraph less flattering:
-  [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md).
+  copied above, the picture has changed with the bridge work: on a bare WSGI
+  callable **m0serve is now slightly ahead at four workers** (101.9k vs
+  98.5k rps) and 2.50x behind at one (48.9k vs 122.3k), where it was 4.3x
+  behind before. What remains at one worker is no longer mostly the bridge:
+  it splits evenly, 1.58x HTTP layer and 1.58x bridge — `apps/hello` serves
+  the same 13-byte response at 77.5k rps with no Python in the path.
+  Methodology, the layer split, and the leak that once made this paragraph
+  less flattering: [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md).
 - **Responses are fully buffered.** There is no chunked encoding, so
   `StreamingHttpResponse` and `FileResponse` are materialized in memory.
 - **Request bodies are fully buffered too**, capped by
