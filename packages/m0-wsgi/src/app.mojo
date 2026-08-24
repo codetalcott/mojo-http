@@ -82,6 +82,7 @@ struct WSGIApp(Movable):
         multithread: Bool = False,
         protocol: String = "auto",
         lifespan: Bool = True,
+        script_name: String = "",
     ) raises:
         """Import `module_name` and take its application callable.
 
@@ -105,6 +106,12 @@ struct WSGIApp(Movable):
                 runs — the executor mode's fallback shape, where this app
                 serves only queue-overflow requests and the executor's own
                 app owns the one lifespan per loop. Ignored for WSGI.
+            script_name: The prefix this application is mounted at, without
+                a trailing slash (`--mount`); empty at the root. Reaches
+                WSGI as `SCRIPT_NAME` with `PATH_INFO` trimmed to the
+                remainder, and ASGI as `root_path` with `path` left whole —
+                the two protocols disagree about that, and `set_base` is
+                the one place either learns it.
         """
         self._bridge = PyBridge()
         self.is_asgi = False
@@ -122,7 +129,8 @@ struct WSGIApp(Movable):
         )
         self.is_asgi = resolved == "asgi"
         self._bridge.set_base(
-            server_name, server_port, multiprocess, multithread
+            server_name, server_port, multiprocess, multithread,
+            script_name=script_name,
         )
 
     def __init__(out self, *, deinit move: Self):

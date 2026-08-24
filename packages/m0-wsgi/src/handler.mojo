@@ -32,6 +32,7 @@ forked copy of a live interpreter is not safe — see `WSGIApp`.
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
+from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame, WS_OP_TEXT,
@@ -43,6 +44,7 @@ from m0_http import SSERegistry, StaticFiles, sse_data_payload
 from m0_http.sse.format import NO_EVENT_ID
 
 from .app import WSGIApp
+from .cli import match_mount
 from .cli import ServeOptions
 from .hold import (
     take_hold, request_last_event_id, ws_message_request,
@@ -75,7 +77,19 @@ struct WSGIHandler(ThreadHandler):
     — on that thread, from the `ServeOptions` whose address is `ctx.user`.
     """
 
-    var app: WSGIApp
+    var apps: OwningList[WSGIApp]
+    """The mounted applications, parallel to `mount_prefixes`.
+
+    Always at least one: a server with no `--mount` holds a single app at
+    the empty prefix, so routing has one shape and the ordinary case is the
+    degenerate mount rather than a separate path. `OwningList` because
+    `WSGIApp` owns a bridge and is Movable but not Copyable — copying one
+    would duplicate an interpreter handle.
+    """
+    var mount_prefixes: List[String]
+    """Each app's prefix, stored without a trailing slash (`''` at the root).
+    Longest match wins; see `match_mount` in `cli.mojo`, which is where the
+    matching lives so it can be tested without an interpreter."""
     var mounts: List[StaticFiles]
     var streams: SSERegistry
     """Slots held open as SSE streams; capacity 0 unless `--realtime`."""
@@ -116,8 +130,15 @@ struct WSGIHandler(ThreadHandler):
         realtime: Bool = False,
         var health_path: String = String(""),
         asgi_streaming: Bool = False,
+        var root_prefix: String = String(""),
     ):
-        self.app = app^
+        # capacity=1, never `OwningList[WSGIApp]()`: the no-argument form
+        # constructs a null `Pointer`, which Mojo 1.0 refuses outright. One
+        # slot is exactly the unmounted case; `mount` grows it.
+        self.apps = OwningList[WSGIApp](capacity=1)
+        self.apps.append(app^)
+        self.mount_prefixes = List[String]()
+        self.mount_prefixes.append(root_prefix^)
         self.mounts = mounts^
         self.realtime = realtime
         self.health_path = health_path^
@@ -202,13 +223,32 @@ struct WSGIHandler(ThreadHandler):
         handler.thread_index = ctx.index
         return handler^
 
+    def mount(mut self, var prefix: String, var app: WSGIApp):
+        """Add a second (or later) application at `prefix`.
+
+        The first application is the constructor's, whose prefix is
+        `root_prefix` — so this only ever appends, and there is never a
+        placeholder app to displace.
+        """
+        self.mount_prefixes.append(prefix^)
+        self.apps.append(app^)
+
+    def app_for(self, path: String) -> Int:
+        """Index of the application serving `path`, or -1 for no mount."""
+        return match_mount(self.mount_prefixes, path)
+
     def set_asgi_notify(mut self, fd: Int):
         """Executor-mode wiring: where stream disconnect tags are sent."""
         self.asgi_notify_fd = fd
 
     def shutdown(mut self):
-        """The application's teardown (ASGI lifespan shutdown; WSGI no-op)."""
-        self.app.shutdown()
+        """Every application's teardown (ASGI lifespan shutdown; WSGI no-op).
+
+        Reverse order, the mirror of construction: a later mount may have
+        started against state an earlier one set up.
+        """
+        for i in range(len(self.apps) - 1, -1, -1):
+            self.apps[i].shutdown()
 
     def serve_local(mut self, req: HTTPRequest) raises -> Optional[HTTPResponse]:
         """A static-mount or health answer, entirely in Mojo — or None.
@@ -235,11 +275,15 @@ struct WSGIHandler(ThreadHandler):
         if local:
             return local.take()
 
+        var which = self.app_for(req.uri.path)
+        if which < 0:
+            return _unmounted()
+
         if not self.realtime:
-            return self.app.serve(req)
+            return self.apps[which].serve(req)
 
         var slot = req.slot_id
-        var resp = self.app.serve(req)
+        var resp = self.apps[which].serve(req)
         var hold = take_hold(resp)
 
         if hold.mode == HOLD_STREAM:
@@ -455,9 +499,25 @@ struct WSGIHandler(ThreadHandler):
             var req = ws_message_request(
                 WS_MESSAGE_PATH, channel, slot, opcode, Span(payload)
             )
-            _ = self.app.serve(req)
+            _ = self.apps[0].serve(req)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
+
+
+def _unmounted() -> HTTPResponse:
+    """No mount claims this path — answered in Mojo, never entering Python.
+
+    A 404 rather than a 502: the server is fine and the path is simply not
+    served here, which is what a reverse proxy in front of two apps would
+    also say.
+    """
+    return HTTPResponse(
+        body_bytes=String('{"error":"no application mounted at this path"}')
+        .as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=404,
+        status_text="Not Found",
+    )
 
 
 def _conflict() -> HTTPResponse:

@@ -154,7 +154,7 @@ def _executor_serve(block: ThreadBlock) raises:
     # made non-blocking by `enable_stream_channel`, in the wiring, before
     # this thread existed.
     set_nonblocking(FileDescriptor(pool.submit_read))
-    handler.app._bridge.executor_init(pool.submit_read, pool.stream_ack_read)
+    handler.apps[0]._bridge.executor_init(pool.submit_read, pool.stream_ack_read)
 
     # Parallel to the slots: what `after_response` needs after the request
     # itself has crossed into Python, and — for a WebSocket handshake —
@@ -172,7 +172,7 @@ def _executor_serve(block: ThreadBlock) raises:
     while True:
         # Parked attached, inside the shim loop's selector — which is where
         # CPython releases the GIL — while every spawned task progresses.
-        var events = handler.app._bridge.wait_events()
+        var events = handler.apps[0]._bridge.wait_events()
         _pump_events(pool, handler, events, methods, paths, pending_101, stopping)
         if stopping:
             break
@@ -180,8 +180,8 @@ def _executor_serve(block: ThreadBlock) raises:
     # The pill is FIFO behind every submitted job, so nothing new arrives:
     # run the in-flight tasks to completion, answer their events, then run
     # lifespan shutdown and let the destructors fire in this scope.
-    handler.app._bridge.finish_executor()
-    var leftover = handler.app._bridge.drain_events_nowait()
+    handler.apps[0]._bridge.finish_executor()
+    var leftover = handler.apps[0]._bridge.drain_events_nowait()
     var ignored = False
     _pump_events(pool, handler, leftover, methods, paths, pending_101, ignored)
     handler.shutdown()
@@ -248,7 +248,7 @@ def _pump_events(
                     continue
                 pending_101[slot] = probe^
                 try:
-                    handler.app._bridge.spawn_asgi_ws(slot, request)
+                    handler.apps[0]._bridge.spawn_asgi_ws(slot, request)
                 except:
                     pending_101[slot] = None
                     var response = InternalError()
@@ -257,7 +257,7 @@ def _pump_events(
                     pool.complete(slot)
                 continue
             try:
-                handler.app._bridge.spawn_asgi(slot, request)
+                handler.apps[0]._bridge.spawn_asgi(slot, request)
             except:
                 # The spawn itself failed (environ build, task creation):
                 # same policy as a raising handler — 500 and a closed
@@ -271,7 +271,7 @@ def _pump_events(
             var raised = False
             try:
                 response = build_response(
-                    handler.app._bridge, String(py=ev[2]), ev[3], ev[4]
+                    handler.apps[0]._bridge, String(py=ev[2]), ev[3], ev[4]
                 )
             except:
                 response = InternalError()
@@ -313,7 +313,7 @@ def _pump_events(
             var raised = False
             try:
                 response = build_response(
-                    handler.app._bridge, String(py=ev[2]), ev[3], ev[4]
+                    handler.apps[0]._bridge, String(py=ev[2]), ev[3], ev[4]
                 )
                 response.sse_streaming = True
             except:
@@ -327,7 +327,7 @@ def _pump_events(
             # IN the datagram, so the send is both the publish and the
             # happens-before edge. Retried, never dropped — a lost chunk
             # is a corrupt body.
-            var chunk = handler.app._bridge.body_bytes(ev[2])
+            var chunk = handler.apps[0]._bridge.body_bytes(ev[2])
             var frame = encode_bus_frame(
                 asgi_stream_url(String("s"), slot), NO_EVENT_ID, Span(chunk)
             )
@@ -368,7 +368,7 @@ def _pump_events(
                 pool.complete(slot)
         elif kind == "ws_send":
             var opcode = Int(py=ev[2])
-            var payload = handler.app._bridge.body_bytes(ev[3])
+            var payload = handler.apps[0]._bridge.body_bytes(ev[3])
             var frame_bytes = encode_ws_frame(
                 WS_OP_TEXT if opcode == 1 else WS_OP_BINARY, Span(payload)
             )

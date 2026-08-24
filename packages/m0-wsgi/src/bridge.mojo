@@ -282,7 +282,12 @@ def _scope_from_environ(environ):
         port = int(environ.get('SERVER_PORT', '') or 0)
     except ValueError:
         port = 0
-    raw_path = environ.get('PATH_INFO', '').encode('latin-1')
+    # ASGI's `path` INCLUDES root_path -- Django's ASGIHandler strips the
+    # prefix itself (`get_script_prefix` then `path[len(script_name):]`),
+    # and hands `request.path` the untrimmed value. WSGI's PATH_INFO is
+    # the trimmed remainder, so the whole path is SCRIPT_NAME + PATH_INFO.
+    raw_path = (environ.get('SCRIPT_NAME', '')
+                + environ.get('PATH_INFO', '')).encode('latin-1')
     return {
         'type': 'http',
         'asgi': {'version': '3.0', 'spec_version': '2.3'},
@@ -562,19 +567,21 @@ def wait_events():
 # no Python-side re-transform), which is what closed the measured gap to
 # uvicorn's parser-to-scope path.
 _scope_base = None
+_root_path = ''
 
 
-def set_scope_base(server_name, server_port):
-    global _scope_base
+def set_scope_base(server_name, server_port, root_path=''):
+    global _scope_base, _root_path
     try:
         port = int(server_port)
     except ValueError:
         port = 0
+    _root_path = root_path
     _scope_base = {
         'type': 'http',
         'asgi': {'version': '3.0', 'spec_version': '2.3'},
         'scheme': 'http',
-        'root_path': '',
+        'root_path': root_path,
         'server': (server_name, port),
         'client': None,
     }
@@ -823,7 +830,7 @@ def spawn_ws(slot, path, query, protocol, headers):
         'type': 'websocket',
         'asgi': {'version': '3.0', 'spec_version': '2.3'},
         'scheme': 'ws',
-        'root_path': '',
+        'root_path': _root_path,
         'server': _scope_base['server'],
         'client': None,
         'http_version': protocol.split('/')[-1],
@@ -1009,6 +1016,13 @@ struct PyBridge(Movable):
     handle. Loading is a `dlsym`; the calls it returns cost nanoseconds, so
     they are resolved here and never per request."""
 
+    var _script_len: Int
+    """Bytes of `SCRIPT_NAME` to trim off the front of `PATH_INFO`.
+
+    Set by `set_base` from the mount prefix; 0 for an unmounted server, so
+    the trim below is a comparison against 0 rather than a branch anyone
+    pays for."""
+
     var _scratch_name: List[UInt8]
     var _scratch_value: List[UInt8]
     """Reused byte buffers for the two transforms that cannot be done in
@@ -1026,6 +1040,7 @@ struct PyBridge(Movable):
         self._wait_events = self._ns["wait_events"]
         self._drain_events = self._ns["drain_events_nowait"]
 
+        self._script_len = 0
         self._k_method = _py_str("REQUEST_METHOD")
         self._k_path = _py_str("PATH_INFO")
         self._k_query = _py_str("QUERY_STRING")
@@ -1054,6 +1069,7 @@ struct PyBridge(Movable):
         self._wait_events = move._wait_events^
         self._drain_events = move._drain_events^
         self._base = move._base^
+        self._script_len = move._script_len
         self._k_method = move._k_method^
         self._k_path = move._k_path^
         self._k_query = move._k_query^
@@ -1290,6 +1306,7 @@ struct PyBridge(Movable):
         server_port: String,
         multiprocess: Bool,
         multithread: Bool = False,
+        script_name: String = String(""),
     ) raises:
         """Build the request-invariant environ entries, once.
 
@@ -1313,7 +1330,12 @@ struct PyBridge(Movable):
 
         _base_set(d, "SERVER_NAME", _py_str(server_name))
         _base_set(d, "SERVER_PORT", _py_str(server_port))
-        _base_set(d, "SCRIPT_NAME", _py_str(""))
+        # The mount prefix, and the ONE place it enters either protocol:
+        # WSGI reads it here as SCRIPT_NAME (with PATH_INFO trimmed to the
+        # remainder in `build_environ`), ASGI reads it as `root_path` from
+        # the scope base below, with `path` left whole. Empty for an
+        # unmounted server, which is what both specs want at the root.
+        _base_set(d, "SCRIPT_NAME", _py_str(script_name))
         _base_set(d, "REMOTE_ADDR", _py_str(""))
         _base_set(d, "wsgi.url_scheme", _py_str("http"))
 
@@ -1338,8 +1360,9 @@ struct PyBridge(Movable):
         # The executor's scope template, same request-invariant idea as the
         # environ base. Startup-only PythonObject call.
         _ = self._ns["set_scope_base"](
-            _py_str(server_name), _py_str(server_port)
+            _py_str(server_name), _py_str(server_port), _py_str(script_name)
         )
+        self._script_len = script_name.byte_length()
 
     # --- the per-request path ---------------------------------------------
 
@@ -1369,7 +1392,14 @@ struct PyBridge(Movable):
         var k_method = self._k_method._obj_ptr
         self._set_latin1(cpy, d, k_method, req.method.as_bytes())
         var k_path = self._k_path._obj_ptr
-        self._set_latin1(cpy, d, k_path, req.uri.path.as_bytes())
+        # PEP 3333: PATH_INFO is the part of the target AFTER SCRIPT_NAME,
+        # and is empty (not "/") when the request names the mount point
+        # exactly. Django answers that with its APPEND_SLASH redirect, the
+        # same as under gunicorn.
+        var path_bytes = req.uri.path.as_bytes()
+        if self._script_len > 0 and len(path_bytes) >= self._script_len:
+            path_bytes = path_bytes[self._script_len :]
+        self._set_latin1(cpy, d, k_path, path_bytes)
         var k_query = self._k_query._obj_ptr
         self._set_latin1(cpy, d, k_query, req.uri.query_string.as_bytes())
         var k_protocol = self._k_protocol._obj_ptr
