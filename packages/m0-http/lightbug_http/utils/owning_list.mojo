@@ -219,8 +219,8 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
         self.append(value^)
 
         for _ in range(normalized_idx, len(self) - 1):
-            var earlier_ptr = self.data + earlier_idx
-            var later_ptr = self.data + later_idx
+            var earlier_ptr = self.data.unsafe_offset(earlier_idx)
+            var later_ptr = self.data.unsafe_offset(later_idx)
 
             var tmp = earlier_ptr.unsafe_take_pointee()
             earlier_ptr.unsafe_write_move_from(later_ptr)
@@ -252,10 +252,10 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
         # logic below.
         other.size = 0
 
-        var dest_ptr = self.data + len(self)
+        var dest_ptr = self.data.unsafe_offset(len(self))
 
         for i in range(other_original_size):
-            var src_ptr = other.data + i
+            var src_ptr = other.data.unsafe_offset(i)
 
             # This (TODO: optimistically) moves an element directly from the
             # `other` list into this list using a single `T.__moveinit()__`
@@ -263,7 +263,7 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
             # (avoiding an extra redundant move constructor call).
             dest_ptr.unsafe_write_move_from(src_ptr)
 
-            dest_ptr = dest_ptr + 1
+            dest_ptr = dest_ptr.unsafe_offset(1)
 
         # Update the size now that all new elements have been moved into this
         # list.

@@ -1916,7 +1916,7 @@ curl -s $B/plain | grep -q 'plain text from fasthtml' || fail '/plain did not an
 
 # FastHTML's EventStream actually streams now: ticks arrive live, the
 # client walks away, the server shrugs.
-n=$(timeout 3 curl -sN --max-time 3 $B/sse | grep -c 'tick')
+n=$(curl -sN --max-time 3 $B/sse | grep -c 'tick')
 [ "$n" -ge 2 ] || fail "expected >=2 live EventStream ticks from /sse, got $n"
 curl -s --fail $B/ > /dev/null || fail 'server died after the EventStream client vanished'
 
@@ -2274,7 +2274,7 @@ echo "asgi rss growth over 10k requests: ${growth}KB (limit ${M0_RSS_LIMIT_KB:-1
 # An infinite SSE stream actually STREAMS: events arrive incrementally,
 # the client walks away, and the server notices (disconnect tag → task
 # cancelled) and stays healthy.
-n=$(timeout 3 curl -sN $B/stream-forever | head -6 | grep -c '^data:')
+n=$(curl -sN --max-time 3 $B/stream-forever | head -6 | grep -c '^data:')
 [ "$n" -ge 3 ] || fail "expected >=3 live SSE events from /stream-forever, got $n"
 curl -s --fail $B/ > /dev/null || fail 'server died after a streaming client vanished'
 
@@ -2304,7 +2304,7 @@ M0_PORT=8088 python3 apps/asgi_bare/ws_probe.py || fail 'the ASGI WebSocket prob
 curl -s --fail $B/ > /dev/null || fail 'server died after an abrupt WebSocket disconnect'
 
 # Graceful stop with a live stream in flight: drains and exits 0.
-timeout 10 curl -sN $B/stream-forever > /dev/null &
+curl -sN --max-time 10 $B/stream-forever > /dev/null &
 stream_pid=$!
 sleep 0.5
 kill -TERM $pid
