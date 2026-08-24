@@ -5,7 +5,7 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
-## [Unreleased]
+## [0.8.0] — 2026-08-24
 
 ### Added
 
@@ -37,66 +37,6 @@ versions may break the API**.
   still declares the proprietary MAX licence, though it contains only the
   compiler and runtime — no MAX components — and ships no licence file of
   its own.
-
-### Fixed
-
-- **The C-ABI artifact no longer records the machine that built it.**
-  `build-ffi` rewrites both paths after the link — install name
-  `packages/m0-core/libm0core.dylib` → `@rpath/libm0core.dylib`, search path
-  `/Users/runner/work/.../modular/lib` → `@loader_path` — taking the macOS
-  artifact from **BROKEN to SATISFIABLE**: it now looks beside itself, so a
-  consumer can supply the runtime. Neither path can be suppressed with a
-  linker flag, because `mojo build` adds them itself; macOS also needs an
-  ad-hoc `codesign`, since arm64 invalidates the signature on any Mach-O
-  edit and an unsigned dylib will not load at all.
-
-  **`smoke-ffi` was silently undoing this**: it ran its own `mojo build` into
-  the same output path, so it overwrote `build-ffi`'s output and tested an
-  unfixed artifact. It now depends on `build-ffi` and tests what that task
-  emits, supplying the runtime through `DYLD_LIBRARY_PATH` — the documented
-  consumer requirement, exercised rather than accidentally bypassed.
-
-  **Linux was never broken the way macOS is.** The published `.so` has no
-  `DT_NEEDED` entries at all and is statically linked; its `DT_RUNPATH` was
-  inert debris. The missing-runtime problem is macOS-only, and
-  `check-ffi-portable` now reports three states — `BROKEN`, `SATISFIABLE`,
-  `SELF-CONTAINED` — because pass/fail could not express that. It also reads
-  ELF itself rather than shelling out: the previous version used
-  `llvm-objdump`, which exists on macOS, formats ELF differently, matched
-  nothing, and reported a Linux artifact as portable. A guard that answers
-  "fine" when it cannot read the file is worse than no guard.
-
-  Still not self-contained: shipping the runtime turns on a licensing
-  question, and the **2026-08-23 nightly still declares the proprietary MAX
-  Platform license** — five days after the Apache-2.0 relicensing, so the
-  discrepancy is not a same-day packaging slip. Building the runtime from
-  the Apache-licensed sources was assessed and rejected as disproportionate
-  (an MLIR/Bazel compiler stack for a 1.57 MB macOS-only bundle). See
-  [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md).
-
-- **The published `libm0core` artifacts do not load off the machine that
-  built them, and now there is a check that says so.** Every release from
-  v0.1.0 has shipped a C-ABI library whose recorded search path is the CI
-  runner's own directory, so `dlopen` — the entire point of the artifact —
-  fails for anyone who downloads it. `smoke-ffi` could never catch this: it
-  loads the library **in the build tree**, where the venv it was linked
-  against still exists, so it passes on exactly the machine where the defect
-  cannot appear.
-
-  `poe check-ffi-portable` checks what a load attempt cannot — that every
-  recorded search path is self-relative and every dependency is a system
-  library or shipped alongside — and fails on the current artifact and on
-  every published one, which is how it was verified. The README no longer
-  claims the prebuilt artifacts are usable as-is.
-
-  The fix is demonstrated in [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md)
-  (the bundled artifact loads from an unrelated directory with a clean
-  environment) but not yet applied: two of the three defects are ours and
-  need no permission, while shipping the Mojo runtime's 1.57 MB
-  three-file closure turns on a licensing question that is genuinely
-  unresolved — Mojo's sources went Apache-2.0 with LLVM Exceptions on
-  2026-08-18, but the wheel shipping those prebuilt binaries still declares
-  the proprietary MAX Platform license. Recorded in NOTICE.
 
 ### Changed
 
@@ -210,6 +150,64 @@ versions may break the API**.
   `run(environ, body)`.
 
 ### Fixed
+
+- **The C-ABI artifact no longer records the machine that built it.**
+  `build-ffi` rewrites both paths after the link — install name
+  `packages/m0-core/libm0core.dylib` → `@rpath/libm0core.dylib`, search path
+  `/Users/runner/work/.../modular/lib` → `@loader_path` — taking the macOS
+  artifact from **BROKEN to SATISFIABLE**: it now looks beside itself, so a
+  consumer can supply the runtime. Neither path can be suppressed with a
+  linker flag, because `mojo build` adds them itself; macOS also needs an
+  ad-hoc `codesign`, since arm64 invalidates the signature on any Mach-O
+  edit and an unsigned dylib will not load at all.
+
+  **`smoke-ffi` was silently undoing this**: it ran its own `mojo build` into
+  the same output path, so it overwrote `build-ffi`'s output and tested an
+  unfixed artifact. It now depends on `build-ffi` and tests what that task
+  emits, supplying the runtime through `DYLD_LIBRARY_PATH` — the documented
+  consumer requirement, exercised rather than accidentally bypassed.
+
+  **Linux was never broken the way macOS is.** The published `.so` has no
+  `DT_NEEDED` entries at all and is statically linked; its `DT_RUNPATH` was
+  inert debris. The missing-runtime problem is macOS-only, and
+  `check-ffi-portable` now reports three states — `BROKEN`, `SATISFIABLE`,
+  `SELF-CONTAINED` — because pass/fail could not express that. It also reads
+  ELF itself rather than shelling out: the previous version used
+  `llvm-objdump`, which exists on macOS, formats ELF differently, matched
+  nothing, and reported a Linux artifact as portable. A guard that answers
+  "fine" when it cannot read the file is worse than no guard.
+
+  Still not self-contained: shipping the runtime turns on a licensing
+  question, and the **2026-08-23 nightly still declares the proprietary MAX
+  Platform license** — five days after the Apache-2.0 relicensing, so the
+  discrepancy is not a same-day packaging slip. Building the runtime from
+  the Apache-licensed sources was assessed and rejected as disproportionate
+  (an MLIR/Bazel compiler stack for a 1.57 MB macOS-only bundle). See
+  [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md).
+
+- **The published `libm0core` artifacts do not load off the machine that
+  built them, and now there is a check that says so.** Every release from
+  v0.1.0 has shipped a C-ABI library whose recorded search path is the CI
+  runner's own directory, so `dlopen` — the entire point of the artifact —
+  fails for anyone who downloads it. `smoke-ffi` could never catch this: it
+  loads the library **in the build tree**, where the venv it was linked
+  against still exists, so it passes on exactly the machine where the defect
+  cannot appear.
+
+  `poe check-ffi-portable` checks what a load attempt cannot — that every
+  recorded search path is self-relative and every dependency is a system
+  library or shipped alongside — and fails on the current artifact and on
+  every published one, which is how it was verified. The README no longer
+  claims the prebuilt artifacts are usable as-is.
+
+  The fix is demonstrated in [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md)
+  (the bundled artifact loads from an unrelated directory with a clean
+  environment) but not yet applied: two of the three defects are ours and
+  need no permission, while shipping the Mojo runtime's 1.57 MB
+  three-file closure turns on a licensing question that is genuinely
+  unresolved — Mojo's sources went Apache-2.0 with LLVM Exceptions on
+  2026-08-18, but the wheel shipping those prebuilt binaries still declares
+  the proprietary MAX Platform license. Recorded in NOTICE.
 
 - **`body_bytes` no longer swallows a pending exception.** `PyObject_Length`
   answers -1 with the exception *set*; folding that into the empty-body case
@@ -1086,6 +1084,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.8.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.8.0
 [0.7.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.7.0
 [0.6.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.6.0
 [0.5.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.5.0

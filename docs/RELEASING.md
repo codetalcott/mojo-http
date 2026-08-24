@@ -35,13 +35,14 @@ The steps, in order:
      integration-dispatched run cannot create releases; a push-triggered
      run can). Delete the branch afterwards.
 
-5. **Check the artifact is loadable off this machine**: `poe build-ffi &&
-   poe check-ffi-portable`. This is currently EXPECTED TO FAIL — every
-   release so far ships a `libm0core` that only loads on its build machine,
-   because `smoke-ffi` tests it in the build tree where the defect cannot
-   appear. See [FFI_DISTRIBUTION.md](FFI_DISTRIBUTION.md) for the analysis,
-   the proven fix, and the licensing question blocking the last step. It is
-   a diagnostic, not a gate, until that fix lands.
+5. **The C-ABI bundle is gated, not checked by hand.** CI runs
+   `poe bundle-ffi` on every commit and the release workflow runs it again,
+   and it refuses to finish unless the bundle is genuinely self-contained —
+   so a release cannot ship a `libm0core` that only loads on the runner,
+   which is what every release through v0.7.0 did. Nothing to do here;
+   `poe bundle-ffi` locally if you want to see what ships.
+   [FFI_DISTRIBUTION.md](FFI_DISTRIBUTION.md) has the history and the
+   licensing position.
 
 6. The workflow does the rest. If a build or the artifact proof fails, no
    release is created — fix, delete the tag if it was pushed
