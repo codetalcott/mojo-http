@@ -938,7 +938,8 @@ Three findings:
   parse it never does. Per-request executor-side work already crosses the
   boundary once, C-API only (the environ-based spawn and its Python-side
   scope re-transform were replaced by direct method/path/query/headers
-  hand-off, worth ~5% and an RSS drop from 356 KB to 20 KB per 10k).
+  hand-off, worth ~5%; the 10k-request RSS guard reads 20 KB–1.7 MB across
+  runs — allocator/arena noise, not growth — against the 12 MB limit).
 - **Recorded fix paths**, in expected-value order: run the bench under wrk
   where available (the stdlib client understates the Mojo layer's edge on
   parse-heavy traffic — see the header-count table above); N executor

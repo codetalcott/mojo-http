@@ -422,10 +422,12 @@ is its concurrency (`use_asgi_executor`; an explicit `--blocking-threads
 N>0` keeps the buffered pool as the escape hatch) — and the banner says
 `asgi-loop`. Measured on day one: **eight concurrent 1.5 s awaits complete
 in 1.51 s on one loop with zero threads** (the buffered bridge takes 12 s),
-the RSS guard reads **20 KB over 10k requests** (the executor path crosses
-method/path/query/headers directly through the C API — no environ, no CGI
-names, no Python-side re-transform), and exactly one lifespan runs per
-event loop (the loop's fallback handler is built with `lifespan=False`).
+the RSS guard stays flat — 20 KB to ~1.7 MB over 10k requests across runs,
+allocator/arena noise (uvloop's included) rather than growth, against the
+12 MB limit (the executor path crosses method/path/query/headers directly
+through the C API — no environ, no CGI names, no Python-side
+re-transform) — and exactly one lifespan runs per event loop (the loop's
+fallback handler is built with `lifespan=False`).
 The bench-asgi gate against uvicorn: the mixed slow/fast tail **passes**
 (fast p99 2.87 ms vs 3.27 ms) and hello-world throughput stands at
 0.88–0.94x across runs — the located remainder and its fix paths are

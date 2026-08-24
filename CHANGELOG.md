@@ -20,7 +20,8 @@ versions may break the API**.
   banner says `asgi-loop`. The executor path crosses method, path, query,
   headers (ready lowercase byte-pairs), and body straight through the C
   API as stolen tuple slots — no environ, no CGI names, no Python-side
-  re-transform — and the RSS guard reads 20 KB over 10k requests. Exactly
+  re-transform — and the RSS guard stays flat (20 KB–1.7 MB across runs,
+  allocator noise against the 12 MB limit). Exactly
   one lifespan runs per loop (fallback handlers are built with
   `lifespan=False`); the executor picks uvloop for its own loop where
   installed. An explicit `--blocking-threads N` keeps the Phase-1
