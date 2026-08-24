@@ -12,7 +12,7 @@ m0-core     (zero deps)   hashing, JSON escape, JSON parse
 └── m0-http               router, negotiation, ETag, cache, SSE, auth, CORS, health
     └── lightbug_http     the forked HTTP server (lives inside m0-http)
 m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
-m0-wsgi                   WSGI host — embeds CPython, layers on m0-http
+m0-wsgi                   WSGI/ASGI gateway — embeds CPython, layers on m0-http
 m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 ```
 
@@ -26,7 +26,19 @@ without the framework — do not add an `m0_http` import to either — while
 `m0-wsgi` is the **only** package that embeds CPython. Keep it that way: a
 Python import in `m0-http` or `m0-core` would put libpython on the link line of
 every build in the repo. Everything touching the interpreter lives in
-`src/bridge.mojo`; the rest of the package works in Mojo types. Two rules the
+`src/bridge.mojo`; the rest of the package works in Mojo types. The package
+hosts **both protocols**: the shim detects WSGI vs ASGI at `set_app`
+(`--protocol` forces it), and an ASGI app runs buffered on a persistent
+per-bridge asyncio loop — the protocol dispatch lives entirely inside the
+shim, so the per-request Mojo path is identical for both and the leak rules
+below apply unchanged. ASGI streaming is deliberately refused (a 10s
+watchdog answers an explanatory 500 — see docs/WSGI_VS_ASGI.md §8 for the
+phased design); do not "fix" an infinite stream by lengthening the grace.
+Zero-config: with no topology flag or `M0_*` topology variable, `m0serve`
+defaults to `--blocking-threads min(cores,8)` — an explicitly-set variable,
+at any value, disables that (`AppConfig`'s `*_set` fields carry the
+distinction; `resolve_blocking_threads` in `src/cli.mojo` is the one place
+the default is decided). Two rules the
 Mojo 1.0 interop imposes and that the code depends on:
 
 - **`std.python` binds no `bytes` API and no latin-1 decoder — but the

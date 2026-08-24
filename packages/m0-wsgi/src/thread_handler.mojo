@@ -31,6 +31,19 @@ trait ThreadHandler(HTTPService, Movable, Deinitable):
     def make(ctx: ThreadContext) raises -> Self:
         ...
 
+    def shutdown(mut self):
+        """Teardown the handler owes its application before destruction.
+
+        Called once, on the thread that owns the handler, inside its
+        attached region, after its serving loop has finished. Stated here
+        for the same reason as `make`: only the thread choreography knows
+        when "after the loop, before the destructors" is, and the generic
+        `_pool_serve`/`_serve_one` bodies can only call what the trait
+        names. Today this is ASGI lifespan shutdown; a WSGI handler's is a
+        no-op. Must not raise — teardown has nowhere to send an error.
+        """
+        ...
+
 
 struct ThreadContext(Copyable, Movable):
     """What a handler factory is handed: which thread, and the app's spec."""

@@ -17,8 +17,14 @@ from src.cli import (
     parse_size,
     parse_int,
     usage,
+    zero_config_topology,
+    default_blocking_threads,
+    resolve_blocking_threads,
+    effective_cpus,
+    discovery_specs,
     DEFAULT_PORT,
     M0SERVE_VERSION,
+    MAX_AUTO_BLOCKING_THREADS,
 )
 from m0_http.config import AppConfig
 
@@ -388,10 +394,125 @@ def test_usage_mentions_every_flag() raises:
         String("--static"), String("--static-cache-control"), String("--access-log"),
         String("--max-body"), String("--metrics"), String("--realtime"),
         String("--health-path"), String("--reload"), String("--reload-dir"),
+        String("--protocol"), String("--blocking-threads"),
         String("--help"), String("--version"),
         String("-h"), String("-V"), String("MODULE[:ATTR]"),
     ]:
         assert_true(text.find(flag) >= 0, "usage() does not mention " + flag)
+
+
+# --- the protocol flag -------------------------------------------------------
+
+
+def test_protocol_defaults_to_auto() raises:
+    var opts = _parse([String("x.wsgi")])
+    assert_equal(opts.protocol, "auto")
+
+
+def test_protocol_accepts_the_three_values() raises:
+    for value in [String("auto"), String("wsgi"), String("asgi")]:
+        var opts = _parse([String("x.wsgi"), String("--protocol"), value])
+        assert_equal(opts.protocol, value)
+
+
+def test_protocol_rejects_anything_else() raises:
+    assert_true(_fails([String("x.wsgi"), String("--protocol"), String("http3")]))
+    assert_true(_fails([String("x.wsgi"), String("--protocol"), String("")]))
+
+
+def test_attribute_explicit_tracks_the_colon() raises:
+    """Discovery may only run for a bare MODULE — an explicit `:ATTR` never
+    falls back to conventions, even when it names the default attribute."""
+    assert_false(_parse([String("myproject")]).attribute_explicit)
+    assert_true(_parse([String("myproject:application")]).attribute_explicit)
+    assert_true(_parse([String("myproject:app")]).attribute_explicit)
+
+
+# --- zero-config topology ----------------------------------------------------
+
+
+def test_zero_config_true_only_when_nothing_was_said() raises:
+    assert_true(zero_config_topology(_parse([String("x.wsgi")])))
+
+
+def test_any_topology_flag_disables_zero_config() raises:
+    """Even at the default value: `--workers 1` is a choice."""
+    assert_false(zero_config_topology(_parse([String("x.wsgi"), String("--workers"), String("1")])))
+    assert_false(zero_config_topology(_parse([String("x.wsgi"), String("--threads"), String("1")])))
+    assert_false(zero_config_topology(_parse([String("x.wsgi"), String("--blocking-threads"), String("0")])))
+
+
+def test_env_topology_disables_zero_config() raises:
+    """An `M0_*` topology variable counts as explicit, through `from_env`."""
+    _ = setenv("M0_BLOCKING_THREADS", "0", True)
+    var opts = parse_args([String("x.wsgi")], ServeOptions.from_env())
+    _ = setenv("M0_BLOCKING_THREADS", "", True)
+    assert_false(zero_config_topology(opts))
+    assert_equal(opts.blocking_threads, 0)
+
+
+def test_non_topology_flags_keep_zero_config() raises:
+    var opts = _parse([String("x.wsgi"), String("--port"), String("9000"), String("--access-log")])
+    assert_true(zero_config_topology(opts))
+
+
+def test_default_blocking_threads_floor_and_cap() raises:
+    assert_equal(default_blocking_threads(0), 1)
+    assert_equal(default_blocking_threads(-3), 1)
+    assert_equal(default_blocking_threads(1), 1)
+    assert_equal(default_blocking_threads(4), 4)
+    assert_equal(default_blocking_threads(8), MAX_AUTO_BLOCKING_THREADS)
+    assert_equal(default_blocking_threads(128), MAX_AUTO_BLOCKING_THREADS)
+
+
+def test_resolve_blocking_threads_zero_config_picks_a_pool() raises:
+    var opts = _parse([String("x.wsgi")])
+    assert_equal(resolve_blocking_threads(opts, False, 4), 4)
+    # Phase 1: ASGI gets the same pool default; the asyncio executor will
+    # change this answer, which is why the parameter already exists.
+    assert_equal(resolve_blocking_threads(opts, True, 4), 4)
+
+
+def test_resolve_blocking_threads_explicit_wins() raises:
+    var opts = _parse([String("x.wsgi"), String("--blocking-threads"), String("0")])
+    assert_equal(resolve_blocking_threads(opts, False, 4), 0)
+    var opts2 = _parse([String("x.wsgi"), String("--workers"), String("2")])
+    assert_equal(resolve_blocking_threads(opts2, False, 4), 0)
+    var opts3 = _parse([String("x.wsgi"), String("--blocking-threads"), String("3"), String("--realtime")])
+    # An explicit pool with --realtime is refused later by m0serve, not
+    # silently zeroed here: the resolver only decides DEFAULTS.
+    assert_equal(resolve_blocking_threads(opts3, False, 4), 3)
+
+
+def test_resolve_blocking_threads_realtime_keeps_the_single_loop() raises:
+    var opts = _parse([String("x.wsgi"), String("--realtime")])
+    assert_equal(resolve_blocking_threads(opts, False, 4), 0)
+
+
+def test_effective_cpus_is_at_least_one() raises:
+    assert_true(effective_cpus() >= 1)
+
+
+# --- discovery ---------------------------------------------------------------
+
+
+def test_discovery_specs_order_and_shape() raises:
+    var specs = discovery_specs(String("myproject"))
+    assert_equal(len(specs), 5)
+    assert_equal(specs[0], "myproject:application")
+    assert_equal(specs[1], "myproject.asgi:application")
+    assert_equal(specs[2], "myproject.wsgi:application")
+    assert_equal(specs[3], "myproject:app")
+    assert_equal(specs[4], "myproject.main:app")
+
+
+def test_discovery_specs_all_parse() raises:
+    """Every convention the list emits must survive `parse_app_spec`."""
+    var specs = discovery_specs(String("m"))
+    for i in range(len(specs)):
+        var pair = parse_app_spec(specs[i])
+        assert_true(pair[0].byte_length() > 0)
+        assert_true(pair[1].byte_length() > 0)
 
 
 def test_version_is_a_dotted_triple() raises:

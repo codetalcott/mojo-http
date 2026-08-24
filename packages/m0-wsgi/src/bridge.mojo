@@ -42,7 +42,9 @@ call) and rides to the shim as a stolen tuple slot; `io.BytesIO(bytes)`
 second copy. The RESPONSE body is read straight out of the returned `bytes`
 via `PyBytes_AsString`. This retired the last piece of the original blob
 design: the persistent transfer bytearray, its `buf_addr()` address call and
-the grow protocol are gone, and the shim imports nothing but `io`.
+the grow protocol are gone, and the shim imports nothing but `io` at exec
+time — the ASGI half imports `asyncio` and friends lazily, so a WSGI app
+never pays for them.
 
 `Python().cpython()` binds no `PyBytes_*` at all, and `external_call` cannot
 reach them either because libpython is not on the link line; but the
@@ -104,13 +106,277 @@ _app = None
 # request replaces it.
 _body = b''
 
+# --- the ASGI half -----------------------------------------------------
+# One persistent event loop per bridge namespace (so per worker, per
+# serving thread, and per pool thread -- each has its own bridge). Each
+# ASGI request runs to completion on it, buffered: real await-concurrency
+# is the asyncio executor's job, not this bridge's.
+_is_asgi = False
+_loop = None
+_lifespan_state = {}
+_lifespan_rq = None
+_lifespan_task = None
+_lifespan_ok = False
 
-def set_app(app):
-    global _app
+# A buffered response body larger than this is refused rather than grown
+# without bound; a streaming response (`more_body=True`) that has not
+# finished after the grace is an infinite stream (SSE/EventStream), which
+# the buffered bridge cannot carry.
+_ASGI_BUFFER_CAP = 16 * 1024 * 1024
+_ASGI_STREAM_GRACE = 10.0
+
+
+def set_app(app, forced='auto'):
+    global _app, _is_asgi
     _app = app
+    if forced == 'auto':
+        _is_asgi = _detect(app) == 'asgi'
+    else:
+        _is_asgi = (forced == 'asgi')
+    if _is_asgi:
+        _asgi_init()
+    return 'asgi' if _is_asgi else 'wsgi'
+
+
+def _detect(app):
+    # The duck-typing uvicorn and asgiref agree on: an ASGI application is
+    # a coroutine function, or an object whose __call__ is one (Starlette
+    # and FastHTML instances, Django's ASGIHandler,
+    # asgiref.markcoroutinefunction). functools.partial is unwrapped first
+    # so a partial over either kind detects as the thing it wraps.
+    import functools, inspect
+    target = app
+    while isinstance(target, functools.partial):
+        target = target.func
+    if not callable(target):
+        raise ValueError(
+            'the application object is not callable: expected a WSGI '
+            'callable app(environ, start_response) or an ASGI callable '
+            'async app(scope, receive, send), got %s'
+            % type(target).__name__)
+    if inspect.iscoroutinefunction(target):
+        return 'asgi'
+    call = getattr(target, '__call__', None)
+    if call is not None and inspect.iscoroutinefunction(call):
+        return 'asgi'
+    return 'wsgi'
+
+
+def detect_spec(module_name, attribute):
+    # Startup-only: import and classify without installing anything.
+    import importlib
+    return _detect(getattr(importlib.import_module(module_name), attribute))
+
+
+def _asgi_init():
+    global _loop
+    import asyncio
+    if _loop is None:
+        _loop = asyncio.new_event_loop()
+        # Thread-local, so per-bridge loops never collide across serving
+        # threads.
+        asyncio.set_event_loop(_loop)
+    _lifespan_startup()
+
+
+def _lifespan_startup():
+    # uvicorn's "auto" lifespan: offer the protocol, and treat an
+    # application that errors on the lifespan scope as one that does not
+    # speak it. An explicit startup.failed is fatal -- Starlette apps use
+    # it to refuse to serve half-initialized.
+    global _lifespan_rq, _lifespan_task, _lifespan_ok
+    import asyncio
+    scope = {
+        'type': 'lifespan',
+        'asgi': {'version': '3.0', 'spec_version': '2.0'},
+        'state': _lifespan_state,
+    }
+    _lifespan_rq = asyncio.Queue()
+    started = _loop.create_future()
+
+    async def receive():
+        return await _lifespan_rq.get()
+
+    async def send(message):
+        t = message.get('type', '')
+        if not started.done():
+            if t == 'lifespan.startup.complete':
+                started.set_result(True)
+            elif t == 'lifespan.startup.failed':
+                started.set_exception(RuntimeError(
+                    'ASGI lifespan startup failed: %s'
+                    % message.get('message', '')))
+
+    _lifespan_task = _loop.create_task(_app(scope, receive, send))
+    _lifespan_rq.put_nowait({'type': 'lifespan.startup'})
+
+    async def wait_started():
+        await asyncio.wait({_lifespan_task, started},
+                           return_when=asyncio.FIRST_COMPLETED)
+        if _lifespan_task.done() and not started.done():
+            # Returned or raised without answering: lifespan unsupported.
+            # The exception (usually "unknown scope type") is retrieved so
+            # the loop never logs "exception was never retrieved".
+            if not _lifespan_task.cancelled():
+                _ = _lifespan_task.exception()
+            return False
+        return bool(await started)
+
+    _lifespan_ok = _loop.run_until_complete(wait_started())
+
+
+def lifespan_shutdown():
+    global _lifespan_task
+    import asyncio
+    if _loop is None or _loop.is_closed():
+        return
+    if (_lifespan_ok and _lifespan_task is not None
+            and not _lifespan_task.done()):
+        _lifespan_rq.put_nowait({'type': 'lifespan.shutdown'})
+        try:
+            _loop.run_until_complete(asyncio.wait_for(
+                asyncio.shield(_lifespan_task), 5.0))
+        except Exception:
+            pass
+    if _lifespan_task is not None and not _lifespan_task.done():
+        _lifespan_task.cancel()
+        try:
+            _loop.run_until_complete(asyncio.gather(
+                _lifespan_task, return_exceptions=True))
+        except Exception:
+            pass
+    _lifespan_task = None
+    _loop.close()
+
+
+def _scope_from_environ(environ):
+    # The reverse of the CGI transform build_environ applied; latin-1 is
+    # PEP 3333's byte tunnel, so encoding it back yields the request's own
+    # bytes. ASGI wants `path` decoded UTF-8 and the rest as bytes.
+    headers = []
+    for key, value in environ.items():
+        if key == 'CONTENT_TYPE':
+            headers.append((b'content-type', value.encode('latin-1')))
+        elif key == 'CONTENT_LENGTH':
+            headers.append((b'content-length', value.encode('latin-1')))
+        elif key.startswith('HTTP_'):
+            headers.append((
+                key[5:].replace('_', '-').lower().encode('latin-1'),
+                value.encode('latin-1')))
+    try:
+        port = int(environ.get('SERVER_PORT', '') or 0)
+    except ValueError:
+        port = 0
+    raw_path = environ.get('PATH_INFO', '').encode('latin-1')
+    return {
+        'type': 'http',
+        'asgi': {'version': '3.0', 'spec_version': '2.3'},
+        'http_version':
+            environ.get('SERVER_PROTOCOL', 'HTTP/1.1').split('/')[-1],
+        'method': environ.get('REQUEST_METHOD', 'GET'),
+        'scheme': environ.get('wsgi.url_scheme', 'http'),
+        'path': raw_path.decode('utf-8', 'replace'),
+        # Best effort: the loop hands over the decoded path, so the
+        # percent-encoded original is not available here.
+        'raw_path': raw_path,
+        'query_string': environ.get('QUERY_STRING', '').encode('latin-1'),
+        'root_path': environ.get('SCRIPT_NAME', ''),
+        'headers': headers,
+        'server': (environ.get('SERVER_NAME', ''), port),
+        'client': None,
+        # A shallow copy per request, matching uvicorn: the app may add
+        # request-scoped keys without polluting the lifespan state.
+        'state': dict(_lifespan_state),
+    }
+
+
+def _run_asgi(environ, body):
+    global _body
+    import asyncio
+    from http.client import responses as _reasons
+
+    scope = _scope_from_environ(environ)
+    delivered = []
+    captured = {'status': None, 'headers': []}
+    chunks = []
+    total = [0]
+    streaming = _loop.create_future()
+
+    async def receive():
+        # The whole body in one message -- the buffered bridge's contract.
+        if not delivered:
+            delivered.append(True)
+            return {'type': 'http.request', 'body': body,
+                    'more_body': False}
+        # uvicorn parity: a further receive() WAITS -- for a disconnect a
+        # buffered bridge can never observe mid-request. Answering
+        # http.disconnect here instead makes Starlette's streaming
+        # responses (which race receive against their own send loop) stop
+        # after one chunk and answer a truncated 200 that looks fine.
+        # Waiting means a streaming app meets the watchdog's explanatory
+        # error, and an app that blocks on receive without streaming hangs
+        # exactly as a hung WSGI view does -- documented parity.
+        await _loop.create_future()
+
+    async def send(message):
+        t = message.get('type', '')
+        if t == 'http.response.start':
+            captured['status'] = int(message.get('status', 500))
+            captured['headers'] = list(message.get('headers', []))
+        elif t == 'http.response.body':
+            chunk = bytes(message.get('body', b'') or b'')
+            if chunk:
+                chunks.append(chunk)
+                total[0] += len(chunk)
+                if total[0] > _ASGI_BUFFER_CAP:
+                    raise RuntimeError(
+                        'ASGI response body exceeded the buffered '
+                        'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP)
+            if message.get('more_body', False) and not streaming.done():
+                streaming.set_result(True)
+
+    task = _loop.create_task(_app(scope, receive, send))
+
+    async def drive():
+        await asyncio.wait({task, streaming},
+                           return_when=asyncio.FIRST_COMPLETED)
+        if not task.done():
+            # A streaming response: give a finite chunked body its grace,
+            # and call an unfinished one what it is.
+            try:
+                await asyncio.wait_for(asyncio.shield(task),
+                                       _ASGI_STREAM_GRACE)
+            except asyncio.TimeoutError:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise RuntimeError(
+                    'ASGI streaming response did not complete within '
+                    '%.0fs -- infinite streams (SSE/EventStream) are not '
+                    'supported by the buffered ASGI bridge; see '
+                    'docs/WSGI_VS_ASGI.md section 8'
+                    % _ASGI_STREAM_GRACE) from None
+        await task
+
+    _loop.run_until_complete(drive())
+
+    if captured['status'] is None:
+        raise RuntimeError(
+            'ASGI application completed without sending '
+            'http.response.start')
+    status = captured['status']
+    headers = [(n.decode('latin-1'), v.decode('latin-1'))
+               for n, v in captured['headers']]
+    _body = b''.join(chunks)
+    return ('%d %s' % (status, _reasons.get(status, '')), headers, _body)
 
 
 def run(environ, body):
+    if _is_asgi:
+        return _run_asgi(environ, body)
+    return _run_wsgi(environ, body)
+
+
+def _run_wsgi(environ, body):
     # Mojo built `environ` through the C API and `body` is a real bytes
     # built with PyBytes_FromStringAndSize; both arrive as stolen tuple
     # slots. BytesIO(bytes) SHARES the immutable buffer until first write
@@ -279,11 +545,28 @@ struct PyBridge(Movable):
         self._scratch_name = move._scratch_name^
         self._scratch_value = move._scratch_value^
 
-    def set_app(self, app: PythonObject) raises:
-        """Install the WSGI callable. Startup-only: passing `app` as a call
-        argument leaks one reference (see module docstring), which is
-        harmless for an object that must outlive the process anyway."""
-        _ = self._ns["set_app"](app)
+    def set_app(self, app: PythonObject, forced: String = "auto") raises -> String:
+        """Install the application callable and resolve its protocol.
+
+        `forced` is `auto` (detect from the object), `wsgi`, or `asgi`;
+        the return value is the protocol the shim resolved. For an ASGI
+        application this also creates the bridge's persistent asyncio loop
+        and runs lifespan startup, so a `lifespan.startup.failed` raises
+        here — at startup, where it belongs.
+
+        Startup-only: passing `app` and `forced` as call arguments leaks
+        one reference each (see module docstring), which is harmless for a
+        bounded number of calls at construction."""
+        var result = self._ns["set_app"](app, PythonObject(forced))
+        return String(py=result)
+
+    def lifespan_shutdown(self) raises:
+        """Run ASGI lifespan shutdown and close the bridge's loop.
+
+        A no-op for WSGI (the shim guards on a missing loop). Call once at
+        teardown, on the thread that owns this bridge, inside its attached
+        region — never per request."""
+        _ = self._ns["lifespan_shutdown"]()
 
     def set_base(
         mut self,

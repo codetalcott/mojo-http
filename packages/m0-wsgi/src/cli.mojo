@@ -20,6 +20,9 @@ flag value is validated and a bad one is a usage error (exit 2), never a
 silent default.
 """
 
+from std.ffi import external_call
+from std.sys.info import CompilationTarget
+
 from lightbug_http.server_config import ServerConfig
 from m0_http.config import AppConfig
 
@@ -39,14 +42,33 @@ comptime EXIT_USAGE = 2
 comptime EXIT_STARTUP = 1
 """The application could not be loaded or the server could not start."""
 
+comptime PROTOCOL_AUTO = "auto"
+"""Detect WSGI vs ASGI from the application object at load time."""
+
+comptime PROTOCOL_WSGI = "wsgi"
+
+comptime PROTOCOL_ASGI = "asgi"
+
+comptime MAX_AUTO_BLOCKING_THREADS = 8
+"""Cap on the zero-config handler pool. Past the count of cores the pool's
+parallelism is waiting, not computing, and each thread costs a live handler
+(interpreter state included); eight covers the common core counts without
+turning a 128-core box into 128 interpreters nobody asked for."""
+
 
 struct ServeOptions(Copyable, Movable):
     """Everything `m0serve` needs to know, after flags and environment agree."""
 
     var module: String
-    """Importable module holding the WSGI callable, e.g. `myproject.wsgi`."""
+    """Importable module holding the application callable, e.g. `myproject.wsgi`."""
     var attribute: String
     """Name of the callable in that module."""
+    var attribute_explicit: Bool
+    """Whether the user wrote `:ATTR` themselves. A bare MODULE may fall back
+    to the discovery conventions (`discovery_specs`) when the default
+    attribute is not there; an explicit one never does."""
+    var protocol: String
+    """`auto` (detect from the object), or a forced `wsgi` / `asgi`."""
     var host: String
     var port: Int
     var workers: Int
@@ -57,12 +79,22 @@ struct ServeOptions(Copyable, Movable):
 
     Stage B. The loop becomes an acceptor: it parses the request, hands it to
     a pool thread, and goes back to `wait()`, so one slow view no longer holds
-    the keep-alive connections that loop happens to own. Off by default
-    because it costs N threads and N interpreters' worth of per-thread handler
-    state per loop, and because a server whose views are all fast gains
-    nothing from it. Composes with `--workers` and with `--threads`; refused
-    with `--realtime`, whose streaming hooks run on the loop's handler.
+    the keep-alive connections that loop happens to own. Explicitly 0 means
+    off, and the loop calls handlers itself; when no topology flag or `M0_*`
+    topology variable is set at all, `resolve_blocking_threads` turns a small
+    pool on by default — one slow view stalling every connection is the wrong
+    out-of-box experience. Composes with `--workers` and with `--threads`;
+    refused with `--realtime`, whose streaming hooks run on the loop's handler.
     """
+    var workers_set: Bool
+    """Whether `--workers` or `M0_WORKERS` was given, at any value.
+
+    The three `*_set` fields exist so zero-config can tell "one worker
+    because nobody said" from "one worker, and I chose that" — only the
+    former lets `resolve_blocking_threads` pick a default pool.
+    """
+    var threads_set: Bool
+    var blocking_threads_set: Bool
     var app_dir: String
     """Prepended to `sys.path` so `module` can be imported; relative to cwd."""
     var static_prefixes: List[String]
@@ -101,11 +133,16 @@ struct ServeOptions(Copyable, Movable):
         """Hard defaults — what applies when neither flag nor env says."""
         self.module = String("")
         self.attribute = String(DEFAULT_ATTRIBUTE)
+        self.attribute_explicit = False
+        self.protocol = String(PROTOCOL_AUTO)
         self.host = String("0.0.0.0")
         self.port = DEFAULT_PORT
         self.workers = 1
         self.threads = 1
         self.blocking_threads = 0
+        self.workers_set = False
+        self.threads_set = False
+        self.blocking_threads_set = False
         self.app_dir = String(".")
         self.static_prefixes = List[String]()
         self.static_dirs = List[String]()
@@ -123,11 +160,16 @@ struct ServeOptions(Copyable, Movable):
     def __init__(out self, *, copy: Self):
         self.module = copy.module
         self.attribute = copy.attribute
+        self.attribute_explicit = copy.attribute_explicit
+        self.protocol = copy.protocol
         self.host = copy.host
         self.port = copy.port
         self.workers = copy.workers
         self.threads = copy.threads
         self.blocking_threads = copy.blocking_threads
+        self.workers_set = copy.workers_set
+        self.threads_set = copy.threads_set
+        self.blocking_threads_set = copy.blocking_threads_set
         self.app_dir = copy.app_dir
         self.static_prefixes = copy.static_prefixes.copy()
         self.static_dirs = copy.static_dirs.copy()
@@ -145,11 +187,16 @@ struct ServeOptions(Copyable, Movable):
     def __init__(out self, *, deinit move: Self):
         self.module = move.module^
         self.attribute = move.attribute^
+        self.attribute_explicit = move.attribute_explicit
+        self.protocol = move.protocol^
         self.host = move.host^
         self.port = move.port
         self.workers = move.workers
         self.threads = move.threads
         self.blocking_threads = move.blocking_threads
+        self.workers_set = move.workers_set
+        self.threads_set = move.threads_set
+        self.blocking_threads_set = move.blocking_threads_set
         self.app_dir = move.app_dir^
         self.static_prefixes = move.static_prefixes^
         self.static_dirs = move.static_dirs^
@@ -178,6 +225,9 @@ struct ServeOptions(Copyable, Movable):
         opts.workers = config.workers
         opts.threads = config.threads
         opts.blocking_threads = config.blocking_threads
+        opts.workers_set = config.workers_set
+        opts.threads_set = config.threads_set
+        opts.blocking_threads_set = config.blocking_threads_set
         opts.access_log = config.access_log
         return opts^
 
@@ -273,6 +323,86 @@ def parse_size(text: String) raises -> Int:
         )
 
 
+def zero_config_topology(opts: ServeOptions) -> Bool:
+    """Whether the user said nothing at all about topology.
+
+    True only when none of `--workers`/`--threads`/`--blocking-threads` (or
+    their `M0_*` variables) were given — including at their default values:
+    `M0_WORKERS=1` is a choice, and a choice disables the auto default.
+    """
+    return not (
+        opts.workers_set or opts.threads_set or opts.blocking_threads_set
+    )
+
+
+def default_blocking_threads(cpus: Int) -> Int:
+    """The zero-config handler-pool size: `min(max(cpus, 1), 8)`.
+
+    Floored at one because a broken CPU probe must not disable the pool
+    the caller already decided to start; capped because the parallelism a
+    handler pool buys is waiting, and past eight threads per loop the extra
+    interpreters' worth of handler state buys nothing (see
+    `MAX_AUTO_BLOCKING_THREADS`).
+    """
+    var floored = cpus if cpus > 1 else 1
+    if floored > MAX_AUTO_BLOCKING_THREADS:
+        return MAX_AUTO_BLOCKING_THREADS
+    return floored
+
+
+def resolve_blocking_threads(
+    opts: ServeOptions, is_asgi: Bool, cpus: Int
+) -> Int:
+    """The handler-pool size actually used, after zero-config kicks in.
+
+    Explicit topology always wins — any of the three flags or variables, at
+    any value, keeps `opts.blocking_threads` verbatim. `--realtime` keeps
+    the single-loop shape (the streaming hooks run on the loop's handler,
+    which is exactly what a pool breaks — the existing refusal, extended to
+    the default). Otherwise both protocols get a small pool: one slow view
+    must not stall every connection out of the box. `is_asgi` is accepted
+    now so the call sites do not change when the asyncio executor lands and
+    ASGI stops wanting a pool at all.
+    """
+    _ = is_asgi
+    if not zero_config_topology(opts):
+        return opts.blocking_threads
+    if opts.realtime:
+        return 0
+    return default_blocking_threads(cpus)
+
+
+def effective_cpus() -> Int:
+    """Logical CPU count via `sysconf(_SC_NPROCESSORS_ONLN)`; 1 on failure.
+
+    `sysconf` rather than a Python `os.cpu_count()` because the count is
+    needed before the fork, and the fork must precede the first Python
+    call. The constant differs per platform (glibc 84, macOS 58).
+    """
+    comptime _SC_NPROCESSORS_ONLN = 58 if CompilationTarget.is_macos() else 84
+    var count = external_call["sysconf", Int](Int(_SC_NPROCESSORS_ONLN))
+    return count if count > 0 else 1
+
+
+def discovery_specs(module: String) -> List[String]:
+    """The `MODULE:ATTR` specs a bare MODULE tries, in order.
+
+    Zero-config discovery: `m0serve myproject` should find a Django
+    project's `asgi.py`/`wsgi.py` and a FastHTML/FastAPI `main.py` without
+    the user learning either convention. The given module with the default
+    attribute stays first — today's behavior — and the fallbacks only run
+    when the user wrote no `:ATTR` and the first candidate fails to load.
+    First match wins; a total miss reports every spec tried.
+    """
+    var specs = List[String]()
+    specs.append(module + ":" + String(DEFAULT_ATTRIBUTE))
+    specs.append(module + ".asgi:" + String(DEFAULT_ATTRIBUTE))
+    specs.append(module + ".wsgi:" + String(DEFAULT_ATTRIBUTE))
+    specs.append(module + ":app")
+    specs.append(module + ".main:app")
+    return specs^
+
+
 # The flags that take a value, and the booleans. `test_cli.mojo` asserts that
 # `usage()` names every one of them, so the help text cannot drift from the
 # parser. (Plain comparisons rather than a comptime list of Strings: an
@@ -290,6 +420,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--max-body"
         or name == "--health-path"
         or name == "--reload-dir"
+        or name == "--protocol"
     )
 
 
@@ -321,16 +452,30 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         if workers < 1:
             raise Error("--workers must be at least 1, got " + value)
         opts.workers = workers
+        opts.workers_set = True
     elif name == "--threads":
         var threads = parse_int(value, "--threads")
         if threads < 1:
             raise Error("--threads must be at least 1, got " + value)
         opts.threads = threads
+        opts.threads_set = True
     elif name == "--blocking-threads":
         var blocking = parse_int(value, "--blocking-threads")
         if blocking < 0:
             raise Error("--blocking-threads cannot be negative, got " + value)
         opts.blocking_threads = blocking
+        opts.blocking_threads_set = True
+    elif name == "--protocol":
+        var protocol = String(value.strip())
+        if (
+            protocol != PROTOCOL_AUTO
+            and protocol != PROTOCOL_WSGI
+            and protocol != PROTOCOL_ASGI
+        ):
+            raise Error(
+                "--protocol must be auto, wsgi or asgi, got '" + value + "'"
+            )
+        opts.protocol = protocol^
     elif name == "--app-dir":
         if value.byte_length() == 0:
             raise Error("--app-dir must not be empty")
@@ -427,6 +572,7 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
             var pair = parse_app_spec(arg)
             opts.module = pair[0]
             opts.attribute = pair[1]
+            opts.attribute_explicit = arg.find(":") >= 0
             have_module = True
         i += 1
 
@@ -440,16 +586,22 @@ def usage() -> String:
     return String(
         "usage: m0serve [OPTIONS] MODULE[:ATTR]\n"
         "\n"
-        "Serve a WSGI application (Django, Flask, anything PEP 3333) with\n"
-        "mojo-http. MODULE is importable from --app-dir; ATTR defaults to\n"
-        "'application'. Flags override M0_* environment variables.\n"
+        "Serve a WSGI or ASGI application (Django, Flask, FastHTML, Starlette)\n"
+        "with mojo-http; the protocol is detected from the object. MODULE is\n"
+        "importable from --app-dir; ATTR defaults to 'application', and a bare\n"
+        "MODULE also tries MODULE.asgi, MODULE.wsgi, MODULE:app and\n"
+        "MODULE.main:app. Flags override M0_* environment variables.\n"
         "\n"
         "  --host ADDR                 bind address (default 0.0.0.0; M0_HOST)\n"
         "  --port N                    port (default 8000; M0_PORT)\n"
         "  --workers N                 prefork worker processes (default 1; M0_WORKERS)\n"
         "  --threads N                 serving threads in ONE process, free-threaded\n"
-        "  --blocking-threads N        handler threads per loop; isolates slow views\n"
         "                              CPython only; exclusive with --workers (M0_THREADS)\n"
+        "  --blocking-threads N        handler threads per loop; isolates slow views\n"
+        "                              (M0_BLOCKING_THREADS; auto when no topology\n"
+        "                              flag or M0_* topology variable is set, 0 = off)\n"
+        "  --protocol P                auto (default), wsgi, or asgi — force the\n"
+        "                              application protocol instead of detecting it\n"
         "  --app-dir DIR               prepended to sys.path (default .)\n"
         "  --static PREFIX=DIR         serve DIR at PREFIX from Mojo, never entering\n"
         "                              Python; repeatable\n"

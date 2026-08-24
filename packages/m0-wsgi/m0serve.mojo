@@ -68,9 +68,11 @@ from m0_http import (
 from m0_http.config import AppConfig
 from m0_http.multiworker import SharedAtomics
 from m0_wsgi import (
-    WSGIApp, WSGIHandler, ServeOptions, parse_args, usage,
+    WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
-    M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP,
+    detect_protocol, discovery_specs, resolve_blocking_threads,
+    zero_config_topology, effective_cpus,
+    M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
 
 
@@ -115,6 +117,72 @@ def _discover_core_lib() -> String:
         if isfile(candidates[i]):
             return candidates[i]
     return String("")
+
+
+comptime _REALTIME_ASGI_CONFLICT = (
+    "--realtime requires a WSGI application: the M0-Hold contract is a"
+    " response-header protocol for buffered WSGI responses, and an ASGI"
+    " application streams through its own send() instead. Serve it without"
+    " --realtime."
+)
+
+
+def _specs_tried(specs: List[String]) -> String:
+    """The discovery candidates as one comma-separated list, for errors."""
+    var joined = String("")
+    for i in range(len(specs)):
+        if i > 0:
+            joined += ", "
+        joined += specs[i]
+    return joined^
+
+
+def _load_app(mut opts: ServeOptions, multiprocess: Bool) raises -> WSGIApp:
+    """Import the application, discovering the spec when it was bare.
+
+    An explicit `MODULE:ATTR` loads exactly what it names. A bare `MODULE`
+    tries the `discovery_specs` conventions in order — Django's
+    `asgi.py`/`wsgi.py` and the `main:app` shape — and the first one that
+    loads wins; `opts` is updated to the winner so the banner and the
+    per-thread handlers name what is actually being served. On a total
+    miss, the primary spec's own error leads and every candidate tried is
+    listed.
+
+    `sys.path` gets `--app-dir` exactly once, here, so retried candidates
+    do not grow it; the `WSGIApp`s are therefore built with an empty
+    `project_path`.
+    """
+    if opts.app_dir.byte_length() > 0:
+        Python.add_to_path(opts.app_dir)
+    if opts.attribute_explicit:
+        return WSGIApp(
+            opts.module,
+            server_name=opts.host,
+            server_port=String(opts.port),
+            attribute=opts.attribute,
+            multiprocess=multiprocess,
+            protocol=opts.protocol,
+        )
+    var specs = discovery_specs(opts.module)
+    var first_error = String("")
+    for i in range(len(specs)):
+        var pair = parse_app_spec(specs[i])
+        try:
+            var app = WSGIApp(
+                pair[0],
+                server_name=opts.host,
+                server_port=String(opts.port),
+                attribute=pair[1],
+                multiprocess=multiprocess,
+                protocol=opts.protocol,
+            )
+            opts.module = pair[0]
+            opts.attribute = pair[1]
+            return app^
+        except e:
+            if i == 0:
+                first_error = String(e)
+    raise Error(first_error + " (tried " + _specs_tried(specs) + ")")
 
 
 def _reload_dirs(opts: ServeOptions) -> List[String]:
@@ -220,6 +288,13 @@ def main() raises:
             EXIT_USAGE,
         )
 
+    # The forced half of the ASGI/realtime refusal is checkable without an
+    # interpreter; the auto-detected half fails after the app loads, with
+    # the same message.
+    if opts.protocol == PROTOCOL_ASGI and opts.realtime:
+        print(usage(), flush=True)
+        _fail(_REALTIME_ASGI_CONFLICT, EXIT_USAGE)
+
     # Bind before forking; every worker accepts from this one socket.
     var listener = ListenConfig().listen(opts.address())
 
@@ -281,14 +356,7 @@ def main() raises:
     # The first Python call in this process.
     var app: WSGIApp
     try:
-        app = WSGIApp(
-            opts.module,
-            server_name=opts.host,
-            server_port=String(opts.port),
-            attribute=opts.attribute,
-            project_path=opts.app_dir,
-            multiprocess=multiprocess,
-        )
+        app = _load_app(opts, multiprocess)
     except e:
         _fail(
             "could not load " + opts.spec() + " from " + opts.app_dir + ": "
@@ -296,13 +364,31 @@ def main() raises:
             EXIT_STARTUP,
         )
         return
+    var is_asgi = app.is_asgi
+
+    if is_asgi and opts.realtime:
+        _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
+
+    # Zero-config: with no topology flag or M0_* topology variable at all,
+    # the protocol picks the pool — detection had to run first, which is
+    # why this sits after the app loads (and, under prefork, inside each
+    # worker; every worker resolves the same app to the same answer).
+    var auto_pool = zero_config_topology(opts)
+    opts.blocking_threads = resolve_blocking_threads(
+        opts, is_asgi, effective_cpus()
+    )
 
     var handler = WSGIHandler.for_options(app^, opts)
 
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
-        + " (workers=" + String(opts.workers) + ")"
-        + (" blocking-threads=" + String(opts.blocking_threads) if opts.blocking_threads > 0 else "")
+        + " (protocol=" + ("asgi" if is_asgi else "wsgi")
+        + " workers=" + String(opts.workers) + ")"
+        + (
+            " blocking-threads=" + String(opts.blocking_threads)
+            + (" (auto)" if auto_pool else "")
+            if opts.blocking_threads > 0 else ""
+        )
         + (" realtime" if opts.realtime else "")
         + (" reload" if opts.reload else ""),
         flush=True,
@@ -318,6 +404,9 @@ def main() raises:
         # prefork rule is untouched — a forked child that then makes threads is
         # fine; a threaded parent that then forks is not.
         _serve_pooled(opts, listener, handler, server_config, shutdown_fd)
+        # The loop's own handler ran lifespan startup too (it serves the
+        # inline fallback); pool handlers shut down in _pool_serve.
+        handler.shutdown()
         if supervised:
             exit_worker()
         return
@@ -333,6 +422,7 @@ def main() raises:
         shutdown_read_fd=shutdown_fd,
         bus_read_fd=bus.read_fd(worker),
     )
+    handler.shutdown()
     if supervised:
         exit_worker()
 
@@ -393,8 +483,34 @@ def _serve_pooled(
     _ = pool.capacity
 
 
+def _resolve_spec_threaded(mut opts: ServeOptions) raises -> Bool:
+    """Resolve discovery and detect the protocol, on the main thread.
+
+    The threaded mode's mirror of `_load_app`: the interpreter comes up on
+    main and every serving thread re-imports through `sys.modules`, so
+    detection can (and must) run here — the per-loop pool default needs
+    the answer before the threads spawn. Returns whether the app is ASGI;
+    `opts` is updated to the discovered spec.
+    """
+    if opts.attribute_explicit:
+        return detect_protocol(opts.module, opts.attribute, opts.protocol)
+    var specs = discovery_specs(opts.module)
+    var first_error = String("")
+    for i in range(len(specs)):
+        var pair = parse_app_spec(specs[i])
+        try:
+            var is_asgi = detect_protocol(pair[0], pair[1], opts.protocol)
+            opts.module = pair[0]
+            opts.attribute = pair[1]
+            return is_asgi
+        except e:
+            if i == 0:
+                first_error = String(e)
+    raise Error(first_error + " (tried " + _specs_tried(specs) + ")")
+
+
 def _serve_threaded(
-    opts: ServeOptions,
+    mut opts: ServeOptions,
     listener: NoTLSListener[NetworkType.tcp4],
     bus: BroadcastBus,
 ) raises:
@@ -420,8 +536,12 @@ def _serve_threaded(
     require_free_threading(opts.threads)
     if opts.app_dir.byte_length() > 0:
         Python.add_to_path(opts.app_dir)
+    # Import once on main (so Django's setup() runs single-threaded) and
+    # detect the protocol while at it — the imports below are sys.modules
+    # hits for every serving thread.
+    var is_asgi: Bool
     try:
-        _ = Python.import_module(opts.module)
+        is_asgi = _resolve_spec_threaded(opts)
     except e:
         _fail(
             "could not load " + opts.spec() + " from " + opts.app_dir + ": "
@@ -429,14 +549,25 @@ def _serve_threaded(
             EXIT_STARTUP,
         )
         return
+    if is_asgi and opts.realtime:
+        _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
+    var auto_pool = zero_config_topology(opts)
+    opts.blocking_threads = resolve_blocking_threads(
+        opts, is_asgi, effective_cpus()
+    )
 
     var shutdown_fd = install_shutdown_signals()
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
     print(
         "m0serve: " + opts.spec() + " on http://" + opts.address()
-        + " (threads=" + String(opts.threads) + ")"
-        + (" blocking-threads=" + String(opts.blocking_threads) if opts.blocking_threads > 0 else "")
+        + " (protocol=" + ("asgi" if is_asgi else "wsgi")
+        + " threads=" + String(opts.threads) + ")"
+        + (
+            " blocking-threads=" + String(opts.blocking_threads)
+            + (" (auto)" if auto_pool else "")
+            if opts.blocking_threads > 0 else ""
+        )
         + (" realtime" if opts.realtime else "")
         + (" reload" if opts.reload else ""),
         flush=True,

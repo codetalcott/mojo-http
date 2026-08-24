@@ -18,6 +18,7 @@ dev = [
     "django>=5.2.17",
     "flask>=3.0",
     "poethepoet>=0.30",
+    "python-fasthtml>=0.12",
 ]
 
 # No [build-system]: this is a virtual project. uv manages the environment but
@@ -662,7 +663,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$srv" $SPEC > django.log 2>&1 &
+# M0_WORKERS=1 is explicit topology, which keeps the zero-config handler
+# pool off: this phase's RSS guard calibrates against ONE bridge, and a
+# pool would spread the 10k requests over several.
+M0_WORKERS=1 "$srv" $SPEC > django.log 2>&1 &
 pid=$!
 
 fail() {
@@ -866,7 +870,9 @@ kill $pid $worker_pids 2>/dev/null
 wait $pid 2>/dev/null
 worker_pids=
 
-M0_WSGI_VALIDATE=1 "$srv" $SPEC > django3.log 2>&1 &
+# M0_WORKERS=1 for the same reason as phase 1: keep the validator pass on
+# the single-bridge shape it has always measured.
+M0_WSGI_VALIDATE=1 M0_WORKERS=1 "$srv" $SPEC > django3.log 2>&1 &
 pid=$!
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
@@ -1877,6 +1883,50 @@ rm -f flask.log
 echo "smoke-flask OK"
 """
 
+# The flagship ASGI row: FastHTML is Starlette-based, served as `main:app`.
+# Ordinary pages work under the buffered bridge today; its SSE EventStream is
+# pinned to the watchdog's explanatory refusal until the streaming surface
+# lands. Skips cleanly where python-fasthtml is not installed, like the
+# Flask row.
+[tool.poe.tasks.smoke-fasthtml]
+help = "Serve a FastHTML app through the ASGI bridge (skips if fasthtml is absent)"
+deps = ["build-serve"]
+shell = """
+python3 -c 'import fasthtml' 2>/dev/null || { echo "fasthtml not installed - skipping smoke-fasthtml"; exit 0; }
+
+srv=bin/m0serve
+SPEC="main:app --app-dir apps/fasthtml_demo --port 8097"
+B=http://localhost:8097
+
+cleanup() { kill $pid 2>/dev/null; }
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f fasthtml.log ]; then echo '=== fasthtml.log ==='; cat fasthtml.log; fi
+  exit 1
+}
+
+"$srv" $SPEC > fasthtml.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'm0serve-fasthtml-demo' || fail 'the FastHTML page did not render'
+grep -q 'protocol=asgi' fasthtml.log || fail 'FastHTML was not detected as ASGI'
+curl -s $B/plain | grep -q 'plain text from fasthtml' || fail '/plain did not answer'
+
+# The EventStream route is an infinite stream: under the buffered bridge it
+# must be the watchdog's 500, and the server must survive it.
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/sse)
+[ "$code" = "500" ] || fail "/sse expected the buffered bridge's 500, got $code"
+curl -s --fail $B/ > /dev/null || fail 'server died after the streaming refusal'
+
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
+rm -f fasthtml.log
+echo "smoke-fasthtml OK"
+"""
+
 [tool.poe.tasks.serve-wsgi-bare]
 help = "Serve the bare PEP 3333 example on :8086 with m0serve"
 deps = ["build-serve"]
@@ -2084,6 +2134,180 @@ wait $pid 2>/dev/null
 
 rm -f wsgi.log
 echo "smoke-wsgi OK"
+"""
+
+[tool.poe.tasks.serve-asgi-bare]
+help = "Serve the bare ASGI example on :8088 with m0serve"
+deps = ["build-serve"]
+cmd = "bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8088"
+
+# The ASGI row: detection, the buffered bridge's HTTP contract, lifespan,
+# the streaming watchdog, zero-config defaults, discovery, refusals, and
+# the same RSS guard the Django row carries — the ASGI path must not leak
+# per request any more than the WSGI path may.
+[tool.poe.tasks.smoke-asgi]
+help = "ASGI conformance: detection, scope shape, lifespan, streaming guard, zero-config defaults"
+deps = ["build-serve"]
+shell = """
+out=$(mktemp -d)
+srv=bin/m0serve
+SPEC="bareapp.asgi:application --app-dir apps/asgi_bare --port 8088"
+B=http://localhost:8088
+
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+
+fail() {
+  echo "$1"
+  if [ -f asgi.log ]; then echo '=== asgi.log ==='; cat asgi.log; fi
+  exit 1
+}
+
+# --- phase 1: zero-config against the bare app -------------------------------
+# No topology flag, no M0_* topology variable: detection must answer asgi and
+# the auto handler pool must be on — the out-of-box shape.
+"$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'hello from asgi_bare' || fail 'GET / did not answer'
+grep -q 'protocol=asgi' asgi.log || fail 'the banner does not report protocol=asgi'
+grep -q 'blocking-threads=.* (auto)' asgi.log || fail 'zero-config did not pick an auto pool'
+curl -s -D "$out/hdr" $B/ -o /dev/null
+grep -qi '^x-thread' "$out/hdr" || fail 'no x-thread header: the auto pool is not serving'
+
+# The scope: headers lowercased byte pairs, query_string raw bytes, path
+# decoded, lifespan state shallow-copied in.
+scope=$(curl -s -H 'X-Custom: yes' "$B/scope?a=1&b=%20x")
+echo "$scope" | grep -qF '"query_string": "a=1&b=%20x"' || fail "query_string wrong: $scope"
+echo "$scope" | grep -qF '["x-custom", "yes"]' || fail "header pair missing: $scope"
+echo "$scope" | grep -qF '"asgi_version": "3.0"' || fail "asgi version missing: $scope"
+
+# The request body arrives as ONE http.request message, byte for byte.
+python3 - <<'PYEOF'
+import http.client, sys
+body = bytes(range(256)) * 4
+c = http.client.HTTPConnection("localhost", 8088, timeout=10)
+c.request("POST", "/echo", body=body)
+got = c.getresponse().read()
+c.close()
+sys.exit(0 if got == body else 1)
+PYEOF
+[ $? = 0 ] || fail 'binary body did not round-trip through receive()/send()'
+
+# A finite more_body sequence is joined; two Set-Cookie headers both survive;
+# an arbitrary status passes through.
+got=$(curl -s $B/chunks)
+[ "$got" = "one-two-three" ] || fail "finite chunked body not joined: got '$got'"
+n=$(curl -s -D - $B/cookies -o /dev/null | grep -ci '^set-cookie')
+[ "$n" = "2" ] || fail "expected 2 Set-Cookie headers, got $n"
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/status/418)
+[ "$code" = "418" ] || fail "status passthrough failed: got $code"
+
+# Lifespan ran at startup and its state reached the request scope.
+curl -s $B/lifespan | grep -qF '"started": true' || fail 'lifespan startup did not run'
+curl -s $B/lifespan | grep -qF '"state_flag": true' || fail 'lifespan state did not reach the scope'
+
+# Zero-config concurrency: two 1.5s views overlap on pool threads — under a
+# single loop with no pool this takes >3s and fails.
+python3 - <<'PYEOF'
+import http.client, sys, threading, time
+def one():
+    c = http.client.HTTPConnection("localhost", 8088, timeout=10)
+    c.request("GET", "/slow?ms=1500"); c.getresponse().read(); c.close()
+t0 = time.time()
+threads = [threading.Thread(target=one) for _ in range(2)]
+for t in threads: t.start()
+for t in threads: t.join()
+sys.exit(0 if time.time() - t0 < 3.0 else 1)
+PYEOF
+[ $? = 0 ] || fail 'two slow views did not overlap: the zero-config pool is not isolating them'
+
+# The RSS guard, same shape and same limit as smoke-django's: the ASGI path
+# adds a Python-side scope build per request and must still not leak.
+rss0=$(ps -o rss= -p $pid | tr -d ' ')
+python3 - <<'PYEOF'
+import http.client
+done = attempts = 0
+conn = http.client.HTTPConnection("localhost", 8088)
+while done < 10000 and attempts < 20000:
+    attempts += 1
+    try:
+        conn.request("GET", "/")
+        conn.getresponse().read()
+        done += 1
+    except Exception:
+        conn.close()
+        conn = http.client.HTTPConnection("localhost", 8088)
+conn.close()
+raise SystemExit(0 if done >= 10000 else 1)
+PYEOF
+[ $? = 0 ] || fail 'leak-check load loop could not complete 10k requests'
+rss1=$(ps -o rss= -p $pid | tr -d ' ')
+growth=$((rss1 - rss0))
+echo "asgi rss growth over 10k requests: ${growth}KB (limit ${M0_RSS_LIMIT_KB:-12288}KB)"
+[ "$growth" -lt "${M0_RSS_LIMIT_KB:-12288}" ] || fail "asgi bridge leaked ${growth}KB of RSS over 10k requests"
+
+# The streaming watchdog: an infinite stream is a clean, explanatory 500 —
+# never a hang — and the server stays healthy after it. Last in this phase
+# because it costs the 10s grace.
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/stream-forever)
+[ "$code" = "500" ] || fail "infinite stream expected the watchdog's 500, got $code"
+curl -s --fail $B/ > /dev/null || fail 'server died after the streaming watchdog fired'
+
+# Graceful stop, lifespan shutdown included.
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
+
+# --- phase 2: explicit topology wins ------------------------------------------
+M0_BLOCKING_THREADS=0 "$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'M0_BLOCKING_THREADS=0 server never became healthy'
+grep -q 'blocking-threads' asgi.log && fail 'M0_BLOCKING_THREADS=0 did not disable the auto pool'
+curl -s -D "$out/hdr" $B/ -o /dev/null
+grep -qi '^x-thread' "$out/hdr" && fail 'x-thread present with the pool explicitly off'
+kill -TERM $pid
+wait $pid 2>/dev/null
+
+# --- phase 3: discovery and the forced protocol -------------------------------
+# A bare MODULE finds bareapp.asgi:application by convention.
+"$srv" bareapp --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'hello from asgi_bare' || fail 'discovery did not find bareapp.asgi:application'
+grep -q 'm0serve: bareapp.asgi:application' asgi.log || fail 'the banner does not name the discovered spec'
+kill -TERM $pid
+wait $pid 2>/dev/null
+
+"$srv" $SPEC --protocol bogus > asgi.log 2>&1; rc=$?
+[ "$rc" = "2" ] || fail "--protocol bogus: exit $rc, want 2"
+
+# --- phase 4: refusals --------------------------------------------------------
+# Not callable at all: a startup error naming BOTH expected signatures and
+# every discovery spec tried.
+echo 'application = 42' > "$out/notcallable.py"
+"$srv" notcallable --app-dir "$out" --port 8088 > asgi.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "non-callable app: exit $rc, want 1"
+grep -q 'app(environ, start_response)' asgi.log || fail 'the error does not name the WSGI signature'
+grep -q 'app(scope, receive, send)' asgi.log || fail 'the error does not name the ASGI signature'
+grep -q 'tried notcallable:application' asgi.log || fail 'the error does not list the specs tried'
+
+# ASGI and --realtime: refused before the bind when forced, at load when
+# detected — same sentence both ways.
+"$srv" $SPEC --protocol asgi --realtime > asgi.log 2>&1; rc=$?
+[ "$rc" = "2" ] || fail "--protocol asgi --realtime: exit $rc, want 2"
+grep -q 'realtime requires a WSGI application' asgi.log || fail 'forced refusal message wrong'
+"$srv" $SPEC --realtime > asgi.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "detected asgi + --realtime: exit $rc, want 1"
+grep -q 'realtime requires a WSGI application' asgi.log || fail 'detected refusal message wrong'
+
+rm -f asgi.log
+echo "smoke-asgi OK"
 """
 
 # Both ends of the wire in Mojo: the client dials, sends, and parses against

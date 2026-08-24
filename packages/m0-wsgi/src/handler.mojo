@@ -171,10 +171,15 @@ struct WSGIHandler(ThreadHandler):
             # both flags against the mode it started.
             multiprocess=opts[].workers > 1,
             multithread=True,
+            protocol=opts[].protocol,
         )
         var handler = Self.for_options(app^, opts[])
         handler.thread_index = ctx.index
         return handler^
+
+    def shutdown(mut self):
+        """The application's teardown (ASGI lifespan shutdown; WSGI no-op)."""
+        self.app.shutdown()
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         # Static assets first: answered in Mojo, never entering Python, so a

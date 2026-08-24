@@ -185,6 +185,10 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
         pool.put_response(slot, response^, raised)
         pool.complete(slot)
 
+    # After the poison pill, before the handler's destructors: the one
+    # point where this thread is attached, idle, and still owns its app.
+    handler.shutdown()
+
 
 def _pool_body[T: ThreadHandler](arg: Int) -> Int:
     """pthread start routine: attach, serve, release, report."""

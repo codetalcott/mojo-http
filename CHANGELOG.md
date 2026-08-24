@@ -5,6 +5,56 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+### Added
+
+- **`m0serve` is now a hybrid WSGI/ASGI gateway with zero-config
+  detection.** The protocol is detected from the application object at load
+  (coroutine-function duck typing — the rule uvicorn and asgiref share;
+  `--protocol auto|wsgi|asgi` overrides it), so FastHTML, Starlette,
+  FastAPI, and Django's `asgi.py` serve from the same binary that serves
+  Django/Flask WSGI. ASGI requests run on a persistent per-bridge asyncio
+  loop, buffered: the scope is derived in the shim from the same C-API
+  environ, `send()` events collect into the same `(status, headers, body)`
+  tuple, and no new per-request Mojo↔Python object traffic exists —
+  `smoke-asgi`'s RSS guard (same 12 MB/10k-request limit as the Django
+  row) measured 356 KB on day one. Lifespan startup/shutdown run with
+  uvicorn's "auto" semantics, and lifespan `state` reaches request scopes.
+  Streaming responses are the recorded limit: a response still unfinished
+  10 s after its first `more_body=True` is answered with an explanatory
+  500 pointing at docs/WSGI_VS_ASGI.md §8 (the buffered bridge cannot
+  carry an infinite SSE/EventStream; that surface is the design's Phase 3).
+- **Spec discovery**: a bare `m0serve MODULE` now tries
+  `MODULE:application`, `MODULE.asgi:application`, `MODULE.wsgi:application`,
+  `MODULE:app`, `MODULE.main:app` in order — a Django project or a
+  FastHTML/FastAPI `main.py` serves without learning either convention. An
+  explicit `:ATTR` never falls back. A total miss lists every spec tried,
+  and a non-callable names both expected signatures.
+- **Zero-config concurrency**: with no `--workers`/`--threads`/
+  `--blocking-threads` flag and no `M0_*` topology variable, `m0serve` now
+  starts a handler pool of `min(cores, 8)` blocking threads, so one slow
+  view no longer stalls every connection out of the box. Any explicit
+  topology value wins — `M0_WORKERS=1` or `M0_BLOCKING_THREADS=0` restore
+  the old single-loop shape — and `--realtime` keeps the single loop
+  (its streaming hooks run on the loop's handler). The banner reports
+  `protocol=` and marks the pool `(auto)`.
+- New rows and gates: `apps/asgi_bare` (the ASGI sibling of `wsgi_bare` —
+  every route pins one clause of the contract) with `poe smoke-asgi`, and
+  `apps/fasthtml_demo` with `poe smoke-fasthtml` (skips where
+  python-fasthtml is absent). `python-fasthtml` joined the dev dependency
+  group.
+
+### Changed
+
+- `wsgi.multithread` is `True` under the zero-config pool (it is a real
+  thread pool), and ASGI apps refuse `--realtime` with an explanatory
+  message — the M0-Hold contract is a WSGI response-header protocol.
+- docs/WSGI_VS_ASGI.md gained §8: the deliberate revisit of its §6
+  verdict, with the three-phase gateway design (buffered bridge →
+  per-loop asyncio executor over the offload channel → ASGI realtime over
+  the existing bus/registry transport).
+
 ## [0.8.0] — 2026-08-24
 
 ### Added

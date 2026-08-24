@@ -431,21 +431,29 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   mtime in whole *seconds* plus size, so without it a same-second,
   same-length edit reloads into stale bytecode. The Mojo binary is never
   re-exec'd — a changed `.mojo` still needs a rebuild.
-- **Can m0serve host FastHTML?** Asked 2026-08-24, unanswered. Django and
-  Flask are both served today and both are WSGI; **FastHTML is ASGI**
-  (Starlette underneath), so it is almost certainly not a drop-in — the
-  question is really whether it is the case that justifies an ASGI path, or
-  whether FastHTML's synchronous handlers can be driven through a WSGI
-  adapter (`asgiref`'s `AsgiToWsgi` direction, already a dependency) at a
-  cost worth paying. Worth an afternoon's spike before any design: a
-  hello-world FastHTML app under `m0serve` via an adapter would settle
-  whether the framework or the protocol is the obstacle. FastHTML's
-  server-sent-events and WebSocket features would then be the interesting
-  part, since `--realtime` already holds both for Django.
-- **Recorded follow-ups, not yet scoped:** ASGI/WSGI auto-detection in
-  the entry point;
+- **Can m0serve host FastHTML?** Asked 2026-08-24; **answered the same
+  week: yes** — it was the case that justified the ASGI path
+  ([WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) §8). No adapter was needed: `m0serve`
+  now detects ASGI applications and runs them on the buffered per-bridge
+  asyncio loop, so `m0serve main:app --app-dir apps/fasthtml_demo` serves
+  FastHTML pages today (`poe smoke-fasthtml` pins it, skipping where
+  python-fasthtml is absent). Its SSE `EventStream` and `app.ws` features
+  are the remaining part: an infinite stream is currently refused with an
+  explanatory 500 by the buffered bridge's watchdog, and lands with the
+  Phase 3 realtime surface below.
+- **The ASGI gateway's next phases** (design in WSGI_VS_ASGI.md §8):
+  Phase 2, the per-loop asyncio executor over the unchanged `OffloadPool` —
+  real await-concurrency, after which ASGI stops defaulting to a handler
+  pool; Phase 3, ASGI streaming and `websocket` scopes over the existing
+  bus/registry transport. Gate both on `bench-asgi` numbers against uvicorn
+  (single process, no uvloop), recorded in WSGI_PERFORMANCE.md.
+- **Recorded follow-ups, not yet scoped:**
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.
+  (ASGI/WSGI auto-detection shipped with the gateway — `--protocol`
+  overrides it, and a bare `MODULE` discovers `MODULE.asgi:application`,
+  `MODULE.wsgi:application`, `MODULE:app`, `MODULE.main:app` by
+  convention.)
 
 ## Known issues
 

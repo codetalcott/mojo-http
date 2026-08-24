@@ -53,3 +53,4 @@ threads.log
 py-canary.log
 probe.out
 dist/
+.sesskey
