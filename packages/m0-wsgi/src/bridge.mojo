@@ -493,8 +493,12 @@ struct PyBridge(Movable):
         """
         ref cpy = Python().cpython()
         var n = Int(cpy.PyObject_Length(body._obj_ptr))
-        if n <= 0:
-            # PyObject_Length answers -1 on error, which is not a body.
+        if n < 0:
+            # -1 means an exception is already set. Returning "empty body"
+            # here would swallow it AND leave it pending, poisoning whatever
+            # C-API call runs next; get_error converts and clears it.
+            raise cpy.get_error()
+        if n == 0:
             return List[UInt8]()
         var maybe = self._bytes_as_string(body._obj_ptr)
         if not maybe:
