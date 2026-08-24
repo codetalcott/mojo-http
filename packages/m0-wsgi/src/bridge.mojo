@@ -34,22 +34,22 @@ Python. That was correct and leak-free, but the parse was 28 Python-level
 `_read_str` calls for a twelve-header request and cost 12.09 µs of the
 bridge's 14.23 — 85% of it. See docs/WSGI_PERFORMANCE.md.
 
-**The REQUEST body crosses as bytes through a persistent bytearray.** Mojo
-writes the raw bytes into the shim's buffer and passes the length as a C-API
-`int`; the shim makes the `BytesIO`. A request with no body (every GET) skips
-the buffer entirely: nothing is written and `buf_addr()` is not called. This
-is still a bytearray because building a `bytes` object needs
-`PyBytes_FromStringAndSize`, which is not bound — though see below: it is
-*reachable*, and doing so would retire the buffer.
+**Both bodies cross through `PyBytes_*`, loaded from the interpreter's own
+handle** — see the `ExternalFunction` declarations below. The REQUEST body
+becomes a real `bytes` via `PyBytes_FromStringAndSize` (one copy, inside the
+call) and rides to the shim as a stolen tuple slot; `io.BytesIO(bytes)`
+*shares* the immutable buffer until first write, so `wsgi.input` costs no
+second copy. The RESPONSE body is read straight out of the returned `bytes`
+via `PyBytes_AsString`. This retired the last piece of the original blob
+design: the persistent transfer bytearray, its `buf_addr()` address call and
+the grow protocol are gone, and the shim imports nothing but `io`.
 
-**The RESPONSE body is read straight out of the `bytes` object**, through
-`PyBytes_AsString` loaded from the interpreter's own handle — see
-`_PyBytes_AsString`. `Python().cpython()` binds no `PyBytes_*` at all, and
-`external_call` cannot reach them either because libpython is not on the link
-line; but the stdlib's own `ExternalFunction[name, type].load(lib.borrow())`
-is how `CPython` populates its bindings, and it works just as well for the
-ones it omits. The whole C-API surface is therefore available to this file,
-not only the part the stdlib chose to wrap.
+`Python().cpython()` binds no `PyBytes_*` at all, and `external_call` cannot
+reach them either because libpython is not on the link line; but the
+stdlib's own `ExternalFunction[name, type].load(lib.borrow())` is how
+`CPython` populates its bindings, and it works just as well for the ones it
+omits. The whole C-API surface is therefore available to this file, not only
+the part the stdlib chose to wrap.
 
 **The shim is a string, not a file.** `SHIM_SOURCE` is `exec`'d into a fresh
 namespace dict at startup. A `.py` file next to the source would have to be
@@ -78,7 +78,7 @@ that is spelled as a UTF-8 encode here.
 from std.ffi import c_char, c_long, _CPointer
 from std.memory import unsafe_memcpy
 from std.python import Python, PythonObject
-from std.python._cpython import ExternalFunction, PyObjectPtr
+from std.python._cpython import ExternalFunction, PyObjectPtr, Py_ssize_t
 
 from lightbug_http import HTTPRequest
 
@@ -89,21 +89,14 @@ from .environ import (
 )
 
 
-# The `bytearray(65536)` below must match `_INITIAL_BUF_CAP`, declared under
-# this string. The two are written out separately because a comptime String
-# cannot interpolate into a triple-quoted literal, so this comment is the
-# only thing holding them together; `PyBridge` tracks the Python side's
-# capacity from that constant and the two move in lockstep through `grow()`.
 comptime SHIM_SOURCE = """
-import ctypes, io, sys
+import io
 
 _app = None
-_buf = bytearray(65536)
 
 # Keeps the last response body alive after `run` returns, so the pointer
-# Mojo takes into it stays valid until the next request replaces it. Mojo
-# reads the bytes through PyBytes_AsString, not through ctypes -- see
-# `_PyBytes_AsString` in this file.
+# Mojo takes into it (via PyBytes_AsString) stays valid until the next
+# request replaces it.
 _body = b''
 
 
@@ -112,29 +105,15 @@ def set_app(app):
     _app = app
 
 
-def buf_addr():
-    return ctypes.addressof(ctypes.c_char.from_buffer(_buf))
-
-
-def grow():
-    # Mojo wrote the required size into the first 8 bytes before calling.
-    global _buf
-    need = int.from_bytes(_buf[:8], 'little')
-    _buf = bytearray(need)
-    return buf_addr()
-
-
-def run(environ, n_body):
-    # Mojo built `environ` through the C API and handed it over already
-    # finished. The one entry it could not build is wsgi.input: there is no
-    # PyBytes_* binding in Mojo 1.0, so the body arrives as raw bytes in
-    # _buf (at offset 8, past grow()'s size header) and becomes a BytesIO
-    # here. The memoryview keeps that to one copy rather than two.
+def run(environ, body):
+    # Mojo built `environ` through the C API and `body` is a real bytes
+    # built with PyBytes_FromStringAndSize; both arrive as stolen tuple
+    # slots. BytesIO(bytes) SHARES the immutable buffer until first write
+    # (measured: getsizeof(BytesIO(b)) is ~46 bytes over the header for a
+    # 256-byte b), so this line copies nothing -- the request-body path's
+    # single copy already happened inside PyBytes_FromStringAndSize.
     global _body
-    if n_body:
-        environ['wsgi.input'] = io.BytesIO(memoryview(_buf)[8:8 + n_body])
-    else:
-        environ['wsgi.input'] = io.BytesIO()
+    environ['wsgi.input'] = io.BytesIO(body)
 
     captured = {}
     written = []
@@ -168,30 +147,36 @@ def run(environ, n_body):
 """
 
 
-comptime _INITIAL_BUF_CAP = 65536
-"""Must match the shim's `bytearray(65536)`."""
-
+# The two C-API functions this file needs and `Python().cpython()` does not
+# bind. `external_call` cannot reach them: libpython is **not on the link
+# line** — Mojo `dlopen`s it, which is exactly why `CPython` is a struct of
+# loaded function pointers rather than a header. But that struct exposes its
+# handle, and `ExternalFunction[name, type].load(lib.borrow())` is how the
+# stdlib populates every one of its own bindings — the same door opens the
+# ones it left out. Both are stable-ABI and *checked*: `PyBytes_AsString`
+# returns NULL + TypeError for a non-`bytes` (where the `PyBytes_AS_STRING`
+# macro would read the wrong offsets, and a macro is not a symbol anyway),
+# and `PyBytes_FromStringAndSize` documents NULL-with-size-0 as valid.
 
 comptime _PyBytes_AsString = ExternalFunction[
     "PyBytes_AsString",
     # char *PyBytes_AsString(PyObject *o)
     def(PyObjectPtr) thin abi("C") -> _CPointer[c_char, ImmutAnyOrigin],
 ]
-"""The one C-API function this file needs and `Python().cpython()` does not
-bind.
-
-`external_call` cannot reach it: libpython is **not on the link line**. Mojo
-`dlopen`s it, which is exactly why `CPython` is a struct of loaded function
-pointers rather than a header. But that struct exposes its handle, and
-`ExternalFunction[name, type].load(lib.borrow())` is how the stdlib populates
-every one of its own bindings — so the same door opens the ones it left out.
-
-`PyBytes_AsString` is stable-ABI and *checked*: it returns NULL and sets
-TypeError for a non-`bytes` argument, where the `PyBytes_AS_STRING` macro
-would read the wrong offsets. The macro is not a symbol anyway.
-
+"""The response body's exit: a direct read of the `bytes` buffer.
 Measured at **1.0 ns**, against 1,095 ns for the `ctypes` round trip through
 the shim that this replaced."""
+
+comptime _PyBytes_FromStringAndSize = ExternalFunction[
+    "PyBytes_FromStringAndSize",
+    # PyObject *PyBytes_FromStringAndSize(const char *v, Py_ssize_t len)
+    def(
+        _CPointer[c_char, ImmutAnyOrigin], Py_ssize_t
+    ) thin abi("C") -> PyObjectPtr,
+]
+"""The request body's entry: a real `bytes` built straight from the
+request's own buffer. Returns a new reference; the copy happens inside.
+Measured at **59 ns for 1 KB**, make and free."""
 
 
 struct PyBridge(Movable):
@@ -201,10 +186,9 @@ struct PyBridge(Movable):
     nothing here is shared between bridges. Construct once at startup, never
     per request.
 
-    A request with no body costs exactly one call into Python — the
-    `PyObject_CallObject` that runs `run(environ, 0)`. Everything else is C
-    API. A request with a body adds the zero-argument `buf_addr()` and the
-    byte copy.
+    Every request costs exactly one call into Python — the
+    `PyObject_CallObject` that runs `run(environ, body)`. Everything else,
+    both directions of both bodies included, is C API.
     """
 
     var _ns: PythonObject
@@ -212,11 +196,6 @@ struct PyBridge(Movable):
     var _run: PythonObject
     """The shim's `run`, resolved once. Called through `PyObject_CallObject`,
     never as a `PythonObject` call — see the module docstring."""
-    var _buf_cap: Int
-    """Current capacity of the shim's transfer bytearray. Mirrors the Python
-    side: the initial value matches the shim's `bytearray(65536)`, and both
-    sides move in lockstep through `grow()`."""
-
     var _base_keys: List[PythonObject]
     var _base_values: List[PythonObject]
     """The request-invariant environ entries, as parallel lists of finished
@@ -234,9 +213,10 @@ struct PyBridge(Movable):
     and four frees for nothing."""
 
     var _bytes_as_string: _PyBytes_AsString.type
-    """`PyBytes_AsString`, resolved once from the interpreter's own handle.
-    Loading is a `dlsym`; the call it returns is 1 ns, so it is resolved here
-    and never per request."""
+    var _bytes_from: _PyBytes_FromStringAndSize.type
+    """The two `PyBytes_*` calls, resolved once from the interpreter's own
+    handle. Loading is a `dlsym`; the calls it returns cost nanoseconds, so
+    they are resolved here and never per request."""
 
     var _scratch_name: List[UInt8]
     var _scratch_value: List[UInt8]
@@ -250,7 +230,6 @@ struct PyBridge(Movable):
         self._ns = Python.dict()
         builtins.exec(PythonObject(SHIM_SOURCE), self._ns)
         self._run = self._ns["run"]
-        self._buf_cap = _INITIAL_BUF_CAP
 
         self._base_keys = List[PythonObject]()
         self._base_values = List[PythonObject]()
@@ -262,6 +241,7 @@ struct PyBridge(Movable):
 
         ref cpy = Python().cpython()
         self._bytes_as_string = _PyBytes_AsString.load(cpy.lib.borrow())
+        self._bytes_from = _PyBytes_FromStringAndSize.load(cpy.lib.borrow())
 
         self._scratch_name = List[UInt8](capacity=64)
         self._scratch_value = List[UInt8](capacity=256)
@@ -269,7 +249,6 @@ struct PyBridge(Movable):
     def __init__(out self, *, deinit move: Self):
         self._ns = move._ns^
         self._run = move._run^
-        self._buf_cap = move._buf_cap
         self._base_keys = move._base_keys^
         self._base_values = move._base_values^
         self._k_method = move._k_method^
@@ -277,6 +256,7 @@ struct PyBridge(Movable):
         self._k_query = move._k_query^
         self._k_protocol = move._k_protocol^
         self._bytes_as_string = move._bytes_as_string
+        self._bytes_from = move._bytes_from
         self._scratch_name = move._scratch_name^
         self._scratch_value = move._scratch_value^
 
@@ -424,52 +404,38 @@ struct PyBridge(Movable):
         """
         ref cpy = Python().cpython()
         var environ = self.build_environ(req)
-        self._stage_body(Span(req.body_raw))
+
+        # The request body becomes a real `bytes`, built straight from the
+        # request's own buffer: one copy, inside PyBytes_FromStringAndSize.
+        # An empty body is fine down this same path -- CPython documents a
+        # NULL `v` (what an unallocated List's pointer is) with size 0 as
+        # valid, answering the empty-bytes singleton without reading `v`.
+        var body = self._bytes_from(
+            req.body_raw.unsafe_ptr()
+            .unsafe_bitcast[c_char]()
+            .as_imm()
+            .as_unsafe_any_origin(),
+            Py_ssize_t(len(req.body_raw)),
+        )
+        if not body:
+            raise cpy.get_error()
 
         # PyTuple_SetItem steals both values, so the tuple owns the environ
-        # from here and one Py_DecRef of the tuple frees the lot -- including
-        # on the raising path, which is why the DecRef comes before the check.
+        # and the body from here, and one Py_DecRef of the tuple frees the
+        # lot -- including on the raising path, which is why the DecRef comes
+        # before the check.
         var args = cpy.PyTuple_New(2)
         if not args:
+            cpy.Py_DecRef(body)
             raise cpy.get_error()
         _ = cpy.PyTuple_SetItem(args, 0, environ^.steal_data())
-        _ = cpy.PyTuple_SetItem(
-            args, 1, cpy.PyLong_FromSsize_t(len(req.body_raw))
-        )
+        _ = cpy.PyTuple_SetItem(args, 1, body)
 
         var result = cpy.PyObject_CallObject(self._run._obj_ptr, args)
         cpy.Py_DecRef(args)
         if not result:
             raise cpy.get_error()
         return PythonObject(from_owned=result)
-
-    def _stage_body(mut self, body: Span[Byte, _]) raises:
-        """Copy the request body into the shim's buffer, growing if needed.
-
-        A body-less request returns without calling into Python at all —
-        `run` passes the length separately, so there is nothing for an empty
-        body to say.
-        """
-        var n = len(body)
-        if n == 0:
-            return
-        var need = n + 8
-        if need > self._buf_cap:
-            # Tell the shim how much to allocate: the size goes through the
-            # first 8 bytes of the *old* buffer, so even this crossing needs
-            # no Python-object argument.
-            var old_addr = self._ns["buf_addr"]()
-            var old_ptr = old_addr.unsafe_get_as_pointer[DType.uint8]()
-            var size = need
-            for i in range(8):
-                old_ptr[unsafe_offset=i] = UInt8(size & 0xFF)
-                size >>= 8
-            _ = self._ns["grow"]()
-            self._buf_cap = need
-        var addr = self._ns["buf_addr"]()
-        var ptr = addr.unsafe_get_as_pointer[DType.uint8]()
-        for i in range(n):
-            ptr[unsafe_offset=i + 8] = body[i]
 
     def body_bytes(self, body: PythonObject) raises -> List[UInt8]:
         """Copy the response body into a Mojo list, binary-safe.
@@ -493,8 +459,12 @@ struct PyBridge(Movable):
         """
         ref cpy = Python().cpython()
         var n = Int(cpy.PyObject_Length(body._obj_ptr))
-        if n <= 0:
-            # PyObject_Length answers -1 on error, which is not a body.
+        if n < 0:
+            # -1 means an exception is already set. Returning "empty body"
+            # here would swallow it AND leave it pending, poisoning whatever
+            # C-API call runs next; get_error converts and clears it.
+            raise cpy.get_error()
+        if n == 0:
             return List[UInt8]()
         var maybe = self._bytes_as_string(body._obj_ptr)
         if not maybe:
@@ -513,11 +483,6 @@ struct PyBridge(Movable):
     # `scripts/bench_bridge_parts.mojo` uses these to split the per-request
     # cost into its parts. They are the same operations `run` performs,
     # exposed individually; nothing in the serving path calls them.
-
-    def probe_buf_addr(self) raises:
-        """One zero-argument call into Python, and nothing else."""
-        var addr = self._ns["buf_addr"]()
-        _ = addr
 
     def probe_build_environ(mut self, req: HTTPRequest) raises:
         """The C-API environ build alone, without running the application."""

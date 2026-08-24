@@ -520,6 +520,51 @@ part. The fix that followed from that measurement was then also wrong, and
 only checking whether the constraint was real rather than assumed found the
 better one.
 
+### The request body follows, and the blob design is fully retired
+
+Once `PyBytes_FromStringAndSize` was known to be reachable, the request body
+had no reason to keep crossing through the shim's bytearray: Mojo now builds
+a real `bytes` straight from the request's own buffer (one copy, inside the
+call) and hands it to the shim as the second stolen tuple slot next to the
+environ. `io.BytesIO(bytes)` **shares** the immutable buffer until first
+write — measured: `getsizeof` of a BytesIO built over 256 bytes is 289 — so
+`wsgi.input` costs no second copy where the old
+`io.BytesIO(memoryview(_buf)[8:8+n])` always copied. An app that *writes* to
+`wsgi.input` triggers CPython's unshare, checked explicitly.
+
+Gone with it: the 64 KB transfer bytearray, the `buf_addr()` address call,
+the grow protocol and its size-through-the-old-buffer handshake, and
+`ctypes` itself — the shim now imports nothing but `io`. Every request costs
+exactly one call into Python: the `PyObject_CallObject` that runs
+`run(environ, body)`.
+
+Same instrument, 1 KB POST alongside the usual GET, two runs each:
+
+| part | before | after |
+|------|-------:|------:|
+| `run()` GET, no body | 2.47 µs | 2.37 / 2.46 µs |
+| `run()` POST, 1 KB body | 4.04 / 4.08 µs | **2.46 / 2.52 µs** |
+| derived: 1 KB body staging | 1.57 / 1.61 µs | **0.086 / 0.063 µs** |
+
+**Staging a 1 KB body went from 1.6 µs to 0.07 µs — ~23x** — and a POST now
+costs what a GET costs. End to end, one worker, `apps/wsgi_bare`'s
+`/input/read` (which `read()`s the whole body and answers `len= sum=`, so a
+truncated or corrupted body changes the response), 1 KB POST over keep-alive,
+`wrk -t2 -c16 -d10s`:
+
+| | rps | p50 | p99 |
+|---|---:|---:|---:|
+| before | 42,308 · 41,942 | 344 µs | 749 µs |
+| after | **47,516 · 47,284** | **303 µs** | 675 µs |
+| after, again | 47,294 · 47,137 | 303 µs | — |
+
+**+12.4% on POSTs, GETs unchanged** (48.6k · 48.9k, the same as before this
+change). Byte-exactness is pinned at eleven sizes straddling the old 64 KB
+grow threshold, in JIT and in a built binary, plus alternating sizes on one
+bridge — the shape that would catch a stale shared buffer. `smoke-django`'s
+RSS guard still reports **0 KB over 10k requests**, which is what says the
+stolen-reference accounting is right.
+
 ## A slow view strands the connections pinned behind it
 
 This is the mixed-workload measurement the `wrk` section named as Stage B's

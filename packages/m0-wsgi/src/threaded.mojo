@@ -4,9 +4,10 @@
 process instead of N forked workers — on free-threaded CPython only. Each
 thread runs its own `run_event_loop` with its own handler, and therefore its
 own `WSGIApp`, `PyBridge` and shim namespace: the bridge's per-process
-singletons (`_buf`, `_body`, `_buf_cap`) become per-thread without changing
-a line of the bridge, and the shared-dict `_ns["handle"]` lookup the thread
-probe measured at 0.7x never happens across threads. The event loop is
+singleton (the shim's `_body`, which keeps the last response alive while
+Mojo reads it) becomes per-thread without changing a line of the bridge,
+and the shared-dict namespace lookups the thread probe measured at 0.7x
+never happen across threads. The event loop is
 untouched: every per-slot structure is already a local of `run_event_loop`,
 so a second thread calling it gets a second, disjoint loop for free.
 

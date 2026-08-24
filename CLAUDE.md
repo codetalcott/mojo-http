@@ -36,8 +36,10 @@ Mojo 1.0 interop imposes and that the code depends on:
   line**, which is precisely why `CPython` is a struct of `dlopen`'d function
   pointers rather than a header. The way in is the stdlib's own mechanism —
   `ExternalFunction[name, type].load(cpy.lib.borrow())`, the same call it
-  uses to populate its bindings. `bridge.mojo`'s `_PyBytes_AsString` is the
-  worked example; resolve once at construction, never per request.
+  uses to populate its bindings. `bridge.mojo`'s `_PyBytes_AsString` and
+  `_PyBytes_FromStringAndSize` are the worked examples — both request and
+  response bodies cross that way; resolve once at construction, never per
+  request.
 
   Prefer a bound function when one exists, and prefer a *checked* C function
   to a macro: `PyBytes_AsString` returns NULL on a non-`bytes` where

@@ -69,9 +69,12 @@ def main() raises:
         print("probe: FAIL(introspection): " + String(e))
         raise Error("interpreter is up but introspection failed")
 
-    # Stage 3: the raw-address crossing every request depends on. Mojo takes
-    # the persistent bytearray's address from a zero-argument call and writes
-    # through the pointer; Python must read those exact bytes back.
+    # Stage 3: the raw-address crossing. The serving path no longer uses it
+    # (both bodies go through PyBytes_* now), but the realtime publish path
+    # still does — m0pub.py hands SharedAtomics' page address to ctypes — and
+    # it is the sharpest probe of Python↔Mojo pointer interop under a new
+    # interpreter: Mojo takes a bytearray's address from a zero-argument call
+    # and writes through the pointer; Python must read those exact bytes back.
     try:
         var addr = ns["buf_addr"]()
         var ptr = addr.unsafe_get_as_pointer[DType.uint8]()
