@@ -499,6 +499,65 @@ on `m0serve` with zero configuration.**
 The M0-Hold/GRIP path is untouched by all three phases and remains the
 recommended realtime surface for synchronous WSGI codebases.
 
+## 9. Mounts (2026-08): several applications, one process
+
+The gateway answers "*which* protocol is this app?" The premise that
+started it was messier: a codebase that is partly sync and partly async,
+where the developer should not have to choose. Detection alone does not
+settle that — it tells you which single server to run.
+
+`m0serve --mount PREFIX=SPEC` hosts several applications in one process,
+routed by longest prefix before either sees the request. Each mount
+detects its own protocol (discovery included, so `--mount /=djangoproj`
+finds `djangoproj.wsgi` exactly as a positional spec would) and gets its
+own bridge — which costs nothing to arrange, because `PyBridge` already
+`exec`s the shim into a **fresh namespace dict** per instance, so N apps
+are N isolated shim states rather than N collisions.
+
+**The prefix is the whole correctness story, and the two protocols
+disagree about it.** WSGI wants `SCRIPT_NAME = prefix` with `PATH_INFO`
+trimmed to the remainder; ASGI wants `root_path = prefix` with `path`
+left **whole** — Django's `ASGIHandler` strips the prefix itself and hands
+`request.path` the untrimmed value. Get it backwards and every direct
+request still works while every *generated* URL is wrong, which is
+invisible until someone clicks something. `PyBridge.set_base` is
+therefore the one place either protocol learns the prefix, and
+`smoke-hybrid` compares Django's `reverse()`, Flask's `url_for()` and both
+frameworks' `request.path` byte for byte (verified load-bearing: with the
+`PATH_INFO` trim disabled, the Flask mount stops routing at all).
+
+A path no mount claims is a **404 answered in Mojo**, never entering
+Python. Prefixes match on segment boundaries, so `/app` serves `/app` and
+`/app/x` but never `/application`, and the root mount is the empty prefix
+— which needs no special case, since every target starts with `/` and any
+deeper mount outranks it.
+
+**What is refused, and why it is refused rather than guessed:**
+
+- **Mixed WSGI and ASGI mounts.** Routing them is done; giving each its
+  native execution mode is the next stage. Running an ASGI app through
+  the buffered bridge beside a WSGI one would quietly cost it the
+  streaming §8 just gave it.
+- **`--mount` with `--realtime`.** M0-Hold subscribes a connection to
+  registries the loop's handler owns, and an inbound WebSocket message is
+  delivered back into ONE application's urlconf. Which mount should
+  receive it has no defensible answer.
+- **The asyncio executor, for now.** It is one loop owning one
+  application's bridge; N ASGI mounts would be N executor threads fed by
+  a submit channel that cannot say which of them a job is for. Per-mount
+  submit channels are the mechanism, and they are stage 2 — one
+  `ProvisionPool` per loop stays (a slot indexes that loop's provisions),
+  and only the submit side becomes per-mount.
+
+**Why this is the hybrid advantage rather than a convenience.** uvicorn
+hosts one callable; daphne hosts one; Granian hosts one. Mixing today
+means two processes behind a reverse proxy, or composing in Python
+(Starlette `Mount` + `WSGIMiddleware`, which drops the sync app onto the
+event loop's threadpool and inherits every limit that implies). Stage 2
+— each mount in its own native mode, sharing one listener, one set of
+workers and one graceful shutdown — is the thing no other server in this
+space can do, and it is what pays for the complexity §8 spent.
+
 ## Sources
 
 - PEP 703 (free-threading), PEP 779 (supported status):

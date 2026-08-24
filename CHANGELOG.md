@@ -5,6 +5,38 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
 versions may break the API**.
 
+## [Unreleased]
+
+### Added
+
+- **`--mount PREFIX=SPEC`: several applications in one process.** A
+  `m0serve` process can now host more than one application, routed by
+  longest prefix before either sees the request — `--mount /=djangoproj
+  --mount /portal=portal.wsgi:app` serves a Django project and a Flask app
+  from one listener, one set of workers and one graceful shutdown. Each
+  mount detects its own protocol (discovery included) and gets its own
+  bridge and shim namespace; a path no mount claims is a 404 answered in
+  Mojo, never entering Python; prefixes match on segment boundaries, so
+  `/app` never swallows `/application`.
+
+  The prefix reaches both protocols through one seam, because they
+  disagree about what it means: WSGI gets `SCRIPT_NAME` with `PATH_INFO`
+  trimmed to the remainder, ASGI gets `root_path` with `path` left whole
+  (Django's `ASGIHandler` strips it itself). Getting that backwards leaves
+  every direct request working while every generated URL breaks, so
+  `smoke-hybrid` compares Django's `reverse()`, Flask's `url_for()` and
+  both frameworks' `request.path` byte for byte. New row:
+  `apps/hybrid_mix`, deliberately two frameworks rather than two Django
+  projects — those would share `django.conf.settings` and the first import
+  would win, which would make the isolation claim a lie.
+
+  Refused rather than guessed, each with a message saying why: mixed
+  WSGI/ASGI mounts (routing them is done; giving each its native execution
+  mode is the next stage), `--mount` with `--realtime` (an inbound
+  WebSocket message has no defensible destination among several urlconfs),
+  and a mounted server taking the asyncio executor (one submit channel
+  cannot say which mount a job is for). See docs/WSGI_VS_ASGI.md §9.
+
 ## [0.9.0] — 2026-08-24
 
 ### Added

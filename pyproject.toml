@@ -1883,11 +1883,121 @@ rm -f flask.log
 echo "smoke-flask OK"
 """
 
+# Two applications, one process, one listener: the mounted-server row.
+# Django at one prefix and Flask at another, deliberately two FRAMEWORKS --
+# two Django projects would share django.conf.settings and the first import
+# would win, which would make the isolation claim a lie. Skips where either
+# dependency is absent, like the Flask and FastHTML rows.
+[tool.poe.tasks.smoke-hybrid]
+help = "Serve two applications at different prefixes from one m0serve process"
+deps = ["build-serve"]
+shell = """
+python3 -c 'import django, flask' 2>/dev/null || { echo "django/flask not installed - skipping smoke-hybrid"; exit 0; }
+
+srv=bin/m0serve
+D="--app-dir apps/hybrid_mix"
+B=http://localhost:8099
+B2=http://localhost:8100
+
+cleanup() { kill $pid $pid2 2>/dev/null; }
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  for log in hybrid.log hybrid2.log; do
+    [ -f $log ] && { echo "=== $log ==="; cat $log; }
+  done
+  exit 1
+}
+
+# --- phase 1: a root mount beside a prefixed one -----------------------
+"$srv" --mount /=shop.wsgi --mount /portal=portal.wsgi:app $D --port 8099 \
+  > hybrid.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'hello from django' || fail 'the root mount did not serve Django'
+curl -s --max-time 5 $B/portal/ | grep -q 'hello from flask' \
+  || fail 'the /portal mount did not serve Flask'
+grep -q '/=shop.wsgi:application,/portal=portal.wsgi:app' hybrid.log \
+  || fail 'the banner did not name both mounts'
+
+# Both mounts report their own bridge's view of the prefix. The generated
+# URLs are the assertion that matters: a server that hands an app a prefix
+# it does not strip from PATH_INFO breaks every link while every direct
+# request still works, which is invisible until someone clicks something.
+root=$(curl -s --max-time 5 $B/where)
+echo "$root" | grep -q '"script_name": ""' || fail "root SCRIPT_NAME wrong: $root"
+echo "$root" | grep -q '"path_info": "/where"' || fail "root PATH_INFO wrong: $root"
+echo "$root" | grep -q '"reverse_where": "/where"' || fail "root reverse() wrong: $root"
+
+portal=$(curl -s --max-time 5 $B/portal/where)
+echo "$portal" | grep -q '"script_name": "/portal"' || fail "portal SCRIPT_NAME wrong: $portal"
+echo "$portal" | grep -q '"path_info": "/where"' || fail "portal PATH_INFO wrong: $portal"
+echo "$portal" | grep -q '"url_for_where": "/portal/where"' \
+  || fail "portal url_for() lost the prefix: $portal"
+echo "$portal" | grep -q '"base_url": "http://localhost:8099/portal/where"' \
+  || fail "portal base_url lost the prefix: $portal"
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
+
+# --- phase 2: no root mount, so unmatched paths are ours to answer ------
+"$srv" --mount /shop=shop.wsgi --mount /portal=portal.wsgi:app $D --port 8100 \
+  > hybrid2.log 2>&1 &
+pid2=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B2/shop \
+  | grep -q 'hello from django' || fail '/shop did not serve Django'
+
+# Answered in Mojo, never entering Python.
+curl -s --max-time 5 $B2/ | grep -q 'no application mounted' \
+  || fail 'an unmounted path was not answered by the server itself'
+code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' $B2/)
+[ "$code" = "404" ] || fail "an unmounted path answered $code, expected 404"
+
+# The near-miss: /shopping must NOT be swallowed by the /shop mount.
+curl -s --max-time 5 $B2/shopping | grep -q 'no application mounted' \
+  || fail '/shopping was swallowed by the /shop mount'
+
+shop=$(curl -s --max-time 5 $B2/shop/where)
+echo "$shop" | grep -q '"script_name": "/shop"' || fail "shop SCRIPT_NAME wrong: $shop"
+echo "$shop" | grep -q '"reverse_where": "/shop/where"' \
+  || fail "shop reverse() lost the prefix: $shop"
+echo "$shop" | grep -q '"request_path": "/shop/where"' \
+  || fail "shop request.path lost the prefix: $shop"
+
+# PEP 3333: PATH_INFO is empty when the target names the mount point
+# exactly, and werkzeug answers that with its redirect to the trailing
+# slash -- which it can only build from SCRIPT_NAME.
+code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' $B2/portal)
+[ "$code" = "308" ] || fail "the exact mount point answered $code, expected 308"
+
+kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
+
+# --- phase 3: the refusals --------------------------------------------
+out=$("$srv" --mount /a=shop.wsgi --mount /b=live.asgi $D --port 8101 2>&1); rc=$?
+[ $rc -ne 0 ] || fail 'a mixed WSGI/ASGI pair of mounts was accepted'
+echo "$out" | grep -q 'mixed WSGI and ASGI mounts' \
+  || fail "the mixed-mount refusal did not explain itself: $out"
+
+out=$("$srv" --mount /a=shop.wsgi --realtime $D --port 8101 2>&1); rc=$?
+[ $rc -ne 0 ] || fail '--mount with --realtime was accepted'
+echo "$out" | grep -q 'cannot be combined with --mount' \
+  || fail "the --realtime refusal did not explain itself: $out"
+
+out=$("$srv" --mount /a=shop.wsgi shop.wsgi $D --port 8101 2>&1); rc=$?
+[ $rc -eq 2 ] || fail "--mount beside a positional spec exited $rc, expected 2"
+
+out=$("$srv" --mount /a=shop.wsgi --mount /a/=portal.wsgi:app $D --port 8101 2>&1); rc=$?
+[ $rc -eq 2 ] || fail "a duplicate mount prefix exited $rc, expected 2"
+
+rm -f hybrid.log hybrid2.log
+echo "smoke-hybrid OK"
+"""
+
 # The flagship ASGI row: FastHTML is Starlette-based, served as `main:app`.
-# Ordinary pages work under the buffered bridge today; its SSE EventStream is
-# pinned to the watchdog's explanatory refusal until the streaming surface
-# lands. Skips cleanly where python-fasthtml is not installed, like the
-# Flask row.
+# Its whole surface runs zero-config through the executor -- pages, a live
+# SSE EventStream, and an `app.ws` WebSocket. Skips cleanly where
+# python-fasthtml is not installed, like the Flask row.
 [tool.poe.tasks.smoke-fasthtml]
 help = "Serve a FastHTML app through the ASGI bridge (skips if fasthtml is absent)"
 deps = ["build-serve"]
