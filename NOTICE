@@ -7,6 +7,41 @@ This project's own source is licensed under the MIT License; see LICENSE.
 
 --------------------------------------------------------------------------------
 
+Mojo toolchain and runtime (NOT redistributed)
+    Upstream    https://github.com/modular/modular
+    Copyright   Modular Inc
+
+    This project is COMPILED BY Mojo and links its runtime, but ships no
+    Modular binary. Recorded here because the published `libm0core` release
+    artifacts depend on three Modular runtime libraries at load time —
+    libKGENCompilerRTShared, libMSupportGlobals, libAsyncRTRuntimeGlobals —
+    which are NOT included in those releases and must come from the
+    consumer's own Mojo installation. See docs/FFI_DISTRIBUTION.md.
+
+    Licensing, as of 2026-08-24, is unresolved in a way that matters if that
+    ever changes:
+
+      - Mojo's compiler and tooling were open sourced on 2026-08-18 under
+        Apache License 2.0 with LLVM Exceptions, and modular/modular's root
+        LICENSE states exactly that with no carve-out for the runtime. The
+        runtime sources (KGEN/, AsyncRT/, Support/lib/) are in that repo.
+      - The wheel that actually ships those prebuilt binaries,
+        mojo_compiler 1.0.0, declares
+        `License: LicenseRef-MAX-Platform-Software-License` — Modular's
+        proprietary MAX Platform license.
+
+    Sources Apache-2.0, binaries-as-distributed proprietary. Probably stale
+    wheel metadata (Mojo 1.0.0 shipped the same day as the relicensing), but
+    that is a guess, and it is why no Modular binary is redistributed here.
+    Resolve it before adding one.
+
+    The LLVM Exception is not the answer to that question. It covers portions
+    of the Software embedded into Object form by compiling one's own source —
+    which describes libm0core.dylib itself, and is not in doubt — not the
+    redistribution of runtime libraries as separate files.
+
+--------------------------------------------------------------------------------
+
 lightbug_http
     Path        packages/m0-http/lightbug_http/
     Upstream    https://github.com/Lightbug-HQ/lightbug_http

@@ -81,6 +81,15 @@ Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import p
 
 `m0-core`'s hash functions are also exported over a C ABI: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS) for Bun's `dlopen`, Node's N-API, or Python's `ctypes` — `poe smoke-ffi` proves that path against public hash vectors in CI, and prebuilt Linux/macOS artifacts ship with each [GitHub release](https://github.com/codetalcott/mojo-http/releases).
 
+> **The prebuilt release artifacts are not yet self-contained.** They resolve
+> the Mojo runtime (`libKGENCompilerRTShared` and two others) through a search
+> path baked in at build time — which on a release asset is the CI runner's
+> own directory, so `dlopen` fails anywhere else. Build locally with
+> `poe build-ffi` and it works, because that path is then your own venv.
+> `poe check-ffi-portable` reports the problem, and
+> [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md) has the analysis, the
+> proven fix, and the one open question blocking it.
+
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · `Accept-Encoding` negotiation (codec-agnostic: it picks among the precompressed codings you can serve, with the RFC 9110 `identity`/`*`/q=0 rules, and tells you when the honest answer is 406) · `Accept-Language` negotiation (RFC 4647 matching — `de` finds your `de-CH`, `en-US` falls back to your `en` — preferring to serve *something* over a 406, as RFC 9110 advises) · weak ETags (wyhash) with `304 Not Modified` · URL-keyed response cache · static file serving with lexical traversal defense, extension content types, ETag/304, and single byte ranges (206/416) · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, UTF-8 validation of text (1007), protocol-error refusals, ping/pong heartbeats, clean close.
