@@ -659,13 +659,29 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 
 ## Known issues
 
+- **Linux aarch64 builds and passes, but nothing in CI does it.** Run by
+  hand in an arm64 container (colima, `python:3.13-slim`, Debian 13):
+  `build-all`, `build-serve` and `smoke-wheel` are all green, producing
+  `m0serve-0.10.0rc1-py3-none-manylinux_2_35_aarch64.whl` — including the
+  install-outside-the-tree pass and the removal sabotage. The remaining gap
+  is a CI job, not a question about the platform; free `ubuntu-24.04-arm`
+  runners exist for this public repo. Deliberately not in the first quiet
+  0.x, because an artifact whose only proof is one developer's laptop is
+  exactly what this effort exists to stop shipping.
+- **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
+  out for linking, so a minimal image (`python:*-slim` carries no compiler)
+  fails with `unable to find suitable c compiler for linking`. CI never
+  noticed because GitHub runners ship gcc. `build-essential` — or any cc —
+  belongs beside `libsqlite3-dev` and `patchelf`.
 - **The Linux wheel misses RHEL 9 by one glibc minor.** Measured on CI, the
   binary requires glibc 2.35 and `scripts/wheel_tag.py` tags it
   `manylinux_2_35_x86_64` — which covers Ubuntu 22.04 and Debian 12 but not
   RHEL 9 and its rebuilds, which sit at 2.34. Worth noting the floor did NOT
   come from the build image (that runner is glibc 2.39): it is what the Mojo
   toolchain's own output requires, so building on an older image would not
-  move it. Reaching 2.34 means building inside a `manylinux_2_34` container.
+  move it — confirmed independently on aarch64, where a Debian 13 container
+  with glibc 2.41 also produced a `manylinux_2_35` wheel. Same floor, two
+  architectures, two very different host glibcs. Reaching 2.34 means building inside a `manylinux_2_34` container.
   Deferred: it adds a container build to the release path for reach the
   first quiet 0.x does not need, and `pip` declines the wheel cleanly rather
   than installing something that crashes.

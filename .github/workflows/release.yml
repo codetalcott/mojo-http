@@ -193,39 +193,47 @@ jobs:
           ! command -v mojo >/dev/null || { echo "::error::mojo on PATH"; exit 1; }
           test -z "${DYLD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:-}${MOJO_PYTHON_LIBRARY:-}" \
             || { echo "::error::loader/interpreter variables are set"; exit 1; }
-      # --network none is not decoration: it asserts the wheel needs nothing
-      # fetched, which is what makes `pip install m0serve` a one-line story.
-      - name: pip install and serve, on four CPython minors
+      # The app and the probe are written HERE, on the host, and ride in
+      # through the mount. The containers are `python:*-slim`, i.e. Debian
+      # slim, which ships neither wget nor curl -- so the health check is
+      # Python's own urllib, which is the one thing a python image is
+      # guaranteed to have. (--network none rules out apt-get anyway, and
+      # that is the point of it: it asserts the wheel needs nothing fetched,
+      # which is what makes `pip install m0serve` a one-line story.)
+      - name: Write the test application and its probe
         run: |
           set -euo pipefail
-          for img in python:3.10-slim-bookworm python:3.12-slim-bookworm \
-                     python:3.13-slim-bookworm python:3.14-slim-bookworm; do
+          printf 'def application(environ, start_response):\n    start_response("200 OK", [("Content-Type", "text/plain")])\n    return [b"ok from a clean container"]\n' > dist/wheelapp.py
+          printf 'import sys, time, urllib.request\nfor _ in range(60):\n    try:\n        body = urllib.request.urlopen("http://127.0.0.1:8123/", timeout=1).read()\n    except Exception:\n        time.sleep(0.5); continue\n    if b"ok from a clean container" in body:\n        print("  served OK"); sys.exit(0)\n    sys.exit("  wrong body: %%r" %% body)\nsys.exit("  never became healthy")\n' > dist/probe.py
+          python3 -c "import ast;ast.parse(open('dist/probe.py').read());ast.parse(open('dist/wheelapp.py').read())"
+      - name: pip install and serve, on several CPython minors
+        run: |
+          set -euo pipefail
+          for img in python:3.10-slim python:3.12-slim python:3.13-slim; do
             echo "== $img"
             docker run --rm --network none -v "$PWD/dist:/w:ro" "$img" sh -c '
               set -e
               pip install --quiet --no-index --no-deps /w/*.whl
               m0serve --version
-              cd /tmp
-              printf "def application(e, s):\n s(\"200 OK\", [(\"Content-Type\", \"text/plain\")])\n return [b\"ok from a clean container\"]\n" > app.py
-              m0serve app:application --port 8123 & pid=$!
-              for i in $(seq 1 40); do
-                if wget -qO- http://127.0.0.1:8123/ 2>/dev/null | grep -q "ok from a clean container"; then
-                  echo "  served OK"; kill $pid; exit 0
-                fi
-                sleep 0.5
-              done
-              echo "  never became healthy"; kill $pid 2>/dev/null; exit 1
+              cd /tmp && cp /w/wheelapp.py /w/probe.py .
+              m0serve wheelapp:application --port 8123 &
+              pid=$!
+              set +e; python probe.py; rc=$?; set -e
+              kill $pid 2>/dev/null || true
+              exit $rc
             '
           done
       # A permanent negative control. The floor must be enforced by pip
       # REFUSING the wheel, not by a runtime GLIBC_2.x-not-found crash. This
-      # needs no sabotage because it is one.
+      # needs no sabotage because it is one. manylinux_2_28 rather than the
+      # EOL manylinux2014: still maintained, certainly carries cp312, and
+      # 2.28 is below our floor either way.
       - name: An older glibc must be refused, not crashed
         run: |
           set -euo pipefail
-          if docker run --rm -v "$PWD/dist:/w:ro" quay.io/pypa/manylinux2014_x86_64 \
+          if docker run --rm -v "$PWD/dist:/w:ro" quay.io/pypa/manylinux_2_28_x86_64 \
                /opt/python/cp312-cp312/bin/pip install --no-index --no-deps /w/*.whl 2>&1 | tee out; then
-            echo "::error::a glibc 2.17 host accepted the wheel"; exit 1
+            echo "::error::a glibc 2.28 host accepted the wheel"; exit 1
           fi
           grep -qi "not a supported wheel\|no matching distribution" out \
             || { echo "::error::refused, but not for the platform-tag reason"; cat out; exit 1; }

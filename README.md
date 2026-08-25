@@ -31,7 +31,7 @@ time.
 |---|---|
 | macOS arm64 (Apple Silicon), macOS 13+ | supported |
 | Linux x86_64, glibc | supported |
-| Linux aarch64 | buildable, not shipped — the toolchain wheel exists, nothing builds or tests it yet |
+| Linux aarch64 | builds and passes the full wheel smoke (verified in an arm64 container), but is not built by CI and is not shipped |
 | macOS x86_64 (Intel) | **not possible**: Modular ships no Intel Mac toolchain |
 | musl / Alpine, Windows | not supported |
 
@@ -563,6 +563,7 @@ so it is not worth the ownership complexity yet.
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
 - Linux `x86_64` (`epoll`) and macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all, and Linux `aarch64` is buildable but untested. See the install table above.
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
+- Building on Linux needs three system packages: a C compiler (`mojo build` shells out for linking), `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves), and `libsqlite3-dev` for `m0-sqlite`. `build-essential libsqlite3-dev patchelf` covers it. None are needed on macOS.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - Pre-1.0: the API will break.
 - **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
