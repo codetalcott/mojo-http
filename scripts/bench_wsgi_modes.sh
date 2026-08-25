@@ -48,3 +48,8 @@ for round in 1 2; do
   done
 done
 echo "results in $OUT"
+
+# Dated, environment-stamped artifact — see scripts/bench_record.py for why
+# terminal transcripts are not a record.
+python3 "$(dirname "$0")/bench_record.py" wsgi_modes "$OUT" \
+  || echo "WARN: could not write the bench artifact (see above)"

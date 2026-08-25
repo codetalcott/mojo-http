@@ -27,6 +27,7 @@ import signal
 import statistics
 import subprocess
 import sys
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent))
 import threading
 import time
 
@@ -172,6 +173,23 @@ def main():
     print("hello-world throughput ratio (m0serve/uvicorn): %.2fx" % ratio)
     print("fast p99 under slow load: m0serve %.2fms vs uvicorn %.2fms"
           % (m0["p99"], uv["p99"]))
+
+    # The artifact is written whether the gate passes or fails — a failing
+    # run's environment stamp is exactly what a regression hunt needs.
+    try:
+        import bench_record
+        bench_record.write_artifact(
+            "asgi_executor",
+            [
+                {"name": name, "rps": r["rps"], "errors": r["errors"],
+                 "mixed_fast_p50_us": r["p50"] * 1000.0,
+                 "mixed_fast_p99_us": r["p99"] * 1000.0}
+                for name, r in (("m0serve", m0), ("uvicorn", uv))
+            ],
+            {"seconds": str(args.seconds), "threads": str(args.threads)},
+        )
+    except Exception as exc:  # noqa: BLE001 - recording must not mask the gate
+        print("WARN: could not write the bench artifact: %s" % exc)
 
     gate_rps = ratio >= 1.0
     gate_p99 = m0["p99"] <= uv["p99"] * 1.5
