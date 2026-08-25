@@ -65,6 +65,8 @@ from .cli import (
     default_blocking_threads,
     resolve_blocking_threads,
     use_asgi_executor,
+    wsgi_lanes,
+    asgi_mount_names,
     effective_cpus,
     discovery_specs,
     M0SERVE_VERSION,
