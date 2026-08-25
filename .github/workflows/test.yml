@@ -137,6 +137,13 @@ jobs:
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API
         run: uv run poe smoke-notes
+      # The zero-copy claim, which only a real transfer can make: a 64MB
+      # file served three times must arrive byte-exact while RSS stays
+      # flat. Both platforms, because sendfile(2)'s signature and its
+      # short-write reporting differ between them and a Darwin-only run
+      # would exercise half the branch.
+      - name: Smoke test zero-copy static file serving
+        run: uv run poe smoke-sendfile
       # Both ends of the wire in Mojo: the client dials, sends, and parses
       # against the notes API, including the error and refusal paths.
       - name: Smoke test the HTTP client
