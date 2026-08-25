@@ -409,6 +409,18 @@ gets a `: heartbeat` comment and a WS slot gets a protocol ping.
 
 Properties of the design, not defects to fix in passing:
 
+- **ASGI apps get cross-worker pub/sub as `scope["state"]["m0"]`.**
+  `publish(channel, payload)` is m0pub's bus protocol from Python
+  (one datagram per worker channel, shared-atomic ids, best-effort);
+  `subscribe(channel)` is an async iterator, executor mode only — the
+  loop forwards GRIP-named bus frames to each executor as tag-3 submit
+  datagrams and the shim fans them out to per-connection asyncio queues
+  (drop-oldest at 256). The loop grew a second bus fd (`peer_bus_fd`)
+  because the executor's chunk channel consumes `bus_read_fd`; same
+  codec, same drain, same `sse_peer_frame` entry. The bus + `SharedAtomics`
+  + env exports are created unconditionally pre-fork now — protocol
+  detection is post-fork, and a single worker's own subscribers ride its
+  own channel (there is deliberately no separate local-delivery path).
 - **SSE fan-out is per-process unless the app joins the `BroadcastBus`.**
   `M0_WORKERS>1` forks, and each worker gets its own subscriber registry; a
   broadcast reaches other workers' subscribers only when everything shared is

@@ -67,6 +67,69 @@ async def application(scope, receive, send):
             )
         await send({"type": "http.response.body", "body": block})
         return
+    if path == root + "/events" or path == "/events":
+        # Cross-worker pub/sub: state["m0"] is the server's BroadcastBus,
+        # handed to every ASGI app through lifespan state. Subscribing
+        # yields (event_id, payload) for every publish on ANY worker --
+        # the Channels channel-layer shape with no Redis, because the bus
+        # socketpairs already exist pre-fork.
+        import os
+
+        m0 = scope.get("state", {}).get("m0")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200 if m0 is not None else 503,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        if m0 is None:
+            await send({"type": "http.response.body", "body": b"no m0\n"})
+            return
+        # First event: which worker holds this stream, so the smoke can
+        # assert the streams SPAN workers before asserting delivery.
+        await send(
+            {
+                "type": "http.response.body",
+                "body": ("data: pid-%d\n\n" % os.getpid()).encode(),
+                "more_body": True,
+            }
+        )
+        async with m0.subscribe("feed") as sub:
+            async for event_id, payload in sub:
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": b"data: " + payload + b"\n\n",
+                        "more_body": True,
+                    }
+                )
+                if payload == b"stop":
+                    break
+        await send({"type": "http.response.body", "body": b""})
+        return
+    if path == root + "/publish" or path == "/publish":
+        import os
+        from urllib.parse import parse_qs
+
+        m0 = scope.get("state", {}).get("m0")
+        msg = parse_qs(scope.get("query_string", b"").decode()).get(
+            "msg", ["ping"]
+        )[0]
+        event_id = m0.publish("feed", msg.encode()) if m0 is not None else -2
+        body = ("published id=%d from pid-%d" % (event_id, os.getpid())).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+        return
     body = b"hello from feed on mojo-http"
     await send(
         {

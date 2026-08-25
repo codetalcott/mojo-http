@@ -190,6 +190,10 @@ def _asgi_init(run_lifespan=True):
         # Thread-local, so per-bridge loops never collide across serving
         # threads.
         asyncio.set_event_loop(_loop)
+    if 'm0' not in _lifespan_state:
+        # Before lifespan runs, so an application can take it during
+        # startup; inert (active=False) when no bus fds were exported.
+        _lifespan_state['m0'] = _M0Broadcast()
     if run_lifespan:
         _lifespan_startup()
 
@@ -433,6 +437,124 @@ _ASGI_CHUNK_SPLIT = 32 * 1024
 # Tags on the submit channel beyond the plain 8-byte job datagram.
 _TAG_DISCONNECT = 1
 _TAG_WS_MESSAGE = 2
+_TAG_BUS_FRAME = 3
+
+_m0_subs = {}
+'''channel -> set of asyncio.Queue: this loop's live subscriptions.
+
+Fed by _TAG_BUS_FRAME datagrams the loop's handler forwards off the
+BroadcastBus, so a publish on ANY worker reaches subscribers on every
+worker -- the Channels channel-layer shape, with no Redis, because the
+bus socketpairs already exist pre-fork for exactly this.'''
+
+
+class _M0Broadcast:
+    '''The object at `scope['state']['m0']`: cross-worker pub/sub.
+
+    `publish` is m0pub.py's protocol verbatim -- one datagram per worker
+    channel (the publisher's own included; there is no separate local
+    path to keep in sync), ids from the shared atomic where available,
+    best-effort on a full or dead channel. `subscribe` is executor-mode
+    only: frames arrive as forwarded submit-channel datagrams, and the
+    buffered bridge has no reader to forward them to.
+    '''
+
+    def __init__(self):
+        import os
+        self._fds = [
+            int(x) for x in os.environ.get(
+                'M0_BUS_WRITE_FDS', '').split(',') if x.strip()
+        ]
+        self._next_id = None
+        addr = os.environ.get('M0_SHARED_ID_ADDR', '')
+        lib = os.environ.get('M0_CORE_LIB', '')
+        if addr and lib:
+            try:
+                import ctypes
+                core = ctypes.CDLL(lib)
+                core.m0_shared_fetch_add.restype = ctypes.c_int64
+                core.m0_shared_fetch_add.argtypes = [
+                    ctypes.c_uint64, ctypes.c_int64,
+                ]
+                base = int(addr)
+                self._next_id = lambda: core.m0_shared_fetch_add(base, 1)
+            except Exception:
+                self._next_id = None
+
+    @property
+    def active(self):
+        return bool(self._fds)
+
+    def publish(self, channel, payload):
+        '''One frame to every worker's loop. Returns the event id (-1
+        when no shared counter is available -- delivery still happens,
+        duplicate suppression is what degrades).'''
+        import os
+        import struct
+        if isinstance(channel, str):
+            channel = channel.encode('utf-8')
+        if isinstance(payload, str):
+            payload = payload.encode('utf-8')
+        event_id = self._next_id() if self._next_id is not None else -1
+        frame = struct.pack('<qH', event_id, len(channel)) + channel + payload
+        if len(frame) > 65536:
+            raise ValueError('m0 publish frame exceeds 65536 bytes')
+        for fd in self._fds:
+            try:
+                os.write(fd, frame)
+            except (BlockingIOError, BrokenPipeError, OSError):
+                pass  # best-effort, exactly as between workers
+        return event_id
+
+    def subscribe(self, channel, max_queue=256):
+        '''An async iterator of (event_id, payload) for `channel`.
+
+        Per-connection, per-loop; drop-oldest at `max_queue` (a slow
+        consumer must not grow memory without bound -- the same
+        backpressure posture as the registry's outboxes).'''
+        import asyncio
+        if isinstance(channel, bytes):
+            channel = channel.decode('utf-8')
+        q = asyncio.Queue(maxsize=max_queue)
+        _m0_subs.setdefault(channel, set()).add(q)
+
+        class _Sub:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                return await q.get()
+
+            async def aclose(self):
+                subs = _m0_subs.get(channel)
+                if subs is not None:
+                    subs.discard(q)
+                    if not subs:
+                        _m0_subs.pop(channel, None)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                await self.aclose()
+
+        return _Sub()
+
+
+def _m0_dispatch(event_id, url, frame):
+    subs = _m0_subs.get(url)
+    if not subs:
+        return
+    for q in tuple(subs):
+        if q.full():
+            try:
+                q.get_nowait()  # drop-oldest
+            except Exception:
+                pass
+        try:
+            q.put_nowait((event_id, bytes(frame)))
+        except Exception:
+            pass
 
 # WebSocket state, keyed by slot, owned by this thread: the inbound
 # message queue behind receive(), and the accepted-set that decides
@@ -517,6 +639,13 @@ def asgi_executor_init(fd, ack_fd):
                 _exec_on_ws_message(
                     int.from_bytes(data[1:9], 'little', signed=True),
                     data[9], data[10:])
+            elif len(data) >= 11 and data[0] == _TAG_BUS_FRAME:
+                # [tag u8][event_id i64 LE][url_len u16 LE][url][frame...]
+                _ulen = int.from_bytes(data[9:11], 'little')
+                _m0_dispatch(
+                    int.from_bytes(data[1:9], 'little', signed=True),
+                    data[11:11 + _ulen].decode('utf-8', 'replace'),
+                    data[11 + _ulen:])
             else:
                 _loop.remove_reader(fd)
                 _exec_queue.put_nowait(('job', -1))

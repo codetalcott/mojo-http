@@ -571,6 +571,23 @@ struct WSGIHandler(ThreadHandler):
         # Every published GRIP frame arrives here — from peer workers or
         # threads AND from this one's own application, because `m0pub`
         # writes every channel, ours included. `url` is the channel name.
+        #
+        # Executor mode first: an ASGI application's subscribers are
+        # asyncio queues on the executor's loop (`state["m0"]`), not
+        # registry slots, so the frame is forwarded to every executor as
+        # a tagged submit datagram and the shim fans it out from there.
+        # The registries still get it below — under --mount a WSGI GRIP
+        # app cannot share the process with --realtime, so the notify is
+        # a no-op there, but keeping it unconditional keeps one shape.
+        if self.asgi_notify_fd >= 0:
+            if len(self.lane_notify_fds) > 0:
+                for lane in range(len(self.lane_notify_fds)):
+                    if self.lane_notify_fds[lane] >= 0:
+                        _send_bus_frame_tag(
+                            self.lane_notify_fds[lane], event_id, url, frame
+                        )
+            else:
+                _send_bus_frame_tag(self.asgi_notify_fd, event_id, url, frame)
         self.streams.notify_frame(url, event_id, frame)
         if self.sockets.has_subscribers(url):
             # The bus carries SSE frames; a socket needs an RFC 6455 frame.
@@ -729,6 +746,37 @@ def _parse_stream_lane(url_bytes: Span[Byte, _]) -> Int:
     """The lane of a reserved channel name; -1 when it carries none (the
     unmounted server's frames)."""
     return _parse_url_number(url_bytes, 1)
+
+
+def _send_bus_frame_tag(fd: Int, event_id: Int, url: String, frame: List[UInt8]):
+    """One `[tag=3 u8][event_id i64 LE][url_len u16 LE][url][frame]` datagram.
+
+    A BroadcastBus frame, re-framed for the submit channel so an ASGI
+    executor's loop receives what a registry slot would have: the shim's
+    `_m0_dispatch` fans it out to `state["m0"]` subscribers. Best-effort
+    with the same bounded retry as the WS tag — a dropped broadcast
+    matches the bus's own delivery posture.
+    """
+    var url_bytes = url.as_bytes()
+    var msg = List[UInt8](capacity=11 + len(url_bytes) + len(frame))
+    msg.append(UInt8(3))
+    var eid = UInt64(event_id)
+    for i in range(8):
+        msg.append(UInt8((eid >> UInt64(8 * i)) & 0xFF))
+    var ulen = UInt16(len(url_bytes))
+    msg.append(UInt8(ulen & 0xFF))
+    msg.append(UInt8((ulen >> UInt16(8)) & 0xFF))
+    for b in url_bytes:
+        msg.append(b)
+    for i in range(len(frame)):
+        msg.append(frame[i])
+    for _ in range(16):
+        var rc = external_call["send", Int](
+            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
+        )
+        if rc == len(msg):
+            return
+        _ = external_call["sched_yield", c_int]()
 
 
 def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):

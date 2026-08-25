@@ -283,10 +283,15 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
     mode. The bus does not care which: a `SOCK_DGRAM` socketpair delivers the
     same whether the peer draining it is another process or another thread.
     """
-    if not opts.realtime:
-        return BroadcastBus(0)
-
-    var bus = BroadcastBus(channels)
+    # The bus is created UNCONDITIONALLY now, --realtime or not, one
+    # worker or many: an ASGI application's pub/sub (`state["m0"]`) rides
+    # it, the decision must be made here -- pre-fork and pre-Python, while
+    # protocol detection can only happen after the fork -- and a
+    # single-worker app publishing to its own subscribers still needs its
+    # own loop's channel (there is no separate local-delivery path to keep
+    # in sync, by design). The cost when nothing uses it is one socketpair
+    # per worker plus three env vars.
+    var bus = BroadcastBus(channels if channels > 0 else 1)
     var fds_csv = String("")
     for i in range(len(bus.write_fds)):
         if i > 0:
@@ -516,6 +521,7 @@ def main() raises:
             executor_mode,
             asgi_lanes=opts.asgi_mounts.copy(),
             wsgi_lanes=_wsgi_lanes(opts),
+            peer_bus_fd=bus.read_fd(worker),
         )
         # The loop's own handler serves the inline fallback; in executor
         # mode its lifespan never ran, and shutdown just closes its loop.
@@ -549,6 +555,7 @@ def _serve_offloaded(
     executor: Bool,
     var asgi_lanes: List[Int] = List[Int](),
     var wsgi_lanes: List[Int] = List[Int](),
+    peer_bus_fd: Int = -1,
 ) raises:
     """One acceptor loop feeding either a handler pool or the executor.
 
@@ -577,8 +584,10 @@ def _serve_offloaded(
     pair (`enable_stream_ack`): credit belongs to the executor that owns
     the slot, and an ack routed anywhere else is a stream stalled forever.
 
-    No bus channel is passed, because `--realtime` is refused with both of
-    these modes and the bus exists only for `--realtime`.
+    `peer_bus_fd` is this worker's BroadcastBus channel (M0_WORKERS>1),
+    registered beside the chunk channel: GRIP-named frames on it are
+    forwarded to the executors for `state["m0"]` subscribers. `--realtime`
+    itself is still refused with both of these modes.
     """
     var pool = OffloadPool(config.max_connections)
     var mounted = len(opts.mount_prefixes) > 0
@@ -624,6 +633,7 @@ def _serve_offloaded(
         run_event_loop(
             listener.socket.fd, handler, backend, config, opts.address(), True,
             shutdown_fd, stream_bus_fd, pool.addr(),
+            peer_bus_fd=peer_bus_fd,
         )
     else:
         from lightbug_http.c.epoll_backend import EpollBackend
@@ -631,6 +641,7 @@ def _serve_offloaded(
         run_event_loop(
             listener.socket.fd, handler, backend, config, opts.address(), True,
             shutdown_fd, stream_bus_fd, pool.addr(),
+            peer_bus_fd=peer_bus_fd,
         )
 
     # Detached across it, for the reason the pool body details: a thread

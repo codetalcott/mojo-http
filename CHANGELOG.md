@@ -32,6 +32,26 @@ versions may break the API**.
   signed-cookie session counter surviving three round trips; SIGTERM.
   `smoke-wsgi` gains the environ-side `REMOTE_ADDR` assertion.
 
+- **Cross-worker fan-out for ASGI applications: `state["m0"]`.** Every
+  ASGI app now finds a pub/sub object in its lifespan state — the
+  Channels channel-layer shape with no Redis, riding the `BroadcastBus`
+  that already existed for GRIP. `m0.publish(channel, payload)` writes
+  one datagram per worker channel (m0pub's exact protocol, shared-atomic
+  event ids included, best-effort on a full or dead channel);
+  `m0.subscribe(channel)` is an async iterator fed by frames the loop's
+  handler forwards to each executor as tagged submit datagrams. The bus
+  fd conflict that blocked this — the executor consumes `bus_read_fd`
+  for its ASGI chunk channel — is answered by a second registered fd on
+  the loop (`peer_bus_fd`), same codec, same drain, same handler entry.
+  The bus (plus `SharedAtomics` ids and env exports) is now created
+  unconditionally pre-fork: an ASGI app cannot be detected until after
+  the fork, and a single worker publishing to its own subscribers rides
+  its own channel — there is no separate local-delivery path to keep in
+  sync. `poe smoke-asgi-fanout` pins the spread (6 streams over 2
+  workers), delivery of one publish to every stream on both workers,
+  distinct cross-worker ids, supervisor SIGTERM with a live subscriber,
+  and the single-worker case.
+
 - **An ASGI server validator — the `wsgiref.validate` that never got
   written.** WSGI has a stdlib conformance checker and this repo runs it;
   ASGI has nothing standard (the `asgiref` testing helper plays the

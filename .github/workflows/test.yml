@@ -202,6 +202,12 @@ jobs:
       # address-less when the server sends client: None, silently.
       - name: Serve a Django ASGI project through the executor
         run: uv run poe smoke-django-asgi
+      # Cross-worker pub/sub for ASGI apps: state["m0"] over the
+      # BroadcastBus -- one publish reaching subscribers on every worker,
+      # no Redis. Spread, delivery, distinct shared-atomic ids, SIGTERM
+      # with a live stream, and the single-worker degenerate case.
+      - name: ASGI cross-worker fan-out over the BroadcastBus
+        run: uv run poe smoke-asgi-fanout
       # The CLI as a user meets it: --help/--version, usage (2) and startup
       # (1) exit codes — including a supervisor that gives up — a typed flag
       # beating the environment, a static mount, --max-body, --metrics.
