@@ -89,6 +89,10 @@ parity() {
   rm -rf "$tmp"
 }
 
+if [ ! -x .venv/bin/granian ]; then
+  echo "NOTE: granian rows will be skipped - install the pinned comparator with: uv sync --group bench" | tee -a "$OUT"
+fi
+
 drain_ports
 parity
 
