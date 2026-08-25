@@ -8,6 +8,20 @@ library is absent, in which case both are -1 and the id assertion is
 skipped rather than failed (delivery is the contract; suppression is the
 upgrade -- m0pub's own degradation posture).
 
+**Spread is a precondition, not the contract, and it is a race.** Nothing
+makes the kernel hand six near-simultaneous connections to both workers;
+with a shared listener the accept race can legitimately put all six on
+one, and then there is no cross-worker delivery left to verify. Measured
+on an idle laptop that happens roughly 5-8% of the time, on unmodified
+main as readily as anywhere else, which on CI reads as a mystery failure
+in whatever PR drew the short straw.
+
+So the two outcomes are separated. A stream that misses the broadcast is
+a REAL failure and exits immediately -- retrying would only hide it.
+Streams that failed to spread are a failed setup: the attempt is thrown
+away and retried, and only a run that cannot achieve spread in
+`FANOUT_ATTEMPTS` tries fails, because that is no longer luck.
+
 Exits 1 with the evidence on failure, so the smoke can just run it.
 """
 
@@ -19,10 +33,10 @@ import urllib.request
 
 BASE = "http://127.0.0.1:" + os.environ.get("M0_PORT", "8150")
 WANT_WORKERS = int(os.environ.get("FANOUT_WORKERS", "2"))
-streams = {}
+ATTEMPTS = int(os.environ.get("FANOUT_ATTEMPTS", "4"))
 
 
-def read_stream(i):
+def read_stream(streams, i):
     got = []
     try:
         with urllib.request.urlopen(BASE + "/events", timeout=25) as r:
@@ -39,10 +53,12 @@ def read_stream(i):
     streams[i] = got
 
 
-def main():
-    count = 6 if WANT_WORKERS > 1 else 2
+def attempt(count):
+    """One full round: open the streams, publish twice, collect."""
+    streams = {}
     threads = [
-        threading.Thread(target=read_stream, args=(i,)) for i in range(count)
+        threading.Thread(target=read_stream, args=(streams, i))
+        for i in range(count)
     ]
     for t in threads:
         t.start()
@@ -67,17 +83,44 @@ def main():
             delivered += 1
         else:
             print("stream %d incomplete: %r" % (i, got))
+    return delivered, pids, first, second
 
-    print(
-        "fanout: %d/%d streams delivered across %d worker(s); %s | %s"
-        % (delivered, count, len(pids), first, second)
-    )
-    if delivered != count:
-        print("FAIL: a stream missed the broadcast")
+
+def main():
+    count = 6 if WANT_WORKERS > 1 else 2
+    for attempt_no in range(1, ATTEMPTS + 1):
+        delivered, pids, first, second = attempt(count)
+        print(
+            "fanout: %d/%d streams delivered across %d worker(s); %s | %s"
+            % (delivered, count, len(pids), first, second)
+        )
+
+        # A missed broadcast is the real failure this probe exists to
+        # catch. Never retry it: a retry that passes would turn a genuine
+        # delivery bug into an intermittent one.
+        if delivered != count:
+            print("FAIL: a stream missed the broadcast")
+            sys.exit(1)
+
+        if len(pids) >= WANT_WORKERS:
+            break
+
+        # Spread is the accept race, not the product. Throw the attempt
+        # away and race again.
+        if attempt_no < ATTEMPTS:
+            print(
+                "  streams landed on %d worker(s), need %d - the accept race"
+                " went one way; retrying (%d/%d)"
+                % (len(pids), WANT_WORKERS, attempt_no, ATTEMPTS)
+            )
+            time.sleep(1.0)
+    else:
+        print(
+            "FAIL: streams never spanned %d workers in %d attempts"
+            % (WANT_WORKERS, ATTEMPTS)
+        )
         sys.exit(1)
-    if len(pids) < WANT_WORKERS:
-        print("FAIL: streams did not span %d workers" % WANT_WORKERS)
-        sys.exit(1)
+
     ids = []
     for text in (first, second):
         for part in text.split():
