@@ -317,9 +317,19 @@ jobs:
           else
             TAG="$GITHUB_REF_NAME"; TARGET="$GITHUB_SHA"
           fi
+          # A PEP 440 pre-release (rc/a/b) must be flagged as one, or GitHub
+          # promotes it to "Latest" above the current stable -- which is the
+          # exact opposite of what an rc is for. `gh release create` does not
+          # infer this from the tag name; v0.10.0rc1 shipped as Latest and had
+          # to be corrected by hand.
+          PRE=""
+          case "$TAG" in
+            *rc*|*a[0-9]*|*b[0-9]*|*alpha*|*beta*) PRE="--prerelease" ;;
+          esac
           gh release create "$TAG" \
             --target "$TARGET" \
             --title "$TAG" \
+            $PRE \
             --generate-notes \
             --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md) for the full release notes." \
             assets/*
