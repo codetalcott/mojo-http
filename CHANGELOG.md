@@ -128,6 +128,96 @@ versions may break the API**.
   one pill per executor on its own lane. `apps/hybrid_mix` gains
   `feed.asgi`, a second async mount beside FastHTML's.
 
+## [0.10.0rc1] — 2026-08-25
+
+First release published to PyPI. A release candidate on purpose: it claims
+the name and exercises the production upload path while staying invisible to
+`pip install m0serve`, which excludes pre-releases by default.
+
+### Added
+
+- **`pip install m0serve` — the server as an installable binary.** A
+  WSGI/ASGI server for Python applications, with no Mojo toolchain on the
+  target machine and nothing fetched at install time (the wheel declares no
+  dependencies). `m0serve myproject.wsgi:application` serves either protocol,
+  detected from the object.
+
+  **One wheel per platform covers every supported CPython** — 3.10 through
+  3.14 including free-threaded builds — because `m0serve` does not link
+  libpython; Mojo `dlopen`s the interpreter at run time, so there is no
+  CPython ABI in the archive to be compatible with and no CPython in it to
+  redistribute. Verified across all five, and by serving Django 5.2.17 on
+  CPython 3.11 from a wheel built on 3.13 with Django 6.1.
+
+  Built from `packaging/m0serve/`, a separate project holding the only
+  `[build-system]` in the repository: one in the root would make uv treat
+  the repo as installable, and that build needs `bin/m0serve`, which needs
+  the `.venv` uv is creating.
+
+- **The platform tag is measured, not declared** (`scripts/wheel_tag.py`).
+  It reads `LC_BUILD_VERSION` and versioned glibc symbols out of the staged
+  binaries and takes the strictest floor. Copying the toolchain's own
+  `macosx_13_0` tag would have shipped a wheel requiring macOS 26.
+
+- **`poe bundle-serve` and `poe check-serve-portable`**, mirroring the
+  `libm0core` pair, plus `stage-wheel`/`build-wheel`/`smoke-wheel`.
+
+- **Clean-consumer release jobs.** The wheel is installed and made to serve
+  in containers and on a runner that never built it — four CPython minors,
+  `--network none`, and a permanent negative control asserting an older
+  glibc is *refused* by pip rather than crashed at startup. Each job asserts
+  its own cleanliness first, and `check-docs` fails the build if one ever
+  acquires a checkout.
+
+### Fixed
+
+- **The portability checker could not see an executable, and the bundler was
+  blind the same way.** `otool -L` prints a *dylib's* own `LC_ID_DYLIB`
+  before its dependencies; an `MH_EXECUTE` has none, so dropping the first
+  entry discarded `bin/m0serve`'s only real dependency. The checker reported
+  `SELF-CONTAINED` for a binary that resolved the Mojo runtime through a
+  developer's `.venv`, and `bundle_ffi.py` would have copied zero runtime
+  libraries and called the bundle complete. The parse now lives once in
+  `scripts/binfmt.py`, keyed on the load command's presence, self-tested in
+  CI against both cases.
+
+- **`build-serve` had no post-link surgery at all**, so every `bin/m0serve`
+  ever built recorded a search path into the venv that produced it. It now
+  shares `build-ffi`'s, via `scripts/relocate.py`, and completes its bundle
+  in place — so `bin/` is the shipped shape rather than a development
+  arrangement that worked for a different reason.
+
+- **The macOS deployment target is pinned to 13.0.** `mojo build` honours
+  `MACOSX_DEPLOYMENT_TARGET`; without it the binary inherited the build
+  host's SDK, making the wheel's reach a property of whichever image GitHub
+  calls `macos-latest`.
+
+- **"The Linux artifact is statically linked" was true of one file only.**
+  Measured on `libm0core.so` and carried as a platform fact; the `m0serve`
+  executable links the three Mojo runtime `.so` files on Linux exactly as on
+  macOS. Nothing in the tooling decides by platform now, only by what the
+  file records. `patchelf` is a Linux build requirement in consequence, and
+  `nightly-canary.yml` — which builds `m0serve` — had no dependency step at
+  all.
+
+### Changed
+
+- **NOTICE describes artifacts, not just the source tree.** The wheel is the
+  first artifact to redistribute the lightbug_http fork in object form, and
+  MIT requires its notice to travel with copies — so
+  `licenses/LICENSE.lightbug_http.txt` and `licenses/NOTICE.m0serve.txt`
+  ship inside the wheel and the `m0serve` bundle. NOTICE gains a table of
+  which notice covers which artifact, and no longer implies the Linux builds
+  contain no Modular code.
+
+- **The README's platform claim is architecture-qualified**, because once
+  wheels exist `pip` enforces it: macOS Intel is not untested but
+  *impossible* (no toolchain wheel), Linux aarch64 is buildable and
+  unshipped, and the glibc floor excludes musl. The free-threading claim
+  moved from "3.13t+" to 3.14t, which is what is actually tested — 3.13t
+  systematically immortalizes objects, as `pyproject.toml` and
+  `docs/WSGI_VS_ASGI.md` already recorded.
+
 ## [0.9.0] — 2026-08-24
 
 ### Added
