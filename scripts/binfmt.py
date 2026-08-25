@@ -47,6 +47,23 @@ SYSTEM_PREFIXES = (
     "/usr/lib64/",
 )
 
+# ELF names its dependencies by bare soname (`libc.so.6`), not by path, so
+# the SYSTEM_PREFIXES rule above cannot classify them -- it would file every
+# one as "not resolvable" and call a perfectly ordinary Linux binary broken.
+# These are the sonames any glibc system supplies; anything else has to
+# travel with the artifact.
+SYSTEM_SONAMES = (
+    "libc.", "libm.", "libdl.", "libpthread.", "librt.", "libutil.",
+    "libgcc_s.", "libstdc++.", "ld-linux", "libresolv.", "libnsl.",
+    "libcrypt.", "libatomic.", "libanl.", "libthread_db.",
+)
+
+
+def is_system_soname(soname):
+    """Is this an ELF dependency the platform is expected to provide?"""
+    return soname.startswith(SYSTEM_SONAMES)
+
+
 # Mach-O header magics, as they appear on disk. Fat archives are deliberately
 # NOT here -- see `classify`.
 _MACHO_LE = (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe")
@@ -353,6 +370,20 @@ def _selftest():
             "executable's runtime dependency was dropped -- this is the exact "
             "bug binfmt.py exists to prevent"
         )
+
+    # ELF dependency classification. The Linux m0serve names the three Mojo
+    # runtime .so files alongside plain glibc, and confusing the two in
+    # either direction is a real failure: call libc ours and the bundle tries
+    # to ship it; call the runtime the platform's and the bundle omits what
+    # the binary cannot start without.
+    for soname in ("libc.so.6", "libm.so.6", "libpthread.so.0", "ld-linux-x86-64.so.2",
+                   "libgcc_s.so.1", "libdl.so.2"):
+        if not is_system_soname(soname):
+            failures.append(f"{soname} should be classified as a platform library")
+    for soname in ("libKGENCompilerRTShared.so", "libMSupportGlobals.so",
+                   "libAsyncRTRuntimeGlobals.so", "libm0core.so"):
+        if is_system_soname(soname):
+            failures.append(f"{soname} must NOT be classified as a platform library")
 
     check("minos LC_BUILD_VERSION", parse_min_os(_EXE_l), "26.0")
     check("minos LC_VERSION_MIN_MACOSX", parse_min_os(_OLD_l), "10.13")

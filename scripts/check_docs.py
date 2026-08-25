@@ -189,12 +189,57 @@ def check_wheel_platform_claims():
         )
 
 
+def check_consumer_jobs_stay_clean():
+    """The wheel consume jobs must not acquire a checkout or the toolchain.
+
+    Their entire value is that they run somewhere the wheel was NOT built.
+    That property is invisible when it breaks: someone adds
+    `actions/checkout` to get a test fixture, the job still passes, and the
+    proof quietly reverts to build-machine conditions with a green tick --
+    which is precisely how a broken libm0core shipped for seven releases.
+    So it is asserted here rather than trusted to review.
+
+    `wheel-inspect` is the deliberate exception: it needs scripts/ to run the
+    portability checker, and it never executes the binary.
+    """
+    path = REPO / ".github" / "workflows" / "release.yml"
+    if not path.exists():
+        return
+    text = path.read_text()
+    jobs = re.split(r"\n  (?=[a-z][a-z0-9-]*:\n)", text)
+    seen = []
+    for block in jobs:
+        name = re.match(r"\s*([a-z][a-z0-9-]*):", block)
+        if not name or not name.group(1).startswith("wheel-consume"):
+            continue
+        seen.append(name.group(1))
+        for forbidden, why in (
+            ("actions/checkout", "a repository checkout"),
+            ("astral-sh/setup-uv", "uv, which brings the Mojo toolchain"),
+            ("poe ", "a poe task, which only exists in the repo"),
+        ):
+            if forbidden in block:
+                fail(
+                    f"release.yml job {name.group(1)!r} uses {why} — that puts the "
+                    "wheel back on a machine that could have built it, and the "
+                    "job stops proving anything"
+                )
+        if "did not build the wheel" not in block:
+            fail(
+                f"release.yml job {name.group(1)!r} no longer asserts its own "
+                "cleanliness before testing the wheel"
+            )
+    if not seen:
+        fail("release.yml has no wheel-consume-* job: nothing installs the wheel off the build machine")
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
     check_bench_region()
     check_version_single_source()
     check_wheel_platform_claims()
+    check_consumer_jobs_stay_clean()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

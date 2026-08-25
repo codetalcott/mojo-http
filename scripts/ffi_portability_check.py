@@ -46,6 +46,7 @@ from binfmt import (
     InspectError,
     classify,
     inspect_elf,
+    is_system_soname,
     macho_info,
     min_os,
 )
@@ -135,6 +136,13 @@ def main() -> int:
     unresolved, missing_beside = [], []
     for d in deps:
         if d.startswith(SELF_RELATIVE) or d.startswith(SYSTEM_PREFIXES):
+            continue
+        # ELF names dependencies by bare soname, so the prefix rule above
+        # never matches one. Without this a Linux binary is "broken" for
+        # needing libc, which is not a finding. It went unnoticed because
+        # libm0core.so has no DT_NEEDED at all -- the first ELF artifact with
+        # real dependencies is bin/m0serve.
+        if fmt == "elf" and is_system_soname(d):
             continue
         if d.startswith("@rpath/") or not os.path.isabs(d):
             if resolves_locally(d):

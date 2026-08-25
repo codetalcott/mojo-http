@@ -24,7 +24,7 @@ import os
 import subprocess
 import sys
 
-from binfmt import InspectError, classify, inspect_elf, macho_info
+from binfmt import InspectError, classify, inspect_elf, is_system_soname, macho_info
 
 
 def sh(*cmd, check=True):
@@ -101,7 +101,7 @@ def relocate_elf(path, rpaths):
     runtime, and that is a hard failure.
     """
     _, deps, _ = inspect_elf(path)
-    needs_runpath = bool([d for d in deps if not _is_system_soname(d)])
+    needs_runpath = bool([d for d in deps if not is_system_soname(d)])
 
     if not shutil_which("patchelf"):
         if needs_runpath and rpaths:
@@ -121,17 +121,6 @@ def relocate_elf(path, rpaths):
         sh("patchelf", "--remove-rpath", path, check=False)
     return spelled
 
-
-# Sonames the platform supplies. Anything else has to travel with us.
-_SYSTEM_SONAMES = (
-    "libc.", "libm.", "libdl.", "libpthread.", "librt.", "libutil.",
-    "libgcc_s.", "libstdc++.", "ld-linux", "libresolv.", "libnsl.",
-    "libcrypt.", "libatomic.",
-)
-
-
-def _is_system_soname(soname):
-    return soname.startswith(_SYSTEM_SONAMES)
 
 
 def shutil_which(name):
