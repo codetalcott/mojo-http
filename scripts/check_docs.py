@@ -200,6 +200,53 @@ def check_wheel_platform_claims():
         )
 
 
+def check_target_cpu_pinned():
+    """Every task that emits a distributable binary must pin --target-cpu.
+
+    `mojo build` defaults it to the host CPU, so an unpinned build is
+    compiled for whatever machine produced it and dies with SIGILL on
+    anything older. The first real release run proved it: "Illegal
+    instruction (core dumped)" in a clean container, having passed on the
+    runner that built it.
+
+    This is checked here rather than left to review because the defect is
+    invisible from the build machine BY CONSTRUCTION -- every test that runs
+    where the binary was compiled passes. The clean-consumer jobs catch it
+    behaviourally; this catches it before a release run has to.
+    """
+    text = (REPO / "pyproject.toml").read_text()
+    for task in ("build-ffi", "build-serve"):
+        m = re.search(
+            r"^\[tool\.poe\.tasks\." + re.escape(task) + r"\]$(.*?)(?=^\[tool\.poe\.tasks\.)",
+            text,
+            re.M | re.S,
+        )
+        if not m:
+            fail(f"could not find the {task} task to check its target CPU")
+            continue
+        # The COMMAND, not the section: the comment above it explains what
+        # --target-cpu is for, so a substring search over the whole task
+        # passes even with the flag deleted. (Found by sabotaging it, which
+        # is the only reason this reads the way it does.)
+        body = m.group(1)
+        body = re.sub(r"\\\n\s*", " ", body)          # join continuations
+        commands = [
+            ln for ln in body.splitlines()
+            if ln.lstrip().startswith("mojo build")
+        ]
+        if not commands:
+            fail(f"poe {task} no longer contains a `mojo build` command to check")
+            continue
+        for cmd in commands:
+            if "--target-cpu" not in cmd:
+                fail(
+                    f"poe {task} invokes `mojo build` without --target-cpu, so it "
+                    "compiles for the build machine's own CPU. That binary "
+                    "crashes with SIGILL on an older one, and nothing running on "
+                    "the build machine can tell."
+                )
+
+
 def check_consumer_jobs_stay_clean():
     """The wheel consume jobs must not acquire a checkout or the toolchain.
 
@@ -250,6 +297,7 @@ def main():
     check_bench_region()
     check_version_single_source()
     check_wheel_platform_claims()
+    check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
     if failures:
         print("check-docs: FAIL")

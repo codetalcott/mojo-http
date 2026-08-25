@@ -134,6 +134,24 @@ default_item_type = "ref"
 help = "Build the m0serve CLI (bin/m0serve) — a uvicorn-shaped WSGI server"
 shell = """
 mkdir -p bin
+# `mojo build` defaults --target-cpu to the HOST CPU, so a binary is compiled
+# for whatever machine happened to build it and dies with SIGILL on anything
+# older. This is not theoretical: the first real release run crashed in a
+# clean container with "Illegal instruction (core dumped)" and
+# libKGENCompilerRTShared.so on the stack, and on this developer's machine
+# the effective target is `apple-m4` with +sme/+sme2 -- Scalable Matrix
+# Extension, which no M1/M2/M3 has.
+#
+# It is the rpath defect one level up: the artifact works exactly where it
+# was built, and no test that runs there can see it. So the baseline is
+# pinned to the OLDEST CPU each platform must support, and the clean-consumer
+# jobs in release.yml are what prove it.
+case "$(uname)-$(uname -m)" in
+  Darwin-arm64) tcpu=apple-m1 ;;      # oldest Apple Silicon
+  Darwin-*)     tcpu=x86-64-v2 ;;
+  *-aarch64)    tcpu=generic ;;
+  *)            tcpu=x86-64-v2 ;;     # SSE4.2/POPCNT; RHEL 9's own baseline
+esac
 # A Mojo binary otherwise inherits the BUILD HOST's SDK as its deployment
 # target -- built on macOS 26 it records `minos 26.0` and refuses to launch
 # on macOS 15, which would have made the wheel's floor a property of whichever
@@ -144,7 +162,8 @@ mkdir -p bin
 # run there. Modular's runtime dylibs are built for 11.0 and so satisfy it.
 # scripts/wheel_tag.py measures the result rather than trusting this.
 export MACOSX_DEPLOYMENT_TARGET=13.0
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
+mojo build --target-cpu "$tcpu" \
+  -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
   packages/m0-wsgi/m0serve.mojo -o bin/m0serve || exit 1
 
 # Same post-link surgery build-ffi does, and for the same reason: `mojo
@@ -175,6 +194,24 @@ help = "Emit the C-ABI shared library (packages/m0-core/libm0core.so|.dylib)"
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 lib="packages/m0-core/libm0core.$ext"
+# `mojo build` defaults --target-cpu to the HOST CPU, so a binary is compiled
+# for whatever machine happened to build it and dies with SIGILL on anything
+# older. This is not theoretical: the first real release run crashed in a
+# clean container with "Illegal instruction (core dumped)" and
+# libKGENCompilerRTShared.so on the stack, and on this developer's machine
+# the effective target is `apple-m4` with +sme/+sme2 -- Scalable Matrix
+# Extension, which no M1/M2/M3 has.
+#
+# It is the rpath defect one level up: the artifact works exactly where it
+# was built, and no test that runs there can see it. So the baseline is
+# pinned to the OLDEST CPU each platform must support, and the clean-consumer
+# jobs in release.yml are what prove it.
+case "$(uname)-$(uname -m)" in
+  Darwin-arm64) tcpu=apple-m1 ;;      # oldest Apple Silicon
+  Darwin-*)     tcpu=x86-64-v2 ;;
+  *-aarch64)    tcpu=generic ;;
+  *)            tcpu=x86-64-v2 ;;     # SSE4.2/POPCNT; RHEL 9's own baseline
+esac
 # A Mojo binary otherwise inherits the BUILD HOST's SDK as its deployment
 # target -- built on macOS 26 it records `minos 26.0` and refuses to launch
 # on macOS 15, which would have made the wheel's floor a property of whichever
@@ -185,7 +222,7 @@ lib="packages/m0-core/libm0core.$ext"
 # run there. Modular's runtime dylibs are built for 11.0 and so satisfy it.
 # scripts/wheel_tag.py measures the result rather than trusting this.
 export MACOSX_DEPLOYMENT_TARGET=13.0
-mojo build --emit shared-lib -I packages/m0-core \
+mojo build --emit shared-lib --target-cpu "$tcpu" -I packages/m0-core \
   packages/m0-core/ffi_exports.mojo -o "$lib" || exit 1
 
 # `mojo build` records the venv it was built in as a search path, and the
