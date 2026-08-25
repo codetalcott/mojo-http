@@ -27,18 +27,23 @@ CPython ABI in the wheel to be compatible with, and no CPython inside it to
 redistribute. It has no Python dependencies and fetches nothing at install
 time.
 
-| platform | wheel tag | status |
-|---|---|---|
-| macOS arm64 (Apple Silicon) | `macosx_13_0_arm64` | supported |
-| Linux x86_64, glibc ≥ 2.34 | `manylinux_2_34_x86_64` | supported |
-| Linux aarch64 | `manylinux_2_34_aarch64` | buildable, not shipped — the toolchain wheel exists, nothing builds or tests it yet |
-| macOS x86_64 (Intel) | — | **not possible**: Modular ships no Intel Mac toolchain |
-| musl / Alpine, Windows | — | not supported |
+| platform | status |
+|---|---|
+| macOS arm64 (Apple Silicon), macOS 13+ | supported |
+| Linux x86_64, glibc | supported |
+| Linux aarch64 | buildable, not shipped — the toolchain wheel exists, nothing builds or tests it yet |
+| macOS x86_64 (Intel) | **not possible**: Modular ships no Intel Mac toolchain |
+| musl / Alpine, Windows | not supported |
 
-Both floors are *measured from the built binary* rather than copied from the
-toolchain's own tag, and the wheel filename carries them. On an older system
-`pip` declines to install rather than installing something that crashes at
-startup. glibc ≥ 2.34 means Debian 12, Ubuntu 22.04, RHEL 9 and newer.
+**The exact floors live in the wheel filename**, because they are measured
+from the built binary rather than copied from the toolchain's own tag. macOS
+is pinned at 13.0. The glibc floor is whatever the build image requires — at
+present the wheel is built on Ubuntu 22.04, so it declares that image's
+glibc, and a distribution older than it is declined by `pip` rather than
+installed and crashed at startup. Reaching further back (RHEL 9 and its
+rebuilds sit at glibc 2.34) means building inside a `manylinux_2_34`
+container rather than relabelling the artifact; that is a known next step,
+not something the tag is allowed to claim in advance.
 
 To **develop against the Mojo packages**, you do need the toolchain:
 

@@ -659,6 +659,16 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 
 ## Known issues
 
+- **The Linux wheel's glibc floor is the build image's, not the toolchain's.**
+  The Mojo toolchain wheel is tagged `manylinux_2_34`, but a binary linked on
+  Ubuntu 22.04 requires that image's glibc through symbol versioning, and
+  `scripts/wheel_tag.py` measures and declares the real number. The practical
+  cost is RHEL 9 and its rebuilds, which sit at glibc 2.34: a wheel built on
+  a newer image excludes them, and `pip` declines it rather than crashing —
+  correct, but narrower than it needs to be. The fix is building inside a
+  `manylinux_2_34` container, not relabelling the artifact. Deferred because
+  it adds a container build to the release path for reach the first quiet 0.x
+  does not need.
 - **`--app-dir` is appended to `sys.path`, not prepended**, so an
   application module can be shadowed by an installed package of the same
   name — the opposite of gunicorn, uvicorn and `runserver`, all of which
