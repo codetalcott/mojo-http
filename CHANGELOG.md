@@ -130,9 +130,19 @@ versions may break the API**.
 
 ## [0.10.0rc1] — 2026-08-25
 
-First release published to PyPI. A release candidate on purpose: it claims
-the name and exercises the production upload path while staying invisible to
-`pip install m0serve`, which excludes pre-releases by default.
+First release published to PyPI, as a release candidate: it claims the name
+and exercises the production upload path — trusted publishing, the
+two-platform wheel set, the tag/version cross-check — before a stable number
+is spent on an untried path.
+
+One correction, because this entry originally claimed otherwise: **`pip
+install m0serve` does install it.** pip excludes pre-releases only when a
+stable version also exists, and there is none here, so the rc is the only
+candidate and pip takes it. The rc therefore buys rehearsal, not
+invisibility; quietness rests on nothing being announced. The upside is that
+the index-install path — pip choosing the right file from several platform
+wheels, from a real index, on a machine that never built them — is proven
+rather than deferred.
 
 ### Added
 

@@ -133,6 +133,12 @@ Only then tag for real. Upload the **identical files**, verified by sha256 —
 rebuilding between the rehearsal and the release means you tested a different
 artifact.
 
+**What an rc does and does not buy.** It rehearses the whole upload path on
+a filename you can afford to burn. It does **not** hide the package: pip
+excludes pre-releases only when a stable version also exists, so while `rcN`
+is the only version on the index, `pip install m0serve` installs it. Assume
+anything uploaded is installable by anyone who finds it.
+
 Publishing and announcing are separate acts. The first releases are
 deliberately quiet: the wheel exists, the README documents `pip install
 m0serve`, and nothing is posted anywhere until the remaining release gates in
