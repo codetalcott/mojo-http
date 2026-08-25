@@ -472,8 +472,26 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   **Several ASGI mounts landed too**: one executor per ASGI mount, a
   shared slot-addressed chunk channel, and per-lane drain-ack pairs
   routed by `slot_lane` — pinned by streaming 256 KB (four credit
-  windows) from two executors concurrently. **What is left:** per-mount
-  modes under `--threads`, which adds no lanes today.
+  windows) from two executors concurrently.
+
+  **Per-mount modes now hold under `--threads` as well.** They were
+  prefork-only because `_serve_one` added no lanes, and the mode was
+  decided pessimistically on top of that: `use_asgi_executor` answers
+  True if *any* mount is ASGI, so a mixed set put every mount — the sync
+  ones included — on one executor. `_serve_one` now mirrors
+  `_serve_offloaded`: a lane per mount, an executor per ASGI lane with
+  its own drain-ack pair, pool threads dealt round-robin over the WSGI
+  lanes, and pills per lane at shutdown. Two things came with it: the
+  loop's `peer_bus_fd` reaches the threaded path (the executor's chunk
+  channel had displaced its only bus fd, so `state["m0"]` could not have
+  reached a threaded executor), and `ThreadHandler` gained
+  `set_lane_notify` beside `set_asgi_notify` — the generic `_serve_one`
+  body can only call what the trait names. `wsgi_lanes` and
+  `asgi_mount_names` moved to `cli.mojo` so both execution modes deal the
+  same lanes from one implementation. `smoke-hybrid` gained a `--threads
+  2` phase asserting all of it (skipped off free-threaded CPython);
+  measured p99 4.3 ms on the async mount under four blocking sync views,
+  against a laneless build where it times out entirely.
 - Recorded executor fix paths, unchanged: a wrk-based bench, and N
   executors per pool under free-threading.
 - **Django ASGI parity is proven, not inferred.** `apps/django_asgi`
@@ -676,8 +694,12 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   NUL → 404, never 400 — a probe deserves no confirmation), verified
   against a real secret file planted outside the root and sabotage-checked.
   Symlinks inside the root are the filesystem owner's decision, documented.
-  No Range, no listings; every hit reads and hashes — compose with
-  `ResponseCache` if a profile ever asks. The notes example serves
+  No listings; every hit reads and hashes — compose with
+  `ResponseCache` if a profile ever asks. (Range served arrived later:
+  `parse_range`, 206 with `Content-Range`, 416 on unsatisfiable, and
+  `Accept-Ranges` on the 200; `If-Range` is deliberately never satisfied,
+  because the ETag is weak and RFC 9110 requires a strong comparison.)
+  The notes example serves
   `/static/` and `poe smoke-notes` asserts type, ETag, 304, and two
   traversal probes (`--path-as-is`, percent-encoded).
 
