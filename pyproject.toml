@@ -20,6 +20,14 @@ dev = [
     "poethepoet>=0.30",
     "python-fasthtml>=0.12",
 ]
+# The benchmark reference implementation. Pinned exactly, because every
+# number in docs/WSGI_PERFORMANCE.md that names Granian names 2.8.1, and a
+# drifted comparator silently invalidates them all. Its own group rather
+# than dev so CI and the ordinary venv never pay for it:
+#     uv sync --group bench
+bench = [
+    "granian==2.8.1",
+]
 
 # No [build-system]: this is a virtual project. uv manages the environment but
 # does not install the repo itself.
