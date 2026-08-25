@@ -164,6 +164,13 @@ struct ConnectionProvision(Movable):
     var encoding_buffer: Bytes
     """Pre-allocated buffer for response encoding; swapped into slot_response to avoid per-request allocation."""
 
+    var peer_host: String
+    var peer_port: Int
+    """The accepted peer, written once per connection at accept and stamped
+    onto every request this slot parses (keep-alive included). Feeds WSGI's
+    `REMOTE_ADDR` and ASGI's `scope["client"]`; empty/0 outside the
+    non-blocking loop."""
+
     def __init__(out self, config: ServerConfig):
         # Empty, not `capacity=socket_buffer_size`: see `ensure_buffers`.
         self.recv_buffer = Bytes()
@@ -180,6 +187,8 @@ struct ConnectionProvision(Movable):
         self.log_path = String()
         self.response_status = 0
         self.encoding_buffer = Bytes()
+        self.peer_host = String("")
+        self.peer_port = 0
 
     def ensure_buffers(mut self, size: Int):
         """Size this connection's buffers, once, the first time it is used.

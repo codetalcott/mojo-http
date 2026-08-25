@@ -101,6 +101,15 @@ async def application(scope, receive, send):
                 ms = int(pair[3:] or 0)
         await asyncio.sleep(ms / 1000.0)
         await _text(send, 200, b"slept %d" % ms)
+    elif path == "/validate/canary":
+        # The engagement canary, mirroring /pep3333/canary on the WSGI
+        # row: a message type the spec does not define. This server
+        # ignores unknown send types, so unvalidated this route is an
+        # ordinary 200 -- and under M0_ASGI_VALIDATE it is a 500, which
+        # is what proves the wrapper is actually on rather than skipped
+        # by a misspelled variable.
+        await send({"type": "http.response.bogus"})
+        await _text(send, 200, b"canary was not caught")
     elif path == "/lifespan":
         payload = json.dumps({
             "started": _LIFESPAN["started"],
@@ -195,3 +204,11 @@ async def _send_start(send, status, headers):
 async def _text(send, status, body):
     await _send_start(send, status, [(b"content-type", b"text/plain")])
     await send({"type": "http.response.body", "body": body})
+
+
+import os
+
+if os.environ.get("M0_ASGI_VALIDATE"):
+    from .validate import validator
+
+    application = validator(application)

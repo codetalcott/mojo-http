@@ -13,7 +13,7 @@ from lightbug_http.c.kqueue import (
 )
 from lightbug_http.broadcast import drain_bus_channel
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import accept, recv, send, close
+from lightbug_http.c.socket import accept_with_peer, recv, send, close
 from lightbug_http.c.socket_error import (
     AcceptEAGAINError, AcceptECONNABORTEDError, AcceptEINTRError,
     RecvEAGAINError, SendEAGAINError,
@@ -243,8 +243,13 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 var accept_budget = pending if pending > 0 else max_conns
                 for _accept_idx in range(accept_budget):
                     var new_fd: FileDescriptor
+                    var peer_host: String
+                    var peer_port: Int
                     try:
-                        new_fd = accept(listen_fd)
+                        var accepted = accept_with_peer(listen_fd)
+                        new_fd = accepted[0]
+                        peer_host = accepted[1]
+                        peer_port = accepted[2]
                     except accept_err:
                         # EAGAIN: backlog drained — this readiness event is done.
                         if accept_err.isa[AcceptEAGAINError]():
@@ -295,6 +300,11 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     set_tcp_nodelay(new_fd)
 
                     slot_fds[slot] = fd_val
+                    # One capture per connection covers every request the
+                    # keep-alive carries; overwritten at the slot's next
+                    # accept, so no clearing on close.
+                    provision_pool.provisions[slot].peer_host = peer_host^
+                    provision_pool.provisions[slot].peer_port = peer_port
                     slot_send_offset[slot] = 0
                     slot_header_start[slot] = perf_counter_ns()
                     slot_read_armed[slot] = False
@@ -1313,6 +1323,8 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         return
 
     request.slot_id = slot
+    request.remote_addr = provision_pool.provisions[slot].peer_host
+    request.remote_port = provision_pool.provisions[slot].peer_port
     provision_pool.provisions[slot].should_close = (not tcp_keep_alive) or request.connection_close()
     var request_method = request.method
     var request_path = request.uri.path

@@ -476,6 +476,20 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   modes under `--threads`, which adds no lanes today.
 - Recorded executor fix paths, unchanged: a wrk-based bench, and N
   executors per pool under free-threading.
+- **Django ASGI parity is proven, not inferred.** `apps/django_asgi`
+  runs Django's own `ASGIHandler` through the executor (`poe
+  smoke-django-asgi`): async views overlap, `StreamingHttpResponse`
+  streams live, sessions survive both directions — and `scope["client"]`
+  is real. The fork's `accept()` had truncated the peer sockaddr with a
+  4-byte addrlen since its lightbug days, so no request had ever carried
+  a readable peer; `accept_with_peer` fixed that at the root and both
+  protocols now see it (`REMOTE_ADDR` in the environ, `client` in the
+  scope). The conformance bar matches the WSGI row's too: ASGI has no
+  `wsgiref.validate`, so `apps/asgi_bare/bareapp/validate.py` is one,
+  written from the ASGI 3 spec and run as `smoke-asgi`'s
+  `M0_ASGI_VALIDATE=1` pass with its own engagement canary. Channels
+  remains out of scope: it needs a channel layer and WebSocket
+  subprotocol negotiation, neither of which this row smuggles in.
 - **Recorded follow-ups, not yet scoped:**
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.

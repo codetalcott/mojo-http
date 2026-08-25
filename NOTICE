@@ -235,6 +235,16 @@ lightbug_http
         demand, so all three compiled cleanly until a consumer reached them.
         Behaviour-preserving; byte_length() is what len() meant
 
+      - accept() passed a 4-byte addrlen (sizeof(socklen_t) -- the TODO in
+        the code flagged it), so the kernel truncated the peer sockaddr
+        before the IP bytes; the address was unreadable even in principle.
+        accept_with_peer keeps the full sockaddr and parses the IPv4 peer
+        (the u16 sa_family holds macOS's [len][family] byte pair, the same
+        single-definition ABI hazard the fcntl fix documents); the event
+        loop stamps it onto each request (HTTPRequest.remote_addr/
+        remote_port, ConnectionProvision.peer_host/peer_port) so WSGI's
+        REMOTE_ADDR and ASGI's scope["client"] carry the real peer.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
