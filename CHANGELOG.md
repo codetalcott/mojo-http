@@ -9,6 +9,42 @@ versions may break the API**.
 
 ### Added
 
+- **`scope["client"]` and `REMOTE_ADDR`: the peer reaches Python.** The
+  fork's `accept()` passed a 4-byte `addrlen`, so the kernel truncated
+  the peer address before the IP bytes — it was unreadable even in
+  principle. `accept_with_peer` keeps the full sockaddr, the event loop
+  stamps each request (`HTTPRequest.remote_addr`/`remote_port`, captured
+  once per connection on the provision), and the peer crosses to Python
+  on both protocols: WSGI gets `REMOTE_ADDR`/`REMOTE_PORT` in the environ
+  (per request, C-API only, same no-leak discipline), ASGI gets
+  `scope["client"] = (host, port)` on http and websocket scopes. Django
+  populates `request.META` from these only when present — `client: None`
+  doesn't error, it silently logs every visitor as address-less, which
+  disables rate limits, IP allow-lists and audit logs.
+
+- **`apps/django_asgi` + `poe smoke-django-asgi`: Django's own ASGI
+  handler, proven.** A bare `djasgi` discovers `djasgi.asgi:application`,
+  detection classifies it ASGI, and the executor serves it zero-config.
+  The smoke pins: discovery + the `asgi-loop` banner; `/meta` showing the
+  real peer (verified load-bearing against a server sending `None` — it
+  answers empty); four overlapping 400 ms async views completing in ~1x;
+  `StreamingHttpResponse` streaming live rather than buffered; a
+  signed-cookie session counter surviving three round trips; SIGTERM.
+  `smoke-wsgi` gains the environ-side `REMOTE_ADDR` assertion.
+
+- **An ASGI server validator — the `wsgiref.validate` that never got
+  written.** WSGI has a stdlib conformance checker and this repo runs it;
+  ASGI has nothing standard (the `asgiref` testing helper plays the
+  server rather than checking one, and uvicorn/hypercorn/daphne verify
+  themselves bespoke). `apps/asgi_bare/bareapp/validate.py` is the
+  analog, written from the ASGI 3 spec: every required scope key with its
+  exact type (bytes-vs-str is THE classic server bug), the receive
+  stream's protocol, `server`/`client` tuple shapes. `M0_ASGI_VALIDATE=1`
+  wraps the app; violations raise and answer 500. `smoke-asgi` gains the
+  validated pass, with `/validate/canary` proving the wrapper is engaged
+  — a bogus message type the unvalidated server ignores (200) and the
+  validator refuses (500), the `/pep3333/canary` pattern exactly.
+
 - **`--mount PREFIX=SPEC`: several applications in one process.** A
   `m0serve` process can now host more than one application, routed by
   longest prefix before either sees the request — `--mount /=djangoproj

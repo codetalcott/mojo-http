@@ -793,9 +793,30 @@ def accept(socket: FileDescriptor) raises AcceptError -> FileDescriptor:
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/accept.3p.html .
     """
+    return accept_with_peer(socket)[0]
+
+
+def accept_with_peer(
+    socket: FileDescriptor,
+) raises AcceptError -> Tuple[FileDescriptor, String, Int]:
+    """`accept`, keeping the peer address the kernel already handed over.
+
+    Returns `(fd, host, port)`; a non-IPv4 peer (or a truncated address)
+    yields `("", 0)` rather than a guess. The plain `accept` above is one
+    line over this — the kernel fills the sockaddr either way, and the old
+    wrapper not only discarded it but passed a 4-byte `addrlen`
+    (`sizeof(socklen_t)`, the TODO that used to sit here), so the kernel
+    truncated the address before the IP bytes and it was unreadable even
+    in principle.
+
+    Layout note: `sa_family_t` here is u16, but macOS's real struct opens
+    `[sin_len u8][sin_family u8]`, so the u16 read is `len | family << 8`
+    there and plain `family` on Linux — the same single-definition ABI
+    hazard `set_nonblocking`'s padded fcntl documents. Port and address
+    bytes sit at the same offsets on both.
+    """
     var remote_address = sockaddr()
-    # TODO: Should this be sizeof sockaddr?
-    var buffer_size = socklen_t(size_of[socklen_t]())
+    var buffer_size = socklen_t(size_of[sockaddr]())
     var result = _accept(Int32(socket.value), Pointer(to=remote_address), Pointer(to=buffer_size))
     if result == -1:
         var errno = get_errno()
@@ -828,7 +849,22 @@ def accept(socket: FileDescriptor) raises AcceptError -> FileDescriptor:
             if errno == errno.EPERM:
                 raise AcceptEPERMError()
 
-    return FileDescriptor(Int(result))
+    var family: Int
+    comptime if CompilationTarget.is_macos():
+        family = Int(remote_address.sa_family) >> 8
+    else:
+        family = Int(remote_address.sa_family)
+    if family != 2 or Int(buffer_size) < 8:  # AF_INET, with port+addr present
+        return (FileDescriptor(Int(result)), String(""), 0)
+    # sockaddr_in after the 2 family bytes: port (network order), then the
+    # four address octets. sa_data is c_char, so mask to unsigned.
+    var d = remote_address.sa_data
+    var port = (Int(d[0]) & 0xFF) << 8 | (Int(d[1]) & 0xFF)
+    var host = (
+        String(Int(d[2]) & 0xFF) + "." + String(Int(d[3]) & 0xFF) + "."
+        + String(Int(d[4]) & 0xFF) + "." + String(Int(d[5]) & 0xFF)
+    )
+    return (FileDescriptor(Int(result)), host^, port)
 
 
 def _connect[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:

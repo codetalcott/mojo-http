@@ -1883,6 +1883,101 @@ rm -f flask.log
 echo "smoke-flask OK"
 """
 
+# Django's OWN ASGI handler through the executor: async views, live
+# StreamingHttpResponse, sessions -- and scope["client"], the reason the
+# row exists. Django populates REMOTE_ADDR only `if scope.get("client")`;
+# None does not error, it silently logs every visitor as address-less.
+# The /meta assertion was verified load-bearing against a server sending
+# None (it answers ""). Skips where django is absent, like the WSGI rows.
+[tool.poe.tasks.smoke-django-asgi]
+help = "Serve a Django ASGI project through the asyncio executor"
+deps = ["build-serve"]
+shell = """
+python3 -c 'import django' 2>/dev/null || { echo "django not installed - skipping smoke-django-asgi"; exit 0; }
+
+srv=bin/m0serve
+SPEC="djasgi --app-dir apps/django_asgi --port 8095"
+B=http://localhost:8095
+
+cleanup() { kill $pid 2>/dev/null; rm -f dj.jar; }
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  [ -f djasgi.log ] && { echo '=== djasgi.log ==='; cat djasgi.log; }
+  exit 1
+}
+
+"$srv" $SPEC > djasgi.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'hello from django-asgi' || fail 'the Django ASGI app did not serve'
+# A bare `djasgi` must have discovered djasgi.asgi:application and taken
+# the executor -- the same zero-config a FastHTML app gets.
+grep -q 'djasgi.asgi:application' djasgi.log || fail 'discovery missed djasgi.asgi'
+grep -q 'protocol=asgi' djasgi.log || fail 'Django ASGI was not detected as ASGI'
+grep -q 'asgi-loop' djasgi.log || fail 'the executor did not engage'
+
+# scope["client"]: Django must see the real peer, not an address-less one.
+meta=$(curl -s --max-time 8 $B/meta)
+echo "$meta" | grep -q '"remote_addr": "127.0.0.1"' \
+  || fail "Django saw no client address: $meta"
+echo "$meta" | grep -qE '"remote_port": [1-9][0-9]*' \
+  || fail "Django saw no client port: $meta"
+
+# Await-concurrency on Django's own handler: 4 overlapping 400ms views in
+# ~1x, not 4x.
+overlap=$(python3 - <<'PY'
+import time, threading, urllib.request
+t0 = time.time()
+ts = [threading.Thread(
+    target=lambda: urllib.request.urlopen(
+        "http://localhost:8095/slow?ms=400", timeout=10).read())
+    for _ in range(4)]
+for t in ts: t.start()
+for t in ts: t.join()
+print("%.2f" % (time.time() - t0))
+PY
+)
+python3 -c "import sys; sys.exit(0 if float('$overlap') < 1.2 else 1)" \
+  || fail "4 concurrent 400ms views took ${overlap}s -- not overlapping"
+
+# StreamingHttpResponse must STREAM: first and last events ~0.75s apart.
+python3 - <<'PY' || exit 1
+import sys, time, urllib.request
+t0 = time.time(); events = []
+with urllib.request.urlopen("http://localhost:8095/stream", timeout=10) as r:
+    while True:
+        line = r.readline()
+        if not line: break
+        if line.strip(): events.append((time.time() - t0, line.decode().strip()))
+if "tick-done" not in events[-1][1]:
+    print("stream truncated:", events); sys.exit(1)
+if events[-1][0] - events[0][0] < 0.4:
+    print("stream arrived all at once (buffered):", events); sys.exit(1)
+PY
+[ $? -eq 0 ] || fail 'StreamingHttpResponse did not stream live'
+
+# Sessions: the counter cannot advance unless cookies survive BOTH ways.
+rm -f dj.jar
+c1=$(curl -s -c dj.jar -b dj.jar --max-time 5 $B/session/bump)
+c2=$(curl -s -c dj.jar -b dj.jar --max-time 5 $B/session/bump)
+c3=$(curl -s -c dj.jar -b dj.jar --max-time 5 $B/session/bump)
+[ "$c3" = "count=3" ] || fail "session counter: $c1 / $c2 / $c3, want count=3"
+
+# SIGTERM drains clean.
+kill $pid 2>/dev/null
+waited=0
+while kill -0 $pid 2>/dev/null && [ $waited -lt 15 ]; do
+  sleep 1; waited=$((waited + 1))
+done
+kill -0 $pid 2>/dev/null && { kill -9 $pid; fail 'SIGTERM did not stop the server'; }
+wait $pid 2>/dev/null
+
+rm -f djasgi.log dj.jar
+echo "smoke-django-asgi OK"
+"""
+
 # Two applications, one process, one listener: the mounted-server row.
 # Django at one prefix and Flask at another, deliberately two FRAMEWORKS --
 # two Django projects would share django.conf.settings and the first import
@@ -2215,6 +2310,9 @@ curl -s "$B/environ?q=%D1%82%D0%B5%D1%81%D1%82" \
 
 # PATH_INFO is decoded, and starts with a slash.
 curl -s "$B/environ" | grep -qF "PATH_INFO='/environ'" || fail 'PATH_INFO wrong'
+# The peer must reach the WSGI environ too -- same capture, CGI spelling.
+curl -s "$B/environ" | grep -qF "REMOTE_ADDR='127.0.0.1'" \
+  || fail 'REMOTE_ADDR missing from the WSGI environ'
 
 # Content-Type and Content-Length are the only two headers PEP 3333 wants in
 # bare CGI form; everything else keeps the HTTP_ prefix, and the HTTP_-prefixed
@@ -2560,6 +2658,31 @@ grep -q 'realtime requires a WSGI application' asgi.log || fail 'forced refusal 
 "$srv" $SPEC --realtime > asgi.log 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "detected asgi + --realtime: exit $rc, want 1"
 grep -q 'realtime requires a WSGI application' asgi.log || fail 'detected refusal message wrong'
+
+# --- the validated pass: the wsgiref.validate that ASGI never got -------
+# M0_ASGI_VALIDATE=1 wraps the app in bareapp/validate.py, which asserts
+# the SERVER'S obligations from the ASGI 3 spec -- scope keys and exact
+# types (bytes-vs-str is THE classic server bug), receive-stream protocol,
+# and one app-side rule so the canary below can exist. A violation raises
+# out of the app and answers 500, so conformance failure is a failing
+# status, never a quiet pass.
+M0_ASGI_VALIDATE=1 "$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  > /dev/null || fail 'the validated server never became healthy'
+for r in /scope /lifespan "/slow?ms=50"; do
+  code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' "$B$r")
+  [ "$code" = "200" ] || fail "validated $r answered $code -- the server violated the ASGI contract (see asgi.log)"
+done
+echo -n 'ab' | curl -s --max-time 8 --data-binary @- $B/echo | grep -q 'ab' \
+  || fail 'validated POST echo failed'
+# The engagement canary, /pep3333/canary's twin: a bogus message type the
+# unvalidated server ignores (an ordinary 200) and the validator refuses
+# (500). Without it, a misspelled variable downgrades this whole pass into
+# a second unvalidated run that always succeeds.
+code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' $B/validate/canary)
+[ "$code" = "500" ] || fail "the validator canary answered $code, want 500 -- the wrapper is not engaged"
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
 
 rm -f asgi.log
 echo "smoke-asgi OK"

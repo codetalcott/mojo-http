@@ -302,6 +302,11 @@ def _scope_from_environ(environ):
         'query_string': environ.get('QUERY_STRING', '').encode('latin-1'),
         'root_path': environ.get('SCRIPT_NAME', ''),
         'headers': headers,
+        'client': (
+            (environ['REMOTE_ADDR'],
+             int(environ.get('REMOTE_PORT') or 0))
+            if environ.get('REMOTE_ADDR') else None
+        ),
         'server': (environ.get('SERVER_NAME', ''), port),
         'client': None,
         # A shallow copy per request, matching uvicorn: the app may add
@@ -716,7 +721,8 @@ async def _serve_one_exec(slot, scope, body):
             b''.join(chunks))
 
 
-def spawn(slot, method, path, query, protocol, headers, body):
+def spawn(slot, method, path, query, protocol, headers, body,
+          host='', port=0):
     # Called from the pump; every argument arrived as a stolen tuple slot
     # through one PyObject_CallObject -- the same crossing discipline as
     # the per-request path. Completion is an event, never a callback into
@@ -730,6 +736,10 @@ def spawn(slot, method, path, query, protocol, headers, body):
     scope['query_string'] = query
     scope['http_version'] = protocol.split('/')[-1]
     scope['headers'] = headers
+    # None rather than ('', 0) when the loop had no peer to give (the
+    # blocking accept path): ASGI's spec makes `client` optional, and
+    # Django/Starlette both branch on its truthiness.
+    scope['client'] = (host, port) if host else None
     scope['state'] = dict(_lifespan_state)
     task = _loop.create_task(_serve_one_exec(slot, scope, body))
     _exec_tasks.add(task)
@@ -825,14 +835,14 @@ async def _serve_one_ws(slot, scope):
     return None
 
 
-def spawn_ws(slot, path, query, protocol, headers):
+def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     scope = {
         'type': 'websocket',
         'asgi': {'version': '3.0', 'spec_version': '2.3'},
         'scheme': 'ws',
         'root_path': _root_path,
         'server': _scope_base['server'],
-        'client': None,
+        'client': (host, port) if host else None,
         'http_version': protocol.split('/')[-1],
         'path': path,
         'raw_path': path.encode('utf-8', 'replace'),
@@ -1004,6 +1014,8 @@ struct PyBridge(Movable):
     var _k_method: PythonObject
     var _k_path: PythonObject
     var _k_query: PythonObject
+    var _k_remote_addr: PythonObject
+    var _k_remote_port: PythonObject
     var _k_protocol: PythonObject
     """The four per-request key strings, interned once. They never vary, so
     building them per request would be four `PyUnicode_DecodeUTF8` calls
@@ -1044,6 +1056,8 @@ struct PyBridge(Movable):
         self._k_method = _py_str("REQUEST_METHOD")
         self._k_path = _py_str("PATH_INFO")
         self._k_query = _py_str("QUERY_STRING")
+        self._k_remote_addr = _py_str("REMOTE_ADDR")
+        self._k_remote_port = _py_str("REMOTE_PORT")
         self._k_protocol = _py_str("SERVER_PROTOCOL")
 
         ref cpy = Python().cpython()
@@ -1073,6 +1087,8 @@ struct PyBridge(Movable):
         self._k_method = move._k_method^
         self._k_path = move._k_path^
         self._k_query = move._k_query^
+        self._k_remote_addr = move._k_remote_addr^
+        self._k_remote_port = move._k_remote_port^
         self._k_protocol = move._k_protocol^
         self._bytes_as_string = move._bytes_as_string
         self._bytes_from = move._bytes_from
@@ -1221,7 +1237,7 @@ struct PyBridge(Movable):
         comes back as a `('ws_accept', slot)` event."""
         ref cpy = Python().cpython()
 
-        var args = cpy.PyTuple_New(5)
+        var args = cpy.PyTuple_New(7)
         if not args:
             raise cpy.get_error()
         _ = cpy.PyTuple_SetItem(args, 0, cpy.PyLong_FromSsize_t(slot))
@@ -1237,6 +1253,12 @@ struct PyBridge(Movable):
                 args, 3, self._py_text(cpy, req.protocol.as_bytes())
             )
             _ = cpy.PyTuple_SetItem(args, 4, self._py_headers(cpy, req))
+            _ = cpy.PyTuple_SetItem(
+                args, 5, self._py_text(cpy, req.remote_addr.as_bytes())
+            )
+            _ = cpy.PyTuple_SetItem(
+                args, 6, cpy.PyLong_FromSsize_t(req.remote_port)
+            )
         except e:
             cpy.Py_DecRef(args)
             raise e
@@ -1265,7 +1287,7 @@ struct PyBridge(Movable):
         uvicorn's parser-to-scope path."""
         ref cpy = Python().cpython()
 
-        var args = cpy.PyTuple_New(7)
+        var args = cpy.PyTuple_New(9)
         if not args:
             raise cpy.get_error()
         _ = cpy.PyTuple_SetItem(args, 0, cpy.PyLong_FromSsize_t(slot))
@@ -1286,6 +1308,17 @@ struct PyBridge(Movable):
             )
 
             _ = cpy.PyTuple_SetItem(args, 5, self._py_headers(cpy, req))
+
+            # The peer, for scope["client"]: Django's ASGIRequest reads it
+            # into REMOTE_ADDR/REMOTE_PORT `if scope.get("client")`, so an
+            # absent one does not error -- it silently logs every visitor
+            # as address-less, which is the worse failure.
+            _ = cpy.PyTuple_SetItem(
+                args, 7, self._py_text(cpy, req.remote_addr.as_bytes())
+            )
+            _ = cpy.PyTuple_SetItem(
+                args, 8, cpy.PyLong_FromSsize_t(req.remote_port)
+            )
 
             _ = cpy.PyTuple_SetItem(
                 args, 6, self._py_bytes_span(cpy, Span(req.body_raw))
@@ -1404,6 +1437,18 @@ struct PyBridge(Movable):
         self._set_latin1(cpy, d, k_query, req.uri.query_string.as_bytes())
         var k_protocol = self._k_protocol._obj_ptr
         self._set_latin1(cpy, d, k_protocol, req.protocol.as_bytes())
+
+        # The peer. The template's REMOTE_ADDR is "", so a request the
+        # blocking path served (no peer captured) keeps the CGI-truthful
+        # empty string rather than a stale previous value -- PyDict_Copy
+        # starts every request from the template. REMOTE_PORT is set only
+        # when real: it is optional in CGI and gunicorn omits absent ones.
+        if req.remote_addr.byte_length() > 0:
+            var k_addr = self._k_remote_addr._obj_ptr
+            self._set_latin1(cpy, d, k_addr, req.remote_addr.as_bytes())
+            var port_text = String(req.remote_port)
+            var k_port = self._k_remote_port._obj_ptr
+            self._set_latin1(cpy, d, k_port, port_text.as_bytes())
 
         # Walked by index over the header map's own spans: no `keys()`
         # snapshot, no `get()` lookup per key, no String anywhere.

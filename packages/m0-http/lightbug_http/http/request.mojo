@@ -90,6 +90,15 @@ struct HTTPRequest(Copyable, Encodable, Writable):
     var timeout: Duration
     var slot_id: Int
 
+    var remote_addr: String
+    var remote_port: Int
+    """The accepted connection's peer, stamped by the non-blocking event
+    loop after parsing (the same post-construction pattern as `slot_id`);
+    empty/0 on the blocking accept path and for outgoing requests. What
+    feeds WSGI's `REMOTE_ADDR` and ASGI's `scope["client"]` — Django reads
+    both, and an empty one silently disables every IP-keyed thing an app
+    does (rate limits, allow-lists, audit logs) rather than erroring."""
+
     @staticmethod
     def from_parsed(
         server_addr: String,
@@ -200,6 +209,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         self.server_is_tls = server_is_tls
         self.timeout = timeout
         self.slot_id = -1
+        self.remote_addr = String("")
+        self.remote_port = 0
         self.set_content_length(len(self.body_raw))
 
         if HeaderKey.CONNECTION not in self.headers:

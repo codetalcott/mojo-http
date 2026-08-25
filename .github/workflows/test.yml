@@ -197,6 +197,11 @@ jobs:
       # 404 for an unmounted path, answered in Mojo without entering Python.
       - name: Serve two mounted applications from one process
         run: uv run poe smoke-hybrid
+      # Django's own ASGI handler: async views, live StreamingHttpResponse,
+      # sessions, and scope["client"] -- Django logs every visitor as
+      # address-less when the server sends client: None, silently.
+      - name: Serve a Django ASGI project through the executor
+        run: uv run poe smoke-django-asgi
       # The CLI as a user meets it: --help/--version, usage (2) and startup
       # (1) exit codes — including a supervisor that gives up — a typed flag
       # beating the environment, a static mount, --max-body, --metrics.
