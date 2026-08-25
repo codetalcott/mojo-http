@@ -190,15 +190,11 @@ def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
     handler name what is actually served.
 
     Mixed WSGI/ASGI mounts are the point: each gets its native execution
-    mode, so the returned list says which mounts are ASGI rather than
-    reducing to one answer for the process.
-
-    Exactly one ASGI mount is supported. A second would need its own
-    streaming chunk channel, and the loop has one `bus_read_fd` — sharing
-    it is possible (slots are unique per loop) but the drain acks are not,
-    because credit belongs to the executor that owns the slot. That routing
-    is the next piece of work, and serving a second async app without its
-    streaming would be a quiet downgrade.
+    mode, so `opts.asgi_mounts` records which mounts are ASGI rather than
+    reducing detection to one answer for the process. Any number of each:
+    every ASGI mount gets its own executor, on its own submit lane, with
+    its own drain-ack pair — the chunk channel is the one thing executors
+    share, and its datagrams are slot-addressed.
     """
     var asgi_count = 0
     for i in range(len(opts.mount_prefixes)):
@@ -229,22 +225,31 @@ def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
                 )
         if is_asgi:
             asgi_count += 1
-            opts.asgi_mount = i
-    if asgi_count > 1:
-        raise Error(
-            "only one ASGI --mount is supported: a second needs its own"
-            " streaming channel, and drain-ack credit belongs to the"
-            " executor that owns the slot (see docs/WSGI_VS_ASGI.md section"
-            " 9). Any number of WSGI mounts may sit beside it."
-        )
+            opts.asgi_mounts.append(i)
     return asgi_count > 0
+
+
+def _asgi_mount_names(opts: ServeOptions) -> String:
+    """`/app,/api` — the mounts whose lanes executors read, for the banner."""
+    var out = String("")
+    for k in range(len(opts.asgi_mounts)):
+        if k > 0:
+            out += ","
+        ref prefix = opts.mount_prefixes[opts.asgi_mounts[k]]
+        out += "/" if prefix.byte_length() == 0 else prefix
+    return out^
 
 
 def _wsgi_lanes(opts: ServeOptions) -> List[Int]:
     """Every mount except the ASGI one — the lanes the pool threads serve."""
     var lanes = List[Int]()
     for i in range(len(opts.mount_prefixes)):
-        if i != opts.asgi_mount:
+        var is_asgi_lane = False
+        for k in range(len(opts.asgi_mounts)):
+            if opts.asgi_mounts[k] == i:
+                is_asgi_lane = True
+                break
+        if not is_asgi_lane:
             lanes.append(i)
     return lanes^
 
@@ -479,13 +484,8 @@ def main() raises:
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " workers=" + String(opts.workers) + ")"
         + (
-            (
-                " asgi-loop@"
-                + (
-                    "/" if opts.mount_prefixes[opts.asgi_mount].byte_length()
-                    == 0 else opts.mount_prefixes[opts.asgi_mount]
-                )
-            ) if (executor_mode and opts.asgi_mount >= 0)
+            (" asgi-loop@" + _asgi_mount_names(opts))
+            if (executor_mode and len(opts.asgi_mounts) > 0)
             else (" asgi-loop" if executor_mode else "")
         )
         + (
@@ -501,7 +501,9 @@ def main() raises:
     # After fork_all — each worker arms its own pipe.
     var shutdown_fd = install_shutdown_signals()
 
-    var mounted_mix = len(opts.mount_prefixes) > 0 and opts.asgi_mount >= 0
+    var mounted_mix = (
+        len(opts.mount_prefixes) > 0 and len(opts.asgi_mounts) > 0
+    )
     if executor_mode or opts.blocking_threads > 0 or mounted_mix:
         # Offloaded serving under prefork: this process gets one acceptor
         # loop and either the asyncio executor (ASGI) or a handler pool.
@@ -512,7 +514,7 @@ def main() raises:
         _serve_offloaded(
             opts, listener, handler, server_config, shutdown_fd,
             executor_mode,
-            asgi_lane=opts.asgi_mount,
+            asgi_lanes=opts.asgi_mounts.copy(),
             wsgi_lanes=_wsgi_lanes(opts),
         )
         # The loop's own handler serves the inline fallback; in executor
@@ -545,7 +547,7 @@ def _serve_offloaded(
     config: ServerConfig,
     shutdown_fd: Int,
     executor: Bool,
-    var asgi_lane: Int = -1,
+    var asgi_lanes: List[Int] = List[Int](),
     var wsgi_lanes: List[Int] = List[Int](),
 ) raises:
     """One acceptor loop feeding either a handler pool or the executor.
@@ -562,12 +564,18 @@ def _serve_offloaded(
     deadlock: nothing behind the queue would ever run. The wrapper is two
     calls per loop *pass*.
 
-    With `--mount`, both run AT ONCE: `asgi_lane` names the mount the
-    executor serves and `wsgi_lanes` the mounts the pool threads serve, so a
-    sync application and an async one share this loop, this listener and
-    this shutdown while each keeps its native concurrency. That is the whole
-    point of mounts, and it is only expressible because a lane is a submit
-    channel rather than a mode for the process.
+    With `--mount`, both run AT ONCE: `asgi_lanes` names the mounts that
+    get an executor each and `wsgi_lanes` the mounts the pool threads
+    serve, so sync applications and async ones share this loop, this
+    listener and this shutdown while each keeps its native concurrency.
+    That is the whole point of mounts, and it is only expressible because
+    a lane is a submit channel rather than a mode for the process.
+
+    Several executors share ONE chunk channel — datagrams are
+    slot-addressed and the queue is globally FIFO, so the recycled-slot
+    safety argument survives two writers — but each gets its own drain-ack
+    pair (`enable_stream_ack`): credit belongs to the executor that owns
+    the slot, and an ack routed anywhere else is a stream stalled forever.
 
     No bus channel is passed, because `--realtime` is refused with both of
     these modes and the bus exists only for `--realtime`.
@@ -585,19 +593,27 @@ def _serve_offloaded(
         if (len(wsgi_lanes) > 0 or not executor) else 0
     )
     var pool_threads = BlockingPool(0 if (executor and not mounted) else pool_count)
-    var exec_thread = AsgiExecutor()
+    var exec_thread = AsgiExecutor(
+        len(asgi_lanes) if len(asgi_lanes) > 0 else 1
+    )
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
-    var run_executor = executor or asgi_lane >= 0
+    var run_executor = executor or len(asgi_lanes) > 0
     if run_executor:
-        # The streaming channel exists before the executor thread does, so
-        # its fds are plain fields by the time anything reads them; the
-        # chunk pair's read end is this loop's bus fd, and the handler
-        # learns where to send disconnect tags — on the ASGI mount's own
-        # lane, since that is where its executor is parked.
+        # The streaming channels exist before any executor thread does, so
+        # their fds are plain fields by the time anything reads them; the
+        # shared chunk pair's read end is this loop's bus fd, and the
+        # handler learns where to send each lane's disconnect tags — on
+        # that mount's own submit channel, since that is where its
+        # executor is parked.
         pool.enable_stream_channel()
-        handler.set_asgi_notify(pool.submit_write_fd(asgi_lane))
-        exec_thread.start(pool.addr(), opts_addr, asgi_lane)
+        if len(asgi_lanes) == 0:
+            handler.set_asgi_notify(pool.submit_write_fd(-1))
+        for k in range(len(asgi_lanes)):
+            var lane = asgi_lanes[k]
+            pool.enable_stream_ack(lane)
+            handler.set_lane_notify(lane, pool.submit_write_fd(lane))
+        exec_thread.start(pool.addr(), opts_addr, asgi_lanes.copy())
     if pool_threads.count > 0:
         pool_threads.start[WSGIHandler](pool.addr(), opts_addr, wsgi_lanes^)
     var stream_bus_fd = pool.stream_chunk_read if run_executor else -1

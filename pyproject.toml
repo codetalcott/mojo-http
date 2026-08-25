@@ -1979,20 +1979,47 @@ kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
 # (async, on the asyncio executor) in ONE process, each keeping its own
 # concurrency. Skipped where fasthtml is absent, like the FastHTML row.
 if python3 -c 'import fasthtml' 2>/dev/null; then
-  "$srv" --mount /=shop.wsgi --mount /app=live.asgi $D --port 8110 \
-    --blocking-threads 4 > hybrid3.log 2>&1 &
+  "$srv" --mount /=shop.wsgi --mount /app=live.asgi --mount /live=feed.asgi \
+    $D --port 8110 --blocking-threads 4 > hybrid3.log 2>&1 &
   pid3=$!
 
   curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B3/ \
     | grep -q 'hello from django' || fail 'the sync mount did not serve Django'
   curl -s --max-time 8 $B3/app/ | grep -q 'hello from fasthtml' \
     || fail 'the async mount did not serve FastHTML'
-  # The banner names WHICH mount the executor took; without the @ the two
+  curl -s --max-time 8 $B3/live/ | grep -q 'hello from feed' \
+    || fail 'the second async mount did not serve'
+  # The banner names WHICH mounts the executors took; without the @ the
   # mounts are sharing a mode and the isolation below is meaningless.
-  grep -q 'asgi-loop@/app' hybrid3.log \
-    || fail 'the executor was not bound to the /app mount'
+  grep -q 'asgi-loop@/app,/live' hybrid3.log \
+    || fail 'the executors were not bound per ASGI mount'
   grep -q 'blocking-threads=4' hybrid3.log \
     || fail 'the sync mount got no handler pool'
+
+  # Two executors, one chunk channel, per-lane credit. 256 KB is four
+  # credit windows, so NEITHER body can complete unless drain acks reach
+  # the executor that owns the slot -- credit misrouted to the other lane
+  # is a send() that awaits forever, not an error. Concurrent on purpose.
+  curl -s --max-time 25 -o big_app.bin $B3/app/big &
+  bigpid1=$!
+  curl -s --max-time 25 -o big_live.bin $B3/live/big &
+  bigpid2=$!
+  wait $bigpid1 $bigpid2
+  [ "$(wc -c < big_app.bin | tr -d ' ')" = "262144" ] \
+    || fail "the /app stream truncated: $(wc -c < big_app.bin) of 262144 bytes"
+  [ "$(wc -c < big_live.bin | tr -d ' ')" = "262144" ] \
+    || fail "the /live stream truncated: $(wc -c < big_live.bin) of 262144 bytes"
+  rm -f big_app.bin big_live.bin
+
+  # A client that vanishes mid-stream on ONE async mount: the disconnect
+  # tag (routed by the lane in the reserved channel name) must cancel that
+  # executor's task, and the OTHER mount must not notice.
+  curl -s --max-time 1 $B3/live/stream > /dev/null 2>&1 || true
+  sleep 1
+  curl -s --max-time 8 $B3/app/ | grep -q 'hello from fasthtml' \
+    || fail 'a mid-stream disconnect on /live broke /app'
+  curl -s --max-time 8 $B3/live/ | grep -q 'hello from feed' \
+    || fail 'a mid-stream disconnect on /live broke /live itself'
 
   # ASGI's `path` includes root_path (the framework strips it), which is the
   # opposite of the WSGI half asserted above -- one seam, two conventions.
@@ -2026,13 +2053,6 @@ else
 fi
 
 # --- phase 4: the refusals --------------------------------------------
-if python3 -c 'import fasthtml' 2>/dev/null; then
-  out=$("$srv" --mount /a=live.asgi --mount /b=live.asgi $D --port 8101 2>&1); rc=$?
-  [ $rc -ne 0 ] || fail 'two ASGI mounts were accepted'
-  echo "$out" | grep -q 'only one ASGI --mount' \
-    || fail "the second-ASGI-mount refusal did not explain itself: $out"
-fi
-
 out=$("$srv" --mount /a=shop.wsgi --realtime $D --port 8101 2>&1); rc=$?
 [ $rc -ne 0 ] || fail '--mount with --realtime was accepted'
 echo "$out" | grep -q 'cannot be combined with --mount' \

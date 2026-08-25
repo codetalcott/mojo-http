@@ -264,9 +264,9 @@ Each mount detects its own protocol and gets its own bridge, and the prefix
 reaches the application the way its protocol expects it — `SCRIPT_NAME` with
 `PATH_INFO` trimmed for WSGI, `root_path` with the whole `path` for ASGI —
 so `reverse()` and `url_for()` generate links that actually work. A path no
-mount claims is a 404 answered in Mojo, never entering Python. One ASGI
-mount is supported, with any number of WSGI mounts beside it
-([§9](docs/WSGI_VS_ASGI.md)). Every `M0_*` variable keeps its
+mount claims is a 404 answered in Mojo, never entering Python. Any mix:
+every ASGI mount gets its own executor, any number of WSGI mounts share
+the pool ([§9](docs/WSGI_VS_ASGI.md)). Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
 matching flag winning over it, and flags are strict: `--port 80eighty` is a
 usage error, not a silent default. `--max-body` and `--metrics` reach two

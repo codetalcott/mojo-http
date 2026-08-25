@@ -69,6 +69,8 @@ mw_sse_*.txt
 todo_*.txt
 slow*.txt
 serve_*.txt
+big_app.bin
+big_live.bin
 .venv-pinned/
 py-canary.log
 probe.out

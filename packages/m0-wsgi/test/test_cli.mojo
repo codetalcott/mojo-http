@@ -684,12 +684,32 @@ def test_match_mount_order_does_not_matter() raises:
     assert_equal(match_mount(prefixes, String("/elsewhere")), 1)
 
 
-def test_mounted_asgi_does_not_take_the_executor() raises:
-    """Stage-1 rule: one submit channel cannot say which mount a job is
-    for, so a mounted server stays on the buffered path even all-ASGI."""
+def test_mounted_executor_follows_detected_asgi_mounts() raises:
+    """A mounted server runs executors exactly when detection found ASGI
+    mounts (`asgi_mounts`, written by m0serve's resolve pass) — one per
+    lane. Before detection the list is empty and no executor runs, which
+    is also why `is_asgi` alone must not decide: for a mounted server it
+    answers a different question."""
     var opts = _parse([String("--mount"), String("/app=main:app")])
     opts.blocking_threads = 0
     assert_false(use_asgi_executor(opts, True))
+    opts.asgi_mounts.append(0)
+    assert_true(use_asgi_executor(opts, True))
+
+
+def test_mounted_executor_allows_several_asgi_mounts() raises:
+    var opts = _parse(
+        [
+            String("--mount"),
+            String("/a=main:app"),
+            String("--mount"),
+            String("/b=other:app"),
+        ]
+    )
+    opts.blocking_threads = 0
+    opts.asgi_mounts.append(0)
+    opts.asgi_mounts.append(1)
+    assert_true(use_asgi_executor(opts, True))
 
 
 def test_unmounted_asgi_still_takes_the_executor() raises:

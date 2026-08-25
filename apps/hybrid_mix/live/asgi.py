@@ -44,6 +44,38 @@ def where(request):
     )
 
 
+@app.get("/sse")
+async def sse():
+    """A live EventStream, so the smoke can hold streams open on TWO async
+    mounts at once — the shared chunk channel and per-lane credit under
+    real concurrency."""
+    from fasthtml.common import EventStream
+
+    async def gen():
+        import asyncio
+
+        for i in range(6):
+            yield f"data: live-{i}\n\n"
+            await asyncio.sleep(0.15)
+        yield "data: live-done\n\n"
+
+    return EventStream(gen())
+
+
+@app.get("/big")
+async def big():
+    """256 KB streamed with no sleeps -- four credit windows, the ack-routing
+    proof on THIS lane while /live/big proves the other."""
+    from fasthtml.common import StreamingResponse
+
+    async def gen():
+        block = b"L" * 32768
+        for _ in range(8):
+            yield block
+
+    return StreamingResponse(gen(), media_type="application/octet-stream")
+
+
 @app.get("/await")
 async def slow(ms: int = 300):
     """Awaits, so the executor can overlap it with everything else."""

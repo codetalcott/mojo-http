@@ -122,6 +122,13 @@ struct WSGIHandler(ThreadHandler):
     used to send the executor a disconnect tag when a streaming slot
     closes — what resolves the app's `receive()` into `http.disconnect`
     and cancels its task."""
+    var lane_notify_fds: List[Int]
+    """Per-lane submit write ends, indexed by mount (`--mount` with more
+    than one ASGI mount); -1 where a lane has no executor. A disconnect
+    tag or an inbound WS message must reach the executor that owns the
+    slot — its lane rides in the reserved channel name the executor
+    subscribed with, so the lookup is a parse of the slot's own filter
+    url, not a table this handler could let drift."""
 
     def __init__(
         out self,
@@ -144,6 +151,7 @@ struct WSGIHandler(ThreadHandler):
         self.health_path = health_path^
         self.thread_index = -1
         self.asgi_notify_fd = -1
+        self.lane_notify_fds = List[Int]()
         # Capacity 0 when neither mode is on. Every `SSERegistry` method
         # already guards on `slot >= _capacity`, so the hooks below stay
         # correct unconditionally and a plain deployment pays nothing for
@@ -313,6 +321,33 @@ struct WSGIHandler(ThreadHandler):
         """Executor-mode wiring: where stream disconnect tags are sent."""
         self.asgi_notify_fd = fd
 
+    def set_lane_notify(mut self, lane: Int, fd: Int):
+        """Mounted executor wiring: lane `lane`'s submit write end.
+
+        Grows the table as lanes arrive; the first ASGI lane also becomes
+        the default (`asgi_notify_fd`), so the `was_asgi` guard and the
+        unmounted path keep one shape."""
+        while len(self.lane_notify_fds) <= lane:
+            self.lane_notify_fds.append(-1)
+        self.lane_notify_fds[lane] = fd
+        if self.asgi_notify_fd < 0:
+            self.asgi_notify_fd = fd
+
+    def _notify_fd_for(self, url: String) -> Int:
+        """The submit fd of the executor that subscribed `url`.
+
+        The lane is the second number of the reserved channel name; absent
+        (the unmounted server, or a frame from before lanes existed) means
+        the one executor there is."""
+        var lane = _parse_stream_lane(url.as_bytes())
+        if (
+            lane >= 0
+            and lane < len(self.lane_notify_fds)
+            and self.lane_notify_fds[lane] >= 0
+        ):
+            return self.lane_notify_fds[lane]
+        return self.asgi_notify_fd
+
     def shutdown(mut self):
         """Every application's teardown (ASGI lifespan shutdown; WSGI no-op).
 
@@ -464,12 +499,17 @@ struct WSGIHandler(ThreadHandler):
             or self.sockets.is_slot_streaming(slot)
             or (slot < len(self.asgi_done) and self.asgi_done[slot])
         )
+        # The slot's reserved channel name carries its executor's lane;
+        # read it before the unsubscribes erase it.
+        var slot_url = self.streams.filter_url(slot)
+        if slot_url.byte_length() == 0:
+            slot_url = self.sockets.filter_url(slot)
         self.streams.unsubscribe(slot)
         self.sockets.unsubscribe(slot)
         if slot < len(self.asgi_done):
             self.asgi_done[slot] = False
         if was_asgi:
-            _send_disconnect_tag(self.asgi_notify_fd, slot)
+            _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open
@@ -551,7 +591,10 @@ struct WSGIHandler(ThreadHandler):
         # `websocket.receive` loop — forward it to the executor thread as
         # a tagged datagram and never enter Python on the loop thread.
         if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
-            _send_ws_message_tag(self.asgi_notify_fd, slot, opcode, payload)
+            _send_ws_message_tag(
+                self._notify_fd_for(self.sockets.filter_url(slot)),
+                slot, opcode, payload,
+            )
             return
         # GRIP mode: an inbound message, handed to a plain synchronous view
         # as a POST. This runs ON the event loop thread, so it costs
@@ -627,8 +670,15 @@ def _upgrade_required() -> HTTPResponse:
 comptime ASGI_URL_CONTROL = UInt8(1)
 
 
-def asgi_stream_url(kind: String, slot: Int) -> String:
-    """Build a reserved channel name: `\\x01<kind>/<slot>`."""
+def asgi_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
+    """Build a reserved channel name: `\\x01<kind>/<slot>[/<lane>]`.
+
+    The lane is the executor's own mount index, appended only under
+    `--mount` (so the unmounted wire format is unchanged). It is how the
+    handler routes a disconnect tag or an inbound WS message back to the
+    executor that owns the slot: the name is stored as the subscription's
+    filter url, so the routing needs no side table that could drift.
+    """
     var b = List[UInt8]()
     b.append(ASGI_URL_CONTROL)
     for ch in kind.as_bytes():
@@ -636,27 +686,49 @@ def asgi_stream_url(kind: String, slot: Int) -> String:
     b.append(UInt8(ord("/")))
     for ch in String(slot).as_bytes():
         b.append(ch)
+    if lane >= 0:
+        b.append(UInt8(ord("/")))
+        for ch in String(lane).as_bytes():
+            b.append(ch)
     return String(StringSlice(unsafe_from_utf8=Span(b)))
 
 
-def _parse_stream_slot(url_bytes: Span[Byte, _]) -> Int:
-    """The slot number after the `/` of a reserved channel name; -1 if
-    malformed. Digits only — anything else is a frame to drop, not raise
-    over (`sse_peer_frame` must not raise)."""
-    var slash = -1
-    for i in range(len(url_bytes)):
+def _parse_url_number(url_bytes: Span[Byte, _], which: Int) -> Int:
+    """The `which`-th `/`-separated number of a reserved channel name
+    (0 = slot, 1 = lane); -1 if absent or malformed. Digits only —
+    anything else is a frame to drop, not raise over (`sse_peer_frame`
+    must not raise)."""
+    var seen = -1
+    var i = 0
+    var n = len(url_bytes)
+    while i < n:
         if url_bytes[i] == UInt8(ord("/")):
-            slash = i
-            break
-    if slash < 0 or slash + 1 >= len(url_bytes):
+            seen += 1
+            if seen == which:
+                break
+        i += 1
+    if seen != which or i + 1 >= n:
         return -1
     var value = 0
-    for i in range(slash + 1, len(url_bytes)):
-        var c = Int(url_bytes[i])
+    var j = i + 1
+    while j < n and url_bytes[j] != UInt8(ord("/")):
+        var c = Int(url_bytes[j])
         if c < ord("0") or c > ord("9"):
             return -1
         value = value * 10 + (c - ord("0"))
+        j += 1
     return value
+
+
+def _parse_stream_slot(url_bytes: Span[Byte, _]) -> Int:
+    """The slot number of a reserved channel name; -1 if malformed."""
+    return _parse_url_number(url_bytes, 0)
+
+
+def _parse_stream_lane(url_bytes: Span[Byte, _]) -> Int:
+    """The lane of a reserved channel name; -1 when it carries none (the
+    unmounted server's frames)."""
+    return _parse_url_number(url_bytes, 1)
 
 
 def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):

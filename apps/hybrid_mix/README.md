@@ -47,14 +47,16 @@ Two Django projects would **not** make this point — they would share
 `django.conf.settings` and the first import would win. Three frameworks
 cannot accidentally share anything.
 
-## Limits
+There is a fourth mount for the two-executor case: `feed.asgi`, a bare
+ASGI app (`--mount /live=feed.asgi`). Two async mounts mean two executors
+sharing one slot-addressed chunk channel with per-lane drain acks; its
+`/big` route (256 KB, four credit windows, no sleeps) is what proves the
+credit actually reaches the executor that owns the slot — misrouted
+credit is a stream that stalls forever, not an error.
 
-One ASGI mount. A second needs its own streaming chunk channel, and the
-loop has a single `bus_read_fd`; sharing it is possible (slots are unique
-per loop) but drain-ack credit belongs to the executor that owns the slot,
-so the routing has to come first. Any number of WSGI mounts may sit beside
-it — they share the pool, dealt round-robin across the lanes.
+## Limits
 
 `--realtime` is refused with `--mount`: an inbound WebSocket message is
 delivered back into one application's urlconf, and which mount should
-receive it has no defensible answer.
+receive it has no defensible answer. WSGI mounts share the pool, dealt
+round-robin across their lanes.
