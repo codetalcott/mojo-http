@@ -189,6 +189,19 @@ shell = """
 python3 scripts/warning_ratchet.py "$log" $flag
 """
 
+# The doc-fact ratchet: prose numbers with a machine source of truth are
+# checked against it (warning counts vs the baseline JSON, smoke tasks vs
+# the workflow that must run them, the generated bench table vs the newest
+# committed artifact). Runs in CI. See scripts/check_docs.py for why each
+# fact is on the list and why historical numbers deliberately are not.
+[tool.poe.tasks.check-docs]
+help = "Fail if a machine-sourced number in the docs drifted from its source"
+shell = "python3 scripts/check_docs.py"
+
+[tool.poe.tasks.render-bench-docs]
+help = "Render the newest bench/results artifact into WSGI_PERFORMANCE.md"
+shell = "python3 scripts/render_bench_docs.py"
+
 [[tool.poe.tasks.check-warnings.args]]
 name = "log"
 positional = true

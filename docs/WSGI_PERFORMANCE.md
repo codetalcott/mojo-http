@@ -704,6 +704,53 @@ the `A`–`Z` range by one byte, which makes it fail.
 than `response.mojo` if CLAUDE.md's "everything touching the interpreter
 lives in one file" is to hold, and that is a design decision, not a tweak.
 
+### Re-measured 2026-08-26: CPU-normalized, and the conclusion inverts twice
+
+Two findings from re-running the split on a genuine 3.14.7t, and they
+retire this section's "dead even — no lopsided target left" conclusion.
+
+**First: the comparator was never one core.** Granian's `--workers 1`
+worker was measured at ~1.6 cores across 6 threads (its Rust runtime's I/O
+threads, beyond `--blocking-threads 1`), while `apps/hello` and `m0serve`
+hold one serving thread at ~100%. Every raw-rps ratio in the tables above
+silently compared ~1.6 cores against one. The rows below carry a measured
+`cores` column so that cannot happen again — sampled from the pids on the
+listen socket, because Granian's launcher idles at 0% while a spawned
+worker serves.
+
+**Second: after CPU normalization and the profile-ranked allocation pass**
+(Headers' packed index, move-not-copy response ctors, no `String(int)` in
+the per-request path — see NOTICE), the per-core decomposition is roughly
+**1.0x HTTP layer × ~1.35x bridge**: the hello row's per-core rate now
+meets or exceeds Granian's, and what remains of the gap is the bridge
+multiplier. The 2026-08-24 numbers above are records of what was measured,
+not descriptions of the present.
+
+A caveat the artifacts made visible: identical binaries move ~1.5x in
+absolute rps across sessions on this hardware (thermal and load state).
+Within-run ratios are the signal; absolute rows are not comparable across
+dated sections of this file.
+
+<!-- generated: layer-split -- edit bench/results, not this table -->
+Source: [`layer-split-20260825T165536Z.json`](../bench/results/layer-split-20260825T165536Z.json) — 2026-08-25T16:55:36+00:00, commit `1670230` (dirty tree).
+Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4; wrk -c16 -d10s, 3 rounds, medians.
+
+| row | rps | cores | rps/core |
+|-----|----:|------:|---------:|
+| `apps/hello` — mojo-http HTTP layer, zero Python | 118,599 | 0.98 | 121,020 |
+| `m0serve` + bare WSGI, 1 worker | 82,146 | 0.98 | 83,823 |
+| `granian` + bare WSGI, 1 worker | 176,858 | 1.75 | 101,062 |
+| `m0serve` + bare WSGI, 4 workers | 160,619 | 3.14 | 51,152 |
+| `granian` + bare WSGI, 4 workers | 142,435 | 4.42 | 32,225 |
+
+Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
+<!-- /generated: layer-split -->
+
+The table between the markers is rendered from the newest artifact in
+`bench/results/` by `uv run poe render-bench-docs`, and `poe check-docs`
+(in CI) fails when it goes stale — the numbers cite a file rather than a
+memory. The prose around it stays hand-written.
+
 ## A slow view strands the connections pinned behind it
 
 This is the mixed-workload measurement the `wrk` section named as Stage B's

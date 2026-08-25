@@ -35,6 +35,12 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      # The doc-fact ratchet, before anything is built: prose numbers with
+      # a machine source (warning counts, smoke coverage in THIS file, the
+      # generated bench table) must match it. Runs here and not in the
+      # smoke job because it needs nothing compiled and fails in seconds.
+      - name: Check machine-sourced doc facts
+        run: uv run poe check-docs
       # m0-sqlite links libsqlite3. macOS resolves it from the dyld shared
       # cache with no setup; Linux needs the development package present at
       # link time, or the build fails with "cannot find -lsqlite3".

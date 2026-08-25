@@ -390,8 +390,21 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   cache's hit-path byte-compares (245 ns) cost more than the decodes they
   skip (180 ns; short-ASCII `DecodeUTF8` is 15 ns) — so it was never built.
   What remains is ~26 mandated `PyDict_SetItem`s and sixteen genuinely
-  dynamic decodes: **the bridge is near its structural floor**, and the
-  next real move is re-measuring the Granian gap on 3.14.7t.
+  dynamic decodes: **the bridge is near its structural floor** — which the
+  re-measurement on 3.14.7t then confirmed from the other side. **Done,
+  and it moved the target twice.** First it showed the raw gap living in
+  the HTTP layer, not the bridge; then CPU-normalizing the comparator
+  (Granian's "1 worker" runs ~1.6–1.75 measured cores) showed the honest
+  per-core HTTP gap was ~1.2x — and a profile-ranked allocation pass
+  (Headers' packed index, move-not-copy response ctors, no `String(int)`
+  per request; NOTICE has the numbers) closed it: the hello row now
+  measures **~121k rps/core against Granian's ~101k**, with the bridge
+  row at ~84k/core. Benchmark runs now leave dated,
+  environment-stamped artifacts in `bench/results/` and the table in
+  [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) is rendered from the newest
+  one (`poe render-bench-docs`, held current by `poe check-docs` in CI) —
+  because this conclusion has now inverted twice on stale numbers, and a
+  cited artifact ages visibly where a transcribed number ages silently.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
