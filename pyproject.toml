@@ -136,6 +136,24 @@ shell = """
 mkdir -p bin
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
   packages/m0-wsgi/m0serve.mojo -o bin/m0serve || exit 1
+
+# Same post-link surgery build-ffi does, and for the same reason: `mojo
+# build` records the build venv as a search path. It was missing here, so
+# every bin/m0serve ever produced resolved the Mojo runtime through a
+# directory that exists on exactly one machine. Two rpaths, because one
+# build output serves both shapes -- flat (the tarball asset, libraries
+# beside the binary) and wheel (_bin/ and _lib/ siblings). See
+# docs/FFI_DISTRIBUTION.md; `poe check-serve-portable` asserts the result.
+python3 scripts/relocate.py --no-id \
+  --rpath '@loader_path' --rpath '@loader_path/../_lib' bin/m0serve || exit 1
+
+# Then complete the bundle in place, so `bin/` IS the shipped shape: the
+# binary plus the Mojo runtime it resolves through @loader_path. Without
+# this the CLI would only run with DYLD_LIBRARY_PATH pointing back into the
+# venv -- which is the dependency we just removed, reintroduced by the
+# development workflow. Every serve-*/smoke-* task runs bin/m0serve
+# directly, so they now exercise the artifact a user actually gets.
+python3 scripts/bundle_artifact.py bin/m0serve bin || exit 1
 echo "built bin/m0serve"
 """
 
@@ -154,25 +172,11 @@ mojo build --emit shared-lib -I packages/m0-core \
 # output path as the install name. Both are the BUILD MACHINE's, which is
 # meaningless to anyone who downloads the artifact -- and neither can be
 # suppressed with a linker flag, so they are rewritten after the link.
+# The surgery is shared with build-serve rather than copied into it; the
+# copy is how bin/m0serve went without any. Linux is a best-effort cleanup
+# (that .so is statically linked, so its RUNPATH resolves nothing).
 # See docs/FFI_DISTRIBUTION.md; `poe check-ffi-portable` asserts the result.
-if [ "$(uname)" = "Darwin" ]; then
-  install_name_tool -id "@rpath/libm0core.dylib" "$lib" || exit 1
-  otool -l "$lib" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}' | while read -r rp; do
-    [ "$rp" = "@loader_path" ] || install_name_tool -delete_rpath "$rp" "$lib"
-  done
-  otool -l "$lib" | grep -q "@loader_path" || install_name_tool -add_rpath "@loader_path" "$lib" || exit 1
-  # arm64 macOS invalidates the signature on any Mach-O edit; an unsigned
-  # dylib will not load at all, so re-sign ad-hoc.
-  codesign -f -s - "$lib" >/dev/null 2>&1 || true
-else
-  # The Linux .so is statically linked (no DT_NEEDED at all), so its RUNPATH
-  # resolves nothing and cannot break a load -- but it still publishes the
-  # build directory, so it is cleared when patchelf is available. Not a hard
-  # dependency precisely because nothing depends on it.
-  if command -v patchelf >/dev/null 2>&1; then
-    patchelf --remove-rpath "$lib" || true
-  fi
-fi
+python3 scripts/relocate.py --id "libm0core.$ext" --rpath '@loader_path' "$lib" || exit 1
 echo "built $lib"
 """
 
@@ -2884,7 +2888,7 @@ case "$(uname)-$(uname -m)" in
 esac
 out="dist/libm0core-$plat"
 rm -rf "$out"
-python3 scripts/bundle_ffi.py "packages/m0-core/libm0core.$ext" "$out" || exit 1
+python3 scripts/bundle_artifact.py "packages/m0-core/libm0core.$ext" "$out" || exit 1
 # Apache-2.0 with LLVM Exceptions governs the Mojo runtime shipped alongside
 # on macOS; sections 4(a) and 4(d) want the licence text and attribution to
 # travel with it. Included unconditionally so the bundle is self-describing
@@ -2904,6 +2908,49 @@ ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 lib=${FFI_LIB:-packages/m0-core/libm0core.$ext}
 [ -f "$lib" ] || { echo "check-ffi-portable: $lib not built - run: poe build-ffi"; exit 2; }
 python3 scripts/ffi_portability_check.py "$lib"
+"""
+
+# The same treatment for the CLI binary, which never had any. bin/m0serve
+# statically embeds the lightbug fork, so unlike libm0core it carries an MIT
+# attribution obligation into every artifact it ships in -- hence a licence
+# set of its own rather than the bundle's. Deliberately NOT named smoke-*:
+# scripts/check_docs.py requires every smoke-* task to be run by test.yml,
+# and this one is a release-path task.
+[tool.poe.tasks.bundle-serve]
+help = "Assemble a self-contained, redistributable m0serve bundle under dist/"
+deps = ["build-serve", "build-ffi"]
+shell = """
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+case "$(uname)-$(uname -m)" in
+  Darwin-arm64) plat=macos-arm64 ;;
+  Darwin-*)     plat=macos-x86_64 ;;
+  *-aarch64)    plat=linux-aarch64 ;;
+  *)            plat=linux-x86_64 ;;
+esac
+out="dist/m0serve-$plat"
+rm -rf "$out"
+# libm0core rides along because _discover_core_lib (m0serve.mojo) looks for
+# it beside argv[0] first. Without it in the bundle, --realtime and the ASGI
+# state["m0"] fan-out still deliver but lose their shared event ids, and they
+# lose them SILENTLY -- the failure is duplicate suppression quietly not
+# working, not an error anyone sees.
+python3 scripts/bundle_artifact.py \
+  --also "packages/m0-core/libm0core.$ext" bin/m0serve "$out" || exit 1
+cp LICENSE "$out/LICENSE.mojo-http.txt" || exit 1
+cp licenses/LICENSE.lightbug_http.txt "$out/LICENSE.lightbug_http.txt" || exit 1
+cp licenses/LICENSE.mojo-runtime.txt "$out/LICENSE.mojo-runtime.txt" || exit 1
+cp licenses/NOTICE.m0serve.txt "$out/NOTICE.txt" || exit 1
+python3 scripts/ffi_portability_check.py --require-self-contained \
+  "$out/m0serve" || exit 1
+echo "bundle ready: $out"
+"""
+
+[tool.poe.tasks.check-serve-portable]
+help = "Assert bin/m0serve does not depend on the machine that built it"
+shell = """
+bin=${SERVE_BIN:-bin/m0serve}
+[ -f "$bin" ] || { echo "check-serve-portable: $bin not built - run: poe build-serve"; exit 2; }
+python3 scripts/ffi_portability_check.py "$bin"
 """
 
 [tool.poe.tasks.smoke-ffi]

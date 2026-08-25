@@ -605,15 +605,27 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 - **The release path.** Five gates, deliberately finite — when they are
   done the release is ready, and nothing off this list blocks it:
 
-  1. **The install matrix, hardened by existing.** Scope the PyPI wheel
-     (the binary links libpython and carries the Mojo runtime; the
-     `libm0core` bundle's rpath surgery and its licensing analysis in
-     [NOTICE](../NOTICE) are the transferable groundwork), then publish a
-     quiet, unannounced 0.x and dogfood it — publishing and announcing
-     are separate acts, and install failures are only found by installing
-     on machines that are not this one. The bundle-ffi lesson applies:
-     an artifact tested only where it was built passes exactly where the
-     defect cannot appear.
+  1. **The install matrix, hardened by existing.** Scope the PyPI wheel,
+     then publish a quiet, unannounced 0.x and dogfood it — publishing
+     and announcing are separate acts, and install failures are only
+     found by installing on machines that are not this one. The
+     bundle-ffi lesson applies: an artifact tested only where it was
+     built passes exactly where the defect cannot appear.
+
+     Two corrections to what this entry used to assume. **The binary does
+     not link libpython** — `std.python` `dlopen`s the interpreter from
+     `python3` on PATH, so the wheel needs no ABI tag and one build per
+     platform serves CPython 3.10–3.14 including free-threaded builds.
+     And the `libm0core` bundle's rpath surgery was transferable, but it
+     transferred a *bug*: both the checker and the bundler assumed
+     `otool -L`'s first entry was the file's own install name, which is
+     true of a dylib and false of `bin/m0serve`, so they agreed that a
+     binary resolving the Mojo runtime through a developer's venv was
+     self-contained. Fixed, self-tested, and written up in
+     [FFI_DISTRIBUTION.md](FFI_DISTRIBUTION.md). The licensing analysis in
+     [NOTICE](../NOTICE) did transfer, with one addition: the wheel is the
+     first artifact that redistributes the lightbug fork in binary form,
+     so its MIT notice has to travel with it.
   2. **A ten-minute quickstart that proves the headline.** The
      sync-Django realtime demo (`apps/django_realtime`: SSE + WebSocket
      fan-out from plain sync views, no Channels/Redis/second process) as

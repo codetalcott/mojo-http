@@ -1,0 +1,66 @@
+m0serve — a WSGI/ASGI server binary built from mojo-http
+Copyright (c) 2025-2026 Wm Talcott
+Licensed under the MIT License; see LICENSE.mojo-http.txt.
+
+This notice describes what the m0serve ARTIFACT contains, which is not the
+same set as the repository's NOTICE (that one describes the source tree) or
+NOTICE.txt in a libm0core bundle (that one describes a hash library with no
+dependencies). Each notice covers the thing it ships with.
+
+--------------------------------------------------------------------------------
+
+lightbug_http — statically linked into the m0serve binary
+Copyright (c) 2023 Valentin Erokhin
+Licensed under the MIT License; see LICENSE.lightbug_http.txt for the full
+text.
+
+The HTTP/1.1 server this binary is built on is a hard fork of lightbug_http,
+taken from upstream release v26.1.2 (commit 3aae65f46a72, tagged 2026-02-22).
+Upstream was archived on 2026-05-12 and is no longer maintained. The fork has
+been substantially modified; the modifications are enumerated in the NOTICE
+file of the mojo-http source repository:
+
+    https://github.com/codetalcott/mojo-http/blob/main/NOTICE
+
+The MIT License requires its notice to travel with copies "or substantial
+portions" of the software. A compiled binary is such a copy, which is why
+this file and LICENSE.lightbug_http.txt ship alongside it.
+
+--------------------------------------------------------------------------------
+
+Mojo runtime libraries
+Copyright Modular Inc
+Licensed under the Apache License 2.0 with LLVM Exceptions; see
+LICENSE.mojo-runtime.txt for the full text.
+Upstream: https://github.com/modular/modular
+
+On macOS these are shipped as separate files beside the binary, which
+resolves them through @loader_path:
+
+    libKGENCompilerRTShared.dylib
+    libMSupportGlobals.dylib
+    libAsyncRTRuntimeGlobals.dylib
+
+MODIFICATION NOTICE (Apache License 2.0, section 4(b)): each of these files
+has been changed. Their Mach-O install name and rpath were rewritten so the
+set resolves beside itself rather than in the directory it was built in, and
+each was re-signed ad-hoc because arm64 macOS invalidates a code signature on
+any Mach-O edit. No source was changed and no code was recompiled; the
+executable code is byte-for-byte as Modular built it.
+
+On Linux the same runtime is present as STATICALLY LINKED CODE inside the
+m0serve binary rather than as separate files. There is no Modular file to
+list, but the code is redistributed, and this notice covers it.
+
+--------------------------------------------------------------------------------
+
+CPython is NOT redistributed here.
+
+m0serve resolves libpython at run time from the interpreter already installed
+on the machine — it is not on the binary's link line and no CPython files are
+included. That is also why the PyPI wheel carries no ABI tag: there is no
+interpreter inside it to be compatible with, so one build serves every
+supported CPython.
+
+SQLite is not included either. The m0-sqlite bindings are a sibling package
+that m0serve does not link.
