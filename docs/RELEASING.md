@@ -92,6 +92,47 @@ Four properties of this that are easy to get wrong later:
   rehearse on TestPyPI first with an `rc`, upload the *identical* files to
   PyPI without rebuilding, and treat rc numbers as the cheap resource.
 
+### The first upload, concretely
+
+One-time, and only you can do these — they need accounts this repository
+cannot reach:
+
+1. PyPI → *Your projects* → **Publishing** → add a **pending** publisher:
+   project `m0serve`, owner `codetalcott`, repository `mojo-http`, workflow
+   `release.yml`, environment `pypi`. Repeat on TestPyPI.
+2. This repository → Settings → Environments → create `pypi`.
+3. Settings → Secrets and variables → Actions → Variables → set
+   `PUBLISH_TO_PYPI` to `true`. Until then `publish-pypi` is skipped, so a
+   tag pushed today produces a GitHub release and no upload.
+
+Then rehearse before anything is burned:
+
+```bash
+# 1. Bump BOTH copies to the release candidate, and let the ratchet check you.
+#    (pyproject.toml `version`, cli.mojo M0SERVE_VERSION -- see above.)
+uv run poe check-docs
+
+# 2. Build and prove it locally.
+uv run poe smoke-wheel
+
+# 3. Collect the OTHER platform's wheel from a CI run rather than rebuilding
+#    it -- the wheels you upload must be the wheels that were tested.
+gh run download <run-id> --pattern 'wheel-*' --dir dist/wheels
+
+# 4. TestPyPI. Filenames there are worthless, so burn rc numbers freely.
+uvx twine check --strict dist/wheels/*.whl
+uvx twine upload --repository testpypi dist/wheels/*.whl
+
+# 5. The assertion that matters: pip must pick the right file out of several
+#    platform wheels, from an index, on a machine that never built them.
+docker run --rm python:3.12-slim-bookworm sh -c \
+  'pip install -i https://test.pypi.org/simple/ m0serve && m0serve --version'
+```
+
+Only then tag for real. Upload the **identical files**, verified by sha256 —
+rebuilding between the rehearsal and the release means you tested a different
+artifact.
+
 Publishing and announcing are separate acts. The first releases are
 deliberately quiet: the wheel exists, the README documents `pip install
 m0serve`, and nothing is posted anywhere until the remaining release gates in
