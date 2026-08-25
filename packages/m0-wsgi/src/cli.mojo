@@ -485,6 +485,37 @@ def use_asgi_executor(opts: ServeOptions, is_asgi: Bool) -> Bool:
     return is_asgi and not opts.realtime and opts.blocking_threads == 0
 
 
+def wsgi_lanes(opts: ServeOptions) -> List[Int]:
+    """Every mount except the ASGI ones — the lanes the pool threads serve.
+
+    Here rather than beside its caller because BOTH execution modes deal
+    the same lanes: prefork's `_serve_offloaded` and the `--threads`
+    serving loop must partition the mounts identically, or a job reaches a
+    worker that cannot run it.
+    """
+    var lanes = List[Int]()
+    for i in range(len(opts.mount_prefixes)):
+        var is_asgi_lane = False
+        for k in range(len(opts.asgi_mounts)):
+            if opts.asgi_mounts[k] == i:
+                is_asgi_lane = True
+                break
+        if not is_asgi_lane:
+            lanes.append(i)
+    return lanes^
+
+
+def asgi_mount_names(opts: ServeOptions) -> String:
+    """`/app,/api` — the mounts whose lanes executors read, for the banner."""
+    var out = String("")
+    for k in range(len(opts.asgi_mounts)):
+        if k > 0:
+            out += ","
+        ref prefix = opts.mount_prefixes[opts.asgi_mounts[k]]
+        out += "/" if prefix.byte_length() == 0 else prefix
+    return out^
+
+
 def effective_cpus() -> Int:
     """Logical CPU count via `sysconf(_SC_NPROCESSORS_ONLN)`; 1 on failure.
 

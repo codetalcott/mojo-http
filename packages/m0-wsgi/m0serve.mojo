@@ -71,7 +71,8 @@ from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
     AsgiExecutor, detect_protocol, discovery_specs, resolve_blocking_threads,
-    zero_config_topology, use_asgi_executor, effective_cpus,
+    zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
+    effective_cpus,
     M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
 
@@ -227,31 +228,6 @@ def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
             asgi_count += 1
             opts.asgi_mounts.append(i)
     return asgi_count > 0
-
-
-def _asgi_mount_names(opts: ServeOptions) -> String:
-    """`/app,/api` — the mounts whose lanes executors read, for the banner."""
-    var out = String("")
-    for k in range(len(opts.asgi_mounts)):
-        if k > 0:
-            out += ","
-        ref prefix = opts.mount_prefixes[opts.asgi_mounts[k]]
-        out += "/" if prefix.byte_length() == 0 else prefix
-    return out^
-
-
-def _wsgi_lanes(opts: ServeOptions) -> List[Int]:
-    """Every mount except the ASGI one — the lanes the pool threads serve."""
-    var lanes = List[Int]()
-    for i in range(len(opts.mount_prefixes)):
-        var is_asgi_lane = False
-        for k in range(len(opts.asgi_mounts)):
-            if opts.asgi_mounts[k] == i:
-                is_asgi_lane = True
-                break
-        if not is_asgi_lane:
-            lanes.append(i)
-    return lanes^
 
 
 def _reload_dirs(opts: ServeOptions) -> List[String]:
@@ -489,7 +465,7 @@ def main() raises:
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " workers=" + String(opts.workers) + ")"
         + (
-            (" asgi-loop@" + _asgi_mount_names(opts))
+            (" asgi-loop@" + asgi_mount_names(opts))
             if (executor_mode and len(opts.asgi_mounts) > 0)
             else (" asgi-loop" if executor_mode else "")
         )
@@ -520,7 +496,7 @@ def main() raises:
             opts, listener, handler, server_config, shutdown_fd,
             executor_mode,
             asgi_lanes=opts.asgi_mounts.copy(),
-            wsgi_lanes=_wsgi_lanes(opts),
+            wsgi_lanes=wsgi_lanes(opts),
             peer_bus_fd=bus.read_fd(worker),
         )
         # The loop's own handler serves the inline fallback; in executor
@@ -731,7 +707,11 @@ def _serve_threaded(
         "m0serve: " + opts.served() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " threads=" + String(opts.threads) + ")"
-        + (" asgi-loop" if executor_mode else "")
+        + (
+            (" asgi-loop@" + asgi_mount_names(opts))
+            if (executor_mode and len(opts.asgi_mounts) > 0)
+            else (" asgi-loop" if executor_mode else "")
+        )
         + (
             " blocking-threads=" + String(opts.blocking_threads)
             + (" (auto)" if auto_pool else "")
