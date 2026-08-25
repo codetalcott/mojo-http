@@ -492,9 +492,27 @@ platform must support:
 baseline RHEL 9 itself requires. `apple-m1` is simply the oldest Apple
 Silicon.
 
-There is a cost: `bench/results/` numbers were measured with host-native
-tuning and a baseline build will not reproduce them exactly. Correctness
-first — an artifact that crashes has no throughput.
+**The cost is zero, measured rather than assumed.** The obvious objection to
+pinning a baseline is lost performance, and it was worth checking before
+accepting it — or before offering a tuned build alongside. Compiling the same
+sources both ways and diffing the disassembly:
+
+| binary | disassembly lines | differing lines, `apple-m1` vs `apple-m4` |
+|---|---|---|
+| `run_benchmarks` (m0-core hot paths) | 41,248 | **0** (only the filename in otool's header) |
+| `m0serve` | 257,735 | **0** |
+
+The compiler emits byte-identical machine code. That is a stronger result
+than a timing comparison — identical code cannot differ in speed — and it
+makes sense on inspection: the features `apple-m4` adds over `apple-m1` are
+`+sme`, `+sme2`, `+i8mm`, `+bf16`, all matrix and ML extensions, and nothing
+in an HTTP server auto-vectorizes into them. The hot paths are syscalls,
+byte scanning, hashing and memcpy.
+
+So the pin costs nothing here, and a microarchitecture-tuned build has
+nothing to ship. That conclusion is specific to this code at this commit: add
+SIMD-heavy work and it could change, in which case the way to find out is to
+re-run this diff, not to assume either way.
 
 `check_docs.py` asserts both tasks pass the flag. Note *how* it asserts it:
 the first version searched the whole task body, which contains a comment
@@ -502,3 +520,22 @@ explaining what `--target-cpu` is for, so it passed with the flag deleted —
 a guard satisfied by its own documentation. It now parses the `mojo build`
 command itself, with continuations joined, and both tasks were sabotaged to
 confirm it fails.
+
+### Should there be an M4-tuned build alongside?
+
+No, on two independent grounds.
+
+**Nothing to ship.** The measurement above: `apple-m1` and `apple-m4` produce
+byte-identical code for both the core benchmarks and the server. A tuned
+wheel would be the same bytes under a different name.
+
+**And nowhere to put it if there were.** A wheel's platform tag has no field
+for microarchitecture — `macosx_13_0_arm64` is the only arm64 macOS tag
+there is. Two differently-tuned wheels for one version would have the *same
+filename*, so only one can exist and `pip` has no way to choose between them.
+Shipping a tuned build would mean a separate distribution name that users
+opt into by hand, or a download outside PyPI entirely. Both are real options;
+neither is worth it for identical bytes.
+
+If that ever changes, the honest order is: measure the delta first with the
+diff above, then decide on a mechanism — not the reverse.
