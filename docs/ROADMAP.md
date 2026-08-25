@@ -492,6 +492,37 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   2` phase asserting all of it (skipped off free-threaded CPython);
   measured p99 4.3 ms on the async mount under four blocking sync views,
   against a laneless build where it times out entirely.
+- **Streamed responses no longer end their connection.** An ASGI stream on
+  HTTP/1.1 now goes out `Transfer-Encoding: chunked` — each drain framed
+  `size CRLF payload CRLF`, end-of-stream a `0 CRLF CRLF` terminator — and
+  the connection returns to keep-alive. That was the most visible
+  remaining divergence from uvicorn: close-delimiting works, but it costs
+  the connection, so an SSE stream or a `StreamingHttpResponse` was
+  followed by a reconnect. The encoder lives beside the decoder that was
+  already in `lightbug_http/http/chunked.mojo` (the client's half), and the
+  round-trip tests feed one to the other.
+
+  Framing is refused wherever it would corrupt rather than differ:
+  HTTP/1.0 has no chunked encoding, a HEAD carries no body, a 101 hands
+  the connection to WebSocket framing. It is scoped to the executor's ASGI
+  streams — a `--realtime` SSE stream is refused alongside the executor and
+  does not end on its own anyway.
+
+  Two accounting rules turned out to be load-bearing. The outbox drain
+  reads `sse_is_streaming` **once** per pass, because the drain itself is
+  what flips it and asking twice can straddle the transition — sending a
+  terminator on a stream that has just queued more. And drain acks count
+  **payload**, not wire bytes; a credit window replenished by the framing
+  overhead grows without bound over a long stream, which is why
+  `OffloadLoopState` carries `ack_payload`.
+
+  `smoke-asgi` gained the assertion that actually proves it
+  (`scripts/chunked_keepalive.py`): a raw socket, a hand-decoded chunked
+  body compared byte for byte, then a **second request on the same
+  connection**. Everything else about streaming passes with close-delimiting
+  too, which is why that one assertion is the whole guard — verified
+  load-bearing against a close-delimited build, where it fails on the
+  missing header. The same probe pins the HTTP/1.0 refusal.
 - Recorded executor fix paths, unchanged: a wrk-based bench, and N
   executors per pool under free-threading.
 - **Django ASGI parity is proven, not inferred.** `apps/django_asgi`

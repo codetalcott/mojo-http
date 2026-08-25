@@ -195,6 +195,20 @@ lightbug_http
         leaves the provision borrowed, which is what _close_slot's new
         release_provision=False is for. The HTTPService trait is unchanged,
         which was a constraint rather than an accident
+      - http/chunked.mojo gained an ENCODER beside its decoder
+        (append_chunk_size, encode_chunk, chunked_terminator), and the
+        event loop uses it to frame streaming responses on HTTP/1.1:
+        Transfer-Encoding: chunked on the head, size CRLF payload CRLF per
+        drain, and 0 CRLF CRLF at end-of-stream, after which the connection
+        returns to keep-alive instead of closing. Before this, every
+        streamed body was close-delimited and a stream therefore ended its
+        connection. Framing is refused where it would corrupt rather than
+        differ — HTTP/1.0, HEAD, a 101 upgrade — and is limited to the
+        executor's ASGI streams. Two accounting rules came with it: the
+        outbox drain reads sse_is_streaming once per pass (the drain is
+        what flips it), and stream credit acks count payload rather than
+        wire bytes, which is why OffloadLoopState carries ack_payload
+        alongside the new http11 and chunked slot arrays
       - c/socketpair.mojo (new) holds the socketpair(2) binding that
         broadcast.mojo had privately. Both callers want an AF_UNIX
         SOCK_DGRAM pair for the same reason (message boundaries, so

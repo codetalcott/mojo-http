@@ -681,6 +681,29 @@ struct OffloadLoopState(Movable):
     """The parked request was a HEAD — the loop strips the body at finish,
     and by then the request itself belongs to the pool thread."""
 
+    var http11: List[Bool]
+    """The request was HTTP/1.1. Recorded for the same reason `is_head` is:
+    the framing decision happens at finish, when the request may already
+    belong to a pool thread. Chunked transfer-encoding is 1.1-only, so an
+    HTTP/1.0 stream stays close-delimited."""
+
+    var chunked: List[Bool]
+    """This slot's streaming response is framed `Transfer-Encoding: chunked`.
+
+    Set at finish, read by the outbox drain, and only ever consulted while
+    the slot is streaming. Written unconditionally for every streaming
+    response, so a recycled slot cannot inherit a stale True."""
+
+    var ack_payload: List[Int]
+    """Payload bytes owed to the producer's credit window once the buffer
+    now in flight has landed.
+
+    Carried rather than recomputed because the buffer on the wire is not
+    the payload: chunk framing wraps it, and the credit window must count
+    what the application produced. Acking wire bytes would hand back more
+    credit than was spent on every chunk, and a long stream would grow its
+    own window without bound."""
+
     var inflight: Int
     """Jobs submitted and not yet completed. Bounded by OFFLOAD_MAX_INFLIGHT."""
 
@@ -689,14 +712,23 @@ struct OffloadLoopState(Movable):
         self.inflight = 0
         self.offloaded = List[Bool](capacity=capacity)
         self.is_head = List[Bool](capacity=capacity)
+        self.http11 = List[Bool](capacity=capacity)
+        self.chunked = List[Bool](capacity=capacity)
+        self.ack_payload = List[Int](capacity=capacity)
         for _ in range(capacity):
             self.offloaded.append(False)
             self.is_head.append(False)
+            self.http11.append(False)
+            self.chunked.append(False)
+            self.ack_payload.append(0)
 
     def __init__(out self, *, deinit move: Self):
         self.addr = move.addr
         self.offloaded = move.offloaded^
         self.is_head = move.is_head^
+        self.http11 = move.http11^
+        self.chunked = move.chunked^
+        self.ack_payload = move.ack_payload^
         self.inflight = move.inflight
 
     def enabled(self) -> Bool:
