@@ -1645,11 +1645,23 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     if response.sse_streaming:
         response.headers.pop("content-length")
         var asgi_stream = offload.enabled() and offload.pool()[].stream_active()
+        # RFC 9110 §6.4.1: a 1xx, 204 or 304 carries no body at all, so
+        # there is nothing to frame and a `0\r\n\r\n` would itself be a
+        # body. An application streaming into one of these is already
+        # wrong, but framing it turns "wrong" into "unparseable", and the
+        # reader would hang waiting for a terminator on a message the
+        # status says is already complete.
+        var bodiless = (
+            response.status_code == 204
+            or response.status_code == 304
+            or (response.status_code >= 100 and response.status_code < 200)
+        )
         var can_chunk = (
             asgi_stream
             and offload.http11[slot]
             and not offload.is_head[slot]
             and not upgraded_ws
+            and not bodiless
         )
         # Written unconditionally: a recycled slot must not inherit the
         # previous connection's framing.
