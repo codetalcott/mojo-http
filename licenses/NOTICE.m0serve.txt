@@ -34,23 +34,25 @@ Licensed under the Apache License 2.0 with LLVM Exceptions; see
 LICENSE.mojo-runtime.txt for the full text.
 Upstream: https://github.com/modular/modular
 
-On macOS these are shipped as separate files beside the binary, which
-resolves them through @loader_path:
+These are shipped as separate files beside the binary, which resolves them
+relative to itself. On macOS:
 
     libKGENCompilerRTShared.dylib
     libMSupportGlobals.dylib
     libAsyncRTRuntimeGlobals.dylib
 
-MODIFICATION NOTICE (Apache License 2.0, section 4(b)): each of these files
-has been changed. Their Mach-O install name and rpath were rewritten so the
-set resolves beside itself rather than in the directory it was built in, and
-each was re-signed ad-hoc because arm64 macOS invalidates a code signature on
-any Mach-O edit. No source was changed and no code was recompiled; the
-executable code is byte-for-byte as Modular built it.
+and on Linux the same three as .so files. (The m0serve executable links the
+Mojo runtime dynamically on both platforms. That is worth stating because it
+differs from the libm0core shared library, which is statically linked on
+Linux and ships no Modular file there at all.)
 
-On Linux the same runtime is present as STATICALLY LINKED CODE inside the
-m0serve binary rather than as separate files. There is no Modular file to
-list, but the code is redistributed, and this notice covers it.
+MODIFICATION NOTICE (Apache License 2.0, section 4(b)): each of these files
+has been changed. On macOS their Mach-O install name and rpath were rewritten
+so the set resolves beside itself rather than in the directory it was built
+in, and each was re-signed ad-hoc because arm64 macOS invalidates a code
+signature on any Mach-O edit. On Linux their DT_RUNPATH was rewritten to
+$ORIGIN for the same reason. No source was changed and no code was
+recompiled; the executable code is byte-for-byte as Modular built it.
 
 --------------------------------------------------------------------------------
 

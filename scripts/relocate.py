@@ -24,7 +24,7 @@ import os
 import subprocess
 import sys
 
-from binfmt import InspectError, classify, macho_info
+from binfmt import InspectError, classify, inspect_elf, macho_info
 
 
 def sh(*cmd, check=True):
@@ -74,22 +74,64 @@ def relocate_macho(path, set_id, rpaths):
     return after
 
 
-def relocate_elf(path, rpaths):
-    """ELF is a best-effort cleanup, deliberately not a hard dependency.
+def elf_spelling(rpaths):
+    """Translate self-relative search paths into ELF's spelling.
 
-    The Linux artifacts are statically linked — no `DT_NEEDED` at all — so
-    their `DT_RUNPATH` resolves nothing and cannot break a load. It still
-    publishes the build directory, so it is cleared when patchelf is
-    available; nothing depends on it being gone.
+    Call sites name `@loader_path` because that is what the Mach-O side uses
+    and because one call should not have to know which platform it is on.
+    ELF spells the same idea `$ORIGIN`.
     """
+    out = []
+    for rp in rpaths:
+        out.append(rp.replace("@loader_path", "$ORIGIN").replace("@executable_path", "$ORIGIN"))
+    return out
+
+
+def relocate_elf(path, rpaths):
+    """Set DT_RUNPATH, and refuse to skip it when something actually needs it.
+
+    This used to be best-effort, on the documented grounds that "the Linux
+    artifacts are statically linked, so DT_RUNPATH resolves nothing". That is
+    true of `libm0core.so` and **false of `bin/m0serve`**, which carries real
+    DT_NEEDED entries for the Mojo runtime — the CI run that first bundled it
+    on Linux is what established that. So the distinction is drawn from the
+    file rather than assumed: if nothing non-system is needed, a missing
+    patchelf is fine and the RUNPATH is only cosmetic debris; if something is,
+    building without patchelf would produce a binary that cannot find its own
+    runtime, and that is a hard failure.
+    """
+    _, deps, _ = inspect_elf(path)
+    needs_runpath = bool([d for d in deps if not _is_system_soname(d)])
+
     if not shutil_which("patchelf"):
+        if needs_runpath and rpaths:
+            raise SystemExit(
+                f"relocate: {path} needs {deps} at load time and patchelf is "
+                "not installed, so DT_RUNPATH cannot be set. Install patchelf "
+                "(apt-get install patchelf) — on Linux it is a build "
+                "requirement for this artifact, not an optional cleanup."
+            )
         print(f"relocate: patchelf not found; leaving {path} unchanged")
         return []
-    if rpaths:
-        sh("patchelf", "--set-rpath", ":".join(rpaths), path, check=False)
+
+    spelled = elf_spelling(rpaths)
+    if spelled:
+        sh("patchelf", "--set-rpath", ":".join(spelled), path)
     else:
         sh("patchelf", "--remove-rpath", path, check=False)
-    return rpaths
+    return spelled
+
+
+# Sonames the platform supplies. Anything else has to travel with us.
+_SYSTEM_SONAMES = (
+    "libc.", "libm.", "libdl.", "libpthread.", "librt.", "libutil.",
+    "libgcc_s.", "libstdc++.", "ld-linux", "libresolv.", "libnsl.",
+    "libcrypt.", "libatomic.",
+)
+
+
+def _is_system_soname(soname):
+    return soname.startswith(_SYSTEM_SONAMES)
 
 
 def shutil_which(name):

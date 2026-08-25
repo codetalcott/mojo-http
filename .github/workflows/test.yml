@@ -51,7 +51,7 @@ jobs:
         # legible failure — the job cap above is the backstop, this is the
         # one step known to stall.
         timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       # Both steps tee into one log so the ratchet below sees every warning:
       # build-all covers the packages, and test-all is the only thing that
       # compiles test/ sources, where most of the residual warnings live.
@@ -110,7 +110,7 @@ jobs:
         # legible failure — the job cap above is the backstop, this is the
         # one step known to stall.
         timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       - name: Build all packages
         run: uv run poe build-all
       # Exercises the m0-http <-> lightbug_http cycle end to end: the binary
@@ -140,6 +140,20 @@ jobs:
       # instead, and that the licences it must carry travel with it.
       - name: Assert the m0serve bundle is self-contained
         run: uv run poe bundle-serve
+      # The artifact a user actually installs. Builds the wheel with its
+      # platform tag MEASURED from the staged binaries, installs it into a
+      # throwaway venv outside this tree on a different Python minor, serves
+      # a real WSGI app through it with the environment scrubbed, and asserts
+      # it stops working when its bundled runtime is removed. That last one
+      # matters most: if it still ran, the bundle would be a placebo and the
+      # binary would be resolving the runtime from the build venv.
+      #
+      # This is the repo-side half only. A poe task runs where
+      # .venv/.../modular/lib exists, which is the directory a stale rpath
+      # would name, so it cannot prove portability on its own -- that is what
+      # the clean consumer jobs in release.yml are for.
+      - name: Build and smoke test the installable wheel
+        run: uv run poe smoke-wheel
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
       # Both stop paths: SIGTERM draining a single process, and a SIGTERM aimed

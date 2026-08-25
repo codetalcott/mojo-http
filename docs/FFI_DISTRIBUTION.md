@@ -143,6 +143,15 @@ So **the missing-runtime problem is macOS-only**, and the Linux artifact has
 been loadable all along. That is worth stating plainly because the original
 report implied both were broken.
 
+> **Correction, 2026-08-25.** That holds for `libm0core.so` and does not
+> generalise. `bin/m0serve` links the three Mojo runtime `.so` files
+> dynamically on Linux, exactly as on macOS — the first Linux CI run that
+> tried to bundle the executable is what established it, by refusing. The
+> lesson is narrow and worth keeping: "the Linux artifact is statically
+> linked" was measured on one file and then carried as a platform fact.
+> Nothing in the tooling decides by platform any more, only by what the file
+> records.
+
 The checker reports three states rather than pass/fail, which is what makes
 it gateable: `BROKEN` (only loads where it was built), `SATISFIABLE` (loads
 once named files are placed beside it), `SELF-CONTAINED` (loads with nothing
@@ -355,3 +364,33 @@ whatever `minos` the runner happened to have.
 The checker reports `min OS` now and accepts `--require-min-os=X.Y`. The
 consequence for the wheel is that **the platform tag must be measured from the
 staged binary, never copied from the toolchain's.**
+
+### It is a choice, though, not a fate
+
+`mojo build` honours `MACOSX_DEPLOYMENT_TARGET`. Measured:
+
+```
+$ MACOSX_DEPLOYMENT_TARGET=13.0 mojo build --emit shared-lib ... -o probe.dylib
+$ otool -l probe.dylib | grep -A3 LC_BUILD_VERSION
+    minos 13.0
+```
+
+So `build-ffi` and `build-serve` pin it to **13.0** — the same version the
+Mojo toolchain's own wheel is tagged for (`macosx_13_0_arm64`). Not lower:
+the toolchain does not claim to run below that, and promising more than the
+compiler does would just move the failure. Modular's runtime dylibs turn out
+to be built for 11.0, so they satisfy 13.0 comfortably — `wheel_tag.py`
+reports the spread rather than hiding it:
+
+```
+note: floors differ across files, taking the strictest (macosx_13_0_arm64):
+  macosx_11_0_arm64 <- libAsyncRTRuntimeGlobals.dylib
+  macosx_13_0_arm64 <- libm0core.dylib
+```
+
+Pinning changes the wheel's reach from macOS 26+ to macOS 13+, and — more
+usefully — makes the floor a property of this repository rather than of
+whichever image GitHub is currently calling `macos-latest`. The measurement
+stays regardless: `smoke-wheel` asserts the tag is never below the binary's
+own `LC_BUILD_VERSION`, so if the pin ever stops working the wheel gets a
+narrower tag instead of a false promise.

@@ -37,7 +37,7 @@ jobs:
       - name: Install libsqlite3 (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
 
       - name: Install pinned dependencies
         run: uv sync

@@ -108,10 +108,93 @@ def check_bench_region():
         fail((r.stdout + r.stderr).strip() or "render_bench_docs --check failed")
 
 
+def check_version_single_source():
+    """The version lives in exactly two places, and the wheel adds no third.
+
+    docs/RELEASING.md's rule is that `version` in pyproject.toml and
+    M0SERVE_VERSION in cli.mojo are the only copies. `poe smoke-serve` already
+    cross-checks them, but only after a successful compile -- this catches the
+    drift in seconds, and more importantly it catches the case smoke-serve
+    cannot see: a literal `version` creeping into the wheel's own metadata.
+    A drifted version that reaches PyPI is not correctable; the filename is
+    burned permanently, even after a delete.
+    """
+    declared = re.search(
+        r'^version = "([^"]+)"', (REPO / "pyproject.toml").read_text(), re.M
+    )
+    cli = re.search(
+        r'comptime M0SERVE_VERSION = "([^"]+)"',
+        (REPO / "packages" / "m0-wsgi" / "src" / "cli.mojo").read_text(),
+    )
+    if not declared or not cli:
+        fail("could not read the version from pyproject.toml and/or cli.mojo")
+        return
+    if declared.group(1) != cli.group(1):
+        fail(
+            f"version drift: pyproject.toml says {declared.group(1)!r} but "
+            f"cli.mojo's M0SERVE_VERSION says {cli.group(1)!r}"
+        )
+
+    wheel_pyproject = REPO / "packaging" / "m0serve" / "pyproject.toml"
+    if wheel_pyproject.exists():
+        text = wheel_pyproject.read_text()
+        if re.search(r"^version = ", text, re.M):
+            fail(
+                f"{wheel_pyproject.relative_to(REPO)} declares a literal version — "
+                "that is a third copy. It must stay `dynamic = [\"version\"]` and "
+                "derive from the repository root."
+            )
+        if 'dynamic = ["version"]' not in text:
+            fail(
+                f"{wheel_pyproject.relative_to(REPO)} no longer derives its "
+                "version from the repository root"
+            )
+
+
+def check_wheel_platform_claims():
+    """The README's platform table must name the platforms CI actually builds.
+
+    The table is the promise pip enforces, so it is exactly the kind of claim
+    this file exists to keep honest: an entry that says "supported" for a
+    platform nothing builds is a claim not backed by an artifact.
+    """
+    readme = (REPO / "README.md").read_text()
+    if "## Install" not in readme and "pip install m0serve" not in readme:
+        return  # the wheel is not documented yet; nothing to keep in step
+
+    workflow = (REPO / ".github" / "workflows" / "test.yml").read_text()
+    builds_wheel = "poe smoke-wheel" in workflow
+    if not builds_wheel:
+        fail(
+            "README documents `pip install m0serve` but test.yml never builds "
+            "a wheel — the install instructions are not backed by an artifact"
+        )
+
+    # 3.13t is a dead end (systematic object immortalization); only 3.14t is
+    # tested, by py-canary.yml. The README is what a user reads first and is
+    # burned into the PyPI long_description at upload time, so it must not
+    # point anyone at 3.13t.
+    if re.search(r"3\.13t\+|3\.13t or newer|from 3\.13t", readme):
+        fail(
+            "README claims free-threading works from 3.13t, but pyproject.toml "
+            "and docs/WSGI_VS_ASGI.md both record 3.13t as a dead end and only "
+            "3.14t is tested"
+        )
+    probe = (REPO / "pyproject.toml").read_text()
+    m = re.search(r"uv python install (3\.\d+t)", probe)
+    if m and "free-threaded" in readme and m.group(1) not in readme:
+        fail(
+            f"pyproject.toml probes {m.group(1)} but the README's free-threading "
+            f"claim does not name it"
+        )
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
     check_bench_region()
+    check_version_single_source()
+    check_wheel_platform_claims()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

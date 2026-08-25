@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 
+from relocate import relocate_elf
 from binfmt import (
     SELF_RELATIVE,
     SYSTEM_PREFIXES,
@@ -215,19 +216,17 @@ def main() -> int:
         ensure_self_relative(staged, art_rpaths)
         for name in copied + [os.path.basename(p) for p in roots[1:]]:
             ensure_self_relative(os.path.join(libdir, name), ["@loader_path"])
-    elif copied:
-        # Every Linux artifact this repo produces is statically linked, so
-        # nothing should ever be copied here. If that changes, the copies
-        # need a $ORIGIN RUNPATH that this script does not set -- and a
-        # bundle that is quietly missing one is exactly the class of defect
-        # the whole file exists to prevent. Refuse rather than guess.
-        raise SystemExit(
-            f"bundle-artifact: {staged} needed {len(copied)} runtime "
-            f"librar{'y' if len(copied) == 1 else 'ies'} ({', '.join(copied)}), "
-            "but the ELF path assumes static linking and sets no RUNPATH on "
-            "the copies. Teach relocate.py/patchelf to set $ORIGIN before "
-            "shipping this."
-        )
+    else:
+        # ELF gets the same treatment, spelled $ORIGIN. This branch used to
+        # assume the Linux artifacts were statically linked and do nothing --
+        # true of libm0core.so, and false of bin/m0serve, which needs the
+        # three Mojo runtime .so files at load time. The first Linux CI run
+        # that bundled the executable is what found that, which is why the
+        # assumption is no longer made anywhere: relocate_elf reads DT_NEEDED
+        # and decides from the file.
+        relocate_elf(staged, art_rpaths)
+        for name in copied + [os.path.basename(p) for p in roots[1:]]:
+            relocate_elf(os.path.join(libdir, name), ["@loader_path"])
 
     total = os.path.getsize(staged) + sum(
         os.path.getsize(os.path.join(libdir, n))

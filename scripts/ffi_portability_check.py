@@ -112,12 +112,32 @@ def main() -> int:
     foreign_search = [p for p in search if not p.startswith(SELF_RELATIVE)]
 
     here = os.path.dirname(os.path.abspath(path)) or "."
+
+    def resolves_locally(dep):
+        """Is `dep` present along one of the artifact's own search paths?
+
+        Not just beside the artifact: a self-relative path may point
+        elsewhere, and the wheel layout depends on exactly that -- the binary
+        lives in `_bin/` and searches `@loader_path/../_lib`. Checking only
+        the artifact's own directory would report that arrangement as merely
+        satisfiable when it is in fact complete.
+        """
+        base = os.path.basename(dep)
+        for sp in self_relative_search or ["@loader_path"]:
+            prefix = next((s for s in SELF_RELATIVE if sp.startswith(s)), None)
+            if prefix is None:
+                continue
+            resolved = os.path.normpath(os.path.join(here, sp[len(prefix) :].lstrip("/")))
+            if os.path.exists(os.path.join(resolved, base)):
+                return True
+        return False
+
     unresolved, missing_beside = [], []
     for d in deps:
         if d.startswith(SELF_RELATIVE) or d.startswith(SYSTEM_PREFIXES):
             continue
         if d.startswith("@rpath/") or not os.path.isabs(d):
-            if os.path.exists(os.path.join(here, os.path.basename(d))):
+            if resolves_locally(d):
                 continue
             # Resolvable by the consumer only if the artifact looks beside
             # itself; otherwise it can only ever find it on the build box.

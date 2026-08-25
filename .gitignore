@@ -79,3 +79,14 @@ py-canary.log
 probe.out
 dist/
 .sesskey
+
+# Wheel build output. _bin/_lib/licenses under the packaging project are
+# STAGED by `poe stage-wheel` from artifacts built elsewhere in the tree, so
+# they are build output rather than sources. Hatchling excludes VCS-ignored
+# files by default, which is why packaging/m0serve/pyproject.toml has to name
+# them under `artifacts` -- see the comment there.
+packaging/m0serve/src/m0serve/_bin/
+packaging/m0serve/src/m0serve/_lib/
+packaging/m0serve/src/m0serve/licenses/
+packaging/m0serve/licenses/
+packaging/m0serve/dist/
