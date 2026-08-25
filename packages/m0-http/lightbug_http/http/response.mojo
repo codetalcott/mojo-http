@@ -135,6 +135,30 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     var protocol: String
     var sse_streaming: Bool
 
+    var body_fd: Int
+    """An open file to send as the body instead of `body_raw`, or -1.
+
+    The point is that the bytes never enter this process: the event loop
+    hands the descriptor to `sendfile(2)`. `body_raw` stays EMPTY when
+    this is set — the two are alternatives, and `encode_into` therefore
+    writes only the head, leaving the loop to transfer the body. The
+    `Content-Length` still has to be right, because a framed or
+    close-delimited body is not what this path produces; `set_file_body`
+    sets it.
+
+    Ownership transfers to whoever encodes the response: the event loop
+    closes this descriptor when the transfer finishes, when the client
+    disconnects, and when it strips the body from a HEAD. A handler that
+    builds a response and then drops it without encoding leaks the fd,
+    which is why `StaticFiles` opens the file last, after every refusal
+    has already returned."""
+
+    var body_fd_offset: Int
+    """Where in the file the body starts — a Range response begins mid-file."""
+
+    var body_fd_len: Int
+    """How many bytes to send from `body_fd_offset`."""
+
     @staticmethod
     def from_bytes(b: Span[Byte, _]) raises ResponseParseError -> HTTPResponse:
         var cookies = ResponseCookieJar()
@@ -286,6 +310,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.protocol = protocol
         self.body_raw = Bytes(body_bytes)
         self.sse_streaming = False
+        self.body_fd = -1
+        self.body_fd_offset = 0
+        self.body_fd_len = 0
         if HeaderKey.CONNECTION not in self.headers:
             self.set_connection_keep_alive()
         if HeaderKey.CONTENT_LENGTH not in self.headers:
@@ -315,6 +342,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         var body_len = len(owned_body)
         self.body_raw = owned_body^
         self.sse_streaming = False
+        self.body_fd = -1
+        self.body_fd_offset = 0
+        self.body_fd_len = 0
         if HeaderKey.CONNECTION not in self.headers:
             self.set_connection_keep_alive()
         if HeaderKey.CONTENT_LENGTH not in self.headers:
@@ -342,6 +372,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.protocol = protocol
         self.body_raw = Bytes(reader.read_bytes().as_bytes())
         self.sse_streaming = False
+        self.body_fd = -1
+        self.body_fd_offset = 0
+        self.body_fd_len = 0
         self.set_content_length(len(self.body_raw))
         if HeaderKey.CONNECTION not in self.headers:
             self.set_connection_keep_alive()
@@ -462,6 +495,20 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.write(self.cookies, lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
+
+    def set_file_body(mut self, fd: Int, offset: Int, length: Int):
+        """Send `length` bytes of `fd` from `offset` as the body.
+
+        Takes ownership of `fd`: from here the event loop closes it, on
+        every path including a client that disappears mid-transfer. Clears
+        `body_raw`, because the two body kinds are alternatives and a
+        buffer left behind would be written in front of the file's bytes.
+        """
+        self.body_raw = Bytes()
+        self.body_fd = fd
+        self.body_fd_offset = offset
+        self.body_fd_len = length
+        self.set_content_length(length)
 
     def encode_into(deinit self, var buf: Bytes) -> Bytes:
         """Encode response into a pre-allocated buffer (zero new-alloc hot path).

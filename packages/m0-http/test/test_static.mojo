@@ -7,8 +7,11 @@ the secret file planted OUTSIDE the root proves rejection happened before
 any read.
 """
 
+from std.ffi import c_int, external_call
 from std.os import makedirs
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
+
+from lightbug_http.io.bytes import Bytes
 
 from lightbug_http.c.process import getpid
 from lightbug_http.http import HTTPRequest
@@ -51,8 +54,39 @@ def _get(path: String, method: String = "GET") raises -> HTTPRequest:
     )
 
 
+def _body_bytes(resp: HTTPResponse) -> Bytes:
+    """The response body, wherever it lives.
+
+    A served file is now fd-backed — `body_raw` is empty and the event
+    loop transfers the bytes with `sendfile(2)` — so reading it here is
+    what keeps these assertions about CONTENT rather than about which
+    field happens to hold it. `pread` so the descriptor's own offset is
+    untouched, exactly as the loop leaves it.
+    """
+    if resp.body_fd < 0 or resp.body_fd_len <= 0:
+        return Bytes(Span(resp.body_raw))
+    var buf = Bytes(capacity=resp.body_fd_len)
+    for _ in range(resp.body_fd_len):
+        buf.append(0)
+    var got = external_call[
+        "pread", Int, c_int, type_of(Pointer(to=buf[0])), Int, Int64
+    ](
+        c_int(resp.body_fd),
+        Pointer(to=buf[0]),
+        resp.body_fd_len,
+        Int64(resp.body_fd_offset),
+    )
+    if got < 0:
+        return Bytes()
+    var out = Bytes(capacity=got)
+    for i in range(got):
+        out.append(buf[i])
+    return out^
+
+
 def _body(resp: HTTPResponse) -> String:
-    return String(StringSlice(unsafe_from_utf8=Span(resp.body_raw)))
+    var b = _body_bytes(resp)
+    return String(StringSlice(unsafe_from_utf8=Span(b)))
 
 
 from lightbug_http.http import HTTPResponse
@@ -283,7 +317,11 @@ def test_range_serves_206_with_content_range() raises:
     var resp = _serve(static, req^)
     assert_equal(resp.status_code, 206)
     assert_equal(resp.headers["Content-Range"], "bytes 0-3/" + String(_file_len(root, "style.css")))
-    assert_equal(len(resp.body_raw), 4)
+    # Four bytes FROM THE FILE, not four bytes of whatever was in memory:
+    # a range is served by giving sendfile an offset, so the assertion has
+    # to read at that offset to mean anything.
+    assert_equal(len(_body_bytes(resp)), 4)
+    assert_equal(_body(resp), "body")
 
 
 def test_range_unsatisfiable_is_416_with_total() raises:

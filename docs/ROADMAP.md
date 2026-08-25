@@ -398,8 +398,26 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   ahead of the bridge: asset requests are answered in Mojo and never enter
   Python, which is the WhiteNoise/nginx replacement claim,
   smoke-asserted (type, ETag revalidation, freshness, traversal 404). The
-  zero-copy `sendfile` step remains recorded — it needs event-loop support
-  for fd-backed response bodies, a deliberate change, not a tweak.
+  **zero-copy `sendfile` step has landed.** `HTTPResponse` gained an
+  fd-backed body beside `body_raw`, and both write paths transfer it with
+  `sendfile(2)` — the event loop across readiness events, the blocking loop
+  in a plain loop, because a response kind only one path understood would
+  be a trap. `StaticFiles` no longer reads a file to serve it: `stat`
+  supplies the size, and a hit hands the loop an open descriptor.
+  Measured at **64 KB of RSS growth while serving 192 MB**, against
+  ~200 MB when the same files are buffered — `poe smoke-sendfile` asserts
+  both halves, plus a mid-file Range, a bodyless HEAD that keeps the real
+  `Content-Length`, and the ETag round-trip.
+
+  **The validator changed with it, deliberately.** It was a wyhash64 over
+  the whole file, which a path that never reads the bytes cannot compute;
+  it is now derived from size and mtime, as nginx and Apache do. The trade
+  is that a rewrite preserving both is a cache *hit* the content hash would
+  have caught. What did not change is what the tag claims: still weak, so
+  `If-Range` remains unsatisfiable and a conditional range still falls back
+  to the full representation. The descriptor is owned by the connection's
+  provision from the moment the head is encoded and released on every
+  close path, so a client that vanishes mid-transfer cannot leak it.
 - **The uvicorn-shaped CLI exists.** `m0serve MODULE[:ATTR]` with `--host`,
   `--port`, `--workers`, `--app-dir`, `--static PREFIX=DIR`, `--max-body`,
   `--metrics` (`packages/m0-wsgi/m0serve.mojo`, `poe build-serve` →

@@ -32,6 +32,7 @@ from lightbug_http.http.chunked import (
     chunked_terminator,
     encode_chunk,
 )
+from lightbug_http.c.sendfile import send_file
 from lightbug_http.strings import strHttp11
 from lightbug_http.io.bytes import Bytes
 from std.memory import unsafe_memcpy
@@ -748,6 +749,31 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
 
                 var remaining = len(slot_response[slot]) - slot_send_offset[slot]
                 if remaining <= 0:
+                    # Head already drained: this readiness belongs to the
+                    # file body, if one is still owed.
+                    var pumped = _pump_body_fd(
+                        provision_pool.provisions[slot], fd_val
+                    )
+                    if pumped == BODY_FD_FATAL:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool,
+                            active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                        continue
+                    if pumped == BODY_FD_MORE:
+                        try:
+                            backend.add_write_oneshot(fd_val)
+                            slot_read_armed[slot] = False
+                        except:
+                            _close_slot(
+                                backend, handler, slot, fd_val,
+                                slot_fds, fd_to_slot, provision_pool,
+                                active_count, metrics,
+                                slot_sse, slot_ws, slot_ws_state,
+                            )
+                        continue
                     _after_send(
                         backend, slot, fd_val,
                         handler, config, server_address, tcp_keep_alive,
@@ -1557,6 +1583,59 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
         )
 
 
+comptime BODY_FD_DONE = 1
+comptime BODY_FD_MORE = 0
+comptime BODY_FD_FATAL = -1
+
+
+def _pump_body_fd(mut provision: ConnectionProvision, fd_val: Int) -> Int:
+    """Push the pending file body at the socket until it stops taking it.
+
+    Returns `BODY_FD_DONE` when nothing is owed (including the common case
+    of no file at all), `BODY_FD_MORE` when the socket filled up and the
+    caller must wait for writability, and `BODY_FD_FATAL` when the
+    transfer cannot continue.
+
+    A fatal error has to close the connection rather than move on: the head
+    is already on the wire promising `Content-Length` bytes, so a short body
+    is indistinguishable from a truncated response to the client. Closing is
+    at least an error it can detect.
+
+    Loops rather than sending once per readiness event, because a large
+    file would otherwise cost one event loop pass per socket buffer.
+    """
+    if provision.body_fd < 0 or provision.body_fd_remaining <= 0:
+        provision.close_body_fd()
+        return BODY_FD_DONE
+
+    while provision.body_fd_remaining > 0:
+        var r = send_file(
+            fd_val,
+            provision.body_fd,
+            provision.body_fd_offset,
+            provision.body_fd_remaining,
+        )
+        # `sent` is meaningful even alongside `again` — Darwin reports a
+        # short write as EAGAIN WITH a count — so advance before branching
+        # or those bytes are sent twice.
+        provision.body_fd_offset += r.sent
+        provision.body_fd_remaining -= r.sent
+        if r.failed():
+            provision.close_body_fd()
+            return BODY_FD_FATAL
+        if provision.body_fd_remaining <= 0:
+            break
+        if r.again:
+            return BODY_FD_MORE
+        if r.sent == 0:
+            # Neither progress nor a reason: treat as would-block rather
+            # than spinning the loop on this connection forever.
+            return BODY_FD_MORE
+
+    provision.close_body_fd()
+    return BODY_FD_DONE
+
+
 def _finish_response[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
@@ -1611,9 +1690,19 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         if (provision_pool.provisions[slot].keepalive_count + 1) >= config.max_keepalive_requests:
             provision_pool.provisions[slot].should_close = True
 
-    # RFC 9110 §9.3.2: HEAD response must not contain a body
+    # RFC 9110 §9.3.2: HEAD response must not contain a body. The headers
+    # stay as they are — including Content-Length, which must describe the
+    # body a GET would have returned — so an fd-backed body is dropped by
+    # closing the file rather than by rewriting the head.
     if offload.is_head[slot]:
         response.body_raw = Bytes()
+        if response.body_fd >= 0:
+            try:
+                close(FileDescriptor(response.body_fd))
+            except:
+                pass
+            response.body_fd = -1
+            response.body_fd_len = 0
 
     if upgraded_ws:
         # The handshake already set "Connection: Upgrade"; a keep-alive or
@@ -1690,10 +1779,24 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # comment here claimed Mojo could not move out of a list-element field at
     # all; it can, verified on the 1.0 toolchain against both this shape and
     # a bare `List[Bytes]` element.)
+    # Take the file body off the response BEFORE it is consumed by
+    # `encode_into`, which moves out of it. From here the provision owns
+    # the descriptor and `close_body_fd` is the only thing that releases
+    # it — the response object is gone a line later.
+    var file_fd = response.body_fd
+    var file_off = response.body_fd_offset
+    var file_len = response.body_fd_len
+    response.body_fd = -1
+
     var scratch = Bytes()
     swap(provision_pool.provisions[slot].encoding_buffer, scratch)
     slot_response[slot] = response^.encode_into(scratch^)
     slot_send_offset[slot] = 0
+    provision_pool.provisions[slot].close_body_fd()
+    if file_fd >= 0:
+        provision_pool.provisions[slot].body_fd = file_fd
+        provision_pool.provisions[slot].body_fd_offset = file_off
+        provision_pool.provisions[slot].body_fd_remaining = file_len
 
     # The access log's method and path were recorded in `_process_request`,
     # before the request could leave this thread.
@@ -1720,16 +1823,29 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
             # EAGAIN: fall through to register EVFILT_WRITE
 
     if slot_send_offset[slot] >= response_len:
-        _after_send(
-            backend, slot, fd_val,
-            handler, config, server_address, tcp_keep_alive,
-            slot_fds, slot_response, slot_send_offset,
-            slot_header_start,
-            fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse, slot_ws, slot_ws_state,
-            slot_read_armed, slot_idle_deadline,
-        )
-        return
+        # The head has landed. A file body, if any, follows it — the two
+        # are separate transfers and this is the ordering between them.
+        var pumped = _pump_body_fd(provision_pool.provisions[slot], fd_val)
+        if pumped == BODY_FD_FATAL:
+            _close_slot(
+                backend, handler, slot, fd_val,
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+            return
+        if pumped == BODY_FD_DONE:
+            _after_send(
+                backend, slot, fd_val,
+                handler, config, server_address, tcp_keep_alive,
+                slot_fds, slot_response, slot_send_offset,
+                slot_header_start,
+                fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+                slot_read_armed, slot_idle_deadline,
+            )
+            return
+        # else: more of the file is owed — fall through and wait for
+        # writability exactly as a partial head send does.
 
     # Partial send or EAGAIN: register EVFILT_WRITE for the remainder.
     try:
@@ -1926,6 +2042,10 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     slot_sse[slot] = False
     slot_ws[slot] = False
     slot_ws_state[slot].reset()
+    # A client that vanished mid-transfer still leaves an open file behind.
+    # This is the one place every close goes through, which is why the
+    # release lives here rather than beside each caller.
+    provision_pool.provisions[slot].close_body_fd()
 
     try:
         close(FileDescriptor(fd_val))

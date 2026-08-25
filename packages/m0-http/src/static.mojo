@@ -24,12 +24,30 @@ ignored and served as the full `200`, which the RFC explicitly permits.
 these ETags are weak by design, so a conditional range falls back to the
 full representation rather than risking a stale slice. No directory
 listings — a request for a directory (trailing `/`) serves its
-`index.html` or 404s. Every hit reads and hashes the file; put
-`ResponseCache` in front if that ever shows up in a profile.
+`index.html` or 404s.
+
+**A hit never reads the file.** `stat` supplies the size — which is what
+Range arithmetic and `Content-Length` need — and the validator is derived
+from size and mtime, so a 304 or a refusal costs one syscall and no I/O.
+A served body is handed to the event loop as an open descriptor and moved
+by `sendfile(2)`, so the bytes never enter this process: measured at 64 KB
+of RSS growth while serving 192 MB, against ~200 MB when the same files
+are buffered (`poe smoke-sendfile` pins both halves of that).
+
+That replaced a wyhash64 over the whole file, and the trade is worth
+stating plainly rather than discovering: a rewrite that preserves both
+size and mtime is now a cache *hit* the content hash would have caught.
+nginx and Apache make the same trade for the same reason. What did NOT
+change is what the tag claims — it is still weak, so `If-Range` stays
+unsatisfiable exactly as above.
 """
+
+from std.os import stat
 
 from lightbug_http import HTTPRequest, HTTPResponse
 from lightbug_http.header import Headers, Header, HeaderKey
+
+from .threads import dup_fd
 
 from .etag import compute_etag, etag_matches
 
@@ -127,14 +145,22 @@ struct StaticFiles(Copyable, Movable):
         if not fs_path:
             return _not_found()
 
-        var contents: List[UInt8]
+        # `stat` rather than a read: the size is what Range arithmetic and
+        # Content-Length need, and the validator is derived from it, so a
+        # cache hit or a refusal never touches the file's bytes at all.
+        var total: Int
+        var etag: String
         try:
-            with open(fs_path.value(), "r") as f:
-                contents = f.read_bytes()
+            var st = stat(fs_path.value())
+            total = Int(st.st_size)
+            etag = stat_etag(
+                total,
+                Int(st.st_mtimespec.tv_sec) * 1_000_000_000
+                + Int(st.st_mtimespec.tv_subsec),
+            )
         except:
             return _not_found()
 
-        var etag = compute_etag(contents)
         var inm = req.headers.get(HeaderKey.IF_NONE_MATCH)
         if inm:
             if etag_matches(etag, inm.value()):
@@ -146,18 +172,19 @@ struct StaticFiles(Copyable, Movable):
                 )
                 return self._with_cache_control(not_modified^)
 
-        # A single satisfiable byte range gets its slice; If-Range never
-        # matches (strong comparison, weak ETags), so a conditional range
-        # falls back to the full representation. GET only: a ranged HEAD
-        # would advertise a length no GET here ever sends for that request.
+        # A single satisfiable byte range is sent from an offset rather
+        # than sliced; If-Range never matches (strong comparison, weak
+        # ETags), so a conditional range falls back to the full
+        # representation. GET only: a ranged HEAD would advertise a length
+        # no GET here ever sends for that request.
         var range_hdr = req.headers.get("range")
         if range_hdr and req.method == "GET" and not req.headers.get("if-range"):
-            var r = parse_range(range_hdr.value(), len(contents))
+            var r = parse_range(range_hdr.value(), total)
             if r.kind == RANGE_UNSATISFIABLE:
                 var unsat = HTTPResponse(
                     body_bytes=String("").as_bytes(),
                     headers=Headers(
-                        Header("Content-Range", "bytes */" + String(len(contents))),
+                        Header("Content-Range", "bytes */" + String(total)),
                         Header(HeaderKey.ETAG, etag),
                     ),
                     status_code=416,
@@ -165,11 +192,11 @@ struct StaticFiles(Copyable, Movable):
                 )
                 return unsat^
             if r.kind == RANGE_VALID:
-                var part = List[UInt8](capacity=r.end - r.start + 1)
-                for i in range(r.start, r.end + 1):
-                    part.append(contents[i])
+                var part_fd = _open_read(fs_path.value())
+                if part_fd < 0:
+                    return _not_found()
                 var partial = HTTPResponse(
-                    body_bytes=part^,
+                    body_bytes=String("").as_bytes(),
                     headers=Headers(
                         Header(HeaderKey.CONTENT_TYPE, content_type_for(rel)),
                         Header(HeaderKey.ETAG, etag),
@@ -177,16 +204,26 @@ struct StaticFiles(Copyable, Movable):
                         Header(
                             "Content-Range",
                             "bytes " + String(r.start) + "-" + String(r.end)
-                            + "/" + String(len(contents)),
+                            + "/" + String(total),
                         ),
                     ),
                     status_code=206,
                     status_text="Partial Content",
                 )
+                # sendfile takes an offset, so a range is the same transfer
+                # as a whole file with different bounds — no slicing, and
+                # nothing proportional to the range is ever allocated.
+                partial.set_file_body(part_fd, r.start, r.end - r.start + 1)
                 return self._with_cache_control(partial^)
 
+        # Opened LAST, after every refusal above has already returned:
+        # from here the descriptor belongs to the response, and a path
+        # that built one and then bailed would leak it.
+        var fd = _open_read(fs_path.value())
+        if fd < 0:
+            return _not_found()
         var resp = HTTPResponse(
-            body_bytes=contents,
+            body_bytes=String("").as_bytes(),
             headers=Headers(
                 Header(HeaderKey.CONTENT_TYPE, content_type_for(rel)),
                 Header(HeaderKey.ETAG, etag),
@@ -195,7 +232,51 @@ struct StaticFiles(Copyable, Movable):
             status_code=200,
             status_text="OK",
         )
+        resp.set_file_body(fd, 0, total)
         return self._with_cache_control(resp^)
+
+
+def _open_read(path: String) -> Int:
+    """A raw read-only descriptor for `path`, or -1.
+
+    `sendfile(2)` wants a descriptor, but Mojo's `open` hands back a
+    `FileHandle` that closes itself at end of scope — exactly wrong here,
+    since the response outlives this function and the event loop is what
+    eventually closes the file. So: open normally, `dup(2)` the
+    descriptor, and let the handle close its own copy. The dup survives
+    on the same open file description, offset included.
+
+    Binding `open(2)` directly was tried first and does not work: it is
+    variadic, the stdlib already declares it with a different signature,
+    and the two collide at link time ("failed to legalize operation
+    'pop.external_call'"). `dup` has no such problem.
+    """
+    try:
+        with open(path, "r") as f:
+            return dup_fd(Int(f._get_raw_fd()))
+    except:
+        return -1
+
+
+def stat_etag(size: Int, mtime_ns: Int) -> String:
+    """A validator from `stat` alone: `W/"<size>-<mtime_ns>"`.
+
+    Hashing the contents would be a stronger validator, and it is what
+    this module used to do — but it required reading every byte of every
+    hit, which is the cost `sendfile` exists to remove. nginx and Apache
+    both derive static validators from size and mtime for the same reason.
+
+    Still WEAK, and deliberately so. Two representations can share a size
+    and an mtime truncated to whatever the filesystem records, so this
+    cannot promise the byte-for-byte identity a strong validator asserts.
+    That keeps `If-Range` unsatisfiable here exactly as before — a
+    conditional range still falls back to the full representation — so the
+    change is confined to how the tag is computed, not to what it claims.
+
+    The nanosecond field is used where the filesystem provides it, which
+    narrows but does not close the same-second rewrite window.
+    """
+    return String('W/"') + String(size) + "-" + String(mtime_ns) + '"'
 
 
 comptime RANGE_NONE = 0
