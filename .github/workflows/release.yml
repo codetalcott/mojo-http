@@ -231,8 +231,13 @@ jobs:
       - name: An older glibc must be refused, not crashed
         run: |
           set -euo pipefail
+          # `sh -c` so the glob expands INSIDE the container. Without it the
+          # host shell leaves /w/*.whl literal (that path does not exist on
+          # the host), pip receives an asterisk and fails with "Invalid wheel
+          # filename" -- a refusal, but not the one being tested. The guard
+          # caught that correctly and refused to accept it as a pass.
           if docker run --rm -v "$PWD/dist:/w:ro" quay.io/pypa/manylinux_2_28_x86_64 \
-               /opt/python/cp312-cp312/bin/pip install --no-index --no-deps /w/*.whl 2>&1 | tee out; then
+               sh -c '/opt/python/cp312-cp312/bin/pip install --no-index --no-deps /w/*.whl' 2>&1 | tee out; then
             echo "::error::a glibc 2.28 host accepted the wheel"; exit 1
           fi
           grep -qi "not a supported wheel\|no matching distribution" out \
