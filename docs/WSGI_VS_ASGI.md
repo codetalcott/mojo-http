@@ -555,15 +555,32 @@ views holding every pool thread, the FastHTML mount answers at **p50
 — which is the same shape as the mixed-workload run that justified
 `--blocking-threads` in the first place (§`WSGI_PERFORMANCE.md`).
 
+**Several ASGI mounts (2026-08).** The one-ASGI-mount limit is gone: each
+ASGI mount gets its own executor, and the ack routing that blocked a
+second one is built. The parts, each carrying one invariant:
+
+- **Executors share ONE chunk channel.** Its datagrams were always
+  slot-addressed, and one `SOCK_DGRAM` queue is globally FIFO across
+  writers — an old stream's frames all precede its end marker, which
+  precedes the close, the recycle, and therefore the new stream's begin —
+  so the recycled-slot safety argument survives two writers untouched.
+- **Each executor gets its own drain-ack pair** (`enable_stream_ack`),
+  and the loop routes every ack by `slot_lane`, recorded at submit.
+  Credit belongs to the executor that owns the slot: an ack sent to the
+  other lane is not an error but a stream stalled *forever*, because the
+  owner's `send()` awaits a window only its own ack fd replenishes.
+  Pinned by streaming 256 KB — four credit windows — from both executors
+  concurrently.
+- **The reserved channel name carries the lane** (`\x01<kind>/<slot>/<lane>`;
+  the unmounted wire format is unchanged). It is stored as the slot's
+  subscription filter url, so a disconnect tag or an inbound WS message
+  routes to the owning executor's submit fd by parsing the slot's own
+  record — no side table to drift.
+- **Shutdown sends one pill per executor, each on its own lane** — the
+  stage-2 SIGTERM lesson applied to N.
+
 **What is still refused, and why it is refused rather than guessed:**
 
-- **A second ASGI mount.** Each executor needs its own streaming chunk
-  channel and the loop has one `bus_read_fd`. Sharing it is possible —
-  slots are unique per loop, so chunks are already addressed — but the
-  drain **acks** are not, because credit belongs to the executor that owns
-  the slot. That routing is the next piece of work, and serving a second
-  async app without its streaming would be a quiet downgrade. Any number
-  of WSGI mounts may sit beside the one ASGI mount.
 - **`--mount` with `--realtime`.** M0-Hold subscribes a connection to
   registries the loop's handler owns, and an inbound WebSocket message is
   delivered back into ONE application's urlconf. Which mount should

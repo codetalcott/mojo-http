@@ -224,6 +224,22 @@ struct OffloadPool(Movable):
     end-of-stream close and no comment heartbeats), which is sound because
     `--realtime` is refused with every offload mode."""
 
+    var slot_lane: List[Int]
+    """Which lane each slot's in-flight job was submitted on; stale between
+    jobs and overwritten by the next `submit`. What routes a drain ack (and
+    nothing else) to the executor that owns the slot — credit sent to a
+    different executor is a permanently stalled stream, because the shim's
+    `send()` awaits a window only its own ack fd replenishes."""
+
+    var lane_ack_read: List[Int]
+    var lane_ack_write: List[Int]
+    """Per-lane drain-ack pairs, parallel to `lane_prefixes`; -1 where a
+    lane has no executor (a WSGI lane, whose slots never stream). The chunk
+    channel stays SHARED — slots are unique per loop so chunks are already
+    addressed, and one datagram queue is globally FIFO, which is what keeps
+    the recycled-slot argument true with two writers — but acks cannot
+    share: credit belongs to the executor that owns the slot."""
+
     var capacity: Int
 
     def __init__(out self, capacity: Int) raises:
@@ -246,7 +262,12 @@ struct OffloadPool(Movable):
         self.lane_prefixes = List[String]()
         self.lane_submit_read = List[Int]()
         self.lane_submit_write = List[Int]()
+        self.lane_ack_read = List[Int]()
+        self.lane_ack_write = List[Int]()
         var slots = capacity if capacity > 0 else 1
+        self.slot_lane = List[Int](capacity=slots)
+        for _ in range(slots):
+            self.slot_lane.append(0)
         self.requests = OwningList[Optional[HTTPRequest]](capacity=slots)
         self.responses = OwningList[Optional[HTTPResponse]](capacity=slots)
         self.errored = List[Bool](capacity=slots)
@@ -289,6 +310,9 @@ struct OffloadPool(Movable):
         self.lane_prefixes = move.lane_prefixes^
         self.lane_submit_read = move.lane_submit_read^
         self.lane_submit_write = move.lane_submit_write^
+        self.lane_ack_read = move.lane_ack_read^
+        self.lane_ack_write = move.lane_ack_write^
+        self.slot_lane = move.slot_lane^
         self.submit_read = move.submit_read
         self.submit_write = move.submit_write
         self.complete_read = move.complete_read
@@ -343,13 +367,52 @@ struct OffloadPool(Movable):
             except:
                 _sched_yield()
 
+    def enable_stream_ack(mut self, lane: Int) raises:
+        """A private drain-ack pair for `lane`'s executor.
+
+        Called once per ASGI lane by the wiring, after `add_lane` and
+        before that lane's executor thread spawns. Both ends non-blocking,
+        exactly as `enable_stream_channel` sets up the base pair — the
+        loop must never park in a send, and the executor's asyncio loop
+        watches the read end with `add_reader`."""
+        var pair = socketpair_dgram()
+        _size_socket(pair[0])
+        _size_socket(pair[1])
+        _set_nonblocking_fd(pair[0])
+        _set_nonblocking_fd(pair[1])
+        self.lane_ack_read[lane] = pair[0]
+        self.lane_ack_write[lane] = pair[1]
+
+    def ack_read_fd(self, lane: Int) -> Int:
+        """The ack read end `lane`'s executor watches; the base pair when
+        the lane never got its own (the unmounted executor)."""
+        if (
+            lane >= 0
+            and lane < len(self.lane_ack_read)
+            and self.lane_ack_read[lane] >= 0
+        ):
+            return self.lane_ack_read[lane]
+        return self.stream_ack_read
+
     def ack_stream(self, slot: Int, bytes_flushed: Int):
         """One drain-ack datagram, loop side: `(slot: i32, bytes: i32)` LE.
 
         Called after a streaming slot's buffer fully lands in the kernel;
         the executor replenishes that slot's credit by `bytes_flushed`.
         Retried like `complete` — bounded, and the ack channel is sized
-        far beyond the credit window so it cannot stay full."""
+        far beyond the credit window so it cannot stay full.
+
+        Routed by `slot_lane`: with several executors the ack must reach
+        the one that owns the slot, because credit sent anywhere else
+        stalls the stream forever — the owner's window never refills, and
+        the shim's `send()` awaits it with no timeout."""
+        var lane = (
+            self.slot_lane[slot]
+            if slot >= 0 and slot < len(self.slot_lane) else 0
+        )
+        var ack_fd = self.stream_ack_write
+        if lane < len(self.lane_ack_write) and self.lane_ack_write[lane] >= 0:
+            ack_fd = self.lane_ack_write[lane]
         var msg = List[UInt8](capacity=8)
         var s = UInt32(slot)
         var b = UInt32(bytes_flushed)
@@ -360,7 +423,7 @@ struct OffloadPool(Movable):
         for _ in range(64):
             try:
                 _ = send(
-                    FileDescriptor(self.stream_ack_write),
+                    FileDescriptor(ack_fd),
                     Span(msg), UInt(len(msg)), 0,
                 )
                 return
@@ -389,6 +452,8 @@ struct OffloadPool(Movable):
         """
         if len(self.lane_prefixes) == 0:
             self.lane_prefixes.append(prefix^)
+            self.lane_ack_read.append(-1)
+            self.lane_ack_write.append(-1)
             return
         var pair = socketpair_dgram()
         _size_socket(pair[0])
@@ -397,6 +462,8 @@ struct OffloadPool(Movable):
         self.lane_submit_read.append(pair[0])
         self.lane_submit_write.append(pair[1])
         self.lane_prefixes.append(prefix^)
+        self.lane_ack_read.append(-1)
+        self.lane_ack_write.append(-1)
 
     def submit_read_fd(self, lane: Int) -> Int:
         """The read end a worker for `lane` blocks on."""
@@ -424,9 +491,12 @@ struct OffloadPool(Movable):
         request had before this module existed.
         """
         var job = _encode_job(slot)
+        var lane = self.lane_for(path)
+        if slot >= 0 and slot < len(self.slot_lane):
+            self.slot_lane[slot] = lane
         try:
             _ = send(
-                FileDescriptor(self.submit_write_fd(self.lane_for(path))),
+                FileDescriptor(self.submit_write_fd(lane)),
                 Span(job),
                 UInt(len(job)),
                 0,

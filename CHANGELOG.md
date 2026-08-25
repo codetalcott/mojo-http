@@ -51,10 +51,26 @@ versions may break the API**.
 
   Measured and smoke-pinned: with four blocking 2-second Django views
   holding every pool thread, the FastHTML mount answers at p50 1.3 ms /
-  p99 2.8 ms. One ASGI mount is supported — a second needs its own
-  streaming channel, and drain-ack credit belongs to the executor that
-  owns the slot — with any number of WSGI mounts beside it.
-  `apps/hybrid_mix` is now Django + Flask + FastHTML in one process.
+  p99 2.8 ms. `apps/hybrid_mix` is now Django + Flask + FastHTML in one
+  process.
+
+- **Several ASGI mounts, one executor each.** The one-ASGI-mount limit is
+  lifted: every ASGI mount gets its own executor thread, its own bridge
+  and lifespan, and its own drain-ack pair (`OffloadPool.enable_stream_ack`),
+  with the loop routing each ack by the lane recorded at submit
+  (`slot_lane`) — credit belongs to the executor that owns the slot, and
+  an ack routed anywhere else is a stream stalled forever rather than an
+  error, which is why the smoke streams 256 KB (four credit windows) from
+  two executors concurrently and byte-counts both. Executors share the
+  one chunk channel: its datagrams were always slot-addressed, and a
+  single `SOCK_DGRAM` queue is globally FIFO across writers, so the
+  recycled-slot safety argument survives. The reserved channel names now
+  carry the executor's lane (`\x01<kind>/<slot>/<lane>`; the unmounted
+  wire format is unchanged), which is how disconnect tags and inbound
+  WebSocket messages route back to the owning executor — parsed from the
+  slot's own subscription record, no side table to drift. Shutdown sends
+  one pill per executor on its own lane. `apps/hybrid_mix` gains
+  `feed.asgi`, a second async mount beside FastHTML's.
 
 ## [0.9.0] — 2026-08-24
 

@@ -80,60 +80,76 @@ struct AsgiExecutor(Movable):
 
     var _set: ThreadSet
     var _started: Bool
-    var _lane: Int
-    """The submit lane this executor reads, so `stop_and_join` poisons the
-    channel the thread is actually parked on."""
+    var _lanes: List[Int]
+    """Each executor thread's submit lane, so `stop_and_join` poisons the
+    channel that thread is actually parked on. One entry for the unmounted
+    server; one per ASGI mount otherwise."""
 
-    def __init__(out self):
-        self._set = ThreadSet(1)
+    def __init__(out self, count: Int = 1):
+        self._set = ThreadSet(count if count > 0 else 1)
         self._started = False
-        self._lane = -1
+        self._lanes = List[Int]()
 
     def __init__(out self, *, deinit move: Self):
         self._set = move._set^
         self._started = move._started
-        self._lane = move._lane
+        self._lanes = move._lanes^
 
-    def start(mut self, pool_addr: Int, user: Int, lane: Int = -1) raises:
-        """Spawn the executor thread. `user` is the `ServeOptions` address.
+    def start(
+        mut self, pool_addr: Int, user: Int, var lanes: List[Int]
+    ) raises:
+        """Spawn one executor thread per lane in `lanes`.
 
-        `lane` is the submit lane this executor reads and the mount it
-        serves — under `--mount` a sync application's pool threads are
-        parked on other lanes at the same time, and a job must reach the
-        worker that can actually run it. -1 is the unmounted server.
+        `user` is the `ServeOptions` address. A lane is the submit channel
+        that executor reads and the mount it serves — under `--mount` a
+        sync application's pool threads are parked on other lanes at the
+        same time, and a job must reach the worker that can actually run
+        it. `[-1]` is the unmounted server: one executor, the base
+        channels. Each executor owns its own bridge, asyncio loop,
+        lifespan and drain-ack fd; they share only the chunk channel,
+        whose datagrams are slot-addressed.
         """
         var body = _executor_body
         var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
-        var block = self._set.block(0)
-        block.set(BLK_USER, user)
-        block.set(BLK_POOL, pool_addr)
-        block.set(BLK_LANE, lane)
-        self._lane = lane
-        self._set.spawn(0, body_addr)
+        if len(lanes) == 0:
+            lanes.append(-1)
+        self._lanes = lanes^
+        for i in range(len(self._lanes)):
+            var block = self._set.block(i)
+            block.set(BLK_USER, user)
+            block.set(BLK_POOL, pool_addr)
+            block.set(BLK_LANE, self._lanes[i])
+            self._set.spawn(i, body_addr)
         self._started = True
 
     def stop_and_join(mut self, mut pool: OffloadPool) raises -> Int:
-        """One pill on THIS executor's lane, then join.
+        """One pill per executor, each on ITS OWN lane, then join.
 
-        Returns 1 if the thread did not end cleanly.
+        Returns the count of threads that did not end cleanly.
 
         BLOCKS — detach from the interpreter around it, exactly as with
-        `BlockingPool.stop_and_join`: the executor must attach-and-run to
+        `BlockingPool.stop_and_join`: an executor must attach-and-run to
         drain its in-flight tasks, and it cannot while the joiner holds a
         thread state and sleeps in `pthread_join`.
 
-        **The lane is load-bearing.** Under `--mount` this thread sleeps on
-        its own mount's submit channel, and a pill sent to lane 0 goes to
-        the pool threads instead — `next_job` has no timeout, so the
-        executor never wakes and this join hangs forever rather than
-        failing. That is exactly what a mounted server's SIGTERM did before
-        this line named the lane.
+        **The lanes are load-bearing.** Under `--mount` each executor
+        sleeps on its own mount's submit channel, and a pill sent to lane
+        0 goes to the pool threads instead — `next_job` has no timeout, so
+        the executor never wakes and this join hangs forever rather than
+        failing. That is exactly what a mounted server's SIGTERM did
+        before the pills named their lanes.
         """
         if not self._started:
             return 0
-        pool.stop(1, self._lane if self._lane > 0 else 0)
+        for i in range(len(self._lanes)):
+            var lane = self._lanes[i]
+            pool.stop(1, lane if lane > 0 else 0)
         self._set.join_all()
-        return 0 if self._set.status(0) == STATUS_OK else 1
+        var failed = 0
+        for i in range(len(self._lanes)):
+            if self._set.status(i) != STATUS_OK:
+                failed += 1
+        return failed
 
 
 def _executor_serve(block: ThreadBlock) raises:
@@ -190,8 +206,10 @@ def _executor_serve(block: ThreadBlock) raises:
     # made non-blocking by `enable_stream_channel`, in the wiring, before
     # this thread existed.
     set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
+    if lane >= 0:
+        set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
     handler.apps[0]._bridge.executor_init(
-        pool.submit_read_fd(lane), pool.stream_ack_read
+        pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
 
     # Parallel to the slots: what `after_response` needs after the request
@@ -211,7 +229,9 @@ def _executor_serve(block: ThreadBlock) raises:
         # Parked attached, inside the shim loop's selector — which is where
         # CPython releases the GIL — while every spawned task progresses.
         var events = handler.apps[0]._bridge.wait_events()
-        _pump_events(pool, handler, events, methods, paths, pending_101, stopping)
+        _pump_events(
+            pool, handler, events, methods, paths, pending_101, stopping, lane
+        )
         if stopping:
             break
 
@@ -221,7 +241,9 @@ def _executor_serve(block: ThreadBlock) raises:
     handler.apps[0]._bridge.finish_executor()
     var leftover = handler.apps[0]._bridge.drain_events_nowait()
     var ignored = False
-    _pump_events(pool, handler, leftover, methods, paths, pending_101, ignored)
+    _pump_events(
+        pool, handler, leftover, methods, paths, pending_101, ignored, lane
+    )
     handler.shutdown()
 
 
@@ -233,6 +255,7 @@ def _pump_events(
     mut paths: List[String],
     mut pending_101: OwningList[Optional[HTTPResponse]],
     mut stopping: Bool,
+    lane: Int = -1,
 ) raises:
     """Answer one batch of shim events.
 
@@ -339,7 +362,7 @@ def _pump_events(
             # stream sits between its begin and its end on one channel.
             var begin = List[UInt8]()
             var begin_frame = encode_bus_frame(
-                asgi_stream_url(String("b"), slot), NO_EVENT_ID, Span(begin)
+                asgi_stream_url(String("b"), slot, lane), NO_EVENT_ID, Span(begin)
             )
             pool.send_stream_chunk(Span(begin_frame))
             # The head: an ordinary completion whose response is marked
@@ -367,13 +390,13 @@ def _pump_events(
             # is a corrupt body.
             var chunk = handler.apps[0]._bridge.body_bytes(ev[2])
             var frame = encode_bus_frame(
-                asgi_stream_url(String("s"), slot), NO_EVENT_ID, Span(chunk)
+                asgi_stream_url(String("s"), slot, lane), NO_EVENT_ID, Span(chunk)
             )
             pool.send_stream_chunk(Span(frame))
         elif kind == "stream_end":
             var empty = List[UInt8]()
             var frame = encode_bus_frame(
-                asgi_stream_url(String("e"), slot), NO_EVENT_ID, Span(empty)
+                asgi_stream_url(String("e"), slot, lane), NO_EVENT_ID, Span(empty)
             )
             pool.send_stream_chunk(Span(frame))
         elif kind == "stream_note":
@@ -388,7 +411,7 @@ def _pump_events(
             if pending_101[slot]:
                 var begin = List[UInt8]()
                 var begin_frame = encode_bus_frame(
-                    asgi_stream_url(String("B"), slot), NO_EVENT_ID,
+                    asgi_stream_url(String("B"), slot, lane), NO_EVENT_ID,
                     Span(begin),
                 )
                 pool.send_stream_chunk(Span(begin_frame))
@@ -411,7 +434,7 @@ def _pump_events(
                 WS_OP_TEXT if opcode == 1 else WS_OP_BINARY, Span(payload)
             )
             var frame = encode_bus_frame(
-                asgi_stream_url(String("w"), slot), NO_EVENT_ID,
+                asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
                 Span(frame_bytes),
             )
             pool.send_stream_chunk(Span(frame))
@@ -424,13 +447,13 @@ def _pump_events(
             close_body.append(UInt8(code & 0xFF))
             var close_frame = encode_ws_frame(WS_OP_CLOSE, Span(close_body))
             var f1 = encode_bus_frame(
-                asgi_stream_url(String("w"), slot), NO_EVENT_ID,
+                asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
                 Span(close_frame),
             )
             pool.send_stream_chunk(Span(f1))
             var empty = List[UInt8]()
             var f2 = encode_bus_frame(
-                asgi_stream_url(String("x"), slot), NO_EVENT_ID, Span(empty)
+                asgi_stream_url(String("x"), slot, lane), NO_EVENT_ID, Span(empty)
             )
             pool.send_stream_chunk(Span(f2))
 

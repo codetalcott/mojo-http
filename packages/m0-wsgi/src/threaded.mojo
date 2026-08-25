@@ -368,7 +368,12 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         # learns where disconnect tags go.
         pool.enable_stream_channel()
         handler.set_asgi_notify(pool.submit_write)
-        exec_thread.start(pool_addr, ctx.user)
+        # The threaded path adds no lanes (a mounted server there shares
+        # one mode), so this is the unmounted shape: one executor on the
+        # base channels.
+        var exec_lanes = List[Int]()
+        exec_lanes.append(-1)
+        exec_thread.start(pool_addr, ctx.user, exec_lanes^)
     elif blocking > 0:
         pool_threads.start[T](pool_addr, ctx.user)
     var loop_bus_fd = pool.stream_chunk_read if executor_mode else block.get(BLK_BUS_FD)

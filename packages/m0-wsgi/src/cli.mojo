@@ -80,13 +80,15 @@ struct ServeOptions(Copyable, Movable):
     """
     var mount_modules: List[String]
     var mount_attributes: List[String]
-    var asgi_mount: Int
-    """Index of the ASGI mount, or -1 when every mount is WSGI.
+    var asgi_mounts: List[Int]
+    """Indexes of the ASGI mounts; empty when every mount is WSGI.
 
-    Written by `m0serve`'s detection pass, not by a flag. It is what decides
-    which submit lane the asyncio executor reads while the handler pool
-    serves the others — the per-mount execution mode that makes a mixed
-    sync/async process worth having.
+    Written by `m0serve`'s detection pass, not by a flag. Each names a
+    submit lane one asyncio executor reads while the handler pool serves
+    the rest — the per-mount execution mode that makes a mixed sync/async
+    process worth having. Several are allowed: executors share only the
+    slot-addressed chunk channel, and each gets its own drain-ack pair,
+    because credit belongs to the executor that owns the slot.
     """
     var mount_explicit: List[Bool]
     """Per mount, whether the user wrote `:ATTR`. Discovery applies to a
@@ -173,7 +175,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_modules = List[String]()
         self.mount_attributes = List[String]()
         self.mount_explicit = List[Bool]()
-        self.asgi_mount = -1
+        self.asgi_mounts = List[Int]()
         self.protocol = String(PROTOCOL_AUTO)
         self.host = String("0.0.0.0")
         self.port = DEFAULT_PORT
@@ -207,7 +209,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_modules = copy.mount_modules.copy()
         self.mount_attributes = copy.mount_attributes.copy()
         self.mount_explicit = copy.mount_explicit.copy()
-        self.asgi_mount = copy.asgi_mount
+        self.asgi_mounts = copy.asgi_mounts.copy()
         self.protocol = copy.protocol
         self.host = copy.host
         self.port = copy.port
@@ -241,7 +243,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_modules = move.mount_modules^
         self.mount_attributes = move.mount_attributes^
         self.mount_explicit = move.mount_explicit^
-        self.asgi_mount = move.asgi_mount
+        self.asgi_mounts = move.asgi_mounts^
         self.protocol = move.protocol^
         self.host = move.host^
         self.port = move.port
@@ -452,10 +454,9 @@ def resolve_blocking_threads(
     if opts.realtime:
         return 0
     if len(opts.mount_prefixes) > 0:
-        var wsgi_mounts = 0
-        for i in range(len(opts.mount_prefixes)):
-            if i != opts.asgi_mount:
-                wsgi_mounts += 1
+        var wsgi_mounts = (
+            len(opts.mount_prefixes) - len(opts.asgi_mounts)
+        )
         return default_blocking_threads(cpus) if wsgi_mounts > 0 else 0
     if is_asgi:
         return 0
@@ -475,12 +476,12 @@ def use_asgi_executor(opts: ServeOptions, is_asgi: Bool) -> Bool:
     `resolve_blocking_threads`'s answer has been written back into
     `opts.blocking_threads`.
     """
-    # A mounted server routes by lane, so the executor serves the ASGI
-    # mount while pool threads serve the sync ones; `asgi_mount` names it
-    # and the blocking-threads count is about the pool, not about whether
-    # the executor runs at all.
+    # A mounted server routes by lane, so one executor per ASGI mount
+    # serves the async ones while pool threads serve the sync ones;
+    # `asgi_mounts` names them and the blocking-threads count is about
+    # the pool, not about whether executors run at all.
     if len(opts.mount_prefixes) > 0:
-        return opts.asgi_mount >= 0 and not opts.realtime
+        return len(opts.asgi_mounts) > 0 and not opts.realtime
     return is_asgi and not opts.realtime and opts.blocking_threads == 0
 
 

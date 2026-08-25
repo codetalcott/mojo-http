@@ -469,10 +469,11 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   answers at p50 1.3 ms / p99 2.8 ms (`docs/WSGI_VS_ASGI.md` §9,
   `apps/hybrid_mix`, `poe smoke-hybrid`).
 
-  **What is left:** a second ASGI mount, which needs drain-ack routing
-  (chunks could share the loop's one bus fd since slots are unique;
-  credit cannot, because it belongs to the executor that owns the slot),
-  and per-mount modes under `--threads`, which adds no lanes today.
+  **Several ASGI mounts landed too**: one executor per ASGI mount, a
+  shared slot-addressed chunk channel, and per-lane drain-ack pairs
+  routed by `slot_lane` — pinned by streaming 256 KB (four credit
+  windows) from two executors concurrently. **What is left:** per-mount
+  modes under `--threads`, which adds no lanes today.
 - Recorded executor fix paths, unchanged: a wrk-based bench, and N
   executors per pool under free-threading.
 - **Recorded follow-ups, not yet scoped:**

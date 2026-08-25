@@ -61,13 +61,19 @@ per loop stays** (a slot indexes that loop's provisions); `lane i` is
 `match_path_prefix`, so they cannot disagree; each worker builds **only
 its own mount** (`only_mount`), or lifespans run once per mount per
 thread; and pills are sent per lane at shutdown, because a thread parked
-on lane 2 is not woken by a pill sent to lane 0. Two refusals stand: a
-**second ASGI mount** (each executor needs its own chunk channel and the
-loop has one `bus_read_fd`; chunks could share it since slots are unique,
-but drain-ack credit belongs to the owning executor) and `--mount` with
-`--realtime` (an inbound WS message has no defensible destination among
-several urlconfs). Under `--threads` no lanes are added, so a mounted
-server there shares one mode.
+on lane 2 is not woken by a pill sent to lane 0. **Several ASGI mounts
+each get their own executor**: they share the ONE slot-addressed chunk
+channel (a single `SOCK_DGRAM` queue is globally FIFO across writers, so
+the recycled-slot argument survives), but each has its own drain-ack pair
+(`enable_stream_ack`) with the loop routing acks by `slot_lane` — credit
+sent to the wrong executor is not an error but a stream stalled forever,
+which is why the smoke streams 256 KB (four credit windows) from two
+executors concurrently. The reserved channel names carry the lane
+(`\x01<kind>/<slot>/<lane>`) so disconnect tags and inbound WS messages
+route to the owning executor by parsing the slot's own filter url. One
+refusal stands: `--mount` with `--realtime` (an inbound WS message has no
+defensible destination among several urlconfs). Under `--threads` no
+lanes are added, so a mounted server there shares one mode.
 
 Zero-config: with no topology flag or `M0_*` topology variable, `m0serve`
 defaults to `--blocking-threads min(cores,8)` — an explicitly-set variable,
