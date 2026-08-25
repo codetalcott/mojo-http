@@ -665,6 +665,26 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   workaround can be retired if a future toolchain fixes the leak (re-test
   with `smoke-django`'s RSS guard, which must stay at 0 KB over 10k
   requests).
+- **Suspected race: the WebSocket close path can RST instead of FIN.**
+  Seen once (2026-08-25, macOS CI runner, PR #107's first smoke run):
+  `ws_probe.py` failed with `ConnectionResetError` at its final
+  `sock.recv` — *after* the entire close handshake had verified (text and
+  binary echoes, server close with code 1000, client echo sent). Only the
+  FIN it was waiting for never came; a rerun of identical code passed,
+  and `main` with the same server code had passed an hour earlier, so
+  this is a timing window, not a determinism.
+
+  The suspected mechanism: the loop closes the slot while the client's
+  close-echo frame is still unread in the socket's receive buffer, and a
+  socket closed with pending unread data sends RST rather than FIN — a
+  window a slow runner widens. If it recurs, the fix direction is in the
+  WS teardown path: consume (or drain) the peer's close echo before the
+  final `close`, which pins the orderly-FIN contract the probe already
+  asserts. Deliberately recorded rather than fixed on one occurrence —
+  the repo's own rule is that a guard must be verified load-bearing, and
+  a fix for a failure that cannot yet be reproduced cannot be. Loosening
+  the probe to tolerate RST would be the wrong repair: the FIN is the
+  contract worth keeping, and the probe is doing its job by noticing.
 - ~~**Graceful shutdown always waits the full 5 s drain when idle keep-alive
   connections are open**~~ — **fixed.** It did, in every execution mode.
   Measured 2026-08-23 on 3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
