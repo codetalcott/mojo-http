@@ -717,7 +717,12 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   with `smoke-django`'s RSS guard, which must stay at 0 KB over 10k
   requests).
 - **Suspected race: the WebSocket close path can RST instead of FIN.**
-  Seen once (2026-08-25, macOS CI runner, PR #107's first smoke run):
+  Seen twice, both on macOS CI runners and never locally — most recently on
+  PR #113, a change touching only `scripts/binfmt.py` and `release.yml`,
+  which cannot reach the event loop. So it is a genuine intermittent rather
+  than anything a diff introduced, and the second sighting is consistent
+  with the first in every detail below. Seen first (2026-08-25, macOS CI
+  runner, PR #107's first smoke run):
   `ws_probe.py` failed with `ConnectionResetError` at its final
   `sock.recv` — *after* the entire close handshake had verified (text and
   binary echoes, server close with code 1000, client echo sent). Only the
