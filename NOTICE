@@ -209,6 +209,18 @@ lightbug_http
         what flips it), and stream credit acks count payload rather than
         wire bytes, which is why OffloadLoopState carries ack_payload
         alongside the new http11 and chunked slot arrays
+      - c/sendfile.mojo (new) and fd-backed response bodies: HTTPResponse
+        gained body_fd/body_fd_offset/body_fd_len as an alternative to
+        body_raw, and both write paths learned to transfer it with
+        sendfile(2) — the event loop across readiness events, the blocking
+        loop in a plain loop. The file's bytes never enter the process.
+        Darwin and Linux disagree about the argument order and about how a
+        short write is reported (Darwin returns -1/EAGAIN WITH a positive
+        count), which is what SendFileResult normalises. The descriptor is
+        owned by the ConnectionProvision once the head is encoded, and
+        released by close_body_fd on every path — completion, client
+        disconnect, and HEAD stripping — so a client that vanishes
+        mid-transfer cannot leak it
       - c/socketpair.mojo (new) holds the socketpair(2) binding that
         broadcast.mojo had privately. Both callers want an AF_UNIX
         SOCK_DGRAM pair for the same reason (message boundaries, so

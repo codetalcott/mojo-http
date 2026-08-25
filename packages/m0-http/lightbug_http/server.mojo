@@ -20,6 +20,8 @@ from lightbug_http.http.common_response import BadRequest, InternalError, URIToo
 from lightbug_http.io.bytes import Bytes, ByteView
 from std.memory import memcpy
 from lightbug_http.service import HTTPService
+from lightbug_http.c.sendfile import send_file
+from lightbug_http.c.socket import close as close_fd
 from lightbug_http.socket import EOF, FatalCloseError, SocketAcceptError, SocketClosedError, SocketRecvError
 from lightbug_http.utils.error import CustomError
 from lightbug_http.utils.owning_list import OwningList
@@ -164,6 +166,24 @@ struct ConnectionProvision(Movable):
     var encoding_buffer: Bytes
     """Pre-allocated buffer for response encoding; swapped into slot_response to avoid per-request allocation."""
 
+    var body_fd: Int
+    """An open file whose bytes are still owed to this connection, or -1.
+
+    Lives on the provision rather than in a loop-side array for one
+    reason: closing it must not be forgotten, and the provision is what
+    every close path already has in hand. `_close_slot` releases it, so a
+    client that vanishes mid-transfer cannot leak the descriptor.
+
+    Set only after the response head is encoded, and the loop sends from
+    it once that head has fully landed — the head is bytes and the body is
+    not, so they are two transfers and the order between them matters."""
+
+    var body_fd_offset: Int
+    """Next byte of `body_fd` to send; advanced by each partial sendfile."""
+
+    var body_fd_remaining: Int
+    """Bytes still owed from `body_fd`. Zero with a live fd means done."""
+
     var peer_host: String
     var peer_port: Int
     """The accepted peer, written once per connection at accept and stamped
@@ -187,8 +207,27 @@ struct ConnectionProvision(Movable):
         self.log_path = String()
         self.response_status = 0
         self.encoding_buffer = Bytes()
+        self.body_fd = -1
+        self.body_fd_offset = 0
+        self.body_fd_remaining = 0
         self.peer_host = String("")
         self.peer_port = 0
+
+    def close_body_fd(mut self):
+        """Release any file this connection was still sending. Idempotent.
+
+        Every path that abandons a response goes through here — completion,
+        client disconnect, HEAD stripping — so the descriptor has exactly
+        one owner and one release.
+        """
+        if self.body_fd >= 0:
+            try:
+                close_fd(FileDescriptor(self.body_fd))
+            except:
+                pass
+            self.body_fd = -1
+        self.body_fd_offset = 0
+        self.body_fd_remaining = 0
 
     def ensure_buffers(mut self, size: Int):
         """Size this connection's buffers, once, the first time it is used.
@@ -655,9 +694,18 @@ def handle_connection[
                 if (provision.keepalive_count + 1) >= config.max_keepalive_requests:
                     provision.should_close = True
 
-            # RFC 9110 §9.3.2: HEAD response must not contain a body
+            # RFC 9110 §9.3.2: HEAD response must not contain a body. An
+            # fd-backed body is dropped by closing the file; the headers,
+            # Content-Length included, still describe what a GET returns.
             if request_method == "HEAD":
                 response.body_raw = Bytes()
+                if response.body_fd >= 0:
+                    try:
+                        close_fd(FileDescriptor(response.body_fd))
+                    except:
+                        pass
+                    response.body_fd = -1
+                    response.body_fd_len = 0
 
             if provision.should_close:
                 response.set_connection_close()
@@ -675,11 +723,48 @@ def handle_connection[
         elif provision.state.kind == ConnectionState.RESPONDING:
             var response = provision.response.take()
 
+            # The file body, taken before `encode` consumes the response.
+            # This loop is blocking, so the transfer is a plain loop over
+            # `sendfile` rather than the event loop's readiness dance —
+            # but it has to exist, or an fd-backed response would go out
+            # as headers promising a body that never arrives.
+            var body_fd = response.body_fd
+            var body_off = response.body_fd_offset
+            var body_rem = response.body_fd_len
+            response.body_fd = -1
+
             try:
                 _ = conn.write(encode(response^))
             except write_err:
+                if body_fd >= 0:
+                    try:
+                        close_fd(FileDescriptor(body_fd))
+                    except:
+                        pass
                 provision.state = ConnectionState.closed()
                 break
+
+            if body_fd >= 0:
+                var send_failed = False
+                while body_rem > 0:
+                    var r = send_file(
+                        conn.socket.fd.value, body_fd, body_off, body_rem
+                    )
+                    body_off += r.sent
+                    body_rem -= r.sent
+                    if r.failed():
+                        send_failed = True
+                        break
+                    if r.sent == 0 and not r.again:
+                        send_failed = True
+                        break
+                try:
+                    close_fd(FileDescriptor(body_fd))
+                except:
+                    pass
+                if send_failed:
+                    provision.state = ConnectionState.closed()
+                    break
 
             if provision.should_close:
                 provision.state = ConnectionState.closed()

@@ -3021,6 +3021,74 @@ echo "smoke-todo OK"
 # Each assertion pins one framework feature the notes API exists to showcase:
 # routing with :id and a real 405, negotiation, ETag/304, problem+json, CORS,
 # and M0_PORT via AppConfig (the smoke runs the whole thing on :8091).
+[tool.poe.tasks.smoke-sendfile]
+help = "Serve a file larger than every buffer without holding it in memory"
+deps = ["build-serve"]
+shell = """
+set -u
+srv=bin/m0serve
+B=http://localhost:8140
+dir=$(mktemp -d)
+fail() { echo "FAIL: $1"; echo '=== sendfile.log ==='; cat sendfile.log 2>/dev/null; kill $pid 2>/dev/null; rm -rf "$dir"; exit 1; }
+
+# 64 MB: far past the socket buffer, the 4KB staging read, and the
+# encode buffer. A path that read the file into memory to serve it would
+# show this in RSS; sendfile never brings it into the process at all.
+dd if=/dev/urandom of="$dir/big.bin" bs=1048576 count=64 2>/dev/null
+want=$(md5sum < "$dir/big.bin" | cut -d' ' -f1)
+printf 'hello static' > "$dir/small.txt"
+
+"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8140 \
+  --static /assets/="$dir" > sendfile.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'server never became healthy'
+
+rss_before=$(ps -o rss= -p $pid | tr -d ' ')
+
+# Byte-exact delivery of the whole file, three times over.
+for i in 1 2 3; do
+  got=$(curl -s --max-time 120 $B/assets/big.bin | md5sum | cut -d' ' -f1)
+  [ "$got" = "$want" ] || fail "64MB body differed on pass $i (want $want, got $got)"
+done
+
+rss_after=$(ps -o rss= -p $pid | tr -d ' ')
+growth=$((rss_after - rss_before))
+echo "sendfile: RSS ${rss_before}KB -> ${rss_after}KB (grew ${growth}KB) after 3x64MB"
+
+# The actual claim. Reading each file into memory would add ~65536KB per
+# concurrent response; 16MB of headroom catches that with room to spare
+# while tolerating allocator noise.
+[ "$growth" -lt 16384 ] || fail "RSS grew ${growth}KB serving 64MB files - the body is being buffered"
+
+# Range: served by giving sendfile an offset, so this reads mid-file.
+code=$(curl -s -o part.bin -w '%{http_code}' -H 'Range: bytes=1048576-1048583' $B/assets/big.bin)
+[ "$code" = "206" ] || fail "range expected 206, got $code"
+[ "$(wc -c < part.bin | tr -d ' ')" = "8" ] || fail 'range served the wrong length'
+want_part=$(dd if="$dir/big.bin" bs=1 skip=1048576 count=8 2>/dev/null | md5sum | cut -d' ' -f1)
+got_part=$(md5sum < part.bin | cut -d' ' -f1)
+[ "$want_part" = "$got_part" ] || fail 'range served the wrong bytes'
+
+# HEAD: the headers a GET would send, and no body at all.
+curl -s -I --max-time 20 $B/assets/big.bin > head.txt
+grep -qi '^content-length: 67108864' head.txt || fail 'HEAD lost the real Content-Length'
+n=$(curl -s -o - -I --max-time 20 $B/assets/big.bin | wc -c | tr -d ' ')
+[ "$n" -lt 4096 ] || fail 'HEAD sent a body'
+
+# The validator is now derived from stat, and must still round-trip.
+etag=$(grep -i '^etag:' head.txt | tr -d '\r' | cut -d' ' -f2-)
+[ -n "$etag" ] || fail 'no ETag on a sendfile response'
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/assets/small.txt)
+# small.txt has its own ETag; a mismatched one must NOT 304.
+[ "$code" = "200" ] || fail "another file's ETag produced $code, want 200"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/assets/big.bin)
+[ "$code" = "304" ] || fail "the file's own ETag produced $code, want 304"
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
+rm -rf "$dir" part.bin head.txt sendfile.log
+echo "smoke-sendfile OK"
+"""
+
 [tool.poe.tasks.smoke-notes]
 help = "Start the notes API, assert each framework feature end to end (incl. static files), stop"
 shell = """
