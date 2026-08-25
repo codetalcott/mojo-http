@@ -72,6 +72,7 @@ from lightbug_http.server_config import ServerConfig
 
 from .asgi_executor import AsgiExecutor
 from .blocking_pool import BlockingPool
+from .cli import ServeOptions, wsgi_lanes
 from .thread_handler import ThreadContext, ThreadHandler
 
 from m0_http import (
@@ -355,55 +356,103 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     # and its own receiver thread(s). Built before the loop because the
     # receivers hold the pool's address for their whole lives, and retired
     # after it, so an in-flight job always has somewhere to land.
+    #
+    # Under `--mount` this loop runs BOTH kinds at once, one submit lane per
+    # mount, exactly as prefork's `_serve_offloaded` does: the sync mounts'
+    # pool threads and the async mounts' executors are parked on different
+    # lanes of one pool, so `submit(slot, path)` reaches the worker that can
+    # actually run that request. Per-mount modes are per-LANE — the two
+    # server fields below decide what a lane's worker is, never "what this
+    # loop is".
+    var opts = Pointer[ServeOptions, MutUntrackedOrigin](
+        unsafe_from_address=ctx.user
+    )
+    var mounted = len(opts[].mount_prefixes) > 0
+    var asgi_lanes = opts[].asgi_mounts.copy()
+    var pool_lanes = wsgi_lanes(opts[])
+
     var blocking = server[].blocking_threads
     var executor_mode = server[].asgi_executor
-    var use_offload = blocking > 0 or executor_mode
+    var run_executor = executor_mode or len(asgi_lanes) > 0
+    var use_offload = blocking > 0 or run_executor
     var pool = OffloadPool(server[].config.max_connections if use_offload else 0)
     var pool_addr = pool.addr() if use_offload else 0
-    var pool_threads = BlockingPool(0 if executor_mode else blocking)
-    var exec_thread = AsgiExecutor()
-    if executor_mode:
-        # Streaming channel before the executor thread exists; the chunk
-        # pair's read end becomes this loop's bus fd, and the handler
-        # learns where disconnect tags go.
+    if mounted:
+        # Lane i is mount i, so this loop's `submit(slot, path)` and the
+        # handler's `app_for(path)` cannot disagree: both ask
+        # `match_path_prefix` the same question about the same table.
+        for i in range(len(opts[].mount_prefixes)):
+            pool.add_lane(opts[].mount_prefixes[i])
+    var pool_count = (
+        blocking if (len(pool_lanes) > 0 or not executor_mode) else 0
+    )
+    var pool_threads = BlockingPool(
+        0 if (executor_mode and not mounted) else pool_count
+    )
+    var exec_thread = AsgiExecutor(
+        len(asgi_lanes) if len(asgi_lanes) > 0 else 1
+    )
+    if run_executor:
+        # Streaming channel before any executor thread exists; the shared
+        # chunk pair's read end becomes this loop's bus fd, and each
+        # executor learns where its own lane's disconnect tags go — on that
+        # mount's submit channel, since that is where it is parked. Every
+        # executor gets its OWN drain-ack pair: credit belongs to the
+        # executor owning the slot, and an ack routed elsewhere is a stream
+        # stalled forever.
         pool.enable_stream_channel()
-        handler.set_asgi_notify(pool.submit_write)
-        # The threaded path adds no lanes (a mounted server there shares
-        # one mode), so this is the unmounted shape: one executor on the
-        # base channels.
-        var exec_lanes = List[Int]()
-        exec_lanes.append(-1)
+        if len(asgi_lanes) == 0:
+            handler.set_asgi_notify(pool.submit_write_fd(-1))
+        for k in range(len(asgi_lanes)):
+            var lane = asgi_lanes[k]
+            pool.enable_stream_ack(lane)
+            handler.set_lane_notify(lane, pool.submit_write_fd(lane))
+        var exec_lanes = asgi_lanes.copy()
+        if len(exec_lanes) == 0:
+            exec_lanes.append(-1)
         exec_thread.start(pool_addr, ctx.user, exec_lanes^)
-    elif blocking > 0:
-        pool_threads.start[T](pool_addr, ctx.user)
-    var loop_bus_fd = pool.stream_chunk_read if executor_mode else block.get(BLK_BUS_FD)
+    if pool_threads.count > 0:
+        pool_threads.start[T](pool_addr, ctx.user, pool_lanes^)
+    # The executor's chunk channel consumes `bus_read_fd`, so this thread's
+    # own BroadcastBus channel rides the loop's second registered fd. Both
+    # are drained identically (same codec, same `sse_peer_frame`), which is
+    # what lets the chunk channel displace it without losing `state["m0"]`.
+    var stream_bus_fd = pool.stream_chunk_read if run_executor else -1
+    var peer_fd = block.get(BLK_BUS_FD)
 
     comptime if CompilationTarget.is_macos():
         from lightbug_http.c.kqueue_backend import KqueueBackend
         var backend = DetachingBackend[KqueueBackend](KqueueBackend())
         run_event_loop(
             listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), loop_bus_fd, pool_addr,
+            block.get(BLK_SHUTDOWN_FD), stream_bus_fd, pool_addr,
+            peer_bus_fd=peer_fd,
         )
     else:
         from lightbug_http.c.epoll_backend import EpollBackend
         var backend = DetachingBackend[EpollBackend](EpollBackend())
         run_event_loop(
             listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), loop_bus_fd, pool_addr,
+            block.get(BLK_SHUTDOWN_FD), stream_bus_fd, pool_addr,
+            peer_bus_fd=peer_fd,
         )
 
     if use_offload:
         # Detached across it: a receiver finishing its last job (or the
         # executor draining its tasks) needs to attach, and it cannot
         # while this thread holds a state and blocks.
+        #
+        # Both kinds are stopped when both ran (a mounted mix): each sends
+        # its pills PER LANE, because a worker parked on lane 2 is not
+        # woken by a pill sent to lane 0 and `next_job` has no timeout —
+        # the failure is a hung `pthread_join`, not a slow one.
         ref cpy = Python().cpython()
         var join_ts = cpy.PyEval_SaveThread()
-        var failed: Int
-        if executor_mode:
-            failed = exec_thread.stop_and_join(pool)
-        else:
-            failed = pool_threads.stop_and_join(pool)
+        var failed = 0
+        if run_executor:
+            failed += exec_thread.stop_and_join(pool)
+        if pool_threads.count > 0:
+            failed += pool_threads.stop_and_join(pool)
         cpy.PyEval_RestoreThread(join_ts)
         if failed > 0:
             print(

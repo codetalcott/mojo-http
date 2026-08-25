@@ -2204,6 +2204,79 @@ else
   echo "fasthtml not installed - skipping the mixed-protocol phase"
 fi
 
+# --- phase 3t: the same mixed mounts, under `--threads` ----------------
+# Phase 3 proves per-mount modes under prefork. This proves them in the
+# OTHER execution mode, where they used to be unavailable: `_serve_one`
+# added no lanes, so `use_asgi_executor` (True if ANY mount is ASGI) put
+# every mount -- the sync one included -- on one executor. The isolation
+# assertion is what separates the two: with lanes it is ~1-5 ms, and
+# against the laneless build the async mount times out entirely.
+#
+# Needs free-threaded CPython, like every `--threads` row, and fasthtml
+# for the async mount; skipped cleanly without either.
+gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
+if [ "$gil_off" = "1" ] && python3 -c 'import fasthtml' 2>/dev/null; then
+  B3T=http://localhost:8112
+  "$srv" --mount /=shop.wsgi --mount /app=live.asgi --mount /live=feed.asgi \
+    $D --port 8112 --threads 2 --blocking-threads 4 > hybrid3t.log 2>&1 &
+  pid3t=$!
+
+  curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B3T/ \
+    | grep -q 'hello from django' \
+    || fail 'the sync mount did not serve Django under --threads'
+  curl -s --max-time 8 $B3T/app/ | grep -q 'hello from fasthtml' \
+    || fail 'the async mount did not serve FastHTML under --threads'
+  curl -s --max-time 8 $B3T/live/ | grep -q 'hello from feed' \
+    || fail 'the second async mount did not serve under --threads'
+
+  # The banner names WHICH mounts the executors took. Without the @ every
+  # mount shares one mode and the isolation below would be meaningless --
+  # exactly the state this phase was written against.
+  grep -q 'asgi-loop@/app,/live' hybrid3t.log \
+    || fail 'the executors were not bound per ASGI mount under --threads'
+  grep -q 'blocking-threads=4' hybrid3t.log \
+    || fail 'the sync mount got no handler pool under --threads'
+  grep -q 'threads=2' hybrid3t.log || fail 'the threaded banner is missing'
+
+  # Two executors on two lanes, one shared chunk channel, per-lane credit
+  # -- the acks must reach the executor owning the slot. 256 KB is four
+  # credit windows, so a misrouted ack is a stream that never finishes.
+  curl -s --max-time 25 -o big_app_t.bin $B3T/app/big &
+  bigt1=$!
+  curl -s --max-time 25 -o big_live_t.bin $B3T/live/big &
+  bigt2=$!
+  wait $bigt1 $bigt2
+  [ "$(wc -c < big_app_t.bin | tr -d ' ')" = "262144" ] \
+    || fail "the /app stream truncated under --threads: $(wc -c < big_app_t.bin) of 262144"
+  [ "$(wc -c < big_live_t.bin | tr -d ' ')" = "262144" ] \
+    || fail "the /live stream truncated under --threads: $(wc -c < big_live_t.bin) of 262144"
+  rm -f big_app_t.bin big_live_t.bin
+
+  M0_PORT=8112 python3 scripts/hybrid_isolation.py \
+    || fail 'the mounts did not isolate under --threads'
+
+  # SIGTERM with both worker kinds live on several lanes, per loop. A pill
+  # sent to the wrong lane leaves a worker parked in `next_job`, which has
+  # no timeout -- a hung join, not a slow one. Assert the exit itself.
+  kill $pid3t 2>/dev/null
+  waited=0
+  while kill -0 $pid3t 2>/dev/null && [ $waited -lt 20 ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 $pid3t 2>/dev/null; then
+    kill -9 $pid3t 2>/dev/null
+    fail 'a mixed mounted --threads server did not exit on SIGTERM (pill to the wrong lane?)'
+  fi
+  wait $pid3t 2>/dev/null
+  n=$(grep -c 'exited cleanly' hybrid3t.log || true)
+  [ "$n" = "2" ] || fail "expected 2 'exited cleanly' lines under --threads 2, saw $n"
+  rm -f hybrid3t.log
+  echo "smoke-hybrid: per-mount modes hold under --threads too"
+else
+  echo "not free-threaded (or no fasthtml) - skipping the threaded mixed-mount phase"
+fi
+
 # --- phase 4: the refusals --------------------------------------------
 out=$("$srv" --mount /a=shop.wsgi --realtime $D --port 8101 2>&1); rc=$?
 [ $rc -ne 0 ] || fail '--mount with --realtime was accepted'
@@ -2216,7 +2289,7 @@ out=$("$srv" --mount /a=shop.wsgi shop.wsgi $D --port 8101 2>&1); rc=$?
 out=$("$srv" --mount /a=shop.wsgi --mount /a/=portal.wsgi:app $D --port 8101 2>&1); rc=$?
 [ $rc -eq 2 ] || fail "a duplicate mount prefix exited $rc, expected 2"
 
-rm -f hybrid.log hybrid2.log hybrid3.log
+rm -f hybrid.log hybrid2.log hybrid3.log hybrid3t.log
 echo "smoke-hybrid OK"
 """
 

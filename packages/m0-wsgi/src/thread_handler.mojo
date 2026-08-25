@@ -39,6 +39,17 @@ trait ThreadHandler(HTTPService, Movable, Deinitable):
         """
         ...
 
+    def set_lane_notify(mut self, lane: Int, fd: Int):
+        """`set_asgi_notify`'s mounted twin: lane `lane`'s submit write end.
+
+        On the trait for the same reason `set_asgi_notify` is — the
+        generic `_serve_one` body can only call what the trait names, and
+        under `--mount` each ASGI mount's executor is parked on its own
+        lane, so a disconnect tag has to reach that lane rather than the
+        base channel. A handler with no mounted ASGI streams ignores it.
+        """
+        ...
+
     def shutdown(mut self):
         """Teardown the handler owes its application before destruction.
 

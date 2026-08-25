@@ -72,8 +72,14 @@ executors concurrently. The reserved channel names carry the lane
 (`\x01<kind>/<slot>/<lane>`) so disconnect tags and inbound WS messages
 route to the owning executor by parsing the slot's own filter url. One
 refusal stands: `--mount` with `--realtime` (an inbound WS message has no
-defensible destination among several urlconfs). Under `--threads` no
-lanes are added, so a mounted server there shares one mode.
+defensible destination among several urlconfs). **`--threads` gets the same
+lanes**: `_serve_one` mirrors `_serve_offloaded` per loop, so N loops of
+per-mount modes is N times the prefork shape — with two consequences to keep
+straight. The executor's chunk channel takes `bus_read_fd`, so a threaded
+loop's own bus channel rides `peer_bus_fd` (both drain identically; passing
+neither is how `state["m0"]` silently goes missing). And `set_lane_notify`
+sits on the `ThreadHandler` trait beside `set_asgi_notify`, because the
+generic `_serve_one` body can only call what the trait names.
 
 Zero-config: with no topology flag or `M0_*` topology variable, `m0serve`
 defaults to `--blocking-threads min(cores,8)` — an explicitly-set variable,
@@ -302,7 +308,7 @@ Tests are `std.testing`: `test_*` functions in a `test_*.mojo`, dispatched by
 `TestSuite.discover_tests[__functions_in_module()]().run()` in `main()`. Adding
 a test means adding a function — there is no registration list to update.
 
-The 69 warnings the baseline records are not a backlog. 53 are doc-string
+The 68 warnings the baseline records are not a backlog. 52 are doc-string
 capitalisation lint on summaries that open with a real identifier (`fetch_add
 on...`, `wants_html`, `q=0`, `text/*`) — capitalising them would corrupt the
 name each documents. The other 16 warn about APIs Mojo 1.0.0 does not ship:
