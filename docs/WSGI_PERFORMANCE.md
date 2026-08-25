@@ -751,6 +751,24 @@ The table between the markers is rendered from the newest artifact in
 (in CI) fails when it goes stale — the numbers cite a file rather than a
 memory. The prose around it stays hand-written.
 
+**Which per-core rows to trust, and why (2026-08-25).** The cores column's
+first artifact showed m0serve w4 at ~51k rps/core against ~84k at w1, which
+reads like a prefork scaling defect. Chased down, it is the benchmark box:
+this machine has **4 performance + 6 efficiency cores**, and an E-core
+serves this workload at **18.6k rps against a P-core's 81.7k — 4.4x
+slower** (measured by pinning a worker to background QoS). At w4 the
+server (~3.2 cores) plus wrk (~2.3) demand ~5.5 cores, so worker
+CPU-seconds spill onto E-cores and the blended rps/core craters while
+total rps plateaus at the box's ~165–170k co-located ceiling; raising
+offered load (c16→c128) moves neither number, which rules out
+under-driving. The clean scaling data: **w2 runs at 96% of w1's per-core
+rate** (83.2k vs 86.9k, server+wrk ≤ 4 P-cores), and w3's 60k/core sits
+exactly on the spillover curve (2.76 + ~2 > 4). So: per-core rows are
+comparable only where server + load-generator demand fits the P-cores —
+on this box, w1 and w2 — and the w4 rows measure scheduling, not the
+server. The same mechanism retro-explains Granian's recorded "19% loss
+from w1 to w4": that was never purely its own oversubscription either.
+
 ## A slow view strands the connections pinned behind it
 
 This is the mixed-workload measurement the `wrk` section named as Stage B's
