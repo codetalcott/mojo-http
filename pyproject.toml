@@ -1978,6 +1978,63 @@ rm -f djasgi.log dj.jar
 echo "smoke-django-asgi OK"
 """
 
+# Cross-worker pub/sub for ASGI applications: state["m0"] rides the
+# BroadcastBus, so a publish on any worker reaches subscribers on every
+# worker -- the Channels channel-layer shape with no Redis. The bus fd
+# question that blocked this (the executor consumes bus_read_fd for its
+# chunk channel) is answered by a second registered fd, same codec.
+[tool.poe.tasks.smoke-asgi-fanout]
+help = "ASGI cross-worker pub/sub over the BroadcastBus (state['m0'])"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+D="--app-dir apps/hybrid_mix"
+B=http://localhost:8152
+
+cleanup() { kill $pid 2>/dev/null; }
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  [ -f fanout.log ] && { echo '=== fanout.log ==='; cat fanout.log; }
+  exit 1
+}
+
+# --- phase 1: two workers -- spread, delivery, distinct ids -------------
+M0_WORKERS=2 "$srv" feed.asgi $D --port 8152 > fanout.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'hello from feed' || fail 'the feed app did not serve'
+M0_PORT=8152 FANOUT_WORKERS=2 python3 apps/hybrid_mix/feed/fanout_probe.py \
+  || fail 'cross-worker fan-out failed'
+
+# --- phase 2: supervisor SIGTERM with a live subscriber stream ----------
+curl -sN --max-time 30 $B/events > /dev/null 2>&1 &
+streampid=$!
+sleep 1
+kill $pid 2>/dev/null
+waited=0
+while kill -0 $pid 2>/dev/null && [ $waited -lt 20 ]; do
+  sleep 1; waited=$((waited + 1))
+done
+kill -0 $pid 2>/dev/null && { kill -9 $pid; fail 'SIGTERM did not stop the supervisor with a live subscriber'; }
+wait $pid 2>/dev/null
+kill $streampid 2>/dev/null
+
+# --- phase 3: one worker -- the app's own loop still delivers -----------
+# A single worker publishing to its own subscribers rides its own bus
+# channel; there is no separate local-delivery path to keep in sync.
+"$srv" feed.asgi $D --port 8152 > fanout.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  > /dev/null || fail 'the single-worker feed app did not serve'
+M0_PORT=8152 FANOUT_WORKERS=1 python3 apps/hybrid_mix/feed/fanout_probe.py \
+  || fail 'single-worker pub/sub failed'
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
+
+rm -f fanout.log
+echo "smoke-asgi-fanout OK"
+"""
+
 # Two applications, one process, one listener: the mounted-server row.
 # Django at one prefix and Flask at another, deliberately two FRAMEWORKS --
 # two Django projects would share django.conf.settings and the first import

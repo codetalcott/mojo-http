@@ -490,6 +490,15 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   `M0_ASGI_VALIDATE=1` pass with its own engagement canary. Channels
   remains out of scope: it needs a channel layer and WebSocket
   subprotocol negotiation, neither of which this row smuggles in.
+- **Cross-worker fan-out reaches ASGI applications.** `state["m0"]` is
+  the Channels channel-layer shape with no Redis: publish rides m0pub's
+  bus protocol (shared-atomic ids included), subscribe is an async
+  iterator fed by frames the loop forwards to each executor over the
+  submit channel. The executor's chunk channel had consumed the loop's
+  one bus fd; a second registered fd (`peer_bus_fd`) answers that. The
+  bus is now created unconditionally pre-fork — detection is post-fork,
+  and a single worker's own subscribers ride its own channel. Pinned by
+  `poe smoke-asgi-fanout`.
 - **Recorded follow-ups, not yet scoped:**
   PyPI-wheel distribution (the binary links libpython and carries the Mojo
   runtime); a published benchmark suite against gunicorn/uvicorn/Granian.

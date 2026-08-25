@@ -71,6 +71,9 @@ slow*.txt
 serve_*.txt
 big_app.bin
 big_live.bin
+fanout.log
+djasgi.log
+dj.jar
 .venv-pinned/
 py-canary.log
 probe.out

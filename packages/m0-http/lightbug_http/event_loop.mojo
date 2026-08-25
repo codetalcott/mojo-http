@@ -69,6 +69,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     shutdown_read_fd: Int = -1,
     bus_read_fd: Int = -1,
     offload_addr: Int = 0,
+    peer_bus_fd: Int = -1,
 ) raises:
     """Run the IO-multiplexed event loop.
 
@@ -109,6 +110,13 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     # Cross-worker broadcast channel: register this worker's receive end.
     if bus_read_fd >= 0:
         backend.try_add_read(bus_read_fd)
+    # A second bus channel, for the one deployment that needs two: the
+    # asyncio executor consumes `bus_read_fd` for its ASGI chunk stream,
+    # and under M0_WORKERS>1 the cross-worker BroadcastBus still has to
+    # reach this loop. Same codec, same drain, same handler entry -- the
+    # frames themselves are distinguished by their channel names.
+    if peer_bus_fd >= 0:
+        backend.try_add_read(peer_bus_fd)
 
     # `--blocking-threads`: the pool's completion channel, registered exactly
     # as a bus channel is — a readable fd that means "somebody else finished
@@ -201,8 +209,13 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             # be consumed now; drain_bus_channel reads until EAGAIN. The
             # handler queues each frame for its local subscribers, and the
             # SSE outbox drain at the bottom of this pass sends them out.
-            if bus_read_fd >= 0 and Int(backend.event_ident(i)) == bus_read_fd:
-                var peer_frames = drain_bus_channel(bus_read_fd)
+            var _ident = Int(backend.event_ident(i))
+            var _is_bus = bus_read_fd >= 0 and _ident == bus_read_fd
+            var _is_peer_bus = peer_bus_fd >= 0 and _ident == peer_bus_fd
+            if _is_bus or _is_peer_bus:
+                var peer_frames = drain_bus_channel(
+                    bus_read_fd if _is_bus else peer_bus_fd
+                )
                 for f in range(len(peer_frames)):
                     handler.sse_peer_frame(
                         peer_frames[f].url,
