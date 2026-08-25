@@ -1,0 +1,71 @@
+{
+  "bench": "asgi_wrk_hello",
+  "recorded_utc": "2026-08-25T17:24:28+00:00",
+  "environment": {
+    "git_sha": "58a35ed",
+    "git_dirty": false,
+    "os": "Darwin 25.6.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "granian 2.8.1",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "cpu": "Apple M4",
+    "cores_physical": "10"
+  },
+  "parameters": {
+    "client": "wrk -t2 -c16 -d8s, browser headers",
+    "app": "apps/asgi_bare",
+    "note": "byte parity asserted; m0serve zero-config asyncio executor vs python -m uvicorn --loop asyncio"
+  },
+  "rows": [
+    {
+      "name": "m0serve asgi-executor",
+      "round": 1,
+      "rps": 41170.04,
+      "cores": 0.89
+    },
+    {
+      "name": "m0serve asgi-executor",
+      "round": 2,
+      "rps": 40837.85,
+      "cores": 0.89
+    },
+    {
+      "name": "m0serve asgi-executor",
+      "round": 3,
+      "rps": 40471.51,
+      "cores": 0.91
+    },
+    {
+      "name": "uvicorn asyncio",
+      "round": 1,
+      "rps": 55833.44,
+      "cores": 0.97
+    },
+    {
+      "name": "uvicorn asyncio",
+      "round": 2,
+      "rps": 56369.76,
+      "cores": 0.98
+    },
+    {
+      "name": "uvicorn asyncio",
+      "round": 3,
+      "rps": 56929.72,
+      "cores": 0.99
+    }
+  ],
+  "medians": {
+    "m0serve asgi-executor": {
+      "rps": 40837.85,
+      "cores": 0.89,
+      "rps_per_core": 45885
+    },
+    "uvicorn asyncio": {
+      "rps": 56369.76,
+      "cores": 0.98,
+      "rps_per_core": 57520
+    }
+  }
+}

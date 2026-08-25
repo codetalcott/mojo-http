@@ -143,3 +143,8 @@ for round in $(seq 1 $ROUNDS); do
 done
 rm -f "$SRVLOG"
 echo "results in $OUT"
+
+# Dated, environment-stamped artifact — see scripts/bench_record.py for why
+# terminal transcripts are not a record.
+python3 "$(dirname "$0")/bench_record.py" mixed_workload "$OUT" \
+  || echo "WARN: could not write the bench artifact (see above)"

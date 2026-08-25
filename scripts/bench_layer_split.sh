@@ -58,13 +58,29 @@ measure() {
   curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o /dev/null http://127.0.0.1:8080/ \
     || { echo "$name: never healthy" | tee -a "$OUT"; return; }
   wrk -t2 -c$CONNS -d3s "${HDRS[@]}" http://127.0.0.1:8080/ > /dev/null 2>&1
+  # CPU sampling runs beside the measurement, because "1 worker" is a claim
+  # about configuration, not about cores: Granian's w1 worker was measured
+  # at ~1.6 cores across 6 threads, and every per-server ratio in this
+  # file's history silently assumed one. The serving pids come from the
+  # LISTEN socket rather than $pid — a launcher that spawns its worker
+  # (Granian does) idles at 0% while a child does the work.
+  local cpu_samples=/tmp/bench_cpu_$$
+  ( : > "$cpu_samples"
+    while :; do
+      lsof -nP -t -iTCP:8080 -sTCP:LISTEN 2>/dev/null | sort -u \
+        | xargs ps -o %cpu= -p 2>/dev/null | awk '{s+=$1} END{if (NR>0) print s}' >> "$cpu_samples"
+      sleep 1
+    done ) & local sampler=$!
   local ka=$(wrk -t2 -c$CONNS -d$DUR --latency "${HDRS[@]}" http://127.0.0.1:8080/ 2>&1)
+  kill $sampler 2>/dev/null; wait $sampler 2>/dev/null
+  local cores=$(sort -n "$cpu_samples" 2>/dev/null | awk '{a[NR]=$1} END{if (NR>0) printf "%.2f", a[int((NR+1)/2)]/100; else print "?"}')
+  rm -f "$cpu_samples"
   local errs=$(echo "$ka" | awk '/Socket errors/ {$1="";$2=""; print; exit}')
   case "$errs" in *connect\ [1-9]*) errs="$errs  <-- MEASUREMENT FAILED (ports)";; esac
-  printf '%-26s rps %9s p50 %8s p90 %8s p99 %8s max %8s %s\n' "$name" \
+  printf '%-26s rps %9s p50 %8s p90 %8s p99 %8s max %8s cores %5s %s\n' "$name" \
     "$(echo "$ka" | awk '/Requests\/sec/ {print $2}')" \
     "$(field "$ka" '^ +50%')" "$(field "$ka" '^ +90%')" "$(field "$ka" '^ +99%')" \
-    "$(echo "$ka" | awk '/Latency /{print $4}')" "${errs:-}" | tee -a "$OUT"
+    "$(echo "$ka" | awk '/Latency /{print $4}')" "$cores" "${errs:-}" | tee -a "$OUT"
 }
 
 stop() { kill -TERM $pid 2>/dev/null; for q in $(pgrep -P $pid 2>/dev/null); do kill -TERM $q 2>/dev/null; done; wait $pid 2>/dev/null; sleep "$COOL"; }
@@ -116,3 +132,11 @@ for round in $(seq 1 $ROUNDS); do
   done
 done
 echo "results in $OUT"
+
+# Every run leaves a dated, environment-stamped artifact. Committing one is
+# a human decision; producing one is not, because the metadata that decides
+# whether numbers are comparable (interpreter build, comparator version,
+# cores actually consumed) is exactly what a terminal transcript loses.
+python3 "$(dirname "$0")/bench_record.py" layer_split "$OUT" \
+  --meta "duration=$DUR" --meta "connections=$CONNS" --meta "rounds=$ROUNDS" \
+  || echo "WARN: could not write the bench artifact (see above)"

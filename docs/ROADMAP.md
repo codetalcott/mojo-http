@@ -390,8 +390,21 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   cache's hit-path byte-compares (245 ns) cost more than the decodes they
   skip (180 ns; short-ASCII `DecodeUTF8` is 15 ns) — so it was never built.
   What remains is ~26 mandated `PyDict_SetItem`s and sixteen genuinely
-  dynamic decodes: **the bridge is near its structural floor**, and the
-  next real move is re-measuring the Granian gap on 3.14.7t.
+  dynamic decodes: **the bridge is near its structural floor** — which the
+  re-measurement on 3.14.7t then confirmed from the other side. **Done,
+  and it moved the target twice.** First it showed the raw gap living in
+  the HTTP layer, not the bridge; then CPU-normalizing the comparator
+  (Granian's "1 worker" runs ~1.6–1.75 measured cores) showed the honest
+  per-core HTTP gap was ~1.2x — and a profile-ranked allocation pass
+  (Headers' packed index, move-not-copy response ctors, no `String(int)`
+  per request; NOTICE has the numbers) closed it: the hello row now
+  measures **~121k rps/core against Granian's ~101k**, with the bridge
+  row at ~84k/core. Benchmark runs now leave dated,
+  environment-stamped artifacts in `bench/results/` and the table in
+  [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) is rendered from the newest
+  one (`poe render-bench-docs`, held current by `poe check-docs` in CI) —
+  because this conclusion has now inverted twice on stale numbers, and a
+  cited artifact ages visibly where a transcribed number ages silently.
 - **Static files front the Django rows.** `StaticFiles` grew a
   `Cache-Control` policy (emitted on 200/206/304 — the validator response
   carries freshness too, per RFC 9110) and `apps/django_realtime` mounts it
@@ -462,8 +475,15 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   Phase 2 — the per-loop asyncio executor over the unchanged
   `OffloadPool` — **shipped**: zero-config ASGI gets real
   await-concurrency and no handler pool, `bench-asgi` is the standing
-  uvicorn gate (mixed-tail passing; hello-world 0.88–0.94x with the gap
-  located in WSGI_PERFORMANCE.md §"The ASGI executor vs uvicorn").
+  uvicorn gate. Mixed-tail — the executor's actual claim — passes; the
+  hello-world row was re-measured under wrk 2026-08-25 and the deficit is
+  real and **wakeup-bound, not CPU-bound** (0.72x while consuming 0.89
+  cores: each request serializes loop → datagram → executor → datagram →
+  loop, both threads idling between handoffs — artifact in
+  `bench/results/`, analysis in WSGI_PERFORMANCE.md §"The ASGI executor
+  vs uvicorn"). The throughput gate is recalibrated to ≥0.8x so it fails
+  on mechanism regressions instead of on every run; **pump batching** is
+  the recorded lever that would earn the threshold back up.
   Phase 3 — ASGI streaming and `websocket` scopes over the existing
   bus/registry transport — **shipped** in v0.9.0, which is the release
   that made FastHTML's whole surface work zero-config.

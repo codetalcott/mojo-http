@@ -289,6 +289,14 @@ uv run poe canary           # full suite against the Mojo nightly, then restore
 # needed, because only test-all compiles test/ sources.
 uv run poe check-warnings compile.log
 uv run poe check-warnings compile.log --update   # after genuinely fixing some
+
+# The doc-fact ratchet, same philosophy for prose: numbers with a machine
+# source (this file's warning counts, smoke coverage in test.yml, the
+# generated bench table in WSGI_PERFORMANCE.md) are CI-checked against it.
+# Benchmark runs leave environment-stamped artifacts in bench/results/;
+# the doc table renders from the newest one.
+uv run poe check-docs         # fails naming the drifted fact
+uv run poe render-bench-docs  # after committing a new bench artifact
 ```
 
 One test file, without going through poe — the `-I` chain mirrors the package's
