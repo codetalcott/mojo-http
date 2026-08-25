@@ -181,14 +181,18 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         except bounds_err:
             raise ResponseParseError(ResponseBodyReadError(detail=String(bounds_err)))
 
+        # Fields leave `properties` by swap — the ctor takes them by `var`
+        # now, and a struct with a field moved out cannot be destroyed.
+        var taken_headers = Headers()
+        swap(taken_headers, properties.headers)
         try:
             return HTTPResponse(
                 reader=reader,
-                headers=properties.headers^,
+                headers=taken_headers^,
                 cookies=cookies^,
-                protocol=properties.protocol^,
+                protocol=properties.protocol,
                 status_code=properties.status,
-                status_text=properties.status_message^,
+                status_text=properties.status_message,
             )
         except body_err:
             raise ResponseParseError(ResponseBodyReadError(detail=String(body_err)))
@@ -215,13 +219,16 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         except bounds_err:
             raise ResponseParseError(ResponseBodyReadError(detail=String(bounds_err)))
 
+        # Same swap idiom as the overload above, same reason.
+        var taken_headers = Headers()
+        swap(taken_headers, properties.headers)
         var response = HTTPResponse(
             Bytes(),
-            headers=properties.headers^,
+            headers=taken_headers^,
             cookies=cookies^,
-            protocol=properties.protocol^,
+            protocol=properties.protocol,
             status_code=properties.status,
-            status_text=properties.status_message^,
+            status_text=properties.status_message,
         )
 
         var transfer_encoding = response.headers.get(HeaderKey.TRANSFER_ENCODING)
@@ -295,14 +302,20 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     def __init__(
         out self,
         body_bytes: Span[Byte, _],
-        headers: Headers = Headers(),
-        cookies: ResponseCookieJar = ResponseCookieJar(),
+        var headers: Headers = Headers(),
+        var cookies: ResponseCookieJar = ResponseCookieJar(),
         status_code: Int = 200,
         status_text: String = "OK",
         protocol: String = strHttp11,
     ):
-        self.headers = headers.copy()
-        self.cookies = cookies.copy()
+        # Move, not copy: the arguments are almost always temporaries built
+        # inline at the call site (`Headers(Header(...))`), and copying the
+        # whole header blob per response was 2 of the hot path's ~6
+        # allocations. A caller that reuses a named Headers still can — a
+        # `var` parameter takes an implicit copy of a value that is used
+        # again afterwards.
+        self.headers = headers^
+        self.cookies = cookies^
         if HeaderKey.CONTENT_TYPE not in self.headers:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
@@ -325,15 +338,15 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     def __init__(
         out self,
         var owned_body: Bytes,
-        headers: Headers = Headers(),
-        cookies: ResponseCookieJar = ResponseCookieJar(),
+        var headers: Headers = Headers(),
+        var cookies: ResponseCookieJar = ResponseCookieJar(),
         status_code: Int = 200,
         status_text: String = "OK",
         protocol: String = strHttp11,
     ):
         """Initialize with an owned body buffer (zero-copy move)."""
-        self.headers = headers.copy()
-        self.cookies = cookies.copy()
+        self.headers = headers^
+        self.cookies = cookies^
         if HeaderKey.CONTENT_TYPE not in self.headers:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
@@ -357,14 +370,14 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     def __init__(
         out self,
         mut reader: ByteReader,
-        headers: Headers = Headers(),
-        cookies: ResponseCookieJar = ResponseCookieJar(),
+        var headers: Headers = Headers(),
+        var cookies: ResponseCookieJar = ResponseCookieJar(),
         status_code: Int = 200,
         status_text: String = "OK",
         protocol: String = strHttp11,
     ) raises:
-        self.headers = headers.copy()
-        self.cookies = cookies.copy()
+        self.headers = headers^
+        self.cookies = cookies^
         if HeaderKey.CONTENT_TYPE not in self.headers:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
@@ -409,7 +422,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
 
     @always_inline
     def set_content_length(mut self, l: Int):
-        self.headers[HeaderKey.CONTENT_LENGTH] = String(l)
+        self.headers.set_int(HeaderKey.CONTENT_LENGTH, l)
 
     @always_inline
     def content_length(self) -> Int:
@@ -482,7 +495,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.write(
             self.protocol,
             whitespace,
-            String(self.status_code),
+            self.status_code,
             whitespace,
             self.status_text,
             lineBreak,
@@ -522,7 +535,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.write(
             self.protocol,
             whitespace,
-            String(self.status_code),
+            self.status_code,
             whitespace,
             self.status_text,
             lineBreak,

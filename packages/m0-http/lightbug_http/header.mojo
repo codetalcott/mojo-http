@@ -450,17 +450,17 @@ struct Headers(Copyable, Writable):
 
     var _buf: List[Byte]
     """Every name and value, back to back. Names are stored lowercased."""
-    var _name_off: List[Int32]
-    var _name_len: List[Int32]
-    var _val_off: List[Int32]
-    var _val_len: List[Int32]
+    var _idx: List[Int32]
+    """One packed entry per header, stride 4: name offset, name length,
+    value offset, value length. One array rather than four parallel ones,
+    because a Headers is built fresh for every request AND every response —
+    four index allocations per construction was a fifth of the hello row's
+    allocator traffic, and nothing outside this struct ever saw the four
+    arrays."""
 
     def __init__(out self):
         self._buf = List[Byte]()
-        self._name_off = List[Int32]()
-        self._name_len = List[Int32]()
-        self._val_off = List[Int32]()
-        self._val_len = List[Int32]()
+        self._idx = List[Int32]()
 
     def __init__(out self, var *headers: Header):
         self = Headers()
@@ -469,11 +469,11 @@ struct Headers(Copyable, Writable):
 
     @always_inline
     def count(self) -> Int:
-        return len(self._name_off)
+        return len(self._idx) // 4
 
     @always_inline
     def empty(self) -> Bool:
-        return len(self._name_off) == 0
+        return len(self._idx) == 0
 
     def _name_matches(self, i: Int, probe: Span[Byte, _]) -> Bool:
         """Whether entry `i`'s name equals `probe`, case-insensitively.
@@ -481,10 +481,10 @@ struct Headers(Copyable, Writable):
         Stored names are already lowercase, so only the probe needs folding
         — which is what lets a lookup run without allocating.
         """
-        var n = Int(self._name_len[i])
+        var n = Int(self._idx[4 * i + 1])
         if n != len(probe):
             return False
-        var off = Int(self._name_off[i])
+        var off = Int(self._idx[4 * i])
         for j in range(n):
             if self._buf[off + j] != ascii_lower_byte(probe[j]):
                 return False
@@ -492,7 +492,7 @@ struct Headers(Copyable, Writable):
 
     def _find(self, key: Span[Byte, _]) -> Int:
         """Index of the entry named `key`, or -1."""
-        for i in range(len(self._name_off)):
+        for i in range(self.count()):
             if self._name_matches(i, key):
                 return i
         return -1
@@ -508,14 +508,14 @@ struct Headers(Copyable, Writable):
         blob, which was 77% of that bridge's entire per-request cost. Walking
         `count()` with these two spans allocates nothing at all.
         """
-        var off = Int(self._val_off[i])
-        return Span(self._buf)[off : off + Int(self._val_len[i])]
+        var off = Int(self._idx[4 * i + 2])
+        return Span(self._buf)[off : off + Int(self._idx[4 * i + 3])]
 
     @always_inline
     def name_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
         """Header `i`'s name, lowercased, as bytes in place. See `value_span`."""
-        var off = Int(self._name_off[i])
-        return Span(self._buf)[off : off + Int(self._name_len[i])]
+        var off = Int(self._idx[4 * i])
+        return Span(self._buf)[off : off + Int(self._idx[4 * i + 1])]
 
     @always_inline
     def __contains__(self, key: String) -> Bool:
@@ -561,8 +561,8 @@ struct Headers(Copyable, Writable):
         needed by anything projecting these headers into another
         representation, such as a WSGI `environ`.
         """
-        var out = List[String](capacity=len(self._name_off))
-        for i in range(len(self._name_off)):
+        var out = List[String](capacity=self.count())
+        for i in range(self.count()):
             out.append(String(unsafe_from_utf8=self.name_span(i)))
         return out^
 
@@ -582,20 +582,48 @@ struct Headers(Copyable, Writable):
         for j in range(len(value)):
             self._buf.append(value[j])
         if i >= 0:
-            self._val_off[i] = Int32(v_off)
-            self._val_len[i] = Int32(len(value))
+            self._idx[4 * i + 2] = Int32(v_off)
+            self._idx[4 * i + 3] = Int32(len(value))
             return
         var n_off = len(self._buf)
         for j in range(len(name)):
             self._buf.append(ascii_lower_byte(name[j]))
-        self._name_off.append(Int32(n_off))
-        self._name_len.append(Int32(len(name)))
-        self._val_off.append(Int32(v_off))
-        self._val_len.append(Int32(len(value)))
+        self._idx.append(Int32(n_off))
+        self._idx.append(Int32(len(name)))
+        self._idx.append(Int32(v_off))
+        self._idx.append(Int32(len(value)))
 
     @always_inline
     def __setitem__(mut self, key: String, value: String):
         self.set_bytes(key.as_bytes(), value.as_bytes())
+
+    def set_int(mut self, key: String, value: Int):
+        """Insert or overwrite an integer-valued header without a String.
+
+        `headers[key] = String(n)` costs a heap allocation per call, and the
+        two hottest headers in the server are integers set once per request
+        (Content-Length on the request and on the response). Twenty bytes of
+        stack covers Int64's digits.
+        """
+        var digits = InlineArray[Byte, 20](fill=0)
+        var n = value
+        if n < 0:
+            # No negative header values exist; clamp rather than emit a sign
+            # the receiving parser would reject.
+            n = 0
+        var pos = 20
+        if n == 0:
+            pos -= 1
+            digits[pos] = 0x30
+        else:
+            while n > 0:
+                pos -= 1
+                digits[pos] = Byte(0x30 + (n % 10))
+                n //= 10
+        self.set_bytes(
+            key.as_bytes(),
+            Span(digits)[pos:],
+        )
 
     def pop(mut self, key: String):
         """Remove a header by name (no-op if absent).
@@ -606,10 +634,8 @@ struct Headers(Copyable, Writable):
         var i = self._find(key.as_bytes())
         if i < 0:
             return
-        _ = self._name_off.pop(i)
-        _ = self._name_len.pop(i)
-        _ = self._val_off.pop(i)
-        _ = self._val_len.pop(i)
+        for _ in range(4):
+            _ = self._idx.pop(4 * i)
 
     def content_length(self) -> Int:
         """Content-Length as an Int, or 0 if absent or malformed.
@@ -632,7 +658,7 @@ struct Headers(Copyable, Writable):
         return total
 
     def write_to[T: Writer, //](self, mut writer: T):
-        for i in range(len(self._name_off)):
+        for i in range(self.count()):
             writer.write(
                 StringSlice(unsafe_from_utf8=self.name_span(i)),
                 ": ",
@@ -642,7 +668,7 @@ struct Headers(Copyable, Writable):
 
     def write_latin1_to(self, mut writer: ByteWriter):
         """Write headers with values transcoded to ISO-8859-1 for the wire."""
-        for i in range(len(self._name_off)):
+        for i in range(self.count()):
             writer.write(StringSlice(unsafe_from_utf8=self.name_span(i)), ": ")
             var value = self.value_span(i)
             var all_ascii = True
@@ -662,9 +688,9 @@ struct Headers(Copyable, Writable):
         return String(self)
 
     def __eq__(self, other: Headers) -> Bool:
-        if len(self._name_off) != len(other._name_off):
+        if len(self._idx) != len(other._idx):
             return False
-        for i in range(len(self._name_off)):
+        for i in range(self.count()):
             var j = other._find(self.name_span(i))
             if j < 0:
                 return False

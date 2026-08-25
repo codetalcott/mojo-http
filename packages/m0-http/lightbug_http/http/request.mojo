@@ -201,7 +201,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         requests, use from_parsed() instead.
         """
         self.headers = headers^
-        self.cookies = cookies.copy()
+        self.cookies = cookies^
         self.method = method^
         self.protocol = protocol^
         self.uri = uri^
@@ -235,7 +235,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     def set_content_length(mut self, length: Int):
         """Set the Content-Length header."""
-        self.headers[HeaderKey.CONTENT_LENGTH] = String(length)
+        self.headers.set_int(HeaderKey.CONTENT_LENGTH, length)
 
     def connection_close(self) -> Bool:
         """Check if the Connection header is set to 'close'.
