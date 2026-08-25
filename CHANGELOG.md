@@ -171,6 +171,19 @@ the name and exercises the production upload path while staying invisible to
 
 ### Fixed
 
+- **Binaries were compiled for the machine that built them.** `mojo build`
+  defaults `--target-cpu` to the host CPU, so every artifact this project has
+  produced was effectively `-march=native`. The first release run proved the
+  consequence: `m0serve --version` died with `Illegal instruction (core
+  dumped)` in a clean container after passing on the runner that built it,
+  and on a developer machine the effective target was `apple-m4` with
+  `+sme`/`+sme2` — Scalable Matrix Extension, which no M1, M2 or M3 has.
+  `build-ffi` and `build-serve` now pin the oldest CPU each platform must
+  support (`apple-m1`, `x86-64-v2`, `generic`), and `check-docs` asserts they
+  do. Unlike the rpath defect this resembles, it is invisible to static
+  inspection — only running the artifact on different silicon can find it,
+  which is exactly what the clean-consumer jobs do.
+
 - **The portability checker could not see an executable, and the bundler was
   blind the same way.** `otool -L` prints a *dylib's* own `LC_ID_DYLIB`
   before its dependencies; an `MH_EXECUTE` has none, so dropping the first

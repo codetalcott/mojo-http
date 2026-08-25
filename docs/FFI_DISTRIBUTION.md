@@ -409,3 +409,133 @@ whichever image GitHub is currently calling `macos-latest`. The measurement
 stays regardless: `smoke-wheel` asserts the tag is never below the binary's
 own `LC_BUILD_VERSION`, so if the pin ever stops working the wheel gets a
 narrower tag instead of a false promise.
+
+## 2026-08-25: the first real release crashed, and it was the CPU
+
+The `v0.10.0rc1` release run built both wheels, passed `smoke-wheel` inside
+both build jobs, and passed `wheel-consume-macos`. Then
+`wheel-consume-linux` did this:
+
+```
+Stack dump without symbol names ...
+0  libKGENCompilerRTShared.so 0x00007f39a1540f8e
+...
+4  m0serve                    0x000056203c1260e9
+Illegal instruction (core dumped)
+```
+
+`m0serve --version` — the simplest thing the binary can do — died with
+SIGILL in a clean container, having worked on the runner that built it
+minutes earlier.
+
+### `mojo build` compiles for the host CPU by default
+
+```
+--target-cpu <CPU>
+    Sets the compilation target CPU. Defaults to the host CPU.
+```
+
+That is `-march=native`, silently, for every artifact this repository has
+ever produced. Asking the compiler what it was actually doing on a developer
+machine:
+
+```
+$ mojo build --print-effective-target ...
+  --target-cpu apple-m4
+  --target-features +aes,+bf16,...,+sme,+sme-f64f64,+sme-i16i64,+sme2
+```
+
+`+sme` and `+sme2` are the Scalable Matrix Extension. **No M1, M2 or M3 has
+them.** Every wheel built on that machine — including the ones dogfooded
+against three real Django projects, all on the same M4 — would very likely
+have crashed on any other Apple Silicon Mac.
+
+### Why nothing caught it earlier
+
+This is the rpath defect one level up, and it fails the same way for the same
+reason:
+
+| | rpath | target CPU |
+|---|---|---|
+| passes where built | yes | yes |
+| fails elsewhere | yes | yes |
+| detectable on the build machine | **statically** | **no** |
+
+The rpath version was at least visible to static inspection — that is what
+`ffi_portability_check.py` exists for. This one is not: the binary is
+*correct*, it simply requires instructions the consumer's CPU does not
+implement. Nothing short of running it on different silicon can tell.
+
+So `wheel-consume-linux` did not merely catch a bug; it caught the one class
+of bug that no amount of care on the build machine could have. It caught it
+because it has no repository, no toolchain, and — crucially — **runs on a
+different machine from the one that built the artifact**. That property was
+worth the trouble.
+
+`wheel-consume-macos` passed, and that is worth stating plainly rather than
+taking as reassurance: it builds on `macos-14` and consumes on `macos-14`,
+so build and consumer share a CPU and the defect is invisible there too.
+The macOS side is protected by the pin below, not by that job.
+
+### The fix, and the guard
+
+`build-ffi` and `build-serve` pin `--target-cpu` to the oldest CPU each
+platform must support:
+
+| platform | baseline | dropped |
+|---|---|---|
+| macOS arm64 | `apple-m1` | `+sme`, `+sme2`, `+i8mm`, `+bf16` |
+| Linux / macOS x86_64 | `x86-64-v2` | AVX, AVX2, BMI, FMA |
+| Linux aarch64 | `generic` | |
+
+`x86-64-v2` is SSE4.2 and POPCNT — hardware from 2009 onward, and the
+baseline RHEL 9 itself requires. `apple-m1` is simply the oldest Apple
+Silicon.
+
+**The cost is zero, measured rather than assumed.** The obvious objection to
+pinning a baseline is lost performance, and it was worth checking before
+accepting it — or before offering a tuned build alongside. Compiling the same
+sources both ways and diffing the disassembly:
+
+| binary | disassembly lines | differing lines, `apple-m1` vs `apple-m4` |
+|---|---|---|
+| `run_benchmarks` (m0-core hot paths) | 41,248 | **0** (only the filename in otool's header) |
+| `m0serve` | 257,735 | **0** |
+
+The compiler emits byte-identical machine code. That is a stronger result
+than a timing comparison — identical code cannot differ in speed — and it
+makes sense on inspection: the features `apple-m4` adds over `apple-m1` are
+`+sme`, `+sme2`, `+i8mm`, `+bf16`, all matrix and ML extensions, and nothing
+in an HTTP server auto-vectorizes into them. The hot paths are syscalls,
+byte scanning, hashing and memcpy.
+
+So the pin costs nothing here, and a microarchitecture-tuned build has
+nothing to ship. That conclusion is specific to this code at this commit: add
+SIMD-heavy work and it could change, in which case the way to find out is to
+re-run this diff, not to assume either way.
+
+`check_docs.py` asserts both tasks pass the flag. Note *how* it asserts it:
+the first version searched the whole task body, which contains a comment
+explaining what `--target-cpu` is for, so it passed with the flag deleted —
+a guard satisfied by its own documentation. It now parses the `mojo build`
+command itself, with continuations joined, and both tasks were sabotaged to
+confirm it fails.
+
+### Should there be an M4-tuned build alongside?
+
+No, on two independent grounds.
+
+**Nothing to ship.** The measurement above: `apple-m1` and `apple-m4` produce
+byte-identical code for both the core benchmarks and the server. A tuned
+wheel would be the same bytes under a different name.
+
+**And nowhere to put it if there were.** A wheel's platform tag has no field
+for microarchitecture — `macosx_13_0_arm64` is the only arm64 macOS tag
+there is. Two differently-tuned wheels for one version would have the *same
+filename*, so only one can exist and `pip` has no way to choose between them.
+Shipping a tuned build would mean a separate distribution name that users
+opt into by hand, or a download outside PyPI entirely. Both are real options;
+neither is worth it for identical bytes.
+
+If that ever changes, the honest order is: measure the delta first with the
+diff above, then decide on a mechanism — not the reverse.
