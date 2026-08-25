@@ -49,11 +49,25 @@ itself). Backwards, every direct request still works and every generated
 URL breaks — invisible until someone clicks something, which is why
 `smoke-hybrid` compares `reverse()`/`url_for()` byte for byte.
 `WSGIHandler.build` is the one place applications are constructed, so the
-mounted and unmounted shapes cannot drift. Three refusals, all deliberate:
-mixed WSGI/ASGI mounts, `--mount` with `--realtime` (an inbound WS message
-has no defensible destination among several urlconfs), and a mounted
-server taking the asyncio executor (one submit channel cannot say which
-mount a job is for — per-mount submit channels are the next stage).
+mounted and unmounted shapes cannot drift.
+
+**Mounts get their own execution mode**, which is the whole point: a
+submit **lane** per mount (`OffloadPool.add_lane`, one `SOCK_DGRAM` pair
+each) means the loop's `pool.submit(slot, path)` hands a job to the worker
+that can run it — the asyncio executor for the ASGI mount, handler-pool
+threads for the sync ones, dealt round-robin. Rules: **one `ProvisionPool`
+per loop stays** (a slot indexes that loop's provisions); `lane i` is
+`mount i` and both the lane and the handler's `app_for` ask the SAME
+`match_path_prefix`, so they cannot disagree; each worker builds **only
+its own mount** (`only_mount`), or lifespans run once per mount per
+thread; and pills are sent per lane at shutdown, because a thread parked
+on lane 2 is not woken by a pill sent to lane 0. Two refusals stand: a
+**second ASGI mount** (each executor needs its own chunk channel and the
+loop has one `bus_read_fd`; chunks could share it since slots are unique,
+but drain-ack credit belongs to the owning executor) and `--mount` with
+`--realtime` (an inbound WS message has no defensible destination among
+several urlconfs). Under `--threads` no lanes are added, so a mounted
+server there shares one mode.
 
 Zero-config: with no topology flag or `M0_*` topology variable, `m0serve`
 defaults to `--blocking-threads min(cores,8)` — an explicitly-set variable,

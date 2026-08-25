@@ -45,7 +45,7 @@ from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
 
 from m0_http import (
-    ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS,
+    ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS, BLK_LANE,
     STATUS_OK, STATUS_RAISED,
 )
 
@@ -80,25 +80,44 @@ struct BlockingPool(Movable):
     var count: Int
     var _set: ThreadSet
     var _started: Bool
+    var _lanes: List[Int]
+    """Each thread's submit lane, filled by `start` and read by
+    `stop_and_join` — the pills have to go where the threads are parked."""
 
     def __init__(out self, count: Int):
         self.count = count
         self._set = ThreadSet(count)
         self._started = False
+        self._lanes = List[Int]()
 
     def __init__(out self, *, deinit move: Self):
         self.count = move.count
         self._set = move._set^
         self._started = move._started
+        self._lanes = move._lanes^
 
-    def start[T: ThreadHandler](mut self, pool_addr: Int, user: Int) raises:
-        """Spawn the threads. `user` is what `T.make` receives as `ctx.user`."""
+    def start[T: ThreadHandler](
+        mut self, pool_addr: Int, user: Int, var lanes: List[Int] = List[Int]()
+    ) raises:
+        """Spawn the threads. `user` is what `T.make` receives as `ctx.user`.
+
+        `lanes` are the submit lanes these threads serve, dealt round-robin:
+        thread i takes `lanes[i % len(lanes)]`, so one pool covers every WSGI
+        mount without a pool per mount. A thread's lane reaches `T.make` as
+        `ctx.lane`, and the handler then builds only that mount's
+        application — it can never receive another's job. An empty list is
+        the unmounted pool: one lane, every thread on it.
+        """
         var body = _pool_body[T]
         var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
+        self._lanes = List[Int]()
         for i in range(self.count):
+            var lane = -1 if len(lanes) == 0 else lanes[i % len(lanes)]
+            self._lanes.append(lane)
             var block = self._set.block(i)
             block.set(BLK_USER, user)
             block.set(BLK_POOL, pool_addr)
+            block.set(BLK_LANE, lane)
         for i in range(self.count):
             self._set.spawn(i, body_addr)
         self._started = True
@@ -120,7 +139,27 @@ struct BlockingPool(Movable):
         """
         if not self._started:
             return 0
-        pool.stop(self.count)
+        # One pill per THREAD, on that thread's own lane: a thread parked on
+        # lane 2 is not woken by a pill sent to lane 0, and `next_job` has no
+        # timeout, so a miscounted lane is a hung `pthread_join` rather than a
+        # slow one. Lane 0 goes last because its `stop` also closes the
+        # descriptor.
+        var pending = List[Int]()
+        for i in range(len(self._lanes)):
+            pending.append(self._lanes[i])
+        for lane in range(1, len(pool.lane_prefixes)):
+            var n = 0
+            for i in range(len(pending)):
+                if pending[i] == lane:
+                    n += 1
+            if n > 0:
+                pool.stop(n, lane)
+        var zero = 0
+        for i in range(len(pending)):
+            if pending[i] <= 0:
+                zero += 1
+        if zero > 0:
+            pool.stop(zero, 0)
         self._set.join_all()
         var failed = 0
         for i in range(self.count):
@@ -140,7 +179,8 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_POOL)
     )[]
-    var ctx = ThreadContext(block.get(BLK_INDEX), block.get(BLK_USER))
+    var lane = block.get(BLK_LANE)
+    var ctx = ThreadContext(block.get(BLK_INDEX), block.get(BLK_USER), lane)
     var handler = T.make(ctx)
     ref cpy = Python().cpython()
 
@@ -149,7 +189,7 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
         # and holding a thread state through it would stall every other
         # thread's stop-the-world.
         var ts = cpy.PyEval_SaveThread()
-        var slot = pool.next_job()
+        var slot = pool.next_job(lane if lane > 0 else 0)
         cpy.PyEval_RestoreThread(ts)
         if slot < 0:
             break

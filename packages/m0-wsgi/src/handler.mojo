@@ -185,6 +185,7 @@ struct WSGIHandler(ThreadHandler):
         multithread: Bool,
         lifespan: Bool,
         project_path: String = String(""),
+        only_mount: Int = -1,
     ) raises -> Self:
         """The handler `opts` describes, applications and all.
 
@@ -194,6 +195,13 @@ struct WSGIHandler(ThreadHandler):
         mount carrying its prefix as `script_name`. Every caller that needs
         a handler — m0serve's own path, a `--threads` serving thread, a
         `--blocking-threads` pool thread — comes through here.
+
+        `only_mount >= 0` builds JUST that mount, at its own prefix. That is
+        what a pool thread bound to one submit lane wants: it can never
+        receive another mount's job, and building the rest would run one
+        lifespan per mount per thread for applications it will never call.
+        The router still works — a one-mount table has one entry, and every
+        job the thread receives already belongs to it.
         """
         if len(opts.mount_prefixes) == 0:
             var app = WSGIApp(
@@ -209,23 +217,26 @@ struct WSGIHandler(ThreadHandler):
             )
             return Self.for_options(app^, opts)
 
+        var head = only_mount if only_mount >= 0 else 0
         var first = WSGIApp(
-            opts.mount_modules[0],
+            opts.mount_modules[head],
             server_name=opts.host,
             server_port=String(opts.port),
-            attribute=opts.mount_attributes[0],
+            attribute=opts.mount_attributes[head],
             project_path=project_path,
             multiprocess=multiprocess,
             multithread=multithread,
             protocol=opts.protocol,
             lifespan=lifespan,
-            script_name=opts.mount_prefixes[0],
+            script_name=opts.mount_prefixes[head],
         )
         var handler = Self(
             first^, Self.mounts_for(opts), opts.realtime, opts.health_path,
             asgi_streaming=opts.asgi_streaming,
-            root_prefix=opts.mount_prefixes[0],
+            root_prefix=opts.mount_prefixes[head],
         )
+        if only_mount >= 0:
+            return handler^
         for i in range(1, len(opts.mount_prefixes)):
             handler.mount(
                 opts.mount_prefixes[i],
@@ -279,6 +290,7 @@ struct WSGIHandler(ThreadHandler):
             # queue-overflow fallback and the loop's executor owns the one
             # lifespan.
             lifespan=opts[].handler_lifespan,
+            only_mount=ctx.lane,
         )
         handler.thread_index = ctx.index
         return handler^

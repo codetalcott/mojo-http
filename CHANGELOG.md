@@ -37,6 +37,25 @@ versions may break the API**.
   and a mounted server taking the asyncio executor (one submit channel
   cannot say which mount a job is for). See docs/WSGI_VS_ASGI.md §9.
 
+- **Mixed mounts, each in its native execution mode.** A sync Django app
+  and an async FastHTML app now run in ONE process, sharing one listener
+  and one graceful shutdown, with Django's requests on handler-pool
+  threads and FastHTML's on the asyncio executor. The mechanism is a
+  submit **lane** per mount — the single submit channel became one
+  `SOCK_DGRAM` pair each — so the loop hands a job to the worker that can
+  run it; one `ProvisionPool` per loop stays, since a slot indexes that
+  loop's provisions. `match_path_prefix` is now the single implementation
+  of the matching rule, so the lane a job takes and the application the
+  handler picks cannot disagree, and each worker builds only its own
+  mount's application rather than every mount's.
+
+  Measured and smoke-pinned: with four blocking 2-second Django views
+  holding every pool thread, the FastHTML mount answers at p50 1.3 ms /
+  p99 2.8 ms. One ASGI mount is supported — a second needs its own
+  streaming channel, and drain-ack credit belongs to the executor that
+  owns the slot — with any number of WSGI mounts beside it.
+  `apps/hybrid_mix` is now Django + Flask + FastHTML in one process.
+
 ## [0.9.0] — 2026-08-24
 
 ### Added

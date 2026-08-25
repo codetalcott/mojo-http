@@ -248,17 +248,24 @@ current directory and defaulting to `.`.
 by longest prefix before either sees the request:
 
 ```bash
-bin/m0serve --mount /=shop.wsgi --mount /portal=portal.wsgi:app \
+bin/m0serve --mount /=shop.wsgi --mount /app=live.asgi \
     --app-dir apps/hybrid_mix --port 8099
 ```
+
+**Each mount runs in its own native execution mode** — the sync Django app
+on handler-pool threads, the async FastHTML app on the asyncio executor —
+sharing one listener, one set of workers and one graceful shutdown. With
+four blocking 2-second Django views holding every pool thread, the async
+mount still answers at p99 2.8 ms. uvicorn, daphne and Granian each host
+exactly one callable, so mixing otherwise means two processes behind a
+proxy.
 
 Each mount detects its own protocol and gets its own bridge, and the prefix
 reaches the application the way its protocol expects it — `SCRIPT_NAME` with
 `PATH_INFO` trimmed for WSGI, `root_path` with the whole `path` for ASGI —
 so `reverse()` and `url_for()` generate links that actually work. A path no
-mount claims is a 404 answered in Mojo, never entering Python. Mixed
-WSGI/ASGI mounts are refused for now, with a message: routing them is done,
-but giving each its native execution mode is the next stage
+mount claims is a 404 answered in Mojo, never entering Python. One ASGI
+mount is supported, with any number of WSGI mounts beside it
 ([§9](docs/WSGI_VS_ASGI.md)). Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
 matching flag winning over it, and flags are strict: `--port 80eighty` is a
