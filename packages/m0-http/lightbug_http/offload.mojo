@@ -127,6 +127,36 @@ def _decode_job(buf: Span[Byte, _]) -> Int:
     return Int(Int64(bits))
 
 
+def match_path_prefix(prefixes: List[String], path: String) -> Int:
+    """Index of the longest prefix in `prefixes` that `path` falls under, or -1.
+
+    A prefix matches only on a segment boundary, so `/app` covers `/app` and
+    `/app/x` but never `/application`. The empty prefix is the root and needs
+    no special case: every request target starts with `/`, so it matches at
+    length 0 and any deeper prefix outranks it.
+
+    Lives here rather than in the WSGI layer because both callers need the
+    same answer and there must be exactly one of it -- `m0serve`'s mount
+    router picks the application, this pool's `lane_for` picks the worker,
+    and a second copy of segment-boundary matching is how `/app` starts
+    swallowing `/application` again.
+    """
+    var best = -1
+    var best_len = -1
+    for i in range(len(prefixes)):
+        ref prefix = prefixes[i]
+        var n = prefix.byte_length()
+        if n <= best_len:
+            continue
+        if not path.startswith(prefix):
+            continue
+        if path.byte_length() > n and path.as_bytes()[n] != UInt8(ord("/")):
+            continue
+        best = i
+        best_len = n
+    return best
+
+
 struct OffloadPool(Movable):
     """Job storage plus the two channels; created by the caller, not the loop.
 
@@ -140,8 +170,26 @@ struct OffloadPool(Movable):
     thread's argument block.
     """
 
+    var lane_prefixes: List[String]
+    """Path prefixes naming the extra submit lanes, parallel to
+    `lane_submit_read`/`lane_submit_write` with lane 0's prefix first.
+
+    Empty for an unmounted server: one lane, every job to it, exactly the
+    shape this pool had before mounts existed. With `--mount`, one lane per
+    mount, so a job reaches the worker that owns that application instead of
+    whichever worker happens to read the datagram first — which with one
+    channel is a coin flip, not a design.
+    """
+
+    var lane_submit_read: List[Int]
+    """Read ends for lanes 1..N (lane 0 is `submit_read`)."""
+
+    var lane_submit_write: List[Int]
+
     var submit_read: Int
-    """Pool threads block here. Blocking on purpose — a parked worker sleeps."""
+    """Pool threads block here. Blocking on purpose — a parked worker sleeps.
+
+    Lane 0's read end; `submit_read_fd(lane)` is the general accessor."""
 
     var submit_write: Int
     """The loop sends jobs here; non-blocking, so a full queue is visible."""
@@ -195,6 +243,9 @@ struct OffloadPool(Movable):
         # happily and `poe test-all` does not. Reserving one element avoids
         # the constructor entirely; `self.capacity` is what says whether
         # this pool is real, and it is 0 either way.
+        self.lane_prefixes = List[String]()
+        self.lane_submit_read = List[Int]()
+        self.lane_submit_write = List[Int]()
         var slots = capacity if capacity > 0 else 1
         self.requests = OwningList[Optional[HTTPRequest]](capacity=slots)
         self.responses = OwningList[Optional[HTTPResponse]](capacity=slots)
@@ -235,6 +286,9 @@ struct OffloadPool(Movable):
         _set_nonblocking_fd(self.complete_read)
 
     def __init__(out self, *, deinit move: Self):
+        self.lane_prefixes = move.lane_prefixes^
+        self.lane_submit_read = move.lane_submit_read^
+        self.lane_submit_write = move.lane_submit_write^
         self.submit_read = move.submit_read
         self.submit_write = move.submit_write
         self.complete_read = move.complete_read
@@ -324,8 +378,46 @@ struct OffloadPool(Movable):
         """Hand a request to the slot. Call immediately before `submit`."""
         self.requests[slot] = request^
 
-    def submit(mut self, slot: Int) -> Bool:
-        """Queue `slot` for a pool thread. False means the queue is full.
+    def add_lane(mut self, var prefix: String) raises:
+        """Declare a submit lane serving `prefix`; returns nothing, appends.
+
+        Lane 0 reuses the descriptors the constructor already made, so an
+        unmounted pool is a one-lane pool with no extra syscalls. Every lane
+        after it gets its own `SOCK_DGRAM` pair, set up exactly like lane 0:
+        the loop's write end non-blocking so a full queue is visible, the
+        worker's read end blocking so a parked worker sleeps.
+        """
+        if len(self.lane_prefixes) == 0:
+            self.lane_prefixes.append(prefix^)
+            return
+        var pair = socketpair_dgram()
+        _size_socket(pair[0])
+        _size_socket(pair[1])
+        _set_nonblocking_fd(pair[1])
+        self.lane_submit_read.append(pair[0])
+        self.lane_submit_write.append(pair[1])
+        self.lane_prefixes.append(prefix^)
+
+    def submit_read_fd(self, lane: Int) -> Int:
+        """The read end a worker for `lane` blocks on."""
+        if lane <= 0:
+            return self.submit_read
+        return self.lane_submit_read[lane - 1]
+
+    def submit_write_fd(self, lane: Int) -> Int:
+        if lane <= 0:
+            return self.submit_write
+        return self.lane_submit_write[lane - 1]
+
+    def lane_for(self, path: String) -> Int:
+        """Which lane serves `path`; 0 when this pool has no lane table."""
+        if len(self.lane_prefixes) <= 1:
+            return 0
+        var lane = match_path_prefix(self.lane_prefixes, path)
+        return lane if lane >= 0 else 0
+
+    def submit(mut self, slot: Int, path: String = String("")) -> Bool:
+        """Queue `slot` on the lane serving `path`. False means it is full.
 
         False is not an error and not a dropped request: the caller runs that
         one request inline instead, which is precisely the behaviour every
@@ -334,7 +426,10 @@ struct OffloadPool(Movable):
         var job = _encode_job(slot)
         try:
             _ = send(
-                FileDescriptor(self.submit_write), Span(job), UInt(len(job)), 0
+                FileDescriptor(self.submit_write_fd(self.lane_for(path))),
+                Span(job),
+                UInt(len(job)),
+                0,
             )
         except:
             return False
@@ -383,7 +478,7 @@ struct OffloadPool(Movable):
         self.responses[slot] = None
         self.errored[slot] = False
 
-    def stop(mut self, threads: Int):
+    def stop(mut self, threads: Int, lane: Int = 0):
         """Retire the pool: exactly one poison job per thread, then close.
 
         **The pills are the whole mechanism, and `threads` must equal the
@@ -402,14 +497,20 @@ struct OffloadPool(Movable):
         local testing. The close exists to release the descriptor.
         """
         var pill = _encode_job(_POISON)
+        var lane_write = self.submit_write_fd(lane)
         for _ in range(threads):
             try:
                 _ = send(
-                    FileDescriptor(self.submit_write),
+                    FileDescriptor(lane_write),
                     Span(pill), UInt(len(pill)), 0,
                 )
             except:
                 pass
+        # Only lane 0's descriptor is released here. A lane's write end is
+        # the loop's, and the loop outlives this call for the other lanes'
+        # workers; the process exit releases them.
+        if lane > 0:
+            return
         try:
             close(FileDescriptor(self.submit_write))
         except:
@@ -418,8 +519,8 @@ struct OffloadPool(Movable):
 
     # --- pool side -------------------------------------------------------
 
-    def next_job(self) -> Int:
-        """Block until a job arrives. Returns the slot, or -1 to stop.
+    def next_job(self, lane: Int = 0) -> Int:
+        """Block until a job arrives on `lane`. Returns the slot, or -1 to stop.
 
         BLOCKS, and there is no timeout: the only thing that ever wakes it is
         a datagram. A pool thread must therefore detach from the interpreter
@@ -431,7 +532,7 @@ struct OffloadPool(Movable):
         var buf = List[UInt8](capacity=_JOB_BYTES)
         for _ in range(_JOB_BYTES):
             buf.append(0)
-        var fd = FileDescriptor(self.submit_read)
+        var fd = FileDescriptor(self.submit_read_fd(lane))
         while True:
             var n: UInt
             try:

@@ -1898,12 +1898,13 @@ srv=bin/m0serve
 D="--app-dir apps/hybrid_mix"
 B=http://localhost:8099
 B2=http://localhost:8100
+B3=http://localhost:8110
 
-cleanup() { kill $pid $pid2 2>/dev/null; }
+cleanup() { kill $pid $pid2 $pid3 2>/dev/null; }
 trap cleanup EXIT
 fail() {
   echo "$1"
-  for log in hybrid.log hybrid2.log; do
+  for log in hybrid.log hybrid2.log hybrid3.log; do
     [ -f $log ] && { echo "=== $log ==="; cat $log; }
   done
   exit 1
@@ -1973,11 +1974,64 @@ code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' $B2/portal)
 
 kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
 
-# --- phase 3: the refusals --------------------------------------------
-out=$("$srv" --mount /a=shop.wsgi --mount /b=live.asgi $D --port 8101 2>&1); rc=$?
-[ $rc -ne 0 ] || fail 'a mixed WSGI/ASGI pair of mounts was accepted'
-echo "$out" | grep -q 'mixed WSGI and ASGI mounts' \
-  || fail "the mixed-mount refusal did not explain itself: $out"
+# --- phase 3: mixed protocols, each in its native mode ------------------
+# The stage-2 claim: Django (sync, on handler-pool threads) and FastHTML
+# (async, on the asyncio executor) in ONE process, each keeping its own
+# concurrency. Skipped where fasthtml is absent, like the FastHTML row.
+if python3 -c 'import fasthtml' 2>/dev/null; then
+  "$srv" --mount /=shop.wsgi --mount /app=live.asgi $D --port 8110 \
+    --blocking-threads 4 > hybrid3.log 2>&1 &
+  pid3=$!
+
+  curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B3/ \
+    | grep -q 'hello from django' || fail 'the sync mount did not serve Django'
+  curl -s --max-time 8 $B3/app/ | grep -q 'hello from fasthtml' \
+    || fail 'the async mount did not serve FastHTML'
+  # The banner names WHICH mount the executor took; without the @ the two
+  # mounts are sharing a mode and the isolation below is meaningless.
+  grep -q 'asgi-loop@/app' hybrid3.log \
+    || fail 'the executor was not bound to the /app mount'
+  grep -q 'blocking-threads=4' hybrid3.log \
+    || fail 'the sync mount got no handler pool'
+
+  # ASGI's `path` includes root_path (the framework strips it), which is the
+  # opposite of the WSGI half asserted above -- one seam, two conventions.
+  live=$(curl -s --max-time 8 $B3/app/where)
+  echo "$live" | grep -q '"root_path": "/app"' || fail "asgi root_path wrong: $live"
+  echo "$live" | grep -q '"path": "/app/where"' \
+    || fail "asgi path was trimmed; it must carry root_path: $live"
+  echo "$live" | grep -q '/app/where"}' || fail "url_for lost the prefix: $live"
+
+  M0_PORT=8110 python3 scripts/hybrid_isolation.py || fail 'the mounts did not isolate'
+
+  # SIGTERM must reach BOTH worker kinds. The executor sleeps on its own
+  # mount's submit channel, so a shutdown pill sent to lane 0 poisons the
+  # pool threads and leaves it parked forever -- `next_job` has no timeout,
+  # so that is a hung join, not a slow one. This asserts the exit rather
+  # than the exit code, because a hang is the failure mode.
+  kill $pid3 2>/dev/null
+  waited=0
+  while kill -0 $pid3 2>/dev/null && [ $waited -lt 20 ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 $pid3 2>/dev/null; then
+    kill -9 $pid3 2>/dev/null
+    fail 'a mixed mounted server did not exit on SIGTERM (executor pill went to the wrong lane?)'
+  fi
+  wait $pid3 2>/dev/null
+  rm -f hybrid3.log
+else
+  echo "fasthtml not installed - skipping the mixed-protocol phase"
+fi
+
+# --- phase 4: the refusals --------------------------------------------
+if python3 -c 'import fasthtml' 2>/dev/null; then
+  out=$("$srv" --mount /a=live.asgi --mount /b=live.asgi $D --port 8101 2>&1); rc=$?
+  [ $rc -ne 0 ] || fail 'two ASGI mounts were accepted'
+  echo "$out" | grep -q 'only one ASGI --mount' \
+    || fail "the second-ASGI-mount refusal did not explain itself: $out"
+fi
 
 out=$("$srv" --mount /a=shop.wsgi --realtime $D --port 8101 2>&1); rc=$?
 [ $rc -ne 0 ] || fail '--mount with --realtime was accepted'
@@ -1990,7 +2044,7 @@ out=$("$srv" --mount /a=shop.wsgi shop.wsgi $D --port 8101 2>&1); rc=$?
 out=$("$srv" --mount /a=shop.wsgi --mount /a/=portal.wsgi:app $D --port 8101 2>&1); rc=$?
 [ $rc -eq 2 ] || fail "a duplicate mount prefix exited $rc, expected 2"
 
-rm -f hybrid.log hybrid2.log
+rm -f hybrid.log hybrid2.log hybrid3.log
 echo "smoke-hybrid OK"
 """
 

@@ -23,6 +23,7 @@ silent default.
 from std.ffi import external_call
 from std.sys.info import CompilationTarget
 
+from lightbug_http.offload import match_path_prefix
 from lightbug_http.server_config import ServerConfig
 from m0_http.config import AppConfig
 
@@ -79,6 +80,14 @@ struct ServeOptions(Copyable, Movable):
     """
     var mount_modules: List[String]
     var mount_attributes: List[String]
+    var asgi_mount: Int
+    """Index of the ASGI mount, or -1 when every mount is WSGI.
+
+    Written by `m0serve`'s detection pass, not by a flag. It is what decides
+    which submit lane the asyncio executor reads while the handler pool
+    serves the others — the per-mount execution mode that makes a mixed
+    sync/async process worth having.
+    """
     var mount_explicit: List[Bool]
     """Per mount, whether the user wrote `:ATTR`. Discovery applies to a
     mount exactly as it does to a positional spec, and for the same reason:
@@ -164,6 +173,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_modules = List[String]()
         self.mount_attributes = List[String]()
         self.mount_explicit = List[Bool]()
+        self.asgi_mount = -1
         self.protocol = String(PROTOCOL_AUTO)
         self.host = String("0.0.0.0")
         self.port = DEFAULT_PORT
@@ -197,6 +207,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_modules = copy.mount_modules.copy()
         self.mount_attributes = copy.mount_attributes.copy()
         self.mount_explicit = copy.mount_explicit.copy()
+        self.asgi_mount = copy.asgi_mount
         self.protocol = copy.protocol
         self.host = copy.host
         self.port = copy.port
@@ -230,6 +241,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_modules = move.mount_modules^
         self.mount_attributes = move.mount_attributes^
         self.mount_explicit = move.mount_explicit^
+        self.asgi_mount = move.asgi_mount
         self.protocol = move.protocol^
         self.host = move.host^
         self.port = move.port
@@ -427,10 +439,25 @@ def resolve_blocking_threads(
     (`use_asgi_executor`) — its concurrency is the application's own
     awaits, and pool threads would only multiply interpreter-side handler
     state for nothing.
+
+    A **mounted** server is decided per mount rather than per process: if
+    any mount is WSGI it needs a pool, whatever the others are, because its
+    handler threads are the only workers parked on its lane. `is_asgi` for
+    a mounted server means "some mount is ASGI" and answers a different
+    question — which lane the executor takes — so it must not zero the pool
+    here.
     """
     if not zero_config_topology(opts):
         return opts.blocking_threads
-    if opts.realtime or is_asgi:
+    if opts.realtime:
+        return 0
+    if len(opts.mount_prefixes) > 0:
+        var wsgi_mounts = 0
+        for i in range(len(opts.mount_prefixes)):
+            if i != opts.asgi_mount:
+                wsgi_mounts += 1
+        return default_blocking_threads(cpus) if wsgi_mounts > 0 else 0
+    if is_asgi:
         return 0
     return default_blocking_threads(cpus)
 
@@ -448,13 +475,12 @@ def use_asgi_executor(opts: ServeOptions, is_asgi: Bool) -> Bool:
     `resolve_blocking_threads`'s answer has been written back into
     `opts.blocking_threads`.
     """
-    # Mounted servers stay on the buffered path for now. The executor is
-    # one asyncio loop owning one application's bridge, so N ASGI mounts
-    # would be N executor threads fed by one submit channel that cannot
-    # say which of them a job is for -- per-mount submit channels are
-    # stage 2, and serving the wrong app is not a tradeoff worth taking.
+    # A mounted server routes by lane, so the executor serves the ASGI
+    # mount while pool threads serve the sync ones; `asgi_mount` names it
+    # and the blocking-threads count is about the pool, not about whether
+    # the executor runs at all.
     if len(opts.mount_prefixes) > 0:
-        return False
+        return opts.asgi_mount >= 0 and not opts.realtime
     return is_asgi and not opts.realtime and opts.blocking_threads == 0
 
 
@@ -496,28 +522,13 @@ def discovery_specs(module: String) -> List[String]:
 def match_mount(prefixes: List[String], path: String) -> Int:
     """Index of the mount serving `path`, or -1 when none does.
 
-    Longest prefix wins, and a prefix matches only on a segment boundary:
-    `/app` serves `/app` and `/app/x`, never `/application`. The root mount
-    is the empty prefix (see `ServeOptions.mount_prefixes`) and needs no
-    special case here — every request target starts with `/`, so it matches
-    at length 0 and any deeper mount outranks it. That is what lets a Django
-    project at `/` coexist with a FastHTML app at `/app` instead of
-    shadowing it.
+    One line, because the rule belongs to exactly one implementation:
+    `lightbug_http.offload.match_path_prefix`. The pool's `lane_for` routes
+    a job to a worker with the same answer this routes a request to an
+    application, and the two must never disagree — a request served by the
+    wrong mount is the failure this whole feature exists to avoid.
     """
-    var best = -1
-    var best_len = -1
-    for i in range(len(prefixes)):
-        ref prefix = prefixes[i]
-        var n = prefix.byte_length()
-        if n <= best_len:
-            continue
-        if not path.startswith(prefix):
-            continue
-        if path.byte_length() > n and path.as_bytes()[n] != UInt8(ord("/")):
-            continue
-        best = i
-        best_len = n
-    return best
+    return match_path_prefix(prefixes, path)
 
 
 def _takes_value(name: String) -> Bool:

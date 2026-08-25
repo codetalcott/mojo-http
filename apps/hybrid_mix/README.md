@@ -1,36 +1,60 @@
-# hybrid_mix — two applications, one process
+# hybrid_mix — sync and async in one process
 
-Two frameworks served by one `m0serve` process at different path prefixes:
+Three frameworks, three prefixes, one `m0serve` process — and each
+application runs in the concurrency model it was written for:
 
 ```bash
 uv run bin/m0serve \
   --mount /=shop.wsgi \
   --mount /portal=portal.wsgi:app \
+  --mount /app=live.asgi \
   --app-dir apps/hybrid_mix --port 8099
 ```
 
-`/` and `/where` reach Django; `/portal/` and `/portal/where` reach Flask;
-anything else is a 404 answered in Mojo, never entering Python.
+| prefix | framework | protocol | runs on |
+|---|---|---|---|
+| `/` | Django | WSGI | handler-pool threads |
+| `/portal` | Flask | WSGI | handler-pool threads |
+| `/app` | FastHTML | ASGI | the asyncio executor |
 
-Each mount gets its own bridge and its own shim namespace, which is what
-makes two frameworks in one interpreter safe. Two Django projects would
-*not* prove that — they would share `django.conf.settings` and the first
-one imported would win — so the second half is deliberately Flask.
+The banner says which mount took the executor: `asgi-loop@/app`.
 
-## What the `/where` routes are for
+**This is the thing the hybrid gateway is for.** uvicorn, daphne and
+Granian each host exactly one callable, so a codebase that is partly sync
+and partly async runs two servers behind a proxy, or drops the sync half
+onto an event loop's threadpool. Here the loop routes by prefix before
+either application sees the request, and hands the job to a submit lane
+whose worker is the right kind.
 
-Both frameworks build absolute URLs from `SCRIPT_NAME`, so a server that
-hands an application a prefix it does not actually strip from `PATH_INFO`
-breaks every generated link while every direct request still works. That
-failure is invisible until someone clicks something. `poe smoke-hybrid`
-compares `reverse()`, `url_for()` and the two `request.path` values byte
-for byte against what the mount promises.
+## What the routes are for
 
-## Not here yet
+- `/where` and `/app/where` are the scope-fidelity probes, and they assert
+  **opposite** things on purpose: WSGI gets `SCRIPT_NAME` with `PATH_INFO`
+  trimmed to the remainder, ASGI gets `root_path` with `path` left whole
+  (the framework strips it itself). One seam in `PyBridge.set_base` serves
+  both, and getting it backwards breaks every generated link while every
+  direct request still works.
+- `/slow?ms=` blocks a pool thread — a stand-in for the ORM call or
+  outbound request a real Django view makes.
+- `/app/await?ms=` awaits, so the executor can overlap it.
 
-Both mounts are WSGI. Mixed WSGI/ASGI mounts are refused for now with a
-message pointing at `docs/WSGI_VS_ASGI.md` — routing them is done, but
-giving each its native execution mode (the asyncio executor for the async
-one, the handler pool for the sync one) is the next stage, and running an
-ASGI app through the buffered bridge beside a WSGI one would quietly cost
-it its streaming.
+`scripts/hybrid_isolation.py` is the measurement: four `/slow?ms=2000`
+requests hold every pool thread while the FastHTML mount is polled, and the
+async p99 must stay inside a few hundred milliseconds. Sharing one
+execution mode puts it in the seconds.
+
+Two Django projects would **not** make this point — they would share
+`django.conf.settings` and the first import would win. Three frameworks
+cannot accidentally share anything.
+
+## Limits
+
+One ASGI mount. A second needs its own streaming chunk channel, and the
+loop has a single `bus_read_fd`; sharing it is possible (slots are unique
+per loop) but drain-ack credit belongs to the executor that owns the slot,
+so the routing has to come first. Any number of WSGI mounts may sit beside
+it — they share the pool, dealt round-robin across the lanes.
+
+`--realtime` is refused with `--mount`: an inbound WebSocket message is
+delivered back into one application's urlconf, and which mount should
+receive it has no defensible answer.

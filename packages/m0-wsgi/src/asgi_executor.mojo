@@ -57,6 +57,7 @@ from m0_http import (
 
 from .app import WSGIApp
 from .blocking_pool import BLK_POOL
+from m0_http import BLK_LANE
 from .cli import ServeOptions
 from .handler import WSGIHandler, asgi_stream_url
 from .response import build_response
@@ -79,36 +80,58 @@ struct AsgiExecutor(Movable):
 
     var _set: ThreadSet
     var _started: Bool
+    var _lane: Int
+    """The submit lane this executor reads, so `stop_and_join` poisons the
+    channel the thread is actually parked on."""
 
     def __init__(out self):
         self._set = ThreadSet(1)
         self._started = False
+        self._lane = -1
 
     def __init__(out self, *, deinit move: Self):
         self._set = move._set^
         self._started = move._started
+        self._lane = move._lane
 
-    def start(mut self, pool_addr: Int, user: Int) raises:
-        """Spawn the executor thread. `user` is the `ServeOptions` address."""
+    def start(mut self, pool_addr: Int, user: Int, lane: Int = -1) raises:
+        """Spawn the executor thread. `user` is the `ServeOptions` address.
+
+        `lane` is the submit lane this executor reads and the mount it
+        serves — under `--mount` a sync application's pool threads are
+        parked on other lanes at the same time, and a job must reach the
+        worker that can actually run it. -1 is the unmounted server.
+        """
         var body = _executor_body
         var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
         var block = self._set.block(0)
         block.set(BLK_USER, user)
         block.set(BLK_POOL, pool_addr)
+        block.set(BLK_LANE, lane)
+        self._lane = lane
         self._set.spawn(0, body_addr)
         self._started = True
 
     def stop_and_join(mut self, mut pool: OffloadPool) raises -> Int:
-        """One pill, then join. Returns 1 if the thread did not end cleanly.
+        """One pill on THIS executor's lane, then join.
+
+        Returns 1 if the thread did not end cleanly.
 
         BLOCKS — detach from the interpreter around it, exactly as with
         `BlockingPool.stop_and_join`: the executor must attach-and-run to
         drain its in-flight tasks, and it cannot while the joiner holds a
         thread state and sleeps in `pthread_join`.
+
+        **The lane is load-bearing.** Under `--mount` this thread sleeps on
+        its own mount's submit channel, and a pill sent to lane 0 goes to
+        the pool threads instead — `next_job` has no timeout, so the
+        executor never wakes and this join hangs forever rather than
+        failing. That is exactly what a mounted server's SIGTERM did before
+        this line named the lane.
         """
         if not self._started:
             return 0
-        pool.stop(1)
+        pool.stop(1, self._lane if self._lane > 0 else 0)
         self._set.join_all()
         return 0 if self._set.status(0) == STATUS_OK else 1
 
@@ -126,26 +149,39 @@ def _executor_serve(block: ThreadBlock) raises:
     var opts = Pointer[ServeOptions, MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_USER)
     )
+    var lane = block.get(BLK_LANE)
 
     # This thread's own app, and THE lifespan for this loop: the module was
     # imported before this thread existed, so this is a sys.modules hit
     # plus a fresh shim namespace — the same economics as a pool thread's
     # handler. The event loop's fallback handler was built with
     # `lifespan=False`, so exactly one lifespan runs per event loop.
-    var app = WSGIApp(
-        opts[].module,
-        server_name=opts[].host,
-        server_port=String(opts[].port),
-        attribute=opts[].attribute,
+    #
+    # Under `--mount` this builds ONLY the mount on this executor's lane
+    # (`only_mount`), for the reason a pool thread does: the sync mounts'
+    # applications belong to the pool threads, and building them here would
+    # run their lifespans a second time. `thread_index` stays -1 either way
+    # — one executor is not a pool, and stamping `x-thread: 0` on every
+    # response would claim it is.
+    var handler = WSGIHandler.build(
+        opts[],
         multiprocess=opts[].workers > 1,
         multithread=False,
-        protocol="asgi",
         lifespan=True,
+        only_mount=lane,
+    ) if len(opts[].mount_prefixes) > 0 else WSGIHandler.for_options(
+        WSGIApp(
+            opts[].module,
+            server_name=opts[].host,
+            server_port=String(opts[].port),
+            attribute=opts[].attribute,
+            multiprocess=opts[].workers > 1,
+            multithread=False,
+            protocol="asgi",
+            lifespan=True,
+        ),
+        opts[],
     )
-    # `for_options` rather than `make`: the mounts and health path are the
-    # options', but `thread_index` stays -1 — one executor is not a pool,
-    # and stamping `x-thread: 0` on every response would claim it is.
-    var handler = WSGIHandler.for_options(app^, opts[])
 
     # The shim's loop reads the submit channel itself from here on. The fd
     # must be non-blocking: `add_reader` fires level-ish per readability,
@@ -153,8 +189,10 @@ def _executor_serve(block: ThreadBlock) raises:
     # whole loop in a blocking `read`. The ack fd (streaming credit) was
     # made non-blocking by `enable_stream_channel`, in the wiring, before
     # this thread existed.
-    set_nonblocking(FileDescriptor(pool.submit_read))
-    handler.apps[0]._bridge.executor_init(pool.submit_read, pool.stream_ack_read)
+    set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
+    handler.apps[0]._bridge.executor_init(
+        pool.submit_read_fd(lane), pool.stream_ack_read
+    )
 
     # Parallel to the slots: what `after_response` needs after the request
     # itself has crossed into Python, and — for a WebSocket handshake —

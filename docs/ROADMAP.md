@@ -452,18 +452,27 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 - **Mounts: several applications in one process.** `m0serve --mount
   PREFIX=SPEC` routes by longest prefix in Mojo before either application
   sees the request, each mount detecting its own protocol and getting its
-  own bridge. This is the hybrid advantage rather than a convenience:
+  own bridge — **and each running in its own native execution mode**: the
+  sync application on handler-pool threads, the async one on the asyncio
+  executor, sharing one listener, one set of workers and one graceful
+  shutdown. This is the hybrid advantage rather than a convenience:
   uvicorn, daphne and Granian each host exactly one callable, so mixing
-  today means two processes behind a proxy or a Python-side composite
+  otherwise means two processes behind a proxy or a Python-side composite
   (Starlette `Mount` + `WSGIMiddleware`, which drops the sync app onto the
-  event loop's threadpool). Stage 1 routes them and pins the prefix
-  semantics (`docs/WSGI_VS_ASGI.md` §9, `apps/hybrid_mix`,
-  `poe smoke-hybrid`); **stage 2 is the payoff** — each mount in its own
-  native execution mode, the asyncio executor for the async one and the
-  handler pool for the sync one, sharing one listener and one shutdown.
-  That needs per-mount submit channels on `OffloadPool`; one
-  `ProvisionPool` per loop stays, since a slot indexes that loop's
-  provisions.
+  event loop's threadpool).
+
+  The mechanism is a submit **lane** per mount — the single `OffloadPool`
+  submit channel became one `SOCK_DGRAM` pair each — so the loop hands a
+  job to the worker that can run it. One `ProvisionPool` per loop stays,
+  since a slot indexes that loop's provisions. Measured with four blocking
+  2-second Django views holding every pool thread, the FastHTML mount
+  answers at p50 1.3 ms / p99 2.8 ms (`docs/WSGI_VS_ASGI.md` §9,
+  `apps/hybrid_mix`, `poe smoke-hybrid`).
+
+  **What is left:** a second ASGI mount, which needs drain-ack routing
+  (chunks could share the loop's one bus fd since slots are unique;
+  credit cannot, because it belongs to the executor that owns the slot),
+  and per-mount modes under `--threads`, which adds no lanes today.
 - Recorded executor fix paths, unchanged: a wrk-based bench, and N
   executors per pool under free-threading.
 - **Recorded follow-ups, not yet scoped:**

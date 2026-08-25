@@ -532,31 +532,55 @@ Python. Prefixes match on segment boundaries, so `/app` serves `/app` and
 — which needs no special case, since every target starts with `/` and any
 deeper mount outranks it.
 
-**What is refused, and why it is refused rather than guessed:**
+**Stage 2: each mount in its own native execution mode.** The refusal of
+mixed WSGI/ASGI mounts is gone, and with it the reason mounts were a
+convenience rather than a capability. A submit **lane** — one `SOCK_DGRAM`
+pair per mount — replaces the single submit channel, so the loop's
+`pool.submit(slot, path)` hands a job to the worker that can actually run
+it: the asyncio executor for the ASGI mount, handler-pool threads for the
+sync ones, dealt round-robin across their lanes. One `ProvisionPool` per
+loop **stays** (a slot indexes that loop's provisions, and a pool shared
+between loops would answer the wrong connection); only the submit side
+became per-mount. `match_path_prefix` in `offload.mojo` is the single
+implementation of the matching rule, so the lane a job takes and the
+application the handler picks cannot disagree.
 
-- **Mixed WSGI and ASGI mounts.** Routing them is done; giving each its
-  native execution mode is the next stage. Running an ASGI app through
-  the buffered bridge beside a WSGI one would quietly cost it the
-  streaming §8 just gave it.
+Each worker builds **only its own mount's** application (`only_mount`) —
+building the rest would run one lifespan per mount per thread for
+applications it can never be handed.
+
+Measured, and pinned by `smoke-hybrid`: with four blocking 2-second Django
+views holding every pool thread, the FastHTML mount answers at **p50
+1.3 ms, p99 2.8 ms**. Sharing one execution mode puts those in the seconds
+— which is the same shape as the mixed-workload run that justified
+`--blocking-threads` in the first place (§`WSGI_PERFORMANCE.md`).
+
+**What is still refused, and why it is refused rather than guessed:**
+
+- **A second ASGI mount.** Each executor needs its own streaming chunk
+  channel and the loop has one `bus_read_fd`. Sharing it is possible —
+  slots are unique per loop, so chunks are already addressed — but the
+  drain **acks** are not, because credit belongs to the executor that owns
+  the slot. That routing is the next piece of work, and serving a second
+  async app without its streaming would be a quiet downgrade. Any number
+  of WSGI mounts may sit beside the one ASGI mount.
 - **`--mount` with `--realtime`.** M0-Hold subscribes a connection to
   registries the loop's handler owns, and an inbound WebSocket message is
   delivered back into ONE application's urlconf. Which mount should
   receive it has no defensible answer.
-- **The asyncio executor, for now.** It is one loop owning one
-  application's bridge; N ASGI mounts would be N executor threads fed by
-  a submit channel that cannot say which of them a job is for. Per-mount
-  submit channels are the mechanism, and they are stage 2 — one
-  `ProvisionPool` per loop stays (a slot indexes that loop's provisions),
-  and only the submit side becomes per-mount.
+- **Per-mount modes under `--threads`.** The threaded path adds no lanes,
+  so a mounted server there routes to lane 0 and every mount shares one
+  mode — stage 1's behaviour, still correct, just without the advantage.
 
 **Why this is the hybrid advantage rather than a convenience.** uvicorn
-hosts one callable; daphne hosts one; Granian hosts one. Mixing today
+hosts one callable; daphne hosts one; Granian hosts one. Mixing otherwise
 means two processes behind a reverse proxy, or composing in Python
 (Starlette `Mount` + `WSGIMiddleware`, which drops the sync app onto the
-event loop's threadpool and inherits every limit that implies). Stage 2
-— each mount in its own native mode, sharing one listener, one set of
-workers and one graceful shutdown — is the thing no other server in this
-space can do, and it is what pays for the complexity §8 spent.
+event loop's threadpool and inherits every limit that implies). A sync
+application and an async one sharing one listener, one set of workers and
+one graceful shutdown while each keeps its own concurrency is the thing no
+other server in this space does, and it is what pays for the complexity §8
+spent.
 
 ## Sources
 

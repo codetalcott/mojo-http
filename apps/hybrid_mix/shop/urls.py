@@ -13,6 +13,19 @@ from django.http import HttpResponse
 from django.urls import path, reverse
 
 
+def slow(request):
+    """A blocking sync view: the thing that must NOT stall the async mount.
+
+    `time.sleep` rather than anything clever -- this is a stand-in for the
+    ORM call or the third-party HTTP request a real Django view makes, and
+    what matters is that it holds its worker.
+    """
+    import time
+
+    time.sleep(float(request.GET.get("ms", "1000")) / 1000)
+    return HttpResponse("slow done", content_type="text/plain")
+
+
 def hello(request):
     return HttpResponse("hello from django on mojo-http", content_type="text/plain")
 
@@ -40,4 +53,5 @@ def where(request):
 urlpatterns = [
     path("", hello),
     path("where", where, name="where"),
+    path("slow", slow),
 ]

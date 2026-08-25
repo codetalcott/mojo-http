@@ -59,7 +59,18 @@ struct ThreadContext(Copyable, Movable):
     var index: Int
     var user: Int
     """The address passed to `ThreadedServer.serve` — the app's own spec."""
+    var lane: Int
+    """Which mount this thread serves, or -1 for "every mount".
 
-    def __init__(out self, index: Int, user: Int):
+    A `--blocking-threads` pool thread bound to one mount's submit lane
+    builds only that mount's application: building all of them per thread
+    would run one lifespan per mount per thread and carry N applications'
+    worth of interpreter state for jobs it can never receive. -1 is the
+    unmounted case and the `--threads` serving loops, which own every
+    mount because they route in Mojo before dispatching.
+    """
+
+    def __init__(out self, index: Int, user: Int, lane: Int = -1):
         self.index = index
         self.user = user
+        self.lane = lane

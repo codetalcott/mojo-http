@@ -40,6 +40,9 @@ comptime BLK_USER = 4
 """Address of whatever the spawner wants the thread to find."""
 comptime BLK_STATUS = 5
 """Written by the thread: `STATUS_NEVER_RAN` until it starts, then its result."""
+comptime BLK_LANE = 6
+"""Which submit lane a pool thread serves (`--mount`); 0 when there is one."""
+
 comptime BLK_INTS = 8
 """Slots per block; 64 bytes, one cache line."""
 

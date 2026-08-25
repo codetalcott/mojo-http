@@ -1348,8 +1348,14 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         # loop waits for this handler.
         if offload.accepting():
             ref pool = offload.pool()[]
+            # The path decides the lane, and the loop never learns what a
+            # lane means: with `--mount` each application's worker owns
+            # one, so a job reaches the worker that can serve it rather
+            # than whichever reads the datagram first. Unmounted there is
+            # one lane and this is the call it always was.
+            var target = request.uri.path
             pool.park_request(slot, request^)
-            if pool.submit(slot):
+            if pool.submit(slot, target):
                 offload.offloaded[slot] = True
                 offload.inflight += 1
                 # A stale deadline from the PREVIOUS request on this
