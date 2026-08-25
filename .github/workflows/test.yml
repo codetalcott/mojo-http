@@ -51,7 +51,7 @@ jobs:
         # legible failure — the job cap above is the backstop, this is the
         # one step known to stall.
         timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       # Both steps tee into one log so the ratchet below sees every warning:
       # build-all covers the packages, and test-all is the only thing that
       # compiles test/ sources, where most of the residual warnings live.
@@ -73,6 +73,13 @@ jobs:
       # matches. A silent parse regression would under-count and pass.
       - name: Self-test the warning parser
         run: python3 scripts/warning_ratchet.py --selftest
+      # Same reasoning, different parser. binfmt.py tells a dylib from an
+      # executable, and getting that backwards is invisible to any test that
+      # only ever inspects one of them -- which is exactly how the portability
+      # checker came to report bin/m0serve as self-contained while it resolved
+      # the Mojo runtime through a path on one developer's machine.
+      - name: Self-test the Mach-O/ELF parser
+        run: python3 scripts/binfmt.py --selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # m0-wsgi embeds CPython, so its interpreter has to resolve on both
@@ -103,7 +110,7 @@ jobs:
         # legible failure — the job cap above is the backstop, this is the
         # one step known to stall.
         timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       - name: Build all packages
         run: uv run poe build-all
       # Exercises the m0-http <-> lightbug_http cycle end to end: the binary
@@ -127,6 +134,26 @@ jobs:
       # bundle is self-contained, and fails if it ever regresses.
       - name: Assert the C-ABI bundle is self-contained
         run: uv run poe bundle-ffi
+      # The same gate for the CLI binary, which shipped without one. Every
+      # bin/m0serve ever built recorded a search path into its build venv;
+      # this asserts the bundled artifact resolves the runtime beside itself
+      # instead, and that the licences it must carry travel with it.
+      - name: Assert the m0serve bundle is self-contained
+        run: uv run poe bundle-serve
+      # The artifact a user actually installs. Builds the wheel with its
+      # platform tag MEASURED from the staged binaries, installs it into a
+      # throwaway venv outside this tree on a different Python minor, serves
+      # a real WSGI app through it with the environment scrubbed, and asserts
+      # it stops working when its bundled runtime is removed. That last one
+      # matters most: if it still ran, the bundle would be a placebo and the
+      # binary would be resolving the runtime from the build venv.
+      #
+      # This is the repo-side half only. A poe task runs where
+      # .venv/.../modular/lib exists, which is the directory a stale rpath
+      # would name, so it cannot prove portability on its own -- that is what
+      # the clean consumer jobs in release.yml are for.
+      - name: Build and smoke test the installable wheel
+        run: uv run poe smoke-wheel
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
       # Both stop paths: SIGTERM draining a single process, and a SIGTERM aimed

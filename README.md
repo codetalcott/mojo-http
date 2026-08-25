@@ -4,7 +4,46 @@
 
 The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE- and WebSocket-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
 
-It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, Linux and macOS, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
+It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, macOS arm64 and Linux x86_64, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
+
+## Install
+
+To **serve a Python application**, no Mojo toolchain is needed — install the
+server binary from PyPI and point it at your app:
+
+```bash
+pip install m0serve
+m0serve myproject.wsgi:application
+```
+
+Install it into the same virtual environment as your application, the way you
+would gunicorn or uvicorn. The protocol is detected from the object, so the
+same command serves WSGI and ASGI.
+
+**One wheel per platform covers every supported CPython**, 3.10 through 3.14
+including free-threaded builds. That is not a shortcut: `m0serve` does not
+link libpython — Mojo `dlopen`s the interpreter at run time — so there is no
+CPython ABI in the wheel to be compatible with, and no CPython inside it to
+redistribute. It has no Python dependencies and fetches nothing at install
+time.
+
+| platform | status |
+|---|---|
+| macOS arm64 (Apple Silicon), macOS 13+ | supported |
+| Linux x86_64, glibc | supported |
+| Linux aarch64 | buildable, not shipped — the toolchain wheel exists, nothing builds or tests it yet |
+| macOS x86_64 (Intel) | **not possible**: Modular ships no Intel Mac toolchain |
+| musl / Alpine, Windows | not supported |
+
+**The exact floors live in the wheel filename**, because they are measured
+from the built binary rather than copied from the toolchain's own tag. macOS
+is pinned at 13.0; Linux currently measures `manylinux_2_35`, so Ubuntu
+22.04, Debian 12 and newer. An older distribution is declined by `pip`
+rather than installed and crashed at startup — RHEL 9 and its rebuilds sit
+at glibc 2.34 and miss by one minor version. Reaching them means building
+inside a `manylinux_2_34` container rather than relabelling the artifact.
+
+To **develop against the Mojo packages**, you do need the toolchain:
 
 ```bash
 uv sync                     # installs the Mojo toolchain
@@ -356,7 +395,9 @@ values returns unchanged.
   `--workers N` preforks N processes that all accept from one shared
   listener, gunicorn-style — the fork happens *before* the first Python
   call, never after, because forking a live CPython is unsafe — or, on
-  free-threaded CPython (3.13t+ with the GIL off), `--threads N` runs N
+  free-threaded CPython (3.14t or newer with the GIL off — 3.13t is a
+  dead end that systematically immortalizes objects, which is why Django
+  dropped it from its own CI), `--threads N` runs N
   loops on N threads in **one** process: one RSS, the app imported once, and
   none of the fork-after-init hazards. A GIL-enabled interpreter refuses
   `--threads` outright (exit 78) rather than run loops the GIL would
@@ -520,7 +561,7 @@ so it is not worth the ownership complexity yet.
 ## Status and limits
 
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
-- Linux (`epoll`) and macOS (`kqueue`).
+- Linux `x86_64` (`epoll`) and macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all, and Linux `aarch64` is buildable but untested. See the install table above.
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - Pre-1.0: the API will break.

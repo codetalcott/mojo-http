@@ -54,3 +54,86 @@ README: minor versions may break the API. The version lives in
 a package carries, because `m0serve --version` has to answer something.
 Nothing else may add one: `smoke-serve` cross-checks exactly that pair, so
 a fourth copy would drift silently.
+
+## The PyPI wheel
+
+`m0serve` is published to PyPI as a platform wheel. The distribution name is
+`m0serve`, not `mojo-http`: it matches the command users type, it keeps
+distance from Modular's `mojo` mark, and it names what is actually in the
+archive — the server binary, not the Mojo packages. The GitHub repository
+keeps its own name; a repository and a distribution need not agree.
+
+```bash
+uv run poe build-wheel     # stage, measure the tag, build into dist/wheels/
+uv run poe smoke-wheel     # + install it outside the tree and serve from it
+```
+
+Four properties of this that are easy to get wrong later:
+
+- **The version is derived, never bumped.** `packaging/m0serve/pyproject.toml`
+  declares `dynamic = ["version"]` and `hatch_version.py` reads the root
+  `pyproject.toml`, cross-checking `M0SERVE_VERSION` and *refusing to build*
+  on drift. The two copies this document already names stay the only two;
+  `check-docs` fails if a third appears.
+
+- **The platform tag is measured, not declared.** `scripts/wheel_tag.py`
+  reads `LC_BUILD_VERSION` and versioned glibc symbols out of the staged
+  binaries and takes the strictest floor across all of them. Copying the
+  toolchain's own tag would have shipped a `macosx_13_0` wheel containing a
+  binary that requires macOS 26.
+
+- **There is no ABI tag, on purpose.** `m0serve` does not link libpython, so
+  one wheel per platform serves CPython 3.10–3.14 including free-threaded
+  builds. If a future change ever puts libpython on the link line, this stops
+  being true and the wheel needs a tag per interpreter — a much larger matrix.
+
+- **A PyPI filename is burned permanently.** It cannot be re-uploaded after a
+  delete, and a yank (PEP 592) leaves the file installable by exact pin. So
+  rehearse on TestPyPI first with an `rc`, upload the *identical* files to
+  PyPI without rebuilding, and treat rc numbers as the cheap resource.
+
+### The first upload, concretely
+
+One-time, and only you can do these — they need accounts this repository
+cannot reach:
+
+1. PyPI → *Your projects* → **Publishing** → add a **pending** publisher:
+   project `m0serve`, owner `codetalcott`, repository `mojo-http`, workflow
+   `release.yml`, environment `pypi`. Repeat on TestPyPI.
+2. This repository → Settings → Environments → create `pypi`.
+3. Settings → Secrets and variables → Actions → Variables → set
+   `PUBLISH_TO_PYPI` to `true`. Until then `publish-pypi` is skipped, so a
+   tag pushed today produces a GitHub release and no upload.
+
+Then rehearse before anything is burned:
+
+```bash
+# 1. Bump BOTH copies to the release candidate, and let the ratchet check you.
+#    (pyproject.toml `version`, cli.mojo M0SERVE_VERSION -- see above.)
+uv run poe check-docs
+
+# 2. Build and prove it locally.
+uv run poe smoke-wheel
+
+# 3. Collect the OTHER platform's wheel from a CI run rather than rebuilding
+#    it -- the wheels you upload must be the wheels that were tested.
+gh run download <run-id> --pattern 'wheel-*' --dir dist/wheels
+
+# 4. TestPyPI. Filenames there are worthless, so burn rc numbers freely.
+uvx twine check --strict dist/wheels/*.whl
+uvx twine upload --repository testpypi dist/wheels/*.whl
+
+# 5. The assertion that matters: pip must pick the right file out of several
+#    platform wheels, from an index, on a machine that never built them.
+docker run --rm python:3.12-slim-bookworm sh -c \
+  'pip install -i https://test.pypi.org/simple/ m0serve && m0serve --version'
+```
+
+Only then tag for real. Upload the **identical files**, verified by sha256 —
+rebuilding between the rehearsal and the release means you tested a different
+artifact.
+
+Publishing and announcing are separate acts. The first releases are
+deliberately quiet: the wheel exists, the README documents `pip install
+m0serve`, and nothing is posted anywhere until the remaining release gates in
+[ROADMAP.md](ROADMAP.md) are done.

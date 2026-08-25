@@ -134,8 +134,36 @@ default_item_type = "ref"
 help = "Build the m0serve CLI (bin/m0serve) — a uvicorn-shaped WSGI server"
 shell = """
 mkdir -p bin
+# A Mojo binary otherwise inherits the BUILD HOST's SDK as its deployment
+# target -- built on macOS 26 it records `minos 26.0` and refuses to launch
+# on macOS 15, which would have made the wheel's floor a property of whichever
+# runner image GitHub happened to be using. `mojo build` honours
+# MACOSX_DEPLOYMENT_TARGET (measured: setting 13.0 produces `minos 13.0`), so
+# the floor is pinned to the same version the Mojo toolchain's own wheel is
+# tagged for -- macosx_13_0_arm64. Not lower: the toolchain does not claim to
+# run there. Modular's runtime dylibs are built for 11.0 and so satisfy it.
+# scripts/wheel_tag.py measures the result rather than trusting this.
+export MACOSX_DEPLOYMENT_TARGET=13.0
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
   packages/m0-wsgi/m0serve.mojo -o bin/m0serve || exit 1
+
+# Same post-link surgery build-ffi does, and for the same reason: `mojo
+# build` records the build venv as a search path. It was missing here, so
+# every bin/m0serve ever produced resolved the Mojo runtime through a
+# directory that exists on exactly one machine. Two rpaths, because one
+# build output serves both shapes -- flat (the tarball asset, libraries
+# beside the binary) and wheel (_bin/ and _lib/ siblings). See
+# docs/FFI_DISTRIBUTION.md; `poe check-serve-portable` asserts the result.
+python3 scripts/relocate.py --no-id \
+  --rpath '@loader_path' --rpath '@loader_path/../_lib' bin/m0serve || exit 1
+
+# Then complete the bundle in place, so `bin/` IS the shipped shape: the
+# binary plus the Mojo runtime it resolves through @loader_path. Without
+# this the CLI would only run with DYLD_LIBRARY_PATH pointing back into the
+# venv -- which is the dependency we just removed, reintroduced by the
+# development workflow. Every serve-*/smoke-* task runs bin/m0serve
+# directly, so they now exercise the artifact a user actually gets.
+python3 scripts/bundle_artifact.py bin/m0serve bin || exit 1
 echo "built bin/m0serve"
 """
 
@@ -147,6 +175,16 @@ help = "Emit the C-ABI shared library (packages/m0-core/libm0core.so|.dylib)"
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 lib="packages/m0-core/libm0core.$ext"
+# A Mojo binary otherwise inherits the BUILD HOST's SDK as its deployment
+# target -- built on macOS 26 it records `minos 26.0` and refuses to launch
+# on macOS 15, which would have made the wheel's floor a property of whichever
+# runner image GitHub happened to be using. `mojo build` honours
+# MACOSX_DEPLOYMENT_TARGET (measured: setting 13.0 produces `minos 13.0`), so
+# the floor is pinned to the same version the Mojo toolchain's own wheel is
+# tagged for -- macosx_13_0_arm64. Not lower: the toolchain does not claim to
+# run there. Modular's runtime dylibs are built for 11.0 and so satisfy it.
+# scripts/wheel_tag.py measures the result rather than trusting this.
+export MACOSX_DEPLOYMENT_TARGET=13.0
 mojo build --emit shared-lib -I packages/m0-core \
   packages/m0-core/ffi_exports.mojo -o "$lib" || exit 1
 
@@ -154,25 +192,11 @@ mojo build --emit shared-lib -I packages/m0-core \
 # output path as the install name. Both are the BUILD MACHINE's, which is
 # meaningless to anyone who downloads the artifact -- and neither can be
 # suppressed with a linker flag, so they are rewritten after the link.
+# The surgery is shared with build-serve rather than copied into it; the
+# copy is how bin/m0serve went without any. Linux is a best-effort cleanup
+# (that .so is statically linked, so its RUNPATH resolves nothing).
 # See docs/FFI_DISTRIBUTION.md; `poe check-ffi-portable` asserts the result.
-if [ "$(uname)" = "Darwin" ]; then
-  install_name_tool -id "@rpath/libm0core.dylib" "$lib" || exit 1
-  otool -l "$lib" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}' | while read -r rp; do
-    [ "$rp" = "@loader_path" ] || install_name_tool -delete_rpath "$rp" "$lib"
-  done
-  otool -l "$lib" | grep -q "@loader_path" || install_name_tool -add_rpath "@loader_path" "$lib" || exit 1
-  # arm64 macOS invalidates the signature on any Mach-O edit; an unsigned
-  # dylib will not load at all, so re-sign ad-hoc.
-  codesign -f -s - "$lib" >/dev/null 2>&1 || true
-else
-  # The Linux .so is statically linked (no DT_NEEDED at all), so its RUNPATH
-  # resolves nothing and cannot break a load -- but it still publishes the
-  # build directory, so it is cleared when patchelf is available. Not a hard
-  # dependency precisely because nothing depends on it.
-  if command -v patchelf >/dev/null 2>&1; then
-    patchelf --remove-rpath "$lib" || true
-  fi
-fi
+python3 scripts/relocate.py --id "libm0core.$ext" --rpath '@loader_path' "$lib" || exit 1
 echo "built $lib"
 """
 
@@ -2884,7 +2908,7 @@ case "$(uname)-$(uname -m)" in
 esac
 out="dist/libm0core-$plat"
 rm -rf "$out"
-python3 scripts/bundle_ffi.py "packages/m0-core/libm0core.$ext" "$out" || exit 1
+python3 scripts/bundle_artifact.py "packages/m0-core/libm0core.$ext" "$out" || exit 1
 # Apache-2.0 with LLVM Exceptions governs the Mojo runtime shipped alongside
 # on macOS; sections 4(a) and 4(d) want the licence text and attribution to
 # travel with it. Included unconditionally so the bundle is self-describing
@@ -2904,6 +2928,225 @@ ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 lib=${FFI_LIB:-packages/m0-core/libm0core.$ext}
 [ -f "$lib" ] || { echo "check-ffi-portable: $lib not built - run: poe build-ffi"; exit 2; }
 python3 scripts/ffi_portability_check.py "$lib"
+"""
+
+# The same treatment for the CLI binary, which never had any. bin/m0serve
+# statically embeds the lightbug fork, so unlike libm0core it carries an MIT
+# attribution obligation into every artifact it ships in -- hence a licence
+# set of its own rather than the bundle's. Deliberately NOT named smoke-*:
+# scripts/check_docs.py requires every smoke-* task to be run by test.yml,
+# and this one is a release-path task.
+[tool.poe.tasks.bundle-serve]
+help = "Assemble a self-contained, redistributable m0serve bundle under dist/"
+deps = ["build-serve", "build-ffi"]
+shell = """
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+case "$(uname)-$(uname -m)" in
+  Darwin-arm64) plat=macos-arm64 ;;
+  Darwin-*)     plat=macos-x86_64 ;;
+  *-aarch64)    plat=linux-aarch64 ;;
+  *)            plat=linux-x86_64 ;;
+esac
+out="dist/m0serve-$plat"
+rm -rf "$out"
+# libm0core rides along because _discover_core_lib (m0serve.mojo) looks for
+# it beside argv[0] first. Without it in the bundle, --realtime and the ASGI
+# state["m0"] fan-out still deliver but lose their shared event ids, and they
+# lose them SILENTLY -- the failure is duplicate suppression quietly not
+# working, not an error anyone sees.
+python3 scripts/bundle_artifact.py \
+  --also "packages/m0-core/libm0core.$ext" bin/m0serve "$out" || exit 1
+cp LICENSE "$out/LICENSE.mojo-http.txt" || exit 1
+cp licenses/LICENSE.lightbug_http.txt "$out/LICENSE.lightbug_http.txt" || exit 1
+cp licenses/LICENSE.mojo-runtime.txt "$out/LICENSE.mojo-runtime.txt" || exit 1
+cp licenses/NOTICE.m0serve.txt "$out/NOTICE.txt" || exit 1
+python3 scripts/ffi_portability_check.py --require-self-contained \
+  "$out/m0serve" || exit 1
+echo "bundle ready: $out"
+"""
+
+[tool.poe.tasks.check-serve-portable]
+help = "Assert bin/m0serve does not depend on the machine that built it"
+shell = """
+bin=${SERVE_BIN:-bin/m0serve}
+[ -f "$bin" ] || { echo "check-serve-portable: $bin not built - run: poe build-serve"; exit 2; }
+python3 scripts/ffi_portability_check.py "$bin"
+"""
+
+# ---------------------------------------------------------------------------
+# The PyPI wheel. Built from packaging/m0serve/, which is a separate project
+# with its own [build-system] -- see the comment at the top of its pyproject.
+# ---------------------------------------------------------------------------
+
+[tool.poe.tasks.stage-wheel]
+help = "Stage the binary, the Mojo runtime and the licences into packaging/m0serve"
+deps = ["build-serve", "build-ffi"]
+shell = """
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+pkg=packaging/m0serve/src/m0serve
+rm -rf "$pkg/_bin" "$pkg/_lib" "$pkg/licenses" packaging/m0serve/licenses
+
+# _bin/ and _lib/ siblings, so the binary searches @loader_path/../_lib -- a
+# relative path with no Python version in it, which is what lets ONE wheel
+# per platform serve 3.10 through 3.14 rather than one per version.
+python3 scripts/bundle_artifact.py --layout wheel \
+  --also "packages/m0-core/libm0core.$ext" bin/m0serve "$pkg" || exit 1
+
+# Licences twice, deliberately. PEP 639 license-files puts the canonical copy
+# in .dist-info/licenses/ where pip and downstream packagers look; the copy
+# beside the binary travels with the directory that has to be moved as a unit
+# (the @loader_path neighbourhood). smoke-wheel asserts the two are identical
+# so they cannot drift.
+for d in "$pkg/licenses" packaging/m0serve/licenses; do
+  mkdir -p "$d" || exit 1
+  cp LICENSE "$d/LICENSE.mojo-http.txt" || exit 1
+  cp licenses/LICENSE.lightbug_http.txt "$d/" || exit 1
+  cp licenses/LICENSE.mojo-runtime.txt "$d/" || exit 1
+  cp licenses/NOTICE.m0serve.txt "$d/NOTICE.txt" || exit 1
+done
+
+python3 scripts/ffi_portability_check.py --require-self-contained \
+  "$pkg/_bin/m0serve" || exit 1
+echo "staged $pkg"
+"""
+
+[tool.poe.tasks.build-wheel]
+help = "Build the PyPI wheel, with the platform tag measured from the binaries"
+deps = ["stage-wheel"]
+shell = """
+tag=$(python3 scripts/wheel_tag.py packaging/m0serve/src/m0serve) || exit 1
+echo "measured platform tag: $tag"
+rm -rf dist/wheels
+M0SERVE_WHEEL_TAG="$tag" uv build packaging/m0serve --wheel --out-dir dist/wheels || exit 1
+ls -1 dist/wheels/
+"""
+
+# The repo-side half of the wheel proof, and its docstring says so on purpose:
+# a poe task runs inside the repo, where .venv/.../modular/lib is on disk --
+# the very directory a stale rpath would name. It therefore CANNOT establish
+# portability. What it can do is check every property that is visible from
+# here, and run the artifact from outside the tree with the environment
+# scrubbed. The other half is the clean consumer jobs in release.yml.
+[tool.poe.tasks.smoke-wheel]
+help = "Build the wheel, install it outside this tree, and serve a real app from it"
+deps = ["build-wheel"]
+shell = """
+set -u
+fail() { echo "smoke-wheel: $1" >&2; exit 1; }
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+whl=$(ls dist/wheels/*.whl 2>/dev/null | head -1)
+[ -n "$whl" ] || fail "no wheel was built"
+[ "$(ls dist/wheels/*.whl | wc -l | tr -d ' ')" = "1" ] || fail "more than one wheel in dist/wheels"
+
+# 1. The tag. `-none-any` would mean the binary is missing or the hook did not
+#    run; a cp3xx/abi3 tag would mean something decided we link libpython.
+base=$(basename "$whl")
+case "$base" in
+  *-py3-none-macosx_*_arm64.whl|*-py3-none-manylinux_*_x86_64.whl|*-py3-none-manylinux_*_aarch64.whl) ;;
+  *-py3-none-any.whl) fail "wheel is tagged py3-none-any: the binary did not make it in" ;;
+  *) fail "unexpected wheel tag: $base" ;;
+esac
+
+# 2. The macOS floor must not be a promise the binary cannot keep. This is the
+#    guard for LC_BUILD_VERSION: a Mojo binary inherits the build host's SDK,
+#    so a tag copied from the toolchain rather than measured would install on
+#    an older macOS and then fail in dyld.
+if [ "$(uname)" = "Darwin" ]; then
+  minos=$(otool -l packaging/m0serve/src/m0serve/_bin/m0serve \
+    | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+  [ -n "$minos" ] || fail "could not read LC_BUILD_VERSION from the staged binary"
+  python3 - "$base" "$minos" <<'PY' || fail "the wheel promises a macOS it cannot keep"
+import re, sys
+base, minos = sys.argv[1], sys.argv[2]
+m = re.search(r"-macosx_([0-9]+)_([0-9]+)_", base)
+if not m:
+    sys.exit("could not read the macOS floor from the wheel name")
+tagged = (int(m.group(1)), int(m.group(2)))
+required = tuple(int(x) for x in minos.split("."))
+if tagged < required:
+    sys.exit(f"wheel is tagged macOS {tagged} but the binary requires {required}")
+print(f"macOS floor OK: tagged {tagged}, binary requires {required}")
+PY
+fi
+
+# 3. Contents: the payload, and the exec bit, which is lost silently.
+python3 - "$whl" <<'PY' || fail "wheel contents check failed"
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+names = z.namelist()
+exe = [n for n in names if n.endswith("m0serve/_bin/m0serve")]
+assert exe, f"no _bin/m0serve in the wheel: {names}"
+mode = (z.getinfo(exe[0]).external_attr >> 16) & 0o777
+assert mode & 0o111, f"_bin/m0serve is not executable in the archive (mode {mode:o})"
+assert any(n.endswith("_lib/libm0core.dylib") or n.endswith("_lib/libm0core.so")
+           for n in names), "libm0core is not in the wheel"
+assert any("dist-info/RECORD" in n for n in names), "no RECORD"
+for want in ("NOTICE.txt", "LICENSE.lightbug_http.txt", "LICENSE.mojo-runtime.txt",
+             "LICENSE.mojo-http.txt"):
+    assert any(n.endswith("m0serve/licenses/" + want) for n in names), f"missing {want}"
+    assert any("dist-info/licenses/" in n and n.endswith(want) for n in names), \
+        f"missing {want} from dist-info/licenses"
+    a = z.read([n for n in names if n.endswith("m0serve/licenses/" + want)][0])
+    b = z.read([n for n in names if "dist-info/licenses/" in n and n.endswith(want)][0])
+    assert a == b, f"{want} differs between the package copy and dist-info"
+print("wheel contents OK")
+PY
+
+# 4. Install OUTSIDE the tree, on a different Python minor than the repo pins,
+#    so a wheel that accidentally depends on the build interpreter fails here.
+py=3.12; [ "${M0_WHEEL_PY:-}" != "" ] && py=$M0_WHEEL_PY
+uv venv "$work/venv" --python "$py" >/dev/null 2>&1 || uv venv "$work/venv" >/dev/null 2>&1 \
+  || fail "could not create a test venv"
+"$work/venv/bin/python" -m ensurepip >/dev/null 2>&1 || true
+uv pip install --python "$work/venv/bin/python" --quiet "$whl" flask \
+  || fail "the wheel would not install"
+
+# 5. Run it with the environment scrubbed and from another directory. This is
+#    what would catch a binary still leaning on DYLD_LIBRARY_PATH or on the
+#    venv that built it.
+ver=$(cd "$work" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+  -u LD_LIBRARY_PATH -u MOJO_PYTHON_LIBRARY -u VIRTUAL_ENV \
+  "$work/venv/bin/m0serve" --version 2>&1) || fail "installed m0serve would not run: $ver"
+want=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+[ "$ver" = "m0serve $want" ] || fail "version mismatch: got '$ver', pyproject says '$want'"
+
+# 6. Serve a real application through the installed wheel, which is the only
+#    assertion that proves the embedded interpreter reaches the INSTALL venv's
+#    site-packages rather than some other Python's.
+mkdir -p "$work/app"
+cat > "$work/app/wheelapp.py" <<'PY'
+def application(environ, start_response):
+    start_response("200 OK", [("Content-Type", "text/plain")])
+    return [b"served from the wheel"]
+PY
+(cd "$work/app" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+  -u LD_LIBRARY_PATH -u MOJO_PYTHON_LIBRARY -u VIRTUAL_ENV \
+  "$work/venv/bin/m0serve" wheelapp:application --port 8129 > "$work/wheel.log" 2>&1) &
+pid=$!
+curl --retry 25 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8129/ > "$work/body" || { cat "$work/wheel.log"; kill $pid 2>/dev/null; fail 'never became healthy'; }
+grep -q 'served from the wheel' "$work/body" || { kill $pid 2>/dev/null; fail 'wrong body'; }
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
+
+# 7. Removal sabotage, permanent. If the binary still starts once its runtime
+#    is gone, it is resolving it from somewhere else -- the build venv -- and
+#    the bundle is a placebo. This is the blind spot, checked from the machine
+#    where it hides.
+# Both platforms: the m0serve EXECUTABLE links the Mojo runtime dynamically
+# on Linux too, which is not true of libm0core.so and was assumed away until
+# CI refused to bundle it. So the sabotage is meaningful on both.
+site=$("$work/venv/bin/python" -c 'import m0serve,os;print(os.path.dirname(m0serve.__file__))')
+mv "$site/_lib" "$work/_lib_moved" || fail "could not move _lib"
+if (cd "$work" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+    -u LD_LIBRARY_PATH "$work/venv/bin/m0serve" --version >/dev/null 2>&1); then
+  mv "$work/_lib_moved" "$site/_lib"
+  fail "m0serve still ran with its bundled runtime removed - it is resolving it elsewhere, so the bundle proves nothing"
+fi
+mv "$work/_lib_moved" "$site/_lib" || fail "could not restore _lib"
+
+echo "smoke-wheel OK ($base)"
 """
 
 [tool.poe.tasks.smoke-ffi]

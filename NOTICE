@@ -5,17 +5,32 @@ This product includes third-party software. The components listed below are
 distributed under their own licenses, reproduced in full at the paths given.
 This project's own source is licensed under the MIT License; see LICENSE.
 
+WHICH NOTICE APPLIES TO WHAT. This file describes the SOURCE TREE. The
+distributed artifacts each contain a different subset, and each carries its
+own notice naming only what is actually inside it:
+
+    artifact                     contains                       notice
+    ------------------------     --------------------------     ---------------------------
+    this repository              everything below               NOTICE (this file)
+    libm0core bundle             libm0core + Mojo runtime       licenses/NOTICE.bundle.txt
+    m0serve bundle / PyPI wheel  m0serve (lightbug embedded)    licenses/NOTICE.m0serve.txt
+                                 + libm0core + Mojo runtime
+
+A reader who downloaded one of those should read its notice, not this one:
+pointing at `packages/m0-http/lightbug_http/` is only meaningful in a source
+checkout.
+
 --------------------------------------------------------------------------------
 
-Mojo runtime libraries (redistributed in the macOS libm0core bundle)
+Mojo runtime libraries (redistributed in every macOS binary artifact)
     Path        licenses/LICENSE.mojo-runtime.txt
     Upstream    https://github.com/modular/modular
     License     Apache License 2.0 with LLVM Exceptions
     Copyright   Modular Inc
 
-    The macOS `libm0core` release bundle contains three Mojo runtime
-    libraries, because the C-ABI artifact resolves them at load time and is
-    useless without them:
+    Every macOS bundle — `libm0core`, `m0serve`, and the PyPI wheel —
+    contains three Mojo runtime libraries, because the artifact resolves
+    them at load time and is useless without them:
 
         libKGENCompilerRTShared.dylib
         libMSupportGlobals.dylib
@@ -28,8 +43,20 @@ Mojo runtime libraries (redistributed in the macOS libm0core bundle)
     code was recompiled. `licenses/NOTICE.bundle.txt` travels inside the
     bundle and states this, which is Apache section 4(b).
 
-    Linux bundles contain NO Modular binary: that artifact is statically
-    linked, has no DT_NEEDED entries, and resolves nothing at load time.
+    The two artifacts differ on Linux, and the difference is Modular's
+    linking strategy rather than ours. The libm0core SHARED LIBRARY is
+    statically linked there: no DT_NEEDED, no Modular file in the bundle,
+    the runtime code embedded in the artifact. The m0serve EXECUTABLE is
+    not: it links the same three libraries dynamically on Linux exactly as
+    on macOS, so its bundle and its wheel carry them as files on both
+    platforms, with DT_RUNPATH rewritten to $ORIGIN.
+
+    (This entry said Linux artifacts were statically linked without
+    qualification until 2026-08-25. That was measured on libm0core.so and
+    assumed of the executable; the first Linux CI run to bundle m0serve
+    showed it needs all three. Either way the runtime code is redistributed
+    and this entry covers it — a licence outcome should not turn on which
+    platform links dynamically.)
 
     ON THE LICENCE, because the evidence is not unanimous. Mojo's compiler
     and tooling were open sourced on 2026-08-18 under Apache 2.0 with LLVM
@@ -60,6 +87,17 @@ lightbug_http
     Upstream    https://github.com/Lightbug-HQ/lightbug_http
     License     MIT — packages/m0-http/lightbug_http/LICENSE
     Copyright   (c) 2023 Valentin Erokhin
+
+    REDISTRIBUTED IN BINARY FORM since the m0serve bundle and the PyPI
+    wheel: the fork is statically linked into that binary, and the MIT
+    License requires its notice to travel with copies "or substantial
+    portions" of the software — which a compiled binary is. Those artifacts
+    therefore carry licenses/LICENSE.lightbug_http.txt (this licence,
+    verbatim) alongside licenses/NOTICE.m0serve.txt, which points back here
+    for the modification list below rather than duplicating it.
+
+    No such obligation attaches to the libm0core bundle: m0-core has no
+    dependencies and none of this code is in it.
 
     Forked from upstream release v26.1.2 (commit 3aae65f46a72, tagged
     2026-02-22). Upstream was archived on 2026-05-12 and is no longer

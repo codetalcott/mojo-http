@@ -88,8 +88,190 @@ jobs:
             ${{ matrix.asset }}.tar.gz
           if-no-files-found: error
 
+  # ---------------------------------------------------------------------
+  # The wheel, and the only proof that matters for it.
+  #
+  # smoke-wheel runs in the repo, where .venv/.../modular/lib is on disk --
+  # the exact directory a stale rpath would name -- so it cannot establish
+  # that the wheel works anywhere else. That is the shape of the defect that
+  # shipped for seven releases: a test passing on the one machine where it
+  # cannot fail. The consume jobs below therefore have NO checkout, NO uv, no
+  # toolchain and no DYLD_/LD_ variables, and they assert their own
+  # cleanliness before they assert anything about the wheel -- otherwise
+  # someone adds `actions/checkout` "to get a test app" and the proof
+  # silently reverts with a green tick. scripts/check_docs.py enforces that.
+  # ---------------------------------------------------------------------
+  build-wheels:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            plat: macos-arm64
+          - os: ubuntu-22.04
+            plat: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.ref }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+      # The runner images are PINNED, and the pin IS the floor: a Mojo binary
+      # inherits the build host's SDK and glibc, so `macos-latest` would mean
+      # the wheel's reach changed whenever GitHub rotated images. Do not
+      # "modernize" these to -latest without moving the documented floors.
+      - run: uv run poe build-all
+      - run: uv run poe smoke-wheel
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.plat }}
+          path: dist/wheels/*.whl
+          if-no-files-found: error
+
+  # Static: does the wheel describe an artifact that can load elsewhere?
+  # The one consume-side job allowed a checkout, because it needs scripts/ --
+  # and it never runs the binary.
+  wheel-inspect:
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.ref }}
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: wheels
+      - name: Inspect every wheel without running anything
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=0
+          for whl in wheels/*.whl; do
+            found=$((found+1))
+            echo "== $whl"
+            case "$whl" in
+              *-py3-none-any.whl) echo "::error::$whl is tagged py3-none-any"; exit 1 ;;
+              *-py3-none-*) ;;
+              *) echo "::error::unexpected tag on $whl"; exit 1 ;;
+            esac
+            d=$(mktemp -d); unzip -qq "$whl" -d "$d"
+            bin=$(find "$d" -path '*/m0serve/_bin/m0serve')
+            [ -n "$bin" ] || { echo "::error::no binary in $whl"; exit 1; }
+            # Covers both formats and both questions: every search path is
+            # self-relative, and every dependency is either shipped alongside
+            # or one the platform supplies. On Linux that second half is what
+            # turns "the executable links the Mojo runtime" from an
+            # assumption into a measurement.
+            python3 scripts/ffi_portability_check.py --require-self-contained "$bin"
+          done
+          [ "$found" -gt 0 ] || { echo "::error::no wheels to inspect"; exit 1; }
+          echo "inspected $found wheel(s)"
+
+  # Behavioural, in containers that have never seen this repository.
+  wheel-consume-linux:
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheel-linux-x86_64
+          path: dist
+      - name: Assert this machine did not build the wheel
+        run: |
+          set -eu
+          test ! -d "$GITHUB_WORKSPACE/packages" || { echo "::error::repo present"; exit 1; }
+          ! command -v mojo >/dev/null || { echo "::error::mojo on PATH"; exit 1; }
+          test -z "${DYLD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:-}${MOJO_PYTHON_LIBRARY:-}" \
+            || { echo "::error::loader/interpreter variables are set"; exit 1; }
+      # --network none is not decoration: it asserts the wheel needs nothing
+      # fetched, which is what makes `pip install m0serve` a one-line story.
+      - name: pip install and serve, on four CPython minors
+        run: |
+          set -euo pipefail
+          for img in python:3.10-slim-bookworm python:3.12-slim-bookworm \
+                     python:3.13-slim-bookworm python:3.14-slim-bookworm; do
+            echo "== $img"
+            docker run --rm --network none -v "$PWD/dist:/w:ro" "$img" sh -c '
+              set -e
+              pip install --quiet --no-index --no-deps /w/*.whl
+              m0serve --version
+              cd /tmp
+              printf "def application(e, s):\n s(\"200 OK\", [(\"Content-Type\", \"text/plain\")])\n return [b\"ok from a clean container\"]\n" > app.py
+              m0serve app:application --port 8123 & pid=$!
+              for i in $(seq 1 40); do
+                if wget -qO- http://127.0.0.1:8123/ 2>/dev/null | grep -q "ok from a clean container"; then
+                  echo "  served OK"; kill $pid; exit 0
+                fi
+                sleep 0.5
+              done
+              echo "  never became healthy"; kill $pid 2>/dev/null; exit 1
+            '
+          done
+      # A permanent negative control. The floor must be enforced by pip
+      # REFUSING the wheel, not by a runtime GLIBC_2.x-not-found crash. This
+      # needs no sabotage because it is one.
+      - name: An older glibc must be refused, not crashed
+        run: |
+          set -euo pipefail
+          if docker run --rm -v "$PWD/dist:/w:ro" quay.io/pypa/manylinux2014_x86_64 \
+               /opt/python/cp312-cp312/bin/pip install --no-index --no-deps /w/*.whl 2>&1 | tee out; then
+            echo "::error::a glibc 2.17 host accepted the wheel"; exit 1
+          fi
+          grep -qi "not a supported wheel\|no matching distribution" out \
+            || { echo "::error::refused, but not for the platform-tag reason"; cat out; exit 1; }
+          echo "correctly refused on an unsupported glibc"
+
+  # macOS has no containers, so the separation available is a fresh runner in
+  # a different job with none of the contamination vectors -- on macos-14,
+  # the OLDEST arm64 image, which turns the declared macosx_ floor into a
+  # measurement rather than a claim.
+  wheel-consume-macos:
+    needs: build-wheels
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheel-macos-arm64
+          path: dist
+      - name: Assert this machine did not build the wheel
+        run: |
+          set -eu
+          test ! -d "$GITHUB_WORKSPACE/packages" || { echo "::error::repo present"; exit 1; }
+          ! command -v mojo >/dev/null || { echo "::error::mojo on PATH"; exit 1; }
+          test -z "${DYLD_LIBRARY_PATH:-}${MOJO_PYTHON_LIBRARY:-}" \
+            || { echo "::error::loader variables are set"; exit 1; }
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: pip install and serve
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/v"
+          "$RUNNER_TEMP/v/bin/pip" install --quiet --no-index --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/v/bin/m0serve" --version
+          printf 'def application(e, s):\n    s("200 OK", [("Content-Type", "text/plain")])\n    return [b"ok on a clean mac"]\n' > app.py
+          "$RUNNER_TEMP/v/bin/m0serve" app:application --port 8124 &
+          pid=$!
+          curl --retry 40 --retry-delay 1 --retry-all-errors -sf http://127.0.0.1:8124/ | tee body
+          kill $pid 2>/dev/null || true
+          grep -q "ok on a clean mac" body
+
   publish:
-    needs: build-artifacts
+    # The wheel consume jobs gate this, so a release cannot carry a wheel
+    # that was never installed anywhere but the machine that built it.
+    needs: [build-artifacts, wheel-inspect, wheel-consume-linux, wheel-consume-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -99,6 +281,12 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      # The wheels ride along as release assets too, so anyone can pin to a
+      # specific build without going through PyPI, and the sha256s are
+      # recorded with them.
+      - name: Record asset checksums
+        run: |
+          cd assets && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       # Release notes come from the tag's CHANGELOG section living in the
       # repo; --generate-notes appends the commit list for completeness.
       # Where the tag does not exist yet (branch-push and dispatch paths),
@@ -122,3 +310,51 @@ jobs:
             --generate-notes \
             --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md) for the full release notes." \
             assets/*
+
+
+  # Uploading to PyPI is deliberately opt-in and deliberately last.
+  #
+  # A PyPI filename is burned permanently: it cannot be re-uploaded after a
+  # delete, and a yank (PEP 592) leaves the file installable by exact pin. So
+  # this runs only when the repository variable PUBLISH_TO_PYPI is "true",
+  # and only after the GitHub release has succeeded -- that one is fixable,
+  # this one is not.
+  #
+  # ONE-TIME SETUP before flipping the variable:
+  #   1. On PyPI, create a *pending* Trusted Publisher for project `m0serve`
+  #      -- owner `codetalcott`, repository `mojo-http`, workflow
+  #      `release.yml`, environment `pypi`. Pending publishers exist exactly
+  #      so a project that does not exist yet can be claimed by a workflow,
+  #      so no API token is ever created.
+  #   2. Create the `pypi` environment in this repository's settings.
+  #   3. Rehearse on TestPyPI with an rc first, then set PUBLISH_TO_PYPI.
+  publish-pypi:
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - name: Refuse to publish an incomplete or mismatched set
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          [ "${#wheels[@]}" -eq 2 ] \
+            || { echo "::error::expected 2 wheels, found ${#wheels[@]}"; exit 1; }
+          plats=$(for w in "${wheels[@]}"; do basename "$w" | sed 's/.*-py3-none-//'; done | sort -u | wc -l)
+          [ "$plats" -eq 2 ] || { echo "::error::wheels do not cover 2 platforms"; exit 1; }
+          vers=$(for w in "${wheels[@]}"; do basename "$w" | cut -d- -f2; done | sort -u)
+          [ "$(echo "$vers" | wc -l)" -eq 1 ] \
+            || { echo "::error::wheels disagree about the version: $vers"; exit 1; }
+          tag="${GITHUB_REF_NAME#release/}"
+          [ "v$vers" = "$tag" ] \
+            || { echo "::error::wheel version $vers does not match tag $tag"; exit 1; }
+          echo "publishing $vers: ${wheels[*]}"
+      - uses: pypa/gh-action-pypi-publish@release/v1

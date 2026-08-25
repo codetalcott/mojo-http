@@ -1,4 +1,4 @@
-"""Assert the C-ABI artifact does not depend on the machine that built it.
+"""Assert a distributable artifact does not depend on the machine that built it.
 
 `smoke-ffi` builds `libm0core` and `dlopen`s it **in the build tree**, where
 the venv it was linked against is still present — so it passes on exactly
@@ -22,148 +22,47 @@ relative to the artifact itself, and every dependency is either a system
 library or one shipped beside it.** Static inspection rather than a load
 attempt, because a load attempt on the build machine succeeds by definition.
 
+**Executables are checked the same way, and used not to be.** The Mach-O
+parse lived here and assumed `otool -L`'s first entry was the file's own
+`LC_ID_DYLIB` — true of a dylib, false of `bin/m0serve` — so the CLI's one
+real dependency was discarded and a binary that loads nowhere reported as
+SELF-CONTAINED. The parse now lives in `binfmt.py`, which keys on the load
+command's presence and self-tests both cases. See docs/FFI_DISTRIBUTION.md.
+
 Exit 0 = portable. Exit 1 = depends on its build machine. Exit 2 = could not
-inspect (missing tool), which is reported rather than passed silently.
+inspect (missing tool, fat archive), which is reported rather than passed
+silently.
 
     python3 scripts/ffi_portability_check.py packages/m0-core/libm0core.dylib
+    python3 scripts/ffi_portability_check.py --require-self-contained bin/m0serve
 """
 
 import os
-import re
-import subprocess
 import sys
 
-# Prefixes a consumer can rely on existing: OS libraries, and paths the
-# loader resolves relative to the artifact itself.
-SELF_RELATIVE = ("@loader_path", "@executable_path", "$ORIGIN")
-SYSTEM_PREFIXES = (
-    "/usr/lib/",
-    "/System/Library/",
-    "/lib/",
-    "/lib64/",
-    "/usr/lib64/",
+from binfmt import (
+    SELF_RELATIVE,
+    SYSTEM_PREFIXES,
+    InspectError,
+    classify,
+    inspect_elf,
+    is_system_soname,
+    macho_info,
+    min_os,
 )
-
-
-def _run(cmd):
-    try:
-        out = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, timeout=60
-        )
-    except FileNotFoundError:
-        return None
-    if out.returncode != 0:
-        return None
-    return out.stdout
-
-
-def inspect_macho(path):
-    """(search_paths, dependencies, install_name) from a Mach-O file."""
-    load = _run(["otool", "-l", path])
-    deps = _run(["otool", "-L", path])
-    if load is None or deps is None:
-        print("ffi-portability: otool unavailable or failed", file=sys.stderr)
-        sys.exit(2)
-
-    rpaths = re.findall(r"^\s*path\s+(.+?)\s+\(offset \d+\)\s*$", load, re.M)
-    # `otool -L` prints a header line, then the library's OWN install name
-    # (LC_ID_DYLIB), then its dependencies. The install name is not a
-    # dependency and must not be reported as one -- but it is worth checking
-    # separately, because a relative one is recorded into anything that later
-    # links against this library.
-    entries = [
-        m.group(1)
-        for m in (
-            re.match(r"^\s*(\S+)\s+\(compatibility", ln)
-            for ln in deps.splitlines()[1:]
-        )
-        if m
-    ]
-    install_name = entries[0] if entries else None
-    return rpaths, entries[1:], install_name
-
-
-def inspect_elf(path):
-    """(search_paths, dependencies, soname) from a 64-bit ELF file.
-
-    Parsed here rather than shelled out to `readelf`, for two reasons. The
-    release workflow should not depend on binutils being installed — and
-    more sharply, the shell-out version was **wrong in the dangerous
-    direction**: `llvm-objdump` exists on macOS and prints ELF dynamic
-    entries in a different format, so the regexes matched nothing, the
-    function returned three empty lists, and the check reported a Linux
-    artifact as *portable*. A guard that answers "fine" when it cannot read
-    the file is worse than no guard.
-    """
-    import struct
-
-    with open(path, "rb") as fh:
-        data = fh.read()
-    if data[:4] != b"\x7fELF" or data[4] != 2:
-        raise ValueError(f"{path}: not a 64-bit ELF")
-
-    end = "<" if data[5] == 1 else ">"
-    (e_phoff,) = struct.unpack_from(end + "Q", data, 0x20)
-    e_phentsize, e_phnum = struct.unpack_from(end + "HH", data, 0x36)
-
-    # PT_DYNAMIC (2) holds the entries; PT_LOAD (1) segments translate the
-    # string table's virtual address into a file offset.
-    dyn = None
-    loads = []
-    for i in range(e_phnum):
-        base = e_phoff + i * e_phentsize
-        (p_type,) = struct.unpack_from(end + "I", data, base)
-        p_offset, p_vaddr = struct.unpack_from(end + "QQ", data, base + 8)
-        (p_filesz,) = struct.unpack_from(end + "Q", data, base + 32)
-        if p_type == 2:
-            dyn = (p_offset, p_filesz)
-        elif p_type == 1:
-            loads.append((p_vaddr, p_filesz, p_offset))
-    if dyn is None:
-        raise ValueError(f"{path}: no PT_DYNAMIC segment")
-
-    def vaddr_to_off(v):
-        for p_vaddr, p_filesz, p_offset in loads:
-            if p_vaddr <= v < p_vaddr + p_filesz:
-                return p_offset + (v - p_vaddr)
-        raise ValueError(f"{path}: address {v:#x} is in no PT_LOAD segment")
-
-    DT_NEEDED, DT_STRTAB, DT_SONAME, DT_RPATH, DT_RUNPATH = 1, 5, 14, 15, 29
-    dyn_off, dyn_size = dyn
-    entries = []
-    strtab_v = None
-    for off in range(dyn_off, dyn_off + dyn_size, 16):
-        d_tag, d_val = struct.unpack_from(end + "qQ", data, off)
-        if d_tag == 0:
-            break
-        if d_tag == DT_STRTAB:
-            strtab_v = d_val
-        entries.append((d_tag, d_val))
-    if strtab_v is None:
-        raise ValueError(f"{path}: dynamic section has no DT_STRTAB")
-    strtab = vaddr_to_off(strtab_v)
-
-    def s_at(idx):
-        stop = data.index(b"\x00", strtab + idx)
-        return data[strtab + idx : stop].decode("utf-8", "replace")
-
-    search, deps, soname = [], [], None
-    for d_tag, d_val in entries:
-        if d_tag == DT_NEEDED:
-            deps.append(s_at(d_val))
-        elif d_tag == DT_SONAME:
-            soname = s_at(d_val)
-        elif d_tag in (DT_RPATH, DT_RUNPATH):
-            search.extend(q for q in s_at(d_val).split(":") if q)
-    return search, deps, soname
 
 
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     require_self_contained = "--require-self-contained" in sys.argv
+    require_min_os = None
+    for a in sys.argv[1:]:
+        if a.startswith("--require-min-os="):
+            require_min_os = a.split("=", 1)[1]
     if len(args) != 1:
         print(
-            "usage: ffi_portability_check.py [--require-self-contained] <library>",
+            "usage: ffi_portability_check.py [--require-self-contained] "
+            "[--require-min-os=X.Y] <artifact>",
             file=sys.stderr,
         )
         return 2
@@ -172,26 +71,32 @@ def main() -> int:
         print(f"ffi-portability: {path} does not exist", file=sys.stderr)
         return 2
 
-    with open(path, "rb") as fh:
-        magic = fh.read(4)
-    is_macho = magic in (
-        b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
-        b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
-        b"\xca\xfe\xba\xbe",
-    )
-    is_elf = magic == b"\x7fELF"
-    if is_macho:
-        search, deps, install_name = inspect_macho(path)
-    elif is_elf:
-        search, deps, install_name = inspect_elf(path)
-    else:
-        print(f"ffi-portability: {path} is neither Mach-O nor ELF", file=sys.stderr)
+    try:
+        fmt = classify(path)
+        if fmt == "macho":
+            search, deps, install_name = macho_info(path)
+            deployment_target = min_os(path)
+        else:
+            search, deps, install_name = inspect_elf(path)
+            deployment_target = None
+    except InspectError as exc:
+        print(f"ffi-portability: {exc}", file=sys.stderr)
         return 2
 
     print(f"artifact      : {path}")
-    print(f"install name  : {install_name or '(none)'}")
+    # An executable has no install name. Saying so beats printing "(none)",
+    # which reads like a defect rather than a property of the filetype.
+    if install_name is None:
+        print(
+            "install name  : "
+            + ("(not a dylib — no LC_ID_DYLIB)" if fmt == "macho" else "(no DT_SONAME)")
+        )
+    else:
+        print(f"install name  : {install_name}")
     print(f"search paths  : {search or '(none)'}")
     print(f"dependencies  : {deps or '(none)'}")
+    if deployment_target:
+        print(f"min OS        : {deployment_target}")
 
     # Three honest states, because "portable" is not one bit of information:
     #
@@ -208,12 +113,39 @@ def main() -> int:
     foreign_search = [p for p in search if not p.startswith(SELF_RELATIVE)]
 
     here = os.path.dirname(os.path.abspath(path)) or "."
+
+    def resolves_locally(dep):
+        """Is `dep` present along one of the artifact's own search paths?
+
+        Not just beside the artifact: a self-relative path may point
+        elsewhere, and the wheel layout depends on exactly that -- the binary
+        lives in `_bin/` and searches `@loader_path/../_lib`. Checking only
+        the artifact's own directory would report that arrangement as merely
+        satisfiable when it is in fact complete.
+        """
+        base = os.path.basename(dep)
+        for sp in self_relative_search or ["@loader_path"]:
+            prefix = next((s for s in SELF_RELATIVE if sp.startswith(s)), None)
+            if prefix is None:
+                continue
+            resolved = os.path.normpath(os.path.join(here, sp[len(prefix) :].lstrip("/")))
+            if os.path.exists(os.path.join(resolved, base)):
+                return True
+        return False
+
     unresolved, missing_beside = [], []
     for d in deps:
         if d.startswith(SELF_RELATIVE) or d.startswith(SYSTEM_PREFIXES):
             continue
+        # ELF names dependencies by bare soname, so the prefix rule above
+        # never matches one. Without this a Linux binary is "broken" for
+        # needing libc, which is not a finding. It went unnoticed because
+        # libm0core.so has no DT_NEEDED at all -- the first ELF artifact with
+        # real dependencies is bin/m0serve.
+        if fmt == "elf" and is_system_soname(d):
+            continue
         if d.startswith("@rpath/") or not os.path.isabs(d):
-            if os.path.exists(os.path.join(here, os.path.basename(d))):
+            if resolves_locally(d):
                 continue
             # Resolvable by the consumer only if the artifact looks beside
             # itself; otherwise it can only ever find it on the build box.
@@ -257,6 +189,18 @@ def main() -> int:
         print("A consumer who downloads this from a GitHub release cannot use it.")
         return 1
 
+    if require_min_os and deployment_target:
+        # The most literal form of "depends on the machine that built it": a
+        # Mojo binary inherits the build host's SDK, so this is a property of
+        # the runner, not a choice, unless something pins it.
+        if _ver(deployment_target) > _ver(require_min_os):
+            print(
+                f"MIN-OS TOO HIGH — built against macOS {deployment_target}, "
+                f"but {require_min_os} was required."
+            )
+            print("  The deployment target follows the build host's SDK.")
+            return 1
+
     if missing_beside:
         print("SATISFIABLE — loads once these are placed beside it:")
         for d in missing_beside:
@@ -282,6 +226,10 @@ def main() -> int:
     print("SELF-CONTAINED — every search path is self-relative and every"
           " dependency is a system library or shipped alongside.")
     return 0
+
+
+def _ver(s):
+    return tuple(int(p) for p in s.split(".") if p.isdigit())
 
 
 if __name__ == "__main__":
