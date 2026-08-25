@@ -103,6 +103,19 @@ lightbug_http
         projecting twelve headers into the WSGI blob, 77% of that bridge's
         whole per-request cost. Walking `count()` with these two spans
         allocates nothing; the projection now runs in 0.44us
+      - Hot-path allocation pass, profile-ranked (a flat sample of the
+        hello row put allocator traffic at 29% of busy time): Headers'
+        four parallel Int32 index arrays became one packed stride-4 array
+        (a Headers is built fresh for every request AND response, so this
+        removed six allocations per request); HTTPResponse's three
+        constructors take headers/cookies by `var` and move instead of
+        `.copy()` (the arguments are almost always inline temporaries —
+        source-compatible, a caller that reuses a named value gets an
+        implicit copy); Headers.set_int added and both set_content_length
+        implementations plus the status-code write in encode use integer
+        formatting into the writer rather than a per-call String. Together
+        +25% on the hello row (92.4k -> 115.2k rps) and +20% through the
+        WSGI bridge, byte-identical responses verified
       - fcntl F_SETFL fixed on ARM64 macOS: fcntl is variadic, Darwin
         passes variadic arguments on the stack while external_call used
         registers, so set_nonblocking silently did nothing there for the
