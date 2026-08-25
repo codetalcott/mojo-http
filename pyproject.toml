@@ -3134,16 +3134,17 @@ kill $pid 2>/dev/null; wait $pid 2>/dev/null
 #    is gone, it is resolving it from somewhere else -- the build venv -- and
 #    the bundle is a placebo. This is the blind spot, checked from the machine
 #    where it hides.
+# Both platforms: the m0serve EXECUTABLE links the Mojo runtime dynamically
+# on Linux too, which is not true of libm0core.so and was assumed away until
+# CI refused to bundle it. So the sabotage is meaningful on both.
 site=$("$work/venv/bin/python" -c 'import m0serve,os;print(os.path.dirname(m0serve.__file__))')
-if [ "$(uname)" = "Darwin" ]; then
-  mv "$site/_lib" "$work/_lib_moved" || fail "could not move _lib"
-  if (cd "$work" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
-      "$work/venv/bin/m0serve" --version >/dev/null 2>&1); then
-    mv "$work/_lib_moved" "$site/_lib"
-    fail "m0serve still ran with its bundled runtime removed - it is resolving it elsewhere, so the bundle proves nothing"
-  fi
-  mv "$work/_lib_moved" "$site/_lib" || fail "could not restore _lib"
+mv "$site/_lib" "$work/_lib_moved" || fail "could not move _lib"
+if (cd "$work" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+    -u LD_LIBRARY_PATH "$work/venv/bin/m0serve" --version >/dev/null 2>&1); then
+  mv "$work/_lib_moved" "$site/_lib"
+  fail "m0serve still ran with its bundled runtime removed - it is resolving it elsewhere, so the bundle proves nothing"
 fi
+mv "$work/_lib_moved" "$site/_lib" || fail "could not restore _lib"
 
 echo "smoke-wheel OK ($base)"
 """
