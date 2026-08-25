@@ -561,8 +561,24 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   too, which is why that one assertion is the whole guard — verified
   load-bearing against a close-delimited build, where it fails on the
   missing header. The same probe pins the HTTP/1.0 refusal.
-- Recorded executor fix paths, unchanged: a wrk-based bench, and N
-  executors per pool under free-threading.
+- **The executor's one recorded lever is pump batching**, and it is
+  conditional, not planned. The evidence (2026-08-25, artifact in
+  `bench/results/`): the executor loses the hello-world row at 0.72x
+  under wrk while consuming **0.89 cores** — wakeup-bound, not CPU-bound,
+  each request serializing loop → submit datagram → executor → completion
+  datagram → loop with both threads idling between handoffs. Batching
+  (drain several submit datagrams per executor wakeup, coalesce
+  completions per loop pass) attacks that cost directly; more executor
+  threads would only overlap it, at real complexity in the seam where a
+  misrouted credit ack is a hung stream — which is why the earlier
+  "N executors per pool" idea is demoted below it. Build it only if a
+  tiny-fast-response workload ever matters (the mixed-tail gate — the
+  executor's actual claim — already beats uvicorn); the load-bearing
+  constraint is that the chunk channel's begin-frame-before-head FIFO
+  ordering must survive any coalescing. The other old fix path, "measure
+  under wrk", is done and falsified its own premise (the stdlib harness
+  flattered the executor). Landing batching earns `bench-asgi`'s
+  throughput gate back up from ≥0.8x.
 - **Django ASGI parity is proven, not inferred.** `apps/django_asgi`
   runs Django's own `ASGIHandler` through the executor (`poe
   smoke-django-asgi`): async views overlap, `StreamingHttpResponse`
@@ -586,9 +602,44 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   bus is now created unconditionally pre-fork — detection is post-fork,
   and a single worker's own subscribers ride its own channel. Pinned by
   `poe smoke-asgi-fanout`.
-- **Recorded follow-ups, not yet scoped:**
-  PyPI-wheel distribution (the binary links libpython and carries the Mojo
-  runtime); a published benchmark suite against gunicorn/uvicorn/Granian.
+- **The release path.** Five gates, deliberately finite — when they are
+  done the release is ready, and nothing off this list blocks it:
+
+  1. **The install matrix, hardened by existing.** Scope the PyPI wheel
+     (the binary links libpython and carries the Mojo runtime; the
+     `libm0core` bundle's rpath surgery and its licensing analysis in
+     [NOTICE](../NOTICE) are the transferable groundwork), then publish a
+     quiet, unannounced 0.x and dogfood it — publishing and announcing
+     are separate acts, and install failures are only found by installing
+     on machines that are not this one. The bundle-ffi lesson applies:
+     an artifact tested only where it was built passes exactly where the
+     defect cannot appear.
+  2. **A ten-minute quickstart that proves the headline.** The
+     sync-Django realtime demo (`apps/django_realtime`: SSE + WebSocket
+     fan-out from plain sync views, no Channels/Redis/second process) as
+     a copy-paste path a newcomer — or an agent — completes and
+     *verifies* end to end, the smoke idiom exposed as a user affordance.
+  3. **A public benchmark page rendered from `bench/results/`** — same
+     provenance discipline as the WSGI_PERFORMANCE table: every number
+     cites a dated, environment-stamped artifact, cores measured,
+     methodology caveats (P/E cores, within-run ratios) stated up front.
+  4. **Agent affordances**: an `llms.txt`; a `--doctor` / machine-readable
+     startup diagnostic; error messages and refusals already explain
+     themselves and name their fix — document that as a contract rather
+     than leaving it as culture.
+  5. **The public name, decided once.** `mojo` is Modular's mark;
+     `m0serve`/`m0-*` keep distance. Check PyPI availability during the
+     wheel spike and lock the name before anything is published under it
+     — renames spend first impressions twice.
+
+  Sequencing: gate 1 first (it ages in the wild while the rest proceed);
+  gates 2–4 in any order; announce only when all five are done. The
+  README's first screen states the limits plainly (no TLS and no HTTP/2 —
+  terminate at a proxy, gunicorn's answer; platform matrix is what the
+  Mojo toolchain supports). Explicitly NOT release-blocking: pump
+  batching, Channels compatibility, Windows, and any claim not backed by
+  a smoke or an artifact.
+
   (ASGI/WSGI auto-detection shipped with the gateway — `--protocol`
   overrides it, and a bare `MODULE` discovers `MODULE.asgi:application`,
   `MODULE.wsgi:application`, `MODULE:app`, `MODULE.main:app` by
