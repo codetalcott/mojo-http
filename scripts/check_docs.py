@@ -135,6 +135,17 @@ def check_version_single_source():
             f"cli.mojo's M0SERVE_VERSION says {cli.group(1)!r}"
         )
 
+    # uv.lock records it a third time. RELEASING.md says "run uv lock" after
+    # a bump and nothing checked that it happened -- a stale lock is invisible
+    # until someone notices the wrong version in a resolved environment.
+    lock = (REPO / "uv.lock").read_text()
+    m = re.search(r'name = "mojo-http"\nversion = "([^"]+)"', lock)
+    if m and m.group(1) != declared.group(1):
+        fail(
+            f"uv.lock still records version {m.group(1)!r} but pyproject.toml "
+            f"says {declared.group(1)!r} — run `uv lock`"
+        )
+
     wheel_pyproject = REPO / "packaging" / "m0serve" / "pyproject.toml"
     if wheel_pyproject.exists():
         text = wheel_pyproject.read_text()
