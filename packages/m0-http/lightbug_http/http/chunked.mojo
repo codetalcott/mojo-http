@@ -240,3 +240,70 @@ def decode_hex(ch: Byte) -> Int:
         return Int(ch - BytesConstant.A_LOWER + 10)
     else:
         return -1
+
+
+# --- Encoder ---------------------------------------------------------------
+#
+# The decoder above is the client's; this is the server's. They are the two
+# halves of RFC 9112 §7.1 and live together so the framing rules have one
+# home: `chunk-size` in lowercase hex with no extensions, CRLF, the data,
+# CRLF, and a zero-size chunk plus a bare CRLF to end (no trailers, which is
+# what lets a reader stop at `0\r\n\r\n`).
+
+
+comptime _HEX_DIGITS = "0123456789abcdef"
+
+
+def append_chunk_size(mut out: Bytes, size: Int):
+    """Append `size` as lowercase hex with no leading zeros, then CRLF.
+
+    Split out because the terminator needs the same digits: a chunk header
+    and the final `0` differ only in the value, and writing the `0` by hand
+    somewhere else is how the two drift.
+    """
+    if size == 0:
+        out.append(BytesConstant.ZERO)
+    else:
+        # Emit most-significant digit first: find the top nibble, then walk
+        # down. No buffer, no reverse.
+        var shift = 0
+        var probe = size
+        while probe >= 16:
+            probe = probe >> 4
+            shift += 4
+        while shift >= 0:
+            var nibble = (size >> shift) & 0xF
+            out.append(_HEX_DIGITS.as_bytes()[nibble])
+            shift -= 4
+    out.append(BytesConstant.CR)
+    out.append(BytesConstant.LF)
+
+
+def encode_chunk(payload: Span[Byte, _]) -> Bytes:
+    """Frame `payload` as one chunk: `size CRLF payload CRLF`.
+
+    A zero-length payload is NOT encodable as a chunk — a zero-size chunk is
+    the end-of-stream marker, so emitting one mid-stream would truncate the
+    body. Callers must skip empty drains; the loop does.
+    """
+    var out = Bytes()
+    var n = len(payload)
+    append_chunk_size(out, n)
+    out.extend(payload)
+    out.append(BytesConstant.CR)
+    out.append(BytesConstant.LF)
+    return out^
+
+
+def chunked_terminator() -> Bytes:
+    """The end of a chunked body: `0 CRLF CRLF`.
+
+    No trailer section. After these bytes the message is complete and the
+    connection may carry another request — which is the whole point of
+    framing a stream rather than closing it.
+    """
+    var out = Bytes()
+    append_chunk_size(out, 0)
+    out.append(BytesConstant.CR)
+    out.append(BytesConstant.LF)
+    return out^

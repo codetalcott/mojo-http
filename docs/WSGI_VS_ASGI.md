@@ -460,13 +460,22 @@ that make it correct, each pinned by `smoke-asgi`:
   chunk split) before emitting. The registry's 64 KB drop threshold is
   therefore never reached, and a 100 MB stream behind a slow reader
   holds server RSS growth to ~2 MB.
-- **End of stream is a close.** The head goes out without
-  content-length, so the body is close-delimited; the handler
-  unsubscribes after handing out the final bytes, and the loop — reading
-  `sse_is_streaming`, the hook nothing had ever called — closes once
-  they land. A disconnect tag on the submit channel resolves the app's
-  `receive()` into `http.disconnect` and cancels its task, uvicorn's
-  contract.
+- **End of stream is a terminator on HTTP/1.1, a close otherwise.** The
+  head goes out without content-length; on HTTP/1.1 it carries
+  `Transfer-Encoding: chunked` instead, each drain is framed
+  `size CRLF payload CRLF`, and end-of-stream writes `0 CRLF CRLF` and
+  returns the connection to keep-alive. Everything else — an HTTP/1.0
+  client, a HEAD, a `--realtime` SSE stream — stays close-delimited, which
+  is what the server did for every stream before. Either way the handler
+  unsubscribes after handing out the final bytes and the loop reads
+  `sse_is_streaming` (the hook nothing had ever called) to know it
+  happened; only what it does next differs. Two rules the framing
+  introduced: the drain reads `sse_is_streaming` **once** per pass, since
+  the drain itself is what flips it and asking twice can straddle the
+  transition; and drain acks count **payload** bytes, not wire bytes, or a
+  window replenished by the framing overhead grows without bound. A
+  disconnect tag on the submit channel resolves the app's `receive()` into
+  `http.disconnect` and cancels its task, uvicorn's contract.
 - **No comment heartbeats on ASGI streams**: an SSE event may span two
   chunks, and a `: heartbeat` between them corrupts the frame (the smoke
   splits a Datastar event mid-word under a 300 ms cadence and asserts

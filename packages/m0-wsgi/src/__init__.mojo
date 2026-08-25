@@ -18,9 +18,11 @@ uvicorn-shaped binary that runs it:
 
 Known limits, all inherited from the server rather than the bridge:
 
-- **Responses are fully buffered.** `HTTPResponse` always emits
-  `Content-Length`; there is no chunked encoding. Django's
-  `StreamingHttpResponse` and `FileResponse` are materialized in memory.
+- **WSGI responses are fully buffered.** A WSGI response always emits
+  `Content-Length`, so Django's `StreamingHttpResponse` and `FileResponse`
+  are materialized in memory on this path. ASGI streams do not buffer: they
+  stream through the executor, chunk-framed on HTTP/1.1 so the connection
+  survives the stream.
 - **Request bodies are fully buffered too**, and capped by
   `ServerConfig.max_request_body_size` (4 MB by default). Raise it for uploads.
 - **One request at a time per process.** See `WSGIApp` for why.
@@ -63,6 +65,8 @@ from .cli import (
     default_blocking_threads,
     resolve_blocking_threads,
     use_asgi_executor,
+    wsgi_lanes,
+    asgi_mount_names,
     effective_cpus,
     discovery_specs,
     M0SERVE_VERSION,
