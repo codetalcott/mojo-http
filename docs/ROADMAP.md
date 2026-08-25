@@ -659,6 +659,19 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 
 ## Known issues
 
+- **`--app-dir` is appended to `sys.path`, not prepended**, so an
+  application module can be shadowed by an installed package of the same
+  name — the opposite of gunicorn, uvicorn and `runserver`, all of which
+  `sys.path.insert(0, ...)`. `m0serve.mojo` calls `Python.add_to_path`,
+  which appends; the flag's help text, `cli.mojo:136` and `app.mojo:96` all
+  say "prepended". Found by dogfooding the wheel against a real Django
+  project, where the reported `sys.path` put `--app-dir` after
+  site-packages. Not fixed in passing because changing import precedence can
+  break an application that (accidentally) depends on the current order, so
+  it wants its own change and its own test. Also visible there and harmless:
+  `argv[0]`'s directory is `sys.path[0]`, which under a wheel install is the
+  package's `_bin/` — it contains no `.py` files, so nothing can resolve
+  through it.
 - Negotiation covers `Accept`, `Accept-Encoding` (`negotiate_encoding` —
   codec-agnostic, for callers with precompressed variants; the framework
   deliberately ships no compressor), and `Accept-Language`
