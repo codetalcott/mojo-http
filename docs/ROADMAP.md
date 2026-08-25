@@ -475,8 +475,15 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   Phase 2 — the per-loop asyncio executor over the unchanged
   `OffloadPool` — **shipped**: zero-config ASGI gets real
   await-concurrency and no handler pool, `bench-asgi` is the standing
-  uvicorn gate (mixed-tail passing; hello-world 0.88–0.94x with the gap
-  located in WSGI_PERFORMANCE.md §"The ASGI executor vs uvicorn").
+  uvicorn gate. Mixed-tail — the executor's actual claim — passes; the
+  hello-world row was re-measured under wrk 2026-08-25 and the deficit is
+  real and **wakeup-bound, not CPU-bound** (0.72x while consuming 0.89
+  cores: each request serializes loop → datagram → executor → datagram →
+  loop, both threads idling between handoffs — artifact in
+  `bench/results/`, analysis in WSGI_PERFORMANCE.md §"The ASGI executor
+  vs uvicorn"). The throughput gate is recalibrated to ≥0.8x so it fails
+  on mechanism regressions instead of on every run; **pump batching** is
+  the recorded lever that would earn the threshold back up.
   Phase 3 — ASGI streaming and `websocket` scopes over the existing
   bus/registry transport — **shipped** in v0.9.0, which is the release
   that made FastHTML's whole surface work zero-config.

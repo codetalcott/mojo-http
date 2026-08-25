@@ -1013,6 +1013,24 @@ Three findings:
   `--blocking-threads`, but for tasks); further pump batching. None of
   these block Phase 3, which changes this path's shape anyway.
 
+**The wrk run happened (2026-08-25), and it falsified the first fix path's
+premise in the opposite direction**
+([`asgi-wrk-hello-*.json`](../bench/results/)): under wrk with browser
+headers the ratio is **0.72x** (40.8k vs 56.4k on `--loop asyncio`), not
+the stdlib harness's 0.88–0.94x — the stdlib client was *flattering* the
+executor, not understating it. The decisive number is the cores column:
+**the executor loses while consuming 0.89 cores.** It is wakeup-bound,
+not CPU-bound — every request serializes through loop thread → submit
+datagram → executor thread → completion datagram → loop thread, and both
+threads idle between handoffs. That confirms **pump batching** (amortize
+the wakeups across queued requests) as the one real lever, retires
+"measure under wrk" as done, and is why `bench-asgi`'s throughput gate
+now reads ≥0.8x rather than ≥1.0x: the deficit is a located mechanism
+cost, a red-by-design gate trains people to ignore red, and the gate that
+carries the executor's actual claim — fast-request tail under mixed load
+— still requires beating uvicorn. Ratchet the threshold back up if pump
+batching lands, with the measurement that justifies it.
+
 The executor uses uvloop for its own loop where installed (stdlib asyncio
 otherwise); the uvicorn baseline row stays `--loop asyncio` per this
 repo's standing benchmark configuration, with the uvloop row shown for
