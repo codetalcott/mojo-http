@@ -2634,6 +2634,17 @@ hb_want=86bb66cab11c93043981f0eff7ff3586
 hb_got=$(curl -sN --max-time 10 $B/stream-events | md5sum | cut -d' ' -f1)
 [ "$hb_got" = "$hb_want" ] || fail 'a split SSE event was corrupted (heartbeat injection?)'
 
+# --- Chunked framing: the stream leaves its connection reusable ---------------
+# Everything above passes with close-delimited streams too -- the bytes
+# arrive either way. The one thing that cannot work without real framing
+# is a SECOND request on the same connection, so the probe speaks HTTP on
+# a raw socket, decodes the chunked body by hand (catching a wrong chunk
+# size or a missing terminator that a lenient client would paper over),
+# and then reuses the connection. Verified load-bearing against a
+# close-delimited build, where it fails on the missing header.
+M0_PORT=8088 python3 scripts/chunked_keepalive.py \
+  || fail 'a streamed response did not leave its connection reusable'
+
 # --- WebSockets (Phase 3b) ---------------------------------------------------
 # The raw RFC 6455 probe: handshake with verified accept, prefixed text
 # echo, binary echo, app-initiated close(1000) through to the FIN — then a

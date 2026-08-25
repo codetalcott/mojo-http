@@ -27,7 +27,12 @@ from lightbug_http.http.date import http_date_from_unix, unix_now
 from lightbug_http.http.common_response import (
     BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge,
 )
-from lightbug_http.http.chunked import HTTPChunkedDecoder
+from lightbug_http.http.chunked import (
+    HTTPChunkedDecoder,
+    chunked_terminator,
+    encode_chunk,
+)
+from lightbug_http.strings import strHttp11
 from lightbug_http.io.bytes import Bytes
 from std.memory import unsafe_memcpy
 from lightbug_http.metrics import ServerMetrics
@@ -778,13 +783,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 slot_send_offset[slot] += Int(sent)
 
                 if slot_send_offset[slot] >= len(slot_response[slot]):
-                    # The partial-send completion of a streaming buffer:
-                    # ack the whole buffer here (the drain pass acked
-                    # nothing for it). The stream head's flush also lands
-                    # here once per stream and inflates the credit window
-                    # by its header bytes — bounded and harmless.
-                    if slot_sse[slot] and offload.enabled() and offload.pool()[].stream_active():
-                        offload.pool()[].ack_stream(slot, len(slot_response[slot]))
+                    # The partial-send completion of a streaming buffer: ack
+                    # the PAYLOAD the drain recorded for it (the drain pass
+                    # acked nothing, having sent only part). Not the buffer
+                    # length — chunk framing makes those differ, and the
+                    # window must count what the application produced. The
+                    # stream head lands here too, with 0 owed.
+                    if offload.ack_payload[slot] > 0 and offload.enabled() and offload.pool()[].stream_active():
+                        offload.pool()[].ack_stream(slot, offload.ack_payload[slot])
+                    offload.ack_payload[slot] = 0
                     _after_send(
                         backend, slot, fd_val,
                         handler, config, server_address, tcp_keep_alive,
@@ -825,9 +832,32 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 # how a content-length-free streamed body ends.
                 var asgi_stream = offload.enabled() and offload.pool()[].stream_active()
                 var pending = handler.sse_drain_slot(s)
-                if len(pending) > 0:
-                    slot_response[s] = Bytes(Span(pending))
+                # Read ONCE per pass: `sse_drain_slot` above is what makes it
+                # go false, so asking twice can straddle the transition and
+                # send a terminator on a stream that just queued more.
+                var ended = asgi_stream and not handler.sse_is_streaming(s)
+                var framed = offload.chunked[s]
+
+                # Payload bytes are what the producer's credit window counts.
+                # Framing bytes are added below and deliberately excluded: a
+                # window replenished by wire bytes shrinks by the framing
+                # overhead on every chunk, and a long stream starves itself.
+                var payload_len = len(pending)
+                var out = Bytes()
+                if framed:
+                    if payload_len > 0:
+                        out = encode_chunk(Span(pending))
+                    if ended:
+                        out.extend(chunked_terminator())
+                elif payload_len > 0:
+                    out = Bytes(Span(pending))
+
+                if len(out) > 0:
+                    slot_response[s] = out^
                     slot_send_offset[s] = 0
+                    # What the write-ready completion owes the producer if
+                    # this buffer does not land in one send below.
+                    offload.ack_payload[s] = payload_len if asgi_stream else 0
                     provision_pool.provisions[s].state = ConnectionState.responding()
                     # Eager send
                     var sse_fd = FileDescriptor(slot_fds[s])
@@ -837,27 +867,57 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     except:
                         pass
                     if slot_send_offset[s] >= len(slot_response[s]):
-                        if asgi_stream:
-                            offload.pool()[].ack_stream(s, len(slot_response[s]))
-                            if not handler.sse_is_streaming(s):
+                        # Landed in one send: ack here and cancel what the
+                        # write-ready path would otherwise have owed.
+                        offload.ack_payload[s] = 0
+                        if asgi_stream and payload_len > 0:
+                            offload.pool()[].ack_stream(s, payload_len)
+                        if ended:
+                            if framed:
+                                # The terminator landed: the message is
+                                # complete and the connection is reusable.
+                                # Clearing the stream flag is what routes
+                                # `_after_send` down its keep-alive path
+                                # instead of back into streaming.
+                                slot_sse[s] = False
+                                offload.chunked[s] = False
+                                _after_send(
+                                    backend, s, slot_fds[s],
+                                    handler, config, server_address, tcp_keep_alive,
+                                    slot_fds, slot_response, slot_send_offset,
+                                    slot_header_start,
+                                    fd_to_slot, provision_pool, active_count, metrics,
+                                    slot_sse, slot_ws, slot_ws_state,
+                                    slot_read_armed, slot_idle_deadline,
+                                )
+                            else:
                                 _close_slot(
                                     backend, handler, s, slot_fds[s],
                                     slot_fds, fd_to_slot, provision_pool,
                                     active_count, metrics,
                                     slot_sse, slot_ws, slot_ws_state,
                                 )
-                                continue
+                            continue
                         provision_pool.provisions[s].state = ConnectionState.streaming_ws() if slot_ws[s] else ConnectionState.streaming_sse()
                     else:
-                        if asgi_stream and not handler.sse_is_streaming(s):
+                        if ended and not framed:
                             # The rest of the final buffer flushes through
                             # the write-ready path; _after_send's existing
                             # should_close branch closes it there.
                             provision_pool.provisions[s].should_close = True
+                        elif ended and framed:
+                            # Same flush, but the message ends with the
+                            # terminator already in this buffer — so the
+                            # write-ready completion must finish it as a
+                            # keep-alive response, not a close.
+                            slot_sse[s] = False
+                            offload.chunked[s] = False
                         backend.try_add_write_oneshot(slot_fds[s])
                         slot_read_armed[s] = False
-                elif asgi_stream and not handler.sse_is_streaming(s):
-                    # End marked with nothing left to send.
+                elif ended:
+                    # End marked with nothing left to send. Only reachable
+                    # unframed: a framed stream always has a terminator to
+                    # write, so `out` is never empty when it ends.
                     _close_slot(
                         backend, handler, s, slot_fds[s],
                         slot_fds, fd_to_slot, provision_pool,
@@ -1346,6 +1406,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     # request itself is about to belong to another thread and neither of these
     # can be read back at completion time.
     offload.is_head[slot] = request_method == "HEAD"
+    offload.http11[slot] = request.protocol == strHttp11
     if config.access_log:
         provision_pool.provisions[slot].log_method = request_method
         provision_pool.provisions[slot].log_path = request_path
@@ -1566,9 +1627,37 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     var response_status = response.status_code
     provision_pool.provisions[slot].response_status = response_status
 
-    # SSE streaming: remove Content-Length so client reads until close
+    # Streaming: the body has no length to declare, so it is framed one of
+    # two ways. Chunked (HTTP/1.1) keeps the connection reusable, which is
+    # the whole reason to prefer it; close-delimiting is the fallback and
+    # was the only option before.
+    #
+    # The refusals are all cases where a framed body would corrupt the
+    # message rather than merely differ: HTTP/1.0 has no chunked encoding,
+    # a HEAD response carries no body to frame, and a 101 hands the
+    # connection to the WebSocket framing instead. Chunking is limited to
+    # ASGI streams — the executor's, which end and therefore benefit —
+    # because a `--realtime` SSE stream is refused alongside the executor
+    # and never ends on its own anyway.
+    # A response head owes the producer nothing: the credit window is
+    # seeded when the stream opens, and the head is not payload.
+    offload.ack_payload[slot] = 0
     if response.sse_streaming:
         response.headers.pop("content-length")
+        var asgi_stream = offload.enabled() and offload.pool()[].stream_active()
+        var can_chunk = (
+            asgi_stream
+            and offload.http11[slot]
+            and not offload.is_head[slot]
+            and not upgraded_ws
+        )
+        # Written unconditionally: a recycled slot must not inherit the
+        # previous connection's framing.
+        offload.chunked[slot] = can_chunk
+        if can_chunk:
+            response.headers[HeaderKey.TRANSFER_ENCODING] = "chunked"
+    else:
+        offload.chunked[slot] = False
 
     # Stamp the Date header from the loop's per-second cache (encode()
     # would otherwise format a fresh date string for every response).
