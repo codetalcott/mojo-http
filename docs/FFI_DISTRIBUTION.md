@@ -151,6 +151,21 @@ report implied both were broken.
 > linked" was measured on one file and then carried as a platform fact.
 > Nothing in the tooling decides by platform any more, only by what the file
 > records.
+>
+> With `patchelf` installed, the Linux path now produces what the macOS one
+> does:
+>
+> ```
+> relocated bin/m0serve (search paths: ['$ORIGIN', '$ORIGIN/../_lib'])
+> bundle ready: dist/m0serve-linux-x86_64
+> smoke-wheel OK (m0serve-0.9.0-py3-none-manylinux_2_35_x86_64.whl)
+> ```
+>
+> The measured glibc floor is worth one more note, because it is not where
+> anyone would look for it: 2.35, on a runner whose own glibc is 2.39. The
+> floor is what the toolchain's output requires, not what the build image
+> has — so unlike the macOS deployment target, building on an older image
+> would not lower it.
 
 The checker reports three states rather than pass/fail, which is what makes
 it gateable: `BROKEN` (only loads where it was built), `SATISFIABLE` (loads

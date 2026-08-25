@@ -37,13 +37,11 @@ time.
 
 **The exact floors live in the wheel filename**, because they are measured
 from the built binary rather than copied from the toolchain's own tag. macOS
-is pinned at 13.0. The glibc floor is whatever the build image requires — at
-present the wheel is built on Ubuntu 22.04, so it declares that image's
-glibc, and a distribution older than it is declined by `pip` rather than
-installed and crashed at startup. Reaching further back (RHEL 9 and its
-rebuilds sit at glibc 2.34) means building inside a `manylinux_2_34`
-container rather than relabelling the artifact; that is a known next step,
-not something the tag is allowed to claim in advance.
+is pinned at 13.0; Linux currently measures `manylinux_2_35`, so Ubuntu
+22.04, Debian 12 and newer. An older distribution is declined by `pip`
+rather than installed and crashed at startup — RHEL 9 and its rebuilds sit
+at glibc 2.34 and miss by one minor version. Reaching them means building
+inside a `manylinux_2_34` container rather than relabelling the artifact.
 
 To **develop against the Mojo packages**, you do need the toolchain:
 
