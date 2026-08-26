@@ -128,6 +128,34 @@ versions may break the API**.
   one pill per executor on its own lane. `apps/hybrid_mix` gains
   `feed.asgi`, a second async mount beside FastHTML's.
 
+## [0.10.0] — 2026-08-25
+
+Promotes 0.10.0rc1 unchanged. The rc's whole purpose was to run the upload
+path once on a filename that could be spent: it published, installed from
+the real index on machines that never built it, and served. Nothing needed
+fixing afterwards, so this is the same artifact under a stable number.
+
+What the release candidate cost, kept here because the reasoning outlives
+the incident: three attempts and four defects, every one of them invisible
+from the machine that built the artifact.
+
+- The binaries were compiled for the build host's CPU (`mojo build` defaults
+  `--target-cpu` to it), so `m0serve --version` died with SIGILL in a clean
+  container after passing on the runner that produced it. Not detectable by
+  static inspection at all — only by running the artifact on different
+  silicon.
+- `wheel-inspect` runs on Linux and checks both wheels, but read Mach-O
+  through `otool`, which macOS has and Linux does not.
+- The glibc negative control ran `pip` with no shell in the container, so
+  its glob stayed literal and pip refused the wheel for the wrong reason.
+  The guard caught precisely that and declined to score it as a pass.
+- The release published as "Latest", above the current stable, because
+  `gh release create` does not infer pre-release status from a tag.
+
+### Changed
+
+- Version only. No source changes from 0.10.0rc1.
+
 ## [0.10.0rc1] — 2026-08-25
 
 First release published to PyPI, as a release candidate: it claims the name
