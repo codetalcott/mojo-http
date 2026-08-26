@@ -21,6 +21,17 @@ No Windows, no musl, no TLS/HTTP2 (terminate at a proxy).
   environment variables, which override defaults.
 - Refusals explain themselves on stderr and name the fix; a configuration
   the server will not run exits 78. `--version` prints `m0serve X.Y.Z`.
+- `m0serve --doctor [OPTIONS] [MODULE]` prints one JSON object and starts
+  nothing — platform and wheel arch, the interpreter it resolved and where
+  it lives, the application spec discovery chose and the protocol it
+  classified as, the resolved topology (including whether the handler pool
+  is a default or configured), and a `checks` array in which every failure
+  carries `detail`, `fix` and `exit`. **It exits with the code `m0serve`
+  itself would exit with for the same arguments** (0 serve, 2 usage,
+  1 startup, 78 EX_CONFIG), so it answers "will this run?" without binding
+  a port, forking, or importing the app twice. `poe smoke-doctor` runs both
+  over every refusal and compares. Bare `--doctor` with no MODULE is the
+  environment check and exits 0.
 - `--health-path /health` answers 200 in the server, before Python.
 - Realtime: a view's response with `M0-Hold: stream|websocket` +
   `M0-Channel: NAME` converts the connection to a held subscription;
@@ -34,6 +45,11 @@ No Windows, no musl, no TLS/HTTP2 (terminate at a proxy).
   one sync-Django file. Every fenced block is executed by CI on every pull
   request (`poe smoke-quickstart`), so the steps are pinned, not aspirational.
 - [README.md](README.md): install matrix, framework docs, limits.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): every performance number, each
+  rendered from a dated artifact in `bench/results/` and CI-checked against
+  it. States where m0serve loses (raw throughput, against both Granian and
+  uvicorn) as plainly as where it wins (fast-request tail under mixed
+  load), and names the one claim that has no artifact yet.
 - [CHANGELOG.md](CHANGELOG.md): honest release notes, including what each
   release's failures taught.
 - [apps/django_realtime/](apps/django_realtime/): the fuller demo — token

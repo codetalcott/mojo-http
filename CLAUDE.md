@@ -498,7 +498,13 @@ Properties of the design, not defects to fix in passing:
   `M0_BLOCKING_THREADS` (handler threads per loop; composes with either of
   those, refused with `--realtime`), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
   `M0_APP_TICK_MS`. `m0serve` layers flags on top (flag > env > default) and
-  is strict where the env loader is lenient.
+  is strict where the env loader is lenient. `--doctor` prints the whole
+  resolved configuration as JSON and starts nothing; its contract is that
+  it **exits with the code `m0serve` would exit with for the same
+  arguments**, which is held true by `smoke-doctor` running both and
+  comparing — the doctor mirrors `main`'s check order rather than sharing
+  its control flow, so a check that moves in `main` must move in
+  `_run_doctor` too.
 
 ## Mojo 1.0 patterns
 

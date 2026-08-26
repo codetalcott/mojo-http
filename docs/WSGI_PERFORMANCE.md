@@ -720,11 +720,32 @@ worker serves.
 
 **Second: after CPU normalization and the profile-ranked allocation pass**
 (Headers' packed index, move-not-copy response ctors, no `String(int)` in
-the per-request path — see NOTICE), the per-core decomposition is roughly
-**1.0x HTTP layer × ~1.35x bridge**: the hello row's per-core rate now
-meets or exceeds Granian's, and what remains of the gap is the bridge
-multiplier. The 2026-08-24 numbers above are records of what was measured,
-not descriptions of the present.
+the per-request path — see NOTICE), the hello row's per-core rate now meets
+or exceeds Granian's end-to-end rate, and what remains of the gap is the
+bridge. The 2026-08-24 numbers above are records of what was measured, not
+descriptions of the present.
+
+**Corrected 2026-08-26.** This paragraph used to state the result as a
+decomposition — "roughly 1.0x HTTP layer × ~1.35x bridge" — and that does
+not reconcile with the artifact below it. The measured per-core gap is
+**1.21x** (101,062 / 83,823); a 1.35x bridge term would require an HTTP
+layer term of 0.89x, i.e. this server's HTTP layer *slower* than Granian's,
+which the same sentence denies. The error is structural rather than
+arithmetic: **a two-sided decomposition needs both sides measured**, and
+there is no Granian-without-Python row in this run to divide by. What the
+artifact does support:
+
+- `apps/hello`, no Python in the path: **121,020 rps/core**
+- m0serve + bare WSGI: **83,823 rps/core** — so *this server's* bridge
+  costs **1.44x**
+- Granian + bare WSGI: **101,062 rps/core** — so the net is **0.83x**
+
+Granian's own bridge cost is unknown here, and a per-side split needs a
+`granian`-equivalent of the hello row. The figure had been propagated into
+README.md and docs/BENCHMARKS.md before it was checked, which is what
+motivated `check_bench_prose` in scripts/check_docs.py: the generated
+tables were never wrong, and the prose around them was answerable to
+nothing.
 
 A caveat the artifacts made visible: identical binaries move ~1.5x in
 absolute rps across sessions on this hardware (thermal and load state).
@@ -733,7 +754,7 @@ dated sections of this file.
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
 Source: [`layer-split-20260825T165536Z.json`](../bench/results/layer-split-20260825T165536Z.json) — 2026-08-25T16:55:36+00:00, commit `1670230` (dirty tree).
-Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4; wrk -c16 -d10s, 3 rounds, medians.
+Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
