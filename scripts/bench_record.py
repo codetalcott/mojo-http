@@ -154,13 +154,34 @@ def _cmd(*argv):
         return ""
 
 
+def _tree_is_dirty():
+    """Is the WORKING TREE dirty, ignoring bench artifacts?
+
+    `git status --porcelain` counts untracked files, and a benchmark run
+    writes its artifact into bench/results/ -- so running two benches back
+    to back stamped the second one `git_dirty: true` because the FIRST
+    one's artifact was sitting there untracked. That is a false provenance
+    warning on the worst possible field: the flag exists to tell a reader
+    the measured code may not match the recorded commit, and a sibling
+    result file says nothing about the code.
+
+    Artifacts under bench/results/ are therefore excluded. Anything else --
+    including an uncommitted change to a bench script -- still counts.
+    """
+    status = _cmd("git", "-C", str(REPO), "status", "--porcelain") or ""
+    for line in status.splitlines():
+        path = line[3:].strip().strip('"')
+        if path.startswith("bench/results/"):
+            continue
+        return True
+    return False
+
+
 def environment():
     venv = REPO / ".venv" / "bin"
     env = {
         "git_sha": _cmd("git", "-C", str(REPO), "rev-parse", "--short", "HEAD"),
-        "git_dirty": bool(
-            _cmd("git", "-C", str(REPO), "status", "--porcelain")
-        ),
+        "git_dirty": _tree_is_dirty(),
         "os": f"{platform.system()} {platform.release()}",
         "machine": platform.machine(),
         "python": _cmd(str(venv / "python3"), "-VV"),

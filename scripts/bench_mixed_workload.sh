@@ -146,5 +146,11 @@ echo "results in $OUT"
 
 # Dated, environment-stamped artifact — see scripts/bench_record.py for why
 # terminal transcripts are not a record.
+# --meta, so the artifact says what it measured. Without it the rendered
+# provenance line can only name the environment, and the hold time is the
+# one parameter the isolation claim actually depends on: "p99 stays flat"
+# means nothing without "flat against a 200ms hold".
 python3 "$(dirname "$0")/bench_record.py" mixed_workload "$OUT" \
+  --meta "hold_ms=$HOLD" --meta "connections=$CONNS" \
+  --meta "duration=$DUR" --meta "rounds=$ROUNDS" \
   || echo "WARN: could not write the bench artifact (see above)"
