@@ -447,7 +447,9 @@ sequence with `more_body=True` now actually streams — FastHTML's
 by reusing the §4 transport rather than building one. The executor
 publishes response chunks as bus-shaped datagrams on a private per-loop
 channel (`OffloadPool.enable_stream_channel`; the chunk pair's read end is
-the loop's `bus_read_fd`, free since `--realtime` is refused for ASGI),
+the loop's `bus_read_fd`, with a realtime server's own bus channel moved
+to `peer_bus_fd` beside it — the two coexist since `--realtime` learned to
+share a process with an ASGI mount),
 delivered through the existing `drain_bus_channel` → `sse_peer_frame`
 path into the loop-owned `SSERegistry` under reserved channel names that
 open with a control byte no HTTP header value can carry. The mechanics
