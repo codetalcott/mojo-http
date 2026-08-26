@@ -177,10 +177,16 @@ Mojo 1.0 interop imposes and that the code depends on:
     chunk channel is ONE shared socket pair and N per-stream windows
     over-commit it (12 concurrent Django `FileResponse`s were enough:
     dropped datagrams, short bodies under clean terminators, a wedged
-    executor). Both waits live in the shim, where waiting is an `await`;
-    **never wait on the Mojo side** -- the executor is attached there and
-    would hold the GIL against the loop that has to drain the channel.
-    The loop's `ack_stream` may not block for the same reason, so it
+    executor). Both waits live in the shim, where waiting is an `await`.
+    The Mojo side may wait too but **only detached** --
+    `_send_chunk_frame` releases the thread state first, because the
+    executor is attached there and would otherwise hold the GIL against
+    the loop that drains the channel. No send site may treat a full
+    channel as "skip this frame": a dropped chunk is a truncated body,
+    and the budget alone cannot prevent one, the channel's capacity being
+    a kernel property (a budget that never overflowed on macOS overflowed
+    on Linux, where each datagram's whole `skb` is charged to the
+    receiver). The loop's `ack_stream` may not block for the same reason, so it
     reports failure and the loop retries the owed credit
     (`OffloadLoopState.ack_owed`) -- a lost ack is a window that never
     refills. And comment heartbeats stay suppressed on ASGI streams (a

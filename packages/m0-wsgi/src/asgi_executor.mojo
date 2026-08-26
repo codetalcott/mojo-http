@@ -33,6 +33,7 @@ Streaming is still refused here (the Phase-1 watchdog rides along in
 """
 
 from std.python import Python, PythonObject
+from std.time import sleep
 
 from std.collections import Optional
 
@@ -376,7 +377,7 @@ def _pump_events(
             var begin_frame = encode_bus_frame(
                 asgi_stream_url(String("b"), slot, lane), NO_EVENT_ID, Span(begin)
             )
-            _ = pool.send_stream_chunk(Span(begin_frame))
+            _ = _send_chunk_frame(pool, Span(begin_frame))
             # The head: an ordinary completion whose response is marked
             # streaming — _finish_response pops content-length, keeps the
             # connection, and flips the slot into streaming state once the
@@ -404,13 +405,11 @@ def _pump_events(
             var frame = encode_bus_frame(
                 asgi_stream_url(String("s"), slot, lane), NO_EVENT_ID, Span(chunk)
             )
-            if not pool.send_stream_chunk(Span(frame)):
-                # Unplaceable after the bounded retry: the body this client
-                # receives is now short, and saying so is the only honest
-                # thing left — a truncated 200 is indistinguishable from a
-                # good one on the wire. The shim's global window
-                # (`_ASGI_TOTAL_WINDOW`) exists so this cannot be reached;
-                # if it prints, that budget is wrong for this channel.
+            if not _send_chunk_frame(pool, Span(frame)):
+                # Unplaceable even after waiting detached: the loop is not
+                # draining this channel at all, so this body is short and
+                # saying so is the only honest thing left — a truncated 200
+                # is indistinguishable from a good one on the wire.
                 print(
                     "asgi-executor: chunk channel full, dropped "
                     + String(len(frame)) + " bytes for slot " + String(slot)
@@ -422,7 +421,7 @@ def _pump_events(
             var frame = encode_bus_frame(
                 asgi_stream_url(String("e"), slot, lane), NO_EVENT_ID, Span(empty)
             )
-            _ = pool.send_stream_chunk(Span(frame))
+            _ = _send_chunk_frame(pool, Span(frame))
         elif kind == "stream_note":
             print(
                 "asgi-executor: stream raised after its head: "
@@ -438,7 +437,7 @@ def _pump_events(
                     asgi_stream_url(String("B"), slot, lane), NO_EVENT_ID,
                     Span(begin),
                 )
-                _ = pool.send_stream_chunk(Span(begin_frame))
+                _ = _send_chunk_frame(pool, Span(begin_frame))
                 var held = pending_101[slot].take()
                 handler.after_response(methods[slot], paths[slot], held)
                 pool.put_response(slot, held^, False)
@@ -461,7 +460,7 @@ def _pump_events(
                 asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
                 Span(frame_bytes),
             )
-            _ = pool.send_stream_chunk(Span(frame))
+            _ = _send_chunk_frame(pool, Span(frame))
         elif kind == "ws_close":
             # A close frame with the app's code, then the end marker that
             # lets the loop close after it lands.
@@ -474,12 +473,48 @@ def _pump_events(
                 asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
                 Span(close_frame),
             )
-            _ = pool.send_stream_chunk(Span(f1))
+            _ = _send_chunk_frame(pool, Span(f1))
             var empty = List[UInt8]()
             var f2 = encode_bus_frame(
                 asgi_stream_url(String("x"), slot, lane), NO_EVENT_ID, Span(empty)
             )
-            _ = pool.send_stream_chunk(Span(f2))
+            _ = _send_chunk_frame(pool, Span(f2))
+
+
+def _send_chunk_frame(mut pool: OffloadPool, frame: Span[Byte, _]) -> Bool:
+    """Place one chunk datagram, waiting **detached** if the channel is full.
+
+    A dropped chunk is a corrupt body — a short response under a clean
+    terminator, or, for an end frame, one that never completes — so this may
+    not simply give up. But it also may not wait while attached: the executor
+    holds the GIL here, and the thread that has to drain this channel is the
+    event loop, which needs to attach for other work. So the wait releases
+    the thread state first, touches no Python object inside it, and takes it
+    back before returning. The same discipline `DetachingBackend` applies to
+    the loop, in the other direction.
+
+    The shim's global window (`_ASGI_TOTAL_WINDOW`) is what makes this rare;
+    what makes it *correct* is that being wrong about that budget on some
+    platform now costs a few hundred microseconds of backpressure rather
+    than a truncated response. CI found exactly that: a budget that never
+    overflowed on macOS overflowed on Linux, where the kernel charges each
+    datagram's whole `skb` against the receiver's buffer.
+
+    Bounded at ~5 s, matching the drain: past that the loop is not draining
+    at all and nothing this thread does will help.
+    """
+    if pool.send_stream_chunk(frame):
+        return True
+    ref cpy = Python().cpython()
+    var ts = cpy.PyEval_SaveThread()
+    var placed = False
+    for _ in range(25000):
+        sleep(0.0002)
+        if pool.send_stream_chunk(frame):
+            placed = True
+            break
+    cpy.PyEval_RestoreThread(ts)
+    return placed
 
 
 def _ws_forbidden() -> HTTPResponse:
