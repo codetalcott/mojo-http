@@ -70,9 +70,20 @@ sent to the wrong executor is not an error but a stream stalled forever,
 which is why the smoke streams 256 KB (four credit windows) from two
 executors concurrently. The reserved channel names carry the lane
 (`\x01<kind>/<slot>/<lane>`) so disconnect tags and inbound WS messages
-route to the owning executor by parsing the slot's own filter url. One
-refusal stands: `--mount` with `--realtime` (an inbound WS message has no
-defensible destination among several urlconfs). **`--threads` gets the same
+route to the owning executor by parsing the slot's own filter url.
+**`--mount` composes with `--realtime`**: a WSGI mount's view takes an SSE
+hold while an ASGI mount streams through its own executor, in one process
+— which is what a mixed application needs, its pub/sub streams being
+hold-shaped and its request-scoped generators executor-shaped. The loop
+tells the two apart PER SLOT by lane (`OffloadPool.slot_is_executor`):
+asking per server was the same question only while they could not share
+one, and a held stream drained as an executor's would be chunk-framed,
+acked to an executor that never issued the credit, and denied the comment
+heartbeat that keeps it alive through a proxy. Two refusals remain: a
+`websocket` hold under `--mount` (answered 409 — an inbound frame is a
+synthesised POST into `apps[0]`, and which mount should receive it has no
+defensible answer), and `--realtime` on a server with no WSGI mount at
+all, which is asking for a hold nothing could take. **`--threads` gets the same
 lanes**: `_serve_one` mirrors `_serve_offloaded` per loop, so N loops of
 per-mount modes is N times the prefork shape — with two consequences to keep
 straight. The executor's chunk channel takes `bus_read_fd`, so a threaded
@@ -227,12 +238,16 @@ Mojo 1.0 interop imposes and that the code depends on:
       thread (`hold_notify_fd >= 0`) `WSGIHandler.func` takes the hold and
       sends it as a reserved `h` frame on THIS loop's bus channel before
       the response completes; the loop handler's `sse_peer_frame` makes the
-      subscription. Safe without a same-pass guarantee because, absent an
-      executor, the loop has no end-of-stream signal to misread a
-      not-yet-subscribed slot as — which is exactly why `--mount` +
-      `--realtime` stays refused: an ASGI mount brings that signal. A
-      WebSocket hold under the pool is a legible 409 until inbound messages
-      can reach a pool thread (docs/ROADMAP.md, "Hold on a pool thread").
+      subscription. Safe without a same-pass guarantee because the frame
+      is sent BEFORE the completion, so any pass whose event batch holds
+      the completion holds the frame too, and the outbox drain runs at the
+      bottom of the pass — after every event, in whatever order they came.
+      That is also what let `--mount` join in: an ASGI mount does bring an
+      end-of-stream signal, but the loop reads it per slot now, and only
+      for slots an executor produced. A WebSocket hold under the pool (or
+      under mounts) is a legible 409 until inbound messages can reach a
+      pool thread and name their mount (docs/ROADMAP.md, "Hold on a pool
+      thread").
     - **The shutdown join is bounded, and leaving is correct.** A response
       that never ends -- a `StreamingHttpResponse` served under WSGI, which
       buffers it -- holds its pool thread for the life of the process, and

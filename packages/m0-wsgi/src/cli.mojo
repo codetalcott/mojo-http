@@ -444,10 +444,13 @@ def resolve_blocking_threads(
     """The handler-pool size actually used, after zero-config kicks in.
 
     Explicit topology always wins — any of the three flags or variables, at
-    any value, keeps `opts.blocking_threads` verbatim. `--realtime` keeps
-    the single-loop shape *by default* — the demo and its smokes assume
-    it — while an explicit `--blocking-threads N` composes with it (a hold
-    taken on a pool thread is forwarded to the loop's registries). A zero-config WSGI app gets a small pool: one slow view
+    any value, keeps `opts.blocking_threads` verbatim. An unmounted
+    `--realtime` keeps the single-loop shape *by default* — the demo and
+    its smokes assume it — while an explicit `--blocking-threads N`
+    composes with it (a hold taken on a pool thread is forwarded to the
+    loop's registries). A **mounted** `--realtime` follows the mount rule
+    below instead: its WSGI mounts need pool threads whatever the flag,
+    because those threads are the only workers parked on their lanes. A zero-config WSGI app gets a small pool: one slow view
     must not stall every connection out of the box. A zero-config ASGI app
     gets NO pool, because it gets the asyncio executor instead
     (`use_asgi_executor`) — its concurrency is the application's own
@@ -463,7 +466,7 @@ def resolve_blocking_threads(
     """
     if not zero_config_topology(opts):
         return opts.blocking_threads
-    if opts.realtime:
+    if opts.realtime and len(opts.mount_prefixes) == 0:
         return 0
     if len(opts.mount_prefixes) > 0:
         var wsgi_mounts = (
@@ -493,7 +496,11 @@ def use_asgi_executor(opts: ServeOptions, is_asgi: Bool) -> Bool:
     # `asgi_mounts` names them and the blocking-threads count is about
     # the pool, not about whether executors run at all.
     if len(opts.mount_prefixes) > 0:
-        return len(opts.asgi_mounts) > 0 and not opts.realtime
+        # `--realtime` no longer zeroes this: under `--mount` the flag is
+        # per-mount in effect — WSGI mounts take holds, ASGI mounts stream
+        # through their own executor, and the loop tells the two apart by
+        # lane (`OffloadPool.slot_is_executor`).
+        return len(opts.asgi_mounts) > 0
     return is_asgi and not opts.realtime and opts.blocking_threads == 0
 
 

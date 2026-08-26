@@ -413,14 +413,18 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # expired-and-unrearmed timer would be returned by every
                     # subsequent epoll_wait: a heartbeat storm at loop speed.
                     backend.try_add_timer(timer_ident, config.sse_heartbeat_ms)
-                    # ASGI streams (the executor's streaming channel is
-                    # active): no comment injection. An SSE event may span
-                    # two chunks, and a `: heartbeat` landing between them
-                    # corrupts the frame for any parser (Datastar's
-                    # included). Dead clients are still discovered — by
-                    # chunk-send failures and read-EOF, both of which close
-                    # the slot. WS pings are frame-atomic and stay.
-                    if not hb_is_ws and offload.enabled() and offload.pool()[].stream_active():
+                    # An executor's stream: no comment injection. An SSE
+                    # event may span two chunks, and a `: heartbeat` landing
+                    # between them corrupts the frame for any parser
+                    # (Datastar's included). Dead clients are still
+                    # discovered — by chunk-send failures and read-EOF, both
+                    # of which close the slot. WS pings are frame-atomic and
+                    # stay. Asked per SLOT, not per server: under
+                    # `--realtime --mount` a held stream shares this loop
+                    # with an executor's, and a hold is one frame per event
+                    # with nothing to land between — the heartbeat is what
+                    # keeps it alive through an idle proxy.
+                    if not hb_is_ws and offload.slot_is_executor(hb_slot):
                         continue
                     var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
                     if provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
@@ -815,7 +819,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # length — chunk framing makes those differ, and the
                     # window must count what the application produced. The
                     # stream head lands here too, with 0 owed.
-                    if offload.ack_payload[slot] > 0 and offload.enabled() and offload.pool()[].stream_active():
+                    if offload.ack_payload[slot] > 0 and offload.slot_is_executor(slot):
                         if not offload.pool()[].ack_stream(slot, offload.ack_payload[slot]):
                             if offload.ack_owed[slot] == 0:
                                 offload.ack_owed_count += 1
@@ -867,15 +871,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 slot_ws[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
             )
             if s_idle and slot_fds[s] != UNUSED and not offload.offloaded[s]:
-                # An active streaming channel means every streaming slot is
-                # an ASGI stream (the executor mode refuses --realtime):
-                # drained bytes are acked back to the producer's credit
-                # window, and `sse_is_streaming` — unread by the loop
+                # An executor's stream (asked per slot: a held stream on
+                # another mount is drained by the same pass and is none of
+                # this): drained bytes are acked back to the producer's
+                # credit window, and `sse_is_streaming` — unread by the loop
                 # anywhere else — becomes the end-of-stream signal: the
                 # handler unsubscribes once the final chunk has been handed
                 # out, and the loop closes after those bytes land. Close is
                 # how a content-length-free streamed body ends.
-                var asgi_stream = offload.enabled() and offload.pool()[].stream_active()
+                var asgi_stream = offload.slot_is_executor(s)
                 var pending = handler.sse_drain_slot(s)
                 # Read ONCE per pass: `sse_drain_slot` above is what makes it
                 # go false, so asking twice can straddle the transition and
@@ -1770,7 +1774,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         offload.ack_owed_count -= 1
     if response.sse_streaming:
         response.headers.pop("content-length")
-        var asgi_stream = offload.enabled() and offload.pool()[].stream_active()
+        var asgi_stream = offload.slot_is_executor(slot)
         # RFC 9110 §6.4.1: a 1xx, 204 or 304 carries no body at all, so
         # there is nothing to frame and a `0\r\n\r\n` would itself be a
         # body. An application streaming into one of these is already

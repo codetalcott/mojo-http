@@ -77,6 +77,22 @@ from m0_wsgi import (
 )
 
 
+def _realtime_without_wsgi(opts: ServeOptions, is_asgi: Bool) -> Bool:
+    """Whether `--realtime` has no application that could ever take a hold.
+
+    `M0-Hold` is a response-header protocol for buffered WSGI responses, so
+    the flag needs a WSGI application somewhere. Unmounted that is the whole
+    question. **Mounted it is per mount**: a server whose WSGI mounts take
+    holds while its ASGI mounts stream through their own executor is exactly
+    the mixed application this pair was refused for, and the loop tells the
+    two apart by lane. Only a mounted server with no WSGI mount at all is
+    asking for nothing.
+    """
+    if len(opts.mount_prefixes) == 0:
+        return is_asgi
+    return len(opts.asgi_mounts) == len(opts.mount_prefixes)
+
+
 def _fail(message: String, code: Int):
     """Report and exit with `code`.
 
@@ -127,13 +143,12 @@ comptime _REALTIME_ASGI_CONFLICT = (
     " --realtime."
 )
 
-comptime _REALTIME_MOUNT_CONFLICT = (
-    "--realtime cannot be combined with --mount: M0-Hold subscribes the"
-    " connection to registries the loop's handler owns, and an inbound"
-    " WebSocket message is delivered back into ONE application's urlconf."
-    " Which mount should receive it has no defensible answer, so it is"
-    " refused rather than guessed. Serve the realtime application on its"
-    " own."
+comptime _REALTIME_MOUNT_WS_NOTE = (
+    "note: --realtime with --mount holds SSE streams only. A WebSocket"
+    " hold is answered 409 there, because an inbound frame is delivered"
+    " back into ONE application's urlconf and which mount should receive"
+    " it has no defensible answer yet. Serve a WebSocket application on"
+    " its own."
 )
 
 
@@ -564,18 +579,11 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
             )
             # The two refusals that need the detected protocol -- the same
             # pair main makes right after its own resolve, at EXIT_STARTUP.
-            if is_asgi and opts.realtime:
+            if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
                 report.fail_check(
                     String("realtime-vs-asgi"),
                     String(_REALTIME_ASGI_CONFLICT),
                     String("drop --realtime; an ASGI app streams natively"),
-                    EXIT_STARTUP,
-                )
-            if len(opts.mount_prefixes) > 0 and opts.realtime:
-                report.fail_check(
-                    String("realtime-vs-mount"),
-                    String(_REALTIME_MOUNT_CONFLICT),
-                    String("serve one application, or drop --realtime"),
                     EXIT_STARTUP,
                 )
 
@@ -770,10 +778,8 @@ def main() raises:
         )
         return
 
-    if is_asgi and opts.realtime:
+    if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
-    if len(opts.mount_prefixes) > 0 and opts.realtime:
-        _fail(_REALTIME_MOUNT_CONFLICT, EXIT_STARTUP)
 
     # Zero-config: with no topology flag or M0_* topology variable at all,
     # the protocol picks the concurrency — a pool for WSGI, the asyncio
@@ -1066,10 +1072,8 @@ def _serve_threaded(
             EXIT_STARTUP,
         )
         return
-    if is_asgi and opts.realtime:
+    if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
-    if len(opts.mount_prefixes) > 0 and opts.realtime:
-        _fail(_REALTIME_MOUNT_CONFLICT, EXIT_STARTUP)
     var auto_pool = zero_config_topology(opts)
     opts.blocking_threads = resolve_blocking_threads(
         opts, is_asgi, effective_cpus()

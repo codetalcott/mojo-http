@@ -9,6 +9,23 @@ versions may break the API**.
 
 ### Added
 
+- **`--realtime` composes with `--mount`.** One process can now hold the
+  SSE streams a synchronous application publishes to *and* run an ASGI
+  mount for the streams whose view is the producer — the shape a mixed
+  application needs, and the one that kept `textshelf` in two processes
+  (docs/REAL_APP_VALIDATION.md). The loop tells a held stream from an
+  executor's **per slot** rather than per server
+  (`OffloadPool.slot_is_executor`, read from the lane `submit` already
+  stamps): asking globally was the same question only while the two could
+  not share a loop, and a held stream drained as an executor's would be
+  chunk-framed, acked to an executor that never issued the credit, and
+  denied the comment heartbeat that keeps it alive through an idle proxy —
+  none of which stops delivery, so none of which looks wrong.
+  `smoke-django-realtime` phase 6 holds one stream of each kind on one loop
+  and asserts both. Still refused: a `websocket` hold under `--mount`
+  (409 — an inbound frame is a synthesised POST into one urlconf), and
+  `--realtime` on a server with no WSGI mount at all.
+
 - **`--realtime` composes with `--blocking-threads`.** A hold taken on a
   pool thread is forwarded to the event loop's registries as a reserved
   frame on that loop's own bus channel, before the response completes —
