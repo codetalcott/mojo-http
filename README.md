@@ -4,7 +4,7 @@
 
 The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE- and WebSocket-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
 
-It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, macOS arm64 and Linux x86_64, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
+It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, macOS arm64 and Linux x86_64/aarch64, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
 
 ## Install
 
@@ -31,7 +31,7 @@ time.
 |---|---|
 | macOS arm64 (Apple Silicon), macOS 13+ | supported |
 | Linux x86_64, glibc | supported |
-| Linux aarch64 | builds and passes the full wheel smoke (verified in an arm64 container), but is not built by CI and is not shipped |
+| Linux aarch64 (Graviton, Ampere, arm64 Docker) | supported |
 | macOS x86_64 (Intel) | **not possible**: Modular ships no Intel Mac toolchain |
 | musl / Alpine, Windows | not supported |
 
@@ -561,7 +561,7 @@ so it is not worth the ownership complexity yet.
 ## Status and limits
 
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
-- Linux `x86_64` (`epoll`) and macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all, and Linux `aarch64` is buildable but untested. See the install table above.
+- Linux `x86_64` and `aarch64` (`epoll`), macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all. See the install table above.
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
 - Building on Linux needs three system packages: a C compiler (`mojo build` shells out for linking), `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves), and `libsqlite3-dev` for `m0-sqlite`. `build-essential libsqlite3-dev patchelf` covers it. None are needed on macOS.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.

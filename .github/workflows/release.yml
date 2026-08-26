@@ -109,6 +109,12 @@ jobs:
             plat: macos-arm64
           - os: ubuntu-22.04
             plat: linux-x86_64
+          # Free for public repositories. aarch64 was "buildable, not
+          # shipped" until it was built by hand in an arm64 container and
+          # passed the whole wheel smoke, removal sabotage included -- so
+          # the only thing left between it and users was this line.
+          - os: ubuntu-24.04-arm
+            plat: linux-aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -179,12 +185,28 @@ jobs:
   # Behavioural, in containers that have never seen this repository.
   wheel-consume-linux:
     needs: build-wheels
-    runs-on: ubuntu-latest
+    # One definition, two architectures. The runners differ from the ones in
+    # build-wheels (ubuntu-latest vs ubuntu-22.04): consuming on a different
+    # image than built on is not an accident, it is the point. An x86_64
+    # runner cannot run aarch64 containers without emulation, and emulation
+    # is the wrong tool for a job that exists to run the artifact on real
+    # hardware it did not come from.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: wheel-linux-x86_64
+            oldglibc: quay.io/pypa/manylinux_2_28_x86_64
+          - os: ubuntu-24.04-arm
+            artifact: wheel-linux-aarch64
+            oldglibc: quay.io/pypa/manylinux_2_28_aarch64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@v7
         with:
-          name: wheel-linux-x86_64
+          name: ${{ matrix.artifact }}
           path: dist
       - name: Assert this machine did not build the wheel
         run: |
@@ -236,7 +258,7 @@ jobs:
           # the host), pip receives an asterisk and fails with "Invalid wheel
           # filename" -- a refusal, but not the one being tested. The guard
           # caught that correctly and refused to accept it as a pass.
-          if docker run --rm -v "$PWD/dist:/w:ro" quay.io/pypa/manylinux_2_28_x86_64 \
+          if docker run --rm -v "$PWD/dist:/w:ro" ${{ matrix.oldglibc }} \
                sh -c '/opt/python/cp312-cp312/bin/pip install --no-index --no-deps /w/*.whl' 2>&1 | tee out; then
             echo "::error::a glibc 2.28 host accepted the wheel"; exit 1
           fi
@@ -369,10 +391,10 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           wheels=(dist/*.whl)
-          [ "${#wheels[@]}" -eq 2 ] \
-            || { echo "::error::expected 2 wheels, found ${#wheels[@]}"; exit 1; }
+          [ "${#wheels[@]}" -eq 3 ] \
+            || { echo "::error::expected 3 wheels, found ${#wheels[@]}"; exit 1; }
           plats=$(for w in "${wheels[@]}"; do basename "$w" | sed 's/.*-py3-none-//'; done | sort -u | wc -l)
-          [ "$plats" -eq 2 ] || { echo "::error::wheels do not cover 2 platforms"; exit 1; }
+          [ "$plats" -eq 3 ] || { echo "::error::wheels do not cover 3 platforms"; exit 1; }
           vers=$(for w in "${wheels[@]}"; do basename "$w" | cut -d- -f2; done | sort -u)
           [ "$(echo "$vers" | wc -l)" -eq 1 ] \
             || { echo "::error::wheels disagree about the version: $vers"; exit 1; }

@@ -9,6 +9,25 @@ versions may break the API**.
 
 ### Added
 
+- **Linux aarch64 wheels** (Graviton, Ampere, arm64 Docker). The platform
+  was already proven — built by hand in an arm64 container, passing the full
+  wheel smoke including the removal sabotage — so the only thing between it
+  and users was a CI runner. `build-wheels` and `wheel-consume-linux` are
+  now matrices over both Linux architectures, and the aarch64 wheel is
+  consumed on real arm64 hardware rather than under emulation, which would
+  defeat the purpose of a job that exists to run an artifact on a machine
+  that did not build it.
+
+  Also added to `test.yml`, not just the release path: `release.yml` runs on
+  a tag, so aarch64-only would have meant discovering a break *during* a
+  release, after the GitHub release exists and with the upload gated behind
+  it. That is the failure shape the consume jobs were built to prevent.
+
+  The README claimed Linux arm64 support before the wheel existed, so a
+  Graviton user would have got `No matching distribution found` — the
+  literal "didn't install" comment the release checklist names as its
+  first risk.
+
 - **`scope["client"]` and `REMOTE_ADDR`: the peer reaches Python.** The
   fork's `accept()` passed a 4-byte `addrlen`, so the kernel truncated
   the peer address before the IP bytes — it was unreadable even in
