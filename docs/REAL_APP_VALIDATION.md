@@ -1,162 +1,222 @@
 # Exercising the server against real applications
 
-A plan, not a record. Nothing here has been run yet.
+**A record. Run 2026-08-26**, against m0serve 0.11.0 (the PyPI-shaped wheel,
+`dist/wheels/m0serve-0.11.0-py3-none-macosx_13_0_arm64.whl`), macOS 26 on an
+M4, CPython 3.13.6 — plus one row on free-threaded 3.14.7t. The plan this
+replaces is in the history of this file.
 
-Every application this server has been tested against so far was written to
-test it. `apps/` holds bare WSGI and ASGI apps that pin spec clauses,
-a Django demo built around the realtime feature, and a FastHTML row — all
-of them small, all of them ours, none of them carrying a dependency tree
-somebody else chose. That is the right shape for a smoke suite and the
-wrong shape for the question **"would this serve my application?"**
+Every application this server had been tested against was written to test it.
+`apps/` holds bare WSGI and ASGI apps that pin spec clauses, a Django demo
+built around the realtime feature, and a FastHTML row — all small, all ours,
+none carrying a dependency tree somebody else chose. That is the right shape
+for a smoke suite and the wrong shape for the question **"would this serve my
+application?"**
 
-The gap is not hypothetical. The one time the wheel met a real Django
-project it produced a defect that no in-repo app could have shown: the
-`--app-dir` flag *appends* to `sys.path` where gunicorn, uvicorn and
-`runserver` all prepend, so an application module can be shadowed by an
-installed package of the same name
-([Known issues](ROADMAP.md#known-issues)). One dogfooding session, one
-real bug, and it is still open.
+The gap was not hypothetical. The one time the wheel had met a real Django
+project it produced the `--app-dir` shadowing defect
+([Known issues](ROADMAP.md#known-issues)). This pass produced **four more**,
+three of which no in-repo app could have shown, and every one of them is now
+fixed with a test that fails without the fix.
 
 ## The three applications
 
 Local Django projects, chosen because they stress different parts of the
-server rather than because they are convenient:
+server rather than because they are convenient. Served from clean clones
+against scratch databases; their own settings, unmodified.
 
-| app | shape | what it should stress |
-|---|---|---|
-| `transcripts` | plain WSGI, no streaming, no channels | the **baseline**: does an ordinary Django app just work? |
-| `color-separation` | image/halftone processing, `StreamingHttpResponse` | **CPU-bound views** — the case `--blocking-threads` exists for — plus the buffering limit |
-| `textshelf` | production-shaped: AI streaming, a pubsub module, djstripe, Docker/Fly deploy | the **hard case**, and the closest thing to the launch claim: an app that already needs streaming and pub/sub |
+| app | shape | Django | what it stressed |
+|---|---|---|---|
+| `transcripts` | plain WSGI, `src/` layout, allauth, 137 modules | 5.2 | the **baseline** — and the `--app-dir` case, since its code is under `src/` |
+| `color-separation` | image/halftone processing, numpy/scipy/Pillow, `FileResponse` | 6.0 | **CPU-bound views**, uploads, downloads |
+| `textshelf` | production-shaped: 4 SSE endpoints, 3 pubsub modules, djstripe, WhiteNoise, Docker/Fly | 6.1 | the **hard case** — an app that already built what this server claims to remove infrastructure for |
 
-`textshelf` is the interesting one. It has `ai/streaming.py`, `ai/views.py`
-and `notate/pubsub.py` — an application that has already built the thing
-this server claims to remove infrastructure for. If the realtime story is
-real, it should be visible there; if it is not, that is worth knowing
-before it is announced rather than after.
+## What was found
 
-## Ground rules
+Five defects. Four are fixed in this repo with a guard; one was already known
+and stays open on purpose.
 
-These are working projects with real data. The plan is **read-only against
-them**:
+| # | defect | how it presented | triage |
+|---|---|---|---|
+| 1 | **Every `Set-Cookie` lost `expires` and `SameSite`** | Django's session and CSRF cookies reached the browser as `sessionid=…; Max-Age=…; Path=/` where every other server sends `expires=…; HttpOnly; Max-Age=…; Path=/; SameSite=Lax`. Sessions still worked, so nothing failed loudly — but a persistent cookie became a session cookie for [any client that prefers `expires`](https://datatracker.ietf.org/doc/html/rfc6265#section-5.3), and CSRF cookies shipped without their `SameSite` defence. On all three apps, on every response. | **fixed** — `ResponseCookieJar.raw`, + `test_response_cookies.mojo`, + `smoke-django` asserts the attributes on the wire |
+| 2 | **Uploads between ~1.5 MB and `--max-body` were refused `400`** | `color-separation`'s image upload (7.1 MB) failed with a truncated connection under `--max-body 64m`; on a bare echo app the threshold was between 1.5 MB and 2 MB whatever the flag said, including the default. The receive buffer had its own 2 MB ceiling that `--max-body` never raised, and it answers `400 Bad Request` rather than the `413` the body cap sends — so the error named the wrong thing. | **fixed** — `ServerConfig.recv_buffer_limit()`, + a `test_config.mojo` case, + `smoke-serve` now asserts a 3 MB body at the default cap and 7 MB at `--max-body 8m` |
+| 3 | **Concurrent ASGI streams truncated each other** | `textshelf` serves its static files through WhiteNoise, so every page load is several `FileResponse`s. Twelve concurrent fetches of one 232 KB file left bodies short — a clean `200` with fewer bytes — and enough of them wedged the executor entirely: the server stopped answering and `SIGTERM` needed 12+ s and then `SIGKILL`. Cause: the credit window is **per stream** (64 KB) while the chunk channel is **shared and finite**, so N streams over-commit it and `send_stream_chunk` dropped the datagram it could not place. | **fixed** — a global in-flight budget in the shim (`_ASGI_TOTAL_WINDOW`), an owed-ack retry on the loop side, + `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and checks every byte |
+| 4 | **`SIGTERM` never returned when a handler thread was inside a response that never ends** | `textshelf`'s SSE endpoints served under WSGI are buffered, so the generator never returns and its pool thread never comes back. `stop_and_join` waited for it forever: the drain finished, the process did not exit, and `docker stop` would end in `SIGKILL` after its grace. | **fixed** — `ThreadSet.join_within` and a 5 s join budget matching the drain's, after which the process leaves and says what it left behind; + a `smoke-blocking-threads` phase with two never-returning views |
+| 5 | `--app-dir` is appended to `sys.path`, not prepended | Confirmed again: a probe app reports `--app-dir` at position 5, after site-packages. It did **not** bite any of the three (no top-level module name collides with an installed package in any of them), which is why it stays a latent hazard rather than a visible failure. | **unchanged** — still open in [Known issues](ROADMAP.md#known-issues); a fix changes import precedence and wants its own change |
 
-- run from a **copy or a clean checkout**, never the working tree
-- a scratch database (`DATABASES` pointed at a temp SQLite/Postgres), never
-  the development one; no `migrate` against real data
-- their own dev settings, unmodified — the point is to serve the app as it
-  is, not an app adapted to us
-- any change needed to make an app serve is a **finding about m0serve**,
-  recorded, not a patch to their repo
+Findings 1, 3 and 4 could not have come from `apps/`: they need a real cookie
+policy, a real static-file middleware, and a real never-ending response
+respectively. Finding 2 needed a file somebody wanted to upload.
 
-Findings land in exactly one of three places, and the triage is the
-deliverable:
+## Phase 0 — will it even load?
 
-1. **a fix** in this repo, with a test
-2. **a documented limit** in `README.md` / `docs/WSGI_CONFORMANCE.md`,
-   stated where a user will meet it
-3. **a smoke**, when the behaviour is worth pinning permanently
+`m0serve --doctor` against each entry point. **All six passed** (`"ok": true`,
+exit 0): `transcript_manager.wsgi`, `halftone_studio.wsgi`,
+`halftone_studio.asgi`, `config.wsgi`, `config.asgi`, and
+`transcript_manager.wsgi` again under `--threads 4` on 3.14.7t, which reported
+`free_threaded_build: true` and `mode: threads`. Protocol detection was right
+every time; the WSGI apps got the zero-config pool of 8, the ASGI apps got the
+executor.
 
-A finding that lands nowhere has been forgotten, not resolved.
+`transcripts` keeps its code in `src/`, so it is the shape the `--app-dir`
+defect targets. It loaded from both `--app-dir src` and `--app-dir .` (it is
+also installed as an editable package), and neither path was shadowed.
 
-## Phase 0 — will it even load? (minutes)
+## Phase 1 — parity against `runserver`
 
-`m0serve --doctor` answers this without binding a port, forking, or
-importing twice, and reports the resolved spec, protocol and topology:
+Same routes under `m0serve` and `manage.py runserver`, raw HTTP/1.1, no
+redirect following, diffed on status, headers and body after normalising what
+is per-process by design (`Date`, CSRF token, session id). Home, admin index,
+admin login, allauth login, a static asset, a 404, a 500, and a full login
+round trip on each app.
 
-```bash
-m0serve --doctor --app-dir <app> <project>.wsgi
-```
+**After the cookie fix, every remaining difference is one of three, and all
+three are the server being itself:**
 
-Pass: `"ok": true`. Any failure here is a bug or a documented limit before
-a single request is served. Run it for all three, WSGI and ASGI entry
-points both, since each project ships `wsgi.py` and `asgi.py`.
+- `connection: keep-alive` — m0serve sends it explicitly; `runserver` does not.
+- `x-thread: N` — which handler-pool thread served the request. Documented,
+  and absent under `--blocking-threads 0`.
+- Django's debug pages embed the request's own `host:port`, which differs
+  because the two servers are on different ports.
 
-**Expect `--app-dir` shadowing to bite here.** It is a known open issue and
-these are the projects that can demonstrate it.
+Bodies were byte-identical on every route on all three apps, admin included.
+The login round trip — `GET` the form, `POST` credentials, `GET` the
+destination with the session — produced **identical headers at all three
+steps** on `color-separation` and `textshelf`. Before the fix the same
+comparison reported 15–24 differences per app, every one of them a cookie.
 
-## Phase 1 — parity against the incumbent
-
-For each app, serve the same routes under `m0serve` and under whatever the
-project already uses (`runserver`, gunicorn, uvicorn) and **diff the
-responses byte for byte** — status, headers, body — the way `smoke-hybrid`
-already does for `reverse()`/`url_for()`.
-
-Routes worth diffing, in order of how much they have historically hidden:
-
-- `/` and any unauthenticated page
-- the **Django admin** — sessions, CSRF, its own static files, and the
-  largest middleware stack most projects run
-- a **login round trip**: cookies set, redirect chain, CSRF token accepted
-- any page with `{% static %}` — the URLs must resolve identically
-- a 404 and a 500 (with `DEBUG=False`)
-
-A header-level difference that does not change rendering is still a
-finding: `Content-Length` vs chunked, `Vary`, cookie attributes.
+Two app-level failures appeared identically under both servers and are the
+applications', not ours: `transcripts` answers `403` on `/accounts/login/`
+(its dev auto-login middleware logs you in, and allauth's login view forbids
+an authenticated user), and `textshelf` answers `500` on `/accounts/signup/`
+(no `SocialApp` row in a scratch database).
 
 ## Phase 2 — the feature matrix
 
-The properties this server is known to handle differently. Each row is a
-yes/no against each app, and a "no" is triaged by the rule above.
-
-| property | why it is on the list |
+| property | result |
 |---|---|
-| static files via WhiteNoise | the common Django answer; does it work, and is `--static` better? |
-| static files via `--static PREFIX=DIR` | served from Mojo without entering Python — the claim |
-| file upload > 4 MB | request bodies are buffered and capped at `--max-body` (default 4m) |
-| `StreamingHttpResponse` | **WSGI responses are fully buffered** — it will be materialized in memory |
-| `FileResponse` / large download | same buffering limit, plus whether sendfile applies |
-| long-running view | the case for `--blocking-threads` |
-| a view that calls out over HTTP | on macOS under `--workers>1`, `urlopen` consults `_scproxy` → CoreFoundation → **abort in a forked child**; `http.client` is the documented workaround |
-| management commands | not served, but they must still run against the same settings |
-
-The upload cap and the streaming buffering are **expected** to fail. They
-are documented limits; the point of running them is to find out whether the
-failure is *legible* — a clear error, or a silent truncation.
+| static via WhiteNoise (`textshelf`) | works; **found defect 3** under concurrency on ASGI. After the fix, 200 fetches of a 232 KB file at concurrency 16 take 0.35 s against uvicorn's 0.29 s on the same app |
+| static via `--static PREFIX=DIR` | works (`smoke-serve` covers it; not re-exercised here) |
+| upload > 4 MB | **found defect 2.** After the fix: a 7.1 MB multipart upload under `--max-body 64m` reaches Django, is validated, stored, and processed. Over the cap the answer is a legible `413 Payload Too Large` before the body is read |
+| `StreamingHttpResponse` under WSGI | buffered, as documented — and for `textshelf`'s never-ending SSE generators that means the response never completes and the thread is held. **Legible? No.** The client sees an open connection that yields nothing; nothing is logged. This is the documented limit meeting an app that does not know it, and it produced defect 4 |
+| `StreamingHttpResponse` under ASGI | streams for real, chunk-framed |
+| `FileResponse` / download (`color-separation`) | byte-identical zip to `runserver`, correct `Content-Type`, `Content-Length` and `Content-Disposition` |
+| long-running view | `color-separation` runs its whole separation pipeline synchronously inside the request (`ImmediateBackend`); served correctly in every mode |
+| view that calls out over HTTP | not reached by these apps' fixtures; the documented `_scproxy` hazard is unchanged and pinned by `smoke-wsgi` |
+| management commands | `check`, `makemigrations`, `migrate`, `collectstatic`, `createsuperuser` all ran against the same settings; that is how the scratch databases were built |
 
 ## Phase 3 — the topology matrix
 
-Each app, each mode, same request set:
+Each app, each mode: a route sweep, a 200-request burst at concurrency 16,
+and 16 concurrent logins (a session write per request).
 
-```
---workers 1                      the reference
---workers 4                      prefork; where the fork/CoreFoundation hazard lives
---blocking-threads 4             the handler pool (zero-config default anyway)
---workers 4 --blocking-threads 4 both
---threads 4                      free-threaded CPython only
-```
+Every mode served every route correctly on all three apps, with **zero 5xx
+and zero dropped connections in the bursts** — `--workers 1`, `--workers 4`,
+`--blocking-threads 4`, `--workers 4 --blocking-threads 4`, and `--threads 4`
+on free-threaded 3.14.7t (`transcripts`, which is the app whose dependency
+tree is thread-clean).
 
-Watch for what only appears at concurrency: database connections per
-worker, module-level mutable state, thread-unsafe third-party middleware,
-and anything that opens a file descriptor per request.
+The 16-concurrent-login column found nothing about the server and one thing
+about the fixture: `textshelf` answers some of them `500` with
+`sqlite3.OperationalError: database is locked`. That is the scratch SQLite —
+the project runs PostgreSQL — and it reproduces at the same rate under
+**gunicorn `--workers 4` and under `runserver`**, so it is attributed there
+rather than here. `transcripts` answers all 16 with the same app-level `403`
+as in Phase 1. `textshelf` also rate-limits its own auth endpoints (`429`),
+which is the application working as designed.
 
 ## Phase 4 — the realtime retrofit (`textshelf`)
 
-The launch claim is that a plain sync view can hold an SSE stream or a
-WebSocket with two response headers and no added infrastructure. `textshelf`
-already streams AI responses and already has a pubsub module, so it is the
-honest test: **can its existing streaming endpoint be converted to
-`M0-Hold` + `m0pub.publish()`, and is the result simpler than what it
-replaces?**
+The claim is that a plain sync view can hold an SSE stream with two response
+headers and no added infrastructure. `textshelf/notifications/` was the
+honest test: an async `notification_stream` view, an `async_subscribe`
+generator over PostgreSQL `LISTEN/NOTIFY`, a polling fallback for SQLite, a
+sync copy of both, and a hard dependency on running under Daphne.
 
-Success is not "it works" — it is a diff a maintainer would accept. If the
-conversion needs more code than it removes, the claim is weaker than the
-README says and the README should change.
+The conversion is 20 lines of view:
+
+```python
+@login_required
+@require_http_methods(["GET"])
+def notification_stream(request):
+    response = HttpResponse(f"event: connected\ndata: {head}\n\n",
+                            content_type="text/event-stream")
+    response["M0-Hold"] = "stream"
+    response["M0-Channel"] = NotificationPubSub.get_user_channel(request.user.id)
+    return response
+```
+
+plus one `m0pub.publish` beside the existing `pg_notify` in the publish path,
+deferred to commit the same way.
+
+**Measured result: `+52 / −293` across two files — a net 241 lines removed**,
+because holding the connection in the server strands all four subscription
+implementations (sync, async, and a polling fallback for each: 236 of
+`pubsub.py`'s 336 lines), and with them the `psycopg` import that existed
+only for `LISTEN/NOTIFY`.
+
+It works: four `EventSource` clients held across **two prefork workers**, one
+`POST` to an ordinary synchronous Django view, and all four receive the same
+numbered event. No Daphne, no asyncio, no `LISTEN/NOTIFY`, and the database
+is SQLite — where the code being replaced had no delivery mechanism at all,
+only a 5-second poll.
+
+**The degradation is better than what it replaces, which was the surprise.**
+Under gunicorn the converted view answers a short buffered
+`text/event-stream` that the browser's `EventSource` reconnects on — the GRIP
+property. The *original* async view under gunicorn hangs: 12 s with no bytes,
+and the worker never serves again. So this is not a change that trades
+portability for the feature.
+
+The honest caveats: the app loses its SQLite polling fallback (nothing
+delivers under gunicorn now, where before it polled — at the cost above), and
+`M0-Channel` is one channel per connection, which suits a user-scoped
+notification stream and would not suit an endpoint that multiplexes several.
+
+**Verdict: a diff a maintainer would accept.** The claim survives contact.
 
 ## Phase 5 — soak
 
-The one thing a request-count test cannot show. Serve each app for an
-extended run under mixed load and watch:
+6,000 keep-alive requests per app over a mixed route set (home, admin, login,
+static, 404, an authenticated page), sampling RSS, open descriptors and
+threads.
 
-- **RSS** — `smoke-django` already guards 0 KB growth over 10k requests
-  against the bare app; a real app with a real dependency tree is the
-  harder case
-- **file descriptors** — per-request fd growth is invisible until it is a
-  crash
-- **database connections** — Django's `CONN_MAX_AGE` against a
-  worker/thread model it was not written for
+| app | RSS at 1k → 6k | fds | db fds | threads | errors |
+|---|---|---|---|---|---|
+| `transcripts` | 103.6 → 105.1 MB | 34 → 34 | 0 | 13 | 0 |
+| `color-separation` | 99.6 → 101.6 MB | 71 → 71 | 0 | 13 | 0 |
+| `textshelf` | 261.4 → 267.9 MB | 52 → 52 | 8 | 13 | 0 |
+
+Descriptors and threads are flat — nothing accumulates per request, and
+Django's `CONN_MAX_AGE = 10` holds its connections steady rather than growing
+them. RSS rises 1.5–6.5 MB over the 5,000 requests after warm-up and then
+stops, which is Python's allocator reaching steady state rather than a leak;
+`smoke-django`'s 10k-request guard still measures 0 KB against the bare app.
+Throughput was 363–819 rps single-worker on a laptop, which is not a
+benchmark and is not offered as one.
+
+## What this changes about the guards
+
+Every fix landed with something that fails without it, and each was checked by
+sabotage rather than assumed:
+
+- `test_response_cookies.mojo` — 4 of 6 cases fail when `add_raw` is reverted
+  to parse-and-reserialise.
+- `test_config.mojo::test_recv_buffer_limit_covers_headers_plus_body` — fails
+  when `recv_buffer_limit()` returns the bare field.
+- `smoke-django` — now reads the session cookie off the wire and requires
+  `expires`, `HttpOnly`, `Max-Age` and `SameSite=Lax`, because curl's cookie
+  jar stores name and value only and could never have seen this.
+- `smoke-serve` — a 3 MB body at the default cap and 7 MB at `--max-body 8m`
+  must be `200`; 5 MB and 9 MB must be `413`. Both sizes straddle the old
+  ceiling.
+- `smoke-asgi` — 32 concurrent 4 KB-piece streams, every body byte-exact.
+- `smoke-blocking-threads` — two views that never return, `SIGTERM`, and the
+  process must exit inside 20 s naming what it abandoned.
 
 ## What would make this worth repeating
 
-If the pass turns up findings, the ones that generalize should become
-`apps/` fixtures or smokes so they are checked forever rather than
-rediscovered. The value of a real application is finding the defect; the
-value of a smoke is that it stays found.
+It already was: four defects in one pass, three of them invisible to any
+application written to test this server. The next pass should use applications
+with shapes these three lack — a background worker, an app behind a proxy with
+`SECURE_PROXY_SSL_HEADER`, an upload-heavy API, and something that is not
+Django.

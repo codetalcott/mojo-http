@@ -9,17 +9,18 @@ versions may break the API**.
 
 ### Documentation
 
-- **A plan to exercise the server against applications nobody wrote to test
-  it** ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). Every app in
-  `apps/` exists to pin a spec clause or demo a feature; none carries a
-  dependency tree somebody else chose. The precedent for why that matters is
-  already in the known issues: the one dogfooding session against a real
-  Django project found the `--app-dir` shadowing bug, and nothing in `apps/`
-  could have shown it. Staged from `--doctor` through byte-parity against the
-  incumbent server, a feature matrix aimed at the documented limits, the
-  topology matrix, a realtime retrofit, and a soak. Read-only against the
-  target projects, and every finding must land as a fix, a documented limit,
-  or a smoke.
+- **Three real Django projects, served — the record**
+  ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). The plan that
+  file used to hold has been executed: `transcripts` (plain WSGI, `src/`
+  layout), `color-separation` (numpy/Pillow pipelines, uploads, downloads)
+  and `textshelf` (four SSE endpoints, three pubsub modules, WhiteNoise,
+  djstripe) served from clean clones against scratch databases, through
+  `--doctor`, byte-parity against `runserver`, the feature matrix, the
+  topology matrix, a realtime retrofit and a soak. Four defects, all fixed
+  below, three of which no application in `apps/` could have shown. After
+  the cookie fix, every remaining parity difference on every route of all
+  three apps is `connection: keep-alive`, `x-thread`, or Django's debug page
+  echoing its own port.
 
 - **The desktop-Mac hypothesis, and the packaging tension under it**
   (ROADMAP, Open questions). Recorded because the relevant decision is
@@ -37,6 +38,54 @@ versions may break the API**.
 
 
 ### Fixed
+
+- **Every `Set-Cookie` an application set lost its `expires` and `SameSite`
+  attributes.** The WSGI/ASGI bridge parsed each `Set-Cookie` line into a
+  `Cookie` and re-serialised it, and that round trip was lossy four ways:
+  `Expiration` is a stub whose `from_string` parses nothing, `SameSite`
+  matched only lowercase values, a value was cut at its first `=` (base64
+  pads with one), and any attribute the struct does not model was dropped.
+  Django's session and CSRF cookies therefore reached every browser without
+  `expires` or `SameSite` — a persistent cookie silently demoted to a
+  session cookie, and a CSRF cookie without its defence. Application lines
+  are now transmitted **verbatim** (`ResponseCookieJar.add_raw`), which is
+  also the cheaper path on the measured response half of the bridge. Found
+  by serving three real Django projects; `smoke-django` now reads the cookie
+  off the wire and requires all four attributes, because curl's jar stores
+  name and value only and could never have seen it.
+
+- **Uploads between ~1.5 MB and `--max-body` were refused with `400`.** The
+  per-connection receive buffer had its own 2 MB ceiling that `--max-body`
+  never raised, so a body the server advertised as acceptable was rejected
+  by the wrong check with the wrong status — under the default 4 MB cap too.
+  The limit is now derived (`ServerConfig.recv_buffer_limit()` = headers plus
+  body allowance, floored by `recv_buffer_max`), so raising the body cap
+  raises the buffer with it. A 7.1 MB image upload to a real Django app
+  found it.
+
+- **Concurrent ASGI streams truncated each other, and enough of them wedged
+  the executor.** The chunk credit window is per stream (64 KB) while the
+  chunk channel is one shared `SOCK_DGRAM` pair, so N streams over-commit it;
+  `send_stream_chunk` then dropped the datagram it could not place — a short
+  body under a clean terminator, or, with the end frame dropped, a response
+  that never completed at all. Twelve concurrent WhiteNoise `FileResponse`s
+  under Django were enough. Now bounded globally (`_ASGI_TOTAL_WINDOW` in the
+  shim, where waiting is an `await` rather than a Mojo spin that would hold
+  the GIL against the very loop that has to drain the channel), with the loop
+  keeping owed credit and retrying it when the ack channel is momentarily
+  full. `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and
+  checks every byte.
+
+- **`SIGTERM` never returned while a handler thread sat in a response that
+  never ends.** A `StreamingHttpResponse` served under WSGI is buffered, so
+  an SSE generator never returns and its pool thread never comes back;
+  `stop_and_join` waited for it forever, turning `docker stop` into a
+  `SIGKILL` after the grace period. The join now has the same 5 s budget as
+  the drain (`ThreadSet.join_within`), after which the process exits naming
+  how many threads it left inside the application. Nothing in the process can
+  unwind Python on another thread, so leaving is the only correct answer;
+  waiting was not.
+
 
 - **`smoke-wheel` leaked a server on every run, and could pass against the
   wrong binary.** Nine orphaned `m0serve` processes accumulated over one

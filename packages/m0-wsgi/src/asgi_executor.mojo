@@ -84,16 +84,21 @@ struct AsgiExecutor(Movable):
     """Each executor thread's submit lane, so `stop_and_join` poisons the
     channel that thread is actually parked on. One entry for the unmounted
     server; one per ASGI mount otherwise."""
+    var stragglers: Int
+    """Executors `stop_and_join` gave up waiting for — still inside the
+    application when its budget ran out, left running and unjoined."""
 
     def __init__(out self, count: Int = 1):
         self._set = ThreadSet(count if count > 0 else 1)
         self._started = False
         self._lanes = List[Int]()
+        self.stragglers = 0
 
     def __init__(out self, *, deinit move: Self):
         self._set = move._set^
         self._started = move._started
         self._lanes = move._lanes^
+        self.stragglers = move.stragglers
 
     def start(
         mut self, pool_addr: Int, user: Int, var lanes: List[Int]
@@ -122,10 +127,14 @@ struct AsgiExecutor(Movable):
             self._set.spawn(i, body_addr)
         self._started = True
 
-    def stop_and_join(mut self, mut pool: OffloadPool) raises -> Int:
+    def stop_and_join(mut self, mut pool: OffloadPool, timeout_ns: Int = -1) raises -> Int:
         """One pill per executor, each on ITS OWN lane, then join.
 
-        Returns the count of threads that did not end cleanly.
+        Returns the count of threads that did not end cleanly. With
+        `timeout_ns >= 0` the join is bounded, as `BlockingPool`'s is: an
+        executor whose loop never comes back (a task awaiting a chunk credit
+        that will never arrive, docs/REAL_APP_VALIDATION.md) is counted in
+        `stragglers` and left behind rather than waited for forever.
 
         BLOCKS — detach from the interpreter around it, exactly as with
         `BlockingPool.stop_and_join`: an executor must attach-and-run to
@@ -144,7 +153,10 @@ struct AsgiExecutor(Movable):
         for i in range(len(self._lanes)):
             var lane = self._lanes[i]
             pool.stop(1, lane if lane > 0 else 0)
-        self._set.join_all()
+        if timeout_ns >= 0:
+            self.stragglers = self._set.join_within(timeout_ns)
+        else:
+            self._set.join_all()
         var failed = 0
         for i in range(len(self._lanes)):
             if self._set.status(i) != STATUS_OK:
@@ -364,7 +376,7 @@ def _pump_events(
             var begin_frame = encode_bus_frame(
                 asgi_stream_url(String("b"), slot, lane), NO_EVENT_ID, Span(begin)
             )
-            pool.send_stream_chunk(Span(begin_frame))
+            _ = pool.send_stream_chunk(Span(begin_frame))
             # The head: an ordinary completion whose response is marked
             # streaming — _finish_response pops content-length, keeps the
             # connection, and flips the slot into streaming state once the
@@ -392,13 +404,25 @@ def _pump_events(
             var frame = encode_bus_frame(
                 asgi_stream_url(String("s"), slot, lane), NO_EVENT_ID, Span(chunk)
             )
-            pool.send_stream_chunk(Span(frame))
+            if not pool.send_stream_chunk(Span(frame)):
+                # Unplaceable after the bounded retry: the body this client
+                # receives is now short, and saying so is the only honest
+                # thing left — a truncated 200 is indistinguishable from a
+                # good one on the wire. The shim's global window
+                # (`_ASGI_TOTAL_WINDOW`) exists so this cannot be reached;
+                # if it prints, that budget is wrong for this channel.
+                print(
+                    "asgi-executor: chunk channel full, dropped "
+                    + String(len(frame)) + " bytes for slot " + String(slot)
+                    + " — this response is truncated",
+                    flush=True,
+                )
         elif kind == "stream_end":
             var empty = List[UInt8]()
             var frame = encode_bus_frame(
                 asgi_stream_url(String("e"), slot, lane), NO_EVENT_ID, Span(empty)
             )
-            pool.send_stream_chunk(Span(frame))
+            _ = pool.send_stream_chunk(Span(frame))
         elif kind == "stream_note":
             print(
                 "asgi-executor: stream raised after its head: "
@@ -414,7 +438,7 @@ def _pump_events(
                     asgi_stream_url(String("B"), slot, lane), NO_EVENT_ID,
                     Span(begin),
                 )
-                pool.send_stream_chunk(Span(begin_frame))
+                _ = pool.send_stream_chunk(Span(begin_frame))
                 var held = pending_101[slot].take()
                 handler.after_response(methods[slot], paths[slot], held)
                 pool.put_response(slot, held^, False)
@@ -437,7 +461,7 @@ def _pump_events(
                 asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
                 Span(frame_bytes),
             )
-            pool.send_stream_chunk(Span(frame))
+            _ = pool.send_stream_chunk(Span(frame))
         elif kind == "ws_close":
             # A close frame with the app's code, then the end marker that
             # lets the loop close after it lands.
@@ -450,12 +474,12 @@ def _pump_events(
                 asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
                 Span(close_frame),
             )
-            pool.send_stream_chunk(Span(f1))
+            _ = pool.send_stream_chunk(Span(f1))
             var empty = List[UInt8]()
             var f2 = encode_bus_frame(
                 asgi_stream_url(String("x"), slot, lane), NO_EVENT_ID, Span(empty)
             )
-            pool.send_stream_chunk(Span(f2))
+            _ = pool.send_stream_chunk(Span(f2))
 
 
 def _ws_forbidden() -> HTTPResponse:

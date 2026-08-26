@@ -434,6 +434,22 @@ _exec_stream_tasks = {}
 _ASGI_CREDIT_WINDOW = 64 * 1024
 _ASGI_CHUNK_SPLIT = 32 * 1024
 
+# Per-stream credit bounds ONE stream's pending bytes; this bounds every
+# stream's together. They are not the same limit: the chunk channel is a
+# single SOCK_DGRAM pair shared by every stream on this executor, so N
+# streams put N windows in flight against one finite buffer, and past it
+# `send_stream_chunk` cannot place the datagram -- a dropped chunk, which is
+# a short body under a clean terminator. Twelve concurrent WhiteNoise static
+# files under a real Django project were enough (docs/REAL_APP_VALIDATION.md,
+# 2026-08-26). Kept well under the 256 KB socket buffer because the kernel
+# charges per-datagram overhead on top of payload, and because the drain is
+# per loop pass: this caps how far ahead of the wire the executor may run,
+# not how much it may send.
+_ASGI_TOTAL_WINDOW = 128 * 1024
+_exec_global_credit = [_ASGI_TOTAL_WINDOW]
+_exec_global_evt = None
+_exec_inflight = {}
+
 # Tags on the submit channel beyond the plain 8-byte job datagram.
 _TAG_DISCONNECT = 1
 _TAG_WS_MESSAGE = 2
@@ -599,6 +615,14 @@ def _exec_on_ws_message(slot, opcode, payload):
 
 
 def _exec_cleanup_slot(slot):
+    # Whatever this slot still had in flight is returned to the global
+    # window: its acks are no longer coming, and a budget that only ever
+    # shrinks stalls every stream after it.
+    stranded = _exec_inflight.pop(slot, 0)
+    if stranded:
+        _exec_global_credit[0] += stranded
+        if _exec_global_evt is not None:
+            _exec_global_evt.set()
     _exec_credits.pop(slot, None)
     _exec_credit_evts.pop(slot, None)
     _exec_disconnects.pop(slot, None)
@@ -614,9 +638,12 @@ def asgi_executor_init(fd, ack_fd):
     # 8 bytes = a little-endian job slot (-1 is the poison pill); 9 bytes
     # = [tag u8][slot i64 LE], today only _TAG_DISCONNECT. Ack datagrams:
     # (slot: i32, bytes: i32) LE -- drained bytes to re-credit.
-    global _exec_queue
+    global _exec_queue, _exec_global_evt
     import asyncio, os
     _exec_queue = asyncio.Queue()
+    # Created here rather than at import: an asyncio.Event binds to the
+    # running loop, and this is the first point where that loop exists.
+    _exec_global_evt = asyncio.Event()
 
     def _on_submit():
         while True:
@@ -669,6 +696,18 @@ def asgi_executor_init(fd, ack_fd):
                 evt = _exec_credit_evts.get(slot)
                 if evt is not None:
                     evt.set()
+            # The global window is refunded whatever the slot's own state:
+            # bytes that left the channel are bytes the channel has room for
+            # again, and a slot torn down between spend and ack must not
+            # strand its share (that would ratchet the budget to zero and
+            # stall every later stream).
+            spent = _exec_inflight.get(slot, 0)
+            refund = n if n < spent else spent
+            if refund:
+                _exec_inflight[slot] = spent - refund
+                _exec_global_credit[0] += refund
+                if _exec_global_evt is not None:
+                    _exec_global_evt.set()
 
     _loop.add_reader(fd, _on_submit)
     if ack_fd >= 0:
@@ -761,7 +800,13 @@ async def _serve_one_exec(slot, scope, body):
 
     async def _emit(data):
         # Split under the bus frame cap, and never outrun the loop: each
-        # piece waits for the drain acks to leave room in the window.
+        # piece waits for the drain acks to leave room in BOTH windows --
+        # this stream's, and every stream's together. The global one is what
+        # keeps N concurrent streams from over-committing the one chunk
+        # channel they share; see _ASGI_TOTAL_WINDOW. Waiting here is an
+        # await, so the loop's GIL and this executor's other tasks both keep
+        # running -- which is why the wait belongs here and not in the Mojo
+        # send.
         view = memoryview(data)
         for start in range(0, len(view), _ASGI_CHUNK_SPLIT):
             piece = bytes(view[start:start + _ASGI_CHUNK_SPLIT])
@@ -771,7 +816,14 @@ async def _serve_one_exec(slot, scope, body):
                     raise asyncio.CancelledError()
                 evt.clear()
                 await evt.wait()
+            while _exec_global_credit[0] < len(piece):
+                if slot in _exec_disconnected:
+                    raise asyncio.CancelledError()
+                _exec_global_evt.clear()
+                await _exec_global_evt.wait()
             _exec_credits[slot] -= len(piece)
+            _exec_global_credit[0] -= len(piece)
+            _exec_inflight[slot] = _exec_inflight.get(slot, 0) + len(piece)
             _exec_queue.put_nowait(('stream_chunk', slot, piece))
 
     async def send(message):

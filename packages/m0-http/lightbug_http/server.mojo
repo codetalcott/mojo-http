@@ -505,7 +505,7 @@ def handle_connection[
             var prev_len = len(provision.recv_buffer)
             provision.recv_buffer.extend(buffer^)
 
-            if len(provision.recv_buffer) > config.recv_buffer_max:
+            if len(provision.recv_buffer) > config.recv_buffer_limit():
                 _send_error_response(conn, BadRequest())
                 provision.state = ConnectionState.closed()
                 break
@@ -651,7 +651,7 @@ def handle_connection[
                 body_st.bytes_read += Int(bytes_read)
                 provision.body_state = body_st
 
-            if len(provision.recv_buffer) > config.recv_buffer_max:
+            if len(provision.recv_buffer) > config.recv_buffer_limit():
                 _send_error_response(conn, BadRequest())
                 provision.state = ConnectionState.closed()
                 break

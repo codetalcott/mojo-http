@@ -172,11 +172,19 @@ Mojo 1.0 interop imposes and that the code depends on:
     names (leading 0x01 byte), and three rules there are load-bearing: a
     stream's **begin frame goes out before its head completion** (one
     FIFO channel is what makes a recycled slot safe -- never reorder
-    them); chunks are **credit-gated** (64 KB window, acked by the loop's
-    drains -- never emit without credit, and never switch the chunk or
-    ack sends to a drop-on-EAGAIN policy); and comment heartbeats stay
-    suppressed on ASGI streams (a chunk-split SSE event with a comment
-    inside is corrupt). WebSocket scopes use the same seam — the held
+    them); chunks are **credit-gated twice** -- 64 KB per stream AND
+    `_ASGI_TOTAL_WINDOW` across every stream on the executor, because the
+    chunk channel is ONE shared socket pair and N per-stream windows
+    over-commit it (12 concurrent Django `FileResponse`s were enough:
+    dropped datagrams, short bodies under clean terminators, a wedged
+    executor). Both waits live in the shim, where waiting is an `await`;
+    **never wait on the Mojo side** -- the executor is attached there and
+    would hold the GIL against the loop that has to drain the channel.
+    The loop's `ack_stream` may not block for the same reason, so it
+    reports failure and the loop retries the owed credit
+    (`OffloadLoopState.ack_owed`) -- a lost ack is a window that never
+    refills. And comment heartbeats stay suppressed on ASGI streams (a
+    chunk-split SSE event with a comment inside is corrupt). WebSocket scopes use the same seam — the held
     101 is only released behind its begin frame, outbound frames ride
     the chunk channel, inbound ones are tagged submit-channel datagrams
     — and a handshake the app never answers must resolve as a 403, never
@@ -209,6 +217,15 @@ Mojo 1.0 interop imposes and that the code depends on:
       the completion releases it.
     - **Refused with `--realtime`.** The streaming hooks run on the loop's
       handler; `func` would run against a pool thread's own registries.
+    - **The shutdown join is bounded, and leaving is correct.** A response
+      that never ends -- a `StreamingHttpResponse` served under WSGI, which
+      buffers it -- holds its pool thread for the life of the process, and
+      `pthread_join` has no timeout. `stop_and_join(pool, JOIN_TIMEOUT_NS)`
+      waits the same 5 s the drain gets (`ThreadSet.join_within` polls each
+      thread's status slot, which a body writes last), then the process
+      `_exit`s naming what it abandoned. Nothing here can unwind Python on
+      another thread, so waiting was a SIGTERM that did nothing until
+      `docker stop` sent SIGKILL.
     - Not refused on a GIL-enabled interpreter, unlike `--threads`: a waiting
       view releases the GIL, so the isolation is real there. That is the
       difference, and it is why the two refusals differ.
@@ -492,6 +509,19 @@ Properties of the design, not defects to fix in passing:
   installed and the default signal behaviour stands, because a handler over a
   dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
   happened and `test_lifecycle.mojo` asserts it.
+- **An application's `Set-Cookie` goes to the wire verbatim.** A `Cookie`
+  is what the server builds for itself; a line a WSGI/ASGI application
+  returned IS the header, and `ResponseCookieJar.add_raw` transmits it
+  unparsed. Round-tripping it through `Cookie.from_set_header` +
+  `build_header_value` silently dropped `expires` (the `Expiration` stub
+  parses nothing), `SameSite` (lowercase-only match), everything after the
+  first `=` in a value, and any unmodelled attribute — on every Django
+  session and CSRF cookie of every app. Do not "normalise" that path.
+- **A body the server accepts must fit its receive buffer.** The
+  per-connection cap is `ServerConfig.recv_buffer_limit()` — headers plus
+  body allowance, floored by `recv_buffer_max` — never the bare field,
+  which was a second, lower ceiling that `--max-body` did not raise and
+  that refused oversized bodies as `400` where the body cap sends `413`.
 - Configuration is env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`,
   `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_THREADS` (mutually
   exclusive with `M0_WORKERS>1`; free-threaded CPython only),

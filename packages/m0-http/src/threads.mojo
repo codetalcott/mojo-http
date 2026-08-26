@@ -24,6 +24,7 @@ set is created once at startup and its blocks must outlive every thread.
 """
 
 from std.ffi import c_int, external_call, get_errno
+from std.time import perf_counter_ns, sleep
 
 from lightbug_http.c.pipe import create_shutdown_pipe, ShutdownHandle
 
@@ -136,6 +137,37 @@ struct ThreadSet(Movable):
             var rc = external_call["pthread_join", c_int, Int, Int](tid, 0)
             if rc != c_int(0):
                 raise Error("pthread_join failed for thread ", i, ": ", Int(rc))
+
+    def join_within(mut self, timeout_ns: Int) raises -> Int:
+        """Join every thread that ends within `timeout_ns`; return how many did not.
+
+        `pthread_join` has no timeout, so the wait is on each thread's status
+        slot instead. A body writes `BLK_STATUS` as its very last act — after
+        releasing its interpreter state, immediately before returning — so a
+        slot still at `STATUS_NEVER_RAN` means the thread is still inside its
+        body, and one that has changed belongs to a thread that is exiting and
+        joins promptly. Stragglers are left running and unjoined: the caller
+        is leaving the process without them, which is the only thing that can
+        be done about a thread blocked inside application code. Nothing in
+        this process can unwind Python on another thread, and a join that
+        waits for it is a SIGTERM that does nothing until `docker stop` gives
+        up and sends SIGKILL — which is what it did.
+        """
+        var deadline = perf_counter_ns() + timeout_ns
+        var stragglers = 0
+        for i in range(self.count):
+            var tid = _slot(self._tids + i * 8)[]
+            if tid == 0:
+                continue
+            while self.status(i) == STATUS_NEVER_RAN and perf_counter_ns() < deadline:
+                sleep(0.02)
+            if self.status(i) == STATUS_NEVER_RAN:
+                stragglers += 1
+                continue
+            var rc = external_call["pthread_join", c_int, Int, Int](tid, 0)
+            if rc != c_int(0):
+                raise Error("pthread_join failed for thread ", i, ": ", Int(rc))
+        return stragglers
 
     def status(self, i: Int) -> Int:
         return self.block(i).get(BLK_STATUS)

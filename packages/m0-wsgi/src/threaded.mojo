@@ -71,7 +71,7 @@ from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig
 
 from .asgi_executor import AsgiExecutor
-from .blocking_pool import BlockingPool
+from .blocking_pool import BlockingPool, JOIN_TIMEOUT_NS
 from .cli import ServeOptions, wsgi_lanes
 from .thread_handler import ThreadContext, ThreadHandler
 
@@ -449,10 +449,27 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         ref cpy = Python().cpython()
         var join_ts = cpy.PyEval_SaveThread()
         var failed = 0
+        var stuck = 0
         if run_executor:
-            failed += exec_thread.stop_and_join(pool)
+            failed += exec_thread.stop_and_join(pool, JOIN_TIMEOUT_NS)
+            stuck += exec_thread.stragglers
         if pool_threads.count > 0:
-            failed += pool_threads.stop_and_join(pool)
+            failed += pool_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
+            stuck += pool_threads.stragglers
+        if stuck > 0:
+            # Same reasoning as `_serve_offloaded` in m0serve.mojo: a thread
+            # still inside the application past the budget never returns,
+            # and the process leaves without it. From a serving thread that
+            # ends every loop at once -- acceptable, because by now every
+            # loop's own 5 s drain has long elapsed.
+            print(
+                "thread[" + String(ctx.index) + "] " + String(stuck)
+                + " handler thread(s) still inside the application "
+                + String(JOIN_TIMEOUT_NS // 1_000_000_000)
+                + " s after the drain; exiting without them",
+                flush=True,
+            )
+            process_exit(0)
         cpy.PyEval_RestoreThread(join_ts)
         if failed > 0:
             print(

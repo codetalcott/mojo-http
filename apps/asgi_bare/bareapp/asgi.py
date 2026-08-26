@@ -130,11 +130,16 @@ async def application(scope, receive, send):
         # chunk split, backpressure, byte-exactness, and the end-close.
         # Deterministic content so the smoke can hash it.
         size = 1024 * 1024
+        piece_size = 64 * 1024
         for pair in scope["query_string"].decode("latin-1").split("&"):
             if pair.startswith("size="):
                 size = int(pair[5:] or 0)
+            elif pair.startswith("piece="):
+                # Django's FileResponse streams 4 KB pieces; many small
+                # datagrams is the shape that overflowed the chunk channel.
+                piece_size = int(pair[6:] or 0)
         await _send_start(send, 200, [(b"content-type", b"application/octet-stream")])
-        block = bytes(range(256)) * 256  # 64 KB
+        block = (bytes(range(256)) * 256)[:piece_size]
         sent_total = 0
         while sent_total < size:
             piece = block[: min(len(block), size - sent_total)]
