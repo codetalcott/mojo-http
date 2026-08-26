@@ -9,6 +9,20 @@ versions may break the API**.
 
 ### Documentation
 
+- **Hold on a pool thread** (ROADMAP, under *Next*). The real-application
+  pass produced one finding about the shape of the server rather than a
+  defect in it: `--realtime` refuses `--blocking-threads`, so the cheapest
+  way to hold a stream (M0-Hold: +2 MB per 200 held, no Python state, no
+  database connection) costs the pool that cures the hostage pathology —
+  measured on textshelf as a 1 543 ms fast-path p50 under `--realtime`
+  against 0.3 ms with the pool, with eight slow views in flight. The entry
+  records the numbers, the mechanism the executor already uses to solve the
+  identical problem (a reserved begin frame the loop's handler turns into a
+  subscription), a staged design for SSE holds then sockets, the narrower
+  `--mount` refusal that follows from it, and what must be shown before it
+  is built. Verdict recorded with it: the larger of the two is the
+  difference between the realtime claim being demonstrable and deployable.
+
 - **Three real Django projects, served — the record**
   ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). The plan that
   file used to hold has been executed: `transcripts` (plain WSGI, `src/`
