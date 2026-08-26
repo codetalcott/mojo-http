@@ -49,17 +49,21 @@ struct SSERegistry:
         self.last_event_ids[slot] = 0
         self.pending_bufs[slot] = List[UInt8]()
 
-    def notify(mut self, url: String, event_id: Int, event_type: String, data: String):
+    def notify(mut self, url: String, event_id: Int, event_type: String, data: String) -> Int:
         """Push an SSE event to all slots subscribed to the given URL.
 
         Frames the event in this module's wire format. Producers with their own
         framing rules should use `notify_frame` instead.
 
+        Returns the number of slots the event was queued for — see
+        `notify_frame` for why a caller should look at it, and for the
+        one-id-many-events trap that motivated it (#120).
+
         Drops events if the pending buffer exceeds MAX_PENDING_BYTES.
         """
-        self.notify_frame(url, event_id, format_sse_event_bytes(event_id, event_type, data))
+        return self.notify_frame(url, event_id, format_sse_event_bytes(event_id, event_type, data))
 
-    def notify_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+    def notify_frame(mut self, url: String, event_id: Int, frame: List[UInt8]) -> Int:
         """Queue a pre-formatted SSE frame verbatim for every slot on `url`.
 
         Unlike `notify`, the caller owns the wire format: `frame` must already
@@ -73,9 +77,22 @@ struct SSERegistry:
         and never advance the slot's last-seen id, which keeps an unnumbered
         heartbeat or comment from masking a real event.
 
+        **Reusing an id across successive calls delivers only the first**: the
+        first call advances every reached slot's last-seen id to `event_id`,
+        so the second fails `event_id > last_event_ids[slot]` and is dropped —
+        silently, for the life of the app, which is how #120 was lived before
+        it was found. Derived or always-safe-to-redeliver events belong on
+        `NO_EVENT_ID`.
+
         Backpressure applies either way — a frame that would push a slot past
         MAX_PENDING_BYTES is dropped for that slot alone.
+
+        Returns the number of slots the frame was queued for. A caller
+        broadcasting to a URL it knows has subscribers and getting 0 back has
+        a local, immediate signal that suppression or backpressure ate the
+        frame — the two behaviours that used to be invisible at the call site.
         """
+        var queued = 0
         for slot in range(self._capacity):
             if self.is_streaming[slot] and self.filter_urls[slot] == url:
                 var deliver = event_id == NO_EVENT_ID or event_id > self.last_event_ids[slot]
@@ -84,25 +101,32 @@ struct SSERegistry:
                         self.pending_bufs[slot].extend(Span(frame))
                         if event_id != NO_EVENT_ID:
                             self.last_event_ids[slot] = event_id
+                        queued += 1
+        return queued
 
-    def queue_frame(mut self, slot: Int, event_id: Int, frame: List[UInt8]):
+    def queue_frame(mut self, slot: Int, event_id: Int, frame: List[UInt8]) -> Bool:
         """Queue a pre-formatted frame for ONE slot — the replay path.
 
         `notify_frame` for a single subscriber: the same delivery filter and
         backpressure, scoped to one slot. This is what catches a reconnecting
         client up from its `Last-Event-ID` without re-broadcasting history to
         everyone else. Bounds-safe; a slot that is not streaming gets nothing.
+
+        Returns whether the frame was queued — False means an invalid or
+        non-streaming slot, id suppression, or backpressure (#120).
         """
         if slot < 0 or slot >= self._capacity:
-            return
+            return False
         if not self.is_streaming[slot]:
-            return
+            return False
         var deliver = event_id == NO_EVENT_ID or event_id > self.last_event_ids[slot]
         if deliver:
             if len(self.pending_bufs[slot]) + len(frame) <= MAX_PENDING_BYTES:
                 self.pending_bufs[slot].extend(Span(frame))
                 if event_id != NO_EVENT_ID:
                     self.last_event_ids[slot] = event_id
+                return True
+        return False
 
     def has_subscribers(self, url: String) -> Bool:
         """Whether any slot is streaming for `url`.
