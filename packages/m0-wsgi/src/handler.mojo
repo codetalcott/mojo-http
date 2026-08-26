@@ -135,6 +135,17 @@ struct WSGIHandler(ThreadHandler):
     `--realtime --blocking-threads` that reported zero subscribers while
     events were being delivered."""
 
+    var mounted: Bool
+    """Whether the SERVER hosts more than one application.
+
+    From `opts`, never from `len(self.apps)`: a pool thread builds only its
+    own mount (`only_mount`), so counting applications here would tell that
+    handler it was unmounted. A WebSocket hold is refused when this is true
+    — an inbound frame comes back as a synthesised POST into ONE urlconf
+    (`ws_message` serves `apps[0]`), and which mount should receive it has
+    no defensible answer. SSE holds have no inbound half and work on every
+    mount."""
+
     var hold_notify_fd: Int
     """Set on a `--blocking-threads` handler under `--realtime`: this loop's
     bus write end (`ThreadContext.hold_fd`). A hold taken on a pool thread
@@ -172,6 +183,7 @@ struct WSGIHandler(ThreadHandler):
         self.health_path = health_path^
         self.thread_index = -1
         self.asgi_notify_fd = -1
+        self.mounted = False
         self.answers_local = True
         self.hold_notify_fd = -1
         self.lane_notify_fds = List[Int]()
@@ -266,6 +278,7 @@ struct WSGIHandler(ThreadHandler):
             asgi_streaming=opts.asgi_streaming,
             root_prefix=opts.mount_prefixes[head],
         )
+        handler.mounted = len(opts.mount_prefixes) > 1
         if only_mount >= 0:
             return handler^
         for i in range(1, len(opts.mount_prefixes)):
@@ -453,16 +466,18 @@ struct WSGIHandler(ThreadHandler):
         if hold.mode == HOLD_WEBSOCKET:
             if slot < 0:
                 return _conflict()
-            if self.hold_notify_fd >= 0:
-                # Stage 2. The handshake could be performed here — the
-                # request is in hand — but the inbound half cannot: the
-                # loop delivers `ws_message` by running the view on ITS
-                # thread, and under a pool it must reach a pool thread as a
-                # tagged job instead, which `next_job` does not yet decode.
-                # Refused legibly rather than half-done: an upgrade that
-                # never receives a message is worse than a 409 the client
-                # can read (docs/ROADMAP.md, "Hold on a pool thread").
-                return _ws_hold_on_pool()
+            if self.hold_notify_fd >= 0 or self.mounted:
+                # The handshake could be performed here — the request is in
+                # hand — but the inbound half cannot, for two different
+                # reasons. Under a pool, `ws_message` runs the view on the
+                # LOOP thread, and reaching a pool thread instead needs a
+                # tagged job `next_job` does not yet decode. Under mounts it
+                # serves `apps[0]`, so a frame would land in whichever
+                # urlconf happens to be first. Refused legibly rather than
+                # half-done: an upgrade that never receives a message is
+                # worse than a 409 the client can read (docs/ROADMAP.md,
+                # "Hold on a pool thread").
+                return _ws_hold_unavailable(self.mounted)
             # The application approved the upgrade; performing it is ours.
             # The handshake reads the client's key off the ORIGINAL request
             # — a buffered, re-encoded WSGI response has no way to compute
@@ -765,11 +780,14 @@ def _hold_unavailable() -> HTTPResponse:
     )
 
 
-def _ws_hold_on_pool() -> HTTPResponse:
+def _ws_hold_unavailable(mounted: Bool) -> HTTPResponse:
+    """The socket half of a hold, refused — naming which reason applies."""
+    var why = String("--mount") if mounted else String("--blocking-threads")
     return HTTPResponse(
         body_bytes=String(
-            '{"error":"M0-Hold: websocket is not available with --blocking-threads yet;'
-            ' serve this application with --realtime and no pool for WebSocket holds"}'
+            '{"error":"M0-Hold: websocket is not available with ' + why
+            + ' yet; serve the WebSocket application on its own.'
+            ' SSE holds work here."}'
         ).as_bytes(),
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
         status_code=409,

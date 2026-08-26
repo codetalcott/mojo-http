@@ -423,6 +423,32 @@ struct OffloadPool(Movable):
             return self.lane_ack_read[lane]
         return self.stream_ack_read
 
+    def slot_is_executor(self, slot: Int) -> Bool:
+        """Whether an asyncio executor produced this slot's response.
+
+        The loop treats an executor's stream differently from a held one —
+        chunk framing, drain acks, and the suppressed comment heartbeat all
+        belong to the executor and none of them to an `M0-Hold`. Asking
+        globally (`stream_active()`) was the same question only while the
+        two could not share a process; under `--realtime --mount` they do,
+        and a held stream that got chunk-framed, acked to an executor that
+        never issued the credit, and denied its heartbeat would be three
+        wrong answers at once.
+
+        The lane is the answer and it is already recorded: `submit` stamps
+        `slot_lane[slot]`, and a lane has a drain-ack pair exactly when an
+        executor serves it. Unmounted, the executor is the only producer
+        there is."""
+        if not self.stream_active():
+            return False
+        if len(self.lane_prefixes) == 0:
+            return True
+        var lane = (
+            self.slot_lane[slot]
+            if slot >= 0 and slot < len(self.slot_lane) else 0
+        )
+        return lane < len(self.lane_ack_write) and self.lane_ack_write[lane] >= 0
+
     def ack_stream(self, slot: Int, bytes_flushed: Int) -> Bool:
         """One drain-ack datagram, loop side: `(slot: i32, bytes: i32)` LE.
 
@@ -754,6 +780,7 @@ struct OffloadLoopState(Movable):
     var inflight: Int
     """Jobs submitted and not yet completed. Bounded by OFFLOAD_MAX_INFLIGHT."""
 
+
     def __init__(out self, addr: Int, capacity: Int):
         self.addr = addr
         self.inflight = 0
@@ -782,6 +809,12 @@ struct OffloadLoopState(Movable):
         self.ack_owed = move.ack_owed^
         self.ack_owed_count = move.ack_owed_count
         self.inflight = move.inflight
+
+    def slot_is_executor(self, slot: Int) -> Bool:
+        """`OffloadPool.slot_is_executor`, inert when the pool is disabled."""
+        if not self.enabled():
+            return False
+        return self.pool()[].slot_is_executor(slot)
 
     def enabled(self) -> Bool:
         return self.addr != 0

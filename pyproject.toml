@@ -1075,7 +1075,7 @@ trap cleanup EXIT
 
 fail() {
   echo "$1"
-  for log in rt.log rt2.log rt5.log; do
+  for log in rt.log rt2.log rt5.log rt6.log; do
     if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
   done
   exit 1
@@ -1377,8 +1377,61 @@ wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --realtime --blocking-threads: exit $rc, want 0"
 echo "phase 5: a hold taken on a pool thread, delivered in ${took}ms behind two slow views"
 
-trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log' EXIT
-rm -f rt.log rt2.log rt3.log rt4.log rt5.log
+# Phase 6: holds and an ASGI mount in ONE process. `--realtime` with
+# `--mount` was refused outright; what the refusal was really about is the
+# WebSocket half (an inbound frame has one urlconf to go to and no way to
+# choose it), and SSE holds have no inbound half at all. So the pair is
+# accepted, WSGI mounts take holds, ASGI mounts stream through their own
+# executor, and the loop tells the two apart per SLOT by lane -- which is
+# what this phase exists to prove, because getting it wrong is silent:
+# a held stream drained as if it were an executor's would be chunk-framed,
+# acked to an executor that never issued the credit, and denied the comment
+# heartbeat that keeps it alive through a proxy.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
+  --mount /=djangoproj.wsgi --mount /live=liveasgi \
+  --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
+  --blocking-threads 4 > rt6.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the mounted realtime server never became healthy'
+grep -q 'asgi-loop@/live' rt6.log || fail 'the ASGI mount did not get its own executor beside --realtime'
+grep -q ' realtime' rt6.log || fail 'the banner lost realtime under --mount'
+
+# The ASGI mount streams for real: five events 100ms apart must not all
+# arrive together.
+curl -sN --max-time 8 http://localhost:8080/live/stream > "$out/m_asgi" &
+asgi_pid=$!
+# ...while a hold on the WSGI mount is subscribed and fed by a publish.
+curl -sN --max-time 8 -D "$out/m_hdr" 'http://localhost:8080/events?channel=mounted&token=letmein' > "$out/m_sse" &
+sse_pid=$!
+sleep 1
+subs=$(curl -s --max-time 5 http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "1" ] || fail "the hold on the WSGI mount did not register beside an ASGI mount (subscribers=$subs)"
+resp=$(curl -s --max-time 5 -X POST -d channel=mounted -d msg=hello-mounted http://localhost:8080/publish)
+echo "$resp" | grep -q '"workers": 1' || fail "publish from the mounted app did not reach the bus: $resp"
+wait $asgi_pid $sse_pid 2>/dev/null
+grep -q '^data: hello-mounted' "$out/m_sse" || { cat "$out/m_sse"; fail 'the publish never reached the held stream on the WSGI mount'; }
+[ "$(grep -c '^data: ' "$out/m_asgi")" = "5" ] || { cat "$out/m_asgi"; fail 'the ASGI mount did not deliver its five events'; }
+
+# The two are told apart per slot, and this is where that shows: a held
+# stream keeps its comment heartbeat (an executor's is suppressed, because
+# a comment landing between two chunks of one event corrupts it), and it is
+# NOT chunk-framed.
+beats=$(grep -c '^: heartbeat' "$out/m_sse")
+[ "$beats" -ge 2 ] || { cat "$out/m_sse"; fail "the held stream saw $beats heartbeats beside an ASGI mount; it is being drained as if it were the executor's"; }
+grep -iq '^transfer-encoding: chunked' "$out/m_hdr" && fail 'the held stream was chunk-framed: the loop mistook it for an executor stream'
+
+# A WebSocket hold under mounts is the half that stays refused, and says so.
+code=$(curl -s -o "$out/m_ws" -w '%{http_code}' --max-time 5 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=mounted&token=letmein')
+[ "$code" = "409" ] || fail "a WebSocket hold under --mount answered $code, want a legible 409"
+grep -q 'not available with --mount' "$out/m_ws" || fail 'the 409 does not name the reason'
+
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --realtime --mount: exit $rc, want 0"
+echo "phase 6: a held stream and an executor stream on one loop, $beats heartbeats on the held one"
+
+trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log rt6.log' EXIT
+rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log
 echo "smoke-django-realtime OK"
 """
 
@@ -1584,6 +1637,11 @@ equiv 'prefork'                     $SPEC --workers 2
 # was the first refusal row before that, and equiv() is agnostic to which
 # side of the line a configuration is on -- both must agree either way.
 equiv 'pool + realtime'             $SPEC --blocking-threads 4 --realtime
+# Mounted realtime: WSGI mounts take holds, ASGI mounts keep their executor.
+# Serves since 2026-08-26; the refusal it replaced was the whole pair.
+equiv 'mounted realtime'            --mount /=bareapp.wsgi --app-dir apps/wsgi_bare --realtime
+# What still refuses: --realtime with nothing that could take a hold.
+equiv 'mounted realtime, no wsgi'   --mount /=bareapp.asgi --app-dir apps/asgi_bare --realtime
 
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
@@ -2610,9 +2668,15 @@ else
 fi
 
 # --- phase 4: the refusals --------------------------------------------
-out=$("$srv" --mount /a=shop.wsgi --realtime $D --port 8101 2>&1); rc=$?
-[ $rc -ne 0 ] || fail '--mount with --realtime was accepted'
-echo "$out" | grep -q 'cannot be combined with --mount' \
+# `--mount` with `--realtime` is accepted since 2026-08-26: the WSGI mounts
+# take holds, the ASGI ones keep their executor, and the loop tells the two
+# apart per slot by lane. What is left of the refusal is the socket half (a
+# 409 from the handler, asserted in smoke-django-realtime phase 6) and this:
+# a mounted realtime server with NO WSGI mount is asking for a hold nothing
+# could ever take.
+out=$("$srv" --mount /a=live.asgi --realtime $D --port 8101 2>&1); rc=$?
+[ $rc -ne 0 ] || fail '--realtime with only ASGI mounts was accepted'
+echo "$out" | grep -q 'requires a WSGI application' \
   || fail "the --realtime refusal did not explain itself: $out"
 
 out=$("$srv" --mount /a=shop.wsgi shop.wsgi $D --port 8101 2>&1); rc=$?

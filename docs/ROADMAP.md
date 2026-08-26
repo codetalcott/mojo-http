@@ -758,26 +758,38 @@ thread as a tagged submit datagram the way the executor receives them
 SSE holds first, which is what textshelf's four pub/sub endpoints need and
 what the numbers above are about; sockets second.
 
-**2. `--realtime` with `--mount` — and it should come before the socket
-half.** Re-measuring `textshelf` after stage 1 settled the order
+**2. `--realtime` with `--mount` — shipped 2026-08-26, and it came before
+the socket half.** Re-measuring `textshelf` after stage 1 settled the order
 ([REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md), *Revisited*). Holds and
 an ASGI mount in one process is what a mixed application needs, because
 stream *shape* decides where an endpoint belongs: its four pub/sub
 endpoints convert to holds, while `ai/streaming.py` is a request-scoped
 generator whose view is the producer and which no hold can carry. That
 application opens no WebSocket against its own server, so the socket half
-buys it nothing. Refused today because an inbound WebSocket
-message "has no defensible destination" among several urlconfs. For an SSE
-hold there is nothing inbound to deliver, so the refusal is broader than its
-reason — and the reason has weakened since it was written:
-`OffloadPool.slot_lane` now records which mount gated each slot, and the
-mount whose view approved an upgrade is precisely where its messages
-belong. Once (1) lands this is a narrowing: allow the pair, and refuse at
-the moment a *socket* hold is taken under mounts (a 409 and a log line, the
-`gate_streaming_response` shape) until inbound routing by lane exists. This
-is also what makes the hybrid's proposition whole for a mixed application:
-holds for its pub/sub streams, the executor for its generator streams, the
-pool for everything else, one process.
+buys it nothing. The refusal was broader than its reason — an inbound
+WebSocket message has no defensible destination among several urlconfs,
+and an SSE hold has nothing inbound to deliver — so it narrowed to the
+socket half: a `websocket` hold under `--mount` answers 409, and
+`--realtime` is refused only where no mount could take a hold at all.
+
+**What it took was not the ordering work this entry expected.** The loop
+already had the answer in `OffloadPool.slot_lane`, which `submit` stamps
+with the mount a job went to, and a lane has a drain-ack pair exactly when
+an executor serves it. So `slot_is_executor(slot)` replaced
+`stream_active()` at the four places the loop decided what a streaming slot
+was, and "is this an ASGI stream?" stopped being a question about the
+server and became one about the slot. Getting it wrong is silent, which is
+what `smoke-django-realtime` phase 6 exists to catch: a held stream drained
+as an executor's is chunk-framed with a `Transfer-Encoding` it never asked
+for, acked to an executor that never issued the credit, and denied the
+comment heartbeat that keeps it alive through an idle proxy — while still
+delivering, so nothing looks wrong until a proxy times the stream out. The
+phase holds one stream of each kind on one loop and asserts the heartbeat
+and the framing on the held one.
+
+That makes the hybrid's proposition whole for a mixed application: holds
+for its pub/sub streams, the executor for its generator streams, the pool
+for everything else, one process.
 
 **What has to be established before (1) is built**, each a place the
 design could be wrong:
