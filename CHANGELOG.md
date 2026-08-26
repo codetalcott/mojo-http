@@ -7,6 +7,46 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The PyPI project page told aarch64 users their wheel did not exist.**
+  0.11.0 shipped a `manylinux_2_35_aarch64` wheel and its release notes
+  claimed "the platform matrix on the README is the platform matrix on the
+  index" — which was true of the repository's README and false of
+  `packaging/m0serve/README.md`, the `readme` named by the wheel's
+  pyproject.toml and therefore the page PyPI renders. That one still read
+  `Linux aarch64 | buildable, not yet shipped` for the whole of the
+  release. Two READMEs, one of them published, and the ratchet was pointed
+  at the other.
+
+### Changed
+
+- **`check_wheel_platform_claims` now checks what its docstring always
+  said.** It asserted that a wheel gets built at all and that neither README
+  points at 3.13t; it never compared a platform table to anything. It now
+  reads the `plat:` entries out of `release.yml`'s `build-wheels` matrix —
+  the only place a wheel that reaches PyPI is declared — and holds **both**
+  READMEs to them in both directions: a built platform must be marked
+  supported, and a platform marked supported must be built. Either failure
+  is a claim with no artifact behind it, which is the whole premise of this
+  file.
+
+  Recorded while wiring it, because it is the opposite of the guess:
+  `test.yml`'s `paths-ignore` lists `*.md`, and a GitHub path glob's `*`
+  does not cross `/`. A PR touching only the root `README.md` therefore
+  skips CI entirely, while one touching only `packaging/m0serve/README.md`
+  runs the full suite. The published README is the guarded one.
+
+- **The quickstart's version echo is machine-checked.** QUICKSTART.md showed
+  `m0serve 0.10.0` against a 0.11.0 tree. The doc promises every command in
+  it is executed by CI, and that promise is kept for ```bash blocks —
+  but the echo lives in a ```text block, which `run_quickstart.py`
+  displays rather than asserts. That is the right design (the other text
+  block interleaves output from three commands and is not byte-stable), so
+  the check belongs in `check_docs.py`, where prose facts with a machine
+  source live. [docs/RELEASING.md](docs/RELEASING.md) names the fourth bump
+  site; `poe check-docs` fails on all four.
+
 ## [0.11.0] — 2026-08-26
 
 The release that makes three published claims true at once: the quickstart
