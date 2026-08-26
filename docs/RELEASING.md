@@ -14,7 +14,11 @@ The steps, in order:
    in `packages/m0-wsgi/src/cli.mojo` — `smoke-serve` asserts the two agree,
    so CI catches a bump that forgot one. Then run `uv lock` so `uv.lock`'s
    own project version follows (a bare `uv run` later will rewrite it
-   otherwise).
+   otherwise), and update the `m0serve X.Y.Z` echo in
+   [QUICKSTART.md](../QUICKSTART.md) — it is the output of a command the
+   quickstart promises is executed, but it sits in a ```text block, which
+   `run_quickstart.py` displays rather than asserts. `poe check-docs` fails
+   on all four, so none of this is remembered by hand.
 3. **Land those changes on `main`** through an ordinary PR — CI green first,
    like any change.
 4. **Tag and release**, either way:
