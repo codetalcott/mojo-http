@@ -7,6 +7,33 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Changed
+
+- **The mounted-isolation guard had 138x headroom and now has 12x.**
+  `hybrid_isolation.py`'s `ISOLATION_BUDGET_MS` was 400 ms against an
+  observed p99 of 1.4–4.1 ms, so it discriminated "isolated" from "sharing
+  an execution mode" (~2000 ms, the sync view's hold) and nothing in
+  between: a regression that parked the async mount for 300 ms — a
+  hundredfold degradation, plainly visible to a user — passed. It is now
+  50 ms, chosen from 17 recorded CI runs across both runners rather than
+  from the gap to the failure signal, and the docstring carries that
+  evidence and its one limit (every run is the prefork phase; the
+  `--threads` phase is skipped wherever there is no free-threaded
+  interpreter with fasthtml).
+
+  Every run now prints its headroom, pass or fail, because a number
+  drifting from 12x to 2x is the warning that comes before the failure.
+
+- **A total loss of isolation reported a stack trace.** With the pool off
+  (`--blocking-threads 0`) the sync mount's warm-up never returns at all,
+  and the script exited on a urllib `TimeoutError` — the smoke failed, but
+  whoever read the log had to work out why from a traceback. A request that
+  never returns is now reported as what it is, with the two things to check
+  named. The ordinary failure still reports a number: sample timeouts are
+  bounded well above the 2000 ms hold, so a request genuinely queued behind
+  the sync work is measured rather than erroring.
+
+
 ### Fixed
 
 - **The PyPI project page told aarch64 users their wheel did not exist.**
