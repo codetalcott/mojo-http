@@ -67,46 +67,7 @@ versions may break the API**.
 
 ### Fixed
 
-- **The bench prose was answerable to nothing, and it was wrong.**
-  `render_bench_docs` kept the generated *tables* honest; the sentences
-  around them — where the headline claims actually live — were checked by
-  no one. docs/WSGI_PERFORMANCE.md stated the WSGI result as a
-  decomposition, "roughly 1.0x HTTP layer × ~1.35x bridge", and it does not
-  reconcile with the artifact directly beneath it: the measured per-core gap
-  is **1.21x**, and a 1.35x bridge term requires an HTTP layer term of
-  0.89x — this server's HTTP layer *slower* than the comparator's, which
-  the same sentence denies.
 
-  The mistake is structural, not arithmetic. **A two-sided decomposition
-  needs both sides measured**, and there is no Granian-without-Python row to
-  divide by. What the artifact supports: `apps/hello` at 121,020 rps/core,
-  m0serve+WSGI at 83,823 (so *this server's* bridge costs 1.44x), Granian at
-  101,062 (so the net is 0.83x). Granian's own bridge cost is simply
-  unknown here.
-
-  It had already been copied into README.md and docs/BENCHMARKS.md before
-  anyone divided it out. So `check_docs.py` gained **`check_bench_prose`**:
-  nineteen figures across the three documents, each recomputed from the
-  newest artifact and compared *at the precision the sentence claims* —
-  "~1.2x" passes at 1.206 and fails at 1.35, while "1.21x" passes only at
-  1.205–1.214. A doc chooses its own strictness by how precisely it writes.
-  Verified by reinstating the original defect, and by landing a new
-  artifact with moved numbers: ten failures fire, naming every sentence
-  that needs updating.
-
-- **The README quoted a decomposition its own measurements had retired.**
-  It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
-  1.58x bridge" — numbers from before the CPU-normalized re-run, which
-  WSGI_PERFORMANCE.md had already replaced with ~1.0x × 1.35x and explicitly
-  marked as "records of what was measured, not descriptions of the
-  present". The README kept quoting them, in raw rps, against a comparator
-  since found to be running 1.75 cores. Rewritten from the artifact.
-
-- **"There is no chunked encoding" was no longer true.** The server has
-  chunked transfer-encoding and ASGI responses stream through the executor
-  chunk-framed on HTTP/1.1. WSGI responses are still fully buffered, but
-  the reason is PEP 3333 — a WSGI response carries a `Content-Length`,
-  which means knowing the length — not a missing feature.
 
 - **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its
   chain with `else: opts.metrics = True`, so a new flag added to `_is_bool`
@@ -114,6 +75,33 @@ versions may break the API**.
   of doing its job. `--doctor` would have been the first victim. The `else`
   now raises, and `test_cli.mojo` asserts each boolean sets only itself.
 
+### Changed
+
+- **`check_wheel_platform_claims` now checks what its docstring always
+  said.** It asserted that a wheel gets built at all and that neither README
+  points at 3.13t; it never compared a platform table to anything. It now
+  reads the `plat:` entries out of `release.yml`'s `build-wheels` matrix —
+  the only place a wheel that reaches PyPI is declared — and holds **both**
+  READMEs to them in both directions: a built platform must be marked
+  supported, and a platform marked supported must be built. Either failure
+  is a claim with no artifact behind it, which is the whole premise of this
+  file.
+
+  Recorded while wiring it, because it is the opposite of the guess:
+  `test.yml`'s `paths-ignore` lists `*.md`, and a GitHub path glob's `*`
+  does not cross `/`. A PR touching only the root `README.md` therefore
+  skips CI entirely, while one touching only `packaging/m0serve/README.md`
+  runs the full suite. The published README is the guarded one.
+
+- **The quickstart's version echo is machine-checked.** QUICKSTART.md showed
+  `m0serve 0.10.0` against a 0.11.0 tree. The doc promises every command in
+  it is executed by CI, and that promise is kept for ```bash blocks —
+  but the echo lives in a ```text block, which `run_quickstart.py`
+  displays rather than asserts. That is the right design (the other text
+  block interleaves output from three commands and is not byte-stable), so
+  the check belongs in `check_docs.py`, where prose facts with a machine
+  source live. [docs/RELEASING.md](docs/RELEASING.md) names the fourth bump
+  site; `poe check-docs` fails on all four.
 
 ## [0.11.0] — 2026-08-26
 
