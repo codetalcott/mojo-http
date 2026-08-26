@@ -39,7 +39,19 @@ versions may break the API**.
 
 ### Documentation
 
-- **Hold on a pool thread** (ROADMAP, under *Next*). The real-application
+- **`textshelf` re-measured after stage 1**
+  ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md), *Revisited*).
+  With `--realtime` and the pool composing, the recommendation the record
+  pointed at changed, so it was re-measured rather than re-reasoned. Two
+  findings. m0serve's ASGI executor matches uvicorn and daphne to the
+  millisecond on both a sync and an async generator — whatever streams
+  under them streams under it. And the application's own AI streaming
+  endpoints do not stream anywhere, including its production daphne: the
+  producer is a *sync* generator, which Django's ASGI handler consumes
+  before serving. That makes those endpoints free to move, which leaves
+  the `--mount`-with-`--realtime` refusal as the only thing standing
+  between a mixed application and one process — recorded in the ROADMAP
+  as a re-ordering of stage 2, ahead of the WebSocket half. The real-application
   pass produced one finding about the shape of the server rather than a
   defect in it: `--realtime` refuses `--blocking-threads`, so the cheapest
   way to hold a stream (M0-Hold: +2 MB per 200 held, no Python state, no
