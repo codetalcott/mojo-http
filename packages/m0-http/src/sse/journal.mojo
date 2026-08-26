@@ -71,6 +71,48 @@ struct PatchJournal:
 
         return eid
 
+    def append_at(
+        mut self,
+        event_id: Int,
+        url: String,
+        base_etag: String,
+        new_etag: String,
+        patch: List[UInt8],
+        snapshot: List[UInt8],
+    ):
+        """Record an entry at an id the caller already holds.
+
+        The peer half of cross-worker fan-out: `sse_peer_frame` hands the
+        app a frame whose id another worker allocated, and `append()` cannot
+        record it -- it insists on its own counter, which is issue #119, and
+        the reason `deliver_peer` was only implementable on DatastarStream's
+        private journal. Also the local half under a shared counter: ids
+        that must be unique across workers come from a SharedAtomics slot,
+        not from `next_id`.
+
+        Inserted in id order, the way DatastarStream._record does and for
+        the same reason: a frame from another worker can arrive behind one
+        this worker already recorded, and replay advances a slot's last-seen
+        id as it walks -- an out-of-order entry would be skipped, not
+        replayed late. `next_id` advances past the supplied id so a later
+        `append()` cannot re-issue it.
+        """
+        var pos = len(self.event_ids)
+        while pos > 0 and self.event_ids[pos - 1] > event_id:
+            pos -= 1
+        self.urls.insert(pos, url)
+        self.event_ids.insert(pos, event_id)
+        self.base_etags.insert(pos, base_etag)
+        self.new_etags.insert(pos, new_etag)
+        self.patches.insert(pos, patch.copy())
+        self.snapshots.insert(pos, snapshot.copy())
+
+        if event_id >= self.next_id:
+            self.next_id = event_id + 1
+
+        if len(self.urls) > self.max_entries:
+            self._compact_oldest()
+
     def since(self, url: String, last_event_id: Int) -> JournalResult:
         """Get events since last_event_id for a URL.
 
