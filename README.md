@@ -460,10 +460,11 @@ values returns unchanged.
   copied above, m0serve is **behind on raw WSGI throughput and the gap is
   located**: normalized per measured core, 83.8k against 101.1k rps/core on
   a bare callable — about 0.83x. The split says where it goes. `apps/hello`,
-  the same server with no Python in the path, runs at 121.0k rps/core and so
-  meets or exceeds Granian's rate, which puts essentially all of the deficit
-  in the bridge rather than in HTTP parsing or the event loop: roughly
-  **1.0x HTTP layer × 1.35x bridge**.
+  the same server with no Python in the path, runs at 121.0k rps/core —
+  above Granian's end-to-end rate — so m0serve's own bridge costs 1.44x, and
+  essentially all of the deficit is that crossing rather than HTTP parsing
+  or the event loop. How much of Granian's rate its *own* bridge costs is
+  not measurable from this run: there is no Granian-without-Python row.
 
   Per *core*, because the comparator was not running one: Granian's
   `--workers 1` was measured at ~1.75 cores across its runtime's I/O

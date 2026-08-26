@@ -1,9 +1,18 @@
 # Benchmarks
 
-Every number on this page is rendered from a dated, environment-stamped
-JSON artifact in [`bench/results/`](../bench/results/), and CI fails the
-build when a table drifts from the artifact it cites. Nothing here is typed
-by hand.
+Every number in the tables below is rendered from a dated,
+environment-stamped JSON artifact in [`bench/results/`](../bench/results/),
+and the figures quoted in the prose are recomputed from those same
+artifacts and compared at the precision they are written to. Both are
+CI-checked: a hand-edited table, or a sentence whose number has drifted,
+fails the build naming the file.
+
+Three groups of numbers are **not** covered by that, and each says so where
+it appears — the performance/efficiency core split, the cross-session
+variance figure, and the slow-view isolation result. They come from
+measurements taken before the artifact system existed. The last of those is
+the strongest claim on this page, which is exactly why it is flagged rather
+than blended in.
 
 That is the only unusual claim this page makes. The performance claims
 themselves are mixed: **m0serve is not the fastest server in this
@@ -18,7 +27,8 @@ Five caveats, stated before the numbers rather than under them.
 
 - **Within-run ratios are the signal; absolute rows are not.** Identical
   binaries move ~1.5x in absolute rps across sessions on this hardware,
-  from thermal and load state alone. Compare rows inside one table, never a
+  from thermal and load state alone (recorded observation, not an
+  artifact). Compare rows inside one table, never a
   row here against a row in something else you read.
 - **Cores are measured, not configured.** Each table's `cores` column is
   sampled `%cpu` of the pids on the listen socket. The column exists
@@ -27,7 +37,8 @@ Five caveats, stated before the numbers rather than under them.
   raw-rps ratio had been comparing 1.75 cores against one.
 - **The benchmark box has performance and efficiency cores** (Apple M4, 4P
   + 6E). An E-core serves this workload at 18.6k rps against a P-core's
-  81.7k — 4.4x slower. So per-core rows are comparable only where the
+  81.7k — 4.4x slower (measured by pinning a worker to background QoS; not
+  an artifact). So per-core rows are comparable only where the
   server plus the load generator fit in the P-cores: on this box, 1 and 2
   workers. The 4-worker rows measure the scheduler, not the server, and are
   kept because removing them would hide that.
@@ -74,14 +85,28 @@ Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4 (10 cor
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
 
-Read down the `rps/core` column at one worker. The HTTP layer with no
-Python at all (`apps/hello`) meets or exceeds Granian's per-core rate; put
-the same bare WSGI application behind it and m0serve runs at **~0.83x
-Granian per core**. So the decomposition is roughly **1.0x HTTP layer ×
-1.35x bridge**, and the whole of the deficit is the bridge — the
-per-request crossing into CPython, not the parsing or the event loop.
+Read down the `rps/core` column at one worker. Three numbers, and the
+arithmetic between them is the finding:
 
-Quoting the 121k hello row against Granian's 101k would be comparing a
+- the HTTP layer with no Python at all (`apps/hello`) runs at **121.0k
+  rps/core** — above Granian's end-to-end **101.1k**
+- put the same bare WSGI application behind it and m0serve runs at **83.8k
+  rps/core**, so **its own bridge costs 1.44x**
+- net, m0serve is **0.83x Granian per core**; Granian is 1.21x ahead
+
+So the deficit is the bridge — the per-request crossing into CPython — and
+not the parsing or the event loop, which is the whole reason to split the
+measurement rather than report one number.
+
+**What this table cannot tell you is how much Granian's own bridge costs**,
+because there is no Granian-without-Python row to divide by. A cleaner
+decomposition — "1.0x HTTP layer × 1.35x bridge" — appeared in the working
+record and does not reconcile with this artifact: the measured gap is
+1.21x, and for a 1.35x bridge term to hold, the HTTP layer would have to be
+0.89x, which contradicts the row above it. Corrected rather than repeated;
+the per-side split needs a measurement nobody has taken yet.
+
+Quoting the 121.0k hello row against Granian's 101.1k would be comparing a
 server that runs no Python to one that does. It is on this page because it
 locates the cost, not because it is a win.
 

@@ -67,6 +67,33 @@ versions may break the API**.
 
 ### Fixed
 
+- **The bench prose was answerable to nothing, and it was wrong.**
+  `render_bench_docs` kept the generated *tables* honest; the sentences
+  around them — where the headline claims actually live — were checked by
+  no one. docs/WSGI_PERFORMANCE.md stated the WSGI result as a
+  decomposition, "roughly 1.0x HTTP layer × ~1.35x bridge", and it does not
+  reconcile with the artifact directly beneath it: the measured per-core gap
+  is **1.21x**, and a 1.35x bridge term requires an HTTP layer term of
+  0.89x — this server's HTTP layer *slower* than the comparator's, which
+  the same sentence denies.
+
+  The mistake is structural, not arithmetic. **A two-sided decomposition
+  needs both sides measured**, and there is no Granian-without-Python row to
+  divide by. What the artifact supports: `apps/hello` at 121,020 rps/core,
+  m0serve+WSGI at 83,823 (so *this server's* bridge costs 1.44x), Granian at
+  101,062 (so the net is 0.83x). Granian's own bridge cost is simply
+  unknown here.
+
+  It had already been copied into README.md and docs/BENCHMARKS.md before
+  anyone divided it out. So `check_docs.py` gained **`check_bench_prose`**:
+  nineteen figures across the three documents, each recomputed from the
+  newest artifact and compared *at the precision the sentence claims* —
+  "~1.2x" passes at 1.206 and fails at 1.35, while "1.21x" passes only at
+  1.205–1.214. A doc chooses its own strictness by how precisely it writes.
+  Verified by reinstating the original defect, and by landing a new
+  artifact with moved numbers: ten failures fire, naming every sentence
+  that needs updating.
+
 - **The README quoted a decomposition its own measurements had retired.**
   It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
   1.58x bridge" — numbers from before the CPU-normalized re-run, which

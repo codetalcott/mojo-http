@@ -162,6 +162,149 @@ def check_version_single_source():
             )
 
 
+def _bench(kind):
+    """The newest artifact of one bench kind, or None."""
+    files = sorted((REPO / "bench" / "results").glob(f"{kind}-*.json"))
+    return json.loads(files[-1].read_text()) if files else None
+
+
+def _agrees(shown, computed):
+    """Does prose `shown` round-trip to `computed` at the precision written?
+
+    The prose rounds — "0.83x", "~1.2x", "121.0k" — so an exact compare is
+    wrong and a fixed tolerance is arbitrary. Rounding the computed value to
+    the precision the sentence actually claims is neither: "~1.2x" passes at
+    1.206 and fails at 1.35, while "1.21x" passes only at 1.205-1.214.
+    The doc chooses its own strictness by how precisely it writes.
+    """
+    text = shown.replace(",", "")
+    decimals = len(text.split(".")[1]) if "." in text else 0
+    return round(computed, decimals) == float(text)
+
+
+def check_bench_prose():
+    """Prose figures derived from bench artifacts, recomputed from them.
+
+    `render_bench_docs` keeps the TABLES honest and nothing kept the
+    sentences around them honest — while the sentences are where the
+    headline claims live. A reader meets "0.83x Granian per core" in a
+    paragraph, not in a table cell.
+
+    That gap produced a real error. docs/WSGI_PERFORMANCE.md stated the
+    result as "roughly 1.0x HTTP layer x ~1.35x bridge", which does not
+    reconcile with the artifact underneath it: the measured per-core gap is
+    1.21x, and a 1.35x bridge term needs an HTTP layer term of 0.89x — this
+    server's HTTP layer *slower* than the comparator's, which the same
+    sentence denies. It was a structural mistake, not an arithmetic one (a
+    two-sided decomposition needs both sides measured, and there is no
+    Granian-without-Python row), and it had been copied into README.md and
+    docs/BENCHMARKS.md before anyone divided it out.
+
+    So: every figure below is recomputed from the newest artifact and
+    compared at the precision the prose claims. Deliberately not exhaustive
+    — it pins the load-bearing comparisons, the ones a reader would quote
+    back. Numbers sourced from measurements that never became artifacts
+    (the E-core/P-core split, the mixed-workload p99s) cannot be checked
+    here and are marked as such on the page itself.
+    """
+    layer, asgi = _bench("layer-split"), _bench("asgi-wrk-hello")
+    if not layer or not asgi:
+        return  # nothing recorded yet; the tables render an absence too
+
+    try:
+        lm = layer["medians"]
+        hello = lm["hello(no python,1proc)"]["rps_per_core"]
+        m0 = lm["m0serve+bare w1"]["rps_per_core"]
+        gran = lm["granian+bare w1"]["rps_per_core"]
+        gran_cores = lm["granian+bare w1"]["cores"]
+        am0 = asgi["medians"]["m0serve asgi-executor"]
+        auv = asgi["medians"]["uvicorn asyncio"]
+    except KeyError as missing:
+        fail(
+            f"a bench artifact no longer has the row {missing} that the docs"
+            " quote — check_bench_prose cannot verify the prose figures"
+        )
+        return
+
+    q = {
+        "hello/1000": hello / 1000,
+        "m0/1000": m0 / 1000,
+        "gran/1000": gran / 1000,
+        "m0÷gran": m0 / gran,
+        "gran÷m0": gran / m0,
+        "hello÷m0 (this server's bridge tax)": hello / m0,
+        "granian's measured cores at --workers 1": gran_cores,
+        "asgi rps ratio m0÷uvicorn": am0["rps"] / auv["rps"],
+        "asgi per-core gap uvicorn÷m0": auv["rps_per_core"] / am0["rps_per_core"],
+    }
+
+    # (document, what it is, pattern with ONE capture group, key in q)
+    # Patterns run against whitespace-normalized text, so re-wrapping a
+    # paragraph never breaks one.
+    claims = [
+        ("docs/BENCHMARKS.md", "the WSGI verdict row",
+         r"Granian, by ~([\d.]+)x", "gran÷m0"),
+        ("docs/BENCHMARKS.md", "the ASGI verdict row",
+         r"uvicorn, by ~([\d.]+)x", "asgi per-core gap uvicorn÷m0"),
+        ("docs/BENCHMARKS.md", "the hello row quoted in prose",
+         r"runs at \*\*([\d.]+)k\s*rps/core\*\*", "hello/1000"),
+        ("docs/BENCHMARKS.md", "Granian's end-to-end rate quoted in prose",
+         r"above Granian's end-to-end \*\*([\d.]+)k\*\*", "gran/1000"),
+        ("docs/BENCHMARKS.md", "m0serve's WSGI rate quoted in prose",
+         r"m0serve runs at \*\*([\d.]+)k\s*rps/core\*\*", "m0/1000"),
+        ("docs/BENCHMARKS.md", "this server's bridge tax",
+         r"its own bridge costs ([\d.]+)x", "hello÷m0 (this server's bridge tax)"),
+        ("docs/BENCHMARKS.md", "the net per-core ratio",
+         r"m0serve is \*\*([\d.]+)x Granian per core\*\*", "m0÷gran"),
+        ("docs/BENCHMARKS.md", "the gap restated the other way",
+         r"Granian is ([\d.]+)x ahead", "gran÷m0"),
+        ("docs/BENCHMARKS.md", "the gap in the correction note",
+         r"the measured gap is ([\d.]+)x", "gran÷m0"),
+        ("docs/BENCHMARKS.md", "the comparator's measured cores",
+         r"running ~([\d.]+) cores", "granian's measured cores at --workers 1"),
+        ("docs/BENCHMARKS.md", "the ASGI throughput ratio",
+         r"Under wrk the ratio is ([\d.]+)x", "asgi rps ratio m0÷uvicorn"),
+
+        ("README.md", "m0serve's WSGI rate",
+         r"([\d.]+)k against [\d.]+k rps/core", "m0/1000"),
+        ("README.md", "Granian's WSGI rate",
+         r"[\d.]+k against ([\d.]+)k rps/core", "gran/1000"),
+        ("README.md", "the net per-core ratio",
+         r"a bare callable — about ([\d.]+)x", "m0÷gran"),
+        ("README.md", "the hello row",
+         r"runs at ([\d.]+)k rps/core", "hello/1000"),
+        ("README.md", "this server's bridge tax",
+         r"own bridge costs ([\d.]+)x", "hello÷m0 (this server's bridge tax)"),
+
+        ("docs/WSGI_PERFORMANCE.md", "the corrected per-core gap",
+         r"gap is \*\*([\d.]+)x\*\*", "gran÷m0"),
+        ("docs/WSGI_PERFORMANCE.md", "this server's bridge tax",
+         r"costs \*\*([\d.]+)x\*\*", "hello÷m0 (this server's bridge tax)"),
+        ("docs/WSGI_PERFORMANCE.md", "the net per-core ratio",
+         r"the net is \*\*([\d.]+)x\*\*", "m0÷gran"),
+    ]
+
+    for doc, what, pattern, key in claims:
+        path = REPO / doc
+        if not path.exists():
+            continue
+        text = re.sub(r"\s+", " ", path.read_text())
+        m = re.search(pattern, text)
+        if not m:
+            fail(
+                f"{doc}: could not find {what} — check_bench_prose's pattern"
+                f" /{pattern}/ no longer matches. If the sentence was"
+                " reworded on purpose, update the pattern; do not delete the"
+                " claim from the list."
+            )
+            continue
+        if not _agrees(m.group(1), q[key]):
+            fail(
+                f"{doc} says {what} is {m.group(1)}, but {key} computes to"
+                f" {q[key]:.4f} from the newest artifact"
+            )
+
+
 def check_wheel_platform_claims():
     """The README's platform table must name the platforms CI actually builds.
 
@@ -320,6 +463,7 @@ def main():
     check_version_single_source()
     check_wheel_platform_claims()
     check_m0pub_twins()
+    check_bench_prose()
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
     if failures:
