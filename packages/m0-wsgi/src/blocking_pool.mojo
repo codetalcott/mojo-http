@@ -206,7 +206,10 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
         unsafe_from_address=block.get(BLK_POOL)
     )[]
     var lane = block.get(BLK_LANE)
-    var ctx = ThreadContext(block.get(BLK_INDEX), block.get(BLK_USER), lane)
+    var ctx = ThreadContext(
+        block.get(BLK_INDEX), block.get(BLK_USER), lane, pool.hold_notify_fd,
+        pool=True,
+    )
     var handler = T.make(ctx)
     ref cpy = Python().cpython()
 

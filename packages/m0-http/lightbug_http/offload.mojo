@@ -224,6 +224,14 @@ struct OffloadPool(Movable):
     end-of-stream close and no comment heartbeats), which is sound because
     `--realtime` is refused with every offload mode."""
 
+    var hold_notify_fd: Int
+    """This loop's own BroadcastBus write end, or -1: where a pool thread
+    sends an `M0-Hold` it took, so the subscription lands in the LOOP's
+    registries rather than the pool thread's own. Set by the wiring under
+    `--realtime --blocking-threads`; a pool thread reads it through its
+    `ThreadContext`. The loop's channel and no other: slot numbers index
+    this loop's provisions and mean nothing to any other loop."""
+
     var slot_lane: List[Int]
     """Which lane each slot's in-flight job was submitted on; stale between
     jobs and overwritten by the next `submit`. What routes a drain ack (and
@@ -281,6 +289,7 @@ struct OffloadPool(Movable):
         self.stream_chunk_write = -1
         self.stream_ack_read = -1
         self.stream_ack_write = -1
+        self.hold_notify_fd = -1
 
         if capacity <= 0:
             self.submit_read = -1
@@ -321,10 +330,15 @@ struct OffloadPool(Movable):
         self.stream_chunk_write = move.stream_chunk_write
         self.stream_ack_read = move.stream_ack_read
         self.stream_ack_write = move.stream_ack_write
+        self.hold_notify_fd = move.hold_notify_fd
         self.requests = move.requests^
         self.responses = move.responses^
         self.errored = move.errored^
         self.capacity = move.capacity
+
+    def set_hold_notify(mut self, fd: Int):
+        """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
+        self.hold_notify_fd = fd
 
     def enable_stream_channel(mut self) raises:
         """Create the ASGI streaming pairs. Executor wiring only, once,

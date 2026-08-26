@@ -252,6 +252,11 @@ struct ThreadedServer(Movable):
     var bus_read_fds: List[Int]
     """Per-thread bus channels for in-process fan-out; empty = no bus."""
 
+    var bus_write_fds: List[Int]
+    """The write ends, parallel to `bus_read_fds`: under `--realtime
+    --blocking-threads`, loop i's pool threads send their holds on
+    `bus_write_fds[i]` and nowhere else."""
+
     var blocking_threads: Int
     """Handler threads EACH loop spawns (`--blocking-threads`); 0 = off.
 
@@ -273,6 +278,7 @@ struct ThreadedServer(Movable):
         self.address = address^
         self.listen_fd = listen_fd
         self.bus_read_fds = List[Int]()
+        self.bus_write_fds = List[Int]()
         self.blocking_threads = 0
         self.asgi_executor = False
 
@@ -281,6 +287,7 @@ struct ThreadedServer(Movable):
         self.address = move.address^
         self.listen_fd = move.listen_fd
         self.bus_read_fds = move.bus_read_fds^
+        self.bus_write_fds = move.bus_write_fds^
         self.blocking_threads = move.blocking_threads
         self.asgi_executor = move.asgi_executor
 
@@ -377,6 +384,11 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var use_offload = blocking > 0 or run_executor
     var pool = OffloadPool(server[].config.max_connections if use_offload else 0)
     var pool_addr = pool.addr() if use_offload else 0
+    if use_offload and opts[].realtime and ctx.index < len(server[].bus_write_fds):
+        # A pool thread's hold must land in THIS loop's registries, so it
+        # rides this loop's own bus channel -- never another loop's, whose
+        # slot numbers mean nothing here.
+        pool.set_hold_notify(server[].bus_write_fds[ctx.index])
     if mounted:
         # Lane i is mount i, so this loop's `submit(slot, path)` and the
         # handler's `app_for(path)` cannot disagree: both ask

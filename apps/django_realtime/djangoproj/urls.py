@@ -22,6 +22,7 @@ instead of breaking — the GRIP property.
 """
 
 import os
+import time
 
 from django.http import HttpResponse, JsonResponse
 from django.urls import path
@@ -146,9 +147,21 @@ def publish(request):
     )
 
 
+def slow(request):
+    """1.5 s of held interpreter, the shape of an AI call or a render.
+
+    Here so the realtime smoke can prove what `--blocking-threads` buys a
+    held-stream server: with two of these in flight, a subscribe and a
+    publish must still go through — under the single loop they wait.
+    """
+    time.sleep(1.5)
+    return HttpResponse("slow done\n", content_type="text/plain")
+
+
 urlpatterns = [
     path("", index),
     path("events", events),
+    path("slow", slow),
     path("ws", websocket),
     path("ws/message", ws_message),
     path("publish", publish),

@@ -195,10 +195,14 @@ unnumbered frames when `M0_CORE_LIB`/`M0_SHARED_ID_ADDR` are absent, which is
 what happens under any plain WSGI host; a WebSocket subscriber receives an
 event's *data*, not its `event:` name, since a frame has no field for one;
 bus frames cap at 64KB; fan-out is best-effort under backpressure, like the
-bus itself; and a slow Django view still stalls its worker's event loop — the
-hold pattern removes the *connection* cost from Python, not the *request*
-cost, and that applies to a `ws_message` view exactly as it does to any
-other.
+bus itself; and the hold pattern removes the *connection* cost from Python,
+not the *request* cost — a slow Django view still holds an interpreter for as
+long as it runs. What changed on 2026-08-26 is *where*: `--blocking-threads`
+now composes with `--realtime`, so that view holds a pool thread while the
+loop keeps every held stream alive through it (a pool thread forwards the
+hold it takes to the loop's registries as a reserved bus frame). The
+exception is `ws_message`, which still runs the view on the loop thread,
+and is why a WebSocket hold under the pool answers 409 for now.
 
 ## 5. The free-threading path for m0-wsgi itself
 

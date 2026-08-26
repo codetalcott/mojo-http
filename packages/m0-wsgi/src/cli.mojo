@@ -111,7 +111,8 @@ struct ServeOptions(Copyable, Movable):
     topology variable is set at all, `resolve_blocking_threads` turns a small
     pool on by default — one slow view stalling every connection is the wrong
     out-of-box experience. Composes with `--workers` and with `--threads`;
-    refused with `--realtime`, whose streaming hooks run on the loop's handler.
+    composes with `--realtime` too: a hold a pool thread takes reaches the
+    loop's registries as a reserved frame on the loop's own bus channel.
     """
     var workers_set: Bool
     """Whether `--workers` or `M0_WORKERS` was given, at any value.
@@ -444,9 +445,9 @@ def resolve_blocking_threads(
 
     Explicit topology always wins — any of the three flags or variables, at
     any value, keeps `opts.blocking_threads` verbatim. `--realtime` keeps
-    the single-loop shape (the streaming hooks run on the loop's handler,
-    which is exactly what a pool breaks — the existing refusal, extended to
-    the default). A zero-config WSGI app gets a small pool: one slow view
+    the single-loop shape *by default* — the demo and its smokes assume
+    it — while an explicit `--blocking-threads N` composes with it (a hold
+    taken on a pool thread is forwarded to the loop's registries). A zero-config WSGI app gets a small pool: one slow view
     must not stall every connection out of the box. A zero-config ASGI app
     gets NO pool, because it gets the asyncio executor instead
     (`use_asgi_executor`) — its concurrency is the application's own

@@ -7,6 +7,36 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **`--realtime` composes with `--blocking-threads`.** A hold taken on a
+  pool thread is forwarded to the event loop's registries as a reserved
+  frame on that loop's own bus channel, before the response completes —
+  the executor's begin-before-head seam, applied to a second producer —
+  so a held-stream server no longer has to run its views on the loop. On
+  textshelf with eight slow views in flight that is the difference between
+  a 1 543 ms fast-path p50 and 0.3 ms, and between M0-Hold being
+  demonstrable and deployable. SSE holds only: a WebSocket hold under the
+  pool answers a 409 that says why (inbound messages still reach the view
+  on the loop thread), and `--mount` with `--realtime` stays refused. The
+  loop needs no ordering guarantee for the forwarded frame because,
+  without an executor, it has no end-of-stream signal to misread a
+  not-yet-subscribed slot as. `smoke-django-realtime` phase 5 pins the
+  composition; `smoke-blocking-threads` and `smoke-doctor` now assert the
+  pair is accepted where they asserted the refusal.
+
+### Changed
+
+- **The loop's `before_request` runs before a request is offloaded**, not
+  only on the queue-full fallback — where, under a pool, it never ran on
+  the loop at all. `WSGIHandler` answers its static mounts and the health
+  path there, so under `--blocking-threads` those are served on the loop
+  in Mojo rather than by a pool thread: a stylesheet stays readable
+  whatever the pool is busy with, and `/health` reports the registries the
+  loop actually drains. Before this, under the newly-composed `--realtime
+  --blocking-threads`, it reported zero subscribers while events were
+  being delivered — a pool thread's own registries are always empty.
+
 ### Documentation
 
 - **Hold on a pool thread** (ROADMAP, under *Next*). The real-application
