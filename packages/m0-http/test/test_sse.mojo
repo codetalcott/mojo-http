@@ -411,7 +411,7 @@ def test_journal_append_since() raises:
 
 
 def test_journal_append_at_records_peer_id() raises:
-    """append_at journals at a caller-supplied id — the sse_peer_frame case.
+    """Journals at a caller-supplied id — the `sse_peer_frame` case.
 
     A reconnect to THIS worker with a Last-Event-ID must be able to replay
     an event that originated on a peer; before append_at existed (#119)
