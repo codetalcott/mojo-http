@@ -424,6 +424,14 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
             exec_lanes.append(-1)
         exec_thread.start(pool_addr, ctx.user, exec_lanes^)
     if pool_threads.count > 0:
+        # See `_serve_offloaded`: read the lanes before `start` moves them.
+        if opts[].realtime:
+            if len(pool_lanes) == 0:
+                handler.set_ws_pool_notify(-1, pool.submit_write_fd(-1))
+            for wl in range(len(pool_lanes)):
+                handler.set_ws_pool_notify(
+                    pool_lanes[wl], pool.submit_write_fd(pool_lanes[wl])
+                )
         pool_threads.start[T](pool_addr, ctx.user, pool_lanes^)
     # The executor's chunk channel consumes `bus_read_fd`, so this thread's
     # own BroadcastBus channel rides the loop's second registered fd. Both

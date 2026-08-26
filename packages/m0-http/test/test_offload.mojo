@@ -13,9 +13,32 @@ from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
 from lightbug_http.offload import (
+    JOB_STOP,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT,
 )
 from lightbug_http.uri import URI
+
+
+def _job_buffer() -> List[UInt8]:
+    """A pool thread's receive buffer: one per thread, reused for its life."""
+    var buf = List[UInt8](capacity=4096)
+    for _ in range(4096):
+        buf.append(0)
+    return buf^
+
+
+def _next_slot(mut pool: OffloadPool, lane: Int = 0) raises -> Int:
+    """`next_job` as the pool body reads it: the slot, or -1 for the pill.
+
+    The channel carries inbound WebSocket messages too now, so `next_job`
+    answers with a `PoolJob` rather than an Int; these tests are about the
+    request path, and this is that path's half of the answer.
+    """
+    var buf = _job_buffer()
+    var job = pool.next_job(lane, buf)
+    if job.kind == JOB_STOP:
+        return -1
+    return job.slot
 
 
 def _request(path: String) raises -> HTTPRequest:
@@ -30,7 +53,7 @@ def test_round_trip_carries_the_request_and_the_response() raises:
     assert_true(pool.submit(3))
 
     # The pool side.
-    assert_equal(pool.next_job(), 3)
+    assert_equal(_next_slot(pool), 3)
     var received = pool.take_request(3)
     assert_equal(received.uri.path, "/hello")
     pool.put_response(3, OK(String("answered")))
@@ -55,7 +78,7 @@ def test_slots_do_not_bleed_into_each_other() raises:
 
     # Datagrams are ordered on one channel, so the jobs come back in order.
     for i in range(3):
-        assert_equal(pool.next_job(), i)
+        assert_equal(_next_slot(pool), i)
         var req = pool.take_request(i)
         assert_equal(req.uri.path, "/p" + String(i))
         pool.put_response(i, OK("body" + String(i)))
@@ -100,7 +123,7 @@ def test_raised_is_reported_and_cleared() raises:
     var pool = OffloadPool(4)
     pool.park_request(0, _request("/boom"))
     assert_true(pool.submit(0))
-    _ = pool.next_job()
+    _ = _next_slot(pool)
     _ = pool.take_request(0)
     pool.put_response(0, OK(String("x")), raised=True)
     pool.complete(0)
@@ -125,7 +148,7 @@ def test_stop_poisons_every_waiting_thread() raises:
     var pool = OffloadPool(4)
     pool.stop(3)
     for _ in range(3):
-        assert_equal(pool.next_job(), -1)
+        assert_equal(_next_slot(pool), -1)
 
 
 def test_a_disabled_pool_builds_and_is_inert() raises:

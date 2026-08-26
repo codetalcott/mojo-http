@@ -61,6 +61,12 @@ Slots index the registries directly, so a slot the server can hand out and
 the registry cannot hold is a subscription that silently does not happen.
 """
 
+comptime NOT_POOL_HELD = -2
+"""`hold_lane` for a slot no pool thread's view is holding.
+
+Not -1: that is the unmounted pool's own lane, and a sentinel a real lane
+can equal would route an executor's socket into a pool."""
+
 comptime WS_MESSAGE_PATH = "/ws/message"
 """Where an inbound WebSocket message is delivered inside the application.
 
@@ -146,6 +152,29 @@ struct WSGIHandler(ThreadHandler):
     no defensible answer. SSE holds have no inbound half and work on every
     mount."""
 
+    var lane: Int
+    """Which mount this handler serves (`ThreadContext.lane`), or -1.
+
+    A pool thread stamps it into the reserved hold frame so the loop learns
+    which lane a held socket belongs to, which is where its inbound messages
+    have to go back to."""
+
+    var ws_pool_fds: List[Int]
+    """Loop side: each lane's pool submit write end, or -1.
+
+    An inbound WebSocket message on a held socket is delivered to the mount
+    whose view gated the upgrade — `hold_lane[slot]` names it, the frame
+    that subscribed the socket carried it, and this is where it goes."""
+
+    var hold_lane: List[Int]
+    """Loop side: for a socket a POOL thread's view held, the lane it belongs
+    to; `NOT_POOL_HELD` for every other slot.
+
+    `-1` is a real lane (the unmounted pool), so the sentinel cannot be -1.
+    It is what separates the three ways a socket can be held on one loop: by
+    a pool thread's view (here), by an executor (a reserved filter url), or
+    by the loop's own handler."""
+
     var hold_notify_fd: Int
     """Set on a `--blocking-threads` handler under `--realtime`: this loop's
     bus write end (`ThreadContext.hold_fd`). A hold taken on a pool thread
@@ -183,6 +212,8 @@ struct WSGIHandler(ThreadHandler):
         self.health_path = health_path^
         self.thread_index = -1
         self.asgi_notify_fd = -1
+        self.lane = -1
+        self.ws_pool_fds = List[Int]()
         self.mounted = False
         self.answers_local = True
         self.hold_notify_fd = -1
@@ -197,8 +228,10 @@ struct WSGIHandler(ThreadHandler):
         self.streams = SSERegistry(slots)
         self.sockets = SSERegistry(slots)
         self.asgi_done = List[Bool](capacity=slots)
+        self.hold_lane = List[Int](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
+            self.hold_lane.append(NOT_POOL_HELD)
 
     @staticmethod
     def mounts_for(opts: ServeOptions) -> List[StaticFiles]:
@@ -338,6 +371,7 @@ struct WSGIHandler(ThreadHandler):
         )
         handler.thread_index = ctx.index
         handler.hold_notify_fd = ctx.hold_fd
+        handler.lane = ctx.lane
         handler.answers_local = not ctx.pool
         return handler^
 
@@ -358,6 +392,17 @@ struct WSGIHandler(ThreadHandler):
     def set_asgi_notify(mut self, fd: Int):
         """Executor-mode wiring: where stream disconnect tags are sent."""
         self.asgi_notify_fd = fd
+
+    def set_ws_pool_notify(mut self, lane: Int, fd: Int):
+        """Realtime-with-a-pool wiring: lane `lane`'s submit write end.
+
+        Where an inbound WebSocket message goes when the socket was held by
+        a pool thread's view. Grows the table as lanes arrive; lane -1 (the
+        unmounted pool) takes slot 0."""
+        var at = lane if lane > 0 else 0
+        while len(self.ws_pool_fds) <= at:
+            self.ws_pool_fds.append(-1)
+        self.ws_pool_fds[at] = fd
 
     def set_lane_notify(mut self, lane: Int, fd: Int):
         """Mounted executor wiring: lane `lane`'s submit write end.
@@ -450,6 +495,7 @@ struct WSGIHandler(ThreadHandler):
                 if not _send_hold_frame(
                     self.hold_notify_fd, slot,
                     request_last_event_id(req), hold.channel,
+                    kind=String("h"), lane=self.lane,
                 ):
                     return _hold_unavailable()
                 resp.headers["x-worker"] = String(getpid())
@@ -466,18 +512,6 @@ struct WSGIHandler(ThreadHandler):
         if hold.mode == HOLD_WEBSOCKET:
             if slot < 0:
                 return _conflict()
-            if self.hold_notify_fd >= 0 or self.mounted:
-                # The handshake could be performed here — the request is in
-                # hand — but the inbound half cannot, for two different
-                # reasons. Under a pool, `ws_message` runs the view on the
-                # LOOP thread, and reaching a pool thread instead needs a
-                # tagged job `next_job` does not yet decode. Under mounts it
-                # serves `apps[0]`, so a frame would land in whichever
-                # urlconf happens to be first. Refused legibly rather than
-                # half-done: an upgrade that never receives a message is
-                # worse than a 409 the client can read (docs/ROADMAP.md,
-                # "Hold on a pool thread").
-                return _ws_hold_unavailable(self.mounted)
             # The application approved the upgrade; performing it is ours.
             # The handshake reads the client's key off the ORIGINAL request
             # — a buffered, re-encoded WSGI response has no way to compute
@@ -493,6 +527,20 @@ struct WSGIHandler(ThreadHandler):
                 # A malformed or wrong-version handshake: 400/426, verbatim.
                 return ws_resp^
             ws_resp.headers["x-worker"] = String(getpid())
+            if self.hold_notify_fd >= 0:
+                # A pool thread: the handshake is ours (the client's key is
+                # in the request we hold), but the subscription belongs to
+                # the loop, and so does the socket. The frame carries this
+                # thread's LANE as well as the channel — an inbound message
+                # comes back to the mount whose view gated the upgrade, and
+                # nothing else can name it.
+                if not _send_hold_frame(
+                    self.hold_notify_fd, slot,
+                    request_last_event_id(req), hold.channel,
+                    kind=String("H"), lane=self.lane,
+                ):
+                    return _hold_unavailable()
+                return ws_resp^
             # Same subscribe as the SSE branch, `Last-Event-ID` included: the
             # upgrade IS an HTTP GET, so one rule covers both transports.
             self.sockets.subscribe(
@@ -589,6 +637,8 @@ struct WSGIHandler(ThreadHandler):
             slot_url = self.sockets.filter_url(slot)
         self.streams.unsubscribe(slot)
         self.sockets.unsubscribe(slot)
+        if slot < len(self.hold_lane):
+            self.hold_lane[slot] = NOT_POOL_HELD
         if slot < len(self.asgi_done):
             self.asgi_done[slot] = False
         if was_asgi:
@@ -640,6 +690,15 @@ struct WSGIHandler(ThreadHandler):
                     String(StringSlice(unsafe_from_utf8=Span(frame))),
                     event_id,
                 )
+            elif ub[1] == UInt8(ord("H")):
+                # A socket hold taken on a pool thread. Subscribe it here,
+                # where the registries are drained, and remember the lane:
+                # an inbound frame has exactly one mount it may be delivered
+                # to, and this is the record of which.
+                var chan = String(StringSlice(unsafe_from_utf8=Span(frame)))
+                self.sockets.subscribe(slot, chan, event_id)
+                if slot < len(self.hold_lane):
+                    self.hold_lane[slot] = _parse_stream_lane(ub)
             elif ub[1] == UInt8(ord("B")):
                 # A WebSocket's begin: sent before its held 101 completes,
                 # same FIFO anchor as a stream's begin — but into the
@@ -697,7 +756,50 @@ struct WSGIHandler(ThreadHandler):
     def tick(mut self, now_ms: Int):
         pass
 
+    def serve_ws_message(
+        mut self, slot: Int, opcode: Int, channel: String,
+        payload: Span[Byte, _],
+    ):
+        """A pool thread's half of `ws_message`: serve it here, drop the reply.
+
+        The loop routed this to the mount whose view gated the upgrade, so
+        `apps[0]` is that mount — a pool thread builds only its own
+        (`only_mount`). The path carries the mount prefix, because the bridge
+        trims exactly that many bytes to make PATH_INFO.
+
+        Non-raising by contract, and the try is what keeps it so: a raising
+        view must not take the socket, or this thread, down with it.
+        """
+        try:
+            var req = ws_message_request(
+                self.mount_prefixes[0] + WS_MESSAGE_PATH,
+                channel, slot, opcode, payload,
+            )
+            _ = self.apps[0].serve(req)
+        except e:
+            print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
+
     def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        # Three ways a socket on this loop can be held, and the message goes
+        # wherever its own hold went. The POOL first: on a mixed mounted
+        # server `asgi_notify_fd` is set for the ASGI mount, and asking that
+        # question first would hand every socket's message to an executor
+        # that never accepted the connection.
+        if slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD:
+            var held_lane = self.hold_lane[slot]
+            var at = held_lane if held_lane > 0 else 0
+            if at < len(self.ws_pool_fds) and self.ws_pool_fds[at] >= 0:
+                if not _send_ws_pool_message(
+                    self.ws_pool_fds[at], slot, opcode,
+                    self.sockets.filter_url(slot), payload,
+                ):
+                    print(
+                        "ws_message: the pool's channel would not take an"
+                        " inbound message for slot " + String(slot)
+                        + "; it is lost",
+                        flush=True,
+                    )
+                return
         # Executor mode: the message belongs to the app's own
         # `websocket.receive` loop — forward it to the executor thread as
         # a tagged datagram and never enter Python on the loop thread.
@@ -746,8 +848,17 @@ def _unmounted() -> HTTPResponse:
     )
 
 
-def _send_hold_frame(fd: Int, slot: Int, last_event_id: Int, channel: String) -> Bool:
-    """One reserved `h` frame on the loop's bus channel: `[id][len][url][channel]`.
+def _send_hold_frame(
+    fd: Int, slot: Int, last_event_id: Int, channel: String,
+    kind: String = String("h"), lane: Int = -1,
+) -> Bool:
+    """One reserved hold frame on the loop's bus channel: `[id][len][url][channel]`.
+
+    `kind` is `h` for an SSE hold and `H` for a socket — the same two letters
+    the executor uses for its own begin frames, and read by the same branch.
+    `lane` rides in the url so the loop learns which mount holds the socket;
+    an SSE hold has no inbound half and does not need it, but carries it
+    anyway rather than having two shapes to reason about.
 
     Bus codec on purpose — the loop drains this descriptor with
     `drain_bus_channel` and hands every frame to `sse_peer_frame`, which is
@@ -757,7 +868,8 @@ def _send_hold_frame(fd: Int, slot: Int, last_event_id: Int, channel: String) ->
     and the caller answers 503 rather than leaving a client on a stream
     nothing will ever feed."""
     var datagram = encode_bus_frame(
-        asgi_stream_url(String("h"), slot), last_event_id, Span(channel.as_bytes())
+        asgi_stream_url(kind, slot, lane), last_event_id,
+        Span(channel.as_bytes()),
     )
     for _ in range(64):
         var rc = external_call["send", Int](
@@ -920,6 +1032,37 @@ def _send_bus_frame_tag(fd: Int, event_id: Int, url: String, frame: List[UInt8])
         if rc == len(msg):
             return
         _ = external_call["sched_yield", c_int]()
+
+
+def _send_ws_pool_message(
+    fd: Int, slot: Int, opcode: Int, channel: String, payload: List[UInt8]
+) -> Bool:
+    """`TAG_WS_MESSAGE` for a pool thread: the executor's shape plus the channel.
+
+    A pool thread's registries are empty — the socket was subscribed on the
+    loop — so the name it joined with has to travel with the message. Bounded
+    retry, never a park: this runs on the event loop."""
+    var chan = channel.as_bytes()
+    var msg = List[UInt8](capacity=12 + len(chan) + len(payload))
+    msg.append(2)
+    var bits = UInt64(Int64(slot))
+    for shift in range(0, 64, 8):
+        msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    msg.append(UInt8(opcode))
+    msg.append(UInt8(len(chan) & 0xFF))
+    msg.append(UInt8((len(chan) >> 8) & 0xFF))
+    for b in chan:
+        msg.append(b)
+    for b in payload:
+        msg.append(b)
+    for _ in range(64):
+        var rc = external_call["send", Int](
+            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
+        )
+        if rc == len(msg):
+            return True
+        _ = external_call["sched_yield", c_int]()
+    return False
 
 
 def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):

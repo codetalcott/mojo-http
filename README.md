@@ -529,8 +529,11 @@ values returns unchanged.
   it exists for — and it composes with `--realtime`: a hold a pool thread
   takes is forwarded to the loop's registries, so a held-stream server no
   longer runs its views on the loop and one slow view no longer stalls
-  every stream on that worker (SSE holds; a WebSocket hold still wants the
-  pool off, and says so with a 409 until it does not).
+  every stream on that worker. `--mount` composes with `--realtime` too, so
+  one process can hold the streams a synchronous app publishes to *and* run
+  an ASGI mount for the streams whose view is the producer. Sockets travel
+  the same seam: a pool thread performs the 101, and inbound frames come
+  back to the mount whose view gated the upgrade.
 
   Benchmarked against gunicorn at 1.4–1.5x its throughput on a GIL-enabled
   3.13 container and ~3.5x on free-threaded 3.14.7t, with

@@ -31,6 +31,32 @@ trait ThreadHandler(HTTPService, Movable, Deinitable):
     def make(ctx: ThreadContext) raises -> Self:
         ...
 
+    def set_ws_pool_notify(mut self, lane: Int, fd: Int):
+        """Where an inbound WebSocket message goes when a POOL thread's view
+        held the socket: that mount's submit lane.
+
+        On the trait beside `set_lane_notify` and for the same reason — the
+        generic `_serve_one` body can only call what the trait names, and
+        both execution modes wire this the same way. A handler with no
+        WebSocket surface ignores it.
+        """
+        ...
+
+    def serve_ws_message(
+        mut self, slot: Int, opcode: Int, channel: String,
+        payload: Span[Byte, _],
+    ):
+        """One inbound WebSocket message, served on THIS thread.
+
+        Called on a pool thread when the loop hands it a `TAG_WS_MESSAGE`
+        datagram: the socket was gated by this mount's view and held by the
+        loop, so the message comes back here rather than running on the loop
+        thread. Non-raising, like `HTTPService.ws_message` and for the same
+        reason — a raising view must not take the socket, or this thread,
+        down with it. A handler with no WebSocket surface ignores it.
+        """
+        ...
+
     def set_asgi_notify(mut self, fd: Int):
         """Where ASGI stream disconnect tags go (the submit channel's
         write end), set by the executor-mode wiring after the pool exists

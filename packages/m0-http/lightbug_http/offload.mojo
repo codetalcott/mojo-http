@@ -90,6 +90,49 @@ comptime _JOB_BYTES = 8
 
 comptime _POISON = -1
 
+comptime TAG_WS_MESSAGE = UInt8(2)
+"""First byte of an inbound-WebSocket datagram on a submit channel.
+
+The channel carries two shapes now. A plain job is `_JOB_BYTES` of slot
+index and nothing else — the hot path, unchanged. An inbound WebSocket
+message is `[tag=2][slot i64 LE][opcode u8][chan_len u16 LE][channel]
+[payload]`, the same shape the executor's shim already decodes, extended
+with the channel because a pool thread's own registries are empty: the
+socket was subscribed on the loop, and the name it joined with has to
+travel with the message.
+
+Length tells the two apart with no ambiguity to reason about: a plain job
+is exactly 8 bytes and a message is at least 12.
+"""
+
+comptime _WS_HEADER = 12
+"""tag(1) + slot(8) + opcode(1) + chan_len(2)."""
+
+comptime JOB_REQUEST = 0
+"""`PoolJob.kind`: an ordinary request, `slot` names it."""
+comptime JOB_WS_MESSAGE = 1
+"""`PoolJob.kind`: an inbound WebSocket message, in the caller's buffer."""
+comptime JOB_STOP = 2
+"""`PoolJob.kind`: the poison pill; this thread is done."""
+
+
+@fieldwise_init
+struct PoolJob(Copyable, Movable):
+    """What `next_job` took off the channel — a view into the caller's buffer.
+
+    The payload is deliberately NOT copied out: a WebSocket message can be
+    the size of the whole receive buffer, and the thread that read it is the
+    only thread that will look at it.
+    """
+
+    var kind: Int
+    var slot: Int
+    var opcode: Int
+    var chan_start: Int
+    var chan_len: Int
+    var payload_start: Int
+    var payload_len: Int
+
 comptime _OFFLOAD_SOCKET_BUF = 262144
 
 
@@ -423,6 +466,37 @@ struct OffloadPool(Movable):
             return self.lane_ack_read[lane]
         return self.stream_ack_read
 
+    def send_ws_message(
+        self, lane: Int, slot: Int, opcode: Int, channel: String,
+        payload: Span[Byte, _],
+    ) -> Bool:
+        """Hand one inbound WebSocket message to `lane`'s pool threads.
+
+        The loop's side of `TAG_WS_MESSAGE`. Bounded retry and never a park:
+        this runs on the event loop, and a lost message is an application-
+        visible gap rather than a corrupt one — the caller says so."""
+        var chan = channel.as_bytes()
+        var msg = List[UInt8](capacity=_WS_HEADER + len(chan) + len(payload))
+        msg.append(TAG_WS_MESSAGE)
+        var bits = UInt64(Int64(slot))
+        for shift in range(0, 64, 8):
+            msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+        msg.append(UInt8(opcode))
+        msg.append(UInt8(len(chan) & 0xFF))
+        msg.append(UInt8((len(chan) >> 8) & 0xFF))
+        for b in chan:
+            msg.append(b)
+        for b in payload:
+            msg.append(b)
+        var fd = self.submit_write_fd(lane)
+        for _ in range(64):
+            try:
+                _ = send(FileDescriptor(fd), Span(msg), UInt(len(msg)), 0)
+                return True
+            except:
+                _sched_yield()
+        return False
+
     def slot_is_executor(self, slot: Int) -> Bool:
         """Whether an asyncio executor produced this slot's response.
 
@@ -651,8 +725,8 @@ struct OffloadPool(Movable):
 
     # --- pool side -------------------------------------------------------
 
-    def next_job(self, lane: Int = 0) -> Int:
-        """Block until a job arrives on `lane`. Returns the slot, or -1 to stop.
+    def next_job(mut self, lane: Int, mut buf: List[UInt8]) -> PoolJob:
+        """Block until something arrives on `lane`; decode it into `buf`.
 
         BLOCKS, and there is no timeout: the only thing that ever wakes it is
         a datagram. A pool thread must therefore detach from the interpreter
@@ -660,15 +734,18 @@ struct OffloadPool(Movable):
         other thread's stop-the-world pause — and `stop` must send it a pill,
         because closing the queue will not (see `stop`). `m0_wsgi`'s pool body
         is the only caller and does both.
+
+        `buf` belongs to the caller and is reused for the life of the thread:
+        an inbound WebSocket message rides IN the datagram and can be large,
+        and allocating for it per job would put that cost on every ordinary
+        request too. Its length is the most a datagram may be.
         """
-        var buf = List[UInt8](capacity=_JOB_BYTES)
-        for _ in range(_JOB_BYTES):
-            buf.append(0)
         var fd = FileDescriptor(self.submit_read_fd(lane))
+        var cap = len(buf)
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(_JOB_BYTES), 0)
+                n = recv(fd, Span(buf), UInt(cap), 0)
             except recv_err:
                 # EINTR is a signal the process handled elsewhere (the
                 # shutdown pipe); go back to sleep. Anything else means the
@@ -676,11 +753,31 @@ struct OffloadPool(Movable):
                 # nothing left to do.
                 if recv_err.isa[RecvEINTRError]():
                     continue
-                return _POISON
-            if n < UInt(_JOB_BYTES):
-                return _POISON  # EOF: the loop closed the queue
-            var slot = _decode_job(Span(buf))
-            return slot
+                return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+            if n == UInt(_JOB_BYTES):
+                var slot = _decode_job(Span(buf))
+                if slot == _POISON:
+                    return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+                return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+            if n >= UInt(_WS_HEADER) and buf[0] == TAG_WS_MESSAGE:
+                var bits = UInt64(0)
+                for i in range(8):
+                    bits |= UInt64(buf[1 + i]) << UInt64(i * 8)
+                var chan_len = Int(buf[10]) | (Int(buf[11]) << 8)
+                var chan_start = _WS_HEADER
+                var payload_start = chan_start + chan_len
+                if payload_start > Int(n):
+                    # A truncated datagram is a bug in the sender, not
+                    # something to serve half of.
+                    continue
+                return PoolJob(
+                    JOB_WS_MESSAGE, Int(Int64(bits)), Int(buf[9]),
+                    chan_start, chan_len,
+                    payload_start, Int(n) - payload_start,
+                )
+            # EOF (0 bytes), or a shape this version does not know.
+            if n == 0:
+                return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
 
     def take_request(mut self, slot: Int) -> HTTPRequest:
         """Take the parked request. Only for a slot this thread received."""

@@ -968,6 +968,17 @@ def _serve_offloaded(
             handler.set_lane_notify(lane, pool.submit_write_fd(lane))
         exec_thread.start(pool.addr(), opts_addr, asgi_lanes.copy())
     if pool_threads.count > 0:
+        # Where an inbound WebSocket message goes when a pool thread's view
+        # held the socket: that mount's own submit lane, so the frame is
+        # served by a thread that has that urlconf and no other. Read before
+        # the lanes are moved into `start`.
+        if opts.realtime:
+            if len(wsgi_lanes) == 0:
+                handler.set_ws_pool_notify(-1, pool.submit_write_fd(-1))
+            for wl in range(len(wsgi_lanes)):
+                handler.set_ws_pool_notify(
+                    wsgi_lanes[wl], pool.submit_write_fd(wsgi_lanes[wl])
+                )
         pool_threads.start[WSGIHandler](pool.addr(), opts_addr, wsgi_lanes^)
     var stream_bus_fd = pool.stream_chunk_read if run_executor else -1
 
