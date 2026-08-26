@@ -672,10 +672,13 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 
   **Before 0.12.0**: exercise the server against real applications rather
   than only the ones written to test it — three local Django projects,
-  staged from `--doctor` through a realtime retrofit. The plan is
-  [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md). The precedent is that
-  the *one* dogfooding session against a real Django project found the
-  `--app-dir` shadowing bug below, which no in-repo app could have shown.
+  staged from `--doctor` through a realtime retrofit. **Done** (2026-08-26;
+  [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md) is the record): four
+  defects, each fixed with a guard that fails without it, three of which no
+  in-repo application could have shown — and one finding about the shape
+  of the server itself, which is the section below. The precedent held: the
+  *one* earlier dogfooding session found the `--app-dir` shadowing bug,
+  which is still open.
 
   Sequencing: gate 1 first (it ages in the wild while the rest proceed);
   gates 2–4 in any order; announce only when all five are done. The
@@ -689,6 +692,119 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   overrides it, and a bare `MODULE` discovers `MODULE.asgi:application`,
   `MODULE.wsgi:application`, `MODULE:app`, `MODULE.main:app` by
   convention.)
+
+### Hold on a pool thread: the refusal that keeps `--realtime` off real applications
+
+**Where this comes from.** Serving `textshelf`
+([REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md), 2026-08-26) showed the
+realtime mode is not deployable for the application class it exists for,
+and the reason is a refusal this server makes on purpose: `--realtime`
+refuses `--blocking-threads`, so a held-stream server runs its views on the
+loop, and one slow view then stalls every held stream on that worker along
+with every other request. Measured on textshelf with eight 1.5 s views in
+flight (what an AI call or a typst render looks like to a server), fast-path
+p50, plus what 200 held SSE streams cost:
+
+| shape | fast path p50 | 200 held streams |
+|---|---|---|
+| `--realtime --workers 4` | **1 543 ms** | +2 MB RSS, no Python state, no DB connection |
+| `--blocking-threads 4 --workers 4` | 0.3 ms | cannot hold |
+| `--mount /=wsgi --mount /rt=asgi`, 4 × 4 | 0.7 ms | within noise; one Postgres connection each in production (their `psycopg.AsyncConnection` per subscriber, not ours) |
+| daphne — their `fly.toml` | 4.9 ms | +94 MB |
+| gunicorn, 2 workers — their `Dockerfile` | 6 015 ms | cannot hold |
+
+One laptop, scratch SQLite, a 120-request burst at concurrency 16: relative
+numbers, not a benchmark. Two things are true at once. **M0-Hold is by far
+the cheapest way to hold a stream** — 2 MB per 200, no per-stream Python,
+no per-stream database connection, and the retrofit that reaches it was
++52/−293 lines. And **choosing it costs the pool**, which is the fix for the
+hostage pathology the README leads with. The feature the pool would protect
+reintroduces the pathology the pool cures. Workers mitigate at N× RSS (491 MB
+for four of textshelf), and only until the N+1th slow view.
+
+The hybrid mount already gets an application like textshelf most of the way
+with no code change — its existing async SSE views on the executor at `/rt`,
+its sync bulk on the pool at `/`, 0.7 ms isolation, +6 MB for the second
+mount (503 MB against 497) — and that is the recommendation today. What it
+cannot do is combine the pool with M0-Hold, which is the shape textshelf
+actually wants: four of its six SSE endpoints are pub/sub (subscribe, then
+wait for events published elsewhere) and convert to a hold outright; the
+other two (`ai/streaming.py`) are request-scoped generators, the view being
+the producer, and belong on the executor. **Protocol is the wrong axis;
+stream shape is the right one**, and one process should serve both shapes.
+
+**1. `--realtime` with `--blocking-threads`.** The refusal's reason is
+exact: `take_hold` runs inside `WSGIHandler.func`, which under the pool
+runs on a pool thread against that thread's own `SSERegistry`/`WSHub`, while
+the loop calls its hooks on the loop's handler. The executor solved the
+identical problem, and its seam is the one to reuse: it does not subscribe
+from the producing thread. It sends a reserved begin frame
+(`\x01b/<slot>/<lane>`) that the *loop's* handler turns into a subscription
+in `sse_peer_frame`, ordered ahead of the head completion. A pool thread in
+realtime mode would do the same — decide with `take_hold` where it is, then
+publish a new reserved kind (`h` for an SSE hold, `H` for a socket; payload
+the channel and the request's `Last-Event-ID`) onto the loop's bus channel,
+which every worker already has (created pre-fork; `m0pub` writes to it from
+Python), and complete with `sse_streaming` set. The loop's handler
+subscribes the slot in its own registries; the drain, the heartbeats, the
+disconnect hooks and the bus fan-out do not change. The WebSocket half is
+harder. The 101 must be computed from the original request, which the pool
+thread has, so it performs the upgrade and completes with the 101 — the loop
+already switches a slot to frame mode on that wire signal. But inbound
+frames are today delivered by `ws_message` running the Django view **on the
+loop thread**, and under a pool they must not; they need to reach a pool
+thread as a tagged submit datagram the way the executor receives them
+(`_TAG_WS_MESSAGE`), which the pool's `next_job` does not decode. Stage it:
+SSE holds first, which is what textshelf's four pub/sub endpoints need and
+what the numbers above are about; sockets second.
+
+**2. `--realtime` with `--mount`.** Refused because an inbound WebSocket
+message "has no defensible destination" among several urlconfs. For an SSE
+hold there is nothing inbound to deliver, so the refusal is broader than its
+reason — and the reason has weakened since it was written:
+`OffloadPool.slot_lane` now records which mount gated each slot, and the
+mount whose view approved an upgrade is precisely where its messages
+belong. Once (1) lands this is a narrowing: allow the pair, and refuse at
+the moment a *socket* hold is taken under mounts (a 409 and a log line, the
+`gate_streaming_response` shape) until inbound routing by lane exists. This
+is also what makes the hybrid's proposition whole for a mixed application:
+holds for its pub/sub streams, the executor for its generator streams, the
+pool for everything else, one process.
+
+**What has to be established before (1) is built**, each a place the
+design could be wrong:
+
+- The begin-before-head ordering argument (`asgi_executor.mojo`,
+  `stream_start`) is made for the chunk channel. A hold frame would ride
+  the bus channel — a different descriptor, drained in a different branch
+  of the same loop pass — and whether the same guarantee holds there has to
+  be shown, not assumed: a subscription that lands after the head
+  completion is a stream the loop closes as ended, the wrongful-early-close
+  race the executor's ordering exists to prevent.
+- `x-worker`, `Last-Event-ID` seeding (`request_last_event_id`) and the
+  `/health` subscriber counts all assume the subscribe happens where the
+  request is; each moves to the loop side, and `smoke-django-realtime` must
+  not notice.
+- Under `--threads`, each loop has its own pool and its own handler; the
+  bus descriptor a pool thread writes to must be *its* loop's
+  (`peer_bus_fd`), or the hold lands in another loop's registry against a
+  slot that means nothing there.
+- The `_health` docstring already concedes the premise — its counts are
+  answered in Mojo because they "have to stay readable while a slow view
+  has the interpreter busy" — which is the hostage problem stated from the
+  inside. After (1) that sentence is about the pool, not about the loop.
+
+**Is it a significant advance?** For (1), yes, and by a distance: it is the
+difference between the realtime claim being demonstrable and being
+deployable. Every application with a slow view and a stream — which is
+every application that wants a stream — currently has to choose between the
+two things this server does best. (2) is worth doing only after (1) and is
+the smaller: the executor mount already streams, so what it adds is the
+cheaper hold and the sync-only codebase for the pub/sub half of a mixed
+application. Neither is a rewrite. The mechanism, the channel, the
+reserved-name dispatch and the lane record all exist; the work is one new
+frame kind, one handler branch, one narrowed refusal, and the smokes that
+prove the ordering.
 
 ## Open questions
 
