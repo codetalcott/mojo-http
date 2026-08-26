@@ -79,11 +79,13 @@ tells the two apart PER SLOT by lane (`OffloadPool.slot_is_executor`):
 asking per server was the same question only while they could not share
 one, and a held stream drained as an executor's would be chunk-framed,
 acked to an executor that never issued the credit, and denied the comment
-heartbeat that keeps it alive through a proxy. Two refusals remain: a
-`websocket` hold under `--mount` (answered 409 — an inbound frame is a
-synthesised POST into `apps[0]`, and which mount should receive it has no
-defensible answer), and `--realtime` on a server with no WSGI mount at
-all, which is asking for a hold nothing could take. **`--threads` gets the same
+heartbeat that keeps it alive through a proxy. Sockets travel
+the same seam: a pool thread performs the 101 (the client's key is in the
+request it holds), sends an `H` frame carrying its own LANE, and the loop
+records `hold_lane[slot]` — so an inbound frame is delivered back to the
+mount whose view gated the upgrade and to no other. One refusal remains:
+`--realtime` on a server with no WSGI mount at all, which is asking for a
+hold nothing could take. **`--threads` gets the same
 lanes**: `_serve_one` mirrors `_serve_offloaded` per loop, so N loops of
 per-mount modes is N times the prefork shape — with two consequences to keep
 straight. The executor's chunk channel takes `bus_read_fd`, so a threaded
@@ -244,9 +246,15 @@ Mojo 1.0 interop imposes and that the code depends on:
       bottom of the pass — after every event, in whatever order they came.
       That is also what let `--mount` join in: an ASGI mount does bring an
       end-of-stream signal, but the loop reads it per slot now, and only
-      for slots an executor produced. A WebSocket hold under the pool (or
-      under mounts) is a legible 409 until inbound messages can reach a
-      pool thread and name their mount (docs/ROADMAP.md, "Hold on a pool
+      for slots an executor produced. A WebSocket hold works
+      here too: the pool thread performs the 101 (the client's key is in
+      the request it holds) and sends an `H` frame, and the inbound half
+      rides the submit channel back as a `TAG_WS_MESSAGE` datagram — the
+      executor's shape plus the CHANNEL, because a pool thread's own
+      registries are empty. `ws_message` asks the pool question FIRST: on a
+      mixed mounted server `asgi_notify_fd` is set for the ASGI mount, and
+      asking that one first hands every socket's message to an executor
+      that never accepted the connection (docs/ROADMAP.md, "Hold on a pool
       thread").
     - **The shutdown join is bounded, and leaving is correct.** A response
       that never ends -- a `StreamingHttpResponse` served under WSGI, which

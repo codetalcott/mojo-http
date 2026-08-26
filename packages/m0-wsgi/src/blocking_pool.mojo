@@ -40,7 +40,9 @@ exists for.
 
 from std.python import Python
 
-from lightbug_http.offload import OffloadPool
+from lightbug_http.offload import (
+    OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP,
+)
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
 
@@ -54,6 +56,14 @@ from .thread_handler import ThreadContext, ThreadHandler
 
 comptime BLK_POOL = 7
 """Block slot holding the `OffloadPool`'s address."""
+
+comptime WS_JOB_BUFFER = 65546
+"""Bytes a pool thread's receive buffer holds.
+
+The submit channel's own socket buffer, plus the tag header: an inbound
+WebSocket message rides in the datagram and the loop's `max_message_size`
+keeps assembled messages under it. Matches what the executor's shim reads
+for the same channel."""
 
 comptime JOIN_TIMEOUT_NS = 5_000_000_000
 """How long a shutdown waits for handler threads after the loop has drained.
@@ -213,16 +223,46 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     var handler = T.make(ctx)
     ref cpy = Python().cpython()
 
+    # One receive buffer for this thread's life. An ordinary job is 8 bytes,
+    # but an inbound WebSocket message rides in the datagram, so the buffer
+    # is sized for the largest one a channel will carry — allocated once
+    # here rather than per job, which would put a WebSocket's cost on every
+    # request.
+    var buf = List[UInt8](capacity=WS_JOB_BUFFER)
+    for _ in range(WS_JOB_BUFFER):
+        buf.append(0)
+
     while True:
         # Detached across the block. This is where the thread spends its life,
         # and holding a thread state through it would stall every other
         # thread's stop-the-world.
         var ts = cpy.PyEval_SaveThread()
-        var slot = pool.next_job(lane if lane > 0 else 0)
+        var job = pool.next_job(lane if lane > 0 else 0, buf)
         cpy.PyEval_RestoreThread(ts)
-        if slot < 0:
+        if job.kind == JOB_STOP:
             break
 
+        if job.kind == JOB_WS_MESSAGE:
+            # An inbound frame from a socket THIS mount's view gated. It is
+            # not a request the loop is waiting on — nothing is owed on the
+            # completion channel — so it is served and its response dropped,
+            # exactly as the loop-thread path did before the pool could take
+            # a hold. What the view does (publishing, writing) is the point.
+            handler.serve_ws_message(
+                job.slot,
+                job.opcode,
+                String(
+                    StringSlice(
+                        unsafe_from_utf8=Span(buf)[
+                            job.chan_start : job.chan_start + job.chan_len
+                        ]
+                    )
+                ),
+                Span(buf)[job.payload_start : job.payload_start + job.payload_len],
+            )
+            continue
+
+        var slot = job.slot
         var request = pool.take_request(slot)
         # Read before `func` consumes the request: `after_response` needs both,
         # and the loop cannot supply them — it gave the request away.

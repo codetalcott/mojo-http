@@ -767,10 +767,10 @@ endpoints convert to holds, while `ai/streaming.py` is a request-scoped
 generator whose view is the producer and which no hold can carry. That
 application opens no WebSocket against its own server, so the socket half
 buys it nothing. The refusal was broader than its reason — an inbound
-WebSocket message has no defensible destination among several urlconfs,
-and an SSE hold has nothing inbound to deliver — so it narrowed to the
-socket half: a `websocket` hold under `--mount` answers 409, and
-`--realtime` is refused only where no mount could take a hold at all.
+WebSocket message was said to have no defensible destination among several
+urlconfs, and an SSE hold has nothing inbound to deliver — so it first
+narrowed to the socket half, and then (3) removed that too. What is refused
+now is only `--realtime` on a server where no mount could take a hold.
 
 **What it took was not the ordering work this entry expected.** The loop
 already had the answer in `OffloadPool.slot_lane`, which `submit` stamps
@@ -790,6 +790,33 @@ and the framing on the held one.
 That makes the hybrid's proposition whole for a mixed application: holds
 for its pub/sub streams, the executor for its generator streams, the pool
 for everything else, one process.
+
+**3. The socket half — shipped 2026-08-26.** A pool thread performs the 101
+(the client's key is in the request it holds) and sends an `H` frame
+carrying its own LANE; the loop records `hold_lane[slot]`, and an inbound
+frame rides the submit channel back as a `TAG_WS_MESSAGE` datagram — the
+executor's shape plus the channel, because a pool thread's registries are
+empty and the name the socket joined with has to travel with the message.
+`next_job` decodes both shapes off one channel, told apart by length (a job
+is exactly 8 bytes, a message at least 12), into a caller-owned buffer so a
+WebSocket's size is not charged to every request.
+
+Two things were not obvious until they broke. **The pool question must be
+asked before the executor one**: on a mixed mounted server `asgi_notify_fd`
+is set for the ASGI mount, so asking that one first hands every socket's
+message to an executor that never accepted the connection — which is what
+happened, and what `smoke-django-realtime-ws` phase 4 now catches. And
+**`NOT_POOL_HELD` cannot be -1**, because -1 is a real lane (the unmounted
+pool); a sentinel a real lane can equal routes an executor's socket into a
+pool. Phases 3 and 4 run the whole socket probe — handshake, fan-out, relay
+through Django, channel isolation — against a pool and against mounts, and
+phase 3 adds what the pool is for: the probe runs **+13 ms** behind two
+1.5 s views, against its own ~4 s baseline.
+
+With that, `--realtime` composes with everything it used to refuse, and the
+`ws_message` limit the design doc recorded — the view runs on the loop
+thread — is retired: under a pool it runs on a pool thread, on the mount
+that gated the socket.
 
 **What has to be established before (1) is built**, each a place the
 design could be wrong:

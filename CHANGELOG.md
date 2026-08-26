@@ -9,6 +9,24 @@ versions may break the API**.
 
 ### Added
 
+- **WebSocket holds work with `--blocking-threads` and with `--mount`.**
+  The last thing `--realtime` refused. A pool thread performs the 101 — the
+  client's key is in the request it holds — and sends the loop an `H` frame
+  carrying its own lane; the loop records which mount holds the socket, and
+  an inbound frame rides the submit channel back as a `TAG_WS_MESSAGE`
+  datagram (the executor's shape plus the channel, since a pool thread's
+  registries are empty). `next_job` decodes both shapes off one channel,
+  told apart by length, into a buffer owned by the thread so a WebSocket's
+  size is not charged to every request. Two orderings are load-bearing and
+  both are pinned by `smoke-django-realtime-ws` phases 3 and 4: the pool
+  must be asked about a socket before the executor (on a mixed mounted
+  server the executor's fd is set, and asking it first hands every message
+  to an executor that never accepted the connection), and the
+  "not pool-held" sentinel cannot be -1, which is a real lane. The whole
+  socket probe — handshake, fan-out, relay through Django, channel
+  isolation — now runs against a pool and against mounts, and behind two
+  1.5 s views it costs +13 ms against its own baseline.
+
 - **`--realtime` composes with `--mount`.** One process can now hold the
   SSE streams a synchronous application publishes to *and* run an ASGI
   mount for the streams whose view is the producer — the shape a mixed

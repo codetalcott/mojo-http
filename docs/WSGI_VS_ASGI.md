@@ -200,9 +200,11 @@ not the *request* cost — a slow Django view still holds an interpreter for as
 long as it runs. What changed on 2026-08-26 is *where*: `--blocking-threads`
 now composes with `--realtime`, so that view holds a pool thread while the
 loop keeps every held stream alive through it (a pool thread forwards the
-hold it takes to the loop's registries as a reserved bus frame). The
-exception is `ws_message`, which still runs the view on the loop thread,
-and is why a WebSocket hold under the pool answers 409 for now.
+hold it takes to the loop's registries as a reserved bus frame). `ws_message` followed: under a pool it runs on
+a pool thread too, and under `--mount` on the thread serving the mount
+whose view gated the upgrade (the hold frame carries the lane). The
+sentence above about a slow view stalling "its worker's event loop" is
+therefore about the loop only when no pool is configured.
 
 ## 5. The free-threading path for m0-wsgi itself
 

@@ -1367,10 +1367,12 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 done
 [ "$subs" = "0" ] || fail "a vanished pooled subscriber is still registered (subscribers=$subs)"
 
-# A WebSocket hold on a pool thread is stage 2: refused legibly, not half-done.
-code=$(curl -s -o "$out/p5_ws" -w '%{http_code}' --max-time 5 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=pool&token=letmein')
-[ "$code" = "409" ] || fail "a WebSocket hold under the pool answered $code, want a legible 409"
-grep -q 'not available with --blocking-threads' "$out/p5_ws" || fail 'the 409 does not say why'
+# A WebSocket hold on a pool thread answered 409 when only SSE holds could
+# cross the seam; it upgrades now, and `smoke-django-realtime-ws` phase 3
+# runs the whole socket probe against this shape. Here: the handshake alone,
+# which is what this phase can assert without a WebSocket client.
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=pool&token=letmein')
+[ "$code" = "101" ] || fail "a WebSocket hold under the pool answered $code, want 101"
 
 kill $pid
 wait $pid; rc=$?
@@ -1420,10 +1422,11 @@ beats=$(grep -c '^: heartbeat' "$out/m_sse")
 [ "$beats" -ge 2 ] || { cat "$out/m_sse"; fail "the held stream saw $beats heartbeats beside an ASGI mount; it is being drained as if it were the executor's"; }
 grep -iq '^transfer-encoding: chunked' "$out/m_hdr" && fail 'the held stream was chunk-framed: the loop mistook it for an executor stream'
 
-# A WebSocket hold under mounts is the half that stays refused, and says so.
-code=$(curl -s -o "$out/m_ws" -w '%{http_code}' --max-time 5 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=mounted&token=letmein')
-[ "$code" = "409" ] || fail "a WebSocket hold under --mount answered $code, want a legible 409"
-grep -q 'not available with --mount' "$out/m_ws" || fail 'the 409 does not name the reason'
+# A WebSocket hold under mounts was the last refusal; it upgrades now, and
+# the mount its messages go back to is asserted in `smoke-django-realtime-ws`
+# phase 4, which needs a real WebSocket client to say anything about frames.
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=mounted&token=letmein')
+[ "$code" = "101" ] || fail "a WebSocket hold under --mount answered $code, want 101"
 
 kill $pid
 wait $pid; rc=$?
@@ -1461,13 +1464,13 @@ core_lib="$PWD/packages/m0-core/libm0core.$ext"
 
 cleanup() {
   kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" ws1.log ws2.log
+  rm -rf "$out" ws1.log ws2.log ws3.log ws4.log
 }
 trap cleanup EXIT
 
 fail() {
   echo "$1"
-  for log in ws1.log ws2.log; do
+  for log in ws1.log ws2.log ws3.log ws4.log; do
     if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
   done
   exit 1
@@ -1556,7 +1559,82 @@ for f in sse1 sse2; do
 done
 
 kill $pid $worker_pids 2>/dev/null
-rm -f ws1.log ws2.log
+wait $pid 2>/dev/null
+
+# Phase 3: the same sockets, held by a POOL thread's view. `--realtime` with
+# `--blocking-threads` was refused outright, then allowed for SSE only, and
+# a `websocket` hold answered 409 -- because the handshake is one half and
+# the inbound frame is the other: `ws_message` ran the view on the LOOP
+# thread, which under a pool is the one place it must not. The frame now
+# travels the submit channel as a tagged datagram (`TAG_WS_MESSAGE`, the
+# executor's shape plus the channel, since a pool thread's registries are
+# empty), so the whole probe -- handshake, fan-out, relay through Django,
+# channel isolation -- has to pass with the pool in front of it.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --blocking-threads 4 > ws3.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the pooled realtime server never became healthy'
+grep -q 'blocking-threads=4' ws3.log || fail 'the banner does not show the pool'
+t_base=$(python3 -c 'import time; print(time.time())')
+python3 apps/django_realtime/realtime_probe.py || fail 'realtime_probe failed with a handler pool'
+base_ms=$(python3 -c "import time, sys; print(int((time.time() - float(sys.argv[1])) * 1000))" "$t_base")
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  [ "$socks" = "0" ] && break
+  sleep 1
+done
+[ "$socks" = "0" ] || fail "closed sockets are still registered under the pool (sockets=$socks)"
+# And the thing the pool is for: a socket's message must not queue behind a
+# slow view. Two of them in flight, then the whole probe again.
+curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+slow1=$!
+curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+slow2=$!
+sleep 0.3
+t0=$(python3 -c 'import time; print(time.time())')
+python3 apps/django_realtime/realtime_probe.py || fail 'realtime_probe failed behind two slow views'
+took=$(python3 -c "import time, sys; print(int((time.time() - float(sys.argv[1])) * 1000))" "$t0")
+wait $slow1 $slow2
+# Against the probe's OWN baseline a moment earlier, not a fixed budget: the
+# probe spends seconds deliberately (it waits on silence to prove channel
+# isolation), so what matters is the DELTA. A socket message that queued
+# behind a 1.5 s view would add at least that.
+delta=$((took - base_ms))
+[ "$delta" -lt 1000 ] || fail "the socket probe took ${took}ms against a ${base_ms}ms baseline (+${delta}ms) with two 1.5s views in flight; the pool is not isolating it"
+echo "phase 3: sockets held by pool threads, probe +${delta}ms behind two 1.5s views (baseline ${base_ms}ms)"
+kill $pid 2>/dev/null
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --realtime --blocking-threads with sockets: exit $rc, want 0"
+
+# Phase 4: sockets under --mount, which is where the refusal was last. An
+# inbound frame is delivered into ONE urlconf, and the answer is the mount
+# whose view gated the upgrade: the hold frame carries the lane, the loop
+# records it per slot, and the message goes back to that lane's pool. Django
+# holds the root mount (so the probe's paths are unchanged) beside an ASGI
+# mount that streams on its own executor at the same time.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
+  --mount /=djangoproj.wsgi --mount /live=liveasgi \
+  --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
+  --blocking-threads 4 > ws4.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the mounted realtime server never became healthy'
+grep -q 'asgi-loop@/live' ws4.log || fail 'the ASGI mount lost its executor beside sockets'
+curl -sN --max-time 8 http://localhost:8080/live/stream > "$out/m4_asgi" &
+asgi4=$!
+python3 apps/django_realtime/realtime_probe.py || fail 'realtime_probe failed under --mount'
+wait $asgi4 2>/dev/null
+[ "$(grep -c '^data: ' "$out/m4_asgi")" = "5" ] || { cat "$out/m4_asgi"; fail 'the ASGI mount stopped streaming while sockets were held'; }
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  [ "$socks" = "0" ] && break
+  sleep 1
+done
+[ "$socks" = "0" ] || fail "closed sockets are still registered under --mount (sockets=$socks)"
+echo "phase 4: sockets and an executor stream on one loop, messages routed by lane"
+kill $pid 2>/dev/null
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --realtime --mount with sockets: exit $rc, want 0"
+
+rm -f ws1.log ws2.log ws3.log ws4.log
 echo "smoke-django-realtime-ws OK"
 """
 
