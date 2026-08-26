@@ -659,15 +659,6 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
 
 ## Known issues
 
-- **Linux aarch64 builds and passes, but nothing in CI does it.** Run by
-  hand in an arm64 container (colima, `python:3.13-slim`, Debian 13):
-  `build-all`, `build-serve` and `smoke-wheel` are all green, producing
-  `m0serve-0.10.0rc1-py3-none-manylinux_2_35_aarch64.whl` — including the
-  install-outside-the-tree pass and the removal sabotage. The remaining gap
-  is a CI job, not a question about the platform; free `ubuntu-24.04-arm`
-  runners exist for this public repo. Deliberately not in the first quiet
-  0.x, because an artifact whose only proof is one developer's laptop is
-  exactly what this effort exists to stop shipping.
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
   out for linking, so a minimal image (`python:*-slim` carries no compiler)
   fails with `unable to find suitable c compiler for linking`. CI never

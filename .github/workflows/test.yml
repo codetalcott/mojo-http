@@ -88,6 +88,39 @@ jobs:
       - name: Check the embedded interpreter resolves
         run: uv run python -c "import django, sys; print(sys.version, django.__version__)"
 
+  # aarch64, on every pull request rather than only at release time.
+  #
+  # release.yml runs on a tag, so without this the arm64 wheel would first
+  # be built during a release -- discovering a break after the GitHub
+  # release exists and with the PyPI upload gated behind it. That is the
+  # exact shape of failure the clean-consumer jobs were added to prevent,
+  # and it would have been reintroduced by putting aarch64 only in the
+  # release path.
+  #
+  # Scoped to the arch-specific part -- build plus the wheel smoke, which
+  # installs outside the tree and runs the removal sabotage -- rather than
+  # the whole smoke suite. What differs by architecture is codegen and
+  # linking, not HTTP semantics. Widen it if this ever catches something
+  # the wheel smoke misses.
+  #
+  # Trade-off worth knowing: this gates automerge like every other job here,
+  # so an arm-runner outage blocks merges. Moving it to its own workflow
+  # would remove that fragility and the gate together.
+  wheel-aarch64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install Linux build dependencies
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+      - run: uv run poe build-all
+      - name: Build and smoke test the aarch64 wheel
+        run: uv run poe smoke-wheel
+
   smoke:
     strategy:
       matrix:
