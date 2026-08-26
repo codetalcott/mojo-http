@@ -1474,36 +1474,46 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         response.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
         provision_pool.provisions[slot].should_close = False
     else:
-        # `--blocking-threads`: hand the request to a pool thread and go back
-        # to `wait()`. The slot stays in PROCESSING across loop passes — the
-        # idle and header sweeps skip it, the read path refuses to touch it,
-        # and `_finish_response` resumes here when the completion arrives.
-        # This is the whole point of the mode: no other connection on this
-        # loop waits for this handler.
-        if offload.accepting():
-            ref pool = offload.pool()[]
-            # The path decides the lane, and the loop never learns what a
-            # lane means: with `--mount` each application's worker owns
-            # one, so a job reaches the worker that can serve it rather
-            # than whichever reads the datagram first. Unmounted there is
-            # one lane and this is the call it always was.
-            var target = request.uri.path
-            pool.park_request(slot, request^)
-            if pool.submit(slot, target):
-                offload.offloaded[slot] = True
-                offload.inflight += 1
-                # A stale deadline from the PREVIOUS request on this
-                # connection would sweep the slot closed while a pool thread
-                # still owned it. The connection is not idle; it is working.
-                slot_idle_deadline[slot] = 0
-                return
-            # Queue full: take the request back and run it here. Degrading to
-            # the loop is exactly the behaviour of a server without the flag,
-            # and it never drops a request.
-            request = pool.unpark_request(slot)
-
-        # Before hook: short-circuit if it returns a response
+        # The before hook first, ON THE LOOP, in every mode. A handler that
+        # answers here never becomes a job: m0serve's answers its static
+        # mounts and its health path this way, so a stylesheet stays
+        # readable whatever the pool is busy with, and the health path
+        # reports the registries THIS loop drains rather than a pool
+        # thread's own — which are always empty, and under `--realtime
+        # --blocking-threads` said "0 subscribers" while events were being
+        # delivered. Before the offload rather than after it, because after
+        # it the hook only ever ran on the queue-full fallback.
         var early = handler.before_request(request)
+        if not early:
+            # `--blocking-threads`: hand the request to a pool thread and go
+            # back to `wait()`. The slot stays in PROCESSING across loop
+            # passes — the idle and header sweeps skip it, the read path
+            # refuses to touch it, and `_finish_response` resumes here when
+            # the completion arrives. This is the whole point of the mode:
+            # no other connection on this loop waits for this handler.
+            if offload.accepting():
+                ref pool = offload.pool()[]
+                # The path decides the lane, and the loop never learns what
+                # a lane means: with `--mount` each application's worker
+                # owns one, so a job reaches the worker that can serve it
+                # rather than whichever reads the datagram first. Unmounted
+                # there is one lane and this is the call it always was.
+                var target = request.uri.path
+                pool.park_request(slot, request^)
+                if pool.submit(slot, target):
+                    offload.offloaded[slot] = True
+                    offload.inflight += 1
+                    # A stale deadline from the PREVIOUS request on this
+                    # connection would sweep the slot closed while a pool
+                    # thread still owned it. The connection is not idle; it
+                    # is working.
+                    slot_idle_deadline[slot] = 0
+                    return
+                # Queue full: take the request back and run it here.
+                # Degrading to the loop is exactly the behaviour of a server
+                # without the flag, and it never drops a request.
+                request = pool.unpark_request(slot)
+
         if early:
             var early_resp = early.take()
             response = early_resp^

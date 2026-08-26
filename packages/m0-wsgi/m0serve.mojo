@@ -343,15 +343,6 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
             String("threads-vs-workers"),
             String("topology flags are consistent"),
         )
-    if opts.blocking_threads > 0 and opts.realtime:
-        report.fail_check(
-            String("blocking-threads-vs-realtime"),
-            "--blocking-threads and --realtime are mutually exclusive: the"
-            " streaming hooks run on the event loop's handler, and a pool"
-            " thread's handler has its own registries",
-            String("drop one of --blocking-threads or --realtime"),
-            EXIT_USAGE,
-        )
     if opts.protocol == PROTOCOL_ASGI and opts.realtime:
         report.fail_check(
             String("protocol-vs-realtime"),
@@ -694,14 +685,6 @@ def main() raises:
     # different `WSHub`. A stream opened by a pool thread's handler would be
     # invisible to the loop that has to feed it. Refused rather than half-wired,
     # which is the same call `--threads` makes about a GIL-enabled interpreter.
-    if opts.blocking_threads > 0 and opts.realtime:
-        print(usage(), flush=True)
-        _fail(
-            "--blocking-threads and --realtime are mutually exclusive:"
-            " the streaming hooks run on the event loop's handler, and a pool"
-            " thread's handler has its own registries. Drop one.",
-            EXIT_USAGE,
-        )
 
     # The forced half of the ASGI/realtime refusal is checkable without an
     # interpreter; the auto-detected half fails after the app loads, with
@@ -863,6 +846,15 @@ def main() raises:
             asgi_lanes=opts.asgi_mounts.copy(),
             wsgi_lanes=wsgi_lanes(opts),
             peer_bus_fd=bus.read_fd(worker),
+            # Under `--realtime` a pool thread's hold reaches THIS worker's
+            # loop through this worker's own channel — `m0pub` writes every
+            # channel, a hold must write exactly one: slot numbers are
+            # this loop's.
+            hold_notify_fd=(
+                bus.write_fds[worker]
+                if (opts.realtime and worker >= 0 and worker < len(bus.write_fds))
+                else -1
+            ),
         )
         # The loop's own handler serves the inline fallback; in executor
         # mode its lifespan never ran, and shutdown just closes its loop.
@@ -897,6 +889,7 @@ def _serve_offloaded(
     var asgi_lanes: List[Int] = List[Int](),
     var wsgi_lanes: List[Int] = List[Int](),
     peer_bus_fd: Int = -1,
+    hold_notify_fd: Int = -1,
 ) raises:
     """One acceptor loop feeding either a handler pool or the executor.
 
@@ -928,9 +921,13 @@ def _serve_offloaded(
     `peer_bus_fd` is this worker's BroadcastBus channel (M0_WORKERS>1),
     registered beside the chunk channel: GRIP-named frames on it are
     forwarded to the executors for `state["m0"]` subscribers. `--realtime`
-    itself is still refused with both of these modes.
+    composes with the pool (`hold_notify_fd`: a pool thread's hold reaches
+    this loop's registries as a reserved frame on this loop's own bus
+    channel) and is still refused with the executor and with `--mount`.
     """
     var pool = OffloadPool(config.max_connections)
+    if hold_notify_fd >= 0:
+        pool.set_hold_notify(hold_notify_fd)
     var mounted = len(opts.mount_prefixes) > 0
     if mounted:
         # Lane i is mount i, so the loop's `submit(slot, path)` and the
@@ -1114,6 +1111,7 @@ def _serve_threaded(
     server.asgi_executor = executor_mode
     for i in range(bus.size()):
         server.bus_read_fds.append(bus.read_fd(i))
+        server.bus_write_fds.append(bus.write_fds[i])
     var failed = server.serve[WSGIHandler](opts.threads, opts_addr, shutdown_fd)
     # `listener` must outlive `serve`; this use is what keeps it alive.
     _ = listener.socket.fd.value

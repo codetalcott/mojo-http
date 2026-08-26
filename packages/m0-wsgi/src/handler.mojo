@@ -30,6 +30,7 @@ the path silently would shadow it.
 forked copy of a live interpreter is not safe — see `WSGIApp`.
 """
 
+from lightbug_http.broadcast import encode_bus_frame
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
 from lightbug_http.utils.owning_list import OwningList
@@ -122,6 +123,26 @@ struct WSGIHandler(ThreadHandler):
     used to send the executor a disconnect tag when a streaming slot
     closes — what resolves the app's `receive()` into `http.disconnect`
     and cancels its task."""
+    var answers_local: Bool
+    """Whether `before_request` answers static mounts and the health path.
+
+    True on every handler that runs on an event loop — the process's own
+    under prefork, each serving thread's under `--threads` — and False on a
+    pool thread's. The loop calls `before_request` before it submits a job,
+    so answering there keeps a stylesheet and `/health` readable whatever
+    the pool is busy with, and gives the health path the registries the
+    loop drains: a pool thread's own are always empty, and under
+    `--realtime --blocking-threads` that reported zero subscribers while
+    events were being delivered."""
+
+    var hold_notify_fd: Int
+    """Set on a `--blocking-threads` handler under `--realtime`: this loop's
+    bus write end (`ThreadContext.hold_fd`). A hold taken on a pool thread
+    is not subscribed here — this handler's registries are never drained by
+    anything — but sent to the loop's handler as a reserved `h` frame, the
+    executor's begin-frame seam applied to a second producer. -1 on the
+    loop's own handler, whose registries are the ones that count."""
+
     var lane_notify_fds: List[Int]
     """Per-lane submit write ends, indexed by mount (`--mount` with more
     than one ASGI mount); -1 where a lane has no executor. A disconnect
@@ -151,6 +172,8 @@ struct WSGIHandler(ThreadHandler):
         self.health_path = health_path^
         self.thread_index = -1
         self.asgi_notify_fd = -1
+        self.answers_local = True
+        self.hold_notify_fd = -1
         self.lane_notify_fds = List[Int]()
         # Capacity 0 when neither mode is on. Every `SSERegistry` method
         # already guards on `slot >= _capacity`, so the hooks below stay
@@ -301,6 +324,8 @@ struct WSGIHandler(ThreadHandler):
             only_mount=ctx.lane,
         )
         handler.thread_index = ctx.index
+        handler.hold_notify_fd = ctx.hold_fd
+        handler.answers_local = not ctx.pool
         return handler^
 
     def mount(mut self, var prefix: String, var app: WSGIApp):
@@ -396,6 +421,26 @@ struct WSGIHandler(ThreadHandler):
         if hold.mode == HOLD_STREAM:
             if slot < 0:
                 return _conflict()
+            if self.hold_notify_fd >= 0:
+                # A pool thread. The registries the loop drains are the
+                # loop handler's, not this one's, so the hold travels there
+                # as a reserved frame on this loop's bus channel — sent
+                # BEFORE this response completes, the executor's
+                # begin-before-head order. Publishes are FIFO behind it on
+                # the same channel, so none is lost to the gap; and with no
+                # executor there is no end-of-stream signal for the loop to
+                # misread a not-yet-subscribed slot as, so a frame drained
+                # a pass late is a stream that starts a pass late, nothing
+                # worse. A frame the channel would not take is a client
+                # holding a dead stream, which is why that is a 503 and not
+                # a shrug.
+                if not _send_hold_frame(
+                    self.hold_notify_fd, slot,
+                    request_last_event_id(req), hold.channel,
+                ):
+                    return _hold_unavailable()
+                resp.headers["x-worker"] = String(getpid())
+                return resp^
             # A reconnecting client tells us where it left off; the
             # registry's delivery filter then declines to re-send what it
             # already has.
@@ -408,6 +453,16 @@ struct WSGIHandler(ThreadHandler):
         if hold.mode == HOLD_WEBSOCKET:
             if slot < 0:
                 return _conflict()
+            if self.hold_notify_fd >= 0:
+                # Stage 2. The handshake could be performed here — the
+                # request is in hand — but the inbound half cannot: the
+                # loop delivers `ws_message` by running the view on ITS
+                # thread, and under a pool it must reach a pool thread as a
+                # tagged job instead, which `next_job` does not yet decode.
+                # Refused legibly rather than half-done: an upgrade that
+                # never receives a message is worse than a 409 the client
+                # can read (docs/ROADMAP.md, "Hold on a pool thread").
+                return _ws_hold_on_pool()
             # The application approved the upgrade; performing it is ours.
             # The handshake reads the client's key off the ORIGINAL request
             # — a buffered, re-encoded WSGI response has no way to compute
@@ -438,7 +493,9 @@ struct WSGIHandler(ThreadHandler):
         Answered here rather than in the application on purpose: the counts
         are how a smoke asserts that a vanished client was actually
         unsubscribed, and they have to stay readable while a slow view has
-        the interpreter busy.
+        the interpreter busy. Under a pool that means answered on the LOOP
+        (`before_request`, `answers_local`): a pool thread's registries are
+        never the ones being drained, and its count would be a lie.
         """
         var body = String('{"status":"ok"')
         if self.realtime:
@@ -448,7 +505,18 @@ struct WSGIHandler(ThreadHandler):
         return OK(body^, "application/json")
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
+        # The loop's hook, called before a job is submitted: static mounts
+        # and the health path are answered here, in Mojo, on the loop — see
+        # `answers_local`. A pool thread's handler declines, so the same
+        # request is never answered twice. `serve_local` may raise on a
+        # static file's I/O; that is `func`'s to report as a 500, not this
+        # hook's, which the trait declares non-raising.
+        if not self.answers_local:
+            return None
+        try:
+            return self.serve_local(req)
+        except:
+            return None
 
     def after_response(
         mut self, req_method: String, req_path: String, mut resp: HTTPResponse
@@ -546,6 +614,17 @@ struct WSGIHandler(ThreadHandler):
                         self.asgi_done[slot] = True
                 else:
                     self.streams.unsubscribe(slot)
+            elif ub[1] == UInt8(ord("h")):
+                # A hold taken on a pool thread: subscribe the slot HERE,
+                # in the registries the loop actually drains. The frame's
+                # id field carries the request's `Last-Event-ID` and its
+                # payload the channel; the pool thread has already
+                # rewritten the response into the stream's head.
+                self.streams.subscribe(
+                    slot,
+                    String(StringSlice(unsafe_from_utf8=Span(frame))),
+                    event_id,
+                )
             elif ub[1] == UInt8(ord("B")):
                 # A WebSocket's begin: sent before its held 101 completes,
                 # same FIFO anchor as a stream's begin — but into the
@@ -649,6 +728,52 @@ def _unmounted() -> HTTPResponse:
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
         status_code=404,
         status_text="Not Found",
+    )
+
+
+def _send_hold_frame(fd: Int, slot: Int, last_event_id: Int, channel: String) -> Bool:
+    """One reserved `h` frame on the loop's bus channel: `[id][len][url][channel]`.
+
+    Bus codec on purpose — the loop drains this descriptor with
+    `drain_bus_channel` and hands every frame to `sse_peer_frame`, which is
+    where the `h` kind is turned into a subscription. Bounded retry, never a
+    park: a hold frame is ~50 bytes on a 256 KB channel the loop empties
+    every pass, so a refusal here means the loop is not draining at all,
+    and the caller answers 503 rather than leaving a client on a stream
+    nothing will ever feed."""
+    var datagram = encode_bus_frame(
+        asgi_stream_url(String("h"), slot), last_event_id, Span(channel.as_bytes())
+    )
+    for _ in range(64):
+        var rc = external_call["send", Int](
+            c_int(fd), datagram.unsafe_ptr(), UInt(len(datagram)), c_int(0)
+        )
+        if rc == len(datagram):
+            return True
+        _ = external_call["sched_yield", c_int]()
+    return False
+
+
+def _hold_unavailable() -> HTTPResponse:
+    return HTTPResponse(
+        body_bytes=String(
+            '{"error":"the stream could not be registered with the event loop; retry"}'
+        ).as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=503,
+        status_text="Service Unavailable",
+    )
+
+
+def _ws_hold_on_pool() -> HTTPResponse:
+    return HTTPResponse(
+        body_bytes=String(
+            '{"error":"M0-Hold: websocket is not available with --blocking-threads yet;'
+            ' serve this application with --realtime and no pool for WebSocket holds"}'
+        ).as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=409,
+        status_text="Conflict",
     )
 
 

@@ -1069,13 +1069,13 @@ gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", 
 
 cleanup() {
   kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" rt.log rt2.log rt3.log rt4.log
+  rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log
 }
 trap cleanup EXIT
 
 fail() {
   echo "$1"
-  for log in rt.log rt2.log; do
+  for log in rt.log rt2.log rt5.log; do
     if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
   done
   exit 1
@@ -1316,8 +1316,69 @@ if [ "$gil_off" = "1" ]; then
   echo "phase 4: cross-thread fan-out over loops $loops"
 fi
 
-trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log' EXIT
-rm -f rt.log rt2.log rt3.log rt4.log
+# Phase 5: the pool. `--realtime --blocking-threads` used to be refused, and
+# that refusal is what kept M0-Hold off applications with a slow view: a
+# held-stream server ran its views on the loop, so one AI call stalled every
+# stream and every request behind it (docs/REAL_APP_VALIDATION.md measured a
+# 1 543 ms fast-path p50 on textshelf under --realtime, 0.3 ms with a pool).
+# A pool thread now takes the hold and forwards it to the loop's registries
+# as a reserved frame on the loop's own bus channel. Everything phase 1
+# proved must hold here -- subscribe, publish, heartbeat, cleanup -- plus the
+# thing the pool exists for: two slow views in flight, and a subscribe then
+# a publish still land promptly.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --blocking-threads 4 --static-cache-control "$CC" > rt5.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the pooled realtime server never became healthy'
+grep -q 'blocking-threads=4' rt5.log || fail 'the banner does not show the pool beside realtime'
+grep -q ' realtime' rt5.log || fail 'the banner does not show realtime beside the pool'
+
+curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+slow1=$!
+curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+slow2=$!
+sleep 0.3
+# The subscribe goes through while both slow views hold their threads: the
+# hold is taken on a third pool thread and the registration reaches the loop.
+curl -sN --max-time 6 -D "$out/p5_hdr" 'http://localhost:8080/events?channel=pool&token=letmein' > "$out/p5_sse" &
+sse5=$!
+sleep 0.5
+subs=$(curl -s --max-time 5 http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "1" ] || fail "a hold taken on a pool thread did not register with the loop (subscribers=$subs)"
+t0=$(python3 -c 'import time; print(time.time())')
+resp=$(curl -s --max-time 5 -X POST -d channel=pool -d msg=hello-pool http://localhost:8080/publish)
+echo "$resp" | grep -q '"workers": 1' || fail "publish under the pool did not reach the worker channel: $resp"
+for i in 1 2 3 4 5 6 7 8 9 10; do grep -q '^data: hello-pool' "$out/p5_sse" && break; sleep 0.1; done
+grep -q '^data: hello-pool' "$out/p5_sse" || { cat "$out/p5_sse"; fail 'publish never reached the pooled subscriber'; }
+took=$(python3 -c "import time, sys; print(int((time.time() - float(sys.argv[1])) * 1000))" "$t0")
+# Well under the 1.5 s the slow views hold: delivery did not queue behind them.
+[ "$took" -lt 1000 ] || fail "delivery waited ${took}ms behind two slow views; the pool is not isolating the held stream"
+grep -iq '^m0-hold' "$out/p5_hdr" && fail 'M0-Hold leaked to the client through the pool path'
+grep -iq '^content-type: text/event-stream' "$out/p5_hdr" || fail 'the pooled hold is not SSE'
+grep -iq '^x-worker' "$out/p5_hdr" || fail 'the pooled hold lost its x-worker header'
+grep -iq '^x-thread' "$out/p5_hdr" || fail 'the pooled hold carries no x-thread: it was not taken on a pool thread'
+wait $slow1 $slow2
+wait $sse5 2>/dev/null
+beats=$(grep -c '^: heartbeat' "$out/p5_sse")
+[ "$beats" -ge 2 ] || { cat "$out/p5_sse"; fail "the pooled stream saw $beats heartbeats; the loop is not driving it"; }
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+  [ "$subs" = "0" ] && break
+  sleep 1
+done
+[ "$subs" = "0" ] || fail "a vanished pooled subscriber is still registered (subscribers=$subs)"
+
+# A WebSocket hold on a pool thread is stage 2: refused legibly, not half-done.
+code=$(curl -s -o "$out/p5_ws" -w '%{http_code}' --max-time 5 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=pool&token=letmein')
+[ "$code" = "409" ] || fail "a WebSocket hold under the pool answered $code, want a legible 409"
+grep -q 'not available with --blocking-threads' "$out/p5_ws" || fail 'the 409 does not say why'
+
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --realtime --blocking-threads: exit $rc, want 0"
+echo "phase 5: a hold taken on a pool thread, delivered in ${took}ms behind two slow views"
+
+trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log' EXIT
+rm -f rt.log rt2.log rt3.log rt4.log rt5.log
 echo "smoke-django-realtime OK"
 """
 
@@ -1519,11 +1580,14 @@ if d['ok'] != ($doc == 0):
 # thing a person runs --doctor to find out.
 equiv 'baseline'                    $SPEC
 equiv 'prefork'                     $SPEC --workers 2
+# Composes since 2026-08-26 (docs/ROADMAP.md, "Hold on a pool thread"); it
+# was the first refusal row before that, and equiv() is agnostic to which
+# side of the line a configuration is on -- both must agree either way.
+equiv 'pool + realtime'             $SPEC --blocking-threads 4 --realtime
 
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
 equiv 'threads and workers together' $SPEC --workers 2 --threads 2
-equiv 'blocking-threads + realtime'  $SPEC --blocking-threads 4 --realtime
 equiv 'forced asgi + realtime'       $SPEC --protocol asgi --realtime
 equiv 'missing app dir'              bareapp.wsgi --app-dir /no/such/dir
 equiv 'unimportable module'          nosuch.wsgi --app-dir apps/wsgi_bare
@@ -1988,12 +2052,16 @@ fail() {
   exit 1
 }
 
-# The refusal first, because it must be quick and it costs nothing.
-# `--realtime` calls the streaming hooks on the LOOP's handler while `func`
-# would run on a pool thread's, with its own registries.
-"$srv" $SPEC --port 8099 --blocking-threads 4 --realtime > pool.log 2>&1; rc=$?
-[ "$rc" = "2" ] || fail "--blocking-threads with --realtime: exit $rc, want 2"
-grep -q 'mutually exclusive' pool.log || fail 'the refusal does not say what is wrong'
+# `--blocking-threads` with `--realtime` used to be refused: the streaming
+# hooks run on the LOOP's handler while `func` ran on a pool thread with
+# registries of its own. A pool thread now forwards the hold it takes to the
+# loop as a reserved bus frame -- smoke-django-realtime phase 5 proves the
+# delivery -- and what stays refused is the executor and --mount. Quick and
+# free, so first: the composition is accepted, and the doctor keeps both.
+"$srv" --doctor $SPEC --port 8099 --blocking-threads 4 --realtime > pool.log 2>&1; rc=$?
+[ "$rc" = "0" ] || fail "--blocking-threads with --realtime: doctor exit $rc, want 0 (the pair composes now)"
+grep -q '"blocking_threads":4' pool.log || fail 'the doctor dropped the pool beside --realtime'
+grep -q '"realtime":true' pool.log || fail 'the doctor dropped --realtime beside the pool'
 
 # The measurement this whole mode exists for. `apps/wsgi_bare`'s /slow sleeps
 # 1.5 s, so two of them in flight is 3 s of handler time. A loop that runs

@@ -81,7 +81,25 @@ struct ThreadContext(Copyable, Movable):
     mount because they route in Mojo before dispatching.
     """
 
-    def __init__(out self, index: Int, user: Int, lane: Int = -1):
+    var hold_fd: Int
+    """Where a pool thread sends an `M0-Hold` it took (`OffloadPool.
+    hold_notify_fd`), or -1 for a handler whose registries ARE the loop's —
+    the loop's own handler, and every handler outside `--realtime`."""
+
+    var pool: Bool
+    """True for a `--blocking-threads` handler thread; False for a thread
+    that runs an event loop. A pool thread's handler must not answer the
+    static mounts or the health path in `before_request` — the loop's
+    handler does that, on the loop, before the job is ever submitted, so
+    those stay readable whatever the pool is busy with and the health
+    counts come from the registries the loop actually drains."""
+
+    def __init__(
+        out self, index: Int, user: Int, lane: Int = -1, hold_fd: Int = -1,
+        pool: Bool = False,
+    ):
         self.index = index
         self.user = user
         self.lane = lane
+        self.hold_fd = hold_fd
+        self.pool = pool

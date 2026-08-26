@@ -526,8 +526,11 @@ values returns unchanged.
   1 ms with two 1.5 s views in flight, against 2.7 s for the same server
   without the flag. It works on a GIL-enabled interpreter too — a view
   waiting on a database or a socket releases the GIL, which is the workload
-  it exists for — and it is refused together with `--realtime`, whose
-  streaming hooks run on the loop's own handler.
+  it exists for — and it composes with `--realtime`: a hold a pool thread
+  takes is forwarded to the loop's registries, so a held-stream server no
+  longer runs its views on the loop and one slow view no longer stalls
+  every stream on that worker (SSE holds; a WebSocket hold still wants the
+  pool off, and says so with a 409 until it does not).
 
   Benchmarked against gunicorn at 1.4–1.5x its throughput on a GIL-enabled
   3.13 container and ~3.5x on free-threaded 3.14.7t, with

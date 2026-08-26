@@ -221,8 +221,18 @@ Mojo 1.0 interop imposes and that the code depends on:
       consumed), and a client that disconnects detaches the fd but leaves the
       provision borrowed — `_close_slot(..., release_provision=False)` — until
       the completion releases it.
-    - **Refused with `--realtime`.** The streaming hooks run on the loop's
-      handler; `func` would run against a pool thread's own registries.
+    - **Composes with `--realtime` by forwarding, never by subscribing.**
+      The streaming hooks run on the loop's handler, so a pool thread must
+      never subscribe its own registries — nothing drains them. On a pool
+      thread (`hold_notify_fd >= 0`) `WSGIHandler.func` takes the hold and
+      sends it as a reserved `h` frame on THIS loop's bus channel before
+      the response completes; the loop handler's `sse_peer_frame` makes the
+      subscription. Safe without a same-pass guarantee because, absent an
+      executor, the loop has no end-of-stream signal to misread a
+      not-yet-subscribed slot as — which is exactly why `--mount` +
+      `--realtime` stays refused: an ASGI mount brings that signal. A
+      WebSocket hold under the pool is a legible 409 until inbound messages
+      can reach a pool thread (docs/ROADMAP.md, "Hold on a pool thread").
     - **The shutdown join is bounded, and leaving is correct.** A response
       that never ends -- a `StreamingHttpResponse` served under WSGI, which
       buffers it -- holds its pool thread for the life of the process, and
@@ -415,7 +425,10 @@ back-edge pulls it in — `event_loop.mojo` → `m0_http.log` →
 ## The handler contract
 
 `HTTPService` (`lightbug_http/service.mojo`) has nine methods and no
-defaults: `func`, `before_request`, `after_response`, four SSE hooks —
+defaults: `func`, `before_request` (called on the LOOP before a request
+is offloaded to a pool thread — what answers it there never becomes a
+job; `WSGIHandler` answers static mounts and the health path this way),
+`after_response`, four SSE hooks —
 `sse_drain_slot`, `sse_is_streaming`, `sse_slot_disconnected`,
 `sse_peer_frame` (frames arriving over the cross-worker `BroadcastBus`; empty
 in non-streaming handlers) — `tick`, the application timer hook (fires
@@ -532,7 +545,7 @@ Properties of the design, not defects to fix in passing:
   `M0_BASE_URL`, `M0_API_KEY`, `M0_WORKERS`, `M0_THREADS` (mutually
   exclusive with `M0_WORKERS>1`; free-threaded CPython only),
   `M0_BLOCKING_THREADS` (handler threads per loop; composes with either of
-  those, refused with `--realtime`), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
+  those and with `--realtime`), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
   `M0_APP_TICK_MS`. `m0serve` layers flags on top (flag > env > default) and
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that

@@ -794,6 +794,32 @@ design could be wrong:
   has the interpreter busy" — which is the hostage problem stated from the
   inside. After (1) that sentence is about the pool, not about the loop.
 
+**Stage 1 shipped (2026-08-26): SSE holds on pool threads.** `--realtime
+--blocking-threads N` is accepted; a pool thread takes the hold and sends
+it to the loop's registries as a reserved `h` frame on that loop's own bus
+channel (`OffloadPool.hold_notify_fd` → `ThreadContext.hold_fd` →
+`WSGIHandler.hold_notify_fd`; `sse_peer_frame` subscribes), before the
+response completes. The ordering question resolved in the design's favour
+without needing a same-pass guarantee: with no executor there is no
+end-of-stream signal for the loop to misread, so a frame drained a pass
+late is a stream that starts a pass late, and publishes are FIFO behind it.
+That is also why the `--mount` refusal stays — an ASGI mount brings the
+signal — and why a WebSocket hold under the pool is a 409 that says so,
+until inbound messages can reach a pool thread. `smoke-django-realtime`
+phase 5 pins it: two 1.5 s views in flight, a subscribe and a publish still
+land well inside a second, heartbeats keep coming, a vanished client is
+unsubscribed, SIGTERM exits 0. Under `--threads` each loop's pool writes to
+its own loop's channel (`ThreadedServer.bus_write_fds`). Building it found
+one more thing the refusal had been hiding: under a pool, `/health` was
+answered by a pool thread's handler, whose registries are never the ones
+being drained, so it reported zero subscribers while events were being
+delivered. The loop's `before_request` now runs *before* the offload and
+answers static mounts and the health path itself (`answers_local`) — it
+used to run only on the queue-full fallback, so under a pool the hook had
+never fired on the loop at all. Measured on textshelf after: fast-path p50
+0.3 ms with eight slow views in flight, four streams held on pool threads
+across three workers, all four delivered.
+
 **Is it a significant advance?** For (1), yes, and by a distance: it is the
 difference between the realtime claim being demonstrable and being
 deployable. Every application with a slow view and a stream — which is
