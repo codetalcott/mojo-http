@@ -645,8 +645,11 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
      with-Python row was comparing unlike things. And it renders a *stated
      absence* for `mixed-workload` rather than omitting it: the pool's
      ~100x p99 improvement is the strongest claim here and the only one
-     without an artifact. Remaining: record that artifact, and re-run the
-     other four, which predate the `--target-cpu` pin.
+     without an artifact. **Closed 2026-08-26**: that artifact exists, the
+     WSGI layer split was re-run post-pin, and the page's prose was
+     corrected by `check_bench_prose` naming all sixteen stale sentences.
+     Two ASGI artifacts still predate the pin — provenance hygiene, not a
+     correction in waiting, since the pin measured byte-identical.
   4. **Agent affordances**: an `llms.txt`; a `--doctor` / machine-readable
      startup diagnostic; error messages and refusals already explain
      themselves and name their fix — document that as a contract rather
