@@ -457,16 +457,29 @@ values returns unchanged.
   3.13 container and ~3.5x on free-threaded 3.14.7t, with
   comparable-or-better p99 in both keep-alive and close-per-request modes.
   Against **Granian**, whose own `--blocking-threads` is the architecture
-  copied above, the picture has changed with the bridge work: on a bare WSGI
-  callable **m0serve is now slightly ahead at four workers** (101.9k vs
-  98.5k rps) and 2.50x behind at one (48.9k vs 122.3k), where it was 4.3x
-  behind before. What remains at one worker is no longer mostly the bridge:
-  it splits evenly, 1.58x HTTP layer and 1.58x bridge — `apps/hello` serves
-  the same 13-byte response at 77.5k rps with no Python in the path.
-  Methodology, the layer split, and the leak that once made this paragraph
-  less flattering: [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md).
-- **Responses are fully buffered.** There is no chunked encoding, so
-  `StreamingHttpResponse` and `FileResponse` are materialized in memory.
+  copied above, m0serve is **behind on raw WSGI throughput and the gap is
+  located**: normalized per measured core, 83.8k against 101.1k rps/core on
+  a bare callable — about 0.83x. The split says where it goes. `apps/hello`,
+  the same server with no Python in the path, runs at 121.0k rps/core —
+  above Granian's end-to-end rate — so m0serve's own bridge costs 1.44x, and
+  essentially all of the deficit is that crossing rather than HTTP parsing
+  or the event loop. How much of Granian's rate its *own* bridge costs is
+  not measurable from this run: there is no Granian-without-Python row.
+
+  Per *core*, because the comparator was not running one: Granian's
+  `--workers 1` was measured at ~1.75 cores across its runtime's I/O
+  threads, so raw-rps ratios had been comparing 1.75 cores against one.
+  Every number here cites a dated artifact —
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) is the page, and it states the
+  ASGI comparison against uvicorn (also a loss) beside this one;
+  [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md) is the working record,
+  including the leak that once made this paragraph less flattering and the
+  re-measurement that retired its previous numbers.
+- **WSGI responses are fully buffered**, so `StreamingHttpResponse` and
+  `FileResponse` are materialized in memory. Not for want of chunked
+  encoding — the server has it, and ASGI responses stream through the
+  executor chunk-framed on HTTP/1.1. It is PEP 3333: a WSGI response
+  carries a `Content-Length`, which means knowing the length.
 - **Request bodies are fully buffered too**, capped by
   `ServerConfig.max_request_body_size` (4 MB default). Raise it for uploads.
 - **No TLS.** `wsgi.url_scheme` is always `http`; terminate at a proxy and set
