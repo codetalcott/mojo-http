@@ -7,12 +7,11 @@ artifacts and compared at the precision they are written to. Both are
 CI-checked: a hand-edited table, or a sentence whose number has drifted,
 fails the build naming the file.
 
-Three groups of numbers are **not** covered by that, and each says so where
-it appears — the performance/efficiency core split, the cross-session
-variance figure, and the slow-view isolation result. They come from
-measurements taken before the artifact system existed. The last of those is
-the strongest claim on this page, which is exactly why it is flagged rather
-than blended in.
+Two figures are **not** covered by that, and each says so where it appears:
+the performance/efficiency core split and the cross-session variance
+number. Both are recorded observations from before the artifact system
+existed. The slow-view isolation result used to be the third and largest of
+them; it has an artifact now.
 
 That is the only unusual claim this page makes. The performance claims
 themselves are mixed: **m0serve is not the fastest server in this
@@ -42,13 +41,18 @@ Five caveats, stated before the numbers rather than under them.
   server plus the load generator fit in the P-cores: on this box, 1 and 2
   workers. The 4-worker rows measure the scheduler, not the server, and are
   kept because removing them would hide that.
-- **The artifacts below predate the `--target-cpu` baseline pin** (commit
-  `30f044a`), visible in each region's `commit` line. The pin's cost was
-  measured separately and was zero — byte-identical code — so the numbers
-  are not expected to move, but the provenance is one commit stale until
-  the runs are repeated. Said here rather than discovered later.
-- **One claim on this page has no artifact**, and it is the strongest one.
-  See [Slow-view isolation](#slow-view-isolation) below.
+- **The two ASGI artifacts predate the `--target-cpu` baseline pin** (commit
+  `30f044a`), visible in their `commit` lines; the WSGI and isolation
+  artifacts were recorded after it. The pin's cost was measured separately
+  and was zero — byte-identical code — so re-running the ASGI pair is
+  provenance hygiene rather than a correction in waiting. Said here rather
+  than discovered later.
+- **One anomalous round per run is normal on this box.** Three recorded
+  runs of the layer split each had exactly one round land well off the
+  other two, in a different position each time — which is why every bench
+  here takes the median of three rather than a mean of one. The medians
+  from those three runs agree to within 0.03 on the per-core ratio; the
+  individual rounds do not.
 
 The comparators are Granian 2.8.1 and uvicorn, both run with their own
 recommended settings, and every row is a single process unless the label
@@ -71,16 +75,16 @@ part that parses HTTP and the part that calls Python locates the gap
 instead of reporting one number for both:
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
-Source: [`layer-split-20260825T165536Z.json`](../bench/results/layer-split-20260825T165536Z.json) — 2026-08-25T16:55:36+00:00, commit `1670230` (dirty tree).
+Source: [`layer-split-20260826T135108Z.json`](../bench/results/layer-split-20260826T135108Z.json) — 2026-08-26T13:51:08+00:00, commit `476358b`.
 Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `apps/hello` — mojo-http HTTP layer, zero Python | 118,599 | 0.98 | 121,020 |
-| `m0serve` + bare WSGI, 1 worker | 82,146 | 0.98 | 83,823 |
-| `granian` + bare WSGI, 1 worker | 176,858 | 1.75 | 101,062 |
-| `m0serve` + bare WSGI, 4 workers | 160,619 | 3.14 | 51,152 |
-| `granian` + bare WSGI, 4 workers | 142,435 | 4.42 | 32,225 |
+| `apps/hello` — mojo-http HTTP layer, zero Python | 106,629 | 0.92 | 115,901 |
+| `m0serve` + bare WSGI, 1 worker | 82,629 | 0.97 | 85,185 |
+| `granian` + bare WSGI, 1 worker | 175,015 | 1.75 | 100,009 |
+| `m0serve` + bare WSGI, 4 workers | 158,338 | 3.12 | 50,750 |
+| `granian` + bare WSGI, 4 workers | 141,571 | 4.18 | 33,869 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
@@ -88,11 +92,11 @@ Cores are measured (sampled `%cpu` of the pids on the listen socket), not config
 Read down the `rps/core` column at one worker. Three numbers, and the
 arithmetic between them is the finding:
 
-- the HTTP layer with no Python at all (`apps/hello`) runs at **121.0k
-  rps/core** — above Granian's end-to-end **101.1k**
-- put the same bare WSGI application behind it and m0serve runs at **83.8k
-  rps/core**, so **its own bridge costs 1.44x**
-- net, m0serve is **0.83x Granian per core**; Granian is 1.21x ahead
+- the HTTP layer with no Python at all (`apps/hello`) runs at **115.9k
+  rps/core** — above Granian's end-to-end **100.0k**
+- put the same bare WSGI application behind it and m0serve runs at **85.2k
+  rps/core**, so **its own bridge costs 1.36x**
+- net, m0serve is **0.85x Granian per core**; Granian is 1.17x ahead
 
 So the deficit is the bridge — the per-request crossing into CPython — and
 not the parsing or the event loop, which is the whole reason to split the
@@ -102,11 +106,11 @@ measurement rather than report one number.
 because there is no Granian-without-Python row to divide by. A cleaner
 decomposition — "1.0x HTTP layer × 1.35x bridge" — appeared in the working
 record and does not reconcile with this artifact: the measured gap is
-1.21x, and for a 1.35x bridge term to hold, the HTTP layer would have to be
+1.17x, and for a 1.35x bridge term to hold, the HTTP layer would have to be
 0.89x, which contradicts the row above it. Corrected rather than repeated;
 the per-side split needs a measurement nobody has taken yet.
 
-Quoting the 121.0k hello row against Granian's 101.1k would be comparing a
+Quoting the 115.9k hello row against Granian's 100.0k would be comparing a
 server that runs no Python to one that does. It is on this page because it
 locates the cost, not because it is a win.
 
@@ -173,23 +177,50 @@ zero threads, where the buffered bridge takes 12 s.
 
 ## Slow-view isolation
 
-The strongest claim this project makes, and **the one without an
-artifact.** A synchronous view that blocks holds the connections pinned to
+The strongest claim this project makes, and now the one with an artifact
+behind it. A synchronous view that blocks holds the connections pinned to
 its event loop; `--blocking-threads N` puts a pool of handler threads
-behind each loop so it stops doing that. Measured, the fast-route p99 goes
-from ~195 ms under two concurrent slow views to ~2 ms, in both execution
-modes — a change of about 100x, and the largest effect recorded anywhere in
-this repository.
+behind each loop so it stops doing that.
 
-Those numbers are hand-written in
-[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md#stage-b-measured-the-pool-removes-it).
-They predate the artifact system, so the claim that most deserves a
-machine-readable source is currently the one without one. That is stated
-here rather than quietly omitted:
+Read the first two rows across, then the next two. Without the pool the
+fast-route p99 climbs from ~1 ms to ~195 ms as slow views are added — most
+of the 200 ms hold, which is what "the connections pinned behind it" means
+arithmetically. With the pool it does not move. **That is a ~100x change
+and the largest effect recorded anywhere in this repository**, and it holds
+in both execution modes, which is the part that matters: prefork and
+threads fail identically and are fixed identically.
+
+The control is the point. Both halves run in one pass, so the rows without
+the flag have to keep failing for the rows with it to mean anything.
 
 <!-- generated: mixed-workload -- edit bench/results, not this table -->
-_No `mixed-workload` artifact has been recorded yet._ `scripts/bench_mixed_workload.sh` records one; the numbers quoted in the prose above predate the artifact system and are therefore the one claim on this page without a machine-readable source. Reproducing it is documented in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md#reproducing).
+Source: [`mixed-workload-20260826T141514Z.json`](../bench/results/mixed-workload-20260826T141514Z.json) — 2026-08-26T14:15:14+00:00, commit `c182b62`.
+Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4 (10 cores); wrk -c16 -d10s, 2 rounds, medians.
+
+| configuration | slow=0 | slow=1 | slow=2 |
+|---|---|---|---|
+| `--workers 4` | 1.0 ms | 190.7 ms | 195.9 ms |
+| `--threads 4` | 1.7 ms | 195.2 ms | 200.5 ms |
+| `--workers 4 +bt=4` | 2.4 ms | 7.4 ms | 7.4 ms |
+| `--threads 4 +bt=4` | 2.2 ms | 2.5 ms | 1.6 ms |
+| `granian bt=4` | 0.6 ms | 0.5 ms | 0.6 ms |
+
+Fast-route p99, median across rounds, as concurrent slow requests are added. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
 <!-- /generated: mixed-workload -->
+
+**And the comparator's row is better than ours.** Granian's own
+`--blocking-threads` is the architecture this feature copied, and its
+fast-route p99 stays at ~0.6 ms across all three slow levels — flat, like
+ours, but roughly 4x lower than our best row and 12x lower than
+`--workers 4 +bt=4`. So the honest claim is the one about the *stall*: the
+pool removes a hundredfold failure that is there without it. It does not
+also win the tail that remains.
+
+That row could not appear in this repository's earlier record of this
+benchmark, which noted granian was absent because it is not in the lock
+file's default groups. It is in the `bench` group, pinned at the version
+every number here names, and installing it is one flag:
+`uv sync --group bench`.
 
 ## What this page does not measure
 

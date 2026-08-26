@@ -3191,7 +3191,23 @@ shell = """
 set -u
 fail() { echo "smoke-wheel: $1" >&2; exit 1; }
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# The server pid joins the trap as soon as it exists. It used to be killed
+# only on the success path, so every `fail` after the launch left a server
+# running -- and the launch itself leaked one every time (see step 6).
+srv=""
+cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; rm -rf "$work"; }
+trap cleanup EXIT
+
+# The port must be free BEFORE the run, because the server sets SO_REUSEPORT
+# (prefork needs it) so the kernel adds this listener ALONGSIDE any stale one
+# and load-balances between them. A leaked server from an earlier run can
+# then answer this smoke's request and the assertions pass against a binary
+# that is not the one under test. Not hypothetical: nine of them accumulated
+# over a day of development, and one was still answering 200 OK a day later.
+if command -v lsof >/dev/null 2>&1; then
+  stale=$(lsof -nP -iTCP:8129 -sTCP:LISTEN -t 2>/dev/null | tr '\n' ' ')
+  [ -z "$stale" ] || fail "port 8129 already has a listener (pids: $stale) -- SO_REUSEPORT means this run could be answered by the wrong binary. Clear them: kill $stale"
+fi
 
 whl=$(ls dist/wheels/*.whl 2>/dev/null | head -1)
 [ -n "$whl" ] || fail "no wheel was built"
@@ -3278,14 +3294,20 @@ def application(environ, start_response):
     start_response("200 OK", [("Content-Type", "text/plain")])
     return [b"served from the wheel"]
 PY
-(cd "$work/app" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+# `exec`, so the subshell BECOMES the server and $! is the server's own pid.
+# Without it, `cd ... && env ...` is a list that bash cannot exec-optimize, so
+# $! was the SUBSHELL: `kill $pid` killed the wrapper and left m0serve
+# orphaned to init. That is exactly how the stale listeners were made.
+# bench_mixed_workload.sh already does it this way.
+(cd "$work/app" && exec env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
   -u LD_LIBRARY_PATH -u MOJO_PYTHON_LIBRARY -u VIRTUAL_ENV \
   "$work/venv/bin/m0serve" wheelapp:application --port 8129 > "$work/wheel.log" 2>&1) &
 pid=$!
+srv=$pid
 curl --retry 25 --retry-delay 1 --retry-all-errors --silent --fail \
   http://127.0.0.1:8129/ > "$work/body" || { cat "$work/wheel.log"; kill $pid 2>/dev/null; fail 'never became healthy'; }
 grep -q 'served from the wheel' "$work/body" || { kill $pid 2>/dev/null; fail 'wrong body'; }
-kill $pid 2>/dev/null; wait $pid 2>/dev/null
+kill $pid 2>/dev/null; wait $pid 2>/dev/null; srv=""
 
 # 7. Removal sabotage, permanent. If the binary still starts once its runtime
 #    is gone, it is resolving it from somewhere else -- the build venv -- and

@@ -7,7 +7,64 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`smoke-wheel` leaked a server on every run, and could pass against the
+  wrong binary.** Nine orphaned `m0serve` processes accumulated over one
+  day of development, all still `LISTEN`ing on port 8129, one of them still
+  answering `200 OK` a day after the run that made it.
+
+  Two independent defects. The launch was
+  `(cd "$work/app" && env ... m0serve ...) &` — a *list*, which bash cannot
+  exec-optimize, so `$!` was the **subshell** rather than the server.
+  `kill $pid` killed the wrapper and left `m0serve` orphaned to init. Adding
+  `exec` makes the subshell become the server, which is how
+  `bench_mixed_workload.sh` had been doing it all along. And the `EXIT` trap
+  only removed the temp directory, so every `fail` after the launch leaked
+  one too; the server pid is in the trap now.
+
+  The consequence was worse than untidiness. The server sets `SO_REUSEPORT`
+  because prefork needs it, so the kernel adds a new listener **alongside**
+  a stale one and load-balances between them: a leaked server from an
+  earlier run can answer this smoke's request, and the assertions then pass
+  against a binary that is not the one under test. `smoke-wheel` now refuses
+  to start when 8129 already has a listener, naming the pids and the command
+  to clear them.
+
+  Verified by running the pre-fix task once (leaks exactly one process,
+  `ppid 1`) against the fixed one (leaks none, on both the success and the
+  failure path), and by putting a decoy listener on 8129 to trip the new
+  refusal.
+
 ### Added
+
+- **The isolation benchmark has an artifact, and the ratchet caught sixteen
+  stale sentences.** Gate 3's last item. `bench/results/` now carries a
+  `mixed-workload-*.json` — the pool's ~100x p99 claim, the largest effect
+  in this repository and previously the only one with no machine-readable
+  source — plus a post-pin re-run of the WSGI layer split.
+
+  Re-rendering moved every derived figure, and `check_bench_prose` failed
+  the build naming **all sixteen** prose sentences that had gone stale
+  across README.md, docs/BENCHMARKS.md and docs/WSGI_PERFORMANCE.md, each
+  with the value it claimed and the value the artifact computes. That is
+  the whole reason it exists: the tables re-render themselves, and before
+  this the sentences around them would have quietly kept the old numbers.
+  Per-core ratio 0.83x → **0.85x**, bridge tax 1.44x → **1.36x**.
+
+  Two findings the run itself produced. **Granian's `--blocking-threads`
+  row is better than ours** — ~0.6 ms flat against our best ~2 ms — which
+  is now on the page, because the honest claim is that the pool removes a
+  hundredfold *stall*, not that it wins the tail that remains. And the
+  earlier note that granian "is not in this repo's lock file" was wrong: it
+  is, in the `bench` group at the pinned 2.8.1, one `uv sync --group bench`
+  away. That is why its row had been missing from the isolation table.
+
+  Recorded because it changes how these are read: **one anomalous round per
+  run is normal on this box.** Three recorded layer-split runs each had
+  exactly one round land well off the other two, in a different position
+  each time, while their medians agreed to within 0.03 on the per-core
+  ratio. Median-of-three is doing real work here, not ceremony.
 
 - **The first screen leads with what the server is for.** Gate 5. All three
   surfaces that have a first screen now open on the same claim — *realtime

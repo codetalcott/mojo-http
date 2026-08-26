@@ -728,17 +728,17 @@ descriptions of the present.
 **Corrected 2026-08-26.** This paragraph used to state the result as a
 decomposition — "roughly 1.0x HTTP layer × ~1.35x bridge" — and that does
 not reconcile with the artifact below it. The measured per-core gap is
-**1.21x** (101,062 / 83,823); a 1.35x bridge term would require an HTTP
+**1.17x** (100,009 / 85,185); a 1.35x bridge term would require an HTTP
 layer term of 0.89x, i.e. this server's HTTP layer *slower* than Granian's,
 which the same sentence denies. The error is structural rather than
 arithmetic: **a two-sided decomposition needs both sides measured**, and
 there is no Granian-without-Python row in this run to divide by. What the
 artifact does support:
 
-- `apps/hello`, no Python in the path: **121,020 rps/core**
-- m0serve + bare WSGI: **83,823 rps/core** — so *this server's* bridge
-  costs **1.44x**
-- Granian + bare WSGI: **101,062 rps/core** — so the net is **0.83x**
+- `apps/hello`, no Python in the path: **115,901 rps/core**
+- m0serve + bare WSGI: **85,185 rps/core** — so *this server's* bridge
+  costs **1.36x**
+- Granian + bare WSGI: **100,009 rps/core** — so the net is **0.85x**
 
 Granian's own bridge cost is unknown here, and a per-side split needs a
 `granian`-equivalent of the hello row. The figure had been propagated into
@@ -753,16 +753,16 @@ Within-run ratios are the signal; absolute rows are not comparable across
 dated sections of this file.
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
-Source: [`layer-split-20260825T165536Z.json`](../bench/results/layer-split-20260825T165536Z.json) — 2026-08-25T16:55:36+00:00, commit `1670230` (dirty tree).
+Source: [`layer-split-20260826T135108Z.json`](../bench/results/layer-split-20260826T135108Z.json) — 2026-08-26T13:51:08+00:00, commit `476358b`.
 Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `apps/hello` — mojo-http HTTP layer, zero Python | 118,599 | 0.98 | 121,020 |
-| `m0serve` + bare WSGI, 1 worker | 82,146 | 0.98 | 83,823 |
-| `granian` + bare WSGI, 1 worker | 176,858 | 1.75 | 101,062 |
-| `m0serve` + bare WSGI, 4 workers | 160,619 | 3.14 | 51,152 |
-| `granian` + bare WSGI, 4 workers | 142,435 | 4.42 | 32,225 |
+| `apps/hello` — mojo-http HTTP layer, zero Python | 106,629 | 0.92 | 115,901 |
+| `m0serve` + bare WSGI, 1 worker | 82,629 | 0.97 | 85,185 |
+| `granian` + bare WSGI, 1 worker | 175,015 | 1.75 | 100,009 |
+| `m0serve` + bare WSGI, 4 workers | 158,338 | 3.12 | 50,750 |
+| `granian` + bare WSGI, 4 workers | 141,571 | 4.18 | 33,869 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
@@ -869,9 +869,22 @@ anything.
 **Different machine from the table above** (an M4, 4P+6E, macOS, 3.14.7t, two
 rounds) so the absolutes are not comparable to the Linux-container rows; the
 rows here are comparable to *each other*, which is the whole design of the
-run. `granian` is absent because it is not in this repo's lock file and a
-swapped venv therefore has none — its flat row is recorded in the section
-above and was the reference the design copied, not part of this gate.
+run.
+
+**Superseded 2026-08-26 by an artifact.** The numbers in this section were
+recorded before `bench_record.py` existed and are kept as the narrative of
+how the pool was justified; the current, machine-readable version is
+rendered on [BENCHMARKS.md](BENCHMARKS.md#slow-view-isolation) from
+`bench/results/mixed-workload-*.json`, and `check_bench_prose` holds the
+prose around it to the file. The shape reproduced exactly — ~1 ms → ~195 ms
+without the flag, flat with it, in both execution modes.
+
+That run also retired this paragraph's note that `granian` is absent
+"because it is not in this repo's lock file". It *is* in the lock file, in
+the `bench` group, pinned at 2.8.1 — `uv sync --group bench`. With it
+installed its row appears, and it is better than ours: ~0.6 ms flat, about
+4x below our best. The pool's claim is that it removes the stall, not that
+it wins the remaining tail.
 
 Fast-route p99, by how many slow requests are in flight (both rounds):
 
