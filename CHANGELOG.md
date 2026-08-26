@@ -7,6 +7,35 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Documentation
+
+- **A plan to exercise the server against applications nobody wrote to test
+  it** ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). Every app in
+  `apps/` exists to pin a spec clause or demo a feature; none carries a
+  dependency tree somebody else chose. The precedent for why that matters is
+  already in the known issues: the one dogfooding session against a real
+  Django project found the `--app-dir` shadowing bug, and nothing in `apps/`
+  could have shown it. Staged from `--doctor` through byte-parity against the
+  incumbent server, a feature matrix aimed at the documented limits, the
+  topology matrix, a realtime retrofit, and a soak. Read-only against the
+  target projects, and every finding must land as a fix, a documented limit,
+  or a smoke.
+
+- **The desktop-Mac hypothesis, and the packaging tension under it**
+  (ROADMAP, Open questions). Recorded because the relevant decision is
+  already shipped and otherwise invisible: `poe build-serve` pins
+  `--target-cpu` to `apple-m1`, the *oldest* Apple Silicon, so the PyPI
+  wheel deliberately forfeits M-series-specific capability — including the
+  +sme/+sme2 matrix extension the build comment notes this M4 would
+  otherwise target. The pin exists because the first release crashed with
+  SIGILL in a clean container, so it is not a mistake to undo; it is a
+  tradeoff that points the other way from "exploit the Mac's silicon", and
+  the two should be reconciled deliberately. Also recorded: what has to be
+  established first, including that this toolchain has no `gpu` module at
+  all, and that the neural engine is a CoreML surface rather than something
+  a language targets directly.
+
+
 ### Fixed
 
 - **`smoke-wheel` leaked a server on every run, and could pass against the
