@@ -85,6 +85,20 @@ versions may break the API**.
 
 ### Fixed
 
+- **The README quoted a decomposition its own measurements had retired.**
+  It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
+  1.58x bridge" — numbers from before the CPU-normalized re-run, which
+  WSGI_PERFORMANCE.md had already replaced with ~1.0x × 1.35x and explicitly
+  marked as "records of what was measured, not descriptions of the
+  present". The README kept quoting them, in raw rps, against a comparator
+  since found to be running 1.75 cores. Rewritten from the artifact.
+
+- **"There is no chunked encoding" was no longer true.** The server has
+  chunked transfer-encoding and ASGI responses stream through the executor
+  chunk-framed on HTTP/1.1. WSGI responses are still fully buffered, but
+  the reason is PEP 3333 — a WSGI response carries a `Content-Length`,
+  which means knowing the length — not a missing feature.
+
 - **The PyPI project page told aarch64 users their wheel did not exist.**
   0.11.0 shipped a `manylinux_2_35_aarch64` wheel and its release notes
   claimed "the platform matrix on the README is the platform matrix on the
