@@ -130,6 +130,19 @@ versions may break the API**.
 
 ### Fixed
 
+- **`--app-dir` is prepended to `sys.path`, not appended.** It appended
+  where gunicorn, uvicorn and `runserver` all `sys.path.insert(0, ...)`, so
+  an application module could be shadowed by an installed package of the
+  same name — and the shadowed application simply is not the one served,
+  with nothing to see. The help text, `cli.mojo` and `app.mojo` had all
+  said "prepended" since the flag existed; now it is true.
+  `prepend_to_path` also declines to move an entry already at the front,
+  and leaves duplicates further down alone — a path the user put there is
+  not the server's to edit. Found by dogfooding the wheel, reconfirmed by
+  the three-project pass, and guarded by a `smoke-serve` phase that puts a
+  module named `django` under `--app-dir` in a venv where the real Django
+  is installed.
+
 - **Every `Set-Cookie` an application set lost its `expires` and `SameSite`
   attributes.** The WSGI/ASGI bridge parsed each `Set-Cookie` line into a
   `Cookie` and re-serialised it, and that round trip was lossy four ways:

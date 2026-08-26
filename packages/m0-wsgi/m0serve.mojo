@@ -73,7 +73,7 @@ from m0_wsgi import (
     AsgiExecutor, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
     effective_cpus, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
-    M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
+    M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
 
 
@@ -510,7 +510,7 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         report.add_bool(String("application"), String("requested"), True)
         try:
             if opts.app_dir.byte_length() > 0 and isdir(opts.app_dir):
-                Python.add_to_path(opts.app_dir)
+                prepend_to_path(opts.app_dir)
             if len(opts.mount_prefixes) > 0:
                 is_asgi = _resolve_mounts(opts)
             else:
@@ -757,7 +757,7 @@ def main() raises:
     var is_asgi: Bool
     try:
         if opts.app_dir.byte_length() > 0:
-            Python.add_to_path(opts.app_dir)
+            prepend_to_path(opts.app_dir)
         if len(opts.mount_prefixes) > 0:
             is_asgi = _resolve_mounts(opts)
         else:
@@ -1058,7 +1058,7 @@ def _serve_threaded(
     """
     require_free_threading(opts.threads)
     if opts.app_dir.byte_length() > 0:
-        Python.add_to_path(opts.app_dir)
+        prepend_to_path(opts.app_dir)
     # Import once on main (so Django's setup() runs single-threaded) and
     # detect the protocol while at it — the imports below are sys.modules
     # hits for every serving thread.

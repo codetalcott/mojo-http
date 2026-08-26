@@ -678,7 +678,7 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   in-repo application could have shown — and one finding about the shape
   of the server itself, which is the section below. The precedent held: the
   *one* earlier dogfooding session found the `--app-dir` shadowing bug,
-  which is still open.
+  which this pass reconfirmed and which is now fixed.
 
   Sequencing: gate 1 first (it ages in the wild while the rest proceed);
   gates 2–4 in any order; announce only when all five are done. The
@@ -964,19 +964,6 @@ otherwise be invisible to whoever picks this hypothesis up.
   Deferred: it adds a container build to the release path for reach the
   first quiet 0.x does not need, and `pip` declines the wheel cleanly rather
   than installing something that crashes.
-- **`--app-dir` is appended to `sys.path`, not prepended**, so an
-  application module can be shadowed by an installed package of the same
-  name — the opposite of gunicorn, uvicorn and `runserver`, all of which
-  `sys.path.insert(0, ...)`. `m0serve.mojo` calls `Python.add_to_path`,
-  which appends; the flag's help text, `cli.mojo:136` and `app.mojo:96` all
-  say "prepended". Found by dogfooding the wheel against a real Django
-  project, where the reported `sys.path` put `--app-dir` after
-  site-packages. Not fixed in passing because changing import precedence can
-  break an application that (accidentally) depends on the current order, so
-  it wants its own change and its own test. Also visible there and harmless:
-  `argv[0]`'s directory is `sys.path[0]`, which under a wheel install is the
-  package's `_bin/` — it contains no `.py` files, so nothing can resolve
-  through it.
 - Negotiation covers `Accept`, `Accept-Encoding` (`negotiate_encoding` —
   codec-agnostic, for callers with precompressed variants; the framework
   deliberately ships no compressor), and `Accept-Language`
@@ -1067,6 +1054,21 @@ otherwise be invisible to whoever picks this hypothesis up.
   everything else — but it remains in the fork for the simplest embeddings.
 
 ## Recently resolved
+
+- ~~**`--app-dir` is appended to `sys.path`, not prepended**~~ — **fixed
+  2026-08-26.** It appended where gunicorn, uvicorn and `runserver` all
+  `sys.path.insert(0, ...)`, so an application module could be shadowed by
+  an installed package of the same name — invisible until it happened, and
+  then invisible again because the wrong module simply serves. Found by
+  dogfooding the wheel against a real Django project, reconfirmed by the
+  three-project pass (a probe reported `--app-dir` at `sys.path[5]`, after
+  site-packages), and fixed with `prepend_to_path`, which also declines to
+  move an entry already at the front. The deferral was about risk —
+  changing import precedence can break an application that accidentally
+  depends on the order — and what retired it was having three real Django
+  projects to check against. `smoke-serve` puts a module named `django`
+  under `--app-dir` in a venv where the real Django is installed and
+  requires ours to win; sabotaged back to appending, it fails.
 
 - **A bare `://` anywhere in a request target was read as a scheme**, and the
   request answered `400` before reaching the application. `URI.parse` decided
