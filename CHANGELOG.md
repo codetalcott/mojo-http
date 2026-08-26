@@ -7,6 +7,35 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`smoke-wheel` leaked a server on every run, and could pass against the
+  wrong binary.** Nine orphaned `m0serve` processes accumulated over one
+  day of development, all still `LISTEN`ing on port 8129, one of them still
+  answering `200 OK` a day after the run that made it.
+
+  Two independent defects. The launch was
+  `(cd "$work/app" && env ... m0serve ...) &` — a *list*, which bash cannot
+  exec-optimize, so `$!` was the **subshell** rather than the server.
+  `kill $pid` killed the wrapper and left `m0serve` orphaned to init. Adding
+  `exec` makes the subshell become the server, which is how
+  `bench_mixed_workload.sh` had been doing it all along. And the `EXIT` trap
+  only removed the temp directory, so every `fail` after the launch leaked
+  one too; the server pid is in the trap now.
+
+  The consequence was worse than untidiness. The server sets `SO_REUSEPORT`
+  because prefork needs it, so the kernel adds a new listener **alongside**
+  a stale one and load-balances between them: a leaked server from an
+  earlier run can answer this smoke's request, and the assertions then pass
+  against a binary that is not the one under test. `smoke-wheel` now refuses
+  to start when 8129 already has a listener, naming the pids and the command
+  to clear them.
+
+  Verified by running the pre-fix task once (leaks exactly one process,
+  `ppid 1`) against the fixed one (leaks none, on both the success and the
+  failure path), and by putting a decoy listener on 8129 to trip the new
+  refusal.
+
 ### Added
 
 - **The isolation benchmark has an artifact, and the ratchet caught sixteen
