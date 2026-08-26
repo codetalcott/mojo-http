@@ -1,10 +1,12 @@
 # m0serve
 
-> A WSGI/ASGI server for Python applications, written in Mojo. `pip install
-> m0serve` — no Mojo toolchain, no dependencies, nothing fetched at install.
-> Its distinguishing capability: held SSE and WebSocket connections gated by
-> plain synchronous views (Django, Flask, ...), with cross-worker publish —
-> no Channels, no Redis, no second process.
+> Realtime from a synchronous Python app, with no added infrastructure.
+> A WSGI/ASGI server written in Mojo: `pip install m0serve` — no Mojo
+> toolchain, no dependencies, nothing fetched at install. Its distinguishing
+> capability: held SSE and WebSocket connections gated by plain synchronous
+> views (Django, Flask, ...), with cross-worker publish — no Channels, no
+> Redis, no daphne, no second process. It is NOT the fastest server on raw
+> throughput and docs/BENCHMARKS.md says so with numbers.
 
 Platforms: macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact
 floor is in the wheel filename — pip refuses rather than crashes on older

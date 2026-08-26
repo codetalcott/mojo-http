@@ -9,6 +9,24 @@ versions may break the API**.
 
 ### Added
 
+- **The first screen leads with what the server is for.** Gate 5. All three
+  surfaces that have a first screen now open on the same claim — *realtime
+  from a synchronous Python app, with no added infrastructure* — with the
+  hero shown as six lines of ordinary sync Django rather than described:
+  README.md, `packaging/m0serve/README.md` (which is what PyPI renders, and
+  is the one nothing was checking until this release), and `llms.txt`.
+
+  The gaps are on the first screen rather than in an issue: no TLS or
+  HTTP/2 (terminate at a proxy), the platform floors, pre-1.0, and — stated
+  with numbers and a link — that this is **not** the fastest server on raw
+  throughput. A page that hid that would be contradicted by the benchmark
+  page two clicks away.
+
+  The snippet was run before it was published: a Django app containing
+  exactly those six lines, served by `bin/m0serve --realtime`, delivers
+  `id: 2 / data: deploy finished` to a live `curl -N` subscriber. The
+  fuller path stays covered in CI by `smoke-quickstart`.
+
 - **[docs/BENCHMARKS.md](docs/BENCHMARKS.md): the public benchmark page,
   and it leads with the losses.** Gate 3 of the launch checklist. Four
   generated regions across two documents, all driven by
@@ -67,33 +85,6 @@ versions may break the API**.
 
 ### Fixed
 
-- **The bench prose was answerable to nothing, and it was wrong.**
-  `render_bench_docs` kept the generated *tables* honest; the sentences
-  around them — where the headline claims actually live — were checked by
-  no one. docs/WSGI_PERFORMANCE.md stated the WSGI result as a
-  decomposition, "roughly 1.0x HTTP layer × ~1.35x bridge", and it does not
-  reconcile with the artifact directly beneath it: the measured per-core gap
-  is **1.21x**, and a 1.35x bridge term requires an HTTP layer term of
-  0.89x — this server's HTTP layer *slower* than the comparator's, which
-  the same sentence denies.
-
-  The mistake is structural, not arithmetic. **A two-sided decomposition
-  needs both sides measured**, and there is no Granian-without-Python row to
-  divide by. What the artifact supports: `apps/hello` at 121,020 rps/core,
-  m0serve+WSGI at 83,823 (so *this server's* bridge costs 1.44x), Granian at
-  101,062 (so the net is 0.83x). Granian's own bridge cost is simply
-  unknown here.
-
-  It had already been copied into README.md and docs/BENCHMARKS.md before
-  anyone divided it out. So `check_docs.py` gained **`check_bench_prose`**:
-  nineteen figures across the three documents, each recomputed from the
-  newest artifact and compared *at the precision the sentence claims* —
-  "~1.2x" passes at 1.206 and fails at 1.35, while "1.21x" passes only at
-  1.205–1.214. A doc chooses its own strictness by how precisely it writes.
-  Verified by reinstating the original defect, and by landing a new
-  artifact with moved numbers: ten failures fire, naming every sentence
-  that needs updating.
-
 - **The README quoted a decomposition its own measurements had retired.**
   It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
   1.58x bridge" — numbers from before the CPU-normalized re-run, which
@@ -118,6 +109,23 @@ versions may break the API**.
   release. Two READMEs, one of them published, and the ratchet was pointed
   at the other.
 
+- **A README number quoted twice, guarded once.** The mounted-isolation
+  p99 (2.8 ms) now appears on the first screen as well as in the mounts
+  section. It is not artifact-backed — `hybrid_isolation.py` asserts a
+  deliberately generous ceiling rather than recording the figure — so
+  `check_hybrid_p99_consistent` checks the two copies against *each other*
+  instead. A number edited in one place and not the other is the ordinary
+  way a README starts contradicting itself.
+
+- **The bench prose was answerable to nothing, and it was wrong.**
+  `render_bench_docs` kept the generated *tables* honest; the sentences
+  around them — where the headline claims actually live — were checked by
+  no one. docs/WSGI_PERFORMANCE.md stated the WSGI result as a
+  decomposition, "roughly 1.0x HTTP layer × ~1.35x bridge", and it does not
+  reconcile with the artifact directly beneath it: the measured per-core gap
+  is **1.21x**, and a 1.35x bridge term requires an HTTP layer term of
+  0.89x — this server's HTTP layer *slower* than the comparator's, which
+  the same sentence denies.
 
 
 - **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its

@@ -659,7 +659,13 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   5. **The public name, decided once.** `mojo` is Modular's mark;
      `m0serve`/`m0-*` keep distance. Check PyPI availability during the
      wheel spike and lock the name before anything is published under it
-     — renames spend first impressions twice.
+     — renames spend first impressions twice. **Done.** Name settled and
+     claimed 2026-08-25; the first screen now leads with the realtime
+     claim on all three surfaces that have one — README.md,
+     `packaging/m0serve/README.md` (which is what PyPI renders, and was
+     the one nothing was checking) and `llms.txt`. The gaps are on the
+     first screen rather than in an issue: no TLS or HTTP/2, the platform
+     floors, pre-1.0, and the benchmark losses stated with numbers.
 
   Sequencing: gate 1 first (it ages in the wild while the rest proceed);
   gates 2–4 in any order; announce only when all five are done. The
