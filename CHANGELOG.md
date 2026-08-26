@@ -7,7 +7,35 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-26
+
+The release that makes three published claims true at once: the quickstart
+works against the PyPI package, `pip install m0serve` includes the publish
+helper the realtime story depends on, and the platform matrix on the
+README is the platform matrix on the index.
+
 ### Added
+
+- **`m0serve.m0pub` ships in the wheel.** The publish half of the realtime
+  feature — `m0pub.publish(channel, data)` from any sync view, one
+  `os.write` per worker plus an atomic fetch-add for the globally unique
+  event id. It was previously only in the repository's demo app, so a pip
+  user had a server that could hold connections and no way to publish to
+  them. Pure stdlib; degrades to 0 workers under any other WSGI server and
+  to unnumbered frames without the shared counter, exactly as documented.
+
+- **[QUICKSTART.md](QUICKSTART.md), and it is executable.** Ten minutes from
+  `pip install m0serve` to live multi-tab sync from one synchronous Django
+  file — SSE verified by curl with expected output stated, WebSockets in
+  the browser, cross-worker fan-out with `--workers 2`. CI extracts the
+  fenced blocks and runs them against the tree's own wheel on every pull
+  request (`poe smoke-quickstart`), so the doc a stranger follows is pinned,
+  not aspirational. It caught its own author before anyone else: a first
+  draft asserted event ids survive a server restart, and the runner failed
+  the doc — ids are unique across one server's workers, by design.
+
+- **`llms.txt`** — the operating contract for agents: strict flags, exit 78
+  refusals that explain themselves, the `M0-Hold` protocol, where to start.
 
 - **Linux aarch64 wheels** (Graviton, Ampere, arm64 Docker). The platform
   was already proven — built by hand in an arm64 container, passing the full
