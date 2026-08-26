@@ -635,6 +635,18 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
      provenance discipline as the WSGI_PERFORMANCE table: every number
      cites a dated, environment-stamped artifact, cores measured,
      methodology caveats (P/E cores, within-run ratios) stated up front.
+     **Written** ([BENCHMARKS.md](BENCHMARKS.md)): four generated regions
+     across two documents, `render_bench_docs.py` drives both and
+     `check-docs` fails on a hand-edited table. Two things it does
+     deliberately. It states the losses — ~0.83x Granian per core on bare
+     WSGI, 0.72x uvicorn on ASGI throughput — because the win it claims
+     (fast-request tail) is only credible beside them, and because the
+     positioning that quoted the zero-Python hello row against Granian's
+     with-Python row was comparing unlike things. And it renders a *stated
+     absence* for `mixed-workload` rather than omitting it: the pool's
+     ~100x p99 improvement is the strongest claim here and the only one
+     without an artifact. Remaining: record that artifact, and re-run the
+     other four, which predate the `--target-cpu` pin.
   4. **Agent affordances**: an `llms.txt`; a `--doctor` / machine-readable
      startup diagnostic; error messages and refusals already explain
      themselves and name their fix — document that as a contract rather

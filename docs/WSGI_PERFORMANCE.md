@@ -733,7 +733,7 @@ dated sections of this file.
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
 Source: [`layer-split-20260825T165536Z.json`](../bench/results/layer-split-20260825T165536Z.json) — 2026-08-25T16:55:36+00:00, commit `1670230` (dirty tree).
-Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4; wrk -c16 -d10s, 3 rounds, medians.
+Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|

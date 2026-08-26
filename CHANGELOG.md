@@ -9,6 +9,30 @@ versions may break the API**.
 
 ### Added
 
+- **[docs/BENCHMARKS.md](docs/BENCHMARKS.md): the public benchmark page,
+  and it leads with the losses.** Gate 3 of the launch checklist. Four
+  generated regions across two documents, all driven by
+  `render_bench_docs.py` and all CI-checked — hand-edit a table, or land a
+  new artifact without re-rendering, and `check-docs` fails naming the file.
+
+  Two things it does on purpose. It states plainly that m0serve is **~0.83x
+  Granian per measured core on bare WSGI and 0.72x uvicorn on ASGI
+  throughput**, because the win it does claim — fast-request p99 under
+  mixed load — is only credible next to them. And it renders a *stated
+  absence* for the mixed-workload bench rather than omitting it: the
+  handler pool's ~100x p99 improvement is the strongest claim in this
+  repository and currently the only one with no machine-readable source.
+
+  `render_bench_docs.py` grew from one region in one document to a table of
+  targets, with a renderer per bench kind. The isolation bench gets its own:
+  its finding is a comparison *across* slow levels within one configuration,
+  so the rows are pivoted — a flat row isolated the slow work, a climbing
+  one did not — and the percentiles are re-medianed from `rows`, since
+  `bench_record.medians()` folds only rps and cores. It also stops naming a
+  comparator the artifact's environment stamp recorded but the bench never
+  ran: on a public page, "granian 2.8.1" beside a table with no granian row
+  reads as if it had been measured and lost.
+
 - **`m0serve --doctor`: the configuration as JSON, starting nothing.** The
   launch checklist's machine-readable startup diagnostic, and the reason is
   narrower than "nice to have": every refusal this server makes already
@@ -42,6 +66,20 @@ versions may break the API**.
   only as a traceback at serve time.
 
 ### Fixed
+
+- **The README quoted a decomposition its own measurements had retired.**
+  It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
+  1.58x bridge" — numbers from before the CPU-normalized re-run, which
+  WSGI_PERFORMANCE.md had already replaced with ~1.0x × 1.35x and explicitly
+  marked as "records of what was measured, not descriptions of the
+  present". The README kept quoting them, in raw rps, against a comparator
+  since found to be running 1.75 cores. Rewritten from the artifact.
+
+- **"There is no chunked encoding" was no longer true.** The server has
+  chunked transfer-encoding and ASGI responses stream through the executor
+  chunk-framed on HTTP/1.1. WSGI responses are still fully buffered, but
+  the reason is PEP 3333 — a WSGI response carries a `Content-Length`,
+  which means knowing the length — not a missing feature.
 
 - **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its
   chain with `else: opts.metrics = True`, so a new flag added to `_is_bool`
