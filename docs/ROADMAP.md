@@ -758,7 +758,15 @@ thread as a tagged submit datagram the way the executor receives them
 SSE holds first, which is what textshelf's four pub/sub endpoints need and
 what the numbers above are about; sockets second.
 
-**2. `--realtime` with `--mount`.** Refused because an inbound WebSocket
+**2. `--realtime` with `--mount` — and it should come before the socket
+half.** Re-measuring `textshelf` after stage 1 settled the order
+([REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md), *Revisited*). Holds and
+an ASGI mount in one process is what a mixed application needs, because
+stream *shape* decides where an endpoint belongs: its four pub/sub
+endpoints convert to holds, while `ai/streaming.py` is a request-scoped
+generator whose view is the producer and which no hold can carry. That
+application opens no WebSocket against its own server, so the socket half
+buys it nothing. Refused today because an inbound WebSocket
 message "has no defensible destination" among several urlconfs. For an SSE
 hold there is nothing inbound to deliver, so the refusal is broader than its
 reason — and the reason has weakened since it was written:

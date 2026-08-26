@@ -223,6 +223,63 @@ sabotage rather than assumed:
 - `smoke-blocking-threads` — two views that never return, `SIGTERM`, and the
   process must exit inside 20 s naming what it abandoned.
 
+## Revisited after stage 1 (2026-08-26)
+
+`--realtime` composing with `--blocking-threads` changed the answer this
+record originally implied, so the question was re-measured rather than
+re-reasoned. Same laptop, same scratch SQLite, five events 0.3 s apart,
+arrival time of each event recorded by a client that reads incrementally —
+`curl -w %{time_starttransfer}` will not do, because several of these
+servers send an empty first body chunk that satisfies it.
+
+| server | a **sync** generator | an **async** generator |
+|---|---|---|
+| `runserver` | 0.31, 0.61, 0.92, 1.23, 1.53 — streams | all at 1.51 — buffered |
+| daphne (their production) | all at 1.53 | 0.30, 0.61, 0.91, 1.21, 1.51 |
+| uvicorn | all at 1.53 | 0.30, 0.61, 0.91, 1.21, 1.51 |
+| m0serve, ASGI executor | all at 1.53 | 0.31, 0.60, 0.91, 1.21, 1.51 |
+| m0serve, `--realtime --blocking-threads` | all at 1.53 | all at 1.51 |
+
+Two things fall out, and the first is about their application rather than
+any server. **`textshelf`'s AI streaming endpoints do not stream, on their
+own production server.** `ai/views.py:summarize_submission` is a sync view
+returning `create_sse_response(...)` over
+`services.summarize_document_stream`, whose annotation is
+`Generator[str, None, None]` — a *sync* generator, which Django's ASGI
+handler must consume before it can serve it (it says so in a warning). Every
+ASGI server buffers it identically; the token-by-token delivery the endpoint
+is written for arrives in one lump at the end. The rows above are a
+same-shaped instrument rather than their endpoint (which needs an API key),
+but the shape is what decides it, and the shape is theirs.
+
+The second: **m0serve's executor matches uvicorn and daphne to the
+millisecond in both rows.** Whatever streams under them streams under it,
+and what buffers buffers everywhere.
+
+That changes the recommendation this record's Phase 4 pointed at. Before
+stage 1, holds cost the pool, so the hybrid mount was the only shape with
+both isolation and working streams. Now:
+
+| shape (4 workers) | pub/sub streams | AI endpoints | fast path, 8 slow views | app changes |
+|---|---|---|---|---|
+| `--realtime --blocking-threads 4` | held by the server: +2 MB per 200, no Python state, no database connection | buffered — exactly as they are today under daphne | 0.3 ms | convert 4 pub/sub endpoints (the notifications one was −241 lines) |
+| `--mount /=wsgi --mount /rt=asgi`, pool 4 | executor: one Postgres connection each in production | buffered — as today | 0.7 ms | none but a URL prefix |
+| daphne, as deployed | as today | buffered | 4.9 ms | none |
+
+**The AI endpoints cost nothing to move**, because they are already
+buffered wherever they run. So the choice is now between the cheapest way
+to hold a stream and no application changes at all — and what still forces
+it to be a choice is that `--realtime` and `--mount` cannot be combined
+(measured: exit 1, refused before the bind). An application that wants
+holds for its pub/sub streams *and* an ASGI mount for genuinely async ones
+needs two processes today.
+
+For the ROADMAP's stage 2 that is a re-ordering, recorded there: **the
+`--mount` half unblocks a real application, the WebSocket half does not.**
+`textshelf` opens no WebSocket against its own server — the `new WebSocket`
+calls in its JavaScript address a local MCP process — so the ambiguity the
+refusal was written for cannot arise for it.
+
 ## What would make this worth repeating
 
 It already was: four defects in one pass, three of them invisible to any
