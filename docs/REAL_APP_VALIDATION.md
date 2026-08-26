@@ -39,7 +39,7 @@ and stays open on purpose.
 |---|---|---|---|
 | 1 | **Every `Set-Cookie` lost `expires` and `SameSite`** | Django's session and CSRF cookies reached the browser as `sessionid=…; Max-Age=…; Path=/` where every other server sends `expires=…; HttpOnly; Max-Age=…; Path=/; SameSite=Lax`. Sessions still worked, so nothing failed loudly — but a persistent cookie became a session cookie for [any client that prefers `expires`](https://datatracker.ietf.org/doc/html/rfc6265#section-5.3), and CSRF cookies shipped without their `SameSite` defence. On all three apps, on every response. | **fixed** — `ResponseCookieJar.raw`, + `test_response_cookies.mojo`, + `smoke-django` asserts the attributes on the wire |
 | 2 | **Uploads between ~1.5 MB and `--max-body` were refused `400`** | `color-separation`'s image upload (7.1 MB) failed with a truncated connection under `--max-body 64m`; on a bare echo app the threshold was between 1.5 MB and 2 MB whatever the flag said, including the default. The receive buffer had its own 2 MB ceiling that `--max-body` never raised, and it answers `400 Bad Request` rather than the `413` the body cap sends — so the error named the wrong thing. | **fixed** — `ServerConfig.recv_buffer_limit()`, + a `test_config.mojo` case, + `smoke-serve` now asserts a 3 MB body at the default cap and 7 MB at `--max-body 8m` |
-| 3 | **Concurrent ASGI streams truncated each other** | `textshelf` serves its static files through WhiteNoise, so every page load is several `FileResponse`s. Twelve concurrent fetches of one 232 KB file left bodies short — a clean `200` with fewer bytes — and enough of them wedged the executor entirely: the server stopped answering and `SIGTERM` needed 12+ s and then `SIGKILL`. Cause: the credit window is **per stream** (64 KB) while the chunk channel is **shared and finite**, so N streams over-commit it and `send_stream_chunk` dropped the datagram it could not place. | **fixed** — a global in-flight budget in the shim (`_ASGI_TOTAL_WINDOW`), an owed-ack retry on the loop side, + `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and checks every byte |
+| 3 | **Concurrent ASGI streams truncated each other** | `textshelf` serves its static files through WhiteNoise, so every page load is several `FileResponse`s. Twelve concurrent fetches of one 232 KB file left bodies short — a clean `200` with fewer bytes — and enough of them wedged the executor entirely: the server stopped answering and `SIGTERM` needed 12+ s and then `SIGKILL`. Cause: the credit window is **per stream** (64 KB) while the chunk channel is **shared and finite**, so N streams over-commit it and `send_stream_chunk` dropped the datagram it could not place. | **fixed** — a global in-flight budget in the shim (`_ASGI_TOTAL_WINDOW`), an owed-ack retry on the loop side, and a full channel that **waits detached** rather than dropping; + `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and checks every byte |
 | 4 | **`SIGTERM` never returned when a handler thread was inside a response that never ends** | `textshelf`'s SSE endpoints served under WSGI are buffered, so the generator never returns and its pool thread never comes back. `stop_and_join` waited for it forever: the drain finished, the process did not exit, and `docker stop` would end in `SIGKILL` after its grace. | **fixed** — `ThreadSet.join_within` and a 5 s join budget matching the drain's, after which the process leaves and says what it left behind; + a `smoke-blocking-threads` phase with two never-returning views |
 | 5 | `--app-dir` is appended to `sys.path`, not prepended | Confirmed again: a probe app reports `--app-dir` at position 5, after site-packages. It did **not** bite any of the three (no top-level module name collides with an installed package in any of them), which is why it stays a latent hazard rather than a visible failure. | **unchanged** — still open in [Known issues](ROADMAP.md#known-issues); a fix changes import precedence and wants its own change |
 
@@ -210,6 +210,16 @@ sabotage rather than assumed:
   must be `200`; 5 MB and 9 MB must be `413`. Both sizes straddle the old
   ceiling.
 - `smoke-asgi` — 32 concurrent 4 KB-piece streams, every body byte-exact.
+  **This one paid for itself on its first CI run**, and is why the fix looks
+  the way it does. It passed on macOS and failed on Linux: two streams short,
+  because the budget had been sized against a 256 KB socket buffer and Linux
+  clamps `SO_RCVBUF` to `net.core.rmem_max` and charges each datagram's whole
+  `skb` against it. Raising the number would have made this platform pass and
+  left the next to find out, so the number stopped being load-bearing instead
+  — a full channel now waits (detached, so the loop can drain it) rather than
+  dropping. Verified by removing the budget rather than trusting it: at
+  `_ASGI_TOTAL_WINDOW = 64 MB`, effectively no budget at all, 64 concurrent
+  streams still deliver every byte and log no drops.
 - `smoke-blocking-threads` — two views that never return, `SIGTERM`, and the
   process must exit inside 20 s naming what it abandoned.
 
