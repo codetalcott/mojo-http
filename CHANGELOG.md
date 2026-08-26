@@ -67,6 +67,16 @@ versions may break the API**.
 
 ### Fixed
 
+- **The PyPI project page told aarch64 users their wheel did not exist.**
+  0.11.0 shipped a `manylinux_2_35_aarch64` wheel and its release notes
+  claimed "the platform matrix on the README is the platform matrix on the
+  index" — which was true of the repository's README and false of
+  `packaging/m0serve/README.md`, the `readme` named by the wheel's
+  pyproject.toml and therefore the page PyPI renders. That one still read
+  `Linux aarch64 | buildable, not yet shipped` for the whole of the
+  release. Two READMEs, one of them published, and the ratchet was pointed
+  at the other.
+
 
 
 - **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its
