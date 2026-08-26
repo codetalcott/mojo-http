@@ -537,7 +537,7 @@ struct WSGIHandler(ThreadHandler):
                 # a new stream's begin frame sorts after every frame of
                 # the old one.
                 if self.streams.is_slot_streaming(slot):
-                    self.streams.queue_frame(slot, NO_EVENT_ID, frame)
+                    _ = self.streams.queue_frame(slot, NO_EVENT_ID, frame)
             elif ub[1] == UInt8(ord("e")):
                 # End of stream: hand out anything still pending, then
                 # stop being a stream (which is what lets the loop close).
@@ -558,7 +558,7 @@ struct WSGIHandler(ThreadHandler):
                 # executor. Subscribed slots only, same recycled-slot
                 # safety rule as 's'.
                 if self.sockets.is_slot_streaming(slot):
-                    self.sockets.queue_frame(slot, NO_EVENT_ID, frame)
+                    _ = self.sockets.queue_frame(slot, NO_EVENT_ID, frame)
             elif ub[1] == UInt8(ord("x")):
                 # WebSocket end (the close frame is already queued ahead
                 # of this on the same channel).
@@ -588,7 +588,7 @@ struct WSGIHandler(ThreadHandler):
                         )
             else:
                 _send_bus_frame_tag(self.asgi_notify_fd, event_id, url, frame)
-        self.streams.notify_frame(url, event_id, frame)
+        _ = self.streams.notify_frame(url, event_id, frame)
         if self.sockets.has_subscribers(url):
             # The bus carries SSE frames; a socket needs an RFC 6455 frame.
             # Translating at delivery rather than publishing twice keeps ONE
@@ -596,7 +596,7 @@ struct WSGIHandler(ThreadHandler):
             # same payload — `sse_data_payload` returns exactly what an
             # `EventSource` would hand to `onmessage`.
             var data = sse_data_payload(Span(frame))
-            self.sockets.notify_frame(
+            _ = self.sockets.notify_frame(
                 url, event_id, encode_ws_frame(WS_OP_TEXT, Span(data))
             )
 

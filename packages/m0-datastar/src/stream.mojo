@@ -150,7 +150,7 @@ struct DatastarStream:
         if reconnecting:
             for i in range(len(self.journal_ids)):
                 if self.journal_urls[i] == url and self.journal_ids[i] > last_id:
-                    self.registry.queue_frame(
+                    _ = self.registry.queue_frame(
                         req.slot_id,
                         self.journal_ids[i],
                         self.journal_frames[i].copy(),
@@ -200,7 +200,7 @@ struct DatastarStream:
         self._record(url, event_id, frame)
         if event_id > self.next_event_id:
             self.next_event_id = event_id
-        self.registry.notify_frame(url, event_id, frame)
+        _ = self.registry.notify_frame(url, event_id, frame)
 
     def _next_id(mut self) -> Int:
         """Allocate the next event id — from the shared atomic when bus'd."""
@@ -223,7 +223,7 @@ struct DatastarStream:
         """Journal a broadcast frame, then queue it for every subscriber."""
         var bytes = List[UInt8](frame.as_bytes())
         self._record(url, event_id, bytes)
-        self.registry.notify_frame(url, event_id, bytes)
+        _ = self.registry.notify_frame(url, event_id, bytes)
         if self.bus_worker >= 0:
             publish_to_channels(
                 self.bus_write_fds, self.bus_worker, url, event_id, Span(bytes)

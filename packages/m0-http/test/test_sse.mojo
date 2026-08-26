@@ -106,8 +106,55 @@ def test_notify_frame_delivers_verbatim() raises:
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
     var frame = String("event: datastar-patch-signals\nid: 7\ndata: signals {}\n\n")
-    reg.notify_frame("/x", 7, List[UInt8](frame.as_bytes()))
+    _ = reg.notify_frame("/x", 7, List[UInt8](frame.as_bytes()))
     assert_equal(_as_text(reg.drain(0)), frame)
+
+
+def test_notify_frame_returns_slots_queued() raises:
+    """The delivery count is the caller's only drop signal (#120)."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    reg.subscribe(1, "/x", 0)
+    reg.subscribe(2, "/other", 0)
+    var n = reg.notify_frame("/x", 1, List[UInt8](String("f\n\n").as_bytes()))
+    assert_equal(n, 2)
+    assert_equal(reg.notify_frame("/nobody", 2, List[UInt8](String("f\n\n").as_bytes())), 0)
+
+
+def test_reused_id_returns_zero_on_second_call() raises:
+    """Three events on one id: only the first delivers, and now it SAYS so.
+
+    The shape that bit issue #120's filer: one logical change, three SSE
+    events, the same journal id on all three. The first call advances the
+    slot's last-seen id, so the second and third are suppressed — for the
+    life of the app, invisibly, until the caller can see the 0.
+    """
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    assert_equal(reg.notify_frame("/x", 3, List[UInt8](String("a\n\n").as_bytes())), 1)
+    assert_equal(reg.notify_frame("/x", 3, List[UInt8](String("b\n\n").as_bytes())), 0)
+    assert_equal(reg.notify_frame("/x", 3, List[UInt8](String("c\n\n").as_bytes())), 0)
+    # The right pattern for derived events — NO_EVENT_ID — still delivers.
+    assert_equal(reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String("d\n\n").as_bytes())), 1)
+
+
+def test_backpressure_visible_in_count() raises:
+    """A slot past MAX_PENDING_BYTES drops, and the count shows it."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 0)
+    var big = List[UInt8]()
+    for _ in range(MAX_PENDING_BYTES + 1):
+        big.append(120)
+    assert_equal(reg.notify_frame("/x", 1, big), 0)
+
+
+def test_queue_frame_reports_outcome() raises:
+    """True when queued; False for bad slot, suppression, or backpressure."""
+    var reg = SSERegistry(4)
+    reg.subscribe(0, "/x", 5)
+    assert_false(reg.queue_frame(99, 6, List[UInt8](String("f\n\n").as_bytes())))
+    assert_false(reg.queue_frame(0, 5, List[UInt8](String("old\n\n").as_bytes())))
+    assert_true(reg.queue_frame(0, 6, List[UInt8](String("new\n\n").as_bytes())))
 
 
 def test_notify_frame_respects_url_filter() raises:
@@ -115,7 +162,7 @@ def test_notify_frame_respects_url_filter() raises:
     var reg = SSERegistry(4)
     reg.subscribe(0, "/a", 0)
     reg.subscribe(1, "/b", 0)
-    reg.notify_frame("/a", 1, List[UInt8](String("f\n\n").as_bytes()))
+    _ = reg.notify_frame("/a", 1, List[UInt8](String("f\n\n").as_bytes()))
     assert_true(reg.has_pending(0))
     assert_false(reg.has_pending(1))
 
@@ -124,9 +171,9 @@ def test_notify_frame_suppresses_replay() raises:
     """Ids at or below the slot's last-seen id are not redelivered."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 5)
-    reg.notify_frame("/x", 5, List[UInt8](String("old\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", 5, List[UInt8](String("old\n\n").as_bytes()))
     assert_false(reg.has_pending(0))
-    reg.notify_frame("/x", 6, List[UInt8](String("new\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", 6, List[UInt8](String("new\n\n").as_bytes()))
     assert_true(reg.has_pending(0))
 
 
@@ -134,8 +181,8 @@ def test_no_event_id_bypasses_dedupe() raises:
     """Unnumbered frames always deliver, however many times."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 100)
-    reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
-    reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
     assert_equal(_as_text(reg.drain(0)), ": hb\n\n: hb\n\n")
 
 
@@ -147,9 +194,9 @@ def test_no_event_id_does_not_advance_last_seen() raises:
     """
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
-    reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", NO_EVENT_ID, List[UInt8](String(": hb\n\n").as_bytes()))
     _ = reg.drain(0)
-    reg.notify_frame("/x", 1, List[UInt8](String("real\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", 1, List[UInt8](String("real\n\n").as_bytes()))
     assert_equal(_as_text(reg.drain(0)), "real\n\n")
 
 
@@ -160,11 +207,11 @@ def test_notify_frame_backpressure_drops() raises:
     var big = List[UInt8]()
     for _ in range(MAX_PENDING_BYTES):
         big.append(UInt8(ord("x")))
-    reg.notify_frame("/x", 1, big)
+    _ = reg.notify_frame("/x", 1, big)
     var before = len(reg.drain(0))
     reg.subscribe(0, "/x", 0)
-    reg.notify_frame("/x", 1, big)
-    reg.notify_frame("/x", 2, List[UInt8](String("tiny\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", 1, big)
+    _ = reg.notify_frame("/x", 2, List[UInt8](String("tiny\n\n").as_bytes()))
     assert_equal(len(reg.drain(0)), before)
 
 
@@ -173,7 +220,7 @@ def test_queue_frame_targets_one_slot() raises:
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
     reg.subscribe(1, "/x", 0)
-    reg.queue_frame(0, 1, List[UInt8](String("replay\n\n").as_bytes()))
+    _ = reg.queue_frame(0, 1, List[UInt8](String("replay\n\n").as_bytes()))
     assert_true(reg.has_pending(0))
     assert_false(reg.has_pending(1))
 
@@ -182,9 +229,9 @@ def test_queue_frame_applies_delivery_filter() raises:
     """Ids at or below the slot's last-seen id are not replayed."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 5)
-    reg.queue_frame(0, 5, List[UInt8](String("old\n\n").as_bytes()))
+    _ = reg.queue_frame(0, 5, List[UInt8](String("old\n\n").as_bytes()))
     assert_false(reg.has_pending(0))
-    reg.queue_frame(0, 6, List[UInt8](String("new\n\n").as_bytes()))
+    _ = reg.queue_frame(0, 6, List[UInt8](String("new\n\n").as_bytes()))
     assert_true(reg.has_pending(0))
 
 
@@ -196,18 +243,18 @@ def test_queue_frame_advances_last_seen() raises:
     """
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
-    reg.queue_frame(0, 3, List[UInt8](String("replay\n\n").as_bytes()))
-    reg.notify_frame("/x", 3, List[UInt8](String("live\n\n").as_bytes()))
+    _ = reg.queue_frame(0, 3, List[UInt8](String("replay\n\n").as_bytes()))
+    _ = reg.notify_frame("/x", 3, List[UInt8](String("live\n\n").as_bytes()))
     assert_equal(_as_text(reg.drain(0)), "replay\n\n")
 
 
 def test_queue_frame_skips_non_streaming_and_bad_slots() raises:
     """A slot not in streaming mode gets nothing; out-of-range is a no-op."""
     var reg = SSERegistry(4)
-    reg.queue_frame(0, 1, List[UInt8](String("f\n\n").as_bytes()))
+    _ = reg.queue_frame(0, 1, List[UInt8](String("f\n\n").as_bytes()))
     assert_false(reg.has_pending(0))
-    reg.queue_frame(-1, 1, List[UInt8](String("f\n\n").as_bytes()))
-    reg.queue_frame(99, 1, List[UInt8](String("f\n\n").as_bytes()))
+    _ = reg.queue_frame(-1, 1, List[UInt8](String("f\n\n").as_bytes()))
+    _ = reg.queue_frame(99, 1, List[UInt8](String("f\n\n").as_bytes()))
 
 
 def test_queue_frame_backpressure_drops() raises:
@@ -217,9 +264,9 @@ def test_queue_frame_backpressure_drops() raises:
     var big = List[UInt8]()
     for _ in range(MAX_PENDING_BYTES):
         big.append(UInt8(ord("x")))
-    reg.queue_frame(0, 1, big)
+    _ = reg.queue_frame(0, 1, big)
     var before = len(reg.pending_bufs[0])
-    reg.queue_frame(0, 2, List[UInt8](String("tiny\n\n").as_bytes()))
+    _ = reg.queue_frame(0, 2, List[UInt8](String("tiny\n\n").as_bytes()))
     assert_equal(len(reg.pending_bufs[0]), before)
 
 
@@ -227,7 +274,7 @@ def test_notify_delegates_to_notify_frame() raises:
     """`notify()` still frames and delivers; backpressure lives in one place."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/x", 0)
-    reg.notify("/x", 1, "update", "hello")
+    _ = reg.notify("/x", 1, "update", "hello")
     var out = _as_text(reg.drain(0))
     assert_true(out.find("event: update") >= 0)
     assert_true(out.find("data: hello") >= 0)
@@ -262,7 +309,7 @@ def test_registry_subscribe_notify() raises:
     """Subscribed slot should receive events."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
-    reg.notify("/orders", 1, "update", '{"id":1}')
+    _ = reg.notify("/orders", 1, "update", '{"id":1}')
     assert_true(reg.has_pending(0))
     var buf = reg.drain(0)
     assert_true(len(buf) > 0)
@@ -274,7 +321,7 @@ def test_registry_filter_by_url() raises:
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
     reg.subscribe(1, "/users", 0)
-    reg.notify("/orders", 1, "update", "data")
+    _ = reg.notify("/orders", 1, "update", "data")
     assert_true(reg.has_pending(0))
     assert_false(reg.has_pending(1))
 
@@ -284,7 +331,7 @@ def test_registry_unsubscribe() raises:
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
     reg.unsubscribe(0)
-    reg.notify("/orders", 1, "update", "data")
+    _ = reg.notify("/orders", 1, "update", "data")
     assert_false(reg.has_pending(0))
 
 
@@ -303,9 +350,9 @@ def test_registry_skips_old_events() raises:
     """Events with id <= last_event_id should be skipped."""
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 5)
-    reg.notify("/orders", 3, "update", "old")
+    _ = reg.notify("/orders", 3, "update", "old")
     assert_false(reg.has_pending(0))
-    reg.notify("/orders", 6, "update", "new")
+    _ = reg.notify("/orders", 6, "update", "new")
     assert_true(reg.has_pending(0))
 
 
@@ -314,17 +361,17 @@ def test_registry_backpressure_preserves_last_id() raises:
     var reg = SSERegistry(4)
     reg.subscribe(0, "/orders", 0)
     # Send event 1 (should succeed)
-    reg.notify("/orders", 1, "update", "first")
+    _ = reg.notify("/orders", 1, "update", "first")
     assert_true(reg.has_pending(0))
     # Fill the buffer with a huge payload to trigger backpressure
     var big_data = String("")
     for _ in range(70000):
         big_data += "x"
-    reg.notify("/orders", 2, "update", big_data)
+    _ = reg.notify("/orders", 2, "update", big_data)
     # Event 2 should have been dropped, so draining gives only event 1
     _ = reg.drain(0)
     # Now send event 3 — it should be accepted (buffer is drained)
-    reg.notify("/orders", 3, "update", "third")
+    _ = reg.notify("/orders", 3, "update", "third")
     assert_true(reg.has_pending(0))
     # Also verify event 2 can still be delivered on retry since ID didn't advance
     # (a new subscriber starting from last_event_id=1 would get event 2)
@@ -342,11 +389,11 @@ def test_backpressure_exact_boundary() raises:
     var big = String("")
     for _ in range(data_size):
         big += "a"
-    reg.notify("/x", 1, "u", big)
+    _ = reg.notify("/x", 1, "u", big)
     assert_true(reg.has_pending(0), "first big event should be accepted")
     var pending_len = len(reg.pending_bufs[0])
     # Now try to add even a tiny event — if pending + new > 65536, it's dropped
-    reg.notify("/x", 2, "u", "tiny")
+    _ = reg.notify("/x", 2, "u", "tiny")
     # If the combined size exceeds limit, event 2 was dropped
     if pending_len + 30 > 65536:  # 30 is conservative overhead for tiny event
         assert_equal(len(reg.pending_bufs[0]), pending_len, "event should be dropped at boundary")
@@ -359,13 +406,13 @@ def test_backpressure_recovery_after_drain() raises:
     var big = String("")
     for _ in range(65000):
         big += "x"
-    reg.notify("/x", 1, "u", big)
+    _ = reg.notify("/x", 1, "u", big)
     assert_true(reg.has_pending(0))
     # Drain clears the buffer
     _ = reg.drain(0)
     assert_false(reg.has_pending(0))
     # New event should now be accepted
-    reg.notify("/x", 2, "u", "recovered")
+    _ = reg.notify("/x", 2, "u", "recovered")
     assert_true(reg.has_pending(0), "should accept events after drain")
 
 
@@ -378,9 +425,9 @@ def test_backpressure_slots_independent() raises:
     var big = String("")
     for _ in range(65000):
         big += "x"
-    reg.notify("/x", 1, "u", big)
+    _ = reg.notify("/x", 1, "u", big)
     # Now send another event — slot 0 is full but slot 1 accepted event 1 fine
-    reg.notify("/x", 2, "u", "small")
+    _ = reg.notify("/x", 2, "u", "small")
     # Slot 1 should have both events (if they fit)
     assert_true(reg.has_pending(1), "slot 1 should still accept events")
 
