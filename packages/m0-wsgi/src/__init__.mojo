@@ -52,6 +52,7 @@ from .threaded import (
     require_free_threading,
     EXIT_NOT_FREE_THREADED,
 )
+from .doctor import Report, DOCTOR_OK
 from .blocking_pool import BlockingPool
 from .asgi_executor import AsgiExecutor
 from .cli import (

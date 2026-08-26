@@ -1441,6 +1441,126 @@ echo "smoke-django-realtime-ws OK"
 # the environment, and that the two server-only tunings a command line can
 # now reach (--max-body, --metrics) actually reach the server. The bare app
 # is the target because nothing in it can be blamed for a wrong answer.
+[tool.poe.tasks.smoke-doctor]
+help = "--doctor reports valid JSON and exits with the code the server itself would use"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+SPEC="bareapp.wsgi --app-dir apps/wsgi_bare"
+cleanup() { rm -f doctor.json doctor.log doctor.served; }
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f doctor.json ]; then echo '=== doctor.json ==='; cat doctor.json; fi
+  if [ -f doctor.log ]; then echo '=== server output ==='; cat doctor.log; fi
+  exit 1
+}
+
+# The property that gives --doctor its value: for the SAME arguments, the
+# doctor's exit code equals the server's. A diagnostic that reports "fine"
+# where the server refuses is worse than no diagnostic -- and the two are
+# kept in step by hand, since the doctor mirrors main's check order rather
+# than sharing its control flow. This is what notices when they drift.
+#
+# A configuration the server accepts never exits: it blocks in accept().
+# So it is backgrounded under a watchdog, and "still running when the
+# watchdog fired" is what exit 0 means on the doctor's side.
+#
+# NOT `timeout`: that is GNU coreutils and the macOS runners do not ship
+# it. A missing command exits 127, which reads as a server refusal rather
+# than as a broken harness -- this smoke's first CI run duly reported
+# "server exits 127" for a configuration that serves perfectly, on the one
+# platform the author could not reproduce (homebrew coreutils was on the
+# development machine). Nothing else in this file uses `timeout`.
+equiv() {
+  desc="$1"; shift
+  "$srv" --doctor "$@" > doctor.json 2>/dev/null; doc=$?
+  rm -f doctor.served
+  "$srv" "$@" --port 8399 > doctor.log 2>&1 &
+  spid=$!
+  # The watchdog fires only if the server is STILL ALIVE at the deadline.
+  # A refused configuration has exited and been reaped by the `wait` below
+  # long before then, so the marker is never written for one.
+  ( sleep 8
+    if kill -0 "$spid" 2>/dev/null; then
+      : > doctor.served
+      kill -TERM "$spid" 2>/dev/null
+    fi ) &
+  wpid=$!
+  wait "$spid"; real=$?
+  kill "$wpid" 2>/dev/null
+  wait "$wpid" 2>/dev/null || true
+  [ -f doctor.served ] && real=0
+  [ "$doc" = "$real" ] || fail "$desc: doctor exits $doc, server exits $real"
+  python3 -c "import json,sys; json.load(open('doctor.json'))" \
+    || fail "$desc: --doctor did not print valid JSON"
+  python3 -c "
+import json, sys
+d = json.load(open('doctor.json'))
+if d['exit'] != $doc:
+    sys.exit('reported exit %r but the process exited %d' % (d['exit'], $doc))
+if d['ok'] != ($doc == 0):
+    sys.exit('ok=%r disagrees with exit %d' % (d['ok'], $doc))
+" || fail "$desc: the JSON verdict disagrees with the exit code"
+}
+
+# Serves. The zero-config default must be visible here, because it is the
+# thing a person runs --doctor to find out.
+equiv 'baseline'                    $SPEC
+equiv 'prefork'                     $SPEC --workers 2
+
+# Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
+# 78 = EX_CONFIG (the interpreter cannot run the requested mode).
+equiv 'threads and workers together' $SPEC --workers 2 --threads 2
+equiv 'blocking-threads + realtime'  $SPEC --blocking-threads 4 --realtime
+equiv 'forced asgi + realtime'       $SPEC --protocol asgi --realtime
+equiv 'missing app dir'              bareapp.wsgi --app-dir /no/such/dir
+equiv 'unimportable module'          nosuch.wsgi --app-dir apps/wsgi_bare
+
+# --threads on a GIL-enabled interpreter is the 78. On a free-threaded one
+# it would serve instead -- equiv() asserts agreement either way, so this
+# row is correct on both and needs no interpreter check of its own.
+equiv 'threads on this interpreter'  $SPEC --threads 4
+
+# The ASGI half: detection reaches the report, and the post-resolve refusal
+# (realtime over an ASGI app) is exit 1, not 2 -- a different code from the
+# forced-protocol row above, which is why both are here.
+equiv 'asgi app'                     bareapp.asgi:application --app-dir apps/asgi_bare
+equiv 'asgi app + realtime'          bareapp.asgi:application --app-dir apps/asgi_bare --realtime
+
+# A bare --doctor answers without an application: the "is this environment
+# sane at all" call, which must not be a failure just because no app was named.
+"$srv" --doctor > doctor.json 2>/dev/null || fail 'bare --doctor did not exit 0'
+python3 -c "
+import json, sys
+d = json.load(open('doctor.json'))
+assert d['ok'] is True, d
+assert d['application']['requested'] is False, d
+# The facts an install-failure report is written from.
+for key in ('version', 'os', 'arch'):
+    assert d['build'][key], ('missing build.%s' % key, d)
+for key in ('version', 'executable', 'prefix'):
+    assert d['python'][key], ('missing python.%s' % key, d)
+assert d['topology']['cpus'] >= 1, d
+" || fail 'bare --doctor is missing the facts it exists to report'
+
+# Resolution reaches the report: a bare MODULE reports the spec discovery
+# actually chose, and the protocol it classified as.
+"$srv" --doctor $SPEC > doctor.json 2>/dev/null || fail 'doctor on the bare app did not exit 0'
+python3 -c "
+import json, sys
+d = json.load(open('doctor.json'))
+app = d['application']
+assert app['spec'] == 'bareapp.wsgi:application', app
+assert app['protocol'] == 'wsgi', app
+t = d['topology']
+assert t['mode'] == 'single', t
+assert t['blocking_threads'] > 0 and t['blocking_threads_source'] == 'default', t
+" || fail 'the doctor does not report the resolved spec and zero-config topology'
+
+echo 'smoke-doctor: --doctor agrees with the server on every refusal'
+"""
+
 [tool.poe.tasks.smoke-serve]
 help = "The m0serve CLI: help/version/usage exit codes, flag-over-env precedence, a static mount, --max-body, --metrics, graceful stop"
 deps = ["build-serve"]

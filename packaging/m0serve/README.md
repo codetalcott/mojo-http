@@ -13,6 +13,12 @@ The protocol is detected from the object, so the same command serves WSGI and
 ASGI. `m0serve --help` lists the flags; `--workers N`, `--threads N` (on
 free-threaded CPython) and `--blocking-threads N` are the topology ones.
 
+If something will not start, `m0serve --doctor myproject.wsgi` prints a JSON
+report — the interpreter it resolved and the virtualenv it came from, the
+spec it discovered, the topology it settled on, and every startup check with
+the fix for the ones that failed — and exits with the code the server itself
+would have used. It binds nothing and imports nothing twice.
+
 ## What is in the wheel
 
 One compiled binary and the Mojo runtime it loads. **No CPython** — m0serve

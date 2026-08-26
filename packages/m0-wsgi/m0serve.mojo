@@ -48,7 +48,7 @@ rebuild and a restart.
 
 from std.os import getenv, setenv
 from std.os.path import isdir, isfile
-from std.python import Python
+from std.python import Python, PythonObject
 from std.sys.arg import argv
 from std.sys.info import CompilationTarget
 
@@ -72,7 +72,7 @@ from m0_wsgi import (
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
     AsgiExecutor, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
-    effective_cpus,
+    effective_cpus, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
 
@@ -288,6 +288,366 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
     return bus^
 
 
+comptime _DOCTOR_PROBE = """
+import sys, platform
+
+
+def where():
+    return (sys.executable or '', sys.prefix or '', platform.machine() or '',
+            platform.python_implementation() or '')
+"""
+
+
+def _doctor_dirs(mut report: Report, opts: ServeOptions):
+    """The three directory checks, in `main`'s order and with its exit code."""
+    if not isdir(opts.app_dir):
+        report.fail_check(
+            String("app-dir"),
+            "app dir does not exist: " + opts.app_dir,
+            "create it, or pass --app-dir with the directory holding "
+            + opts.module,
+            EXIT_STARTUP,
+        )
+    else:
+        report.pass_check(String("app-dir"), opts.app_dir + " exists")
+    for i in range(len(opts.static_dirs)):
+        if not isdir(opts.static_dirs[i]):
+            report.fail_check(
+                String("static-dir"),
+                "static dir does not exist: " + opts.static_dirs[i],
+                "create it, or drop --static " + opts.static_prefixes[i],
+                EXIT_STARTUP,
+            )
+    for i in range(len(opts.reload_dirs)):
+        if not isdir(opts.reload_dirs[i]):
+            report.fail_check(
+                String("reload-dir"),
+                "reload dir does not exist: " + opts.reload_dirs[i],
+                "create it, or drop --reload-dir " + opts.reload_dirs[i],
+                EXIT_STARTUP,
+            )
+
+
+def _doctor_conflicts(mut report: Report, opts: ServeOptions):
+    """The refusals `main` makes before it binds — all EXIT_USAGE."""
+    var conflict = threads_conflict(opts.workers, opts.threads)
+    if conflict:
+        report.fail_check(
+            String("threads-vs-workers"),
+            conflict.value(),
+            String("give one of --workers or --threads, not both"),
+            EXIT_USAGE,
+        )
+    else:
+        report.pass_check(
+            String("threads-vs-workers"),
+            String("topology flags are consistent"),
+        )
+    if opts.blocking_threads > 0 and opts.realtime:
+        report.fail_check(
+            String("blocking-threads-vs-realtime"),
+            "--blocking-threads and --realtime are mutually exclusive: the"
+            " streaming hooks run on the event loop's handler, and a pool"
+            " thread's handler has its own registries",
+            String("drop one of --blocking-threads or --realtime"),
+            EXIT_USAGE,
+        )
+    if opts.protocol == PROTOCOL_ASGI and opts.realtime:
+        report.fail_check(
+            String("protocol-vs-realtime"),
+            String(_REALTIME_ASGI_CONFLICT),
+            String("drop --realtime; an ASGI app streams natively"),
+            EXIT_USAGE,
+        )
+
+
+def _run_doctor(mut opts: ServeOptions) -> Int:
+    """`--doctor`: report the configuration, bind nothing, fork nothing.
+
+    The order of `report.*` calls IS the order `main` performs the same
+    checks, because `Report.exit_code` returns the first failure rather than
+    the worst one — so a configuration that trips two refusals reports the
+    one the server would actually hit first. Keeping the two in step is
+    manual and therefore worth stating: if a check moves in `main`, it moves
+    here.
+
+    Never raises. A doctor that dies while diagnosing is the one failure
+    mode it cannot have, so every fallible step is caught and becomes a
+    failed check with the exit code that step would have produced.
+    """
+    var report = Report(String(M0SERVE_VERSION))
+    report.add_fact(String("build"), String("version"), String(M0SERVE_VERSION))
+    report.add_fact(
+        String("build"),
+        String("os"),
+        String("macos") if CompilationTarget.is_macos() else String("linux"),
+    )
+    # Spelled as the wheel filenames spell it -- macosx_13_0_arm64,
+    # manylinux_2_35_x86_64, manylinux_2_35_aarch64 -- so someone debugging
+    # a `pip` refusal can compare this line to the file pip declined.
+    var arch: String
+    if CompilationTarget.is_x86():
+        arch = String("x86_64")
+    elif CompilationTarget.is_macos():
+        arch = String("arm64")
+    else:
+        arch = String("aarch64")
+    report.add_fact(String("build"), String("arch"), arch)
+
+    # The interpreter, probed here for its FACTS but checked further down.
+    # `probe_free_threading` is the process's first Python call, so this is
+    # also where a binary that cannot resolve libpython reports why -- the
+    # most common install failure, and otherwise visible only as a traceback
+    # at serve time.
+    #
+    # Facts now, checks later, because `Report.exit_code` returns the FIRST
+    # failure and must therefore agree with the order `main` fails in: dirs
+    # and usage conflicts are decided before any Python runs. Recording the
+    # interpreter check here instead made `--workers 2 --threads 2` report
+    # 78 where the server exits 2.
+    var py_ok = False
+    var py_version = String("")
+    var py_ft_build = False
+    var py_gil = True
+    var py_error = String("")
+    try:
+        var py = probe_free_threading()
+        py_ok = True
+        py_version = py.version
+        py_ft_build = py.free_threaded_build
+        py_gil = py.gil_enabled
+        report.add_fact(String("python"), String("version"), py.version)
+        report.add_bool(
+            String("python"), String("free_threaded_build"),
+            py.free_threaded_build,
+        )
+        report.add_bool(String("python"), String("gil_enabled"), py.gil_enabled)
+        try:
+            var builtins = Python.import_module("builtins")
+            var ns = Python.dict()
+            builtins.exec(PythonObject(_DOCTOR_PROBE), ns)
+            var where = ns["where"]()
+            report.add_fact(
+                String("python"), String("executable"), String(py=where[0])
+            )
+            report.add_fact(
+                String("python"), String("prefix"), String(py=where[1])
+            )
+            report.add_fact(
+                String("python"), String("machine"), String(py=where[2])
+            )
+            report.add_fact(
+                String("python"), String("implementation"), String(py=where[3])
+            )
+        except:
+            pass  # the version facts above are the load-bearing ones
+    except e:
+        py_error = String(e)
+
+    _doctor_dirs(report, opts)
+    _doctor_conflicts(report, opts)
+
+    # Python enters here, in `main`'s order: after every check that needs no
+    # interpreter at all.
+    var threads_ok = True
+    if py_ok:
+        report.pass_check(
+            String("interpreter"), "CPython " + py_version + " resolved"
+        )
+        # 78 only when a threaded mode was actually asked for -- that is
+        # `require_free_threading`'s own rule, and the doctor must not
+        # invent a refusal the server would not make.
+        if opts.threads > 1:
+            if py_gil:
+                threads_ok = False
+                report.fail_check(
+                    String("free-threading"),
+                    "--threads " + String(opts.threads)
+                    + " requires free-threaded CPython with the GIL disabled;"
+                    + (
+                        " this is not a free-threaded build"
+                        if not py_ft_build
+                        else " the GIL is enabled (PYTHON_GIL=1?)"
+                    ),
+                    String(
+                        "use --workers N instead, or run on 3.14t with"
+                        " PYTHON_GIL=0"
+                    ),
+                    EXIT_NOT_FREE_THREADED,
+                )
+            else:
+                report.pass_check(
+                    String("free-threading"),
+                    String("interpreter is free-threaded and the GIL is off"),
+                )
+    else:
+        threads_ok = False
+        report.fail_check(
+            String("interpreter"),
+            "could not initialize CPython: " + py_error,
+            String(
+                "run m0serve from a virtualenv whose python3 is on PATH, or"
+                " set MOJO_PYTHON_LIBRARY to the libpython to load"
+            ),
+            EXIT_STARTUP,
+        )
+
+    # The application. Skipped -- not failed -- when there is nothing to
+    # load: `m0serve --doctor` with no MODULE is the "is this environment
+    # sane" call, and reporting a missing app as a defect would make the
+    # useful invocation always exit non-zero.
+    var have_app = opts.module.byte_length() > 0 or len(opts.mount_prefixes) > 0
+    var is_asgi = False
+    var resolved = False
+    if not have_app:
+        report.add_bool(String("application"), String("requested"), False)
+    elif not threads_ok:
+        # The interpreter is unusable or refused; an import would only
+        # produce a second, derivative failure.
+        report.add_bool(String("application"), String("requested"), True)
+        report.add_fact(
+            String("application"), String("resolved"), String("skipped")
+        )
+    else:
+        report.add_bool(String("application"), String("requested"), True)
+        try:
+            if opts.app_dir.byte_length() > 0 and isdir(opts.app_dir):
+                Python.add_to_path(opts.app_dir)
+            if len(opts.mount_prefixes) > 0:
+                is_asgi = _resolve_mounts(opts)
+            else:
+                is_asgi = _resolve_spec(opts)
+            resolved = True
+        except e:
+            report.fail_check(
+                String("application"),
+                "could not load " + opts.served() + " from " + opts.app_dir
+                + ": " + String(e),
+                String(
+                    "check --app-dir and the MODULE[:ATTR] spec; a bare"
+                    " MODULE also tries MODULE.asgi, MODULE.wsgi, MODULE:app"
+                    " and MODULE.main:app"
+                ),
+                EXIT_STARTUP,
+            )
+        if resolved:
+            report.add_fact(
+                String("application"), String("spec"), opts.served()
+            )
+            report.add_fact(
+                String("application"),
+                String("protocol"),
+                String("asgi") if is_asgi else String("wsgi"),
+            )
+            report.add_bool(
+                String("application"),
+                String("protocol_forced"),
+                opts.protocol != String("auto"),
+            )
+            if len(opts.mount_prefixes) > 0:
+                var mounts = String("[")
+                for i in range(len(opts.mount_prefixes)):
+                    if i > 0:
+                        mounts += ","
+                    var prefix = opts.mount_prefixes[i]
+                    var mount_asgi = False
+                    for k in range(len(opts.asgi_mounts)):
+                        if opts.asgi_mounts[k] == i:
+                            mount_asgi = True
+                            break
+                    mounts += '{"prefix":"' + (
+                        prefix if prefix.byte_length() > 0 else String("/")
+                    ) + '","spec":"' + opts.mount_modules[i] + ":"
+                    mounts += opts.mount_attributes[i] + '","protocol":"'
+                    mounts += (
+                        String("asgi") if mount_asgi else String("wsgi")
+                    ) + '"}'
+                mounts += "]"
+                report.add_raw(
+                    String("application"), String("mounts"), mounts
+                )
+            report.pass_check(
+                String("application"),
+                opts.served() + " imports and classifies as "
+                + (String("asgi") if is_asgi else String("wsgi")),
+            )
+            # The two refusals that need the detected protocol -- the same
+            # pair main makes right after its own resolve, at EXIT_STARTUP.
+            if is_asgi and opts.realtime:
+                report.fail_check(
+                    String("realtime-vs-asgi"),
+                    String(_REALTIME_ASGI_CONFLICT),
+                    String("drop --realtime; an ASGI app streams natively"),
+                    EXIT_STARTUP,
+                )
+            if len(opts.mount_prefixes) > 0 and opts.realtime:
+                report.fail_check(
+                    String("realtime-vs-mount"),
+                    String(_REALTIME_MOUNT_CONFLICT),
+                    String("serve one application, or drop --realtime"),
+                    EXIT_STARTUP,
+                )
+
+    # Topology, resolved the way the server resolves it -- which needs the
+    # protocol, hence its place after the import. Without a resolved app the
+    # requested values are reported and `resolved` says so.
+    var cpus = effective_cpus()
+    report.add_int(String("topology"), String("cpus"), cpus)
+    report.add_int(String("topology"), String("workers"), opts.workers)
+    report.add_int(String("topology"), String("threads"), opts.threads)
+    if resolved:
+        var auto_pool = zero_config_topology(opts)
+        var blocking = resolve_blocking_threads(opts, is_asgi, cpus)
+        var executor = use_asgi_executor(opts, is_asgi)
+        report.add_int(
+            String("topology"), String("blocking_threads"), blocking
+        )
+        report.add_fact(
+            String("topology"),
+            String("blocking_threads_source"),
+            String("default") if auto_pool else String("configured"),
+        )
+        report.add_bool(String("topology"), String("asgi_executor"), executor)
+        var mode: String
+        if opts.threads > 1:
+            mode = String("threads")
+        elif opts.workers > 1:
+            mode = String("prefork")
+        else:
+            mode = String("single")
+        report.add_fact(String("topology"), String("mode"), mode)
+    else:
+        report.add_int(
+            String("topology"),
+            String("blocking_threads"),
+            opts.blocking_threads,
+        )
+        report.add_bool(String("topology"), String("resolved"), False)
+
+    report.add_fact(String("server"), String("host"), opts.host)
+    report.add_int(String("server"), String("port"), opts.port)
+    report.add_fact(String("server"), String("app_dir"), opts.app_dir)
+    report.add_bool(String("server"), String("access_log"), opts.access_log)
+    report.add_bool(String("server"), String("metrics"), opts.metrics)
+    report.add_bool(String("server"), String("realtime"), opts.realtime)
+    report.add_bool(String("server"), String("reload"), opts.reload)
+    report.add_fact(
+        String("server"), String("health_path"), opts.health_path
+    )
+    report.add_int(String("server"), String("max_body"), opts.max_body)
+    var statics = String("[")
+    for i in range(len(opts.static_prefixes)):
+        if i > 0:
+            statics += ","
+        statics += '{"prefix":"' + opts.static_prefixes[i] + '","dir":"'
+        statics += opts.static_dirs[i] + '"}'
+    statics += "]"
+    report.add_raw(String("server"), String("static"), statics)
+
+    print(report.render(), flush=True)
+    return report.exit_code()
+
+
 def main() raises:
     var args = List[String]()
     var raw = argv()
@@ -306,6 +666,11 @@ def main() raises:
         return
     if opts.show_version:
         print("m0serve " + M0SERVE_VERSION, flush=True)
+        return
+    # Before the directory checks below, because those `_fail` on the first
+    # problem and the doctor's job is to report all of them at once.
+    if opts.show_doctor:
+        process_exit(_run_doctor(opts))
         return
 
     # Everything checkable without an interpreter, checked before the bind.
