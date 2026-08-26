@@ -20,6 +20,10 @@ Install it into the same virtual environment as your application, the way you
 would gunicorn or uvicorn. The protocol is detected from the object, so the
 same command serves WSGI and ASGI.
 
+**Then: [QUICKSTART.md](QUICKSTART.md)** — ten minutes from `pip install` to
+live multi-tab sync from one synchronous Django file. Every command in it is
+executed by CI on every pull request, so it works or the build is red.
+
 **One wheel per platform covers every supported CPython**, 3.10 through 3.14
 including free-threaded builds. That is not a shortcut: `m0serve` does not
 link libpython — Mojo `dlopen`s the interpreter at run time — so there is no

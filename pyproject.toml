@@ -3186,6 +3186,22 @@ mv "$work/_lib_moved" "$site/_lib" || fail "could not restore _lib"
 echo "smoke-wheel OK ($base)"
 """
 
+
+# The quickstart is executable on purpose: scripts/run_quickstart.py extracts
+# QUICKSTART.md's tagged fences and runs them, so the doc a stranger follows
+# is pinned by CI rather than trusted to stay true. Runs against the TREE's
+# wheel (M0SERVE_WHEEL), because a pull request must prove this tree and must
+# not depend on what is currently published. --expect pins the doc's shape:
+# editing the quickstart's structure means updating it here, loudly.
+[tool.poe.tasks.smoke-quickstart]
+help = "Execute QUICKSTART.md end to end against the tree's own wheel"
+deps = ["build-wheel"]
+shell = """
+whl=$(ls dist/wheels/*.whl | head -1)
+[ -n "$whl" ] || { echo "smoke-quickstart: no wheel built"; exit 2; }
+M0SERVE_WHEEL="$whl" python3 scripts/run_quickstart.py \
+  --expect setup=2,serve=2,verify=2 || exit 1
+"""
 [tool.poe.tasks.smoke-ffi]
 help = "Load the C-ABI shared library via ctypes and assert known vectors"
 deps = ["build-ffi"]

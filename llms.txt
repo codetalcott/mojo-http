@@ -1,0 +1,40 @@
+# m0serve
+
+> A WSGI/ASGI server for Python applications, written in Mojo. `pip install
+> m0serve` — no Mojo toolchain, no dependencies, nothing fetched at install.
+> Its distinguishing capability: held SSE and WebSocket connections gated by
+> plain synchronous views (Django, Flask, ...), with cross-worker publish —
+> no Channels, no Redis, no second process.
+
+Platforms: macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact
+floor is in the wheel filename — pip refuses rather than crashes on older
+systems). CPython 3.10–3.14, free-threaded builds included; one wheel per
+platform because the binary dlopens libpython rather than linking it.
+No Windows, no musl, no TLS/HTTP2 (terminate at a proxy).
+
+## Operating contract
+
+- `m0serve MODULE[:ATTR]` serves WSGI or ASGI, detected from the object.
+  Bare `MODULE` tries `MODULE.asgi:application`, `MODULE.wsgi:application`,
+  `MODULE:app`, `MODULE.main:app`.
+- Flags are strict and named in `m0serve --help`; flags override `M0_*`
+  environment variables, which override defaults.
+- Refusals explain themselves on stderr and name the fix; a configuration
+  the server will not run exits 78. `--version` prints `m0serve X.Y.Z`.
+- `--health-path /health` answers 200 in the server, before Python.
+- Realtime: a view's response with `M0-Hold: stream|websocket` +
+  `M0-Channel: NAME` converts the connection to a held subscription;
+  `from m0serve import m0pub; m0pub.publish(channel, data)` reaches every
+  subscriber on every worker. Inbound WebSocket messages arrive as POSTs
+  to `/ws/message` with `M0-Channel`/`M0-Slot`/opcode headers.
+
+## Start here
+
+- [QUICKSTART.md](QUICKSTART.md): ten minutes to live multi-tab sync from
+  one sync-Django file. Every fenced block is executed by CI on every pull
+  request (`poe smoke-quickstart`), so the steps are pinned, not aspirational.
+- [README.md](README.md): install matrix, framework docs, limits.
+- [CHANGELOG.md](CHANGELOG.md): honest release notes, including what each
+  release's failures taught.
+- [apps/django_realtime/](apps/django_realtime/): the fuller demo — token
+  auth, channel isolation, static files served without entering Python.
