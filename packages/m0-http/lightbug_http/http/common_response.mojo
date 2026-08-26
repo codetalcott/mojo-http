@@ -109,6 +109,27 @@ def HeadersTooLarge() -> HTTPResponse:
     )
 
 
+def StreamingUnsupported() -> HTTPResponse:
+    """409 for a held-stream response on the blocking accept loop.
+
+    Only the non-blocking event loop assigns `req.slot_id`, drains the
+    outbox, and keeps held connections open; the blocking loop can do none
+    of that. Before this response existed it would write an `sse_streaming`
+    body as a one-shot and close -- a silent degradation issue #118 caught:
+    the client saw one frame and an EOF, and nothing anywhere said why.
+    """
+    return HTTPResponse(
+        (
+            "streaming is not available on this server loop: SSE holds and"
+            " WebSocket upgrades need the event loop. Serve with"
+            " listen_and_serve_nonblocking instead of listen_and_serve.\n"
+        ).as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=409,
+        status_text="Conflict",
+    )
+
+
 def InternalError() -> HTTPResponse:
     return HTTPResponse(
         "Failed to process request".as_bytes(),

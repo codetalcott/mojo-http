@@ -216,6 +216,10 @@ lightbug_http
         (its typed re-wrap never compiled), getaddrinfo called with a valid
         numeric service instead of a non-NULL empty string glibc rejects,
         and ai_protocol no longer passed an address family
+      - The blocking accept loop refuses streaming responses with 409
+        (gate_streaming_response): an sse_streaming response or a 101
+        upgrade needs event-loop machinery the blocking path does not have,
+        and used to be written as a silent one-shot body instead
       - http/common_response.mojo imports the names it uses (HTTPResponse,
         Headers, Header, HeaderKey, Cookie, ResponseCookieJar) from their
         defining modules instead of resolving them through the enclosing

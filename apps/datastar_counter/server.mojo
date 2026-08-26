@@ -228,8 +228,9 @@ def main() raises:
     # (the smoke sets it low to assert heartbeats actually arrive).
     var server = Server(config.server_config(), config.address())
     # SSE requires the non-blocking event loop: only it assigns `req.slot_id`
-    # and drains the outbox; the plain accept loop would answer every stream
-    # open with 409.
+    # and drains the outbox; the plain accept loop answers every stream open
+    # with the server's own 409 (`gate_streaming_response`; DatastarStream
+    # also guards `slot_id < 0` itself, for hosts that bypass that gate).
     # After fork_all, so each worker arms its own pipe: dispositions and fds
     # are inherited, and a pre-fork install would point every worker at the
     # supervisor's pipe, which nothing is watching. The supervisor arms itself

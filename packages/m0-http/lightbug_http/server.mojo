@@ -16,7 +16,7 @@ from lightbug_http.header import (
     find_header_end,
     parse_request_headers,
 )
-from lightbug_http.http.common_response import BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge
+from lightbug_http.http.common_response import BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge, StreamingUnsupported
 from lightbug_http.io.bytes import Bytes, ByteView
 from std.memory import memcpy
 from lightbug_http.service import HTTPService
@@ -415,6 +415,26 @@ struct ProvisionPool(Movable):
         return self.capacity - self.available_count()
 
 
+def gate_streaming_response(var response: HTTPResponse) -> HTTPResponse:
+    """Refuse a response the blocking loop cannot honour, else pass it through.
+
+    Two shapes qualify. An `sse_streaming` response asks the loop to keep
+    the connection open and drain a registry outbox; a `101` asks it to
+    switch the socket to WebSocket frame mode. Both are event-loop
+    machinery (`listen_and_serve_nonblocking`), and the blocking loop
+    honouring neither used to be SILENT: the stream went out as a one-shot
+    body and the 101 as a plain response on a socket that then stayed in
+    HTTP mode. The comments in two apps and CLAUDE.md always claimed "the
+    plain accept loop answers every stream open with 409" -- but that 409
+    lived only inside DatastarStream.open, so apps on the lower-level
+    `sse_response()` + `SSERegistry` path got the silent version (#118).
+    This makes the claim true where it was always said to be true.
+    """
+    if response.sse_streaming or response.status_code == 101:
+        return StreamingUnsupported()
+    return response^
+
+
 def handle_connection[
     T: HTTPService
 ](
@@ -686,6 +706,11 @@ def handle_connection[
                 except handler_err:
                     response = InternalError()
                     provision.should_close = True
+
+            # A held stream or an upgrade cannot work here -- see
+            # `gate_streaming_response`. Gated before the after hook so the
+            # 409 is what gets logged, because it is what goes on the wire.
+            response = gate_streaming_response(response^)
 
             # After hook: add headers, log, etc.
             handler.after_response(request_method, request_path, response)
