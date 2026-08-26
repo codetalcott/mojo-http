@@ -410,7 +410,10 @@ example in README.md.
 **SSE and WebSockets require `listen_and_serve_nonblocking`,** not
 `listen_and_serve`. Only the non-blocking event loop assigns `req.slot_id`,
 drains the outbox, and parses WebSocket frames; the plain accept loop leaves
-`slot_id` at `-1` and every stream open answers `409`.
+`slot_id` at `-1` and refuses every `sse_streaming` response and every `101`
+with the server's own `409` (`gate_streaming_response` — since #118; before
+that the only 409 was DatastarStream's own guard, and apps on the lower-level
+`sse_response()` path silently got a one-shot body instead).
 Slots index the registry directly, so a stream's capacity
 (`DatastarStream(1024)`) must be at least the server's max connections.
 A WebSocket upgrade is signalled on the wire, not by a flag: the loop

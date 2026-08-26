@@ -281,7 +281,9 @@ def main() raises:
     var handler = TodoHandler(open(db_path))
     # SSE requires `listen_and_serve_nonblocking`, not `listen_and_serve`:
     # only the non-blocking event loop assigns `req.slot_id` and drains the
-    # outbox; the plain accept loop would answer every stream open with 409.
+    # outbox; the plain accept loop answers every stream open with the server's
+    # own 409 (`gate_streaming_response`; DatastarStream.open also guards
+    # `slot_id < 0` itself, for hosts that bypass that gate).
     var shutdown_fd = install_shutdown_signals()
     server.listen_and_serve_nonblocking(
         config.address(), handler, shutdown_read_fd=shutdown_fd
