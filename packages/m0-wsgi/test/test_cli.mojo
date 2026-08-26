@@ -400,6 +400,56 @@ def test_from_env_default_port_is_8000() raises:
 # --- usage -------------------------------------------------------------------
 
 
+def test_doctor_needs_no_positional() raises:
+    """`m0serve --doctor` alone is the "is this environment sane" call.
+
+    It shares that exemption with --help and --version; without it the
+    parser would demand a MODULE for the one invocation that deliberately
+    names no application.
+    """
+    var opts = _parse([String("--doctor")])
+    assert_true(opts.show_doctor)
+    assert_equal(opts.module, "")
+
+
+def test_doctor_takes_an_app_when_given_one() raises:
+    var opts = _parse([String("--doctor"), String("myproject.wsgi")])
+    assert_true(opts.show_doctor)
+    assert_equal(opts.module, "myproject.wsgi")
+
+
+def test_doctor_does_not_turn_on_metrics() raises:
+    """Guards a trap the boolean dispatch used to hold.
+
+    Its final `else` was `opts.metrics = True`, so any boolean flag added to
+    `_is_bool` and forgotten in the dispatch silently enabled Prometheus
+    metrics instead of doing its job. The else now raises; this is the test
+    that would have caught it.
+    """
+    var opts = _parse([String("--doctor"), String("x.wsgi")])
+    assert_true(opts.show_doctor)
+    assert_false(opts.metrics)
+    assert_false(opts.realtime)
+    assert_false(opts.reload)
+    assert_false(opts.access_log)
+
+
+def test_every_boolean_flag_sets_only_itself() raises:
+    """The same trap, from the other side: --metrics must still work, and
+    must not set anything else."""
+    var m = _parse([String("--metrics"), String("x.wsgi")])
+    assert_true(m.metrics)
+    assert_false(m.show_doctor)
+    var r = _parse([String("--realtime"), String("x.wsgi")])
+    assert_true(r.realtime)
+    assert_false(r.metrics)
+    assert_false(r.show_doctor)
+
+
+def test_doctor_takes_no_value() raises:
+    assert_true(_fails([String("--doctor=1"), String("x.wsgi")]))
+
+
 def test_usage_mentions_every_flag() raises:
     var text = usage()
     for flag in [
@@ -407,8 +457,8 @@ def test_usage_mentions_every_flag() raises:
         String("--static"), String("--static-cache-control"), String("--access-log"),
         String("--max-body"), String("--metrics"), String("--realtime"),
         String("--health-path"), String("--reload"), String("--reload-dir"),
-        String("--protocol"), String("--blocking-threads"),
-        String("--help"), String("--version"),
+        String("--protocol"), String("--blocking-threads"), String("--mount"),
+        String("--help"), String("--version"), String("--doctor"),
         String("-h"), String("-V"), String("MODULE[:ATTR]"),
     ]:
         assert_true(text.find(flag) >= 0, "usage() does not mention " + flag)

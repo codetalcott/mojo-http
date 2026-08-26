@@ -165,6 +165,14 @@ struct ServeOptions(Copyable, Movable):
     """
     var show_help: Bool
     var show_version: Bool
+    var show_doctor: Bool
+    """`--doctor`: report what this configuration would do, and start nothing.
+
+    Set here rather than handled in `m0serve.main` alone because the parser
+    must know the flag needs no positional — `m0serve --doctor` with no
+    MODULE is the "is this environment sane at all" call, and it is the one
+    an agent reaches for first.
+    """
 
     def __init__(out self):
         """Hard defaults — what applies when neither flag nor env says."""
@@ -200,6 +208,7 @@ struct ServeOptions(Copyable, Movable):
         self.health_path = String("")
         self.show_help = False
         self.show_version = False
+        self.show_doctor = False
 
     def __init__(out self, *, copy: Self):
         self.module = copy.module
@@ -234,6 +243,7 @@ struct ServeOptions(Copyable, Movable):
         self.health_path = copy.health_path
         self.show_help = copy.show_help
         self.show_version = copy.show_version
+        self.show_doctor = copy.show_doctor
 
     def __init__(out self, *, deinit move: Self):
         self.module = move.module^
@@ -268,6 +278,7 @@ struct ServeOptions(Copyable, Movable):
         self.health_path = move.health_path^
         self.show_help = move.show_help
         self.show_version = move.show_version
+        self.show_doctor = move.show_doctor
 
     @staticmethod
     def from_env() -> Self:
@@ -589,6 +600,7 @@ def _is_bool(name: String) -> Bool:
         or name == "--reload"
         or name == "--help"
         or name == "--version"
+        or name == "--doctor"
     )
 
 
@@ -737,8 +749,16 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
                     opts.realtime = True
                 elif name == "--reload":
                     opts.reload = True
-                else:
+                elif name == "--metrics":
                     opts.metrics = True
+                elif name == "--doctor":
+                    opts.show_doctor = True
+                else:
+                    # Unreachable: `_is_bool` gated entry. Explicit anyway --
+                    # this used to be `opts.metrics = True`, so a new boolean
+                    # flag added to `_is_bool` and forgotten here silently
+                    # turned on Prometheus metrics instead of doing its job.
+                    raise Error("unhandled boolean option " + name)
             elif _takes_value(name):
                 var value = inline
                 if not has_inline:
@@ -771,6 +791,7 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
         and len(opts.mount_prefixes) == 0
         and not opts.show_help
         and not opts.show_version
+        and not opts.show_doctor
     ):
         raise Error("missing MODULE[:ATTR]")
     return opts^
@@ -817,6 +838,10 @@ def usage() -> String:
         "                              (development; forces a supervisor)\n"
         "  --reload-dir DIR            directory --reload watches; repeatable,\n"
         "                              defaults to --app-dir\n"
+        "  --doctor                    report this configuration as JSON and\n"
+        "                              exit: platform, interpreter, resolved\n"
+        "                              topology, and every startup check, with\n"
+        "                              the exit code the server itself would use\n"
         "  -h, --help                  show this help and exit\n"
         "  -V, --version               show the version and exit\n"
         "\n"

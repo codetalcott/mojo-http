@@ -326,6 +326,37 @@ workers onto changed Python in ~300 ms without re-exec'ing the binary.
 including under `--workers N`, where a supervisor that gives up on respawning
 says so instead of exiting 0.
 
+**`--doctor` answers "will this run?" without running it.** It prints one
+JSON object — platform and wheel architecture, the interpreter it resolved
+and the virtualenv it came from, the spec discovery actually chose and the
+protocol it classified as, the resolved topology, and a `checks` array whose
+failures each carry a `detail`, a `fix` and the `exit` code that check would
+cause — then starts nothing: no bind, no fork, no second import.
+
+```console
+$ m0serve --doctor myproject.wsgi --threads 4 | jq '{exit, checks: [.checks[] | select(.ok | not)]}'
+{
+  "exit": 78,
+  "checks": [
+    {
+      "name": "free-threading",
+      "ok": false,
+      "detail": "--threads 4 requires free-threaded CPython with the GIL disabled; this is not a free-threaded build",
+      "fix": "use --workers N instead, or run on 3.14t with PYTHON_GIL=0",
+      "exit": 78
+    }
+  ]
+}
+```
+
+The contract worth relying on is the exit code: **`--doctor` exits with the
+code `m0serve` itself would exit with for the same arguments.** That is kept
+true by running both over every refusal and comparing (`poe smoke-doctor`),
+because the doctor mirrors the startup path's check order rather than sharing
+its control flow — a diagnostic that reports "fine" where the server refuses
+would be worse than none. A bare `m0serve --doctor` with no application is
+the environment check: platform, interpreter, cores, and exit 0.
+
 The binary resolves libpython from the `python3` on `PATH`: run it from a
 virtualenv that has your framework installed, or set `MOJO_PYTHON_LIBRARY` to
 the shared library. Build once, serve anywhere the interpreter is.

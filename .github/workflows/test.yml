@@ -291,6 +291,13 @@ jobs:
       # beating the environment, a static mount, --max-body, --metrics.
       - name: Smoke test the serve CLI
         run: uv run poe smoke-serve
+      # --doctor's whole value is that its exit code equals the one m0serve
+      # itself would produce for the same arguments, and the two are kept in
+      # step by hand: the doctor mirrors main's check order rather than
+      # sharing its control flow. This runs BOTH over every refusal and
+      # compares, which is the only way that stays true.
+      - name: Smoke test --doctor against the server's own exit codes
+        run: uv run poe smoke-doctor
       # The threaded mode's guard: on these GIL-enabled runners M0_THREADS>1
       # must refuse to start with exit 78 and a sentence naming the
       # requirement. The mode itself is proven weekly by py-canary on 3.14t.

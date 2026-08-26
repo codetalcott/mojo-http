@@ -638,7 +638,12 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   4. **Agent affordances**: an `llms.txt`; a `--doctor` / machine-readable
      startup diagnostic; error messages and refusals already explain
      themselves and name their fix — document that as a contract rather
-     than leaving it as culture.
+     than leaving it as culture. **Done.** `llms.txt` and the
+     CI-executed QUICKSTART shipped with 0.11.0; `--doctor` prints the
+     configuration as JSON and exits with the code `m0serve` itself would
+     use for the same arguments, which `poe smoke-doctor` holds true by
+     running both over every refusal. The refusal contract is now stated in
+     `llms.txt` rather than implied by the messages.
   5. **The public name, decided once.** `mojo` is Modular's mark;
      `m0serve`/`m0-*` keep distance. Check PyPI availability during the
      wheel spike and lock the name before anything is published under it

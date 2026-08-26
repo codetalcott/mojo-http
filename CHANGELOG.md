@@ -7,6 +7,49 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **`m0serve --doctor`: the configuration as JSON, starting nothing.** The
+  launch checklist's machine-readable startup diagnostic, and the reason is
+  narrower than "nice to have": every refusal this server makes already
+  names its fix, but seeing one meant *attempting the run* — which binds a
+  port, forks, and imports the application. `--doctor` reports platform and
+  wheel architecture, the interpreter it resolved and the virtualenv it came
+  from, the spec discovery chose and the protocol it classified as, the
+  resolved topology (including whether the handler pool is a default or
+  configured), and a `checks` array whose failures each carry `detail`,
+  `fix` and `exit`.
+
+  **The contract is the exit code: `--doctor` exits with the code `m0serve`
+  itself would exit with for the same arguments** — 0 serve, 2 usage,
+  1 startup, 78 `EX_CONFIG`. A diagnostic that reports "fine" where the
+  server refuses is worse than no diagnostic, and the doctor mirrors the
+  startup path's check order rather than sharing its control flow, so
+  nothing but a test keeps them in step: `poe smoke-doctor` runs *both*
+  binaries over every refusal and compares.
+
+  That test earned its place before it was committed. The first
+  implementation recorded the free-threading check before the usage
+  conflicts, so `--workers 2 --threads 2` reported 78 where the server exits
+  2 — the interpreter is never reached, because `main` decides topology
+  conflicts before any Python runs. `Report.exit_code` returns the *first*
+  failure rather than the largest for the same reason, and
+  `test_doctor.mojo` pins it.
+
+  A bare `m0serve --doctor` with no application is the "is this environment
+  sane" call and exits 0 — reporting the interpreter facts is precisely what
+  a failed install needs, and previously libpython not resolving was visible
+  only as a traceback at serve time.
+
+### Fixed
+
+- **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its
+  chain with `else: opts.metrics = True`, so a new flag added to `_is_bool`
+  and forgotten in the dispatch silently enabled Prometheus metrics instead
+  of doing its job. `--doctor` would have been the first victim. The `else`
+  now raises, and `test_cli.mojo` asserts each boolean sets only itself.
+
+
 ## [0.11.0] — 2026-08-26
 
 The release that makes three published claims true at once: the quickstart
