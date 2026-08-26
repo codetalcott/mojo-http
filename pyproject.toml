@@ -778,6 +778,17 @@ for expected in 1 2 3; do
     || fail "session did not persist across requests: expected count=$expected, got '$got'"
 done
 grep -q 'sessionid' "$jar" || fail 'Django never set a session cookie'
+# The attributes have to survive too, and curl's jar cannot show that: it
+# stores name and value only. Read the line off the wire. Django's session
+# cookie carries expires, HttpOnly, Max-Age and SameSite=Lax; the bridge
+# used to re-serialise Set-Cookie through its own parser and dropped
+# expires and SameSite from every response of every Django app, which no
+# count of headers could see.
+line=$(curl -s -i -b "$jar" http://localhost:8080/session/bump | grep -i '^set-cookie: sessionid=')
+[ -n "$line" ] || fail 'the session cookie was not re-sent on the wire'
+for attr in 'expires=' 'HttpOnly' 'Max-Age=' 'SameSite=Lax'; do
+  echo "$line" | grep -q "$attr" || fail "the session cookie lost its $attr attribute on the wire: $line"
+done
 rm -f "$jar"
 
 # A body the server cannot read in one go. Both shapes below answered 408
@@ -1650,6 +1661,31 @@ code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/__metrics)
 kill $pid
 wait $pid 2>/dev/null
 
+# The other direction: a body the cap ALLOWS must arrive. The receive buffer
+# had its own 2 MB ceiling that --max-body never raised, so every upload
+# between 2 MB and the cap was refused -- as a 400 from the buffer check, not
+# a 413 -- under the default 4 MB cap too. Three real Django projects' image
+# uploads found it (docs/REAL_APP_VALIDATION.md). Sizes straddle the old
+# ceiling on purpose: 3 MB under the default, 7 MB under --max-body 8m.
+"$srv" $SPEC --port 8098 > serve.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
+code=$(python3 -c "import sys; sys.stdout.write('c' * (3 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+[ "$code" = "200" ] || fail "default cap: a 3 MB body expected 200, got $code (the receive buffer, not --max-body, refused it)"
+code=$(python3 -c "import sys; sys.stdout.write('c' * (5 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+[ "$code" = "413" ] || fail "default cap: a 5 MB body expected 413, got $code"
+kill $pid
+wait $pid 2>/dev/null
+"$srv" $SPEC --port 8098 --max-body 8m > serve.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
+code=$(python3 -c "import sys; sys.stdout.write('d' * (7 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+[ "$code" = "200" ] || fail "--max-body 8m: a 7 MB body expected 200, got $code"
+code=$(python3 -c "import sys; sys.stdout.write('d' * (9 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+[ "$code" = "413" ] || fail "--max-body 8m: a 9 MB body expected 413, got $code"
+kill $pid
+wait $pid 2>/dev/null
+
 # Without --metrics the path is the application's to answer (here: its 404).
 "$srv" $SPEC --port 8098 > serve.log 2>&1 &
 pid=$!
@@ -2018,6 +2054,32 @@ wait $pid 2>/dev/null; rc=$?
 grep -q 'slow done' slowbody.txt || fail 'a request in flight at SIGTERM was dropped'
 [ "$(cat slowcode.txt)" = "200" ] || fail "in-flight request at SIGTERM answered $(cat slowcode.txt), want 200"
 rm -f slowbody.txt slowcode.txt
+
+# SIGTERM with jobs that will NEVER finish: exit anyway, and say so. A
+# response that never ends -- an SSE generator under WSGI is the real case;
+# docs/REAL_APP_VALIDATION.md found it on textshelf -- holds its pool thread
+# forever, and the join after the drain used to wait for it forever: SIGTERM
+# did nothing and `docker stop` ended in SIGKILL. The drain has a 5 s budget
+# and the join now has the same; 20 s here is both plus slack, and the old
+# behaviour is not slow but infinite.
+"$srv" $SPEC --port 8099 --blocking-threads 2 > pool.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8099/ > /dev/null || fail 'never became healthy'
+curl -s -o /dev/null --max-time 60 http://127.0.0.1:8099/stuck &
+stuck1=$!
+curl -s -o /dev/null --max-time 60 http://127.0.0.1:8099/stuck &
+stuck2=$!
+sleep 0.5
+t0=$(date +%s)
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+took=$(( $(date +%s) - t0 ))
+kill $stuck1 $stuck2 2>/dev/null
+wait $stuck1 $stuck2 2>/dev/null
+[ "$took" -lt 20 ] || fail "SIGTERM with two stuck views: ${took}s to exit; the join is waiting for threads that will never come back"
+[ "$rc" = "0" ] || fail "SIGTERM with two stuck views: exit $rc, want 0"
+grep -q 'still inside the application' pool.log || fail 'the exit did not say which threads it left behind'
+echo "SIGTERM with two stuck views exited in ${took}s"
 echo "smoke-blocking-threads OK (phase 1: prefork, 4 handler threads)"
 
 # Phase 2: the pool in front of `--threads N`, which needs free-threaded
@@ -2838,6 +2900,20 @@ n=$(curl -s -D - $B/cookies -o /dev/null | grep -ci '^set-cookie')
 [ "$n" = "2" ] || fail "expected 2 Set-Cookie headers, got $n"
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/status/418)
 [ "$code" = "418" ] || fail "status passthrough failed: got $code"
+
+# Thirty-two streams at once, FileResponse-shaped (4 KB pieces). The credit
+# window is per stream while the chunk channel is shared and finite, so 32
+# windows in flight overflow it; the executor used to retry 64 times and then
+# DROP the datagram, and the body arrived short with a clean terminator -- a
+# corrupt 200 -- or, with the end frame gone, never completed. Twelve
+# concurrent WhiteNoise static files under a real Django project found it
+# (docs/REAL_APP_VALIDATION.md). Every body must be exactly 237568 bytes.
+(for i in $(seq 1 32); do echo "$B/stream?size=237568&piece=4096"; done) \
+  | xargs -P 32 -I{} curl -s -o /dev/null -w '%{size_download}\n' --max-time 30 {} > "$out/sizes"
+short=$(awk '$1 != 237568' "$out/sizes" | wc -l | tr -d ' ')
+[ "$short" = "0" ] || fail "$short of 32 concurrent streams arrived short or not at all: $(sort "$out/sizes" | uniq -c | tr '\n' ' ')"
+# And the server is still whole afterwards.
+curl -s --max-time 5 $B/ | grep -q 'hello from asgi_bare' || fail 'the server did not answer after 32 concurrent streams'
 
 # Lifespan ran at startup and its state reached the request scope.
 curl -s $B/lifespan | grep -qF '"started": true' || fail 'lifespan startup did not run'

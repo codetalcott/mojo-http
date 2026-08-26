@@ -354,18 +354,33 @@ struct OffloadPool(Movable):
         """Whether the ASGI streaming channel exists (executor mode)."""
         return self.stream_ack_write >= 0
 
-    def send_stream_chunk(self, frame: Span[Byte, _]):
-        """One bus-shaped chunk datagram, executor side. Retried, never
-        dropped — same policy and rationale as `complete`."""
+    def send_stream_chunk(self, frame: Span[Byte, _]) -> Bool:
+        """One bus-shaped chunk datagram, executor side. Returns whether it went.
+
+        Bounded retry, never a wait: this runs on the executor thread, which
+        is ATTACHED to the interpreter here, so blocking would hold the GIL
+        against the very loop thread that has to drain this channel — the
+        deadlock is worse than the drop, measured.
+
+        A drop IS corruption (a short body under a clean terminator), so the
+        real defence is upstream: the shim's global in-flight budget
+        (`_ASGI_TOTAL_WINDOW`) keeps the sum of every stream's outstanding
+        bytes under this channel's capacity, where per-stream credit alone
+        did not — 12 concurrent WhiteNoise static files under Django were
+        enough to overflow it (docs/REAL_APP_VALIDATION.md, 2026-08-26).
+        The False return is the last resort, and `_pump_events` says so on
+        stdout rather than letting a truncated body look like a good one.
+        """
         for _ in range(64):
             try:
                 _ = send(
                     FileDescriptor(self.stream_chunk_write),
                     frame, UInt(len(frame)), 0,
                 )
-                return
+                return True
             except:
                 _sched_yield()
+        return False
 
     def enable_stream_ack(mut self, lane: Int) raises:
         """A private drain-ack pair for `lane`'s executor.
@@ -394,13 +409,19 @@ struct OffloadPool(Movable):
             return self.lane_ack_read[lane]
         return self.stream_ack_read
 
-    def ack_stream(self, slot: Int, bytes_flushed: Int):
+    def ack_stream(self, slot: Int, bytes_flushed: Int) -> Bool:
         """One drain-ack datagram, loop side: `(slot: i32, bytes: i32)` LE.
 
         Called after a streaming slot's buffer fully lands in the kernel;
         the executor replenishes that slot's credit by `bytes_flushed`.
-        Retried like `complete` — bounded, and the ack channel is sized
-        far beyond the credit window so it cannot stay full.
+        Retried like `complete` — bounded, because the LOOP must never park
+        in a send: the executor reads acks on its asyncio loop, and it may be
+        blocked at that moment in `send_stream_chunk` waiting for this loop
+        to drain — a loop that waited on it here would be a deadlock. So
+        this returns False when the channel would not take the ack, and the
+        loop keeps the credit owed (`OffloadLoopState.ack_owed`) and retries
+        it on later passes. A lost ack is a window that never refills and a
+        `send()` that awaits forever, which is why it is never dropped.
 
         Routed by `slot_lane`: with several executors the ack must reach
         the one that owns the slot, because credit sent anywhere else
@@ -426,9 +447,10 @@ struct OffloadPool(Movable):
                     FileDescriptor(ack_fd),
                     Span(msg), UInt(len(msg)), 0,
                 )
-                return
+                return True
             except:
                 _sched_yield()
+        return False
 
     def addr(mut self) -> Int:
         """This pool's address, for `run_event_loop` and the thread blocks."""
@@ -704,23 +726,37 @@ struct OffloadLoopState(Movable):
     credit than was spent on every chunk, and a long stream would grow its
     own window without bound."""
 
+    var ack_owed: List[Int]
+    """Credit the ack channel refused to carry (`ack_stream` returned False),
+    per slot, to be retried on a later pass. The executor may have been
+    unable to read acks at that instant because it was itself waiting for
+    this loop to drain its chunks; the loop cannot wait for it — that is the
+    deadlock — so it owes the credit instead. Never dropped: a stream whose
+    window is short by one ack stalls forever."""
+
+    var ack_owed_count: Int
+    """How many slots have `ack_owed > 0`; lets every pass skip the scan."""
+
     var inflight: Int
     """Jobs submitted and not yet completed. Bounded by OFFLOAD_MAX_INFLIGHT."""
 
     def __init__(out self, addr: Int, capacity: Int):
         self.addr = addr
         self.inflight = 0
+        self.ack_owed_count = 0
         self.offloaded = List[Bool](capacity=capacity)
         self.is_head = List[Bool](capacity=capacity)
         self.http11 = List[Bool](capacity=capacity)
         self.chunked = List[Bool](capacity=capacity)
         self.ack_payload = List[Int](capacity=capacity)
+        self.ack_owed = List[Int](capacity=capacity)
         for _ in range(capacity):
             self.offloaded.append(False)
             self.is_head.append(False)
             self.http11.append(False)
             self.chunked.append(False)
             self.ack_payload.append(0)
+            self.ack_owed.append(0)
 
     def __init__(out self, *, deinit move: Self):
         self.addr = move.addr
@@ -729,6 +765,8 @@ struct OffloadLoopState(Movable):
         self.http11 = move.http11^
         self.chunked = move.chunked^
         self.ack_payload = move.ack_payload^
+        self.ack_owed = move.ack_owed^
+        self.ack_owed_count = move.ack_owed_count
         self.inflight = move.inflight
 
     def enabled(self) -> Bool:

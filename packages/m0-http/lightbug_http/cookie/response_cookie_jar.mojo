@@ -58,17 +58,36 @@ struct ResponseCookieKey(ImplicitlyCopyable, KeyElement):
 @fieldwise_init
 struct ResponseCookieJar(Copyable, Sized, Writable):
     var _inner: Dict[ResponseCookieKey, Cookie]
+    var raw: List[String]
+    """Values written to the wire as `Set-Cookie` exactly as given, after
+    the parsed cookies.
+
+    A cookie this server builds itself is a `Cookie`. A cookie that arrives
+    as a finished header line — from a WSGI or ASGI application, or an
+    upstream — is not: the line IS the header, and the server's job is to
+    transmit it. Parsing it into a `Cookie` and serialising that back was
+    lossy in four ways, each measured against Django on a real project:
+    `Expiration` is a stub whose `from_string` parses nothing, so `expires=`
+    vanished; `SameSite.from_string` matched only lowercase values, so
+    `SameSite=Lax` vanished; `parts[0].split("=")` cut a value at its first
+    `=`, which base64 padding puts at the end; and any attribute this struct
+    does not know was dropped. Every Django session and CSRF cookie left
+    without `expires` or `SameSite`. `add_raw` is the bypass.
+    """
 
     def __init__(out self):
         self._inner = Dict[ResponseCookieKey, Cookie]()
+        self.raw = List[String]()
 
     def __init__(out self, *cookies: Cookie):
         self._inner = Dict[ResponseCookieKey, Cookie]()
+        self.raw = List[String]()
         for cookie in cookies:
             self.set_cookie(cookie)
 
     def __init__(out self, cookies: List[Cookie]):
         self._inner = Dict[ResponseCookieKey, Cookie]()
+        self.raw = List[String]()
         for cookie in cookies:
             self.set_cookie(cookie)
 
@@ -97,11 +116,16 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
         return String(self)
 
     def __len__(self) -> Int:
-        return len(self._inner)
+        return len(self._inner) + len(self.raw)
 
     @always_inline
     def set_cookie(mut self, cookie: Cookie):
         self[ResponseCookieKey(cookie.name, cookie.domain, cookie.path)] = cookie
+
+    @always_inline
+    def add_raw(mut self, line: String):
+        """Queue one `Set-Cookie` value to be written verbatim — see `raw`."""
+        self.raw.append(line)
 
     @always_inline
     def empty(self) -> Bool:
@@ -123,3 +147,5 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
         for cookie in self._inner.values():
             var v = cookie.build_header_value()
             write_header(writer, HeaderKey.SET_COOKIE, v)
+        for line in self.raw:
+            write_header(writer, HeaderKey.SET_COOKIE, line)

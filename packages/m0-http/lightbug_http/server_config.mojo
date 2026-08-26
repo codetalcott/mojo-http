@@ -17,7 +17,18 @@ struct ServerConfig(Copyable, Movable):
     """Size of socket read buffer."""
 
     var recv_buffer_max: Int
-    """Maximum total receive buffer size."""
+    """Floor for one connection's receive buffer; the cap is `recv_buffer_limit`.
+
+    Never the effective ceiling on its own. A request is headers plus body
+    and each has its own limit, so the buffer must be allowed to hold
+    `max_total_header_size + max_request_body_size`, or a body the server
+    advertises as acceptable is refused — and refused by the buffer check as
+    a `400 Bad Request`, not the `413` the body limit sends. That is what
+    happened: 2 MB here against the 4 MB body default meant every upload
+    between the two failed with a 400 under every `--max-body`, including
+    no flag at all; three real Django projects' image uploads found it
+    (docs/REAL_APP_VALIDATION.md, 2026-08-26).
+    """
 
     var max_request_body_size: Int
     """Maximum request body size."""
@@ -54,7 +65,7 @@ struct ServerConfig(Copyable, Movable):
         self.max_keepalive_requests = 100
 
         self.socket_buffer_size = default_buffer_size
-        self.recv_buffer_max = 2 * 1024 * 1024  # 2MB
+        self.recv_buffer_max = 2 * 1024 * 1024  # a floor; see recv_buffer_limit
 
         self.max_request_body_size = 4 * 1024 * 1024  # 4MB
         self.max_request_uri_length = 8192
@@ -100,3 +111,15 @@ struct ServerConfig(Copyable, Movable):
         self.enable_metrics = move.enable_metrics
         self.sse_heartbeat_ms = move.sse_heartbeat_ms
         self.app_tick_ms = move.app_tick_ms
+
+    def recv_buffer_limit(self) -> Int:
+        """The most bytes one connection may hold buffered and unprocessed.
+
+        `recv_buffer_max` or the headers-plus-body allowance, whichever is
+        larger — so raising `max_request_body_size` (m0serve's `--max-body`)
+        raises this with it, whichever field a caller set and in whichever
+        order. The check sites in `event_loop.mojo` and `server.mojo` compare
+        against this, never against the field.
+        """
+        var allowance = self.max_total_header_size + self.max_request_body_size
+        return self.recv_buffer_max if self.recv_buffer_max > allowance else allowance

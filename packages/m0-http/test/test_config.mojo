@@ -254,5 +254,28 @@ def test_server_config_leaves_server_only_tuning_at_defaults() raises:
     _clear()
 
 
+def test_recv_buffer_limit_covers_headers_plus_body() raises:
+    """A body the server advertises as acceptable must fit its receive buffer.
+
+    `recv_buffer_max` alone was 2 MB against a 4 MB body default, so every
+    upload between the two was refused — as a 400 from the buffer check,
+    not the 413 the body limit sends. The limit is derived, so raising the
+    body cap raises it with it.
+    """
+    var sc = ServerConfig()
+    assert_true(
+        sc.recv_buffer_limit() >= sc.max_total_header_size + sc.max_request_body_size,
+        "the default receive buffer cannot hold the default headers + body",
+    )
+    sc.max_request_body_size = 64 * 1024 * 1024
+    assert_true(
+        sc.recv_buffer_limit() >= 64 * 1024 * 1024 + sc.max_total_header_size,
+        "raising the body cap did not raise the receive buffer with it",
+    )
+    # The field is still a floor a Mojo caller may raise for its own reasons.
+    sc.recv_buffer_max = 256 * 1024 * 1024
+    assert_equal(sc.recv_buffer_limit(), 256 * 1024 * 1024)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

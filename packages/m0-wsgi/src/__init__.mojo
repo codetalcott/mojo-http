@@ -53,7 +53,7 @@ from .threaded import (
     EXIT_NOT_FREE_THREADED,
 )
 from .doctor import Report, DOCTOR_OK
-from .blocking_pool import BlockingPool
+from .blocking_pool import BlockingPool, JOIN_TIMEOUT_NS
 from .asgi_executor import AsgiExecutor
 from .cli import (
     ServeOptions,

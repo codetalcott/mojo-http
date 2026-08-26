@@ -648,7 +648,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         body_st.bytes_read += Int(bytes_read)
                         provision_pool.provisions[slot].body_state = body_st
 
-                    if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_max:
+                    if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_limit():
                         _send_error_to_fd(fd_val, BadRequest())
                         _close_slot(
                             backend, handler, slot, fd_val,
@@ -816,7 +816,10 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # window must count what the application produced. The
                     # stream head lands here too, with 0 owed.
                     if offload.ack_payload[slot] > 0 and offload.enabled() and offload.pool()[].stream_active():
-                        offload.pool()[].ack_stream(slot, offload.ack_payload[slot])
+                        if not offload.pool()[].ack_stream(slot, offload.ack_payload[slot]):
+                            if offload.ack_owed[slot] == 0:
+                                offload.ack_owed_count += 1
+                            offload.ack_owed[slot] += offload.ack_payload[slot]
                     offload.ack_payload[slot] = 0
                     _after_send(
                         backend, slot, fd_val,
@@ -837,6 +840,22 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse, slot_ws, slot_ws_state,
                         )
+
+        # Credit the ack channel refused earlier (`ack_stream` returned
+        # False: EAGAIN, the executor not reading at that instant — most
+        # likely because it was itself waiting for THIS loop to drain its
+        # chunks). Retried every pass and never dropped: a window short by
+        # one ack is a `send()` that awaits forever. A slot that has since
+        # closed forfeits what it was owed; the head of the next stream on
+        # that slot seeds a fresh window.
+        if offload.ack_owed_count > 0:
+            var can_ack = offload.enabled() and offload.pool()[].stream_active()
+            for s in range(max_conns):
+                if offload.ack_owed[s] <= 0:
+                    continue
+                if slot_fds[s] == UNUSED or (can_ack and offload.pool()[].ack_stream(s, offload.ack_owed[s])):
+                    offload.ack_owed[s] = 0
+                    offload.ack_owed_count -= 1
 
         # Outbox drain: push pending bytes to streaming connections — SSE
         # events and WebSocket frames share the same per-slot outbox contract
@@ -897,7 +916,10 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         # write-ready path would otherwise have owed.
                         offload.ack_payload[s] = 0
                         if asgi_stream and payload_len > 0:
-                            offload.pool()[].ack_stream(s, payload_len)
+                            if not offload.pool()[].ack_stream(s, payload_len):
+                                if offload.ack_owed[s] == 0:
+                                    offload.ack_owed_count += 1
+                                offload.ack_owed[s] += payload_len
                         if ended:
                             if framed:
                                 # The terminator landed: the message is
@@ -1191,7 +1213,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             Span(provision_pool.provisions[slot].recv_staging)
         )
 
-    if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_max:
+    if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_limit():
         _send_error_to_fd(fd_val, BadRequest())
         _close_slot(
             backend, handler, slot, fd_val,
@@ -1729,8 +1751,13 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # because a `--realtime` SSE stream is refused alongside the executor
     # and never ends on its own anyway.
     # A response head owes the producer nothing: the credit window is
-    # seeded when the stream opens, and the head is not payload.
+    # seeded when the stream opens, and the head is not payload. Credit a
+    # previous stream on this slot was still owed dies with it: the new
+    # window is seeded whole, and a late ack would inflate it.
     offload.ack_payload[slot] = 0
+    if offload.ack_owed[slot] > 0:
+        offload.ack_owed[slot] = 0
+        offload.ack_owed_count -= 1
     if response.sse_streaming:
         response.headers.pop("content-length")
         var asgi_stream = offload.enabled() and offload.pool()[].stream_active()

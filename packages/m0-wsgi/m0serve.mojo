@@ -70,7 +70,7 @@ from m0_http.multiworker import SharedAtomics
 from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
-    AsgiExecutor, detect_protocol, discovery_specs, resolve_blocking_threads,
+    AsgiExecutor, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
     effective_cpus, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     M0SERVE_VERSION, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
@@ -992,10 +992,29 @@ def _serve_offloaded(
     ref cpy = Python().cpython()
     var join_ts = cpy.PyEval_SaveThread()
     var failed = 0
+    var stuck = 0
     if run_executor:
-        failed += exec_thread.stop_and_join(pool)
+        failed += exec_thread.stop_and_join(pool, JOIN_TIMEOUT_NS)
+        stuck += exec_thread.stragglers
     if pool_threads.count > 0:
-        failed += pool_threads.stop_and_join(pool)
+        failed += pool_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
+        stuck += pool_threads.stragglers
+    if stuck > 0:
+        # A thread still inside the application after the drain AND the join
+        # budget is not coming back: a response that never ends (an SSE
+        # generator served buffered under WSGI; docs/REAL_APP_VALIDATION.md)
+        # holds it for the life of the process. Nothing here can unwind
+        # Python on another thread, so leave the way a forked worker does --
+        # `_exit`, no teardown -- with every connection the loop could answer
+        # already answered. The alternative was a SIGTERM that did nothing
+        # until `docker stop` gave up and sent SIGKILL, which is what it did.
+        print(
+            "m0serve: " + String(stuck) + " handler thread(s) still inside the"
+            " application " + String(JOIN_TIMEOUT_NS // 1_000_000_000)
+            + " s after the drain; exiting without them",
+            flush=True,
+        )
+        process_exit(0)
     cpy.PyEval_RestoreThread(join_ts)
     if failed > 0:
         print(

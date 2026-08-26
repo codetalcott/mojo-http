@@ -55,6 +55,18 @@ from .thread_handler import ThreadContext, ThreadHandler
 comptime BLK_POOL = 7
 """Block slot holding the `OffloadPool`'s address."""
 
+comptime JOIN_TIMEOUT_NS = 5_000_000_000
+"""How long a shutdown waits for handler threads after the loop has drained.
+
+The same 5 s the loop gives its own drain. A pool thread is inside the
+application for as long as the application keeps it, and a response that
+never ends — an SSE generator served under WSGI, which buffers it, is the
+real case (docs/REAL_APP_VALIDATION.md, textshelf, 2026-08-26) — keeps it
+for the life of the process. `stop_and_join` used to wait for that forever:
+SIGTERM did nothing, and `docker stop` ended in SIGKILL. Past this budget
+the process leaves without the stragglers.
+"""
+
 
 struct BlockingPool(Movable):
     """N handler threads against one loop's `OffloadPool`.
@@ -83,18 +95,23 @@ struct BlockingPool(Movable):
     var _lanes: List[Int]
     """Each thread's submit lane, filled by `start` and read by
     `stop_and_join` — the pills have to go where the threads are parked."""
+    var stragglers: Int
+    """Threads `stop_and_join` gave up waiting for: still inside the
+    application when its budget ran out, left running and unjoined."""
 
     def __init__(out self, count: Int):
         self.count = count
         self._set = ThreadSet(count)
         self._started = False
         self._lanes = List[Int]()
+        self.stragglers = 0
 
     def __init__(out self, *, deinit move: Self):
         self.count = move.count
         self._set = move._set^
         self._started = move._started
         self._lanes = move._lanes^
+        self.stragglers = move.stragglers
 
     def start[T: ThreadHandler](
         mut self, pool_addr: Int, user: Int, var lanes: List[Int] = List[Int]()
@@ -122,9 +139,15 @@ struct BlockingPool(Movable):
             self._set.spawn(i, body_addr)
         self._started = True
 
-    def stop_and_join(mut self, mut pool: OffloadPool) raises -> Int:
+    def stop_and_join(mut self, mut pool: OffloadPool, timeout_ns: Int = -1) raises -> Int:
         """Poison the queue with one pill per thread, then join. Returns the
         count that did not end cleanly.
+
+        With `timeout_ns >= 0` the join is bounded (`ThreadSet.join_within`):
+        a thread still inside the application when the budget runs out is
+        counted in `stragglers`, left unjoined, and the caller is expected to
+        leave the process without it. Unbounded otherwise, for callers that
+        know every thread will come back.
 
         BLOCKS — detach from the interpreter around it, because a pool thread
         finishing its last job has to attach and cannot while this thread
@@ -160,7 +183,10 @@ struct BlockingPool(Movable):
                 zero += 1
         if zero > 0:
             pool.stop(zero, 0)
-        self._set.join_all()
+        if timeout_ns >= 0:
+            self.stragglers = self._set.join_within(timeout_ns)
+        else:
+            self._set.join_all()
         var failed = 0
         for i in range(self.count):
             if self._set.status(i) != STATUS_OK:

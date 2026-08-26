@@ -237,6 +237,19 @@ def slow(environ, start_response):
     return [b"slow done"]
 
 
+def stuck(environ, start_response):
+    """A view that never comes back, to prove shutdown does not wait for it.
+
+    120 s is "never" at the scale of a drain deadline. `smoke-blocking-threads`
+    holds two of these on pool threads, sends SIGTERM, and asserts the process
+    exits within its budget saying what it left behind. The real-world shape
+    is an SSE generator served under WSGI, which is buffered and so never ends.
+    """
+    time.sleep(120)
+    start_response("200 OK", list(TEXT))
+    return [b"stuck done"]
+
+
 def not_found(environ, start_response):
     start_response("404 Not Found", list(TEXT))
     return [b"not found"]
@@ -262,6 +275,7 @@ ROUTES = {
     "/subview": subview,
     "/reentrant": reentrant,
     "/slow": slow,
+    "/stuck": stuck,
 }
 
 

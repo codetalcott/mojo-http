@@ -10,9 +10,15 @@ docs/WSGI_PERFORMANCE.md; the bench now covers both directions.
 The header half is where the interesting bug lives. `Headers` is a
 `Dict[String, String]`, so writing `Set-Cookie` through it keeps only the last
 one — and Django routinely sets two (`sessionid` and `csrftoken`) on the same
-response. `ResponseCookieJar` is keyed by `(name, domain, path)` and emits one
-line per cookie, so every `Set-Cookie` is routed there instead. `smoke-django`
-asserts the count.
+response. `ResponseCookieJar` emits one line per cookie, so every `Set-Cookie`
+is routed there instead — as a **verbatim line** (`ResponseCookieJar.raw`),
+never parsed into a `Cookie` and re-serialised. That round trip was lossy:
+`Expiration` is a stub, `SameSite=Lax` failed a lowercase-only match, and a
+value was cut at its first `=`. Serving three real Django projects, every
+session and CSRF cookie reached the browser without `expires` or `SameSite`
+(2026-08-26, docs/REAL_APP_VALIDATION.md). The application's line is the
+header; PEP 3333 gives the server no licence to rewrite it. `smoke-django`
+asserts the count and that the attributes survive the wire.
 """
 
 from std.python import PythonObject
@@ -51,7 +57,7 @@ def build_response(
     var code_and_text = split_status(status)
 
     var out_headers = Headers()
-    var cookie_lines = List[String]()
+    var cookies = ResponseCookieJar()
     for pair in headers:
         var name = String(py=pair[0])
         var value = String(py=pair[1])
@@ -63,17 +69,15 @@ def build_response(
         # mistake, and header.mojo dispatches the identical Set-Cookie test
         # through it. This is the same fix, applied in the other direction.
         if name_is(name.as_bytes(), HeaderKey.SET_COOKIE):
-            cookie_lines.append(value)
+            # Verbatim. The jar used to parse this into a `Cookie` and emit
+            # its own serialisation, which dropped `expires` and `SameSite`
+            # from every Django cookie and would cut a value at its first
+            # `=` — see `ResponseCookieJar.raw`. Nothing here can improve on
+            # the line the application wrote, and skipping the parse is also
+            # the cheaper path on the measured response half of the bridge.
+            cookies.add_raw(value)
         else:
             out_headers[name] = value
-
-    var cookies = ResponseCookieJar()
-    try:
-        cookies.from_headers(cookie_lines)
-    except:
-        # An unparseable Set-Cookie is the application's bug, not a reason to
-        # drop its response on the floor. Serve the body without the cookie.
-        pass
 
     var body_bytes = bridge.body_bytes(body)
     # Content-Length is authoritative here, not whatever the application
