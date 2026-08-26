@@ -187,6 +187,11 @@ jobs:
       # the clean consumer jobs in release.yml are for.
       - name: Build and smoke test the installable wheel
         run: uv run poe smoke-wheel
+      # The doc a stranger follows, executed: QUICKSTART.md's fenced blocks
+      # run against the tree's own wheel. A code change that breaks the
+      # quickstart, or a quickstart edit that breaks the path, fails here.
+      - name: Execute the quickstart
+        run: uv run poe smoke-quickstart
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
       # Both stop paths: SIGTERM draining a single process, and a SIGTERM aimed

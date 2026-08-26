@@ -200,6 +200,28 @@ def check_wheel_platform_claims():
         )
 
 
+def check_m0pub_twins():
+    """The two copies of m0pub.py must stay byte-identical.
+
+    The module ships inside the wheel (`m0serve.m0pub`) and lives in the demo
+    app (`apps/django_realtime/m0pub.py`), because each must work where the
+    other cannot: pip users have no source tree, and the demo runs from a
+    source tree where the wheel is deliberately not installed. Two copies
+    with no guard is how they drift -- a fix landing in the demo and never
+    reaching users, invisible until someone diffs them.
+    """
+    demo = REPO / "apps" / "django_realtime" / "m0pub.py"
+    wheel = REPO / "packaging" / "m0serve" / "src" / "m0serve" / "m0pub.py"
+    if not wheel.exists():
+        fail("packaging/m0serve/src/m0serve/m0pub.py is missing — the wheel "
+             "would ship without the publish helper the quickstart imports")
+        return
+    if demo.read_bytes() != wheel.read_bytes():
+        fail("m0pub.py has drifted between apps/django_realtime and the wheel "
+             "package — edit one, copy to the other (they are byte-identical "
+             "on purpose; each runs where the other cannot)")
+
+
 def check_target_cpu_pinned():
     """Every task that emits a distributable binary must pin --target-cpu.
 
@@ -297,6 +319,7 @@ def main():
     check_bench_region()
     check_version_single_source()
     check_wheel_platform_claims()
+    check_m0pub_twins()
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
     if failures:
