@@ -75,7 +75,7 @@ at that environment.
 |---|---|
 | macOS arm64 (Apple Silicon) | supported |
 | Linux x86_64 (glibc) | supported |
-| Linux aarch64 | buildable, not yet shipped |
+| Linux aarch64 (Graviton, Ampere, arm64 Docker) | supported |
 | macOS x86_64 (Intel) | not possible — Modular ships no Intel Mac toolchain |
 | musl / Alpine, Windows | not supported |
 

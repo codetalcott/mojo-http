@@ -146,6 +146,27 @@ def check_version_single_source():
             f"says {declared.group(1)!r} — run `uv lock`"
         )
 
+    # QUICKSTART.md echoes `m0serve --version`, and that echo is a claim about
+    # the CURRENT release rather than a record of an old one -- the doc opens
+    # by promising every command in it is executed by CI. The promise has one
+    # hole: run_quickstart.py runs ```bash blocks and treats ```text as
+    # display-only, which is right (the other text block interleaves output
+    # from three commands and is not byte-stable), so no amount of executing
+    # the doc can notice the number. It shipped saying 0.10.0 against a 0.11.0
+    # tree for exactly that reason. Checked here instead, where prose facts
+    # with a machine source belong.
+    quickstart = REPO / "QUICKSTART.md"
+    if quickstart.exists():
+        for shown in set(re.findall(r"^m0serve (\d+\.\d+\.\d+\S*)$",
+                                    quickstart.read_text(), re.M)):
+            if shown != declared.group(1):
+                fail(
+                    f"QUICKSTART.md shows `m0serve {shown}` as the output of "
+                    f"`m0serve --version`, but pyproject.toml declares "
+                    f"{declared.group(1)!r} — the quickstart claims every "
+                    "command in it is executed, so its output must be current"
+                )
+
     wheel_pyproject = REPO / "packaging" / "m0serve" / "pyproject.toml"
     if wheel_pyproject.exists():
         text = wheel_pyproject.read_text()
@@ -161,6 +182,51 @@ def check_version_single_source():
                 "version from the repository root"
             )
 
+
+def _platform_table(readme):
+    """The `| platform | status |` rows of a README, as (platform, status).
+
+    Both READMEs carry one such table and nothing else in either is a
+    two-column table, so this stays a local helper rather than a markdown
+    dependency.
+    """
+    rows = []
+    for line in readme.splitlines():
+        line = line.strip()
+        if not line.startswith("|") or not line.endswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) != 2:
+            continue
+        if cells[0].lower() == "platform" or set(cells[1]) <= set("-: "):
+            continue  # header and its underline
+        rows.append((cells[0], cells[1]))
+    return rows
+
+
+def _claims_support(status):
+    """Does a status cell promise a wheel, or decline to?
+
+    "not supported" and "not possible" both contain the word, so the negative
+    forms are tested first.
+    """
+    s = status.lower().replace("*", "").strip()
+    if s.startswith("not ") or "not supported" in s or "not possible" in s:
+        return False
+    return "supported" in s
+
+
+def _matches(platform_cell, plat):
+    """Does a table row describe the release matrix's `plat` slug?
+
+    Derived from the slug rather than a hand-kept mapping: `linux-aarch64`
+    requires both "linux" and "aarch64" in the platform cell, which the
+    current slugs (`macos-arm64`, `linux-x86_64`, `linux-aarch64`) separate
+    unambiguously. A new slug whose words do not appear in the prose will
+    fail loudly here rather than pass silently, which is the right way round.
+    """
+    cell = platform_cell.lower()
+    return all(token in cell for token in plat.split("-"))
 
 def _bench(kind):
     """The newest artifact of one bench kind, or None."""
@@ -342,11 +408,33 @@ def check_hybrid_p99_consistent():
 
 
 def check_wheel_platform_claims():
-    """The README's platform table must name the platforms CI actually builds.
+    """Both READMEs' platform tables vs the platforms release.yml actually builds.
 
     The table is the promise pip enforces, so it is exactly the kind of claim
-    this file exists to keep honest: an entry that says "supported" for a
-    platform nothing builds is a claim not backed by an artifact.
+    this file exists to keep honest -- and it has to hold in both directions.
+    A row that says "supported" for a platform nothing builds is a claim with
+    no artifact behind it. A platform that IS built but reads "not yet
+    shipped" is the same defect mirrored, and it sends users away from a wheel
+    already sitting on PyPI.
+
+    The second direction is not hypothetical. packaging/m0serve/README.md told
+    aarch64 users the wheel did not exist for the whole of 0.11.0 -- which
+    shipped an aarch64 wheel -- because the row was written before the release
+    matrix grew its third entry and nothing ever compared the two.
+
+    Two READMEs, because they are read by different people arriving different
+    ways. The repository's own is what a visitor sees on GitHub;
+    packaging/m0serve/README.md is the `readme` named by the wheel's
+    pyproject.toml and therefore the PyPI project page -- the first screen for
+    everyone who arrives by `pip install`, and the one whose staleness is
+    published rather than merely committed.
+
+    A coverage asymmetry worth knowing, because it is the opposite of the
+    guess: test.yml's `paths-ignore` lists `*.md`, and a GitHub path glob's
+    `*` does not cross `/`. So a PR touching only the root README.md skips
+    CI and is never checked here, while one touching only
+    packaging/m0serve/README.md runs the full suite. The file that reaches
+    the most people is the one that is actually guarded.
     """
     readme = (REPO / "README.md").read_text()
     if "## Install" not in readme and "pip install m0serve" not in readme:
@@ -360,16 +448,67 @@ def check_wheel_platform_claims():
             "a wheel — the install instructions are not backed by an artifact"
         )
 
-    # 3.13t is a dead end (systematic object immortalization); only 3.14t is
-    # tested, by py-canary.yml. The README is what a user reads first and is
-    # burned into the PyPI long_description at upload time, so it must not
-    # point anyone at 3.13t.
-    if re.search(r"3\.13t\+|3\.13t or newer|from 3\.13t", readme):
+    # The release matrix is the source of truth for what users can install:
+    # a `plat` here is a wheel uploaded to PyPI, and nothing else is.
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text()
+    built = re.findall(r"^\s*(?:-\s+)?plat: (\S+)\s*$", release, re.M)
+    if not built:
         fail(
-            "README claims free-threading works from 3.13t, but pyproject.toml "
-            "and docs/WSGI_VS_ASGI.md both record 3.13t as a dead end and only "
-            "3.14t is tested"
+            ".github/workflows/release.yml declares no `plat:` entries — the "
+            "wheel build matrix is what the platform tables are checked "
+            "against, and it can no longer be read"
         )
+
+    wheel_readme_path = REPO / "packaging" / "m0serve" / "README.md"
+    tables = {"README.md": readme}
+    if wheel_readme_path.exists():
+        tables["packaging/m0serve/README.md"] = wheel_readme_path.read_text()
+    else:
+        fail(
+            "packaging/m0serve/README.md is missing — it is the wheel's "
+            "`readme` and therefore the PyPI project page"
+        )
+
+    for name, text in tables.items():
+        rows = _platform_table(text)
+        if not rows:
+            fail(f"{name} has no `| platform | status |` table to check")
+            continue
+        for plat in built:
+            row = next((r for r in rows if _matches(r[0], plat)), None)
+            if row is None:
+                fail(
+                    f"{name}'s platform table has no row for {plat}, which "
+                    "release.yml builds and uploads — a shipped wheel users "
+                    "are never told about"
+                )
+            elif not _claims_support(row[1]):
+                fail(
+                    f"{name} says {plat} is {row[1]!r}, but release.yml builds "
+                    "and uploads that wheel — the row sends users away from a "
+                    "distribution that exists"
+                )
+        for platform, status in rows:
+            if not _claims_support(status):
+                continue
+            if not any(_matches(platform, plat) for plat in built):
+                fail(
+                    f"{name} claims {platform!r} is supported, but release.yml "
+                    f"builds only {', '.join(built)} — a promise with no wheel "
+                    "behind it"
+                )
+
+    # 3.13t is a dead end (systematic object immortalization); only 3.14t is
+    # tested, by py-canary.yml. Neither README may point anyone at it — the
+    # wheel's least of all, since PyPI serves that one to people who have
+    # already installed.
+    for name, text in tables.items():
+        if re.search(r"3\.13t\+|3\.13t or newer|from 3\.13t", text):
+            fail(
+                f"{name} claims free-threading works from 3.13t, but "
+                "pyproject.toml and docs/WSGI_VS_ASGI.md both record 3.13t as "
+                "a dead end and only 3.14t is tested"
+            )
     probe = (REPO / "pyproject.toml").read_text()
     m = re.search(r"uv python install (3\.\d+t)", probe)
     if m and "free-threaded" in readme and m.group(1) not in readme:
