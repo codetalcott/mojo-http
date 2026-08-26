@@ -9,6 +9,24 @@ versions may break the API**.
 
 ### Added
 
+- **The first screen leads with what the server is for.** Gate 5. All three
+  surfaces that have a first screen now open on the same claim — *realtime
+  from a synchronous Python app, with no added infrastructure* — with the
+  hero shown as six lines of ordinary sync Django rather than described:
+  README.md, `packaging/m0serve/README.md` (which is what PyPI renders, and
+  is the one nothing was checking until this release), and `llms.txt`.
+
+  The gaps are on the first screen rather than in an issue: no TLS or
+  HTTP/2 (terminate at a proxy), the platform floors, pre-1.0, and — stated
+  with numbers and a link — that this is **not** the fastest server on raw
+  throughput. A page that hid that would be contradicted by the benchmark
+  page two clicks away.
+
+  The snippet was run before it was published: a Django app containing
+  exactly those six lines, served by `bin/m0serve --realtime`, delivers
+  `id: 2 / data: deploy finished` to a live `curl -N` subscriber. The
+  fuller path stays covered in CI by `smoke-quickstart`.
+
 - **[docs/BENCHMARKS.md](docs/BENCHMARKS.md): the public benchmark page,
   and it leads with the losses.** Gate 3 of the launch checklist. Four
   generated regions across two documents, all driven by
@@ -66,6 +84,14 @@ versions may break the API**.
   only as a traceback at serve time.
 
 ### Fixed
+
+- **A README number quoted twice, guarded once.** The mounted-isolation
+  p99 (2.8 ms) now appears on the first screen as well as in the mounts
+  section. It is not artifact-backed — `hybrid_isolation.py` asserts a
+  deliberately generous ceiling rather than recording the figure — so
+  `check_hybrid_p99_consistent` checks the two copies against *each other*
+  instead. A number edited in one place and not the other is the ordinary
+  way a README starts contradicting itself.
 
 - **The bench prose was answerable to nothing, and it was wrong.**
   `render_bench_docs` kept the generated *tables* honest; the sentences

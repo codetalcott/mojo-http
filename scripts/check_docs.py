@@ -265,6 +265,10 @@ def check_bench_prose():
         ("docs/BENCHMARKS.md", "the ASGI throughput ratio",
          r"Under wrk the ratio is ([\d.]+)x", "asgi rps ratio m0÷uvicorn"),
 
+        ("README.md", "the first screen's WSGI verdict",
+         r"~([\d.]+)x Granian per measured core", "m0÷gran"),
+        ("README.md", "the first screen's ASGI verdict",
+         r"([\d.]+)x uvicorn on ASGI", "asgi rps ratio m0÷uvicorn"),
         ("README.md", "m0serve's WSGI rate",
          r"([\d.]+)k against [\d.]+k rps/core", "m0/1000"),
         ("README.md", "Granian's WSGI rate",
@@ -303,6 +307,38 @@ def check_bench_prose():
                 f"{doc} says {what} is {m.group(1)}, but {key} computes to"
                 f" {q[key]:.4f} from the newest artifact"
             )
+
+
+def check_hybrid_p99_consistent():
+    """The mounted-isolation p99 is quoted twice in README.md; they must agree.
+
+    Not artifact-backed — `scripts/hybrid_isolation.py` asserts a ceiling
+    (`ISOLATION_BUDGET_MS`, generous on purpose so CI is not flaky) rather
+    than recording the figure, so no file to recompute it from. What CAN be
+    checked is that the two copies say the same thing: the first screen
+    makes the claim and the mounts section explains it, and a number edited
+    in one place and not the other is the ordinary way a README starts
+    contradicting itself.
+
+    If this ever gets an artifact, move it into check_bench_prose and delete
+    this.
+    """
+    quoted = set(
+        re.findall(r"async mount(?:'s p99)? still answers at p99 ([\d.]+) ms",
+                   re.sub(r"\s+", " ", (REPO / "README.md").read_text()))
+    )
+    if not quoted:
+        fail(
+            "README.md no longer states the mounted-isolation p99 —"
+            " check_hybrid_p99_consistent's pattern does not match. If the"
+            " claim moved, update the pattern rather than dropping it."
+        )
+    elif len(quoted) > 1:
+        fail(
+            "README.md quotes the mounted-isolation p99 as "
+            + " and ".join(sorted(quoted))
+            + " ms in different places — one was edited and the other was not"
+        )
 
 
 def check_wheel_platform_claims():
@@ -464,6 +500,7 @@ def main():
     check_wheel_platform_claims()
     check_m0pub_twins()
     check_bench_prose()
+    check_hybrid_p99_consistent()
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
     if failures:

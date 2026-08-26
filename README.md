@@ -1,10 +1,86 @@
 # mojo-http
 
-`mojo-http` is an HTTP/1.1 server and a small web framework for [Mojo](https://docs.modular.com/mojo/): routing, content negotiation, ETags, response caching, and Server-Sent Events, with a [Datastar](https://data-star.dev/) adapter for hypermedia UIs and SQLite bindings for storage.
+**Realtime from a synchronous Python app, with no added infrastructure.**
 
-The server underneath is a hard fork of [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not a vendored snapshot. It adds hardening against request smuggling, slowloris, and integer overflow in request parsing, connection timeouts, an SSE- and WebSocket-aware event loop, and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for the full record.
+A plain sync Django or Flask view can hold a Server-Sent Events stream or a
+WebSocket by answering with two response headers, and reach every subscriber
+on every worker with one function call. No Channels, no Redis, no daphne, no
+Pushpin, no second process.
 
-It is a small library in a small ecosystem: HTTP/1.1 only, no TLS, macOS arm64 and Linux x86_64/aarch64, and the API will change before 1.0 ([CHANGELOG](CHANGELOG.md)).
+```python
+from m0serve import m0pub
+
+
+def events(request):                    # an ordinary synchronous view
+    r = HttpResponse(": connected\n\n", content_type="text/event-stream")
+    r["M0-Hold"] = "stream"             # m0serve holds the connection open
+    r["M0-Channel"] = "news"            # ...subscribed to this channel
+    return r                            # Django's part in it ends here
+
+
+def announce(request):                  # any view, command, or cron job
+    m0pub.publish("news", "deploy finished")
+    return HttpResponse("ok")
+```
+
+```bash
+pip install m0serve
+m0serve myproject.wsgi --realtime
+```
+
+The view runs *first*, with sessions and permissions in hand — which is
+where your auth belongs, and why this is a feature of your app rather than
+of a sidecar. Under gunicorn the two headers are ignored and the same view
+degrades to a short plain response, so adopting it is not a fork of your
+codebase.
+
+**[QUICKSTART.md](QUICKSTART.md) is ten minutes from `pip install` to live
+multi-tab sync**, and CI executes every command in it on every pull request
+— so it works, or the build is red.
+
+### Two more things it does
+
+- **Several applications in one process, each in its native mode.**
+  `m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on
+  handler threads and async FastHTML on an asyncio executor, behind one
+  listener with one shutdown. With four blocking 2-second sync views holding
+  every pool thread, the async mount still answers at p99 2.8 ms.
+- **It runs the app you already have.** WSGI or ASGI, detected from the
+  object. Django, Flask and FastHTML each have their own smoke test in CI
+  (FastHTML is Starlette-based, and is the flagship ASGI row), alongside
+  bare WSGI and ASGI apps that pin the specs clause by clause. PEP 3333
+  conformance is validated by `wsgiref`, ASGI by a validator written from
+  the spec.
+
+### What it is not
+
+- **No TLS and no HTTP/2.** Terminate at a proxy — gunicorn's answer, and
+  the same one applies here.
+- **Not the fastest server on raw throughput**, and
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says so with numbers: ~0.83x
+  Granian per measured core on bare WSGI, 0.72x uvicorn on ASGI. What it
+  does win is the fast-request tail under mixed load. Every figure there
+  cites a dated artifact and CI recomputes the prose against it.
+- **Pre-1.0**, and the API will change ([CHANGELOG](CHANGELOG.md)).
+- **macOS arm64 and Linux x86_64/aarch64 only.** No Intel Mac (no
+  toolchain), no Windows, no musl.
+
+---
+
+Underneath, `mojo-http` is an HTTP/1.1 server and a small web framework for
+[Mojo](https://docs.modular.com/mojo/): routing, content negotiation, ETags,
+response caching, and Server-Sent Events, with a
+[Datastar](https://data-star.dev/) adapter for hypermedia UIs and SQLite
+bindings for storage. The Python server above is one package in it
+(`m0-wsgi`), and the rest of this README is the Mojo side.
+
+The server itself is a hard fork of
+[lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from
+v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not
+a vendored snapshot. It adds hardening against request smuggling, slowloris,
+and integer overflow in request parsing, connection timeouts, an SSE- and
+WebSocket-aware event loop, and a fix for `epoll` struct layout on
+non-x86_64. See [NOTICE](NOTICE) for the full record.
 
 ## Install
 
