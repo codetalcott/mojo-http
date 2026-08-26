@@ -143,14 +143,6 @@ comptime _REALTIME_ASGI_CONFLICT = (
     " --realtime."
 )
 
-comptime _REALTIME_MOUNT_WS_NOTE = (
-    "note: --realtime with --mount holds SSE streams only. A WebSocket"
-    " hold is answered 409 there, because an inbound frame is delivered"
-    " back into ONE application's urlconf and which mount should receive"
-    " it has no defensible answer yet. Serve a WebSocket application on"
-    " its own."
-)
-
 
 def _specs_tried(specs: List[String]) -> String:
     """The discovery candidates as one comma-separated list, for errors."""

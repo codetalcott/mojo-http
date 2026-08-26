@@ -39,7 +39,10 @@ No Windows, no musl, no TLS/HTTP2 (terminate at a proxy).
   `M0-Channel: NAME` converts the connection to a held subscription;
   `from m0serve import m0pub; m0pub.publish(channel, data)` reaches every
   subscriber on every worker. Inbound WebSocket messages arrive as POSTs
-  to `/ws/message` with `M0-Channel`/`M0-Slot`/opcode headers.
+  to `/ws/message` with `M0-Channel`/`M0-Slot`/opcode headers. `--realtime`
+  composes with `--blocking-threads` and `--mount`, so held connections,
+  an ASGI mount and a handler pool can share one process; it is refused
+  only where nothing could take a hold (an ASGI-only server).
 
 ## Start here
 

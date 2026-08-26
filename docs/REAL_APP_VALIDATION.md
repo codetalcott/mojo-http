@@ -267,18 +267,21 @@ both isolation and working streams. Now:
 | daphne, as deployed | as today | buffered | 4.9 ms | none |
 
 **The AI endpoints cost nothing to move**, because they are already
-buffered wherever they run. So the choice is now between the cheapest way
-to hold a stream and no application changes at all — and what still forces
-it to be a choice is that `--realtime` and `--mount` cannot be combined
-(measured: exit 1, refused before the bind). An application that wants
-holds for its pub/sub streams *and* an ASGI mount for genuinely async ones
-needs two processes today.
+buffered wherever they run. So the choice was between the cheapest way to
+hold a stream and no application changes at all — and what forced it to be
+a choice was that `--realtime` and `--mount` could not be combined
+(measured the day this was written: exit 1, refused before the bind).
 
-For the ROADMAP's stage 2 that is a re-ordering, recorded there: **the
-`--mount` half unblocks a real application, the WebSocket half does not.**
-`textshelf` opens no WebSocket against its own server — the `new WebSocket`
-calls in its JavaScript address a local MCP process — so the ambiguity the
-refusal was written for cannot arise for it.
+**That is no longer true, and this pass is why.** The ROADMAP entry it
+produced was implemented the same day: `--realtime` now composes with
+`--blocking-threads`, with `--mount`, and with WebSocket holds under both
+(ROADMAP, *Hold on a pool thread*, stages 1–3). So the row this table calls
+"convert 4 pub/sub endpoints" no longer costs the pool or the ASGI mount —
+an application can hold its pub/sub streams, run its generator streams on
+an executor mount, and keep pool isolation for its slow views, in one
+process. What is left for `textshelf` is application work: converting the
+four endpoints, and making `ai/streaming.py`'s generator async so it
+streams at all.
 
 ## What would make this worth repeating
 
