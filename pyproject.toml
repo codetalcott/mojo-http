@@ -1886,6 +1886,30 @@ code=$(python3 -c "import sys; sys.stdout.write('d' * (9 * 1024 * 1024))" | curl
 kill $pid
 wait $pid 2>/dev/null
 
+# --app-dir goes to the FRONT of sys.path, like gunicorn, uvicorn and
+# runserver -- not the back, which is what it did until 2026-08-26 and which
+# nothing could see until an application module shared a name with an
+# installed package. `django` is installed in this venv (it is a dev
+# dependency for the Django rows), so a module of that name under --app-dir
+# is the decisive case: appended, the real package wins and the server exits
+# 1 having found no application in it.
+shadow=$(mktemp -d)
+cat > "$shadow/django.py" <<'PYSHADOW'
+def application(environ, start_response):
+    body = b"served from --app-dir"
+    start_response("200 OK", [("Content-Type", "text/plain"),
+                              ("Content-Length", str(len(body)))])
+    return [body]
+PYSHADOW
+"$srv" django --app-dir "$shadow" --port 8098 > serve.log 2>&1 &
+pid=$!
+got=$(curl --retry 20 --retry-delay 1 --retry-all-errors --silent --max-time 5 http://127.0.0.1:8098/)
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+rm -rf "$shadow"
+[ "$got" = "served from --app-dir" ] \
+  || fail "--app-dir did not shadow the installed package of the same name: got '$got'"
+
 # Without --metrics the path is the application's to answer (here: its 404).
 "$srv" $SPEC --port 8098 > serve.log 2>&1 &
 pid=$!

@@ -42,6 +42,33 @@ def detect_protocol(
     return String(py=result) == "asgi"
 
 
+def prepend_to_path(directory: String) raises:
+    """Put `directory` FIRST on `sys.path`, the way every other server does.
+
+    `Python.add_to_path` appends, which is the opposite of gunicorn,
+    uvicorn and `manage.py runserver` — all three `sys.path.insert(0, ...)`.
+    The difference is invisible until an application module shares a name
+    with an installed package, at which point the installed one wins and the
+    application silently is not the one being served. Found by dogfooding
+    the wheel against a real Django project, where the reported `sys.path`
+    put `--app-dir` after site-packages, and reconfirmed by the
+    three-project pass (docs/REAL_APP_VALIDATION.md).
+
+    A `PythonObject` call, so it leaks a reference by the toolchain bug the
+    bridge documents — startup-only and once per process, which is the same
+    deliberate exception `set_app` takes. Per-request code may not do this.
+
+    Idempotent by construction: an entry already at the front is not moved,
+    and a duplicate further down is left alone rather than removed, because
+    a path the user put there is not this function's to edit.
+    """
+    var sys = Python.import_module("sys")
+    if Int(py=sys.path.__len__()) > 0:
+        if String(py=sys.path[0]) == directory:
+            return
+    _ = sys.path.insert(0, directory)
+
+
 struct WSGIApp(Movable):
     """One WSGI or ASGI application, with its interpreter helpers.
 
@@ -116,7 +143,7 @@ struct WSGIApp(Movable):
         self._bridge = PyBridge()
         self.is_asgi = False
         if project_path:
-            Python.add_to_path(project_path)
+            prepend_to_path(project_path)
         var module = Python.import_module(module_name)
         # The application object and the request-invariant environ entries
         # live on the Python side of the bridge from here on — per-request
