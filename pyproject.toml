@@ -1447,11 +1447,12 @@ deps = ["build-serve"]
 shell = """
 srv=bin/m0serve
 SPEC="bareapp.wsgi --app-dir apps/wsgi_bare"
-cleanup() { rm -f doctor.json doctor.log; }
+cleanup() { rm -f doctor.json doctor.log doctor.served; }
 trap cleanup EXIT
 fail() {
   echo "$1"
   if [ -f doctor.json ]; then echo '=== doctor.json ==='; cat doctor.json; fi
+  if [ -f doctor.log ]; then echo '=== server output ==='; cat doctor.log; fi
   exit 1
 }
 
@@ -1461,14 +1462,35 @@ fail() {
 # kept in step by hand, since the doctor mirrors main's check order rather
 # than sharing its control flow. This is what notices when they drift.
 #
-# The server is run under a timeout: a configuration it accepts blocks in
-# accept(), and 124 therefore means "would serve" -- which is exit 0's
-# meaning for the doctor.
+# A configuration the server accepts never exits: it blocks in accept().
+# So it is backgrounded under a watchdog, and "still running when the
+# watchdog fired" is what exit 0 means on the doctor's side.
+#
+# NOT `timeout`: that is GNU coreutils and the macOS runners do not ship
+# it. A missing command exits 127, which reads as a server refusal rather
+# than as a broken harness -- this smoke's first CI run duly reported
+# "server exits 127" for a configuration that serves perfectly, on the one
+# platform the author could not reproduce (homebrew coreutils was on the
+# development machine). Nothing else in this file uses `timeout`.
 equiv() {
   desc="$1"; shift
   "$srv" --doctor "$@" > doctor.json 2>/dev/null; doc=$?
-  timeout 10 "$srv" "$@" --port 8399 > doctor.log 2>&1; real=$?
-  [ "$real" = "124" ] && real=0
+  rm -f doctor.served
+  "$srv" "$@" --port 8399 > doctor.log 2>&1 &
+  spid=$!
+  # The watchdog fires only if the server is STILL ALIVE at the deadline.
+  # A refused configuration has exited and been reaped by the `wait` below
+  # long before then, so the marker is never written for one.
+  ( sleep 8
+    if kill -0 "$spid" 2>/dev/null; then
+      : > doctor.served
+      kill -TERM "$spid" 2>/dev/null
+    fi ) &
+  wpid=$!
+  wait "$spid"; real=$?
+  kill "$wpid" 2>/dev/null
+  wait "$wpid" 2>/dev/null || true
+  [ -f doctor.served ] && real=0
   [ "$doc" = "$real" ] || fail "$desc: doctor exits $doc, server exits $real"
   python3 -c "import json,sys; json.load(open('doctor.json'))" \
     || fail "$desc: --doctor did not print valid JSON"
