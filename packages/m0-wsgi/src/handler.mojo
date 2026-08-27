@@ -477,9 +477,28 @@ struct WSGIHandler(ThreadHandler):
         # Only under `--realtime`, which is what makes the path mean
         # anything. Without it an application may route `/ws/message`
         # itself and this must not shadow it.
-        if self.realtime and req.uri.path == WS_MESSAGE_PATH:
+        if self.realtime and self._is_ws_message_path(req.uri.path):
             return _not_found_response()
         return None
+
+    def _is_ws_message_path(self, path: String) -> Bool:
+        """Whether `path` names the synthetic WebSocket-message endpoint.
+
+        Under every mount, not just the bare one: the pool thread builds
+        the synthetic request as `mount_prefixes[0] + WS_MESSAGE_PATH`
+        (`_deliver_ws_message`), so on `--mount /app=...` the application's
+        route is at `/app/ws/message` and a reservation that only compared
+        the bare path would have left it reachable from the network — the
+        exact hole the reservation exists to close, still open in the one
+        configuration where the path is not obvious.
+        """
+        if path == WS_MESSAGE_PATH:
+            return True
+        for i in range(len(self.mount_prefixes)):
+            if self.mount_prefixes[i].byte_length() > 0:
+                if path == self.mount_prefixes[i] + WS_MESSAGE_PATH:
+                    return True
+        return False
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var local = self.serve_local(req)
@@ -867,8 +886,11 @@ struct WSGIHandler(ThreadHandler):
         # try is mandatory, not defensive: a raising view must not take the
         # socket, or the loop, down with it.
         try:
+            # Same expression the pool path uses, so the two cannot
+            # synthesise different paths for the same server.
             var req = ws_message_request(
-                WS_MESSAGE_PATH, channel, slot, opcode, Span(payload)
+                self.mount_prefixes[0] + WS_MESSAGE_PATH,
+                channel, slot, opcode, Span(payload),
             )
             _ = self.apps[0].serve(req)
         except e:

@@ -148,6 +148,17 @@ struct ConnectionProvision(Movable):
     var chunk_decoder: HTTPChunkedDecoder
     """Decoder for a chunked request body, resumed across read events.
 
+    Built with `consume_trailer = True`, which is what makes the body end
+    where RFC 9112 §7.1 says it ends: last-chunk, trailer section, CRLF.
+    Without it the decoder stopped at `0\r\n` and the terminating `\r\n`
+    every conforming client sends was left sitting in the receive buffer —
+    and closing a socket with unread data queued makes the kernel send RST
+    instead of FIN, which discards the response already written to it. On a
+    `Connection: close` request that is a response the client never sees:
+    measured at 3-23% of chunked requests locally, rising the more TCP
+    segments the body arrived in, and 100% when the client paced its writes.
+    Keep-alive hid it because that path never closes the socket.
+
     One decoder per connection, fed only the bytes that just arrived. It
     used to be constructed fresh inside the read handler, which meant every
     read re-decoded the entire body accumulated so far: K reads of a body of
@@ -218,6 +229,7 @@ struct ConnectionProvision(Movable):
         self.state = ConnectionState.reading_headers()
         self.body_state = None
         self.chunk_decoder = HTTPChunkedDecoder()
+        self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
         self.keepalive_count = 0
         self.should_close = False
@@ -287,6 +299,7 @@ struct ConnectionProvision(Movable):
         self.state = ConnectionState.reading_headers()
         self.body_state = None
         self.chunk_decoder = HTTPChunkedDecoder()
+        self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
         self.should_close = False
         self.log_method = String()
@@ -595,9 +608,12 @@ def handle_connection[
                                 break
 
                     var effective_length = config.max_request_body_size if is_chunked else content_length
+                    # `bytes_read` counts DECODED bytes for a chunked body,
+                    # and nothing has been decoded yet — the bytes already
+                    # buffered are still raw. Same rule as the loop's branch.
                     provision.body_state = BodyReadState(
                         content_length=effective_length,
-                        bytes_read=body_bytes_in_buffer,
+                        bytes_read=0 if is_chunked else body_bytes_in_buffer,
                         header_end_offset=header_end_offset,
                         is_chunked=is_chunked,
                     )
@@ -611,34 +627,45 @@ def handle_connection[
             var body_st = provision.body_state.value()
 
             if body_st.is_chunked:
-                # Phase 1b: attempt chunked decode on accumulated buffer
+                # Phase 1b: resume the CONNECTION's decoder over the bytes
+                # that have not been decoded yet — the same shape as the
+                # non-blocking loop's branch, and for the same two reasons.
+                # Rebuilding a decoder here and re-decoding the whole body
+                # each pass was O(N^2) in the number of reads, and it
+                # disagreed with the loop about where a chunked body ends
+                # (`consume_trailer`), which is the difference between a
+                # clean close and an RST that discards the response.
                 var raw_body_start = body_st.header_end_offset
-                var raw_body_len = len(provision.recv_buffer) - raw_body_start
-                if raw_body_len > config.max_request_body_size:
+                var decoded_so_far = body_st.bytes_read
+                var tail_start = raw_body_start + decoded_so_far
+                var buf_len = len(provision.recv_buffer)
+                if buf_len - raw_body_start > config.max_request_body_size:
                     _send_error_response(conn, PayloadTooLarge())
                     provision.state = ConnectionState.closed()
                     break
-                if raw_body_len > 0:
-                    # Fresh copy of raw body portion — decoder modifies in-place
-                    var chunk_buf = Bytes(capacity=raw_body_len)
-                    for i in range(raw_body_start, len(provision.recv_buffer)):
-                        chunk_buf.append(provision.recv_buffer[i])
-                    var decoder = HTTPChunkedDecoder()
-                    var (ret, decoded_size) = decoder.decode(Span(chunk_buf))
+                if buf_len > tail_start:
+                    var ret: Int
+                    var produced: Int
+                    ret, produced = provision.chunk_decoder.decode(
+                        Span(provision.recv_buffer)[tail_start:]
+                    )
                     if ret == -1:
                         _send_error_response(conn, BadRequest())
                         provision.state = ConnectionState.closed()
                         break
-                    elif ret >= 0:
-                        # Decode complete: rebuild recv_buffer as headers + decoded body
-                        var new_buf = Bytes(capacity=raw_body_start + decoded_size)
-                        for i in range(raw_body_start):
-                            new_buf.append(provision.recv_buffer[i])
-                        for i in range(decoded_size):
-                            new_buf.append(chunk_buf[i])
-                        provision.recv_buffer = new_buf^
-                        body_st.content_length = decoded_size
-                        body_st.bytes_read = decoded_size
+                    var leftover = provision.chunk_decoder.pending_bytes
+                    provision.recv_buffer.resize(
+                        tail_start + produced + leftover, 0
+                    )
+                    decoded_so_far += produced
+                    body_st.bytes_read = decoded_so_far
+                    provision.body_state = body_st
+                    if ret >= 0:
+                        provision.recv_buffer.resize(
+                            raw_body_start + decoded_so_far, 0
+                        )
+                        body_st.content_length = decoded_so_far
+                        body_st.bytes_read = decoded_so_far
                         body_st.is_chunked = False
                         provision.body_state = body_st
                         provision.state = ConnectionState.processing()

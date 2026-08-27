@@ -627,6 +627,16 @@ Properties of the design, not defects to fix in passing:
   parses nothing), `SameSite` (lowercase-only match), everything after the
   first `=` in a value, and any unmodelled attribute — on every Django
   session and CSRF cookie of every app. Do not "normalise" that path.
+- **A chunked request body ends where RFC 9112 says it ends**, because the
+  request decoder is built with `consume_trailer = True`. Without it the
+  decode completed at `0\r\n` and the terminating `\r\n` every conforming
+  client sends stayed in the receive buffer — and closing a socket with
+  unread data queued makes the kernel send RST rather than FIN, discarding
+  the response already written. On `Connection: close` that is a response
+  the client never sees: measured at up to 53% of chunked requests, and
+  100% when the client paced its writes. Keep-alive hid it by never
+  closing. The cost of the rule is that a client which omits the final
+  CRLF now waits for it, as it would for any truncated body.
 - **A chunked request body is decoded incrementally, by ONE decoder per
   connection.** `ConnectionProvision.chunk_decoder` is fed only the bytes
   that just arrived and carries its chunk state across reads; the buffer is

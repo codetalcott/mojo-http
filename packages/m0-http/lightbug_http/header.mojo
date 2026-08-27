@@ -878,7 +878,15 @@ def parse_request_headers(
         var te_str = te_opt.value().lower()
         var te_parts = te_str.split(",")
         var last_te = String(String(te_parts[len(te_parts) - 1]).strip())
-        if "chunked" in te_str and last_te != "chunked":
+        # RFC 9112 §6.3: if a request carries Transfer-Encoding, the FINAL
+        # coding must be `chunked` — that is the only one that says where
+        # the body ends. Testing `"chunked" in te_str` first let
+        # `Transfer-Encoding: gzip` past both this check and
+        # `is_chunked_body`, so with no Content-Length either the request
+        # was dispatched as bodyless while its body stayed in the buffer:
+        # the same two-hops-two-framings disagreement as the rest of this
+        # block, and the one member of the family left open.
+        if last_te != "chunked":
             raise RequestParseError(InvalidHTTPRequestError())
 
     var protocol = String("HTTP/1.", minor_version)

@@ -220,16 +220,40 @@ def test_uppercase_chunked_not_last_is_still_rejected() raises:
     )
 
 
-def test_a_non_chunked_encoding_is_not_mistaken_for_chunked() raises:
-    """The match must not be a loose substring: `xchunkedy` is not chunked,
-    and gzip alone certainly is not."""
-    var raw = String(
-        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n"
-        "Content-Length: 0\r\n\r\n"
+def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises:
+    """RFC 9112 6.3: only `chunked` says where a request body ends.
+
+    Deliberately WITHOUT a Content-Length — an earlier version of this test
+    included one, which meant the pre-existing TE+CL rule rejected it and
+    the assertion said nothing at all about the encoding. Without it, a
+    server that does not check this dispatches the request as bodyless and
+    leaves the body in the buffer for the next reader to find.
+    """
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
     )
-    # TE+CL together is rejected outright, so this asserts the pair rule
-    # still fires rather than the encoding being read as chunked.
-    assert_true(_rejected(raw))
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: identity\r\n\r\n")
+    )
+    # A loose substring match would let these through as "chunked".
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: xchunked\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
+    )
+
+
+def test_chunked_as_the_last_coding_is_still_accepted() raises:
+    """The control: a legitimate `gzip, chunked` must keep working."""
+    assert_true(
+        _accepted(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+        )
+    )
+    assert_true(
+        _accepted("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED\r\n\r\n")
+    )
 
 
 # --- Content-Length must be a plain digit run (RFC 9112 6.3) ----------------
