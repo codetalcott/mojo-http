@@ -256,7 +256,22 @@ code depends on:
     not an option, because a buffered slot is invisible to everything that
     reads `offloaded` as "a worker owns it". Pool lanes are never batched —
     one thread takes one job — and `next_job` says so loudly if a batch
-    ever reaches one.
+    ever reaches one. **The pump parks in `run_forever`, never in a
+    per-pass `run_until_complete`**: every event the shim produces is
+    appended to a list, the first append while the pump is parked
+    schedules `loop.stop()` for the end of the NEXT iteration (so a whole
+    iteration's done-callbacks land in one batch), and `wait_events`
+    returns the list. A `run_until_complete(batch())` pass cost 38 µs on
+    stdlib asyncio (a Task for the pump coroutine, loop setup and
+    teardown); this shape costs 17, and was worth +16% at 16 connections
+    on top of batching. The rule that makes it safe: a stop is armed ONLY
+    while the pump itself is parked (`_pump_parked`), never inside another
+    caller's `run_until_complete` — `finish_executor`'s post-pill gather,
+    `lifespan_shutdown` — where it ends that call with "Event loop stopped
+    before Future completed" and skips the application's shutdown.
+    `smoke-asgi`'s outlive-the-drain phase pins it (two requests past the
+    5 s drain, finishing in different iterations; the app's lifespan
+    shutdown must still write its marker).
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind

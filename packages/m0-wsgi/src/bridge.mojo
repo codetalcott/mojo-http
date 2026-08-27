@@ -860,6 +860,7 @@ def asgi_executor_init(fd, ack_fd):
 
 _exec_events = []
 _exec_stop_armed = [False]
+_pump_parked = [False]
 
 
 def _exec_put(ev):
@@ -868,8 +869,16 @@ def _exec_put(ev):
     # batch. One stop per pass. (A pass through run_until_complete cost
     # 38 us on stdlib asyncio -- a Task for the pump coroutine, run_forever
     # setup and teardown; this shape costs 17.)
+    #
+    # Only the pump's OWN run_forever may be stopped. The loop also runs
+    # inside other callers' run_until_complete -- finish_executor's gather
+    # of the in-flight tasks after the pill, lifespan_shutdown -- and a
+    # stop() scheduled there ends that call early with "Event loop stopped
+    # before Future completed", losing the completions it was collecting.
+    # An event appended while the pump is not parked simply waits in the
+    # list for the next wait_events / drain_events_nowait.
     _exec_events.append(ev)
-    if not _exec_stop_armed[0] and _loop.is_running():
+    if _pump_parked[0] and not _exec_stop_armed[0]:
         _exec_stop_armed[0] = True
         _loop.call_soon(_loop.stop)
 
@@ -879,7 +888,11 @@ def wait_events():
     # make progress the whole time this thread is inside run_forever.
     while not _exec_events:
         _exec_stop_armed[0] = False
-        _loop.run_forever()
+        _pump_parked[0] = True
+        try:
+            _loop.run_forever()
+        finally:
+            _pump_parked[0] = False
     out = list(_exec_events)
     del _exec_events[:]
     _exec_stop_armed[0] = False

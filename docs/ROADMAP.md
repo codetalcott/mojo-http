@@ -607,11 +607,15 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   256), because the pump leaves the loop every pass and uvloop is built
   to be entered once — a `run_until_complete` pass costs 64 µs there
   against 38 on stdlib asyncio; the pass itself is the next lever, a
-  `run_forever` + `stop()` shape costing 17 µs against 38, and a shim-only prototype of it measured +16% at 16 connections and
-  +18% at 64 on top of batching (0.90x and 1.17x `uvicorn --loop
-  asyncio`) — a branch and a table, not yet a change in the tree, because
-  the seam's shutdown paths have to be walked with a pending `stop()` in
-  mind;
+  `run_forever` + `stop()` shape costing 17 µs against 38, measured as a
+  shim-only prototype at +16% at 16 connections and +18% at 64 on top of
+  batching (0.90x and 1.17x `uvicorn --loop asyncio`) and landed the same
+  day with the one rule the seam's shutdown paths demand — a stop is
+  armed only while the pump itself is parked, never inside
+  `finish_executor`'s post-pill gather, which it would otherwise end early
+  and skip the application's lifespan shutdown (`smoke-asgi`'s
+  outlive-the-drain phase pins it, sabotage-verified against the
+  unguarded prototype);
   and `bench-asgi`'s stdlib harness now reads the executor at 1.4x
   uvicorn where wrk reads 0.7–1.1x — it measures its own client — so its
   ≥0.8x gate stays where it is as a regression floor only, and the wrk
