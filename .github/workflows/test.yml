@@ -204,6 +204,14 @@ jobs:
       # a keep-alive gap past the header timeout must NOT be answered 408.
       - name: Smoke test the header read timeout
         run: uv run poe smoke-header-timeout
+      # A half-closed client must still be answered. Worth its own smoke
+      # because it is the one behaviour the two backends genuinely disagree
+      # about: kqueue reports the peer's shutdown as EV_EOF on the read
+      # filter, epoll does not (EPOLLRDHUP is never registered), so the bug
+      # this pins lost nearly every response on macOS and none on Linux.
+      # A Linux-only CI would never have caught it.
+      - name: Smoke test a half-closed client
+        run: uv run poe smoke-half-close
       # The framework showcase: routing with :id and a real 405, content
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API

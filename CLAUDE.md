@@ -627,6 +627,25 @@ Properties of the design, not defects to fix in passing:
   parses nothing), `SameSite` (lowercase-only match), everything after the
   first `=` in a value, and any unmodelled attribute — on every Django
   session and CSRF cookie of every app. Do not "normalise" that path.
+- **`EV_EOF` on a read event means "no more request bytes", not "connection
+  over".** A client may half-close (`shutdown(SHUT_WR)`) to say it has sent
+  the whole request and still be waiting to read the answer, so the loop
+  finishes the buffered request and only turns off keep-alive; a stream
+  still closes, having no request left to answer, and a request that is
+  still INCOMPLETE closes at once (`peer_eof`) rather than waiting out the
+  header timeout. Closing there discarded a response already written, which
+  the client sees as an RST and a lost answer.
+
+  **The two backends disagree here, and that is why this was invisible in
+  CI**: kqueue sets `EV_EOF` on the read filter for a half-close (data may
+  still be pending), while the epoll backend never registers `EPOLLRDHUP`,
+  so on Linux the same half-close is an ordinary readable event that the
+  header path already handled. Measured before the fix, 30 requests per
+  shape: macOS lost 24-30 of 30 on GET, Content-Length and chunked alike;
+  Linux lost none. `poe smoke-half-close` pins it, and registering
+  `EPOLLRDHUP` to make the platforms identical is a deliberate non-change —
+  it would add an event source on every Linux connection to buy a bounded
+  10 s in one edge case.
 - **A chunked request body ends where RFC 9112 says it ends**, because the
   request decoder is built with `consume_trailer = True`. Without it the
   decode completed at `0\r\n` and the terminating `\r\n` every conforming

@@ -145,6 +145,17 @@ struct ConnectionProvision(Movable):
     var body_state: Optional[BodyReadState]
     """Body reading state (only valid during READING_BODY)."""
 
+    var peer_eof: Bool
+    """The client has shut down its write side; no more request bytes exist.
+
+    Not the same as the connection being over — a half-close is how a
+    client says "that is the whole request" while still waiting to read the
+    response, and answering it is the point. What this flag is for is the
+    other half: once it is set, a request that is still INCOMPLETE can
+    never be completed, so the slot is released at once instead of being
+    held until the header timeout.
+    """
+
     var chunk_decoder: HTTPChunkedDecoder
     """Decoder for a chunked request body, resumed across read events.
 
@@ -228,6 +239,7 @@ struct ConnectionProvision(Movable):
         self.response = None
         self.state = ConnectionState.reading_headers()
         self.body_state = None
+        self.peer_eof = False
         self.chunk_decoder = HTTPChunkedDecoder()
         self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
@@ -298,6 +310,7 @@ struct ConnectionProvision(Movable):
         self.recv_staging.clear()
         self.state = ConnectionState.reading_headers()
         self.body_state = None
+        self.peer_eof = False
         self.chunk_decoder = HTTPChunkedDecoder()
         self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
