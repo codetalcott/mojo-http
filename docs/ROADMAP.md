@@ -578,8 +578,44 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   constraint is that the chunk channel's begin-frame-before-head FIFO
   ordering must survive any coalescing. The other old fix path, "measure
   under wrk", is done and falsified its own premise (the stdlib harness
-  flattered the executor). Landing batching earns `bench-asgi`'s
-  throughput gate back up from ≥0.8x.
+  flattered the executor). Built — below.
+
+  **Built 2026-08-27, and what it returns depends on how many
+  connections are open: +5% at 16, +7% at 64, +19% at 256 —
+  where the executor passes `uvicorn --loop asyncio` (1.10x; 0.85x
+  against uvicorn with uvloop).** Both directions are batched: the loop
+  buffers a pass's submits to an executor lane and sends them as one
+  `TAG_JOB_BATCH` datagram at the bottom of the pass, and the executor
+  queues a pump pass's completions and pokes the loop once
+  (`complete_many`), with the begin-before-head order kept by flushing
+  queued completions before every non-begin chunk frame. Measured in one
+  session with `scripts/bench_asgi_wrk.sh` (the script the
+  `asgi-wrk-hello` artifact never had), the uvicorn rows re-measured in
+  every run as the drift control; the concurrency table and its
+  artifacts (`bench/results/asgi-wrk-conns-*.json`) are in
+  [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md). Why 16 connections gain so
+  little is a number the record now carries: **a pass batches three
+  submits on average there** (counted; batches of sixteen occurred 18
+  times in 60,000) — keep-alive connections are not in lockstep, each
+  sends its next request as its own response lands, so the wakeup
+  amortisation is ~3x; at 256 the groups are large and it is real. The
+  benchmark page keeps `-c16` as its row because that is the standing
+  configuration; the honest summary is that the executor's deficit on
+  that row is handoff *latency* at low concurrency, not throughput.
+  Three more things the same session settled, recorded on the same page:
+  the executor under uvloop is a wash (−3% at 16 connections, +4% at
+  256), because the pump leaves the loop every pass and uvloop is built
+  to be entered once — a `run_until_complete` pass costs 64 µs there
+  against 38 on stdlib asyncio; the pass itself is the next lever, a
+  `run_forever` + `stop()` shape costing 17 µs against 38, and a shim-only prototype of it measured +16% at 16 connections and
+  +18% at 64 on top of batching (0.90x and 1.17x `uvicorn --loop
+  asyncio`) — a branch and a table, not yet a change in the tree, because
+  the seam's shutdown paths have to be walked with a pending `stop()` in
+  mind;
+  and `bench-asgi`'s stdlib harness now reads the executor at 1.4x
+  uvicorn where wrk reads 0.7–1.1x — it measures its own client — so its
+  ≥0.8x gate stays where it is as a regression floor only, and the wrk
+  artifacts are the record.
 - **Django ASGI parity is proven, not inferred.** `apps/django_asgi`
   runs Django's own `ASGIHandler` through the executor (`poe
   smoke-django-asgi`): async views overlap, `StreamingHttpResponse`

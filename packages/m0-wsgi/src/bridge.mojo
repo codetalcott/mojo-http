@@ -559,6 +559,7 @@ _exec_inflight = {}
 _TAG_DISCONNECT = 1
 _TAG_WS_MESSAGE = 2
 _TAG_BUS_FRAME = 3
+_TAG_JOB_BATCH = 4
 
 _m0_subs = {}
 '''channel -> set of asyncio.Queue: this loop's live subscriptions.
@@ -792,6 +793,15 @@ def asgi_executor_init(fd, ack_fd):
             if len(data) == 8:
                 _exec_queue.put_nowait(
                     ('job', int.from_bytes(data, 'little', signed=True)))
+            elif (len(data) >= 9 and data[0] == _TAG_JOB_BATCH
+                  and (len(data) - 1) % 8 == 0):
+                # [tag u8][slot i64 LE] x n: the loop's whole pass of
+                # submits in one datagram. Checked BEFORE the generic
+                # fallthrough, which treats an unknown shape as EOF.
+                for at in range(1, len(data), 8):
+                    _exec_queue.put_nowait(
+                        ('job', int.from_bytes(data[at:at + 8], 'little',
+                                               signed=True)))
             elif len(data) == 9 and data[0] == _TAG_DISCONNECT:
                 _exec_on_disconnect(
                     int.from_bytes(data[1:9], 'little', signed=True))

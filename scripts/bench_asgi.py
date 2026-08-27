@@ -201,8 +201,16 @@ def main():
     # ignore red. 0.8 sits under the stdlib harness's recorded 0.88-0.94x
     # range with room for its ±10% container noise, and still fails on a
     # genuine mechanism regression. The gate that carries the executor's
-    # actual claim is the mixed-tail one below. If pump batching ever
-    # lands, ratchet this back up with the measurement that justifies it.
+    # actual claim is the mixed-tail one below.
+    #
+    # Pump batching landed 2026-08-27: +5% under wrk -c16 (a loop
+    # pass batches three submits on average there), +19% at -c256 where
+    # the executor passes uvicorn --loop asyncio. This harness, the same
+    # afternoon, read the executor at 1.41-1.46x uvicorn before and after
+    # alike (its 2026-08-25 artifact said 0.96x) -- it measures its own
+    # client, and it is NOT ratcheted on that basis. The gate stays at
+    # 0.8 as a regression floor; the wrk artifacts are the record
+    # (docs/WSGI_PERFORMANCE.md, "The ASGI executor vs uvicorn").
     gate_rps = ratio >= 0.8
     gate_p99 = m0["p99"] <= uv["p99"] * 1.5
     print("gate: throughput %s, mixed-tail %s" % (

@@ -1065,10 +1065,112 @@ carries the executor's actual claim — fast-request tail under mixed load
 — still requires beating uvicorn. Ratchet the threshold back up if pump
 batching lands, with the measurement that justifies it.
 
-The executor uses uvloop for its own loop where installed (stdlib asyncio
-otherwise); the uvicorn baseline row stays `--loop asyncio` per this
-repo's standing benchmark configuration, with the uvloop row shown for
-honesty.
+The uvicorn baseline row stays `--loop asyncio` per this repo's standing
+benchmark configuration, with the uvloop row recorded in the same
+artifact since 2026-08-27, because `uvicorn[standard]` is what a default
+install runs and the number a developer's own machine produces should be
+on the page: 0.56x at 16 connections, against 0.78x for
+the asyncio-loop comparator.
+
+**Which loop the executor itself runs on is a property of the
+interpreter, and the record did not say.** The shim adopts uvloop where
+the interpreter m0serve embeds can import it — and that interpreter is
+the `python3` on `PATH` (README, "Requirements"), so `bin/m0serve` run
+outside the venv embeds the system Python, finds no uvloop, and runs on
+stdlib asyncio. Every executor row recorded before 2026-08-27T18Z was
+measured that way, unrecorded; the artifact's `environment.python` names
+the *recorder's* venv interpreter, which is not evidence of anything.
+`bench_asgi_wrk.sh` now puts the venv first on `PATH` (what `uv run poe`
+does) and stamps `executor_python` and `executor_loop` in the artifact,
+and the generated block prints the loop. Measured on the same afternoon,
+the choice is a wash for this design: the executor on uvloop against
+the executor on stdlib asyncio is −3% at 16 connections (40,138 vs
+41,474 rps), +3.5% at 64 (55,392 vs 53,527) and +4% at 256 (56,757 vs
+54,569) — artifacts `asgi-wrk-conns-*.json` with
+`executor_loop=uvloop`. The reason is the pump's shape, measured
+directly (`.venv/bin/python`, 4,000 passes): the executor leaves the
+loop every pass through `run_until_complete(batch())`, and one such pass
+costs **38 µs on stdlib asyncio and 64 µs on uvloop** — uvloop is built
+to be entered once and run forever, and pays libuv setup on every entry.
+That number is not artifact-backed; it is reproducible from the two
+figures with any Python that has both loops.
+
+**Pump batching, built 2026-08-27: +5% at 16 connections, +19% at
+256 — the row's concurrency decides what the lever is worth.** The lever
+the wrk run pointed at was built in both directions (`TAG_JOB_BATCH`
+submit datagrams sent at the bottom of a loop pass; `complete_many`
+poking the loop once per pump pass) and measured in one session with
+`scripts/bench_asgi_wrk.sh`, the script behind the `asgi-wrk-hello`
+artifact that had none, the executor on stdlib asyncio for every row
+here. Medians of three rounds, `wrk -t2 -d8s`, browser headers,
+`apps/asgi_bare`; the uvicorn rows are re-measured in every run as the
+drift control (their nine medians span 57.1–58.8k for `--loop asyncio`
+and 76.0–84.4k with uvloop); artifacts `asgi-wrk-conns-*.json`, each
+stamped with its `variant`:
+
+| connections | executor, no batching (`0db9cb5`) | executor, batched (`a39df3b`) | Δ | ÷ `uvicorn --loop asyncio` | ÷ uvicorn + uvloop |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 41,474 rps @ 0.90 cores | 43,581 @ 0.88 | +5% | 0.78 | 0.56 |
+| 64 | 53,527 @ 0.99 | 57,135 @ 0.99 | +7% | 1.00 | 0.69 |
+| 256 | 54,569 @ 1.02 | 64,763 @ 1.02 | +19% | **1.10** | 0.85 |
+
+Three things the table says. The gain grows with concurrency because
+the batch does: **a loop pass batches three submits on average at
+sixteen connections** (counted; batches of sixteen occurred 18 times in
+60,000) — keep-alive connections do not move in lockstep, each sends its
+next request as its own response lands, so requests reach the loop in
+small groups and the wakeup amortisation is ~3x there; at 256 the groups
+are large and the two-thread handoff is paid once per many. The
+executor's 16-connection deficit is therefore handoff *latency*, not
+throughput: at 64 connections the batched executor is at parity with the
+asyncio comparator and at 256 it is ahead, on 1.02 cores — both threads
+finally busy. And the executor's rows swing more between rounds than
+uvicorn's do (one batched 64-connection round read 49.6k against 57–59k
+for the other two; a single-threaded uvicorn round never moves more than
+2%) — two threads on a box with performance and efficiency cores land
+differently run to run, which is why every figure here is a median of
+three with the comparator re-measured beside it, and why a single-round
+difference under 5% on this row means nothing.
+
+**The pass itself is the next lever, and it was measured before it was
+built into the tree.** With batching in, the executor's remaining
+per-request Python cost is dominated by how the pump parks: every pass
+is a `run_until_complete(batch())` — a Task for the pump coroutine,
+`run_forever` setup and teardown — at **38 µs on stdlib asyncio** (64 on
+uvloop), against 17 µs for parking in `run_forever` and having the first
+queued event schedule `loop.stop()` for the end of the next iteration.
+A shim-only prototype of that shape (no Mojo change; every event that
+used to be `put_nowait` on a queue is appended to a list that stops the
+loop once per pass) measured in the same session, on top of batching,
+executor on stdlib asyncio, artifacts `asgi-wrk-conns-*.json` with
+`variant` naming the prototype:
+
+| connections | batched (in the tree) | batched + cheap pass (prototype) | Δ | ÷ `uvicorn --loop asyncio` | ÷ uvicorn + uvloop |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 43,581 rps @ 0.88 cores | 50,747 @ 1.01 | **+16%** | 0.90 | 0.64 |
+| 64 | 57,135 @ 0.99 | 67,258 @ 1.00 | **+18%** | **1.17** | 0.83 |
+| 256 | 64,763 @ 1.02 | 66,128 @ 1.02 | +2% | 1.15 | 0.88 |
+
+The two levers are the same lever seen from two ends: batching lowers
+the number of passes per request when the connections supply the
+groups, and the cheap pass lowers the cost of each pass when they do
+not — which is why the prototype gains most at 16 and 64 connections
+and almost nothing at 256, where batching had already amortised the
+passes. From the executor of the morning (no batching) the two together
+are +22% at 16 connections, +26% at 64 and +21% at 256; the cores column
+reads 1.01 at 16 connections for the first time, which is the executor
+thread finally busy rather than waiting. What the prototype has not had
+is the review the seam demands — a `stop()` left pending across a
+shutdown `run_until_complete` would end it early, and the drain and
+shutdown paths have to be walked with that in mind — so it is a branch
+and a measurement, not a change in this tree.
+
+The stdlib-client `bench-asgi` harness read the executor at **1.41–1.46x
+uvicorn** the same afternoon, before and after batching alike, where
+its 2026-08-25 artifact read 0.96x and wrk reads 0.73–1.10x; nothing on
+the server side moved that way. It measures its own client. Its ≥0.8x
+gate stays where it is as a regression floor only; the wrk artifacts
+are the record.
 
 ## History: three fixes, and what the tails actually were
 

@@ -42,7 +42,7 @@ from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
-from lightbug_http.offload import OffloadPool, stream_gen_seed
+from lightbug_http.offload import OffloadPool, stream_gen_seed, COMPLETE_BATCH_MAX
 from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame,
@@ -245,6 +245,13 @@ def _executor_serve(block: ThreadBlock) raises:
         pending_101.append(None)
         gens.append(0)
     var next_gen = stream_gen_seed(lane + 1)
+    # Completions parked this pass and not yet sent: one datagram per pass
+    # pokes the loop for all of them (`complete_many`) instead of one per
+    # response. Flushed at the end of every `_pump_events` — which is
+    # "before this thread parks", since the loop below goes straight back
+    # into `wait_events` — and before any non-begin chunk frame, so the
+    # relative order of a completion and a chunk is exactly what it was.
+    var pending_done = List[Int](capacity=COMPLETE_BATCH_MAX)
 
     var stopping = False
     while True:
@@ -253,7 +260,7 @@ def _executor_serve(block: ThreadBlock) raises:
         var events = handler.apps[0]._bridge.wait_events()
         _pump_events(
             pool, handler, events, methods, paths, pending_101, gens,
-            next_gen, stopping, lane,
+            next_gen, pending_done, stopping, lane,
         )
         if stopping:
             break
@@ -266,7 +273,7 @@ def _executor_serve(block: ThreadBlock) raises:
     var ignored = False
     _pump_events(
         pool, handler, leftover, methods, paths, pending_101, gens,
-        next_gen, ignored, lane,
+        next_gen, pending_done, ignored, lane,
     )
     handler.shutdown()
 
@@ -280,6 +287,7 @@ def _pump_events(
     mut pending_101: OwningList[Optional[HTTPResponse]],
     mut gens: List[Int],
     mut next_gen: Int,
+    mut pending_done: List[Int],
     mut stopping: Bool,
     lane: Int = -1,
 ) raises:
@@ -288,11 +296,22 @@ def _pump_events(
     `('job', slot)` parks nothing here: static mounts and the health path
     are answered immediately in Mojo (they must stay readable while the
     application is busy), everything else becomes a task via `spawn_asgi`.
-    `('done', ...)`/`('err', ...)` park the response and poke the
-    completion channel — park THEN poke, the same happens-before edge the
-    blocking pool documents. A `('job', -1)` is the pill: it only sets
-    `stopping`, because completions later in the same batch still need
-    answering.
+    `('done', ...)`/`('err', ...)` park the response and QUEUE its
+    completion; the whole pass is poked to the loop as one datagram at the
+    end (`_flush_completions`) — park THEN poke, the same happens-before
+    edge the blocking pool documents, now covering N responses at once. A
+    `('job', -1)` is the pill: it only sets `stopping`, because completions
+    later in the same batch still need answering.
+
+    ORDER, spelled out, because it is the correctness of the streaming
+    seam. A stream's begin frame (`b`/`B`) goes out on the chunk channel
+    immediately, and its head completion is queued behind it: begin still
+    precedes head by construction. Every NON-begin chunk frame (`s`, `e`,
+    `w`, `x`) is preceded by a flush of the queued completions, so no
+    chunk can ever overtake the head — or any completion — it used to
+    follow. Under hello-world load that flush never fires and a pass is
+    one datagram; under streaming load it degrades toward one per
+    response, which is what it was.
     """
     for i in range(len(events)):
         var ev = events[i]
@@ -310,14 +329,14 @@ def _pump_events(
                 var response = early.take()
                 handler.after_response(methods[slot], paths[slot], response)
                 pool.put_response(slot, response^, False)
-                pool.complete(slot)
+                _queue_completion(pool, pending_done, slot)
                 continue
             var local = handler.serve_local(request)
             if local:
                 var response = local.take()
                 handler.after_response(methods[slot], paths[slot], response)
                 pool.put_response(slot, response^, False)
-                pool.complete(slot)
+                _queue_completion(pool, pending_done, slot)
                 continue
             # A WebSocket handshake gets a `websocket` scope. The 101 the
             # loop's validator built is held here — the application
@@ -331,7 +350,7 @@ def _pump_events(
                     # Malformed or wrong-version handshake: 400/426 verbatim.
                     handler.after_response(methods[slot], paths[slot], probe)
                     pool.put_response(slot, probe^, False)
-                    pool.complete(slot)
+                    _queue_completion(pool, pending_done, slot)
                     continue
                 pending_101[slot] = probe^
                 try:
@@ -341,7 +360,7 @@ def _pump_events(
                     var response = InternalError()
                     handler.after_response(methods[slot], paths[slot], response)
                     pool.put_response(slot, response^, True)
-                    pool.complete(slot)
+                    _queue_completion(pool, pending_done, slot)
                 continue
             try:
                 handler.apps[0]._bridge.spawn_asgi(slot, request)
@@ -352,7 +371,7 @@ def _pump_events(
                 var response = InternalError()
                 handler.after_response(methods[slot], paths[slot], response)
                 pool.put_response(slot, response^, True)
-                pool.complete(slot)
+                _queue_completion(pool, pending_done, slot)
         elif kind == "done":
             var response: HTTPResponse
             var raised = False
@@ -365,7 +384,7 @@ def _pump_events(
                 raised = True
             handler.after_response(methods[slot], paths[slot], response)
             pool.put_response(slot, response^, raised)
-            pool.complete(slot)
+            _queue_completion(pool, pending_done, slot)
         elif kind == "err":
             print(
                 "asgi-executor: request raised: " + String(py=ev[2]),
@@ -374,7 +393,7 @@ def _pump_events(
             var response = InternalError()
             handler.after_response(methods[slot], paths[slot], response)
             pool.put_response(slot, response^, True)
-            pool.complete(slot)
+            _queue_completion(pool, pending_done, slot)
         elif kind == "stream_start":
             # ORDER IS THE CORRECTNESS HERE. The begin frame goes out on
             # the chunk channel BEFORE the head completion: its send
@@ -412,8 +431,9 @@ def _pump_events(
             response.stream_gen = gens[slot]
             handler.after_response(methods[slot], paths[slot], response)
             pool.put_response(slot, response^, raised)
-            pool.complete(slot)
+            _queue_completion(pool, pending_done, slot)
         elif kind == "stream_chunk":
+            _flush_completions(pool, pending_done)
             # Park-then-poke does not apply here: the chunk's bytes ride
             # IN the datagram, so the send is both the publish and the
             # happens-before edge. Retried, never dropped — a lost chunk
@@ -434,6 +454,7 @@ def _pump_events(
                     flush=True,
                 )
         elif kind == "stream_end":
+            _flush_completions(pool, pending_done)
             var empty = List[UInt8]()
             var frame = encode_bus_frame(
                 asgi_stream_url(String("e"), slot, lane), gens[slot], Span(empty)
@@ -468,7 +489,7 @@ def _pump_events(
                 held.stream_gen = gens[slot]
                 handler.after_response(methods[slot], paths[slot], held)
                 pool.put_response(slot, held^, False)
-                pool.complete(slot)
+                _queue_completion(pool, pending_done, slot)
         elif kind == "ws_reject":
             # The application refused (or never answered) the handshake.
             if pending_101[slot]:
@@ -476,8 +497,9 @@ def _pump_events(
                 var response = _ws_forbidden()
                 handler.after_response(methods[slot], paths[slot], response)
                 pool.put_response(slot, response^, False)
-                pool.complete(slot)
+                _queue_completion(pool, pending_done, slot)
         elif kind == "ws_send":
+            _flush_completions(pool, pending_done)
             var opcode = Int(py=ev[2])
             var payload = handler.apps[0]._bridge.body_bytes(ev[3])
             var frame_bytes = encode_ws_frame(
@@ -489,6 +511,7 @@ def _pump_events(
             )
             _ = _send_chunk_frame(pool, Span(frame))
         elif kind == "ws_close":
+            _flush_completions(pool, pending_done)
             # A close frame with the app's code, then the end marker that
             # lets the loop close after it lands.
             var code = Int(py=ev[2])
@@ -506,7 +529,53 @@ def _pump_events(
                 asgi_stream_url(String("x"), slot, lane), gens[slot], Span(empty)
             )
             _ = _send_chunk_frame(pool, Span(f2))
+    # The pass is over: everything parked above is poked to the loop at once.
+    _flush_completions(pool, pending_done)
 
+
+
+def _queue_completion(mut pool: OffloadPool, mut pending: List[Int], slot: Int):
+    """Park-then-poke, deferred: the response is already parked; the poke
+    joins this pass's batch, flushed at the end of the pass or when full."""
+    pending.append(slot)
+    if len(pending) >= COMPLETE_BATCH_MAX:
+        _flush_completions(pool, pending)
+
+
+def _flush_completions(mut pool: OffloadPool, mut pending: List[Int]):
+    """One completion datagram for every queued slot; never a drop.
+
+    `complete_many` already retries with yields. If the channel still will
+    not take it the loop is not draining completions at that instant, and
+    the wait has to be DETACHED — this thread is attached, and the loop
+    needs to attach for other work — the `_send_chunk_frame` discipline.
+    Bounded at ~5 s like the drain; past that the slots stay queued for the
+    next flush rather than being dropped, and the log says so. The old
+    per-response `complete` dropped silently after its retries, leaving the
+    slot leaked for the process's life; this is strictly better.
+    """
+    if len(pending) == 0:
+        return
+    if pool.complete_many(pending):
+        pending.clear()
+        return
+    ref cpy = Python().cpython()
+    var ts = cpy.PyEval_SaveThread()
+    var placed = False
+    for _ in range(25000):
+        sleep(0.0002)
+        if pool.complete_many(pending):
+            placed = True
+            break
+    cpy.PyEval_RestoreThread(ts)
+    if placed:
+        pending.clear()
+        return
+    print(
+        "asgi-executor: completion channel full, " + String(len(pending))
+        + " completion(s) still queued — the loop is not draining",
+        flush=True,
+    )
 
 def _send_chunk_frame(mut pool: OffloadPool, frame: Span[Byte, _]) -> Bool:
     """Place one chunk datagram, waiting **detached** if the channel is full.

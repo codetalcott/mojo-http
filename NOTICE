@@ -340,6 +340,15 @@ lightbug_http
         (flushing the produced bytes, then closing without a terminator),
         and repeats the farewell pass after the shutdown drain.
         http/response.mojo gained `stream_gen`.
+      - The pump between the event loop and the asyncio executor is
+        batched in both directions (offload.mojo, event_loop.mojo): the
+        loop buffers a pass's submits to an executor lane and sends them
+        as one `TAG_JOB_BATCH` datagram at the bottom of the pass
+        (`OffloadLoopState.queue_submit`/`flush_submits`, `submit_batch`,
+        `lane_is_executor`, `stamp_lane`), running inline what a batch
+        cannot carry; and `drain_completions` decodes `k` concatenated
+        completions from one datagram (`complete_many`) into a buffer
+        sized for a full batch.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

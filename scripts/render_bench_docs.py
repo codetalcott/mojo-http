@@ -60,6 +60,7 @@ ROW_ORDER = {
     "asgi-wrk-hello": [
         ("m0serve asgi-executor", "`m0serve` — zero-config asyncio executor"),
         ("uvicorn asyncio", "`uvicorn --loop asyncio`"),
+        ("uvicorn uvloop", "`uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default"),
     ],
     "asgi-executor": [
         ("m0serve", "`m0serve` — asyncio executor"),
@@ -123,6 +124,11 @@ def provenance(path, d):
         )
     if detail:
         envline += f"; {detail}"
+    # Which loop the executor ran on is a property of the interpreter
+    # m0serve resolved from PATH, not of the code -- the shim adopts uvloop
+    # only where it can import it -- so an artifact that stamped it says so.
+    if p.get("executor_loop"):
+        envline += f"; executor loop: {p['executor_loop']}"
     bits.append(envline + ".")
     return bits
 

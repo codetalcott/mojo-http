@@ -14,9 +14,10 @@ from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
 from lightbug_http.c.socket import recv
 from lightbug_http.offload import (
-    JOB_STOP,
+    JOB_STOP, JOB_REQUEST,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
+    COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH,
 )
 from lightbug_http.uri import URI
 
@@ -347,6 +348,148 @@ def test_loop_state_clear_stream_forgets_fd_and_generation() raises:
     assert_false(state.slot_channel_stream(4))
     assert_equal(state.stream_gen[4], STREAM_GEN_NONE)
     assert_false(pool.slot_channel_stream(4))
+# --- pump batching: one datagram per pass in each direction --------------------
+
+
+def _read_datagram(fd: Int) raises -> List[UInt8]:
+    """One whole datagram off a submit lane's read end, as the executor's
+    shim would read it."""
+    var buf = List[UInt8](capacity=4096)
+    for _ in range(4096):
+        buf.append(0)
+    var n = recv(FileDescriptor(fd), Span(buf), UInt(4096), 0)
+    var out = List[UInt8](capacity=Int(n))
+    for i in range(Int(n)):
+        out.append(buf[i])
+    return out^
+
+
+def test_complete_many_delivers_every_slot_in_one_datagram() raises:
+    var pool = OffloadPool(8)
+    for slot in [2, 5, 7]:
+        pool.park_request(slot, _request("/x"))
+        assert_true(pool.submit(slot))
+        _ = _next_slot(pool)
+        _ = pool.take_request(slot)
+        pool.put_response(slot, OK(String("r")))
+    assert_true(pool.complete_many([2, 5, 7]))
+    var done = pool.drain_completions()
+    assert_equal(len(done), 3)
+    assert_equal(done[0], 2)
+    assert_equal(done[1], 5)
+    assert_equal(done[2], 7)
+    # An empty batch is a no-op, not a zero-length datagram.
+    assert_true(pool.complete_many(List[Int]()))
+    assert_equal(len(pool.drain_completions()), 0)
+
+
+def test_single_and_batched_completions_decode_in_order() raises:
+    """The blocking pool's one-slot `complete` and the executor's batch share
+    the channel; the drain keeps their order."""
+    var pool = OffloadPool(16)
+    pool.complete(2)
+    assert_true(pool.complete_many([3, 4]))
+    pool.complete(9)
+    var done = pool.drain_completions()
+    assert_equal(len(done), 4)
+    assert_equal(done[0], 2)
+    assert_equal(done[1], 3)
+    assert_equal(done[2], 4)
+    assert_equal(done[3], 9)
+
+
+def test_a_full_completion_batch_decodes_whole() raises:
+    """Pins the drain's receive buffer: a SOCK_DGRAM `recv` into a short
+    buffer silently discards the excess, and a batch decoded short is a
+    slot that never answers."""
+    var pool = OffloadPool(128)
+    var slots = List[Int]()
+    for i in range(COMPLETE_BATCH_MAX):
+        slots.append(i)
+    assert_true(pool.complete_many(slots))
+    var done = pool.drain_completions()
+    assert_equal(len(done), COMPLETE_BATCH_MAX)
+    assert_equal(done[COMPLETE_BATCH_MAX - 1], COMPLETE_BATCH_MAX - 1)
+
+
+def test_job_batch_is_tag_4_and_one_mod_eight() raises:
+    """A batch's first byte is 4 and its length is 1 + 8n — so a two-slot
+    batch cannot be read as a plain job (8 bytes), and a one-slot batch
+    goes out as the legacy job, not as a 9-byte datagram that only its tag
+    would distinguish from a disconnect."""
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    assert_true(pool.submit_batch(0, [3, 6]))
+    var batch = _read_datagram(pool.submit_read)
+    assert_equal(len(batch), 17)
+    assert_equal(batch[0], TAG_JOB_BATCH)
+    assert_equal(Int(batch[1]), 3)
+    assert_equal(Int(batch[9]), 6)
+    assert_true(pool.submit_batch(0, [5]))
+    var single = _read_datagram(pool.submit_read)
+    assert_equal(len(single), 8)
+    assert_equal(Int(single[0]), 5)
+
+
+def test_next_job_does_not_misparse_a_job_batch() raises:
+    """A batch on a pool lane is a sender bug; `next_job` skips it loudly and
+    the real job behind it is still served."""
+    var pool = OffloadPool(8)
+    assert_true(pool.submit_batch(0, [1, 2]))
+    pool.park_request(4, _request("/real"))
+    assert_true(pool.submit(4))
+    var buf = _job_buffer()
+    var job = pool.next_job(0, buf)
+    assert_equal(job.kind, JOB_REQUEST)
+    assert_equal(job.slot, 4)
+
+
+def test_lane_is_executor_agrees_with_slot_is_executor() raises:
+    var pool = OffloadPool(8)
+    assert_false(pool.lane_is_executor(0))
+    # The chunk channel alone is not an executor — a streaming pool has one
+    # too; the executor's own ack pair is what says one exists, and only
+    # then are submits to its lane batched.
+    pool.enable_stream_channel()
+    assert_false(pool.lane_is_executor(0))
+    pool.enable_base_stream_ack()
+    # Unmounted with an executor: every lane and every slot is its.
+    assert_true(pool.lane_is_executor(0))
+    assert_true(pool.lane_is_executor(-1))
+    pool.stamp_lane(3, 0)
+    assert_true(pool.slot_is_executor(3))
+
+
+def test_loop_state_buffers_submits_per_lane_and_flushes_at_the_cap() raises:
+    var pool = OffloadPool(128)
+    pool.enable_stream_channel()
+    var state = OffloadLoopState(pool.addr(), 128)
+    for i in range(SUBMIT_BATCH_MAX - 1):
+        assert_false(state.queue_submit(i, 0))
+    assert_equal(state.pending_submit_count, SUBMIT_BATCH_MAX - 1)
+    # The cap: the last slot says "flush now".
+    assert_true(state.queue_submit(SUBMIT_BATCH_MAX - 1, 0))
+    var unsent = state.flush_lane(0)
+    assert_equal(len(unsent), 0)
+    assert_equal(state.pending_submit_count, 0)
+    var batch = _read_datagram(pool.submit_read)
+    assert_equal(len(batch), 1 + 8 * SUBMIT_BATCH_MAX)
+    assert_equal(batch[0], TAG_JOB_BATCH)
+
+
+def test_flush_submits_sends_every_lane_and_returns_nothing_when_all_went() raises:
+    var pool = OffloadPool(16)
+    pool.enable_stream_channel()
+    var state = OffloadLoopState(pool.addr(), 16)
+    _ = state.queue_submit(1, 0)
+    _ = state.queue_submit(2, 0)
+    var unsent = state.flush_submits()
+    assert_equal(len(unsent), 0)
+    assert_equal(state.pending_submit_count, 0)
+    var batch = _read_datagram(pool.submit_read)
+    assert_equal(len(batch), 17)
+    # Nothing buffered: a flush sends nothing and reads back nothing.
+    assert_equal(len(state.flush_submits()), 0)
 
 
 def main() raises:
