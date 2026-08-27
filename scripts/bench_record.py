@@ -143,6 +143,11 @@ PARSERS = {
     # Same row shape as the layer split (bench_asgi_wrk.sh prints it);
     # the artifact name is what docs/BENCHMARKS.md's generated region keys on.
     "asgi_wrk_hello": _parse_layer_split,
+    # Framework apps through the same script (BENCH_NAME=...): the rows the
+    # WSGI_PERFORMANCE.md framework table quotes; not on the benchmark page,
+    # whose rows are bare handlers on purpose.
+    "asgi_wrk_fasthtml": _parse_layer_split,
+    "asgi_wrk_django": _parse_layer_split,
     "wsgi_modes": _parse_wsgi_modes,
     "mixed_workload": _parse_mixed_workload,
 }
