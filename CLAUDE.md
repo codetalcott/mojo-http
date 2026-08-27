@@ -17,16 +17,23 @@ m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 ```
 
 **Zero upward imports.** `m0-core` depends on nothing. `m0-http` uses exactly
-three functions from `m0-core` (`wyhash64`, `format_hash64`,
-`escape_json_string`). `m0-datastar` splits deliberately: `consts.mojo` and
+four functions from `m0-core`: `wyhash64` and `format_hash64` in `etag.mojo`,
+`escape_json_string` in `health.mojo`, `escape_json_string_into` in
+`log.mojo`. `m0-datastar` splits deliberately: `consts.mojo` and
 `sse.mojo` import nothing outside themselves so the wire format is usable
 without the framework — do not add an `m0_http` import to either — while
 `stream.mojo` and `signals.mojo` are the server glue and may.
 
 `m0-wsgi` is the **only** package that embeds CPython. Keep it that way: a
 Python import in `m0-http` or `m0-core` would put libpython on the link line of
-every build in the repo. Everything touching the interpreter lives in
-`src/bridge.mojo`; the rest of the package works in Mojo types. The package
+every build in the repo. Inside the package, `src/bridge.mojo` owns the
+per-request interop — the environ build, the response read, every raw C API
+call — and is the file to reach for first. The other `std.python` importers
+are the modules that run Python on a thread of their own (`app`,
+`asgi_executor`, `blocking_pool`, `response`, `threaded`, and `m0serve.mojo`),
+because attaching, building a handler and destroying it there are theirs to
+do; everything else works in Mojo types, and keeping it that way is what
+bounds how many places the leak rules below have to hold. The package
 hosts **both protocols**: the shim detects WSGI vs ASGI at `set_app`
 (`--protocol` forces it), and an ASGI app runs buffered on a persistent
 per-bridge asyncio loop — the protocol dispatch lives entirely inside the
@@ -51,9 +58,9 @@ URL breaks — invisible until someone clicks something, which is why
 `WSGIHandler.build` is the one place applications are constructed, so the
 mounted and unmounted shapes cannot drift.
 
-**Mounts get their own execution mode**, which is the whole point: a
-submit **lane** per mount (`OffloadPool.add_lane`, one `SOCK_DGRAM` pair
-each) means the loop's `pool.submit(slot, path)` hands a job to the worker
+**Mounts get their own execution mode**: a submit **lane** per mount
+(`OffloadPool.add_lane`, one `SOCK_DGRAM` pair each) means the loop's
+`pool.submit(slot, path)` hands a job to the worker
 that can run it — the asyncio executor for the ASGI mount, handler-pool
 threads for the sync ones, dealt round-robin. Rules: **one `ProvisionPool`
 per loop stays** (a slot indexes that loop's provisions); `lane i` is
@@ -75,15 +82,13 @@ route to the owning executor by parsing the slot's own filter url.
 hold while an ASGI mount streams through its own executor, in one process
 — which is what a mixed application needs, its pub/sub streams being
 hold-shaped and its request-scoped generators executor-shaped. The loop
-tells the two apart PER SLOT by lane (`OffloadPool.slot_is_executor`):
-asking per server was the same question only while they could not share
-one, and a held stream drained as an executor's would be chunk-framed,
-acked to an executor that never issued the credit, and denied the comment
-heartbeat that keeps it alive through a proxy. Sockets travel
-the same seam: a pool thread performs the 101 (the client's key is in the
-request it holds), sends an `H` frame carrying its own LANE, and the loop
-records `hold_lane[slot]` — so an inbound frame is delivered back to the
-mount whose view gated the upgrade and to no other. One refusal remains:
+tells the two apart PER SLOT by lane (`OffloadPool.slot_is_executor`): a
+held stream drained as an executor's would be chunk-framed, acked to an
+executor that never issued the credit, and denied the comment heartbeat
+that keeps it alive through a proxy. Sockets travel the same seam — the
+`H` frame a pool thread sends carries its own LANE and the loop records
+`hold_lane[slot]`, so an inbound frame is delivered back to the mount
+whose view gated the upgrade and to no other. One refusal remains:
 `--realtime` on a server with no WSGI mount at all, which is asking for a
 hold nothing could take. **`--threads` gets the same
 lanes**: `_serve_one` mirrors `_serve_offloaded` per loop, so N loops of
@@ -94,12 +99,19 @@ neither is how `state["m0"]` silently goes missing). And `set_lane_notify`
 sits on the `ThreadHandler` trait beside `set_asgi_notify`, because the
 generic `_serve_one` body can only call what the trait names.
 
-Zero-config: with no topology flag or `M0_*` topology variable, `m0serve`
-defaults to `--blocking-threads min(cores,8)` — an explicitly-set variable,
-at any value, disables that (`AppConfig`'s `*_set` fields carry the
-distinction; `resolve_blocking_threads` in `src/cli.mojo` is the one place
-the default is decided). Two rules the
-Mojo 1.0 interop imposes and that the code depends on:
+Zero-config: with no topology flag or `M0_*` topology variable, a WSGI
+`m0serve` defaults to `--blocking-threads min(cores,8)`, so one slow view does
+not stall every connection out of the box. It is **not** a blanket default: a
+zero-config ASGI app gets NO pool, because it gets the asyncio executor
+instead and its concurrency is the application's own awaits; an unmounted
+`--realtime` gets none either, because the single-loop shape is what the demo
+and its smokes assume. A mounted server is decided per mount, and any WSGI
+mount needs a pool whatever the others are — those threads are the only
+workers parked on its lane. An explicitly-set variable, at any value, disables
+all of it (`ServeOptions`'s `*_set` fields carry the distinction, mirrored on
+`AppConfig`; `resolve_blocking_threads` in `src/cli.mojo` is the one place the
+default is decided). Three rules the Mojo 1.0 interop imposes and that the
+code depends on:
 
 - **`std.python` binds no `bytes` API and no latin-1 decoder — but the
   unbound C API is still reachable.** `Python().cpython()` has no
@@ -244,11 +256,10 @@ Mojo 1.0 interop imposes and that the code depends on:
       is sent BEFORE the completion, so any pass whose event batch holds
       the completion holds the frame too, and the outbox drain runs at the
       bottom of the pass — after every event, in whatever order they came.
-      That is also what let `--mount` join in: an ASGI mount does bring an
-      end-of-stream signal, but the loop reads it per slot now, and only
-      for slots an executor produced. A WebSocket hold works
-      here too: the pool thread performs the 101 (the client's key is in
-      the request it holds) and sends an `H` frame, and the inbound half
+      An ASGI mount does bring an end-of-stream signal, but the loop reads
+      it per slot and only for slots an executor produced. A WebSocket hold
+      works here too: the pool thread performs the 101 (the client's key is
+      in the request it holds) and sends an `H` frame, and the inbound half
       rides the submit channel back as a `TAG_WS_MESSAGE` datagram — the
       executor's shape plus the CHANNEL, because a pool thread's own
       registries are empty. `ws_message` asks the pool question FIRST: on a
@@ -263,11 +274,10 @@ Mojo 1.0 interop imposes and that the code depends on:
       waits the same 5 s the drain gets (`ThreadSet.join_within` polls each
       thread's status slot, which a body writes last), then the process
       `_exit`s naming what it abandoned. Nothing here can unwind Python on
-      another thread, so waiting was a SIGTERM that did nothing until
-      `docker stop` sent SIGKILL.
+      another thread, so waiting longer only makes SIGTERM a no-op until
+      `docker stop` sends SIGKILL.
     - Not refused on a GIL-enabled interpreter, unlike `--threads`: a waiting
-      view releases the GIL, so the isolation is real there. That is the
-      difference, and it is why the two refusals differ.
+      view releases the GIL, so the isolation is real there.
 
 `m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
 flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
@@ -292,10 +302,11 @@ transaction (46x), `mmap_size` (40% on large random reads), `json_each` for
 variable-length `IN` lists, and why `carray()` is unavailable and would not take
 a `List[Struct]` anyway.
 
-There is one cycle, and it is intentional: `m0-http/src/{cors,signal,auth,
-multiworker}.mojo` import from `lightbug_http`, and `lightbug_http/event_loop.mojo`
-imports `m0_http.log`. Both sides live inside `packages/m0-http/`, so the cycle
-never crosses a package boundary.
+There is one cycle, and it is intentional: files throughout `m0-http/src/`
+import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
+them — and `lightbug_http/event_loop.mojo` imports `m0_http.log`. Both sides
+live inside `packages/m0-http/`, so the cycle never crosses a package
+boundary.
 
 `m0-core/ffi_exports.mojo` (package root, deliberately outside `src/`) holds
 the C-ABI exports for foreign callers (Bun `dlopen`, N-API, `ctypes`); `poe
@@ -314,6 +325,20 @@ reasons: it is the `m0serve` CLI binary (`poe build-serve` → `bin/m0serve`),
 included, since `--realtime` moved its hold machinery into `WSGIHandler` —
 are Python-only projects it serves; there is no `server.mojo` in them to
 edit.
+
+Holds are described here from the server side only. The **application**
+contract — a sync view approving a connection with `M0-Hold`/`M0-Channel`
+headers, `m0pub.publish()`, inbound WebSocket messages arriving as a plain
+POST — is [QUICKSTART.md](QUICKSTART.md), which is executable: `poe
+smoke-quickstart` runs its fenced blocks against the tree's own wheel, so
+editing it can break CI.
+
+`packaging/m0serve/` builds the `pip install m0serve` wheel and holds the
+repo's **only** `[build-system]`: one in the root would make `uv sync` build
+the repo, which needs `bin/m0serve`, which needs the venv `uv sync` is
+creating. Wheels only (an sdist cannot build without the toolchain),
+`dependencies` deliberately empty, platform tag measured from the binary
+rather than declared. `poe smoke-wheel` proves the lot outside the tree.
 
 ## The lightbug fork
 
@@ -399,7 +424,7 @@ code problem; check with the compiler before believing it.
 artifacts, with the restore in an `EXIT` trap so it happens even when the
 canary fails. It exits 0 if the nightly is clean, 1 if the nightly broke
 something, and 2 if the environment could not be put back. Prefer it to
-driving the steps by hand, because doing that has two traps:
+driving the steps by hand, which has a trap:
 
 **On a nightly, every task needs `--no-sync`.** `poe nightly-try` swaps the
 venv's toolchain without touching `uv.lock`; a plain `uv run` re-syncs the venv
@@ -470,9 +495,7 @@ example in README.md.
 `listen_and_serve`. Only the non-blocking event loop assigns `req.slot_id`,
 drains the outbox, and parses WebSocket frames; the plain accept loop leaves
 `slot_id` at `-1` and refuses every `sse_streaming` response and every `101`
-with the server's own `409` (`gate_streaming_response` — since #118; before
-that the only 409 was DatastarStream's own guard, and apps on the lower-level
-`sse_response()` path silently got a one-shot body instead).
+with the server's own `409` (`gate_streaming_response`).
 Slots index the registry directly, so a stream's capacity
 (`DatastarStream(1024)`) must be at least the server's max connections.
 A WebSocket upgrade is signalled on the wire, not by a flag: the loop
@@ -494,7 +517,7 @@ Properties of the design, not defects to fix in passing:
   (drop-oldest at 256). The loop grew a second bus fd (`peer_bus_fd`)
   because the executor's chunk channel consumes `bus_read_fd`; same
   codec, same drain, same `sse_peer_frame` entry. The bus + `SharedAtomics`
-  + env exports are created unconditionally pre-fork now — protocol
+  + env exports are created unconditionally pre-fork — protocol
   detection is post-fork, and a single worker's own subscribers ride its
   own channel (there is deliberately no separate local-delivery path).
 - **SSE fan-out is per-process unless the app joins the `BroadcastBus`.**
@@ -530,7 +553,7 @@ Properties of the design, not defects to fix in passing:
   must end with `exit_worker()`, never by returning from `main`**: the
   runtime's teardown calls into libdispatch, which is unusable after a fork
   without exec, and the worker dies with a SIGTRAP the supervisor reads as a
-  crash. Nothing reached that path until workers learned to drain.
+  crash.
 - **After `fork()` without `exec`, platform runtimes are off limits — including
   from application code.** The `exit_worker()` rule above is one instance; the
   general form bites WSGI apps directly. On macOS `urlopen` consults the system
