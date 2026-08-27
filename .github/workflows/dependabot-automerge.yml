@@ -2,11 +2,12 @@ name: Dependabot auto-merge
 
 # Merges Dependabot PRs once the Tests workflow has actually passed.
 #
-# This deliberately does NOT use `gh pr merge --auto`. GitHub's auto-merge
-# only waits when a branch protection rule declares required status checks,
-# and `main` here is unprotected — so `--auto` would merge immediately,
-# before CI had run, while looking like it gated on CI. Protecting `main`
-# would fix that but would also block direct pushes to it.
+# This deliberately does NOT use `gh pr merge --auto`. Repository auto-merge
+# is disabled here, so `--auto` errors — and it would not gate on CI even if
+# enabled, because auto-merge waits only on required status checks, and the
+# ruleset protecting `main` declares none on purpose: test.yml's paths-ignore
+# means a doc-only PR produces no Tests run at all, so a required check would
+# never report and such a PR could never merge.
 #
 # Triggering on workflow_run instead means this only fires after Tests has
 # reported success for the PR's head commit.

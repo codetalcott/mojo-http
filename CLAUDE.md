@@ -438,16 +438,22 @@ name, so renaming the workflow silently disables both. `test.yml` ignores
 `*.md`, `docs/**` and `.claude/**` — a doc-only change runs nothing, and
 therefore never reaches the auto-merge workflows either.
 
+**`main` is protected by a ruleset**: pull request required (0 approvals),
+no force push, no deletion, no bypass actor — so branch first, or the push is
+rejected with `GH013`. It declares **no required status checks, deliberately**:
+by the `paths-ignore` above a doc-only PR produces no `Tests` run at all, and
+a required check that never reports would leave every such PR unmergeable.
+
 **`automerge` is a standing order.** A PR carrying that label merges itself as
 soon as `Tests` passes for its current head commit. The label is the gate and
 it is deliberately not a branch namespace: applying it needs write access, so
 a session can open work autonomously but cannot land it. Add the label when
 the work is meant to go in unattended; leave it off and the PR waits.
 
-Never reach for `gh pr merge --auto` here. GitHub's auto-merge only waits when
-a branch protection rule declares required status checks, and `main` is
-unprotected — so `--auto` merges immediately, before CI runs, while looking
-like it gated on CI.
+Never reach for `gh pr merge --auto` here. Repository auto-merge is disabled,
+so it errors — and it would not gate on CI even if enabled, because
+auto-merge waits only on required status checks and the ruleset declares
+none. The label is the mechanism.
 
 ## Imports resolve two ways
 
