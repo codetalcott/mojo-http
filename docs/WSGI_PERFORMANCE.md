@@ -1172,6 +1172,33 @@ cancelled by the farewell; stream tasks are). `smoke-asgi`'s
 outlive-the-drain phase pins it, and was verified to fail against the
 unguarded prototype before it counted.
 
+**Framework rows, measured 2026-08-27 with batching and the `run_forever`
+pump in.** The benchmark page's rows are bare handlers on purpose — a
+view's own work hides the server — but a developer's first comparison is
+their own framework, so the same script, parametrized (`BENCH_NAME`,
+`BENCH_APP_DIR`, `BENCH_M0_SPEC`, `BENCH_UV_SPEC`, `BENCH_PATH`), ran the
+two ASGI framework apps in the tree at `/`: `wrk -t2 -c16 -d8s`, browser
+headers, the executor on uvloop (the venv's), medians of three with the
+uvicorn rows re-measured beside it, artifacts `asgi-wrk-fasthtml-*.json`
+and `asgi-wrk-django-*.json`:
+
+| app, `GET /` | m0serve executor | `uvicorn --loop asyncio` | ratio | uvicorn + uvloop | ratio |
+|---|---:|---:|---:|---:|---:|
+| FastHTML (`apps/fasthtml_demo`: a `Titled` page) | 3,977 rps @ 0.74 cores | 4,668 @ 1.02 | 0.85 | 5,264 @ 1.00 | 0.76 |
+| Django ASGI (`apps/django_asgi`: a sync view through `ASGIHandler`) | 3,861 @ 0.73 | 3,261 @ 0.71 | **1.18** | 4,156 @ 0.72 | 0.93 |
+
+Two readings. FastHTML — Starlette's stack, a few hundred microseconds of
+Python per page — shows the bare app's shape at 16 connections: the
+executor at 0.74 cores, idle between handoffs, 0.85x the asyncio
+comparator and with the worse tail (p99 8.0 ms against 4.7). Django's
+`ASGIHandler` runs a sync view through `sync_to_async`, a thread hop on
+every request for every server — uvicorn sits at 0.71 cores there too —
+and the executor is 1.18x uvicorn-asyncio and 0.93x uvloop, p99 5.2 ms
+against 5.6 and 4.8. Both rows are a tenth of the bare app's rate: the
+framework's own work dominates, which is the page's reason for keeping
+bare handlers, and it makes the server gap a smaller share of any real
+request than the bare rows make it look.
+
 The stdlib-client `bench-asgi` harness read the executor at **1.41–1.46x
 uvicorn** the same afternoon, before and after batching alike, where
 its 2026-08-25 artifact read 0.96x and wrk reads 0.73–1.10x; nothing on

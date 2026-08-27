@@ -241,7 +241,10 @@ every number here names, and installing it is one flag:
 - **Real applications.** Every row above serves a bare handler, because a
   Django view's own work dominates and would hide the server difference
   entirely. That cuts both ways: it makes these gaps visible, and it makes
-  them a smaller fraction of any real request than they look here.
+  them a smaller fraction of any real request than they look here. Two
+  framework rows — FastHTML and Django ASGI at `/` — are measured all the
+  same and kept in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) ("Framework
+  rows"), off this page for that reason.
 - **Anything on Linux.** These artifacts are macOS arm64. The CI matrix
   builds and smoke-tests Linux x86-64 and aarch64, but the benchmark box is
   one machine and the page says which.

@@ -34,6 +34,14 @@ export PATH="$PWD/$(dirname "$PY"):$PATH"
 # A different build of the server, for an A/B on one box (the uvicorn rows
 # are re-measured every run on purpose: they are the drift control).
 M0=${M0SERVE_BIN:-bin/m0serve}
+# The application: the bare app by default (the benchmark page's row); a
+# framework app for the WSGI_PERFORMANCE.md framework table -- both servers
+# get the same spec, the m0serve one may add --app-dir discovery.
+APP_DIR=${BENCH_APP_DIR:-apps/asgi_bare}
+M0_SPEC=${BENCH_M0_SPEC:-bareapp.asgi:application}
+UV_SPEC=${BENCH_UV_SPEC:-bareapp.asgi:application}
+REQ_PATH=${BENCH_PATH:-/}
+BENCH_NAME=${BENCH_NAME:-asgi_wrk_hello}
 
 HDRS=(-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
       -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
@@ -53,9 +61,9 @@ drain_ports() {
 
 measure() {
   local name=$1
-  curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o /dev/null http://127.0.0.1:8080/ \
+  curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o /dev/null "http://127.0.0.1:8080$REQ_PATH" \
     || { echo "$name: never healthy" | tee -a "$OUT"; return; }
-  wrk -t2 -c$CONNS -d2s "${HDRS[@]}" http://127.0.0.1:8080/ > /dev/null 2>&1
+  wrk -t2 -c$CONNS -d2s "${HDRS[@]}" "http://127.0.0.1:8080$REQ_PATH" > /dev/null 2>&1
   local cpu_samples=/tmp/bench_cpu_$$
   ( : > "$cpu_samples"
     while :; do
@@ -63,7 +71,7 @@ measure() {
         | xargs ps -o %cpu= -p 2>/dev/null | awk '{s+=$1} END{if (NR>0) print s}' >> "$cpu_samples"
       sleep 1
     done ) & local sampler=$!
-  local ka=$(wrk -t2 -c$CONNS -d$DUR --latency "${HDRS[@]}" http://127.0.0.1:8080/ 2>&1)
+  local ka=$(wrk -t2 -c$CONNS -d$DUR --latency "${HDRS[@]}" "http://127.0.0.1:8080$REQ_PATH" 2>&1)
   kill $sampler 2>/dev/null; wait $sampler 2>/dev/null
   local cores=$(sort -n "$cpu_samples" 2>/dev/null | awk '{a[NR]=$1} END{if (NR>0) printf "%.2f", a[int((NR+1)/2)]/100; else print "?"}')
   rm -f "$cpu_samples"
@@ -77,12 +85,12 @@ measure() {
 
 stop() { kill -TERM $pid 2>/dev/null; for q in $(pgrep -P $pid 2>/dev/null); do kill -TERM $q 2>/dev/null; done; wait $pid 2>/dev/null; sleep "$COOL"; }
 
-m0()      { "$M0" bareapp.asgi:application --app-dir apps/asgi_bare --port 8080 > /dev/null 2>&1 & pid=$!; }
-uv_loop() { "$PY" -m uvicorn --app-dir apps/asgi_bare --host 127.0.0.1 --port 8080 --log-level critical --loop "$1" bareapp.asgi:application > /dev/null 2>&1 & pid=$!; }
+m0()      { "$M0" $M0_SPEC --app-dir "$APP_DIR" --port 8080 > /dev/null 2>&1 & pid=$!; }
+uv_loop() { "$PY" -m uvicorn --app-dir "$APP_DIR" --host 127.0.0.1 --port 8080 --log-level critical --loop "$1" $UV_SPEC > /dev/null 2>&1 & pid=$!; }
 
 has_uvloop=0
 "$PY" -c 'import uvloop' 2>/dev/null && has_uvloop=1
-m0_python=$("$M0" --doctor bareapp.asgi:application --app-dir apps/asgi_bare 2>/dev/null \
+m0_python=$("$M0" --doctor $M0_SPEC --app-dir "$APP_DIR" 2>/dev/null \
   | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["python"]["executable"])' 2>/dev/null || echo unknown)
 m0_loop=asyncio
 [ "$m0_python" != unknown ] && "$m0_python" -c 'import uvloop' 2>/dev/null && m0_loop=uvloop
@@ -92,8 +100,8 @@ echo "executor interpreter: $m0_python (loop: $m0_loop)" | tee -a "$OUT"
 # Byte parity, asserted before any timing.
 parity() {
   local tmp=$(mktemp -d)
-  m0;                 curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o "$tmp/m0" http://127.0.0.1:8080/; stop
-  uv_loop asyncio;    curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o "$tmp/uv" http://127.0.0.1:8080/; stop
+  m0;                 curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o "$tmp/m0" "http://127.0.0.1:8080$REQ_PATH"; stop
+  uv_loop asyncio;    curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o "$tmp/uv" "http://127.0.0.1:8080$REQ_PATH"; stop
   if cmp -s "$tmp/m0" "$tmp/uv"; then
     echo "byte parity m0serve/uvicorn on the bare ASGI app: identical" | tee -a "$OUT"
   else
@@ -114,7 +122,7 @@ for round in $(seq 1 $ROUNDS); do
 done
 echo "results in $OUT"
 
-python3 "$(dirname "$0")/bench_record.py" asgi_wrk_hello "$OUT" \
-  --meta "client=wrk -t2 -c$CONNS -d$DUR, browser headers" --meta "app=apps/asgi_bare" --meta "rounds=$ROUNDS" --meta "server=$M0" \
+python3 "$(dirname "$0")/bench_record.py" "$BENCH_NAME" "$OUT" \
+  --meta "client=wrk -t2 -c$CONNS -d$DUR, browser headers" --meta "app=$APP_DIR $M0_SPEC $REQ_PATH" --meta "rounds=$ROUNDS" --meta "server=$M0" \
   --meta "executor_python=$m0_python" --meta "executor_loop=$m0_loop" \
   || echo "WARN: could not write the bench artifact (see above)"

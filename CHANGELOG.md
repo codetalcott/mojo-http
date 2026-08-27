@@ -38,7 +38,11 @@ versions may break the API**.
   `executor_loop` in the artifact, takes `M0SERVE_BIN` for an A/B of
   two builds and `BENCH_CONNS` for the concurrency; the generated block
   on the benchmark page prints the executor's loop. `check-docs` now
-  ratchets the uvloop ratio and per-core gap too.
+  ratchets the uvloop ratio and per-core gap too. `BENCH_NAME`,
+  `BENCH_APP_DIR`, `BENCH_M0_SPEC`, `BENCH_UV_SPEC` and `BENCH_PATH` run a
+  framework app through the same script: the `asgi-wrk-fasthtml-*` and
+  `asgi-wrk-django-*` artifacts behind WSGI_PERFORMANCE.md's framework
+  table (FastHTML 0.85x / Django ASGI 1.18x `uvicorn --loop asyncio`).
 - `bench/results/asgi-wrk-conns-*.json`: the 2026-08-27 concurrency
   matrix — the executor with and without pump batching, and on uvloop,
   at 16/64/256 connections.
