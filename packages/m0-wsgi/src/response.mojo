@@ -30,12 +30,42 @@ from lightbug_http.cookie import ResponseCookieJar
 from .bridge import PyBridge
 
 
+def has_control_bytes(value: String) -> Bool:
+    """Whether `value` carries a byte that would break header framing.
+
+    CR and LF end a header line, so either one inside a value or a name
+    lets the rest of that string be read as further headers — and, after a
+    blank line, as a body the application never wrote. NUL is included
+    because it terminates a C string and this repo hands header bytes to
+    `sendfile`/`send` paths and to Python.
+
+    The check exists because the alternative was trusting every
+    application: `write_latin1_to` emits `name: value\\r\\n` with no
+    inspection, so an app that reflected a query parameter into a header
+    could split its own response. Django and Werkzeug reject these
+    themselves, but a bare WSGI app has nothing between it and the socket,
+    and the reason phrase is unvalidated even by the frameworks that do
+    check header pairs. uvicorn and gunicorn both refuse them; so does
+    this now.
+    """
+    for b in value.as_bytes():
+        if b == 0x0D or b == 0x0A or b == 0x00:
+            return True
+    return False
+
+
 def split_status(status: String) -> Tuple[Int, String]:
     """`"404 Not Found"` → `(404, "Not Found")`.
 
     A malformed status line yields `500 Internal Server Error` rather than
     raising: the application already ran, and a bad status is not worth
     discarding a real body over.
+
+    A reason phrase carrying CR/LF/NUL is dropped to the empty string: it
+    is written verbatim into the status line, so it is the one part of an
+    application's response that frameworks generally do not validate and
+    that would split the response just as a header value would. The code
+    is kept — the client still gets the status the app chose.
     """
     var space = status.find(" ")
     if space < 0:
@@ -45,7 +75,10 @@ def split_status(status: String) -> Tuple[Int, String]:
             return (500, String("Internal Server Error"))
     try:
         var code = Int(String(status[byte=:space]).strip())
-        return (code, String(String(status[byte=space + 1 :]).strip()))
+        var text = String(String(status[byte=space + 1 :]).strip())
+        if has_control_bytes(text):
+            return (code, String(""))
+        return (code, text^)
     except:
         return (500, String("Internal Server Error"))
 
@@ -61,6 +94,14 @@ def build_response(
     for pair in headers:
         var name = String(py=pair[0])
         var value = String(py=pair[1])
+        # Response splitting: a CR or LF here would end the header line and
+        # let the remainder be read as more headers, or as a body. Drop the
+        # header rather than raise — the application has already run and its
+        # body is real; one refused header is a better answer than a 500,
+        # and a silently-split response is the worst of the three. Applies
+        # to Set-Cookie too, whose value is transmitted verbatim below.
+        if has_control_bytes(name) or has_control_bytes(value):
+            continue
         # `name_is`, not `name.lower() == ...`. The lowercase copy this used
         # to allocate — once per header, purely to test one constant — was
         # measured at **3.2 µs per header**, 84% of everything this function

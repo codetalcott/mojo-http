@@ -646,9 +646,25 @@ struct WSGIHandler(ThreadHandler):
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open
-        # with a control byte no HTTP header value can carry, so collision
-        # with an application's GRIP channel is structurally impossible,
-        # and the early return skips both O(capacity) scans below.
+        # with a control byte, and the early return skips both O(capacity)
+        # scans below.
+        #
+        # These branches act on a SLOT NUMBER the frame chose, so reaching
+        # them is equivalent to addressing another connection: `s` queues
+        # bytes into its stream, `e` ends it, `h` re-points it. Separation
+        # from application channels is therefore enforced at every publish
+        # boundary -- `publish_to_channels` (broadcast.mojo), the shim's
+        # `_M0Broadcast.publish`, and `m0pub.publish_frame` all refuse a
+        # leading 0x01 -- because internal senders bypass those helpers and
+        # write `encode_bus_frame` datagrams directly.
+        #
+        # It was previously argued here that the collision was structurally
+        # impossible, on the grounds that an HTTP header value cannot carry
+        # a control byte. That covers the `M0-Channel` header only. A
+        # channel passed to `publish()` is an ordinary string, and `%01` in
+        # a form body decodes to a real 0x01 -- which is how an
+        # unauthenticated POST reached another connection's SSE stream.
+        # See test_broadcast.mojo::test_publish_rejects_reserved_channel.
         var ub = url.as_bytes()
         if len(ub) >= 3 and ub[0] == ASGI_URL_CONTROL:
             var slot = _parse_stream_slot(ub)
@@ -934,10 +950,17 @@ def _upgrade_required() -> HTTPResponse:
 #
 # Chunks and stream-ends travel from the executor thread to the loop as
 # bus-shaped datagrams whose "url" is a slot-addressed channel name opening
-# with a control byte (0x01). HTTP header values cannot carry control bytes,
-# and GRIP channel names come from the application's M0-Channel header, so a
-# collision with a real channel is structurally impossible. Kinds: 's' — a
-# response chunk for the slot's outbox; 'e' — end of stream.
+# with a control byte (0x01). Kinds: 's' — a response chunk for the slot's
+# outbox; 'e' — end of stream.
+#
+# What keeps an application channel out of this namespace is the check at
+# each publish boundary (`channel_is_reserved` in broadcast.mojo, and its
+# two Python twins), NOT the shape of an HTTP header. A GRIP channel does
+# arrive in the `M0-Channel` response header, whose value the request
+# parser would refuse control bytes in — but that is only one of the ways a
+# channel is named. `m0pub.publish(channel, ...)` and the ASGI
+# `state["m0"].publish(...)` take an arbitrary string, and in the reference
+# app that string is a request field.
 
 comptime ASGI_URL_CONTROL = UInt8(1)
 

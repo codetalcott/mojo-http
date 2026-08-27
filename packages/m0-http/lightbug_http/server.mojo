@@ -145,6 +145,23 @@ struct ConnectionProvision(Movable):
     var body_state: Optional[BodyReadState]
     """Body reading state (only valid during READING_BODY)."""
 
+    var chunk_decoder: HTTPChunkedDecoder
+    """Decoder for a chunked request body, resumed across read events.
+
+    One decoder per connection, fed only the bytes that just arrived. It
+    used to be constructed fresh inside the read handler, which meant every
+    read re-decoded the entire body accumulated so far: K reads of a body of
+    size N cost O(N*K) copying and scanning on the EVENT LOOP thread, before
+    any offload to a handler pool. Measured on this tree, one connection
+    dribbling a chunked body in 1 KB segments: 1 MB took 0.15 s, 2 MB 0.61 s,
+    3 MB 1.37 s -- a 4x cost for 2x the bytes, which is an attacker turning
+    a few MB/s of upload into a saturated loop.
+
+    Reconstructing it also reset `_total_overhead`, so the decoder's own
+    abuse-ratio guard (a body that is mostly chunk framing and little data)
+    could never trip. Persisting it fixes both.
+    """
+
     var last_parse_len: Int
     """Length of buffer at last parse attempt (for incremental parsing)."""
 
@@ -200,6 +217,7 @@ struct ConnectionProvision(Movable):
         self.response = None
         self.state = ConnectionState.reading_headers()
         self.body_state = None
+        self.chunk_decoder = HTTPChunkedDecoder()
         self.last_parse_len = 0
         self.keepalive_count = 0
         self.should_close = False
@@ -268,6 +286,7 @@ struct ConnectionProvision(Movable):
         self.recv_staging.clear()
         self.state = ConnectionState.reading_headers()
         self.body_state = None
+        self.chunk_decoder = HTTPChunkedDecoder()
         self.last_parse_len = 0
         self.should_close = False
         self.log_method = String()

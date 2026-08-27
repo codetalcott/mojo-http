@@ -10,7 +10,8 @@ surviving into children — is proven by the multi-worker phase of
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.broadcast import (
-    BroadcastBus, BUS_MAX_FRAME,
+    BroadcastBus, BUS_MAX_FRAME, CHANNEL_CONTROL_BYTE,
+    channel_is_reserved,
     encode_bus_frame, decode_bus_frame, drain_bus_channel,
     publish_to_channels,
 )
@@ -22,6 +23,24 @@ from src.multiworker import SharedAtomics, shared_fetch_add, shared_load, shared
 
 def _bytes(s: String) -> List[UInt8]:
     return List[UInt8](s.as_bytes())
+
+
+def asgi_stream_url_like(kind: String, slot: Int) -> String:
+    """A reserved channel name, built the way m0-wsgi builds them.
+
+    Spelled out here rather than imported: m0-http is the lower package and
+    may not import m0_wsgi (that is the zero-upward-imports rule). It has to
+    match `asgi_stream_url` in `m0-wsgi/src/handler.mojo` — which is the
+    point of the test, since the wire format is the shared contract.
+    """
+    var b = List[UInt8]()
+    b.append(CHANNEL_CONTROL_BYTE)
+    for ch in kind.as_bytes():
+        b.append(ch)
+    b.append(UInt8(ord("/")))
+    for ch in String(slot).as_bytes():
+        b.append(ch)
+    return String(StringSlice(unsafe_from_utf8=Span(b)))
 
 
 def _text(buf: List[UInt8]) -> String:
@@ -112,6 +131,63 @@ def test_publish_to_channels_skips_named_worker() raises:
     var bus = BroadcastBus(2)
     publish_to_channels(bus.write_fds, 1, "/e", 5, Span(_bytes("f\n\n")))
     assert_equal(len(drain_bus_channel(bus.read_fd(0))), 1)
+    assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
+
+
+# --- the reserved control namespace -----------------------------------------
+
+def test_channel_is_reserved_identifies_the_control_namespace() raises:
+    """Only a LEADING 0x01 is reserved — the byte elsewhere is an ordinary
+    (if odd) channel name, and refusing those would break apps needlessly."""
+    assert_true(channel_is_reserved(asgi_stream_url_like("s", 3)))
+    assert_true(channel_is_reserved(String("\x01")))
+    assert_false(channel_is_reserved(String("news")))
+    assert_false(channel_is_reserved(String("")))
+    assert_false(channel_is_reserved(String("news\x01")))
+
+
+def test_publish_rejects_reserved_channel() raises:
+    """An application publish may not address the internal namespace.
+
+    This is the fix for a confirmed hole, so the test is written as the
+    attack: the m0-wsgi handler reads a bus frame named `\\x01s/<slot>` as
+    "queue these bytes into connection slot <slot>'s stream", ignoring what
+    that connection actually subscribed to. Application channel names are
+    routinely user input — the shipped django_realtime `/publish` view takes
+    `request.POST['channel']`, and `%01` in a form body decodes to a real
+    control byte — so an unauthenticated POST could inject events into, or
+    tear down, any other client's stream. Publishing is where an untrusted
+    name crosses into the namespace, so that is where it is refused.
+
+    Internal senders are unaffected: they build `encode_bus_frame`
+    datagrams and send them directly, never through `publish_to_channels`.
+    """
+    var bus = BroadcastBus(2)
+
+    # The attack: every reserved kind the handler acts on.
+    var kinds = [
+        String("s"), String("e"), String("b"), String("h"),
+        String("H"), String("B"), String("w"), String("x"),
+    ]
+    for kind in kinds:
+        publish_to_channels(
+            bus.write_fds, 1, asgi_stream_url_like(kind, 0), 1,
+            Span(_bytes("event: message\ndata: injected\n\n")),
+        )
+    assert_equal(len(drain_bus_channel(bus.read_fd(0))), 0)
+
+    # The control: an ordinary channel still goes through, so the guard is
+    # rejecting the namespace and not simply breaking publish.
+    publish_to_channels(bus.write_fds, 1, "news", 1, Span(_bytes("f\n\n")))
+    var got = drain_bus_channel(bus.read_fd(0))
+    assert_equal(len(got), 1)
+    assert_equal(got[0].url, "news")
+
+
+def test_bus_publish_method_rejects_reserved_channel() raises:
+    """The method form shares the guard — it delegates to the free function."""
+    var bus = BroadcastBus(2)
+    bus.publish(0, asgi_stream_url_like("s", 7), 1, Span(_bytes("x\n\n")))
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
 
 

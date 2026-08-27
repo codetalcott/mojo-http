@@ -661,33 +661,65 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         )
                         continue
 
-                    # Phase 1b: chunked body decode attempt
+                    # Phase 1b: chunked body decode, resumed not restarted.
+                    #
+                    # The buffer is laid out [headers][decoded so far][raw
+                    # tail], and only the raw tail is handed to the
+                    # connection's own decoder — which carries its chunk
+                    # state across reads, so it continues where it stopped.
+                    # Decoded output lands at the front of that tail, i.e.
+                    # contiguous with what was already decoded, and the
+                    # partial header it could not finish is left just after
+                    # it (`pending_bytes`). Total work is linear in the body
+                    # rather than quadratic in the number of reads; see
+                    # `ConnectionProvision.chunk_decoder`.
                     if body_st.is_chunked:
                         var raw_body_start = body_st.header_end_offset
-                        var raw_body_len = len(provision_pool.provisions[slot].recv_buffer) - raw_body_start
-                        if raw_body_len > config.max_request_body_size:
+                        var decoded_so_far = body_st.bytes_read
+                        var tail_start = raw_body_start + decoded_so_far
+                        var buf_len = len(provision_pool.provisions[slot].recv_buffer)
+                        # The cap is on the DECODED body plus whatever raw
+                        # tail is still buffered — the same quantity the old
+                        # code compared, now that consumed framing bytes are
+                        # dropped as they are decoded.
+                        if buf_len - raw_body_start > config.max_request_body_size:
                             _send_error_to_fd(fd_val, PayloadTooLarge())
                             _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
                             continue
-                        if raw_body_len > 0:
-                            var chunk_buf = Bytes(capacity=raw_body_len)
-                            for j in range(raw_body_start, len(provision_pool.provisions[slot].recv_buffer)):
-                                chunk_buf.append(provision_pool.provisions[slot].recv_buffer[j])
-                            var decoder = HTTPChunkedDecoder()
-                            var (ret, decoded_size) = decoder.decode(Span(chunk_buf))
+                        if buf_len > tail_start:
+                            var ret: Int
+                            var produced: Int
+                            ret, produced = provision_pool.provisions[
+                                slot
+                            ].chunk_decoder.decode(
+                                Span(provision_pool.provisions[slot].recv_buffer)[
+                                    tail_start:
+                                ]
+                            )
                             if ret == -1:
                                 _send_error_to_fd(fd_val, BadRequest())
                                 _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
                                 continue
-                            elif ret >= 0:
-                                var new_buf = Bytes(capacity=raw_body_start + decoded_size)
-                                for j in range(raw_body_start):
-                                    new_buf.append(provision_pool.provisions[slot].recv_buffer[j])
-                                for j in range(decoded_size):
-                                    new_buf.append(chunk_buf[j])
-                                provision_pool.provisions[slot].recv_buffer = new_buf^
-                                body_st.content_length = decoded_size
-                                body_st.bytes_read = decoded_size
+                            var leftover = provision_pool.provisions[
+                                slot
+                            ].chunk_decoder.pending_bytes
+                            # Drop the framing bytes this pass consumed, so
+                            # the next read appends straight onto the tail.
+                            provision_pool.provisions[slot].recv_buffer.resize(
+                                tail_start + produced + leftover, 0
+                            )
+                            decoded_so_far += produced
+                            body_st.bytes_read = decoded_so_far
+                            provision_pool.provisions[slot].body_state = body_st
+                            if ret >= 0:
+                                # Complete: trailing bytes after the body are
+                                # discarded with the rest of the buffer on
+                                # keep-alive reset, exactly as before.
+                                provision_pool.provisions[slot].recv_buffer.resize(
+                                    raw_body_start + decoded_so_far, 0
+                                )
+                                body_st.content_length = decoded_so_far
+                                body_st.bytes_read = decoded_so_far
                                 body_st.is_chunked = False
                                 provision_pool.provisions[slot].body_state = body_st
                                 if config.body_read_timeout > 0:
