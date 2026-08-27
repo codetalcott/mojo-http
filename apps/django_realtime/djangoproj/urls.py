@@ -110,6 +110,20 @@ def ws_message(request):
     CSRF-exempt because there is no browser session and no cookie here — the
     "client" is the server itself, on the far side of a connection Django
     already authorised at upgrade time.
+
+    That is true because the SERVER reserves this path: a request for
+    `/ws/message` that arrived over the wire is answered 404 in Mojo
+    (`WSGIHandler.serve_local`) and never reaches Django, while the
+    synthetic one is built in-process and bypasses that check. It was not
+    always true. The path is an ordinary route in this urlconf and the
+    headers below are ordinary headers, so before the server reserved it
+    anyone could POST here and be taken for an authorised socket —
+    publishing to any channel, with the CSRF exemption that the real
+    delivery needs handed to them along with it.
+
+    If you copy this pattern, the reservation is what you are relying on:
+    it holds for `WS_MESSAGE_PATH` under `--realtime`, and for nothing
+    else you invent.
     """
     channel = request.headers.get("M0-Channel", "")
     slot = request.headers.get("M0-Slot", "?")
@@ -135,6 +149,16 @@ def publish(request):
     `request_last_event_id` in `packages/m0-wsgi/src/hold.mojo`. It is -1
     when the server exported no shared counter, which is exactly what
     happens under a plain WSGI host.
+
+    **Unauthenticated on purpose, and wrong for production.** `/events` and
+    `/ws` check a token; this does not, so anyone who can reach the port
+    can broadcast to every subscriber of any channel. That is fine for a
+    demo whose clients render with `textContent`, and it is the first thing
+    to change if you copy it — a fan-out endpoint is a fan-out endpoint
+    whether or not you meant it as one. The channel name reaching
+    `m0pub.publish` is user input here, which is why the publish boundary
+    refuses the server's reserved namespace rather than trusting callers
+    (see `channel_is_reserved`).
     """
     if request.method != "POST":
         return HttpResponse("POST only\n", status=405, content_type="text/plain")

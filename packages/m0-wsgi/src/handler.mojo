@@ -458,6 +458,27 @@ struct WSGIHandler(ThreadHandler):
             and req.uri.path == self.health_path
         ):
             return self._health()
+        # `/ws/message` is the server's to synthesise, not a client's to
+        # request. An inbound WebSocket frame is delivered to the
+        # application as a POST there, carrying `M0-Channel`, `M0-Slot` and
+        # `M0-Opcode` — headers a client can also simply send, to a URL
+        # that is an ordinary route in the application's urlconf and must
+        # be CSRF-exempt to accept the synthetic request at all. So the
+        # view's premise, that "the client is the server itself, on the far
+        # side of a connection Django already authorised at upgrade time",
+        # held only because nobody had tried the other way in.
+        #
+        # A request that arrived over the wire is refused here; the
+        # synthetic one never passes through `serve_local` (`ws_message`
+        # calls `apps[0].serve` directly), so the real path is untouched.
+        # 404 rather than 403: the route's existence is not a client's
+        # business.
+        #
+        # Only under `--realtime`, which is what makes the path mean
+        # anything. Without it an application may route `/ws/message`
+        # itself and this must not shadow it.
+        if self.realtime and req.uri.path == WS_MESSAGE_PATH:
+            return _not_found_response()
         return None
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
@@ -852,6 +873,21 @@ struct WSGIHandler(ThreadHandler):
             _ = self.apps[0].serve(req)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
+
+
+def _not_found_response() -> HTTPResponse:
+    """A plain 404, for a path the server answers itself rather than routes.
+
+    Used for a wire request to `WS_MESSAGE_PATH` under `--realtime`: that
+    path exists for the server to synthesise into, and a client asking for
+    it directly is told only that there is nothing there.
+    """
+    return HTTPResponse(
+        body_bytes=String('{"error":"not found"}').as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=404,
+        status_text="Not Found",
+    )
 
 
 def _unmounted() -> HTTPResponse:
