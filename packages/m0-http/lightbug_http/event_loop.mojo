@@ -682,7 +682,18 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         # tail is still buffered — the same quantity the old
                         # code compared, now that consumed framing bytes are
                         # dropped as they are decoded.
-                        if buf_len - raw_body_start > config.max_request_body_size:
+                        # Two bounds, because a chunked body has two sizes.
+                        # The decoded body is what the application sees; the
+                        # raw stream is what the connection cost. Framing is
+                        # consumed and dropped as it is decoded, so without
+                        # the second an attacker could send the body limit
+                        # in real data and then keep going in chunk-extension
+                        # bytes, bounded only by the decoder's ratio guard.
+                        if (
+                            buf_len - raw_body_start > config.max_request_body_size
+                            or provision_pool.provisions[slot].chunk_decoder._total_read
+                            > 2 * config.max_request_body_size
+                        ):
                             _send_error_to_fd(fd_val, PayloadTooLarge())
                             _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
                             continue

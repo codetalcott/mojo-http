@@ -30,6 +30,13 @@ struct HTTPChunkedDecoder(Defaultable):
     var _sig_hex_count: Int  # significant (non-leading-zero) hex digits seen
     var _state: DecoderState
     var _total_read: Int
+    """Raw body bytes this decoder has consumed, framing included.
+
+    Read by the servers to bound the whole chunked body and not just its
+    decoded size: chunk extensions and size lines are consumed and produce
+    nothing, so a cap on decoded output alone leaves the raw stream bounded
+    only by the ratio guard below — which allows roughly three times the
+    body limit in framing before it fires."""
     var _total_overhead: Int
     var pending_bytes: Int
     """Undecoded bytes the last `decode` left at the front of its buffer.

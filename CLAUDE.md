@@ -637,6 +637,15 @@ Properties of the design, not defects to fix in passing:
   100% when the client paced its writes. Keep-alive hid it by never
   closing. The cost of the rule is that a client which omits the final
   CRLF now waits for it, as it would for any truncated body.
+- **A chunked body is bounded twice: decoded size AND raw bytes consumed.**
+  `max_request_body_size` caps what the application receives; twice that
+  caps what the connection cost, read from the decoder's `_total_read`.
+  Framing is consumed and dropped as it is decoded, so the first bound
+  alone leaves the raw stream limited only by the ratio guard — which
+  allows roughly three times the body limit in chunk-extension bytes
+  before it fires. The cost is that a body whose framing outweighs its
+  payload several times over (1 MB in 3-byte chunks is 3.6 MB on the wire)
+  now answers 413, which is what it is.
 - **A chunked request body is decoded incrementally, by ONE decoder per
   connection.** `ConnectionProvision.chunk_decoder` is fed only the bytes
   that just arrived and carries its chunk state across reads; the buffer is

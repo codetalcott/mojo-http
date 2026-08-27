@@ -526,13 +526,15 @@ class _M0Broadcast:
             channel = channel.encode('utf-8')
         if isinstance(payload, str):
             payload = payload.encode('utf-8')
-        if channel[:1] == b'\x01':
-            raise ValueError(
-                'm0 publish channel may not begin with 0x01 '
-                '(reserved for internal control frames)'
-            )
-        if len(channel) > 65535:
-            raise ValueError('m0 publish channel exceeds 65535 bytes')
+        if channel[:1] == b'\x01' or len(channel) > 65535:
+            # Returns rather than raises, matching `m0pub.publish_frame`
+            # and the Mojo `publish_to_channels`. All three refuse the same
+            # names; they used to disagree on how, so the same user-supplied
+            # channel was a silent no-op under WSGI and a 500 under ASGI.
+            # Publishing is best-effort on every other failure here (a full
+            # channel, a dead worker), and a view that passes a request
+            # field as the channel should not become a 500 because of it.
+            return -1
         event_id = self._next_id() if self._next_id is not None else -1
         frame = struct.pack('<qH', event_id, len(channel)) + channel + payload
         if len(frame) > 65536:
@@ -558,6 +560,10 @@ class _M0Broadcast:
         if isinstance(channel, bytes):
             channel = channel.decode('utf-8')
         if channel[:1] == '\x01':
+            # Subscribe DOES raise where publish returns: publish is
+            # best-effort and its return value says what happened, while a
+            # subscription that silently yielded nothing forever would be
+            # a debugging trap with no signal at all.
             raise ValueError(
                 'm0 subscribe channel may not begin with 0x01 '
                 '(reserved for internal control frames)'

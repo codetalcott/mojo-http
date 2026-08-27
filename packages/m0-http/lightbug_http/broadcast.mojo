@@ -47,6 +47,9 @@ comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(
 comptime BUS_MAX_FRAME = 65536
 comptime _BUS_HEADER = 10  # 8-byte event id + 2-byte url length
 
+comptime MAX_CHANNEL = 65535
+"""Longest channel name the bus wire format can carry (a `uint16` field)."""
+
 comptime CHANNEL_CONTROL_BYTE = UInt8(1)
 """The byte that opens a RESERVED channel name (`\\x01<kind>/<slot>[/<lane>]`).
 
@@ -164,6 +167,13 @@ def publish_to_channels(
     if len(frame) > BUS_MAX_FRAME:
         return
     if channel_is_reserved(url):
+        return
+    # `encode_bus_frame` writes the channel length into two bytes, so a
+    # longer name would be truncated modulo 65536 and the receiver would
+    # split the datagram in the wrong place — a frame delivered to the
+    # wrong channel with part of the name prepended to its payload. The
+    # two Python publishers refuse the same length; this is the third.
+    if url.byte_length() > MAX_CHANNEL:
         return
     var datagram = encode_bus_frame(url, event_id, frame)
     for w in range(len(write_fds)):

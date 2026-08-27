@@ -40,7 +40,11 @@ def escape_html(s: String) -> String:
     """
     var out = List[UInt8](capacity=s.byte_length() + 16)
     escape_html_into(out, s)
-    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=len(out)))
+    # `Span(out)`, not `Span(unsafe_ptr=out.unsafe_ptr(), ...)`: the
+    # pointer form carries no origin, so nothing keeps `out` alive across
+    # the String construction and Mojo destroys at last use. It happens to
+    # work; it should not have to.
+    return String(unsafe_from_utf8=Span(out))
 
 
 def escape_html_into(mut out: List[UInt8], s: String):

@@ -639,7 +639,13 @@ def handle_connection[
                 var decoded_so_far = body_st.bytes_read
                 var tail_start = raw_body_start + decoded_so_far
                 var buf_len = len(provision.recv_buffer)
-                if buf_len - raw_body_start > config.max_request_body_size:
+                # Decoded size and raw size are bounded separately; see the
+                # matching check in `event_loop.mojo`.
+                if (
+                    buf_len - raw_body_start > config.max_request_body_size
+                    or provision.chunk_decoder._total_read
+                    > 2 * config.max_request_body_size
+                ):
                     _send_error_response(conn, PayloadTooLarge())
                     provision.state = ConnectionState.closed()
                     break

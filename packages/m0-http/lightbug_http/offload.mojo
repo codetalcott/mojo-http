@@ -105,6 +105,13 @@ Length tells the two apart with no ambiguity to reason about: a plain job
 is exactly 8 bytes and a message is at least 12.
 """
 
+comptime WS_DATAGRAM_MAX = 65546
+"""Largest `TAG_WS_MESSAGE` datagram a pool thread or the shim will read.
+
+Equal to `m0_wsgi.blocking_pool.WS_JOB_BUFFER` and to the shim's own read
+size; `m0_wsgi.handler.WS_CHANNEL_DATAGRAM_MAX` is the same number on the
+other side of the package boundary, which m0-http may not import from."""
+
 comptime _WS_HEADER = 12
 """tag(1) + slot(8) + opcode(1) + chan_len(2)."""
 
@@ -474,8 +481,18 @@ struct OffloadPool(Movable):
 
         The loop's side of `TAG_WS_MESSAGE`. Bounded retry and never a park:
         this runs on the event loop, and a lost message is an application-
-        visible gap rather than a corrupt one — the caller says so."""
+        visible gap rather than a corrupt one — the caller says so.
+
+        Refuses a datagram larger than the buffer `next_job` reads into,
+        for the reason that function's `recv` cannot help with: the read
+        passes no `MSG_TRUNC`, so an oversized datagram is delivered
+        truncated and the short count is indistinguishable from a short
+        message. `m0_wsgi.handler` has a second copy of this encoder with
+        the same check; a bound in one copy and not the other is not a
+        bound."""
         var chan = channel.as_bytes()
+        if _WS_HEADER + len(chan) + len(payload) > WS_DATAGRAM_MAX:
+            return False
         var msg = List[UInt8](capacity=_WS_HEADER + len(chan) + len(payload))
         msg.append(TAG_WS_MESSAGE)
         var bits = UInt64(Int64(slot))
