@@ -631,6 +631,47 @@ def check_consumer_jobs_stay_clean():
         fail("release.yml has no wheel-consume-* job: nothing installs the wheel off the build machine")
 
 
+# toml-rb 4.2.0's escape handling, replayed. Its MultilineString#value strips
+# `\\` + newline + indent with a regex that cannot see that the backslash was
+# itself escaped, then rejects whatever escape the join produces.
+_TOMLRB_JOIN = re.compile(r"\\\r?\n[\n\t\r ]*")
+_TOMLRB_ESCAPE = re.compile(r"\\(u[\da-fA-F]{4}|U[\da-fA-F]{8}|.)")
+_TOMLRB_KNOWN = {"\\0", "\\t", "\\b", "\\f", "\\n", "\\r", '\\"', "\\\\"}
+
+
+def check_pyproject_parses_for_consumers():
+    """A pyproject.toml every parser accepts, not just the one we run.
+
+    Our own tools read this file with tomllib, which is correct; GitHub's
+    dependency graph reads it with Ruby's toml-rb, which is not. A line
+    ending in `\\` -- an escaped backslash, i.e. a shell line continuation
+    that survives TOML -- is joined by toml-rb as if the backslash were the
+    continuation, and the leftover backslash fuses with the next line's
+    first character into a reserved escape.
+
+    That is how `smoke-threads` broke the `update-uv-graph` job for five
+    days and sixty runs: `... 'bare wsgi app' \\` over `|| fail ...` became
+    `\\|`. Nothing in this repo could see it -- tomllib, uv and poe all
+    parse the file -- and the failing workflow is not `Tests`, so no PR
+    ever went red. The file's own idiom is a single trailing `\\`, which
+    TOML joins itself and every parser agrees on; this keeps it that way.
+    """
+    for rel in ("pyproject.toml", "packaging/m0serve/pyproject.toml"):
+        text = (REPO / rel).read_text()
+        for block in re.finditer(r'"""(.*?)"""', text, re.S):
+            line = text[: block.start()].count("\n") + 1
+            joined = _TOMLRB_JOIN.sub("", block.group(1))
+            for esc in _TOMLRB_ESCAPE.finditer(joined):
+                token = esc.group(0)
+                if len(token) == 2 and token not in _TOMLRB_KNOWN:
+                    fail(
+                        f"{rel}: the multiline string at line {line} yields the "
+                        f"reserved escape {token!r} under toml-rb -- a line ending "
+                        "in a doubled backslash. Use a single trailing backslash "
+                        "and let TOML join the lines"
+                    )
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
@@ -642,6 +683,7 @@ def main():
     check_hybrid_p99_consistent()
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
+    check_pyproject_parses_for_consumers()
     if failures:
         print("check-docs: FAIL")
         for f in failures:
