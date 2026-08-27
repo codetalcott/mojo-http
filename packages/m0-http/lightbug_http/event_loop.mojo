@@ -1462,6 +1462,9 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # was still incomplete, so waiting for the rest only holds the slot
     # until the header timeout answers 408. Release it now instead. (A
     # partial BODY already closes promptly, on the `bytes_read == 0` path.)
+    #
+    # Before the re-arm below, and returning: a connection whose peer has
+    # gone will never produce the readiness that re-arming asks for.
     if (
         slot_fds[slot] != UNUSED
         and provision_pool.provisions[slot].peer_eof
@@ -1475,7 +1478,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         )
         return
 
-    # Still short of a complete body: register read interest for the rest.
+    # Still short of a complete request: register read interest for the rest.
     #
     # Nothing else does. The accept path arms EVFILT_READ only while the
     # state is still READING_HEADERS, so a request whose headers completed
@@ -1485,9 +1488,22 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # the tail of the body is frequently already in the socket buffer, the
     # edge that carried it is spent, and only a fresh EPOLL_CTL_MOD
     # regenerates readiness for bytes that are pending but unread.
-    if (
-        slot_fds[slot] != UNUSED
-        and provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY
+    #
+    # HEADERS need it for the identical reason, and used not to have it.
+    # This function performs exactly ONE `recv` of `recv_staging.capacity()`
+    # (4096) per call, so a request whose headers exceed what the eager read
+    # plus one edge could take -- 8192 bytes, measured exactly -- left the
+    # remainder sitting unread in the socket buffer with no edge left to
+    # announce it. On epoll that request stalled until the header timeout
+    # answered 408, ten seconds after the client had finished sending it;
+    # on kqueue nothing happened at all, because `add_read` there is
+    # `EV_ADD` without `EV_CLEAR` and so LEVEL triggered, and the next
+    # `kevent` reported the socket readable again. 8 KB of request headers
+    # is a large cookie jar or a JWT, not an attack.
+    if slot_fds[slot] != UNUSED and (
+        provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY
+        or provision_pool.provisions[slot].state.kind
+        == ConnectionState.READING_HEADERS
     ):
         backend.try_add_read(fd_val)
         slot_read_armed[slot] = True
