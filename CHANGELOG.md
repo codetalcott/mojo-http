@@ -9,6 +9,11 @@ versions may break the API**.
 
 ### Added
 
+- `check-docs` counts the tests in the tree (`def test_` per
+  `packages/*/test/*.mojo`) and fails when README's "What's in the box"
+  table or its `test-all` comment says otherwise; the table sat at 618
+  while the tree held 928.
+
 - **Unsized WSGI bodies stream.** A generator or iterator the application
   did not size — Django's `StreamingHttpResponse`, a Flask
   `Response(generator)` — is produced chunk by chunk from a
@@ -51,8 +56,10 @@ versions may break the API**.
   (a pass batches three submits on average there), +7% at 64 and +19% at
   256, where the executor passes `uvicorn --loop asyncio` (1.10x; 0.85x
   against uvicorn with uvloop). Table and artifacts in
-  docs/WSGI_PERFORMANCE.md; `bench-asgi`'s stdlib gate stays at ≥0.8x
-  as a regression floor, its harness having read 1.4x the same day.
+  docs/WSGI_PERFORMANCE.md; `bench-asgi`'s stdlib throughput gate is
+  retired — its harness read 1.4x the same day wrk read 0.75x, so it
+  measures its own client; the ratio is printed as information and the
+  mixed-tail gate stays.
 - **The executor pump parks in `run_forever`, one `stop()` per pass**,
   instead of a `run_until_complete(batch())` per pass (38 µs on stdlib
   asyncio against 17): every shim event is appended to a list, the first
@@ -75,6 +82,32 @@ versions may break the API**.
   be a wash either way (−3% at 16 connections, +4% at 256).
 
 ### Fixed
+
+- **A second `m0serve` on a busy port fails, loudly, instead of binding
+  beside the first.** `SO_REUSEPORT` was set unconditionally on every
+  listener, so a second server on an occupied port bound successfully,
+  printed "Ready", and on Linux took a share of the connections (17 of 40,
+  measured from the wheel in `python:3.12-slim`; macOS: served nothing).
+  The option is now opt-in on `ListenConfig` (`reuse_port=False`; workers
+  and threads share one pre-fork listener and never needed it), and
+  `m0serve` binds with five attempts a second apart — a restart racing the
+  previous process's 5 s drain still succeeds — then exits 1 with
+  `address already in use: HOST:PORT -- is another server running?`.
+  `smoke-serve` pins it.
+- **"Ready" means ready.** The listener's banner printed before the
+  application was imported, so a failed import logged "Ready to accept
+  connections" and then exit 1. `m0serve` now binds quietly
+  (`ListenConfig(quiet=True)`); its own startup line, printed after the
+  load, is the ready signal.
+- **A load failure shows its traceback.** An application whose import
+  raises (a settings module without its environment variable, a missing
+  dependency) printed only the exception's one-line text. The shim now
+  attaches the Python traceback for every failure that is not the spec's
+  own module or attribute being absent — those stay one line, because a
+  bare `MODULE` tries four discovery candidates and the misses must stay
+  quiet — and discovery stops at a candidate that exists and raises
+  instead of trying the next convention. `apps/wsgi_bare/deep_fail` is
+  the case; `smoke-serve` pins it and the quiet misses.
 
 - **A stream that raises after its head is truncated honestly.** The
   connection closes without the chunked terminator — for a WSGI generator

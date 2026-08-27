@@ -211,14 +211,34 @@ struct ListenConfig:
     the typical TIME_WAIT drain after a server restart.  Set to 0 for
     infinite retries (original behaviour).
     """
+    var reuse_port: Bool
+    """Set `SO_REUSEPORT` on the listener. Off by default, and opt-in on
+    purpose: this server's workers and threads all accept from ONE listener
+    bound before the fork, so nothing here needs the option — and with it
+    set unconditionally (as it was until 0.14.0) a second server on the
+    same port bound successfully, printed its banner, and on Linux took a
+    share of the connections; on macOS it served nothing. Set it only for
+    a deliberate handoff between two processes that both mean to listen.
+    """
+    var quiet: Bool
+    """Suppress the listening banner and the "Ready" line. For a caller
+    whose own startup line is the ready signal — `m0serve` prints its after
+    the application has loaded, so that "ready" means ready; a banner
+    printed before the load made a failed import read as "Ready" and then
+    exit 1.
+    """
 
     def __init__(
         out self,
         keep_alive: Duration = default_tcp_keep_alive,
         max_bind_retries: Int = 30,
+        reuse_port: Bool = False,
+        quiet: Bool = False,
     ):
         self._keep_alive = keep_alive
         self.max_bind_retries = max_bind_retries
+        self.reuse_port = reuse_port
+        self.quiet = quiet
 
     def listen[
         network: NetworkType = NetworkType.tcp4
@@ -255,13 +275,14 @@ struct ListenConfig:
         except sockopt_err:
             pass  # non-fatal
 
-        # SO_REUSEPORT (Phase 4b): multiple processes/threads may bind the
-        # same port simultaneously — required for zero-downtime restarts and
-        # future multi-threaded sharding.
-        try:
-            socket.set_socket_option(SocketOption.SO_REUSEPORT, 1)
-        except sockopt_err:
-            pass  # non-fatal — kernel may not support SO_REUSEPORT
+        # SO_REUSEPORT is opt-in (see the field): a second server on the
+        # same port must FAIL to bind, not silently share it. Workers and
+        # threads share the one listener bound here, so they never need it.
+        if self.reuse_port:
+            try:
+                socket.set_socket_option(SocketOption.SO_REUSEPORT, 1)
+            except sockopt_err:
+                pass  # non-fatal — kernel may not support SO_REUSEPORT
 
         var addr = TCPAddr[network](ip=local.host^, port=local.port)
         var bind_success = False
@@ -277,7 +298,12 @@ struct ListenConfig:
                 if self.max_bind_retries > 0 and bind_attempts >= self.max_bind_retries:
                     raise ListenFailedError()
                 if not bind_fail_logged:
-                    print("Bind attempt failed (address may be in use)")
+                    print(
+                        "Bind failed on " + String(addr.ip) + ":"
+                        + String(addr.port)
+                        + " (address in use? another server on the port,"
+                        + " or a previous one still draining)"
+                    )
                     var limit = String("unlimited") if self.max_bind_retries == 0 else String(self.max_bind_retries)
                     print("Retrying (max", limit, "attempts, 1s apart)...")
                     bind_fail_logged = True
@@ -302,8 +328,9 @@ struct ListenConfig:
             ":",
             String(addr.port),
         )
-        print(msg)
-        print("Ready to accept connections...")
+        if not self.quiet:
+            print(msg)
+            print("Ready to accept connections...")
 
         return listener^
 

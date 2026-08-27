@@ -689,6 +689,46 @@ def check_pyproject_parses_for_consumers():
                     )
 
 
+def check_test_counts():
+    """README's "What's in the box" table quotes a test count per package and a
+    total, and the commands block quotes the total again; all of them are
+    counted from the tree here (`def test_` per `packages/*/test/*.mojo`,
+    which is what `TestSuite.discover_tests` runs). The table sat at 618
+    while the tree held 928 — the number a reader would quote back.
+    """
+    counts = {}
+    for pkg in sorted((REPO / "packages").iterdir()):
+        tests = pkg / "test"
+        if not tests.is_dir():
+            continue
+        n = 0
+        for f in tests.glob("*.mojo"):
+            n += sum(1 for line in f.read_text().splitlines()
+                     if line.startswith("def test_"))
+        counts[pkg.name] = n
+    total = sum(counts.values())
+    readme = (REPO / "README.md").read_text()
+    for name, n in counts.items():
+        m = re.search(r"^\| `%s` \|[^|]*\| (\d+) \|$" % re.escape(name),
+                      readme, re.M)
+        if not m:
+            fail(f"README.md: no test-count table row for `{name}`")
+        elif int(m.group(1)) != n:
+            fail(f"README.md says `{name}` has {m.group(1)} tests; the tree"
+                 f" has {n}")
+    m = re.search(r"^\| \*\*Total\*\* \| \| \*\*(\d+)\*\* \|$", readme, re.M)
+    if not m:
+        fail("README.md: the test-count table has no Total row")
+    elif int(m.group(1)) != total:
+        fail(f"README.md's test total says {m.group(1)}; the tree has {total}")
+    m = re.search(r"poe test-all\s+# (\d+) unit tests", readme)
+    if not m:
+        fail("README.md: the commands block no longer quotes the test total")
+    elif int(m.group(1)) != total:
+        fail(f"README.md's commands block says {m.group(1)} unit tests; the"
+             f" tree has {total}")
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
@@ -701,6 +741,7 @@ def main():
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
     check_pyproject_parses_for_consumers()
+    check_test_counts()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

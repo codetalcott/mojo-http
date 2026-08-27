@@ -1861,9 +1861,23 @@ grep -q 'app dir does not exist: /no/such/dir' serve.log || fail 'bad --app-dir:
 "$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "bad module: exit $rc, want 1"
 grep -q 'could not load nosuch.wsgi:application' serve.log || fail 'bad module: message does not name it'
+grep -q 'Traceback' serve.log && fail 'bad module: a traceback for a module that does not exist is noise'
 "$srv" bareapp.wsgi:nosuch --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "bad attribute: exit $rc, want 1"
 grep -q 'nosuch' serve.log || fail 'bad attribute: message does not name it'
+grep -q 'Traceback' serve.log && fail 'bad attribute: a traceback for a missing attribute is noise'
+# An application whose import RAISES is a different failure from one that
+# does not exist: the message names the spec and carries the Python
+# traceback, down to the file that raised (apps/wsgi_bare/deep_fail/inner.py,
+# two frames below the module). And nothing said "Ready" first: the listener
+# is quiet, and m0serve's own startup line prints only after the load.
+"$srv" deep_fail:application --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "deep import failure: exit $rc, want 1"
+grep -q 'could not load deep_fail:application' serve.log || fail 'deep import failure: message does not name the spec'
+grep -q 'DATABASE_URL is not set' serve.log || fail 'deep import failure: the exception text is missing'
+grep -q 'Traceback (most recent call last)' serve.log || fail 'deep import failure: no traceback'
+grep -q 'inner.py' serve.log || fail 'deep import failure: the traceback does not name the raising file'
+grep -q 'Ready to accept' serve.log && fail 'a failed load printed a ready banner first'
 # Under --workers the supervisor must not report success for an application
 # that never loaded: every worker dies at once, the breaker trips, exit 1.
 "$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare --workers 2 > serve.log 2>&1; rc=$?
@@ -1880,6 +1894,38 @@ grep -q 'm0serve: bareapp.wsgi:application on http://127.0.0.1:8098' serve.log |
 kill $pid
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0 (the graceful drain)"
+
+# A busy port is refused, loudly, and the server that owns it is left alone.
+# SO_REUSEPORT is opt-in now, so a second m0serve on the same port must fail
+# to bind -- five attempts a second apart, so a restart racing the previous
+# process's 5 s drain still succeeds -- and exit 1 naming the address, while
+# the first keeps answering. Before: it bound, printed "Ready", and on Linux
+# took a share of the connections (17 of 40, measured from the wheel).
+"$srv" $SPEC --port 8113 > serve.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8113/ > /dev/null \
+  || fail 'first server on 8113 did not answer'
+second=$(mktemp)
+"$srv" $SPEC --port 8113 > "$second" 2>&1 &
+pid2=$!
+waited=0
+while [ $waited -lt 12 ]; do
+  st=$(ps -o stat= -p $pid2 2>/dev/null)
+  case "$st" in ""|Z*) break;; esac
+  sleep 1; waited=$((waited + 1))
+done
+if [ $waited -ge 12 ]; then
+  kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
+  fail 'second server on a busy port was still running after 12 s: it bound (SO_REUSEPORT?) or hung'
+fi
+wait $pid2 2>/dev/null; rc2=$?
+[ "$rc2" = "1" ] || fail "second server on a busy port: exit $rc2, want 1"
+grep -q 'address already in use: 0.0.0.0:8113' "$second" || fail 'busy port: the message does not name the address'
+grep -q 'Ready to accept' "$second" && fail 'busy port: the second server printed a ready banner'
+curl --silent --fail http://localhost:8113/ > /dev/null || fail 'the first server stopped answering after the refused second bind'
+kill -TERM $pid; wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "first server after the busy-port probe: exit $rc, want 0"
+rm -f "$second"
 
 # A static mount is answered in Mojo with the freshness policy given; a path
 # outside it still reaches the app; --max-body and --metrics reach the server.
@@ -3351,7 +3397,7 @@ echo "smoke-wsgi-stream OK"
 # shared runners make latency gates flaky; run it where the numbers go
 # into WSGI_PERFORMANCE.md.
 [tool.poe.tasks.bench-asgi]
-help = "Bench the ASGI executor against uvicorn on apps/asgi_bare (gates: rps ratio floor, mixed-tail p99)"
+help = "Bench the ASGI executor against uvicorn on apps/asgi_bare (gate: mixed-tail p99; the rps ratio is informational)"
 deps = ["build-serve"]
 cmd = "python3 scripts/bench_asgi.py"
 

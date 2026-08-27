@@ -266,8 +266,33 @@ def _detect(app):
 
 def detect_spec(module_name, attribute):
     # Startup-only: import and classify without installing anything.
-    import importlib
-    return _detect(getattr(importlib.import_module(module_name), attribute))
+    #
+    # A module that does not exist -- the spec's own, or a parent package
+    # of it -- is discovery's ordinary miss and stays a one-line message,
+    # because a bare MODULE tries four candidates and the misses must stay
+    # quiet. Anything else the import raises is the APPLICATION failing to
+    # load (a settings module without its environment variable, a bad
+    # database URL, a dependency that is not installed), and the one-line
+    # str(e) that used to be all m0serve printed is not enough to find it:
+    # the traceback travels with the message.
+    import importlib, traceback
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError as e:
+        missing = getattr(e, 'name', None) or ''
+        if missing and (missing == module_name
+                        or module_name.startswith(missing + '.')):
+            raise
+        # chr(10), not a backslash escape: this source is a Mojo string
+        # literal, and Mojo would turn the escape into a real newline.
+        raise RuntimeError('%s: %s' % (type(e).__name__, e) + chr(10)
+                           + traceback.format_exc()) from None
+    except Exception as e:
+        # chr(10), not a backslash escape: this source is a Mojo string
+        # literal, and Mojo would turn the escape into a real newline.
+        raise RuntimeError('%s: %s' % (type(e).__name__, e) + chr(10)
+                           + traceback.format_exc()) from None
+    return _detect(getattr(module, attribute))
 
 
 def _asgi_init(run_lifespan=True):

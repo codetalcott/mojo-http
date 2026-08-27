@@ -350,6 +350,13 @@ lightbug_http
         completions from one datagram (`complete_many`) into a buffer
         sized for a full batch.
 
+      - connection.mojo's ListenConfig gained `reuse_port` (default False:
+        SO_REUSEPORT had been set unconditionally, so a second server on a
+        busy port bound beside the first) and `quiet` (suppresses the
+        listening banner and the "Ready" line for a caller whose own
+        startup line is the ready signal); the first bind failure names
+        the address.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

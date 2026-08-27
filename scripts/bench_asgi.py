@@ -17,7 +17,8 @@ Usage:
 
 Serves apps/asgi_bare via bin/m0serve (zero-config: the executor) and via
 `python -m uvicorn` in turn, on port 8123, and prints a small table plus a
-PASS/FAIL verdict for the gate.
+PASS/FAIL verdict for the mixed-tail gate; the throughput ratio is printed
+as information only (see the note beside the gate).
 """
 
 import argparse
@@ -203,19 +204,23 @@ def main():
     # genuine mechanism regression. The gate that carries the executor's
     # actual claim is the mixed-tail one below.
     #
-    # Pump batching landed 2026-08-27: +5% under wrk -c16 (a loop
-    # pass batches three submits on average there), +19% at -c256 where
-    # the executor passes uvicorn --loop asyncio. This harness, the same
-    # afternoon, read the executor at 1.41-1.46x uvicorn before and after
-    # alike (its 2026-08-25 artifact said 0.96x) -- it measures its own
-    # client, and it is NOT ratcheted on that basis. The gate stays at
-    # 0.8 as a regression floor; the wrk artifacts are the record
-    # (docs/WSGI_PERFORMANCE.md, "The ASGI executor vs uvicorn").
-    gate_rps = ratio >= 0.8
+    # The throughput ratio is INFORMATION, not a gate, since 2026-08-27.
+    # Pump batching landed that day (+5% under wrk -c16, +19% at -c256
+    # where the executor passes uvicorn --loop asyncio), and this harness
+    # read the executor at 1.41-1.46x uvicorn before and after alike -- the
+    # same afternoon wrk read 0.75x, and where its own 2026-08-25 artifact
+    # had said 0.96x. Eight Python threads on http.client are most of each
+    # round trip; a gate on a number that moves with the client is a gate
+    # on nothing, red or green. The record is the wrk artifacts
+    # (scripts/bench_asgi_wrk.sh, bench/results/asgi-wrk-*.json;
+    # docs/WSGI_PERFORMANCE.md, "The ASGI executor vs uvicorn"). The gate
+    # that carries the executor's actual claim is the mixed tail below:
+    # fast requests keep their p99 while slow awaits run beside them.
     gate_p99 = m0["p99"] <= uv["p99"] * 1.5
-    print("gate: throughput %s, mixed-tail %s" % (
-        "PASS" if gate_rps else "FAIL", "PASS" if gate_p99 else "FAIL"))
-    sys.exit(0 if (gate_rps and gate_p99) else 1)
+    print("throughput ratio m0serve/uvicorn under this client: %.2fx"
+          " (informational; the wrk artifacts are the record)" % ratio)
+    print("gate: mixed-tail %s" % ("PASS" if gate_p99 else "FAIL"))
+    sys.exit(0 if gate_p99 else 1)
 
 
 if __name__ == "__main__":
