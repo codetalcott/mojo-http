@@ -1129,6 +1129,17 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_sse, slot_ws, slot_ws_state,
                     )
 
+        # The pass's executor submits, one datagram per lane. After the
+        # outbox drain and before this loop can park in `wait`: a slot left
+        # buffered across a wait is a request nothing would ever run.
+        _flush_submits(
+            backend, handler, config, server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset, slot_header_start,
+            fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+            slot_idle_deadline, date_cache_sec, date_cache, offload,
+        )
+
         # Idle-timeout sweep. Replaces the old per-request timerfd re-arm
         # (one timerfd_settime per keep-alive request) with a once-a-second
         # scan of active slots. Timeouts are whole seconds, so the 1 s sweep
@@ -1258,6 +1269,16 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             while active_count > 0 or offload.inflight > 0:
                 if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
                     break
+                # Nothing new is read during the drain, so this only ever
+                # sends what the pass that saw the shutdown had buffered —
+                # but it must go before this wait, for the reason above.
+                _flush_submits(
+                    backend, handler, config, server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset, slot_header_start,
+                    fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+                    slot_idle_deadline, date_cache_sec, date_cache, offload,
+                )
                 var drain_events = backend.wait(100)
                 _service_completions(
                     backend, handler, config, server_address, tcp_keep_alive,
@@ -1304,6 +1325,17 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
+            # Once more before returning: the executor's pill goes out on
+            # its lane after this loop returns, and it must be FIFO behind
+            # every job — a job still buffered here would arrive after the
+            # pill and never run.
+            _flush_submits(
+                backend, handler, config, server_address, tcp_keep_alive,
+                slot_fds, slot_response, slot_send_offset, slot_header_start,
+                fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+                slot_idle_deadline, date_cache_sec, date_cache, offload,
+            )
             break
 
 
@@ -1835,7 +1867,41 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                 # rather than whichever reads the datagram first. Unmounted
                 # there is one lane and this is the call it always was.
                 var target = request.uri.path
+                var lane = pool.lane_for(target)
                 pool.park_request(slot, request^)
+                if pool.lane_is_executor(lane):
+                    # An executor lane: the submit is BUFFERED and sent
+                    # with the rest of this pass's at the bottom of it, one
+                    # datagram, so the executor wakes once per pass rather
+                    # than at the first of N sends. The slot is offloaded
+                    # from here exactly as if the datagram were already
+                    # gone — every sweep leaves it alone — and
+                    # `_flush_submits` runs before the loop ever parks.
+                    pool.stamp_lane(slot, lane)
+                    offload.offloaded[slot] = True
+                    offload.inflight += 1
+                    slot_idle_deadline[slot] = 0
+                    if offload.queue_submit(slot, lane):
+                        # The lane's batch is full: send it now, and run
+                        # inline whatever it could not carry — the same
+                        # answer a refused `submit` always had. This path
+                        # is non-raising like the rest of the read side; a
+                        # raise inside the inline run is a handler that
+                        # already answered 500 and closed, so it is logged
+                        # rather than propagated.
+                        try:
+                            _ = _run_inline(
+                                backend, handler, config, server_address,
+                                tcp_keep_alive, slot_fds, slot_response,
+                                slot_send_offset, slot_header_start, fd_to_slot,
+                                provision_pool, active_count, metrics, slot_sse,
+                                slot_ws, slot_ws_state, slot_read_armed,
+                                slot_idle_deadline, date_cache_sec, date_cache,
+                                offload, offload.flush_lane(lane),
+                            )
+                        except e:
+                            print("event loop: inline run raised: " + String(e), flush=True)
+                    return
                 if pool.submit(slot, target):
                     offload.offloaded[slot] = True
                     offload.inflight += 1
@@ -1870,6 +1936,126 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         slot_sse, slot_ws, slot_ws_state, slot_read_armed, slot_idle_deadline,
         date_cache_sec, date_cache, offload, response^,
     )
+
+
+def _flush_submits[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+) raises:
+    """Send every executor lane's buffered submits; run inline what would
+    not go.
+
+    "Leave it parked and retry next pass" is not an option: a slot in the
+    loop's buffer is invisible to everything that reads `offloaded` as "a
+    worker owns it" — the shutdown drain would wait on `inflight` for a
+    completion that cannot come, a pill sent meanwhile would outrun it,
+    and `wait(1000)` would stall the retry by a second. So a refused batch
+    is exactly what a refused `submit` always was: those requests run on
+    the loop, which never drops a request. It cannot fill in practice
+    (`accepting()` bounds the channel to 256 jobs, and batching shrinks the
+    datagram count further); this is the backstop.
+    """
+    if not offload.enabled() or offload.pending_submit_count == 0:
+        return
+    _ = _run_inline(
+        backend, handler, config, server_address, tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset, slot_header_start,
+        fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+        slot_idle_deadline, date_cache_sec, date_cache, offload,
+        offload.flush_submits(),
+    )
+
+
+def _run_inline[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+    slots: List[Int],
+) raises -> Int:
+    """Run parked requests on the loop: `_process_request`'s queue-full tail,
+    applied to the slots a batch could not carry. Returns how many ran."""
+    if len(slots) == 0:
+        return 0
+    ref pool = offload.pool()[]
+    for i in range(len(slots)):
+        var slot = slots[i]
+        if slot < 0 or slot >= len(slot_fds) or not offload.offloaded[slot]:
+            continue
+        offload.offloaded[slot] = False
+        offload.inflight -= 1
+        var request = pool.unpark_request(slot)
+        if slot_fds[slot] == UNUSED:
+            # The client left while its request sat in the buffer; nothing
+            # to answer, and the provision is released as an abandoned
+            # completion's would be.
+            pool.discard(slot)
+            provision_pool.release(slot)
+            continue
+        var request_method = request.method
+        var request_path = request.uri.path
+        var response: HTTPResponse
+        try:
+            response = handler.func(request^)
+        except:
+            response = InternalError()
+            provision_pool.provisions[slot].should_close = True
+        handler.after_response(request_method, request_path, response)
+        _finish_response(
+            backend, slot, slot_fds[slot], handler, config, server_address,
+            tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset, slot_header_start,
+            fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state, slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload, response^,
+        )
+        _drain_pipelined(
+            backend, slot, slot_fds[slot], handler, config,
+            server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset,
+            slot_header_start, fd_to_slot, provision_pool,
+            active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload,
+        )
+    return len(slots)
 
 
 def _service_completions[T: HTTPService, B: EventLoopBackend](

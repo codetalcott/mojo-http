@@ -201,8 +201,13 @@ def main():
     # ignore red. 0.8 sits under the stdlib harness's recorded 0.88-0.94x
     # range with room for its ±10% container noise, and still fails on a
     # genuine mechanism regression. The gate that carries the executor's
-    # actual claim is the mixed-tail one below. If pump batching ever
-    # lands, ratchet this back up with the measurement that justifies it.
+    # actual claim is the mixed-tail one below.
+    #
+    # Pump batching landed 2026-08-27 and did NOT earn the gate back up:
+    # +4% under wrk (0.740 -> 0.770 against `--loop asyncio`), because a
+    # loop pass batches three submits on average under -c16 -- the
+    # connections are not in lockstep -- so the wakeups amortise ~3x, not
+    # 16x. Recorded in docs/WSGI_PERFORMANCE.md. The gate stays at 0.8.
     gate_rps = ratio >= 0.8
     gate_p99 = m0["p99"] <= uv["p99"] * 1.5
     print("gate: throughput %s, mixed-tail %s" % (

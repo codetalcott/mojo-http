@@ -580,6 +580,31 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   under wrk", is done and falsified its own premise (the stdlib harness
   flattered the executor). Landing batching earns `bench-asgi`'s
   throughput gate back up from ≥0.8x.
+
+  **Built 2026-08-27, and it returned +3%, not the ≥5% that would have
+  moved the gate.** Both directions are batched now: the loop buffers a
+  pass's submits to an executor lane and sends them as one
+  `TAG_JOB_BATCH` datagram at the bottom of the pass, and the executor
+  queues a pump pass's completions and pokes the loop once
+  (`complete_many`), with the begin-before-head order kept by flushing
+  queued completions before every non-begin chunk frame. Measured in one
+  session under `wrk -c16` (`scripts/bench_asgi_wrk.sh`, the script the
+  `asgi-wrk-hello` artifact never had; both artifacts are in
+  `bench/results/`): m0serve 42,449 → 44,626 rps median, 0.90 → 0.88
+  cores, ratio to `uvicorn --loop asyncio` 0.740 → 0.770 — +4% on the
+  ratio, +5% raw, within a whisker of this box's ~1.5% round-to-round
+  noise. The reason it is small is a number the record now carries: **a
+  pass batches three submits on average** (counted; batches of sixteen
+  occurred 18 times in 60,000). Sixteen keep-alive connections are not
+  in lockstep — requests arrive in small groups as responses go out — so
+  the wakeup amortisation is ~3x, not 16x, and the handoff latency is
+  still paid per group. The gate stays at ≥0.8x, the 0.72x on the
+  benchmark page becomes 0.77x, and the page now also states the number a
+  default `pip install uvicorn[standard]` produces (uvloop: 0.54x), since
+  that is the one a developer's own machine will show. What remains is
+  structural — two threads handing off per group of requests — and the
+  next lever, if the row ever matters, is not the pump but the executor
+  running the parse-to-scope path itself.
 - **Django ASGI parity is proven, not inferred.** `apps/django_asgi`
   runs Django's own `ASGIHandler` through the executor (`poe
   smoke-django-asgi`): async views overlap, `StreamingHttpResponse`

@@ -26,6 +26,25 @@ versions may break the API**.
 - `apps/wsgi_bare` gains `/stream`, `/stream-forever`, `/stream-raises`,
   `/stream-empty`, `/stream-write-inside`, `/stream-cl` and `/stream-hold`;
   `apps/django_wsgi` gains `/events`, a `StreamingHttpResponse`.
+- `poe bench-asgi-wrk` / `scripts/bench_asgi_wrk.sh`: the wrk run behind
+  the `asgi-wrk-hello` artifact, which had no producing script.
+
+### Changed
+
+- **The loop↔executor pump is batched in both directions.** The loop
+  sends a pass's submits to an executor lane as one datagram at the
+  bottom of the pass, and the executor answers a pump pass's completions
+  with one datagram; every existing ordering (begin frame before head,
+  park before poke, pill FIFO behind every job) is preserved by
+  construction, and a batch the channel will not take runs inline, which
+  is what a refused submit always meant. Measured under wrk it is worth
+  +4% on the ratio — a pass batches three submits on average under
+  `-c16`, so the wakeup amortisation is ~3x, not 16x — recorded as a
+  negative result in docs/WSGI_PERFORMANCE.md; `bench-asgi`'s throughput
+  gate stays at ≥0.8x.
+- The benchmark page's ASGI row is re-measured (0.72x → 0.77x against
+  `uvicorn --loop asyncio`) and now also states the uvloop number a
+  default `pip install uvicorn[standard]` produces (0.54x).
 
 ### Fixed
 

@@ -1068,7 +1068,35 @@ batching lands, with the measurement that justifies it.
 The executor uses uvloop for its own loop where installed (stdlib asyncio
 otherwise); the uvicorn baseline row stays `--loop asyncio` per this
 repo's standing benchmark configuration, with the uvloop row shown for
-honesty.
+honesty — and, since 2026-08-27, recorded in the same artifact, because
+`uvicorn[standard]` is what a default install runs and the number a
+developer's own machine produces should be on the page: 0.54x, against
+0.77x for the asyncio-loop comparator.
+
+**Pump batching, built 2026-08-27: +4%, a negative result by this page's
+own rule.** The lever the wrk run pointed at was built in both directions
+(`TAG_JOB_BATCH` submit datagrams sent at the bottom of a loop pass;
+`complete_many` poking the loop once per pump pass) and measured in one
+session with `scripts/bench_asgi_wrk.sh`, the script behind the
+`asgi-wrk-hello` artifact that had none. Medians of three rounds, `wrk
+-c16 -d8s`, browser headers, `apps/asgi_bare`:
+
+| | m0serve rps | cores | rps/core | ratio to `uvicorn --loop asyncio` |
+|---|---:|---:|---:|---:|
+| before (`d4a4a65`, `asgi-wrk-hello-20260827T164641Z.json`) | 42,449 | 0.90 | 47,166 | 0.740 |
+| after (`asgi-wrk-hello-20260827T171338Z.json`) | 44,626 | 0.88 | 50,711 | 0.770 |
+
++4% on the ratio (+5% raw, with uvicorn itself +1% between the runs),
+within a whisker of the 5% this page asks for and of the box's ~1.5%
+round-to-round noise — so the gate stays at ≥0.8x. The explanation is a count the
+executor path never had: **a loop pass batches three submits on
+average** under `-c16` — batches of sixteen occurred 18 times in 60,000
+— because sixteen keep-alive connections do not move in lockstep; each
+sends its next request as its own response lands, so requests reach the
+loop in small groups and the two-thread handoff is still paid once per
+group. Batching amortised the wakeups ~3x, and 3x of a small term is a
+small number. The rest of the gap is structural to a loop-and-executor
+design and is not in the pump.
 
 ## History: three fixes, and what the tails actually were
 

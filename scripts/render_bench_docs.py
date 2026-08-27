@@ -60,6 +60,7 @@ ROW_ORDER = {
     "asgi-wrk-hello": [
         ("m0serve asgi-executor", "`m0serve` — zero-config asyncio executor"),
         ("uvicorn asyncio", "`uvicorn --loop asyncio`"),
+        ("uvicorn uvloop", "`uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default"),
     ],
     "asgi-executor": [
         ("m0serve", "`m0serve` — asyncio executor"),
