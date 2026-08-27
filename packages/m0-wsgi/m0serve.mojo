@@ -844,7 +844,7 @@ def main() raises:
         return
 
     print(
-        "m0serve: " + opts.served() + " on http://" + opts.address()
+        "🔥 m0serve: " + opts.served() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " workers=" + String(opts.workers) + ")"
         + (
@@ -1139,7 +1139,7 @@ def _serve_threaded(
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
     print(
-        "m0serve: " + opts.served() + " on http://" + opts.address()
+        "🔥 m0serve: " + opts.served() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " threads=" + String(opts.threads) + ")"
         + (
