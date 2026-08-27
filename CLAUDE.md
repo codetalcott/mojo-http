@@ -286,6 +286,24 @@ code depends on:
     and stops the loop, so the executor's final flush and lifespan
     shutdown run after `run_forever` returns. `smoke-asgi`'s
     outlive-the-drain phase and its 10k-request RSS guard pin the shape.
+    **A slot's per-slot state in the shim belongs to the slot's CURRENT
+    task** (`_exec_slot_task`), never to the slot: the loop recycles a
+    slot the instant it closes a connection, and the previous task is
+    still alive for an iteration or two (its cancellation lands at its
+    next await, its done-callback an iteration later), so a stale task
+    finishing late used to wipe the live task's credit window and event,
+    and a disconnect left on the SLOT made the successor cancel its own
+    stream and skip its end signal — a subscribed stream with no producer,
+    which the client sees as a 30 s stall with a clean server log. Rules:
+    cleanup runs only if the finishing task is the owner; a disconnect is
+    stamped on the owning task (`_m0_disconnected`) and the old
+    connection's in-flight bytes are refunded to the global window right
+    there; spawning a new task on the slot clears the slot's stale mark;
+    every "am I gone" check asks `_task_gone`, which consults both. Found
+    on CI's macOS smoke (1 in 2), reproduced 8 of 11 runs under twelve
+    CPU hogs — `chunked_keepalive.py`'s HTTP/1.0 probe closes after the
+    head and the keep-alive stream that follows lands on the same slot —
+    and traced to this ordering; 0 of 6 under six hogs (the plain build: 4 of 5) after.
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind

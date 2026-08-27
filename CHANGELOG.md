@@ -104,6 +104,23 @@ versions may break the API**.
 
 ### Fixed
 
+- **A stream on a recycled slot could stall silently.** The executor's
+  per-slot state (credit window, event, disconnect mark) was keyed by
+  slot alone; the loop recycles a slot the instant it closes a
+  connection, and the previous task lives on for an iteration or two.
+  When the HTTP/1.0 client of `chunked_keepalive.py` closed after the
+  head and the keep-alive stream that followed landed on the same slot,
+  the new task saw the OLD connection's disconnect mark, cancelled its
+  own stream, and — the mark being the slot's — skipped its end signal,
+  leaving the loop a subscribed stream with no producer: the client
+  waited 30 s on a clean server log (CI macOS, 1 in 2; 8 of 11 runs
+  under twelve CPU hogs locally). A stale task's late cleanup could
+  also wipe the live task's window. Now a slot's state belongs to the
+  slot's current task (`_exec_slot_task`): cleanup only by the owner, a
+  disconnect stamped on the task it hit (with the dead connection's
+  in-flight bytes refunded there), a stale mark cleared when a new task
+  takes the slot, and every "am I gone" check asking both. 0 of 6 under six CPU hogs (the plain build: 4 of 5)
+  after, same load.
 - **A second `m0serve` on a busy port fails, loudly, instead of binding
   beside the first.** `SO_REUSEPORT` was set unconditionally on every
   listener, so a second server on an occupied port bound successfully,

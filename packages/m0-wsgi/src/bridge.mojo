@@ -560,6 +560,12 @@ _exec_credit_evts = {}
 _exec_disconnects = {}
 _exec_disconnected = set()
 _exec_stream_tasks = {}
+# slot -> the task that currently owns the slot's per-slot state (spawned
+# last). A slot is recycled the instant the loop closes its connection,
+# and the previous task may still be alive for an iteration or two; only
+# the OWNER may clean the slot up, and a disconnect is delivered to the
+# task, not left on the slot for its successor to trip over.
+_exec_slot_task = {}
 
 _ASGI_CREDIT_WINDOW = 64 * 1024
 _ASGI_CHUNK_SPLIT = 32 * 1024
@@ -739,6 +745,23 @@ _exec_ws_inbox = {}
 _exec_ws_accepted = set()
 
 
+def _task_gone(slot):
+    # `import asyncio` here, not at module scope: this shim is a string
+    # exec'd into a fresh namespace and every function that needs the
+    # module imports it itself (a sys.modules hit). Without it this
+    # function raises NameError -- which surfaced as every ASGI stream
+    # truncating at its first credit window, since the raise happens
+    # after the head has gone out.
+    import asyncio
+    # Disconnected: the slot's mark (set by the loop's tag, cleared when a
+    # new task takes the slot), or THIS task's own (stamped on the owner at
+    # the time of the tag, and never cleared) -- a task that lingers past
+    # its slot's reuse must not keep producing under the successor's
+    # generation, nor end the successor's stream in its finally.
+    return (slot in _exec_disconnected
+            or getattr(asyncio.current_task(), '_m0_disconnected', False))
+
+
 def _exec_on_disconnect(slot):
     # The loop closed this slot (client vanished, or end-of-stream close
     # raced): resolve the pending receive() into http.disconnect (or
@@ -746,6 +769,18 @@ def _exec_on_disconnect(slot):
     # task -- uvicorn's contract. The cancellation is what stops an
     # EventStream generator; frameworks handle CancelledError as cleanup.
     _exec_disconnected.add(slot)
+    owner = _exec_slot_task.get(slot)
+    if owner is not None:
+        owner._m0_disconnected = True
+    # The bytes this slot still had in flight are the OLD connection's:
+    # its acks are not coming, and its own cleanup may be skipped below
+    # if a new task has taken the slot by then. Refund here, where the
+    # slot is still unambiguously the old task's.
+    stranded = _exec_inflight.pop(slot, 0)
+    if stranded:
+        _exec_global_credit[0] += stranded
+        if _exec_global_evt is not None:
+            _exec_global_evt.set()
     fut = _exec_disconnects.get(slot)
     if fut is not None and not fut.done():
         fut.set_result(True)
@@ -1017,12 +1052,12 @@ async def _serve_one_exec(slot, scope, body):
             piece = bytes(view[start:start + _ASGI_CHUNK_SPLIT])
             evt = _exec_credit_evts[slot]
             while _exec_credits.get(slot, 0) < len(piece):
-                if slot in _exec_disconnected:
+                if _task_gone(slot):
                     raise asyncio.CancelledError()
                 evt.clear()
                 await evt.wait()
             while _exec_global_credit[0] < len(piece):
-                if slot in _exec_disconnected:
+                if _task_gone(slot):
                     raise asyncio.CancelledError()
                 _exec_global_evt.clear()
                 await _exec_global_evt.wait()
@@ -1091,7 +1126,7 @@ async def _serve_one_exec(slot, scope, body):
         aborted[0] = True
         raise
     finally:
-        if streaming[0] and slot not in _exec_disconnected:
+        if streaming[0] and not _task_gone(slot):
             # End of stream. A normal completion ends with the chunked
             # terminator and the connection returns to keep-alive; an
             # application error after the head -- or a cancellation that
@@ -1136,6 +1171,11 @@ def spawn(slot, method, path, query, protocol, headers, body,
     scope['state'] = dict(_lifespan_state)
     task = _loop.create_task(_serve_one_exec(slot, scope, body))
     _exec_tasks.add(task)
+    _exec_slot_task[slot] = task
+    # A disconnect that reached the slot before this task existed was the
+    # previous connection's (the tag precedes this job on the FIFO).
+    _exec_disconnected.discard(slot)
+    _exec_disconnects.pop(slot, None)
     task.add_done_callback(_task_done(slot))
 
 
@@ -1143,7 +1183,12 @@ def _task_done(slot):
     def _done(t):
         _exec_tasks.discard(t)
         was_streaming = getattr(t, '_m0_streaming', False)
-        _exec_cleanup_slot(slot)
+        if _exec_slot_task.get(slot) is t:
+            # Still the slot's owner: the per-slot state is this task's.
+            _exec_slot_task.pop(slot, None)
+            _exec_cleanup_slot(slot)
+        # Otherwise a newer task owns the slot (the loop recycled it while
+        # this one was still winding down); its state is not ours to wipe.
         if was_streaming:
             # The stream's own finally already signalled the loop; the
             # completion channel is off limits (the slot may be recycled).
@@ -1188,7 +1233,7 @@ async def _serve_one_ws(slot, scope):
 
     async def send(message):
         t = message.get('type', '')
-        if slot in _exec_disconnected:
+        if _task_gone(slot):
             return
         if t == 'websocket.accept':
             _exec_ws_accepted.add(slot)
@@ -1216,7 +1261,7 @@ async def _serve_one_ws(slot, scope):
     try:
         await _app(scope, receive, send)
     finally:
-        if slot not in _exec_disconnected:
+        if not _task_gone(slot):
             if slot in _exec_ws_accepted:
                 # The app returned with the socket open: close it for it,
                 # uvicorn's contract.
@@ -1247,6 +1292,9 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     task = _loop.create_task(_serve_one_ws(slot, scope))
     task._m0_streaming = True
     _exec_tasks.add(task)
+    _exec_slot_task[slot] = task
+    _exec_disconnected.discard(slot)
+    _exec_disconnects.pop(slot, None)
     _exec_stream_tasks[slot] = task
     task.add_done_callback(_task_done(slot))
 
