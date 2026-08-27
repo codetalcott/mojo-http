@@ -634,13 +634,19 @@ second one is built. The parts, each carrying one invariant:
 
 **What is still refused, and why it is refused rather than guessed:**
 
-- **`--mount` with `--realtime`.** M0-Hold subscribes a connection to
-  registries the loop's handler owns, and an inbound WebSocket message is
-  delivered back into ONE application's urlconf. Which mount should
-  receive it has no defensible answer.
-- **Per-mount modes under `--threads`.** The threaded path adds no lanes,
-  so a mounted server there routes to lane 0 and every mount shares one
-  mode — stage 1's behaviour, still correct, just without the advantage.
+- **`--realtime` on a server with no WSGI mount at all.** A hold is taken
+  by a sync view answering with `M0-Hold`; a server whose every mount is
+  ASGI has nothing that could take one, so the flag is asking for
+  machinery nothing can use, and it is refused at startup rather than
+  armed and idle.
+
+Two refusals that stood here until 0.12.0 have shipped, and the
+[ROADMAP](ROADMAP.md) has the record: `--mount` with `--realtime` (the
+loop tells a held stream from an executor's per slot by lane, and an
+inbound frame is delivered to the mount whose view gated the upgrade),
+and per-mount modes under `--threads` (`_serve_one` mirrors
+`_serve_offloaded` per loop, so N loops of per-mount modes is N times
+the prefork shape).
 
 **Why this is the hybrid advantage rather than a convenience.** uvicorn
 hosts one callable; daphne hosts one; Granian hosts one. Mixing otherwise

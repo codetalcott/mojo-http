@@ -154,6 +154,34 @@ def _specs_tried(specs: List[String]) -> String:
     return joined^
 
 
+def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
+    """Bind, or say why not and exit `EXIT_STARTUP`.
+
+    Five attempts a second apart: a restart racing the previous process's
+    5 s drain still succeeds, and a port still busy after that belongs to
+    another server — which is the message a developer needs, not the
+    listener's retry chatter. `SO_REUSEPORT` is off (the `ListenConfig`
+    default since 0.14.0), so a second `m0serve` on a busy port fails here
+    instead of binding beside the first and taking a share of its
+    connections. `quiet=True`: the startup line printed after the
+    application loads is the ready signal, so "ready" means ready — the
+    banner used to print before the load, and a failed import read as
+    "Ready" followed by exit 1. `smoke-serve` pins both.
+    """
+    try:
+        return ListenConfig(max_bind_retries=5, quiet=True).listen(
+            opts.address()
+        )
+    except:
+        _fail(
+            "address already in use: " + opts.address()
+            + " -- is another server running? (pick another --port, or"
+            + " stop it)",
+            EXIT_STARTUP,
+        )
+        raise Error("unreachable: _fail exits the process")
+
+
 def _resolve_spec(mut opts: ServeOptions) raises -> Bool:
     """Import, resolve discovery, and detect the protocol — no lifespan.
 
@@ -184,6 +212,12 @@ def _resolve_spec(mut opts: ServeOptions) raises -> Bool:
             opts.attribute = pair[1]
             return is_asgi
         except e:
+            # A candidate that exists and RAISES on import is the answer,
+            # not a miss to be papered over by the next convention: the
+            # shim attaches the traceback to exactly that case, and the
+            # discovery list would only hide it.
+            if String(e).find("Traceback (most recent call last)") >= 0:
+                raise Error(String(e))
             if i == 0:
                 first_error = String(e)
     raise Error(first_error + " (tried " + _specs_tried(specs) + ")")
@@ -694,7 +728,7 @@ def main() raises:
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_USAGE)
 
     # Bind before forking; every worker accepts from this one socket.
-    var listener = ListenConfig().listen(opts.address())
+    var listener = _listen_or_fail(opts)
 
     # Then everything `--realtime` shares, still before the fork and still
     # before the first Python call. Inert without the flag.

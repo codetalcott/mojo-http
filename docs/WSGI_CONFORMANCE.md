@@ -187,12 +187,16 @@ The fork matters for how much of this is reusable:
 - **Flask, Pyramid, Bottle, Werkzeug** are WSGI. Same bridge, adapter only —
   they are matrix rows, and the suite above covers them the day it exists.
 - **FastAPI, Starlette, Litestar are ASGI**, which is a different protocol and
-  a different package, not an adapter. The current architecture is actively
-  hostile to it: the handler runs synchronously on the event loop, the process
-  is single-threaded, Mojo never acquires the GIL, and the fork must happen
-  before the first Python call. ASGI wants a Python event loop coexisting with
-  the Mojo one. That is a design problem to be taken on deliberately, not
-  reached by extending `m0-wsgi`.
+  a different package, not an adapter. *(Dated record, kept as written; it
+  has been superseded — the ASGI executor hosts them now, a Python event
+  loop per serving loop coexisting with the Mojo one, and
+  [WSGI_VS_ASGI.md §8](WSGI_VS_ASGI.md) is the current account.)* The
+  current architecture is actively hostile to it: the handler runs
+  synchronously on the event loop, the process is single-threaded, Mojo
+  never acquires the GIL, and the fork must happen before the first Python
+  call. ASGI wants a Python event loop coexisting with the Mojo one. That
+  is a design problem to be taken on deliberately, not reached by
+  extending `m0-wsgi`.
 
 The HTTP-level assertions in the suite above are protocol-agnostic and would
 carry over to an ASGI host unchanged — which is a further argument for writing
