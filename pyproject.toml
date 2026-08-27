@@ -511,6 +511,18 @@ python3 scripts/header_timeout_probe.py 8080 || { echo '=== ht.log ==='; cat ht.
 echo "smoke-header-timeout OK"
 """
 
+[tool.poe.tasks.smoke-half-close]
+help = "A client that half-closes after sending must still get its response"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > hc.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f hc.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
+  || { echo '=== hc.log ==='; cat hc.log; exit 1; }
+python3 scripts/half_close_probe.py 8080 || { echo '=== hc.log ==='; cat hc.log; exit 1; }
+echo "smoke-half-close OK"
+"""
+
 [tool.poe.tasks.smoke-ws]
 help = "WebSocket echo demo: handshake, echo, fragmentation, ping/pong, heartbeats, close"
 shell = """

@@ -519,12 +519,38 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     continue
 
                 if (backend.event_flags(i) & EV_EOF) != 0:
-                    _close_slot(
-                        backend, handler, slot, fd_val,
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                    )
-                    continue
+                    # The peer shut down its WRITE side. That is not the end
+                    # of the connection: a client may half-close to say
+                    # "that is the whole request" and still be waiting to
+                    # read the response — and closing here discarded it,
+                    # which the client sees as an RST and a lost answer.
+                    #
+                    # kqueue sets EV_EOF on the read filter for exactly this
+                    # (data can still be pending), which is why it was macOS
+                    # that lost responses: the epoll backend never registers
+                    # EPOLLRDHUP, so a half-close there is an ordinary
+                    # readable event and the header path already handled it.
+                    # Measured before the change, 30 requests per shape:
+                    # macOS lost 24-30 of 30 on every request shape, Linux
+                    # none.
+                    #
+                    # A stream has no request left to answer, so those still
+                    # close here. Everything else falls through to the read
+                    # path, which finishes the buffered request; keep-alive
+                    # is off, because the peer cannot send another.
+                    var _eof_state = provision_pool.provisions[slot].state.kind
+                    if (
+                        _eof_state == ConnectionState.STREAMING_SSE
+                        or _eof_state == ConnectionState.STREAMING_WS
+                    ):
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                        continue
+                    provision_pool.provisions[slot].should_close = True
+                    provision_pool.provisions[slot].peer_eof = True
 
                 if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_WS:
                     # WebSocket frames from the client. The parser answers
@@ -1431,6 +1457,23 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 slot_read_armed, slot_idle_deadline,
                 date_cache_sec, date_cache, offload,
             )
+
+    # Headers that can never arrive: the peer half-closed while the request
+    # was still incomplete, so waiting for the rest only holds the slot
+    # until the header timeout answers 408. Release it now instead. (A
+    # partial BODY already closes promptly, on the `bytes_read == 0` path.)
+    if (
+        slot_fds[slot] != UNUSED
+        and provision_pool.provisions[slot].peer_eof
+        and provision_pool.provisions[slot].state.kind
+        == ConnectionState.READING_HEADERS
+    ):
+        _close_slot(
+            backend, handler, slot, fd_val,
+            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state,
+        )
+        return
 
     # Still short of a complete body: register read interest for the rest.
     #
