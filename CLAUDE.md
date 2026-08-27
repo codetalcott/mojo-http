@@ -233,7 +233,30 @@ code depends on:
     — and a handshake the app never answers must resolve as a 403, never
     a leaked slot. The buffered escape hatch keeps its send()-side
     watchdog — do not "fix" it by lengthening the
-    grace (docs/WSGI_VS_ASGI.md §8).
+    grace (docs/WSGI_VS_ASGI.md §8). **The pump is batched in both directions**, because the
+    hello-world deficit was wakeup-bound, not CPU-bound (0.72x uvicorn at
+    0.89 cores; batching is worth +5% at 16 connections, where a
+    pass batches ~3 submits, and +19% at 256): the loop BUFFERS its submits to an executor lane during a
+    pass and sends them at the bottom of it as one `TAG_JOB_BATCH`
+    datagram (`[4][slot i64] x n`, length ≡ 1 mod 8 — no plain job is, and
+    the tag separates it from every other shape; a single slot still goes
+    as the legacy 8-byte job), and the executor QUEUES its completions
+    over a pump pass and pokes the loop once (`complete_many`, `k` bare
+    8-byte slots in one datagram; the blocking pool's `complete` is the
+    `k = 1` case). Three rules keep the streaming seam's order intact: a
+    begin frame (`b`/`B`) still goes out immediately and its head is
+    queued behind it; every NON-begin chunk frame (`s`/`e`/`w`/`x`) is
+    preceded by a flush of the queued completions, so a chunk can never
+    overtake a completion it used to follow; and a buffered submit is
+    never left across a `wait` — `_flush_submits` runs at the bottom of
+    every pass, before the shutdown drain parks, and once more before
+    `run_event_loop` returns so the pill stays FIFO behind every job.
+    What a batch cannot carry runs INLINE (`_run_inline`, the queue-full
+    tail `submit`'s False always meant); "leave it buffered and retry" is
+    not an option, because a buffered slot is invisible to everything that
+    reads `offloaded` as "a worker owns it". Pool lanes are never batched —
+    one thread takes one job — and `next_job` says so loudly if a batch
+    ever reaches one.
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind

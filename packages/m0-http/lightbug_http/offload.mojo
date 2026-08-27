@@ -117,6 +117,32 @@ Real generations are never 0: `stream_gen_seed` starts every producer
 above it."""
 
 comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(0x40)
+comptime COMPLETE_BATCH_MAX = 64
+"""Most slots one completion datagram carries.
+
+The executor answers a whole pump pass with ONE datagram — `k` concatenated
+8-byte slots — instead of one per response, so the loop wakes once per
+pass rather than once per response. The blocking pool's `complete` is the
+`k = 1` case, unchanged. No tag: the completion channel has one reader,
+and a length that is not a multiple of 8 is simply not a completion.
+"""
+
+comptime TAG_JOB_BATCH = UInt8(4)
+"""First byte of a job-batch datagram on an EXECUTOR lane's submit channel.
+
+`[tag=4][slot i64 LE] x n`, `1 <= n <= SUBMIT_BATCH_MAX`, so its length is
+`1 + 8n` — congruent to 1 mod 8, which no plain job (8 bytes) is, and the
+tag byte separates it from the 9-byte disconnect (tag 1), the WS message
+(tag 2, >= 10) and the bus frame (tag 3, >= 11). The loop buffers the
+slots it submits to an executor during a pass and sends them together at
+the bottom of it, so the executor wakes once per pass rather than being
+woken by the first submit while the rest are still being sent. A lane
+holding exactly one slot sends the legacy 8-byte job: nothing to amortise,
+no new shape on the wire. Pool lanes never see a batch — one thread takes
+one job — and `next_job` says so loudly if one ever arrives.
+"""
+
+comptime SUBMIT_BATCH_MAX = 64
 
 comptime TAG_WS_MESSAGE = UInt8(2)
 """First byte of an inbound-WebSocket datagram on a submit channel.
@@ -218,6 +244,25 @@ def stream_gen_seed(producer: Int) -> Int:
     start their low half at 1, so no generation is ever `STREAM_GEN_NONE`.
     """
     return ((producer + 1) << 32) + 1
+def _encode_job_batch(slots: List[Int]) -> List[UInt8]:
+    """`[TAG_JOB_BATCH][slot i64 LE] x n`; see the tag's docstring."""
+    var out = List[UInt8](capacity=1 + _JOB_BYTES * len(slots))
+    out.append(TAG_JOB_BATCH)
+    for i in range(len(slots)):
+        var bits = UInt64(Int64(slots[i]))
+        for shift in range(0, 64, 8):
+            out.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    return out^
+
+
+def _encode_completions(slots: List[Int]) -> List[UInt8]:
+    """`k` concatenated 8-byte LE slots; see `COMPLETE_BATCH_MAX`."""
+    var out = List[UInt8](capacity=_JOB_BYTES * len(slots))
+    for i in range(len(slots)):
+        var bits = UInt64(Int64(slots[i]))
+        for shift in range(0, 64, 8):
+            out.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    return out^
 
 
 def match_path_prefix(prefixes: List[String], path: String) -> Int:
@@ -614,14 +659,21 @@ struct OffloadPool(Movable):
         `slot_lane[slot]`, and a lane has a drain-ack pair exactly when an
         executor serves it. Unmounted, the executor is the only producer
         there is."""
-        if not self.stream_active():
-            return False
-        if len(self.lane_prefixes) == 0:
-            return True
         var lane = (
             self.slot_lane[slot]
             if slot >= 0 and slot < len(self.slot_lane) else 0
         )
+        return self.lane_is_executor(lane)
+
+    def lane_is_executor(self, lane: Int) -> Bool:
+        """Whether an asyncio executor is what reads `lane`'s submit channel
+        — the lane-only body of `slot_is_executor`, for a caller that has
+        the lane and not yet a slot (the loop, deciding whether to batch a
+        submit). Unmounted, the executor is the only producer there is."""
+        if not self.stream_active():
+            return False
+        if len(self.lane_prefixes) == 0:
+            return True
         return lane < len(self.lane_ack_write) and self.lane_ack_write[lane] >= 0
 
     def slot_channel_stream(self, slot: Int) -> Bool:
@@ -784,6 +836,37 @@ struct OffloadPool(Movable):
         var lane = match_path_prefix(self.lane_prefixes, path)
         return lane if lane >= 0 else 0
 
+    def stamp_lane(mut self, slot: Int, lane: Int):
+        """Record which lane `slot`'s job goes to. `submit` does this itself;
+        a caller that batches submits (`OffloadLoopState.queue_submit`) does
+        it here, at park time, so the record exists before the datagram."""
+        if slot >= 0 and slot < len(self.slot_lane):
+            self.slot_lane[slot] = lane
+
+    def submit_batch(self, lane: Int, slots: List[Int]) -> Bool:
+        """One datagram carrying every slot in `slots` to `lane`'s executor.
+
+        A single slot goes as the legacy 8-byte job. One non-blocking send
+        and no retry: the caller owns the policy for a refused batch (the
+        loop runs those requests inline, as a refused `submit` always
+        meant). Executor lanes only — a pool thread takes one job per read.
+        """
+        if len(slots) == 0:
+            return True
+        var msg: List[UInt8]
+        if len(slots) == 1:
+            msg = _encode_job(slots[0])
+        else:
+            msg = _encode_job_batch(slots)
+        try:
+            _ = send(
+                FileDescriptor(self.submit_write_fd(lane)),
+                Span(msg), UInt(len(msg)), 0,
+            )
+        except:
+            return False
+        return True
+
     def submit(mut self, slot: Int, path: String = String("")) -> Bool:
         """Queue `slot` on the lane serving `path`. False means it is full.
 
@@ -793,8 +876,7 @@ struct OffloadPool(Movable):
         """
         var job = _encode_job(slot)
         var lane = self.lane_for(path)
-        if slot >= 0 and slot < len(self.slot_lane):
-            self.slot_lane[slot] = lane
+        self.stamp_lane(slot, lane)
         try:
             _ = send(
                 FileDescriptor(self.submit_write_fd(lane)),
@@ -817,19 +899,23 @@ struct OffloadPool(Movable):
         contract, and the same reason, as `drain_bus_channel`.
         """
         var done = List[Int]()
-        # Sized for the largest datagram the channel carries — an abort —
-        # and not for a completion: a SOCK_DGRAM `recv` into a short buffer
-        # silently discards the excess, on both platforms.
-        var buf = List[UInt8](capacity=_ABORT_BYTES)
-        for _ in range(_ABORT_BYTES):
+        # Sized for the largest datagram the channel carries — a full
+        # completion batch — and not for one completion: a SOCK_DGRAM
+        # `recv` into a short buffer silently discards the excess, on both
+        # platforms, and a batch decoded short is a slot that never answers.
+        comptime cap = OFFLOAD_MAX_INFLIGHT * _JOB_BYTES
+        var buf = List[UInt8](capacity=cap)
+        for _ in range(cap):
             buf.append(0)
         var fd = FileDescriptor(self.complete_read)
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(_ABORT_BYTES), 0)
+                n = recv(fd, Span(buf), UInt(cap), 0)
             except:
                 break  # EAGAIN: drained
+            if n == 0:
+                break  # EOF
             if n == UInt(_ABORT_BYTES) and buf[0] == TAG_STREAM_ABORT:
                 var s = UInt64(0)
                 var g = UInt64(0)
@@ -839,9 +925,11 @@ struct OffloadPool(Movable):
                 self.aborts.append(Int(Int64(s)))
                 self.aborts.append(Int(Int64(g)))
                 continue
-            if n < UInt(_JOB_BYTES):
-                break  # EOF, or a truncated datagram that cannot be ours
-            done.append(_decode_job(Span(buf)))
+            if n % UInt(_JOB_BYTES) != 0:
+                continue  # not a completion; not ours to decode
+            var count = Int(n) // _JOB_BYTES
+            for i in range(count):
+                done.append(_decode_job(Span(buf)[i * _JOB_BYTES : (i + 1) * _JOB_BYTES]))
         return done^
 
     def take_response(mut self, slot: Int) -> HTTPResponse:
@@ -952,6 +1040,17 @@ struct OffloadPool(Movable):
                     chan_start, chan_len,
                     payload_start, Int(n) - payload_start,
                 )
+            if n >= 9 and buf[0] == TAG_JOB_BATCH and (Int(n) - 1) % _JOB_BYTES == 0:
+                # A job batch belongs on an executor lane and nowhere else;
+                # one here is a sender bug, and skipping it silently would
+                # strand every slot it names.
+                print(
+                    "offload: a job batch reached a pool lane ("
+                    + String((Int(n) - 1) // _JOB_BYTES)
+                    + " slots) — sender bug; those requests will not be answered",
+                    flush=True,
+                )
+                continue
             # EOF (0 bytes), or a shape this version does not know.
             if n == 0:
                 return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
@@ -984,6 +1083,30 @@ struct OffloadPool(Movable):
                 return
             except:
                 _sched_yield()
+
+    def complete_many(self, slots: List[Int]) -> Bool:
+        """Tell the loop that every slot in `slots` is finished — one datagram.
+
+        The executor's `complete`: it parks N responses over a pump pass and
+        pokes the loop once for all of them, so the loop wakes per pass
+        rather than per response. Every `put_response` of the pass precedes
+        this one send, so park-then-poke holds for all N at once. Returns
+        whether it went; the caller keeps the slots and retries, never drops
+        — a lost completion is a connection that never answers.
+        """
+        if len(slots) == 0:
+            return True
+        var msg = _encode_completions(slots)
+        for _ in range(64):
+            try:
+                _ = send(
+                    FileDescriptor(self.complete_write),
+                    Span(msg), UInt(len(msg)), 0,
+                )
+                return True
+            except:
+                _sched_yield()
+        return False
 
 
 def make_stream_ack_pair() raises -> Tuple[Int, Int]:
@@ -1096,12 +1219,27 @@ struct OffloadLoopState(Movable):
     carried (`HTTPResponse.stream_gen`), `STREAM_GEN_NONE` otherwise. What
     an abort datagram is checked against: an abort naming any other
     generation is about a stream this slot no longer serves."""
+    var pending_submit: List[List[Int]]
+    """Per executor lane, the slots parked this pass and not yet sent.
+
+    The loop submits to an executor at the BOTTOM of a pass, one datagram
+    per lane (`TAG_JOB_BATCH`), instead of one `send` per request as it
+    parks them: the first of those sends woke the executor while the rest
+    were still being sent, so its batches fragmented and both threads
+    ping-ponged per request. A slot here is already `offloaded` and counted
+    in `inflight`; it is invisible to every sweep exactly as one out on a
+    thread is. Never left here across a `wait`: `flush_submits` runs before
+    every park of the loop, and what it cannot send runs inline."""
+
+    var pending_submit_count: Int
 
 
     def __init__(out self, addr: Int, capacity: Int):
         self.addr = addr
         self.inflight = 0
         self.ack_owed_count = 0
+        self.pending_submit = List[List[Int]]()
+        self.pending_submit_count = 0
         self.offloaded = List[Bool](capacity=capacity)
         self.is_head = List[Bool](capacity=capacity)
         self.http11 = List[Bool](capacity=capacity)
@@ -1129,6 +1267,50 @@ struct OffloadLoopState(Movable):
         self.ack_owed_count = move.ack_owed_count
         self.inflight = move.inflight
         self.stream_gen = move.stream_gen^
+        self.pending_submit = move.pending_submit^
+        self.pending_submit_count = move.pending_submit_count
+
+    def queue_submit(mut self, slot: Int, lane: Int) -> Bool:
+        """Buffer `slot` for `lane`'s executor. True when the lane's batch is
+        full and must be flushed now (`flush_lane`)."""
+        var at = lane if lane >= 0 else 0
+        while len(self.pending_submit) <= at:
+            self.pending_submit.append(List[Int]())
+        self.pending_submit[at].append(slot)
+        self.pending_submit_count += 1
+        return len(self.pending_submit[at]) >= SUBMIT_BATCH_MAX
+
+    def flush_lane(mut self, lane: Int) -> List[Int]:
+        """Send `lane`'s buffered slots as one datagram (64 tries with
+        yields). Returns the slots it could NOT send, buffer cleared either
+        way — the caller runs those inline."""
+        var at = lane if lane >= 0 else 0
+        var unsent = List[Int]()
+        if at >= len(self.pending_submit) or len(self.pending_submit[at]) == 0:
+            return unsent^
+        var batch = self.pending_submit[at].copy()
+        self.pending_submit[at] = List[Int]()
+        self.pending_submit_count -= len(batch)
+        var sent = False
+        for _ in range(64):
+            if self.pool()[].submit_batch(lane, batch):
+                sent = True
+                break
+            _sched_yield()
+        if not sent:
+            unsent = batch^
+        return unsent^
+
+    def flush_submits(mut self) -> List[Int]:
+        """Every lane's buffered slots, sent; returns the ones that were not."""
+        var unsent = List[Int]()
+        if self.pending_submit_count == 0:
+            return unsent^
+        for lane in range(len(self.pending_submit)):
+            var failed = self.flush_lane(lane)
+            for i in range(len(failed)):
+                unsent.append(failed[i])
+        return unsent^
 
     def slot_is_executor(self, slot: Int) -> Bool:
         """`OffloadPool.slot_is_executor`, inert when the pool is disabled."""

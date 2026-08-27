@@ -3351,9 +3351,18 @@ echo "smoke-wsgi-stream OK"
 # shared runners make latency gates flaky; run it where the numbers go
 # into WSGI_PERFORMANCE.md.
 [tool.poe.tasks.bench-asgi]
-help = "Bench the ASGI executor against uvicorn on apps/asgi_bare (gate: >=1x rps, sane p99)"
+help = "Bench the ASGI executor against uvicorn on apps/asgi_bare (gates: rps ratio floor, mixed-tail p99)"
 deps = ["build-serve"]
 cmd = "python3 scripts/bench_asgi.py"
+
+# The wrk run behind the `asgi-wrk-hello-*.json` artifact docs/BENCHMARKS.md
+# renders: the executor against `uvicorn --loop asyncio` (the standing
+# comparator) AND against uvicorn with uvloop (what a default install runs),
+# cores measured, median of three rounds. Needs wrk; not in CI.
+[tool.poe.tasks.bench-asgi-wrk]
+help = "wrk: the ASGI executor vs uvicorn (asyncio and uvloop), recorded as a bench artifact"
+deps = ["build-serve"]
+cmd = "bash scripts/bench_asgi_wrk.sh"
 
 [tool.poe.tasks.serve-asgi-bare]
 help = "Serve the bare ASGI example on :8088 with m0serve"

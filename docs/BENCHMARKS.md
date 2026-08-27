@@ -63,7 +63,7 @@ says otherwise. Where a comparator wins, the row stays.
 | question | answer |
 |---|---|
 | Fastest per core on bare WSGI? | **No** — Granian, by ~1.2x |
-| Fastest per core on bare ASGI? | **No** — uvicorn, by ~1.25x |
+| Fastest per core on bare ASGI? | **No** at 16 connections — uvicorn, by ~1.12x with `--loop asyncio`, and by ~1.57x with uvloop, which is what `pip install uvicorn[standard]` runs by default. At 256 connections the executor is ahead of the asyncio comparator (1.10x) and 0.85x the uvloop one |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
 | Fastest HTTP layer, Python excluded? | **Yes** — but see the note on why that is not the interesting number |
 
@@ -120,31 +120,42 @@ locates the cost, not because it is a win.
 asserted between the two responses, single process each:
 
 <!-- generated: asgi-wrk-hello -- edit bench/results, not this table -->
-Source: [`asgi-wrk-hello-20260825T172428Z.json`](../bench/results/asgi-wrk-hello-20260825T172428Z.json) — 2026-08-25T17:24:28+00:00, commit `58a35ed`.
-Environment: Python 3.13.6; Apple M4 (10 cores); wrk -t2 -c16 -d8s, browser headers.
+Source: [`asgi-wrk-hello-20260827T182310Z.json`](../bench/results/asgi-wrk-hello-20260827T182310Z.json) — 2026-08-27T18:23:10+00:00, commit `92e8b1c`.
+Environment: Python 3.13.6; Apple M4 (10 cores); wrk -t2 -c16 -d8s, browser headers; executor loop: uvloop.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `m0serve` — zero-config asyncio executor | 40,838 | 0.89 | 45,885 |
-| `uvicorn --loop asyncio` | 56,370 | 0.98 | 57,520 |
+| `m0serve` — zero-config executor (its loop is stamped above) | 43,221 | 0.83 | 52,074 |
+| `uvicorn --loop asyncio` | 57,569 | 0.99 | 58,150 |
+| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 80,876 | 0.99 | 81,693 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: asgi-wrk-hello -->
 
-**uvicorn wins this one, and the cores column says why it is not a CPU
-problem.** The executor loses while consuming 0.89 cores against uvicorn's
-0.98 — it is wakeup-bound, not CPU-bound. Every request serializes through
-loop thread → submit datagram → executor thread → completion datagram →
-loop thread, and both threads idle between handoffs. That points at one
-real lever (batching the pump so the wakeups amortize across queued
-requests) and rules out the ones that sound plausible.
+**uvicorn wins this one at 16 connections, and the concurrency says
+why.** The executor loses the row while consuming 0.83 cores against
+uvicorn's 0.99 — wakeup-bound, not CPU-bound: every request
+serializes through loop thread → submit datagram → executor thread →
+completion datagram → loop thread, and both threads idle between
+handoffs. The pump has been batched in both directions since
+2026-08-27, and what that is worth depends on how many connections
+supply the batches: +5% here, where a loop pass batches three submits on
+average, and +19% at 256 connections — where the executor is **1.10x
+`uvicorn --loop asyncio`** and 0.85x uvicorn with uvloop, on 1.02 cores.
+The row stays at `-c16` because that is the standing configuration; the
+concurrency table, which loop the executor itself runs on (this row:
+uvloop; measured to be a wash), and the next lever — a cheaper pass
+shape, prototyped at +16% on this row — are in
+[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md). The uvloop row is on the
+page because it is the number a developer's own `uvicorn[standard]`
+install produces: 0.53x.
 
 Worth recording because it inverted a conclusion: an earlier run of this
 comparison used a stdlib `http.client` harness and reported 0.88–0.94x. The
 assumption was that the stdlib client understated the Mojo layer's parsing
-edge. Under wrk the ratio is 0.72x — the stdlib client had been
-*flattering* the executor, and the fix path derived from it was aimed the
-wrong way.
+edge. Under wrk the ratio is 0.75x at 16 connections (0.72x before the
+pump was batched) — the stdlib client had been *flattering* the
+executor, and the fix path derived from it was aimed the wrong way.
 
 ## Fast-request tail under mixed load
 

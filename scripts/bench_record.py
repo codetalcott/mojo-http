@@ -140,6 +140,9 @@ def _parse_mixed_workload(text):
 
 PARSERS = {
     "layer_split": _parse_layer_split,
+    # Same row shape as the layer split (bench_asgi_wrk.sh prints it);
+    # the artifact name is what docs/BENCHMARKS.md's generated region keys on.
+    "asgi_wrk_hello": _parse_layer_split,
     "wsgi_modes": _parse_wsgi_modes,
     "mixed_workload": _parse_mixed_workload,
 }

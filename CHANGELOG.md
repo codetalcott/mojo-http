@@ -26,6 +26,40 @@ versions may break the API**.
 - `apps/wsgi_bare` gains `/stream`, `/stream-forever`, `/stream-raises`,
   `/stream-empty`, `/stream-write-inside`, `/stream-cl` and `/stream-hold`;
   `apps/django_wsgi` gains `/events`, a `StreamingHttpResponse`.
+- `poe bench-asgi-wrk` / `scripts/bench_asgi_wrk.sh`: the wrk run behind
+  the `asgi-wrk-hello` artifact, which had no producing script. It puts
+  the venv first on `PATH` (so a bare invocation embeds the same
+  interpreter `uv run poe` does), stamps `executor_python` and
+  `executor_loop` in the artifact, takes `M0SERVE_BIN` for an A/B of
+  two builds and `BENCH_CONNS` for the concurrency; the generated block
+  on the benchmark page prints the executor's loop. `check-docs` now
+  ratchets the uvloop ratio and per-core gap too.
+- `bench/results/asgi-wrk-conns-*.json`: the 2026-08-27 concurrency
+  matrix — the executor with and without pump batching, and on uvloop,
+  at 16/64/256 connections.
+
+### Changed
+
+- **The loop↔executor pump is batched in both directions.** The loop
+  sends a pass's submits to an executor lane as one datagram at the
+  bottom of the pass, and the executor answers a pump pass's completions
+  with one datagram; every existing ordering (begin frame before head,
+  park before poke, pill FIFO behind every job) is preserved by
+  construction, and a batch the channel will not take runs inline, which
+  is what a refused submit always meant. Measured under wrk with the
+  uvicorn rows re-measured beside it: +5% at 16 connections
+  (a pass batches three submits on average there), +7% at 64 and +19% at
+  256, where the executor passes `uvicorn --loop asyncio` (1.10x; 0.85x
+  against uvicorn with uvloop). Table and artifacts in
+  docs/WSGI_PERFORMANCE.md; `bench-asgi`'s stdlib gate stays at ≥0.8x
+  as a regression floor, its harness having read 1.4x the same day.
+- The benchmark page's ASGI row is re-measured (0.72x → 0.75x
+  against `uvicorn --loop asyncio` at 16 connections, executor on
+  uvloop) and now also states the uvloop number a default `pip install
+  uvicorn[standard]` produces (0.53x). Which loop the
+  executor ran on was never recorded before: `bin/m0serve` outside the
+  venv embeds the system Python and runs on stdlib asyncio — measured to
+  be a wash either way (−3% at 16 connections, +4% at 256).
 
 ### Fixed
 

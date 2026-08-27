@@ -285,6 +285,9 @@ def check_bench_prose():
         gran_cores = lm["granian+bare w1"]["cores"]
         am0 = asgi["medians"]["m0serve asgi-executor"]
         auv = asgi["medians"]["uvicorn asyncio"]
+        # Present since 2026-08-27; an older artifact simply has no row, and
+        # the uvloop claims are skipped rather than failed on it.
+        auvl = asgi["medians"].get("uvicorn uvloop")
     except KeyError as missing:
         fail(
             f"a bench artifact no longer has the row {missing} that the docs"
@@ -303,6 +306,10 @@ def check_bench_prose():
         "asgi rps ratio m0÷uvicorn": am0["rps"] / auv["rps"],
         "asgi per-core gap uvicorn÷m0": auv["rps_per_core"] / am0["rps_per_core"],
     }
+    if auvl:
+        q["asgi rps ratio m0÷uvloop"] = am0["rps"] / auvl["rps"]
+        q["asgi per-core gap uvloop÷m0"] = (
+            auvl["rps_per_core"] / am0["rps_per_core"])
 
     # (document, what it is, pattern with ONE capture group, key in q)
     # Patterns run against whitespace-normalized text, so re-wrapping a
@@ -353,6 +360,16 @@ def check_bench_prose():
         ("docs/WSGI_PERFORMANCE.md", "the net per-core ratio",
          r"the net is \*\*([\d.]+)x\*\*", "m0÷gran"),
     ]
+    if auvl:
+        claims += [
+            ("docs/BENCHMARKS.md", "the ASGI verdict row's uvloop gap",
+             r"and by ~([\d.]+)x with uvloop", "asgi per-core gap uvloop÷m0"),
+            ("docs/BENCHMARKS.md", "the uvloop ratio quoted in prose",
+             r"install produces: ([\d.]+)x", "asgi rps ratio m0÷uvloop"),
+            ("README.md", "the first screen's uvloop verdict",
+             r"\(([\d.]+)x against uvicorn with uvloop\)",
+             "asgi rps ratio m0÷uvloop"),
+        ]
 
     for doc, what, pattern, key in claims:
         path = REPO / doc
