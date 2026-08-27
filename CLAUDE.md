@@ -153,6 +153,13 @@ code depends on:
   value must not be. Get either backwards and it is a leak or a
   double-free; `smoke-django`'s RSS guard is the instrument, and it must
   stay at 0 KB over 10k requests.
+
+  One header never makes the trip: `Proxy`, which CGI's mechanical mapping
+  would turn into `HTTP_PROXY` — the variable outbound HTTP clients read
+  to choose a proxy (httpoxy). `header_is_excluded` in `environ.mojo` drops
+  it, and deliberately drops nothing else: `X-Forwarded-*` is load-bearing
+  behind a real proxy, and this server never consults it itself
+  (`REMOTE_ADDR` is the socket peer, `wsgi.url_scheme` is config).
 - **Mojo never acquires the GIL on its own** except when destroying a
   `PythonObject`; every other `std.python` call assumes the calling thread is
   *attached* (holds a Python thread state). There are two execution modes,
@@ -438,16 +445,22 @@ name, so renaming the workflow silently disables both. `test.yml` ignores
 `*.md`, `docs/**` and `.claude/**` — a doc-only change runs nothing, and
 therefore never reaches the auto-merge workflows either.
 
+**`main` is protected by a ruleset**: pull request required (0 approvals),
+no force push, no deletion, no bypass actor — so branch first, or the push is
+rejected with `GH013`. It declares **no required status checks, deliberately**:
+by the `paths-ignore` above a doc-only PR produces no `Tests` run at all, and
+a required check that never reports would leave every such PR unmergeable.
+
 **`automerge` is a standing order.** A PR carrying that label merges itself as
 soon as `Tests` passes for its current head commit. The label is the gate and
 it is deliberately not a branch namespace: applying it needs write access, so
 a session can open work autonomously but cannot land it. Add the label when
 the work is meant to go in unattended; leave it off and the PR waits.
 
-Never reach for `gh pr merge --auto` here. GitHub's auto-merge only waits when
-a branch protection rule declares required status checks, and `main` is
-unprotected — so `--auto` merges immediately, before CI runs, while looking
-like it gated on CI.
+Never reach for `gh pr merge --auto` here. Repository auto-merge is disabled,
+so it errors — and it would not gate on CI even if enabled, because
+auto-merge waits only on required status checks and the ruleset declares
+none. The label is the mechanism.
 
 ## Imports resolve two ways
 
@@ -520,6 +533,30 @@ Properties of the design, not defects to fix in passing:
   + env exports are created unconditionally pre-fork — protocol
   detection is post-fork, and a single worker's own subscribers ride its
   own channel (there is deliberately no separate local-delivery path).
+- **A channel name opening with `\x01` is RESERVED, and every publish
+  boundary refuses one.** That namespace is how the executor and pool
+  threads address a connection SLOT on the loop (`\x01<kind>/<slot>[/<lane>]`
+  — queue these bytes into its stream, unsubscribe it, re-point it), and
+  `WSGIHandler.sse_peer_frame` acts on it before looking at any
+  subscription. An application's channel is frequently user input, and
+  `%01` in a form body decodes to a real control byte, so the separation
+  is enforced where an untrusted name crosses in: `channel_is_reserved`
+  in `broadcast.mojo` guards `publish_to_channels`, and the shim's
+  `_M0Broadcast.publish` and both copies of `m0pub.publish_frame` spell
+  the same rule. Internal senders bypass those helpers — they build
+  `encode_bus_frame` datagrams directly — which is what makes refusing at
+  the boundary sufficient. It was previously argued that an HTTP header
+  cannot carry a control byte and so a collision was impossible; that
+  covers the `M0-Channel` header alone, and an unauthenticated POST
+  reached another client's SSE stream through `publish()`.
+- **`/ws/message` is the server's path, not the application's.** Under
+  `--realtime` an inbound WebSocket frame is delivered as a synthetic
+  `POST` there, carrying `M0-Channel`/`M0-Slot`/`M0-Opcode`; the view must
+  be CSRF-exempt to accept it. A request for that path that arrived over
+  the wire is therefore answered 404 in `serve_local`, so only the
+  synthetic one (built in-process, bypassing `serve_local`) reaches the
+  app. Without the reservation the CSRF exemption and the trusted headers
+  were available to anyone who could POST.
 - **SSE fan-out is per-process unless the app joins the `BroadcastBus`.**
   `M0_WORKERS>1` forks, and each worker gets its own subscriber registry; a
   broadcast reaches other workers' subscribers only when everything shared is
@@ -574,14 +611,51 @@ Properties of the design, not defects to fix in passing:
   installed and the default signal behaviour stands, because a handler over a
   dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
   happened and `test_lifecycle.mojo` asserts it.
+- **A response header carrying CR, LF or NUL is dropped, not transmitted.**
+  `write_latin1_to` emits `name: value\r\n` with no inspection, so a value
+  an application built out of user input could end the header block and
+  add headers, or a body, of its own. `has_control_bytes` in
+  `response.mojo` refuses the header (and empties an injected status
+  reason phrase, which frameworks that validate header pairs still leave
+  alone). Dropping rather than raising: the application has already run
+  and its body is real.
 - **An application's `Set-Cookie` goes to the wire verbatim.** A `Cookie`
   is what the server builds for itself; a line a WSGI/ASGI application
   returned IS the header, and `ResponseCookieJar.add_raw` transmits it
-  unparsed. Round-tripping it through `Cookie.from_set_header` +
+  unparsed — subject only to the CR/LF refusal above. Round-tripping it through `Cookie.from_set_header` +
   `build_header_value` silently dropped `expires` (the `Expiration` stub
   parses nothing), `SameSite` (lowercase-only match), everything after the
   first `=` in a value, and any unmodelled attribute — on every Django
   session and CSRF cookie of every app. Do not "normalise" that path.
+- **A chunked request body ends where RFC 9112 says it ends**, because the
+  request decoder is built with `consume_trailer = True`. Without it the
+  decode completed at `0\r\n` and the terminating `\r\n` every conforming
+  client sends stayed in the receive buffer — and closing a socket with
+  unread data queued makes the kernel send RST rather than FIN, discarding
+  the response already written. On `Connection: close` that is a response
+  the client never sees: measured at up to 53% of chunked requests, and
+  100% when the client paced its writes. Keep-alive hid it by never
+  closing. The cost of the rule is that a client which omits the final
+  CRLF now waits for it, as it would for any truncated body.
+- **A chunked body is bounded twice: decoded size AND raw bytes consumed.**
+  `max_request_body_size` caps what the application receives; twice that
+  caps what the connection cost, read from the decoder's `_total_read`.
+  Framing is consumed and dropped as it is decoded, so the first bound
+  alone leaves the raw stream limited only by the ratio guard — which
+  allows roughly three times the body limit in chunk-extension bytes
+  before it fires. The cost is that a body whose framing outweighs its
+  payload several times over (1 MB in 3-byte chunks is 3.6 MB on the wire)
+  now answers 413, which is what it is.
+- **A chunked request body is decoded incrementally, by ONE decoder per
+  connection.** `ConnectionProvision.chunk_decoder` is fed only the bytes
+  that just arrived and carries its chunk state across reads; the buffer is
+  `[headers][decoded][raw tail]` and `pending_bytes` says where the next
+  batch lands. Do not rebuild it per read event, which is what it used to
+  do: that re-copied and re-scanned the whole body every time, making a
+  chunked body O(N^2) on the loop thread (1 MB 0.15 s, 2 MB 0.61 s, 3 MB
+  1.37 s, dribbled in 1 KB segments; 0.003/0.004/0.006 s after), and it
+  reset `_total_overhead` so the decoder's own abuse-ratio guard could
+  never trip.
 - **A body the server accepts must fit its receive buffer.** The
   per-connection cap is `ServerConfig.recv_buffer_limit()` — headers plus
   body allowance, floored by `recv_buffer_max` — never the bare field,

@@ -42,6 +42,7 @@ def cgi_header_name(header_key: String) -> String:
 
 comptime _CONTENT_TYPE = "content-type"
 comptime _CONTENT_LENGTH = "content-length"
+comptime _PROXY = "proxy"
 
 
 def _is_unprefixed(name: Span[Byte, _]) -> Bool:
@@ -52,6 +53,27 @@ def _is_unprefixed(name: Span[Byte, _]) -> Bool:
     return _bytes_equal(name, _CONTENT_TYPE.as_bytes()) or _bytes_equal(
         name, _CONTENT_LENGTH.as_bytes()
     )
+
+
+def header_is_excluded(name: Span[Byte, _]) -> Bool:
+    """Whether this (lowercased) header must not reach the environ at all.
+
+    One entry: `Proxy`. CGI's mapping turns a request header into
+    `HTTP_<NAME>`, so a client sending `Proxy: http://attacker/` produces
+    `HTTP_PROXY` — the variable `urllib`, `requests`, and most HTTP clients
+    read to decide where to send an outbound request. An application that
+    makes any server-side HTTP call while that is in its environment can be
+    redirected by whoever sent the header. That is httpoxy (CVE-2016-5385
+    and friends), and the fix every affected server settled on is to refuse
+    to map this one header, because no legitimate request sends it.
+
+    Deliberately NOT extended to `X-Forwarded-*`: those are load-bearing
+    behind a real proxy, and this server never consults them itself
+    (`REMOTE_ADDR` comes from the socket peer, `wsgi.url_scheme` from
+    config), so passing them through is the application's information to
+    use or ignore.
+    """
+    return _bytes_equal(name, _PROXY.as_bytes())
 
 
 def _bytes_equal(a: Span[Byte, _], b: Span[Byte, _]) -> Bool:

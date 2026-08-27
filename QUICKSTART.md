@@ -240,3 +240,31 @@ The fuller demo, with token auth, channel isolation, and static files
 served without entering Python, is
 [`apps/django_realtime`](apps/django_realtime/) in the repository; its
 behaviour is pinned by `smoke-django-realtime` and a raw RFC 6455 probe.
+
+### Three things the server does not decide for you
+
+The hold pattern moves the *connection* out of Python, not the
+*authorisation*. What that leaves you:
+
+- **A view that approves a hold is the access check.** Nothing downstream
+  re-asks. The demo above gates on a query token because it is a demo; use
+  whatever your project already uses, and remember the view runs before the
+  connection becomes a stream, which is exactly where you want the decision.
+- **`publish()` reaches every subscriber of a channel, on every worker.**
+  If the channel name comes from a request, so does the blast radius — an
+  endpoint that publishes what it is told, to the channel it is told, is a
+  fan-out primitive for whoever can reach it. The server refuses only its
+  own reserved namespace (channels opening with a `\x01` byte, which
+  address connection slots internally); everything else is your namespace
+  to police.
+- **A WebSocket handshake carries no `Origin` check.** The server does not
+  make one, because it cannot know your policy. If you authenticate sockets
+  with cookies, a page on any origin can open one and the browser will
+  attach them — check `Origin` in the view that approves the upgrade, or
+  authenticate with something a cross-site page cannot supply.
+
+Inbound WebSocket messages arrive as a `POST` to `/ws/message`, and the
+server reserves that path: a request for it from the network is answered
+404 before Django sees it, so the view can treat what it receives as
+genuinely server-synthesised. That reservation is why the view may be
+`csrf_exempt` without it becoming an open endpoint.

@@ -4,11 +4,12 @@ name: Label auto-merge
 # passed for its head commit.
 #
 # Like dependabot-automerge.yml, this deliberately does NOT use
-# `gh pr merge --auto`. GitHub's auto-merge only waits when a branch protection
-# rule declares required status checks, and `main` here is unprotected — so
-# `--auto` would merge immediately, before CI had run, while *looking* like it
-# gated on CI. Triggering on workflow_run instead means this only fires after
-# Tests has reported success for the PR's head commit.
+# `gh pr merge --auto`. Repository auto-merge is disabled here, so it errors —
+# and it would not gate on CI even if enabled, because auto-merge waits only on
+# required status checks, and the ruleset protecting `main` declares none on
+# purpose (see dependabot-automerge.yml for why). Triggering on workflow_run
+# instead means this only fires after Tests has reported success for the PR's
+# head commit.
 #
 # The label is the authorization gate, and it is a real one: applying a label
 # requires triage or write access to this repository, so a PR author cannot

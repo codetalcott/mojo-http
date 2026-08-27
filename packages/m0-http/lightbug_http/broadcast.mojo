@@ -46,6 +46,40 @@ comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(
 # buffer, so nothing deliverable is ever dropped here.
 comptime BUS_MAX_FRAME = 65536
 comptime _BUS_HEADER = 10  # 8-byte event id + 2-byte url length
+
+comptime MAX_CHANNEL = 65535
+"""Longest channel name the bus wire format can carry (a `uint16` field)."""
+
+comptime CHANNEL_CONTROL_BYTE = UInt8(1)
+"""The byte that opens a RESERVED channel name (`\\x01<kind>/<slot>[/<lane>]`).
+
+The m0-wsgi handler interprets a bus frame whose channel starts with this
+byte as an internal control frame addressed at a connection SLOT — inject
+these bytes into that slot's stream, unsubscribe it, re-point it at another
+channel. Those senders (`asgi_executor`'s chunk frames, `handler`'s hold
+frames) build their datagrams directly with `encode_bus_frame`; they never
+come through `publish_to_channels`.
+
+Application fan-out does, and an application's channel name is frequently
+user input (a room name, a username, a POST field). So the namespaces are
+kept apart HERE, at the boundary untrusted names cross, by
+`channel_is_reserved` — not by the older claim that a control byte "cannot"
+appear in a channel because HTTP header values reject control characters.
+That reasoning only ever covered the `M0-Channel` header; a channel handed
+to `publish()` is an ordinary string, and `%01` in a form body decodes to a
+real 0x01. See `test_broadcast.mojo::test_publish_rejects_reserved_channel`.
+"""
+
+
+def channel_is_reserved(url: String) -> Bool:
+    """Whether `url` is in the internal control namespace (leading 0x01).
+
+    The one predicate every publish boundary asks — Mojo's here, and the
+    two Python ones in `bridge.mojo`'s shim and `m0pub.py`, which must
+    agree with it byte for byte.
+    """
+    var ub = url.as_bytes()
+    return len(ub) > 0 and ub[0] == CHANNEL_CONTROL_BYTE
 comptime _BUS_SOCKET_BUF = 262144
 
 comptime _AF_UNIX = 1
@@ -123,8 +157,23 @@ def publish_to_channels(
     is full misses the frame (matching per-slot backpressure), and frames
     over BUS_MAX_FRAME are not sent at all — no subscriber could accept them
     anyway.
+
+    A RESERVED channel name is refused outright (`channel_is_reserved`):
+    this is the application fan-out path, so its `url` may be user input,
+    and the control namespace addresses connection slots directly. Internal
+    senders do not come through here — they build their datagrams with
+    `encode_bus_frame` and send them themselves.
     """
     if len(frame) > BUS_MAX_FRAME:
+        return
+    if channel_is_reserved(url):
+        return
+    # `encode_bus_frame` writes the channel length into two bytes, so a
+    # longer name would be truncated modulo 65536 and the receiver would
+    # split the datagram in the wrong place — a frame delivered to the
+    # wrong channel with part of the name prepended to its payload. The
+    # two Python publishers refuse the same length; this is the third.
+    if url.byte_length() > MAX_CHANNEL:
         return
     var datagram = encode_bus_frame(url, event_id, frame)
     for w in range(len(write_fds)):

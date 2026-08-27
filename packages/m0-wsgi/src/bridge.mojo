@@ -93,6 +93,7 @@ from .environ import (
     all_ascii,
     append_cgi_name_as_utf8,
     append_latin1_as_utf8,
+    header_is_excluded,
 )
 
 
@@ -312,7 +313,14 @@ def _scope_from_environ(environ):
             if environ.get('REMOTE_ADDR') else None
         ),
         'server': (environ.get('SERVER_NAME', ''), port),
-        'client': None,
+        # NB: 'client' is computed above and must not be repeated here. A
+        # second `'client': None` key used to follow, and a dict literal
+        # keeps the LAST value -- so the peer computed from REMOTE_ADDR was
+        # thrown away and every buffered-ASGI request saw
+        # `scope["client"] is None`, while the executor path (which builds
+        # its scope separately) reported the real peer. An app doing
+        # IP-based rate limiting or allow-listing off scope["client"] would
+        # behave differently in the two modes for no visible reason.
         # A shallow copy per request, matching uvicorn: the app may add
         # request-scoped keys without polluting the lifespan state.
         'state': dict(_lifespan_state),
@@ -504,13 +512,29 @@ class _M0Broadcast:
     def publish(self, channel, payload):
         '''One frame to every worker's loop. Returns the event id (-1
         when no shared counter is available -- delivery still happens,
-        duplicate suppression is what degrades).'''
+        duplicate suppression is what degrades).
+
+        A channel opening with 0x01 is REFUSED. That namespace addresses
+        connection slots directly on the receiving loop (inject into this
+        slot's stream, unsubscribe it, re-point it), and an application's
+        channel name is routinely user input -- a `%01` in a form body
+        decodes to a real control byte. `channel_is_reserved` in
+        `lightbug_http/broadcast.mojo` is the same predicate.'''
         import os
         import struct
         if isinstance(channel, str):
             channel = channel.encode('utf-8')
         if isinstance(payload, str):
             payload = payload.encode('utf-8')
+        if channel[:1] == b'\x01' or len(channel) > 65535:
+            # Returns rather than raises, matching `m0pub.publish_frame`
+            # and the Mojo `publish_to_channels`. All three refuse the same
+            # names; they used to disagree on how, so the same user-supplied
+            # channel was a silent no-op under WSGI and a 500 under ASGI.
+            # Publishing is best-effort on every other failure here (a full
+            # channel, a dead worker), and a view that passes a request
+            # field as the channel should not become a 500 because of it.
+            return -1
         event_id = self._next_id() if self._next_id is not None else -1
         frame = struct.pack('<qH', event_id, len(channel)) + channel + payload
         if len(frame) > 65536:
@@ -527,10 +551,23 @@ class _M0Broadcast:
 
         Per-connection, per-loop; drop-oldest at `max_queue` (a slow
         consumer must not grow memory without bound -- the same
-        backpressure posture as the registry's outboxes).'''
+        backpressure posture as the registry's outboxes).
+
+        Refuses the reserved namespace for the same reason `publish` does,
+        from the other side: a subscription named `\\x01...` would be asking
+        to receive the loop's internal control frames.'''
         import asyncio
         if isinstance(channel, bytes):
             channel = channel.decode('utf-8')
+        if channel[:1] == '\x01':
+            # Subscribe DOES raise where publish returns: publish is
+            # best-effort and its return value says what happened, while a
+            # subscription that silently yielded nothing forever would be
+            # a debugging trap with no signal at all.
+            raise ValueError(
+                'm0 subscribe channel may not begin with 0x01 '
+                '(reserved for internal control frames)'
+            )
         q = asyncio.Queue(maxsize=max_queue)
         _m0_subs.setdefault(channel, set()).add(q)
 
@@ -1634,6 +1671,11 @@ struct PyBridge(Movable):
         # Walked by index over the header map's own spans: no `keys()`
         # snapshot, no `get()` lookup per key, no String anywhere.
         for i in range(req.headers.count()):
+            # httpoxy: `Proxy:` would become `HTTP_PROXY`, which outbound
+            # HTTP clients read as a proxy setting. See
+            # `header_is_excluded` for why this one name and no others.
+            if header_is_excluded(req.headers.name_span(i)):
+                continue
             self._scratch_name.clear()
             append_cgi_name_as_utf8(
                 self._scratch_name, req.headers.name_span(i)

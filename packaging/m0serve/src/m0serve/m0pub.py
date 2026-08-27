@@ -66,6 +66,20 @@ import sys
 # them here just moves the drop somewhere visible.
 MAX_FRAME = 65536
 
+# The channel-name length field is a uint16, so this is what fits.
+MAX_CHANNEL = 65535
+
+# A channel opening with this byte is RESERVED for the server's own control
+# frames: the m0-wsgi handler reads `\x01<kind>/<slot>[/<lane>]` as an
+# instruction aimed at one connection slot — queue these bytes into its
+# stream, unsubscribe it, re-point it at another channel. Publishing is the
+# boundary where an untrusted name would cross into that namespace (a
+# channel is routinely a room name or a POST field, and `%01` in a form body
+# decodes to a real control byte), so it is refused here. The Mojo side
+# spells the same rule `channel_is_reserved`, in
+# packages/m0-http/lightbug_http/broadcast.mojo.
+CHANNEL_CONTROL_BYTE = b"\x01"
+
 NO_EVENT_ID = -1
 
 # Set by server.mojo before the fork. The library path is not — nothing in
@@ -170,11 +184,18 @@ def publish_frame(channel, frame, event_id=NO_EVENT_ID):
     """Send one pre-framed SSE frame to `channel` on every worker.
 
     Returns the number of worker channels written — 0 means the frame was
-    oversized or no bus is configured.
+    oversized, the channel was refused, or no bus is configured.
+
+    A channel in the reserved namespace (leading 0x01) or longer than the
+    uint16 length field returns 0 rather than raising: publishing is
+    best-effort everywhere else in this module, and a view that passes a
+    user-supplied channel should not turn a bad name into a 500.
     """
     if len(frame) > MAX_FRAME:
         return 0
     url = channel.encode("utf-8")
+    if url[:1] == CHANNEL_CONTROL_BYTE or len(url) > MAX_CHANNEL:
+        return 0
     datagram = struct.pack("<qH", event_id, len(url)) + url + frame
     written = 0
     for fd in bus_write_fds():

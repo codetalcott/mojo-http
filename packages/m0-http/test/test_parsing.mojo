@@ -22,6 +22,7 @@ from lightbug_http.header import (
     HeaderKey,
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
+from lightbug_http.io.bytes import Bytes
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -176,6 +177,139 @@ def test_http11_accepts_a_real_host() raises:
 def test_http10_without_host_is_accepted() raises:
     """The Host requirement is HTTP/1.1's; 1.0 predates it."""
     assert_true(_accepted("GET / HTTP/1.0\r\n\r\n"))
+
+
+def test_http11_requires_host_to_be_present_at_all() raises:
+    """RFC 9112 3.2 asks for 400, and the empty-Host check did not cover
+    this: `headers.get()` returned None, which short-circuited the `and`
+    and let the request through with its target host unstated."""
+    assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
+    assert_true(_rejected("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n"))
+
+
+# --- Transfer-Encoding is case-insensitive (RFC 9112 7.1) --------------------
+
+
+def test_uppercase_chunked_is_recognised_as_chunked() raises:
+    """`CHUNKED` used to answer False to `is_chunked_body` and, having no
+    Content-Length either, was dispatched as a bodyless request while its
+    body stayed in the buffer. A proxy in front reading the same header per
+    spec would frame that body: two hops, two framings."""
+    var raw = String(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED\r\n\r\n"
+    )
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_true(parsed.is_chunked_body())
+
+
+def test_mixed_case_chunked_is_recognised() raises:
+    var raw = String(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: Chunked\r\n\r\n"
+    )
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_true(parsed.is_chunked_body())
+
+
+def test_uppercase_chunked_not_last_is_still_rejected() raises:
+    """The must-be-last rule was skipped entirely for uppercase, because its
+    own guard tested the raw value."""
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED, zorg\r\n\r\n"
+        )
+    )
+
+
+def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises:
+    """RFC 9112 6.3: only `chunked` says where a request body ends.
+
+    Deliberately WITHOUT a Content-Length — an earlier version of this test
+    included one, which meant the pre-existing TE+CL rule rejected it and
+    the assertion said nothing at all about the encoding. Without it, a
+    server that does not check this dispatches the request as bodyless and
+    leaves the body in the buffer for the next reader to find.
+    """
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: identity\r\n\r\n")
+    )
+    # A loose substring match would let these through as "chunked".
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: xchunked\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
+    )
+
+
+def test_chunked_as_the_last_coding_is_still_accepted() raises:
+    """The control: a legitimate `gzip, chunked` must keep working."""
+    assert_true(
+        _accepted(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+        )
+    )
+    assert_true(
+        _accepted("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED\r\n\r\n")
+    )
+
+
+# --- Content-Length must be a plain digit run (RFC 9112 6.3) ----------------
+
+
+def test_content_length_list_is_rejected() raises:
+    """`5, 5` is two hops having already disagreed. It parsed as 0 before,
+    so the body stayed unread and unframed instead of being refused."""
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5, 5\r\n\r\n")
+    )
+
+
+def test_non_digit_content_lengths_are_rejected() raises:
+    """Each of these silently became 0."""
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0x10\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: +5\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5abc\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: \r\n\r\n")
+    )
+
+
+def test_overflowing_content_length_is_rejected() raises:
+    """A 20-digit length wraps Int64 in `content_length()`, so the value
+    acted on would not be the value sent."""
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551621\r\n\r\n"
+        )
+    )
+
+
+def test_ordinary_content_lengths_are_still_accepted() raises:
+    """The guard must not cost a legitimate request: plain digits, zero, and
+    a large-but-representable length all still parse."""
+    assert_true(
+        _accepted("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+    )
+    assert_true(
+        _accepted("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1024\r\n\r\n")
+    )
+    assert_true(
+        _accepted(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 999999999999999999\r\n\r\n"
+        )
+    )
 
 
 # --- Resource bounds: the slowloris family -----------------------------------
@@ -336,3 +470,112 @@ def test_empty_chunk_size_is_rejected() raises:
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
+
+
+# --- the incremental chunked decoder ----------------------------------------
+
+
+def _feed_incrementally(raw: String, piece: Int) raises -> Tuple[Int, String]:
+    """Drive one decoder the way the event loop does: a buffer holding
+    `[decoded][raw tail]`, fed only the bytes that just arrived.
+
+    Returns (final ret, decoded body). This is the loop's arithmetic in
+    miniature — if it is wrong here it is wrong there, and unlike the loop
+    it can be asserted without a socket.
+    """
+    var dec = HTTPChunkedDecoder()
+    var buf = Bytes()
+    var decoded = 0
+    var ret = -2
+    var src = raw.as_bytes()
+    var at = 0
+    while at < len(src):
+        var upto = at + piece
+        if upto > len(src):
+            upto = len(src)
+        for i in range(at, upto):
+            buf.append(src[i])
+        at = upto
+
+        if len(buf) > decoded:
+            var produced: Int
+            ret, produced = dec.decode(Span(buf)[decoded:])
+            if ret == -1:
+                return (ret, String(""))
+            var leftover = dec.pending_bytes
+            buf.resize(decoded + produced + leftover, 0)
+            decoded += produced
+            if ret >= 0:
+                buf.resize(decoded, 0)
+                break
+    return (
+        ret,
+        String(unsafe_from_utf8=Span(buf)[:decoded]),
+    )
+
+
+def test_incremental_decode_matches_a_single_pass() raises:
+    """The same body fed one byte at a time must decode to the same bytes.
+
+    The decoder carries chunk state across calls, so feeding it only the
+    NEW bytes is what makes a chunked body linear rather than quadratic in
+    the number of reads. Every split lands somewhere different — mid size
+    line, mid data, between CR and LF — and all of them must agree.
+    """
+    var raw = String("5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n")
+    for piece in range(1, 12):
+        var got = _feed_incrementally(raw, piece)
+        assert_equal(got[0] >= 0, True)
+        assert_equal(got[1], "Hello World")
+
+
+def test_incremental_decode_does_not_leak_framing_into_the_body() raises:
+    """Chunk framing must never appear in the decoded output.
+
+    It did: the first pass over bytes that arrived WITH the headers seeded
+    `bytes_read` from the raw count rather than the decoded one, so the
+    resumed decode began past bytes it had not consumed and read the
+    `<size>\r\n ... \r\n` in the gap as body. A 300 KB upload in 64-byte
+    chunks came out 12 bytes long, holding two chunks' framing.
+    """
+    var sixteen = String("A") * 16
+    var raw = String()
+    for _ in range(12):  # 12 chunks of 16 bytes = 192
+        raw += "10\r\n" + sixteen + "\r\n"
+    raw += "0\r\n\r\n"
+    for piece in range(1, 9):
+        var got = _feed_incrementally(raw, piece)
+        assert_equal(got[0] >= 0, True)
+        assert_equal(got[1].byte_length(), 192)
+        # Nothing but the payload byte survives.
+        for c in got[1].as_bytes():
+            assert_equal(c, UInt8(ord("A")))
+
+
+def test_a_long_ordinary_body_does_not_trip_the_abuse_guard() raises:
+    """The overhead ratio must measure framing, not the unread tail.
+
+    Charging `buffer_len - dst` counts the not-yet-decodable remainder as
+    overhead on every call — and, since the remainder is re-offered on the
+    next call, counts it again each time. This body is almost all payload
+    (8 bytes of framing per 8 KB chunk) and must decode whole.
+    """
+    var chunk = String("B") * 8192
+    var raw = String()
+    for _ in range(40):  # 320 KB of payload, 8 bytes of framing per chunk
+        raw += "2000\r\n" + chunk + "\r\n"
+    raw += "0\r\n\r\n"
+    var got = _feed_incrementally(raw, 1500)
+    assert_equal(got[0] >= 0, True)
+    assert_equal(got[1].byte_length(), 40 * 8192)
+
+
+def test_a_body_that_is_mostly_framing_still_trips_the_abuse_guard() raises:
+    """The guard must still fire on what it was written for: one-byte
+    chunks are 5 bytes of framing for every byte of data."""
+    var raw = String()
+    for _ in range(40000):
+        raw += "1\r\nx\r\n"
+    raw += "0\r\n\r\n"
+    var got = _feed_incrementally(raw, 4096)
+    assert_equal(got[0], -1)

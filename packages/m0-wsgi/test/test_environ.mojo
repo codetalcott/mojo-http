@@ -14,6 +14,7 @@ from src.environ import (
     append_latin1_as_utf8,
     cgi_header_name,
     cgi_name_utf8,
+    header_is_excluded,
 )
 from src.response import split_status
 
@@ -219,6 +220,35 @@ def test_split_status_malformed_becomes_500() raises:
     var status = split_status("banana")
     assert_equal(status[0], 500)
     assert_equal(status[1], "Internal Server Error")
+
+
+# --- httpoxy ----------------------------------------------------------------
+
+
+def test_proxy_header_is_excluded_from_the_environ() raises:
+    """`Proxy:` must never become `HTTP_PROXY` (httpoxy, CVE-2016-5385).
+
+    CGI's mapping is mechanical, so a client-sent header lands in the same
+    variable that `urllib`/`requests` consult to choose an outbound proxy.
+    Any application making a server-side HTTP call would then send it
+    wherever the client said. No legitimate request carries this header, so
+    it is dropped rather than renamed.
+    """
+    assert_true(header_is_excluded("proxy".as_bytes()))
+
+
+def test_ordinary_headers_are_not_excluded() raises:
+    """The exclusion is one exact name — not a prefix, not a family.
+
+    `X-Forwarded-*` in particular stays: it is load-bearing behind a real
+    proxy, and this server never reads it itself.
+    """
+    assert_false(header_is_excluded("accept".as_bytes()))
+    assert_false(header_is_excluded("content-type".as_bytes()))
+    assert_false(header_is_excluded("x-forwarded-for".as_bytes()))
+    assert_false(header_is_excluded("x-forwarded-proto".as_bytes()))
+    assert_false(header_is_excluded("proxy-authorization".as_bytes()))
+    assert_false(header_is_excluded("".as_bytes()))
 
 
 def main() raises:

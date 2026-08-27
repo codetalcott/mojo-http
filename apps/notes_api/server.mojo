@@ -29,6 +29,7 @@ from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse
 from lightbug_http.header import Headers, Header, HeaderKey
 
 from m0_core.json_escape import escape_json_string
+from m0_core.html_escape import escape_html
 from m0_core.json_parse import parse_json_field
 
 from m0_http import (
@@ -102,8 +103,15 @@ struct NotesHandler(HTTPService):
         )
 
     def _note_html(self, i: Int) -> String:
+        # escape_html on every stored value, exactly as _note_json uses
+        # escape_json_string on the same two fields. Titles and bodies are
+        # whatever a POST body carried, and this representation is served as
+        # text/html to any client whose Accept prefers it — so an
+        # unescaped `<script>` here is stored XSS in every browser that
+        # views the note, not a formatting nit.
         return String(
-            "<article><h1>", self.titles[i], "</h1><p>", self.bodies[i],
+            "<article><h1>", escape_html(self.titles[i]),
+            "</h1><p>", escape_html(self.bodies[i]),
             "</p></article>",
         )
 
@@ -167,7 +175,7 @@ struct NotesHandler(HTTPService):
             for i in range(len(self.ids)):
                 html += String(
                     '<li><a href="/notes/', self.ids[i], '">',
-                    self.titles[i], "</a></li>",
+                    escape_html(self.titles[i]), "</a></li>",
                 )
             html += "</ul>"
             return _vary_accept(_html(html))

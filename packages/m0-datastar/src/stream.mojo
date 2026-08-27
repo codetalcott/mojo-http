@@ -352,12 +352,19 @@ def _parse_event_id(s: String) -> Int:
     is not one came from somewhere else and carries no position — 0 means
     "replay whatever the journal holds", the safe reading of an id we cannot
     place.
+
+    Bounded at 18 digits, the widest decimal that cannot overflow Int64.
+    The accumulator wraps silently past that, so a long enough client-sent
+    id would produce a negative or arbitrary position instead of the
+    rejection it deserves. `request_last_event_id` in m0-wsgi's `hold.mojo`
+    has always had this cap; this is the same rule in the other parser.
     """
-    if s.byte_length() == 0:
+    var n = s.byte_length()
+    if n == 0 or n > 18:
         return 0
     var result = 0
     var bytes = s.as_bytes()
-    for i in range(s.byte_length()):
+    for i in range(n):
         var c = Int(bytes[i])
         if c < ord("0") or c > ord("9"):
             return 0

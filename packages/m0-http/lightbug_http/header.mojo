@@ -284,10 +284,24 @@ struct ParsedRequestHeaders(Movable):
 
         Phase 1b: used by the server loops to distinguish chunked bodies
         (no Content-Length) from fixed-length bodies.
+
+        Case-INSENSITIVELY, as RFC 9112 §7.1 requires of transfer-coding
+        names. It was a plain substring test before, so `Transfer-Encoding:
+        CHUNKED` answered False here and, having no Content-Length either,
+        was dispatched as a request with an empty body while its actual
+        body sat unread in the buffer. Any proxy in front reading the same
+        header the way the RFC says would frame that body — a framing
+        disagreement between two hops is the ingredient request smuggling
+        is made of. The `chunked`-must-be-last check in `parse_request_line`
+        had the same gap and is fixed with it.
+
+        The lowercase copy costs an allocation, but only for requests that
+        carry the header at all: the `get` returns None for everything else
+        and this returns on the line above.
         """
         var te = self.headers.get(HeaderKey.TRANSFER_ENCODING)
         if te:
-            return "chunked" in te.value()
+            return "chunked" in te.value().lower()
         return False
 
     def expects_body(self) -> Bool:
@@ -804,6 +818,24 @@ def parse_request_headers(
             if seen_content_length:
                 raise RequestParseError(InvalidHTTPRequestError())
             seen_content_length = True
+            # RFC 9112 §6.3: a Content-Length that is not a plain digit run
+            # makes the message unframeable, and the answer is 400 rather
+            # than a guess. `Headers.content_length()` returns 0 for
+            # anything it cannot parse, which silently turned
+            # `Content-Length: 5, 5` (two hops disagreeing already),
+            # `0x10`, `+5` and `5abc` into "no body" — the digits' framing
+            # intent dropped on the floor while the bytes stayed in the
+            # buffer. Rejecting here means that reading of a length is
+            # never acted on.
+            if len(value) == 0:
+                raise RequestParseError(InvalidHTTPRequestError())
+            for d in range(len(value)):
+                if value[d] < 0x30 or value[d] > 0x39:
+                    raise RequestParseError(InvalidHTTPRequestError())
+            # A run of digits long enough to overflow Int64 is refused for
+            # the same reason: `content_length()` would wrap it silently.
+            if len(value) > 18:
+                raise RequestParseError(InvalidHTTPRequestError())
             headers.set_bytes(name_bytes, value)
         else:
             headers.set_bytes(name_bytes, value)
@@ -821,22 +853,40 @@ def parse_request_headers(
     if HeaderKey.TRANSFER_ENCODING in headers and HeaderKey.CONTENT_LENGTH in headers:
         raise RequestParseError(InvalidHTTPRequestError())
 
-    # RFC 9110 §7.2: HTTP/1.1 requires a non-empty Host field value.
-    # Whitespace-only Host values ("Host: " / "Host: \t") are stripped to ""
-    # by the parser's OWS skip and must be rejected as invalid.
+    # RFC 9112 §3.2: an HTTP/1.1 request MUST carry exactly one Host field,
+    # and a server MUST respond 400 to one that does not. Both halves are
+    # checked: a *missing* Host used to pass, because `host_opt` being None
+    # short-circuited the `and` — which leaves the request's target host
+    # unstated in any deployment that routes or caches on it.
+    #
+    # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
+    # the parser's OWS skip and are rejected by the same check.
     if minor_version == 1:
         var host_opt = headers.get(HeaderKey.HOST)
-        if host_opt and host_opt.value().byte_length() == 0:
+        if not host_opt or host_opt.value().byte_length() == 0:
             raise RequestParseError(InvalidHTTPRequestError())
 
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".
     var te_opt = headers.get(HeaderKey.TRANSFER_ENCODING)
     if te_opt:
-        var te_str = te_opt.value()
+        # Lowercased before the test, not only for `last_te`: transfer-coding
+        # names are case-insensitive (RFC 9112 §7.1), so testing the raw
+        # value let `Transfer-Encoding: CHUNKED` skip this check entirely —
+        # and skip being recognised as a chunked body at all. See
+        # `is_chunked_body`.
+        var te_str = te_opt.value().lower()
         var te_parts = te_str.split(",")
-        var last_te = String(te_parts[len(te_parts) - 1]).strip().lower()
-        if "chunked" in te_str and last_te != "chunked":
+        var last_te = String(String(te_parts[len(te_parts) - 1]).strip())
+        # RFC 9112 §6.3: if a request carries Transfer-Encoding, the FINAL
+        # coding must be `chunked` — that is the only one that says where
+        # the body ends. Testing `"chunked" in te_str` first let
+        # `Transfer-Encoding: gzip` past both this check and
+        # `is_chunked_body`, so with no Content-Length either the request
+        # was dispatched as bodyless while its body stayed in the buffer:
+        # the same two-hops-two-framings disagreement as the rest of this
+        # block, and the one member of the family left open.
+        if last_te != "chunked":
             raise RequestParseError(InvalidHTTPRequestError())
 
     var protocol = String("HTTP/1.", minor_version)

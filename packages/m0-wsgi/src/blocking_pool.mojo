@@ -60,10 +60,17 @@ comptime BLK_POOL = 7
 comptime WS_JOB_BUFFER = 65546
 """Bytes a pool thread's receive buffer holds.
 
-The submit channel's own socket buffer, plus the tag header: an inbound
-WebSocket message rides in the datagram and the loop's `max_message_size`
-keeps assembled messages under it. Matches what the executor's shim reads
-for the same channel."""
+The submit channel's own socket buffer, plus the tag header. Matches what
+the executor's shim reads for the same channel, and must equal
+`handler.WS_CHANNEL_DATAGRAM_MAX`, which is what the SENDER checks against.
+
+It is not `max_message_size` that keeps an inbound WebSocket message under
+this, though the comment here used to say so: that is
+`max_request_body_size`, 4 MB by default, 64x this buffer. `recv` here
+passes no `MSG_TRUNC`, so a larger datagram would be copied up to the
+buffer with the remainder discarded and the short count indistinguishable
+from a short message -- a truncated message handed to the application as a
+complete one. The senders in `handler.mojo` refuse to send one instead."""
 
 comptime JOIN_TIMEOUT_NS = 5_000_000_000
 """How long a shutdown waits for handler threads after the loop has drained.

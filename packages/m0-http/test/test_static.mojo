@@ -420,3 +420,69 @@ def test_cache_control_not_on_404() raises:
     var resp = hit.take()
     assert_equal(resp.status_code, 404)
     assert_false("cache-control" in resp.headers)
+
+
+def test_a_directory_without_a_trailing_slash_is_not_served_as_a_file() raises:
+    """`/static/sub` must 404, not 200.
+
+    `index.html` is only appended when the path ends in `/`, so this one
+    reached `stat` naming a directory — which succeeds — and went out as a
+    200 whose Content-Length was the directory inode's size. `sendfile(2)`
+    then refused the descriptor (EINVAL on Linux, EOPNOTSUPP on macOS) and
+    the connection died with the head already sent, which a client sees as
+    a truncated response rather than an error.
+    """
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/sub"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 404)
+
+
+def test_a_directory_with_a_trailing_slash_still_serves_its_index() raises:
+    """The regular-file check must not cost the supported shape."""
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/sub/"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 200)
+
+
+def test_ordinary_files_are_unaffected() raises:
+    """The control: a real file still serves, with its real length."""
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/style.css"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 200)
+
+
+# --- encoded slashes ---------------------------------------------------------
+
+def test_an_encoded_slash_does_not_become_a_path_separator() raises:
+    """`%2F` must not open a new segment.
+
+    The traversal defense is lexical and per segment, so a `%2F` that
+    decoded to a real `/` would hand it segments it never inspected.
+    """
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/sub%2F..%2F..%2Fsecret.txt"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 404)
+
+
+def test_an_encoded_slash_does_not_silently_vanish() raises:
+    """`%2F` used to be DELETED from the path, so `/static/sub%2Findex.html`
+    became `/static/subindex.html` — a different file than the client asked
+    for, and a target no component in front would agree on. It is now kept
+    encoded, which matches no real file here, so: 404."""
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/sub%2Findex.html"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 404)
+
+
+def test_ordinary_percent_escapes_still_decode() raises:
+    """The change is scoped to the disallowed byte; everything else decodes
+    as before, which is what PATH_INFO is supposed to carry."""
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/style%2Ecss"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 200)

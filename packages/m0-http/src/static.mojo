@@ -11,7 +11,10 @@ percent-DECODED (the fork's URI parser resolves `%2e` before anything here
 runs), so traversal is rejected lexically, segment by segment: `..`, `.`,
 empty segments (`//`), backslashes, and NUL all answer 404 — 404 and not
 400, because a traversal probe deserves no confirmation that it was
-understood. What this does NOT defend against is a symlink inside the root
+understood. The one escape the parser deliberately leaves encoded is
+`%2F`: it reaches here as those three characters, so it can never open a
+segment this loop did not inspect, and it matches no file whose name does
+not literally contain them. What this does NOT defend against is a symlink inside the root
 pointing out of it: like most servers' defaults, following symlinks is the
 filesystem owner's decision.
 
@@ -23,8 +26,16 @@ ignored and served as the full `200`, which the RFC explicitly permits.
 `If-Range` is never satisfied here: it requires strong comparison and
 these ETags are weak by design, so a conditional range falls back to the
 full representation rather than risking a stale slice. No directory
-listings — a request for a directory (trailing `/`) serves its
-`index.html` or 404s.
+listings — a request for a directory serves its `index.html` or 404s,
+whether or not the URL ended in `/`.
+
+**Only regular files are served.** A directory named without a trailing
+slash gets no `index.html` appended, and `stat` answers for it perfectly
+well, so it used to reach the send path: a `200` went out carrying the
+directory inode's size, `sendfile(2)` then refused the descriptor, and the
+connection died mid-response. The `S_ISREG` check also keeps a FIFO in the
+served tree from parking the loop inside `open`, and keeps device and
+socket nodes out.
 
 **A hit never reads the file.** `stat` supplies the size — which is what
 Range arithmetic and `Content-Length` need — and the validator is derived
@@ -50,6 +61,12 @@ from lightbug_http.header import Headers, Header, HeaderKey
 from .threads import dup_fd
 
 from .etag import compute_etag, etag_matches
+
+
+# The file-type bits of `st_mode`, and the one value this module serves.
+# POSIX constants, spelled out because Mojo's `std.os` does not export them.
+comptime _S_IFMT = 0o170000
+comptime _S_IFREG = 0o100000
 
 
 struct StaticFiles(Copyable, Movable):
@@ -152,6 +169,24 @@ struct StaticFiles(Copyable, Movable):
         var etag: String
         try:
             var st = stat(fs_path.value())
+            # Regular files only. Without this a request for a subdirectory
+            # WITHOUT a trailing slash — which never gets `index.html`
+            # appended, and which `stat` answers happily — was served as
+            # though it were a file: a 200 head went out carrying the
+            # directory inode's size as Content-Length, and then
+            # `sendfile(2)` refused it (EINVAL on Linux, EOPNOTSUPP on
+            # macOS) and the connection died mid-response. The same check
+            # keeps a FIFO in the served tree from blocking the loop or a
+            # pool thread inside `open`, which has no O_NONBLOCK here, and
+            # keeps device and socket nodes out.
+            #
+            # 404 rather than a redirect to `<path>/`: this module answers
+            # a directory request with its `index.html` or nothing, and a
+            # redirect would be a new promise about URL shape. Symlinks are
+            # still followed (`stat`, not `lstat`) — the module docstring
+            # says so, and it stays the filesystem owner's decision.
+            if (Int(st.st_mode) & _S_IFMT) != _S_IFREG:
+                return _not_found()
             total = Int(st.st_size)
             etag = stat_etag(
                 total,

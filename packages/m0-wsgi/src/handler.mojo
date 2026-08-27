@@ -458,7 +458,47 @@ struct WSGIHandler(ThreadHandler):
             and req.uri.path == self.health_path
         ):
             return self._health()
+        # `/ws/message` is the server's to synthesise, not a client's to
+        # request. An inbound WebSocket frame is delivered to the
+        # application as a POST there, carrying `M0-Channel`, `M0-Slot` and
+        # `M0-Opcode` — headers a client can also simply send, to a URL
+        # that is an ordinary route in the application's urlconf and must
+        # be CSRF-exempt to accept the synthetic request at all. So the
+        # view's premise, that "the client is the server itself, on the far
+        # side of a connection Django already authorised at upgrade time",
+        # held only because nobody had tried the other way in.
+        #
+        # A request that arrived over the wire is refused here; the
+        # synthetic one never passes through `serve_local` (`ws_message`
+        # calls `apps[0].serve` directly), so the real path is untouched.
+        # 404 rather than 403: the route's existence is not a client's
+        # business.
+        #
+        # Only under `--realtime`, which is what makes the path mean
+        # anything. Without it an application may route `/ws/message`
+        # itself and this must not shadow it.
+        if self.realtime and self._is_ws_message_path(req.uri.path):
+            return _not_found_response()
         return None
+
+    def _is_ws_message_path(self, path: String) -> Bool:
+        """Whether `path` names the synthetic WebSocket-message endpoint.
+
+        Under every mount, not just the bare one: the pool thread builds
+        the synthetic request as `mount_prefixes[0] + WS_MESSAGE_PATH`
+        (`_deliver_ws_message`), so on `--mount /app=...` the application's
+        route is at `/app/ws/message` and a reservation that only compared
+        the bare path would have left it reachable from the network — the
+        exact hole the reservation exists to close, still open in the one
+        configuration where the path is not obvious.
+        """
+        if path == WS_MESSAGE_PATH:
+            return True
+        for i in range(len(self.mount_prefixes)):
+            if self.mount_prefixes[i].byte_length() > 0:
+                if path == self.mount_prefixes[i] + WS_MESSAGE_PATH:
+                    return True
+        return False
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var local = self.serve_local(req)
@@ -646,9 +686,25 @@ struct WSGIHandler(ThreadHandler):
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open
-        # with a control byte no HTTP header value can carry, so collision
-        # with an application's GRIP channel is structurally impossible,
-        # and the early return skips both O(capacity) scans below.
+        # with a control byte, and the early return skips both O(capacity)
+        # scans below.
+        #
+        # These branches act on a SLOT NUMBER the frame chose, so reaching
+        # them is equivalent to addressing another connection: `s` queues
+        # bytes into its stream, `e` ends it, `h` re-points it. Separation
+        # from application channels is therefore enforced at every publish
+        # boundary -- `publish_to_channels` (broadcast.mojo), the shim's
+        # `_M0Broadcast.publish`, and `m0pub.publish_frame` all refuse a
+        # leading 0x01 -- because internal senders bypass those helpers and
+        # write `encode_bus_frame` datagrams directly.
+        #
+        # It was previously argued here that the collision was structurally
+        # impossible, on the grounds that an HTTP header value cannot carry
+        # a control byte. That covers the `M0-Channel` header only. A
+        # channel passed to `publish()` is an ordinary string, and `%01` in
+        # a form body decodes to a real 0x01 -- which is how an
+        # unauthenticated POST reached another connection's SSE stream.
+        # See test_broadcast.mojo::test_publish_rejects_reserved_channel.
         var ub = url.as_bytes()
         if len(ub) >= 3 and ub[0] == ASGI_URL_CONTROL:
             var slot = _parse_stream_slot(ub)
@@ -804,10 +860,16 @@ struct WSGIHandler(ThreadHandler):
         # `websocket.receive` loop — forward it to the executor thread as
         # a tagged datagram and never enter Python on the loop thread.
         if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
-            _send_ws_message_tag(
+            if not _send_ws_message_tag(
                 self._notify_fd_for(self.sockets.filter_url(slot)),
                 slot, opcode, payload,
-            )
+            ):
+                print(
+                    "ws_message: the executor's channel would not take an"
+                    " inbound message for slot " + String(slot)
+                    + "; it is lost",
+                    flush=True,
+                )
             return
         # GRIP mode: an inbound message, handed to a plain synchronous view
         # as a POST. This runs ON the event loop thread, so it costs
@@ -824,12 +886,30 @@ struct WSGIHandler(ThreadHandler):
         # try is mandatory, not defensive: a raising view must not take the
         # socket, or the loop, down with it.
         try:
+            # Same expression the pool path uses, so the two cannot
+            # synthesise different paths for the same server.
             var req = ws_message_request(
-                WS_MESSAGE_PATH, channel, slot, opcode, Span(payload)
+                self.mount_prefixes[0] + WS_MESSAGE_PATH,
+                channel, slot, opcode, Span(payload),
             )
             _ = self.apps[0].serve(req)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
+
+
+def _not_found_response() -> HTTPResponse:
+    """A plain 404, for a path the server answers itself rather than routes.
+
+    Used for a wire request to `WS_MESSAGE_PATH` under `--realtime`: that
+    path exists for the server to synthesise into, and a client asking for
+    it directly is told only that there is nothing there.
+    """
+    return HTTPResponse(
+        body_bytes=String('{"error":"not found"}').as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=404,
+        status_text="Not Found",
+    )
 
 
 def _unmounted() -> HTTPResponse:
@@ -934,10 +1014,36 @@ def _upgrade_required() -> HTTPResponse:
 #
 # Chunks and stream-ends travel from the executor thread to the loop as
 # bus-shaped datagrams whose "url" is a slot-addressed channel name opening
-# with a control byte (0x01). HTTP header values cannot carry control bytes,
-# and GRIP channel names come from the application's M0-Channel header, so a
-# collision with a real channel is structurally impossible. Kinds: 's' — a
-# response chunk for the slot's outbox; 'e' — end of stream.
+# with a control byte (0x01). Kinds: 's' — a response chunk for the slot's
+# outbox; 'e' — end of stream.
+#
+# What keeps an application channel out of this namespace is the check at
+# each publish boundary (`channel_is_reserved` in broadcast.mojo, and its
+# two Python twins), NOT the shape of an HTTP header. A GRIP channel does
+# arrive in the `M0-Channel` response header, whose value the request
+# parser would refuse control bytes in — but that is only one of the ways a
+# channel is named. `m0pub.publish(channel, ...)` and the ASGI
+# `state["m0"].publish(...)` take an arbitrary string, and in the reference
+# app that string is a request field.
+
+comptime WS_CHANNEL_DATAGRAM_MAX = 65546
+"""The receive buffer both channel readers post for an inbound WS message.
+
+`blocking_pool.WS_JOB_BUFFER` and the executor shim's own read size are
+this number, and both READ WITHOUT `MSG_TRUNC`: a SOCK_DGRAM datagram
+larger than the buffer is copied up to the buffer and the remainder is
+DISCARDED, with the short count looking exactly like a short message. The
+comment at each of those buffers claimed the loop's `max_message_size` kept
+assembled messages underneath it, which is wrong by a factor of 64 --
+`max_message_size` is `max_request_body_size`, 4 MB by default, so any
+inbound frame between ~64 KB and the socket's send-buffer limit was handed
+to the application truncated and presented as complete.
+
+Refusing to send is the honest answer: an oversized message is dropped and
+logged, the same way one too big for the socket buffer already was. It is
+declared here rather than beside either buffer because both senders live in
+this file, and a bound that is not shared with the check is not a bound.
+"""
 
 comptime ASGI_URL_CONTROL = UInt8(1)
 
@@ -1043,6 +1149,10 @@ def _send_ws_pool_message(
     loop — so the name it joined with has to travel with the message. Bounded
     retry, never a park: this runs on the event loop."""
     var chan = channel.as_bytes()
+    # See WS_CHANNEL_DATAGRAM_MAX: past this the reader silently drops the
+    # tail, so the message must not be sent at all.
+    if 12 + len(chan) + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
+        return False
     var msg = List[UInt8](capacity=12 + len(chan) + len(payload))
     msg.append(2)
     var bits = UInt64(Int64(slot))
@@ -1065,13 +1175,18 @@ def _send_ws_pool_message(
     return False
 
 
-def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):
+def _send_ws_message_tag(
+    fd: Int, slot: Int, opcode: Int, payload: List[UInt8]
+) -> Bool:
     """One `[tag=2 u8][slot i64 LE][opcode u8][payload]` datagram.
 
     The payload rides IN the datagram, so it is bounded by the channel's
-    frame size; the loop's own `max_message_size` keeps assembled messages
-    under it. Retried like the disconnect tag — a lost inbound message is
-    an app-visible gap."""
+    frame size — and by WS_CHANNEL_DATAGRAM_MAX, which is what the reader
+    can actually take. Over that it is refused rather than truncated;
+    `ws_message` logs the drop. Retried like the disconnect tag — a lost
+    inbound message is an app-visible gap."""
+    if 10 + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
+        return False
     var msg = List[UInt8](capacity=10 + len(payload))
     msg.append(2)
     var bits = UInt64(Int64(slot))
@@ -1085,8 +1200,9 @@ def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):
             c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
         )
         if rc == len(msg):
-            return
+            return True
         _ = external_call["sched_yield", c_int]()
+    return False
 
 
 def _send_disconnect_tag(fd: Int, slot: Int):

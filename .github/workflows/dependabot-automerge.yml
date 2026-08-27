@@ -2,14 +2,24 @@ name: Dependabot auto-merge
 
 # Merges Dependabot PRs once the Tests workflow has actually passed.
 #
-# This deliberately does NOT use `gh pr merge --auto`. GitHub's auto-merge
-# only waits when a branch protection rule declares required status checks,
-# and `main` here is unprotected — so `--auto` would merge immediately,
-# before CI had run, while looking like it gated on CI. Protecting `main`
-# would fix that but would also block direct pushes to it.
+# This deliberately does NOT use `gh pr merge --auto`. Repository auto-merge
+# is disabled here, so `--auto` errors — and it would not gate on CI even if
+# enabled, because auto-merge waits only on required status checks, and the
+# ruleset protecting `main` declares none on purpose: test.yml's paths-ignore
+# means a doc-only PR produces no Tests run at all, so a required check would
+# never report and such a PR could never merge.
 #
 # Triggering on workflow_run instead means this only fires after Tests has
 # reported success for the PR's head commit.
+#
+# **The branch name is not the gate.** It used to be: the job ran on
+# `startsWith(head_branch, 'dependabot/')`, reasoning that pushing such a
+# branch requires write access. That is true of a branch in THIS repository
+# and false of a pull request from a fork, where the head-ref name is chosen
+# by whoever opened it — so anyone able to get a green Tests run on a fork PR
+# named `dependabot/anything` could have it squash-merged to a protected
+# `main` with the base repo's token, no label and no review. The author,
+# the head repository, and the tested commit are all checked below instead.
 
 on:
   workflow_run:
@@ -23,36 +33,68 @@ permissions:
 jobs:
   merge:
     runs-on: ubuntu-latest
-    # Gated on Dependabot's branch namespace rather than the actor field,
-    # which is not reliably 'dependabot[bot]' on a workflow_run event.
-    # Creating a dependabot/* branch requires write access to this repo
-    # anyway, so the namespace is a sufficient gate.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'pull_request' &&
       startsWith(github.event.workflow_run.head_branch, 'dependabot/')
     steps:
-      - name: Resolve the PR for this run
+      - name: Resolve the PR and verify it is really Dependabot's
         id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           REPO: ${{ github.repository }}
         run: |
           # workflow_run.pull_requests is unreliable, so resolve by head branch.
-          number=$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" \
-                     --state open --json number --jq '.[0].number // empty')
-          if [ -z "$number" ]; then
+          # `--head` matches on the bare ref name, which a fork PR also
+          # supplies — every check that matters is made on the PR object.
+          pr=$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" --state open \
+                 --json number,author,headRefOid,headRepositoryOwner,isCrossRepository \
+                 --jq '.[0]')
+          if [ -z "$pr" ]; then
             echo "No open PR for $HEAD_BRANCH; nothing to merge."
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Found PR #$number for $HEAD_BRANCH"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "number=$number" >> "$GITHUB_OUTPUT"
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          number=$(printf '%s' "$pr" | jq -r '.number')
+          author=$(printf '%s' "$pr" | jq -r '.author.login')
+          head=$(printf '%s' "$pr" | jq -r '.headRefOid')
+          cross=$(printf '%s' "$pr" | jq -r '.isCrossRepository')
+
+          # The authorization gate: Dependabot itself opened this, not
+          # someone who named a branch after it.
+          if [ "$author" != "dependabot[bot]" ]; then
+            echo "PR #$number was opened by '$author', not dependabot[bot]; refusing."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Dependabot pushes branches to this repository. A cross-repository
+          # PR claiming to be from it is not something to merge unattended.
+          if [ "$cross" != "false" ]; then
+            echo "PR #$number comes from a fork; refusing to auto-merge."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The run that just passed must describe the PR's current head.
+          # Without this, pushing a commit while CI ran on the previous one
+          # would merge code that was never tested. (Same rule, and the same
+          # reason, as label-automerge.yml.)
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "PR #$number moved on ($head != $HEAD_SHA); waiting for the new run."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "PR #$number is green, current, and authored by dependabot[bot]."
+          echo "merge=true" >> "$GITHUB_OUTPUT"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
       - name: Squash-merge
-        if: steps.pr.outputs.found == 'true'
+        if: steps.pr.outputs.merge == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}

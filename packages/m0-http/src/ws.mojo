@@ -30,6 +30,22 @@ from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from .multiworker import shared_fetch_add
 
 
+# Backpressure: stop queueing for a slot whose outbox is already this deep.
+# The same number and the same posture as `SSERegistry.MAX_PENDING_BYTES`,
+# and for the same reason — a client that stops reading must lose frames
+# rather than grow the server's memory without bound.
+#
+# It is reachable here specifically because the loop only drains a slot's
+# outbox while that slot is idle in `STREAMING_WS`. A client whose receive
+# window is full leaves its slot in `RESPONDING` with a partial send, so the
+# drain is skipped for exactly as long as every `broadcast`/`deliver_peer`
+# keeps appending to it. Dropping is correct for a frame-per-message
+# transport: a chat message missed by a stalled client is a missed message,
+# whereas the alternative is one non-reading socket costing the process all
+# of its memory.
+comptime MAX_PENDING_BYTES = 65536
+
+
 struct WSHub(Movable):
     """Connected-slot registry with per-slot outboxes and bus fan-out."""
 
@@ -89,12 +105,27 @@ struct WSHub(Movable):
 
     # --- Sending ------------------------------------------------------------
 
-    def send(mut self, slot: Int, frame: List[UInt8]):
-        """Queue one encoded frame for one connection."""
-        if not self.is_connected(slot):
+    def _queue(mut self, slot: Int, frame: List[UInt8]):
+        """Append one whole frame to a slot's outbox, or drop it.
+
+        Whole frame or nothing: a WebSocket frame truncated at the cap would
+        be a protocol violation on the wire, not merely a lost message, so
+        the check is made before the first byte rather than per byte.
+        """
+        if len(self.outbox[slot]) + len(frame) > MAX_PENDING_BYTES:
             return
         for j in range(len(frame)):
             self.outbox[slot].append(frame[j])
+
+    def send(mut self, slot: Int, frame: List[UInt8]):
+        """Queue one encoded frame for one connection.
+
+        Dropped if the slot's outbox is already at `MAX_PENDING_BYTES` —
+        see that constant for why a stalled reader must not grow it.
+        """
+        if not self.is_connected(slot):
+            return
+        self._queue(slot, frame)
 
     def drain(mut self, slot: Int) -> List[UInt8]:
         """Return and clear a slot's pending bytes. Wire to `sse_drain_slot`."""
@@ -111,8 +142,7 @@ struct WSHub(Movable):
         whatever arrives on their channel, so use one url per hub."""
         for s in range(self.capacity):
             if self.connected[s]:
-                for j in range(len(frame)):
-                    self.outbox[s].append(frame[j])
+                self._queue(s, frame)
         if self.bus_worker >= 0:
             var event_id = 0
             if self.shared_id_addr != 0:
@@ -141,8 +171,11 @@ struct WSHub(Movable):
     def deliver_peer(mut self, frame: List[UInt8]):
         """Queue a peer worker's broadcast for every local connection —
         wire `sse_peer_frame` here (the url and event id are the bus's
-        concern; the hub delivers the bytes)."""
+        concern; the hub delivers the bytes).
+
+        Subject to the same per-slot cap as a local broadcast: a peer
+        worker's traffic must not be the thing that grows a stalled
+        client's outbox."""
         for s in range(self.capacity):
             if self.connected[s]:
-                for j in range(len(frame)):
-                    self.outbox[s].append(frame[j])
+                self._queue(s, frame)

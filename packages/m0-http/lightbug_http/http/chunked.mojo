@@ -30,7 +30,30 @@ struct HTTPChunkedDecoder(Defaultable):
     var _sig_hex_count: Int  # significant (non-leading-zero) hex digits seen
     var _state: DecoderState
     var _total_read: Int
+    """Raw body bytes this decoder has consumed, framing included.
+
+    Read by the servers to bound the whole chunked body and not just its
+    decoded size: chunk extensions and size lines are consumed and produce
+    nothing, so a cap on decoded output alone leaves the raw stream bounded
+    only by the ratio guard below — which allows roughly three times the
+    body limit in framing before it fires."""
     var _total_overhead: Int
+    var pending_bytes: Int
+    """Undecoded bytes the last `decode` left at the front of its buffer.
+
+    `decode` already compacts them there — decoded output first, then the
+    partial chunk header (or half-read size line) it could not finish — but
+    it only *returns* the decoded length, so a caller resuming across
+    several reads had no way to know where the next batch should be
+    appended. That is why this decoder was reconstructed per read event,
+    which made a chunked body cost O(N²): every event re-copied and
+    re-scanned the whole body accumulated so far, and it also reset
+    `_total_overhead`, disabling the abuse ratio below.
+
+    Feeding one decoder only the NEW bytes is what this makes possible.
+    Meaningless after an error return, and equal to `ret` on a completed
+    body (both are "bytes after the chunked data").
+    """
 
     def __init__(out self):
         self.bytes_left_in_chunk = 0
@@ -40,6 +63,7 @@ struct HTTPChunkedDecoder(Defaultable):
         self._state = DecoderState.IN_CHUNK_SIZE
         self._total_read = 0
         self._total_overhead = 0
+        self.pending_bytes = 0
 
     def decode[origin: MutOrigin](mut self, buf: Span[Byte, origin]) -> Tuple[Int, Int]:
         """Decode chunked transfer encoding.
@@ -59,7 +83,8 @@ struct HTTPChunkedDecoder(Defaultable):
         var ret = -2  # incomplete
         var buffer_len = len(buf)
 
-        self._total_read += buffer_len
+        # NB: the totals are accumulated at the BOTTOM, from `src`/`dst`, not
+        # here from `buffer_len`. See the abuse-ratio block.
 
         while True:
             if self._state == DecoderState.IN_CHUNK_SIZE:
@@ -216,12 +241,38 @@ struct HTTPChunkedDecoder(Defaultable):
                 _bp[unsafe_offset = dst + _k] = _bp[unsafe_offset = src + _k]
 
         var new_bufsz = dst
+        # Where the next batch of raw bytes belongs: right after the
+        # leftover the block above just moved to buf[dst:]. See the field's
+        # docstring for why this is recorded rather than recomputed.
+        self.pending_bytes = buffer_len - src
 
-        # Check for excessive overhead
+        # Check for excessive overhead: a body that is mostly chunk framing
+        # and hardly any data.
+        #
+        # Measured against what this call actually CONSUMED (`src`) and
+        # produced (`dst`), so the framing cost is `src - dst`.
+        #
+        # It was `buffer_len - dst`, which charged the whole
+        # not-yet-decodable tail as overhead. That was harmless while a
+        # throwaway decoder saw the entire body in one call, and is wrong
+        # now that one decoder is fed per read: the unconsumed tail is
+        # re-offered on the next call, so those bytes were charged again
+        # every time, and `_total_read` double-counted them alongside. No
+        # request is known to have been refused because of it — the ratio
+        # needs 100 KB of charged overhead before it can fire, and the
+        # 400s seen while building this were the `bytes_read` desync in
+        # `event_loop.mojo`, not this. It is corrected because the numbers
+        # should mean what they say; `test_a_body_that_is_mostly_framing_
+        # still_trips_the_abuse_guard` pins that the guard still fires on
+        # what it was written for.
         if ret == -2:
-            self._total_overhead += buffer_len - dst
+            self._total_read += src
+            self._total_overhead += src - dst
             if self._total_overhead >= 100 * 1024 and self._total_read - self._total_overhead < self._total_read // 4:
                 ret = -1
+        else:
+            self._total_read += src
+            self._total_overhead += src - dst
 
         return (ret, new_bufsz)
 

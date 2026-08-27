@@ -11,36 +11,21 @@ is a single line on purpose — SSE is line-framed, and a one-line fragment
 keeps every broadcast a single `data: elements` line.
 """
 
+from m0_core.html_escape import escape_html
+
 # Pinned deliberately: a floating CDN version would let an upstream release
 # break this example without a commit here. Matches the protocol version
 # m0-datastar implements (v1.0.2).
 comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"
 
 
-def escape_html(s: String) -> String:
-    """Escape text for safe interpolation into HTML content.
-
-    Todo text is user input; without this, a note titled `<script>` would run
-    in every connected tab — the broadcast would turn stored XSS into
-    *distributed* stored XSS.
-    """
-    var out = String()
-    var bytes = s.as_bytes()
-    for i in range(s.byte_length()):
-        var b = bytes[i]
-        if b == UInt8(ord("&")):
-            out += "&amp;"
-        elif b == UInt8(ord("<")):
-            out += "&lt;"
-        elif b == UInt8(ord(">")):
-            out += "&gt;"
-        elif b == UInt8(ord('"')):
-            out += "&quot;"
-        elif b == UInt8(ord("'")):
-            out += "&#39;"
-        else:
-            out += String(chr(Int(b)))
-    return out^
+# `escape_html` now comes from m0-core rather than being written here. The
+# local copy rebuilt every byte with `chr(Int(b))`, which promotes each
+# UTF-8 continuation byte to its own codepoint — a todo reading `café` was
+# stored correctly and displayed as `cafÃ©`, in the page and in every
+# broadcast of it. The XSS defense itself was sound (the five characters it
+# escaped are all ASCII); the mangling was the bug, and sharing one
+# implementation is what keeps it fixed in both places.
 
 
 def render_todos(

@@ -10,7 +10,7 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.broadcast import BroadcastBus, drain_bus_channel
 from src.multiworker import SharedAtomics
-from src.ws import WSHub
+from src.ws import WSHub, MAX_PENDING_BYTES
 
 
 def _frame(text: String) raises -> List[UInt8]:
@@ -149,6 +149,70 @@ def test_without_bus_broadcast_is_local_only() raises:
     hub.broadcast("/chat", _frame("local"))
     assert_equal(_text(hub.drain(0)), "local")
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
+
+
+# --- backpressure -----------------------------------------------------------
+
+def test_outbox_stops_growing_at_the_cap() raises:
+    """A slot nobody drains must not grow without bound.
+
+    The loop drains a slot's outbox only while that slot sits idle in
+    `STREAMING_WS`; a client whose receive window is full leaves it in
+    `RESPONDING` instead, so a broadcast-heavy app kept appending to a
+    stalled client's outbox for the life of the connection. `SSERegistry`
+    has capped this since it was written — this is the same cap, arrived at
+    the same way.
+    """
+    var hub = WSHub(4)
+    hub.open(0)
+
+    var chunk = List[UInt8]()
+    for _ in range(4096):
+        chunk.append(UInt8(ord("x")))
+    for _ in range(64):  # 256 KB offered into a 64 KB outbox
+        hub.send(0, chunk)
+
+    var pending = hub.drain(0)
+    assert_true(len(pending) <= MAX_PENDING_BYTES)
+    assert_true(len(pending) > 0)  # it queues until the cap, it does not refuse everything
+
+    # Draining releases the pressure: the connection recovers rather than
+    # being poisoned for the rest of its life.
+    hub.send(0, chunk)
+    assert_equal(len(hub.drain(0)), 4096)
+
+
+def test_cap_drops_whole_frames_only() raises:
+    """A truncated WebSocket frame is a protocol violation, so the cap must
+    drop a frame entirely rather than fill up to the boundary."""
+    var hub = WSHub(2)
+    hub.open(0)
+
+    var chunk = List[UInt8]()
+    for _ in range(1000):
+        chunk.append(UInt8(ord("y")))
+    for _ in range(200):
+        hub.send(0, chunk)
+
+    # Every byte queued belongs to a whole 1000-byte frame.
+    assert_equal(len(hub.drain(0)) % 1000, 0)
+
+
+def test_broadcast_and_peer_delivery_respect_the_cap() raises:
+    """Both fan-out paths share the guard, not just the unicast one."""
+    var big = List[UInt8]()
+    for _ in range(MAX_PENDING_BYTES + 1):
+        big.append(UInt8(ord("z")))
+
+    var hub = WSHub(2)
+    hub.open(0)
+    hub.broadcast("/chat", big)
+    assert_equal(len(hub.drain(0)), 0)
+
+    var peer = WSHub(2)
+    peer.open(0)
+    peer.deliver_peer(big)
+    assert_equal(len(peer.drain(0)), 0)
 
 
 def main() raises:
