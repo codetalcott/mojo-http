@@ -140,11 +140,29 @@ struct EpollBackend(EventLoopBackend):
 
         Tries ADD first (new fd); falls back to MOD (re-arm after
         EPOLLONESHOT disarmed the fd — still registered but inactive).
+
+        EPOLLRDHUP is in the mask so a peer's half-close surfaces as
+        EV_EOF (see `event_flags`), exactly as kqueue reports it on the
+        read filter. Without it a half-close on Linux was an ordinary
+        readable event: a COMPLETE buffered request was answered by the
+        header path anyway, but an INCOMPLETE one sat holding its slot
+        until the header timeout answered 408 — ten seconds for a
+        connection the kernel already knew could never finish. The flag
+        costs nothing per connection (same registration, one more mask
+        bit) and makes the two backends agree on what a half-close is.
+
+        Belt and braces, deliberately: a recv returning 0 marks
+        `peer_eof` too, so the prompt release does not hinge on this
+        flag alone (sabotage-verified — removing only the flag changes
+        nothing observable). What the flag buys is parity — the EV_EOF
+        path runs on both platforms instead of being macOS-only code —
+        and the half-close arriving in the same event as the last data.
         """
+        comptime _R = EPOLLIN | EPOLLRDHUP | EPOLLET
         try:
-            epoll_ctl_add(self.epfd, fd, EPOLLIN | EPOLLET, UInt64(fd))
+            epoll_ctl_add(self.epfd, fd, _R, UInt64(fd))
         except:
-            epoll_ctl_mod(self.epfd, fd, EPOLLIN | EPOLLET, UInt64(fd))
+            epoll_ctl_mod(self.epfd, fd, _R, UInt64(fd))
 
     def try_add_read(mut self, fd: Int):
         try:

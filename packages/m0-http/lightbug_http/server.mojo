@@ -187,6 +187,20 @@ struct ConnectionProvision(Movable):
     var last_parse_len: Int
     """Length of buffer at last parse attempt (for incremental parsing)."""
 
+    var request_end: Int
+    """Where the CURRENT request ends in `recv_buffer`, once known; 0 before.
+
+    Set at dispatch — headers alone for a bodyless request, headers plus
+    declared length for Content-Length (known at parse time), headers plus
+    decoded size at chunked completion. Bytes past it are the NEXT
+    pipelined request, already read off the socket, and
+    `prepare_for_new_request(keep_pipelined=True)` preserves them where it
+    used to clear them — RFC 9112 §9.3: a server MUST be able to receive
+    pipelined requests, and losing the tail was a hang for any client that
+    pipelines (no event will ever announce bytes that were consumed with a
+    previous request's read).
+    """
+
     var keepalive_count: Int
     """Number of requests handled on this connection."""
 
@@ -243,6 +257,7 @@ struct ConnectionProvision(Movable):
         self.chunk_decoder = HTTPChunkedDecoder()
         self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
+        self.request_end = 0
         self.keepalive_count = 0
         self.should_close = False
         self.log_method = String()
@@ -301,12 +316,29 @@ struct ConnectionProvision(Movable):
         self.recv_staging.reserve(size)
         self.encoding_buffer.reserve(size)
 
-    def prepare_for_new_request(mut self):
-        """Reset provision for next request in keepalive connection."""
+    def prepare_for_new_request(mut self, keep_pipelined: Bool = False):
+        """Reset provision for next request in keepalive connection.
+
+        `keep_pipelined=True` — passed ONLY by the keep-alive resets, after
+        a response has gone out — keeps any bytes past `request_end`: they
+        are the next pipelined request, and the recv that took them off the
+        socket consumed the only readiness event they will ever get.
+        Everywhere else (accept, close) the buffer clears whole, so a tail
+        left behind by one client can never leak into another connection's
+        first request.
+        """
         self.parsed_headers = None
         self.request = None
         self.response = None
-        self.recv_buffer.clear()
+        if (
+            keep_pipelined
+            and self.request_end > 0
+            and self.request_end < len(self.recv_buffer)
+        ):
+            var tail = Bytes(Span(self.recv_buffer)[self.request_end :])
+            self.recv_buffer = tail^
+        else:
+            self.recv_buffer.clear()
         self.recv_staging.clear()
         self.state = ConnectionState.reading_headers()
         self.body_state = None
@@ -314,6 +346,7 @@ struct ConnectionProvision(Movable):
         self.chunk_decoder = HTTPChunkedDecoder()
         self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
+        self.request_end = 0
         self.should_close = False
         self.log_method = String()
         self.log_path = String()
@@ -522,40 +555,44 @@ def handle_connection[
                     provision.state = ConnectionState.closed()
                     break
 
-            var buffer = Bytes(capacity=config.socket_buffer_size)
-            var bytes_read: UInt
+            # Bytes the keep-alive reset preserved are parsed BEFORE
+            # blocking on the socket: the client already sent them and is
+            # waiting on their responses, so a blocking read here would sit
+            # out the idle timeout for data that is never coming.
+            if len(provision.recv_buffer) <= provision.last_parse_len:
+                var buffer = Bytes(capacity=config.socket_buffer_size)
+                var bytes_read: UInt
 
-            try:
-                bytes_read = conn.read(buffer)
-            except read_err:
-                if read_err.isa[EOF]():
+                try:
+                    bytes_read = conn.read(buffer)
+                except read_err:
+                    if read_err.isa[EOF]():
+                        provision.state = ConnectionState.closed()
+                        break
+                    # On keep-alive connections, treat timeout (EAGAIN) as clean close
+                    # so the server can accept new connections.
+                    if provision.keepalive_count > 0:
+                        provision.state = ConnectionState.closed()
+                        break
+                    # First request timeout: send 408 Request Timeout
+                    if config.header_read_timeout > 0:
+                        _send_error_response(conn, RequestTimeout())
+                        provision.state = ConnectionState.closed()
+                        break
+                    raise read_err^
+
+                if bytes_read == 0:
                     provision.state = ConnectionState.closed()
                     break
-                # On keep-alive connections, treat timeout (EAGAIN) as clean close
-                # so the server can accept new connections.
-                if provision.keepalive_count > 0:
-                    provision.state = ConnectionState.closed()
-                    break
-                # First request timeout: send 408 Request Timeout
-                if config.header_read_timeout > 0:
-                    _send_error_response(conn, RequestTimeout())
-                    provision.state = ConnectionState.closed()
-                    break
-                raise read_err^
 
-            if bytes_read == 0:
-                provision.state = ConnectionState.closed()
-                break
-
-            var prev_len = len(provision.recv_buffer)
-            provision.recv_buffer.extend(buffer^)
+                provision.recv_buffer.extend(buffer^)
 
             if len(provision.recv_buffer) > config.recv_buffer_limit():
                 _send_error_response(conn, BadRequest())
                 provision.state = ConnectionState.closed()
                 break
 
-            var search_start = prev_len
+            var search_start = provision.last_parse_len
             if search_start > 3:
                 search_start -= 3  # Account for partial \r\n\r\n match
 
@@ -630,8 +667,14 @@ def handle_connection[
                         header_end_offset=header_end_offset,
                         is_chunked=is_chunked,
                     )
+                    # Where this request will end. Chunked cannot know yet
+                    # (0 = whole buffer); the completion below stamps it.
+                    provision.request_end = (
+                        0 if is_chunked else header_end_offset + content_length
+                    )
                     provision.state = ConnectionState.reading_body(effective_length)
                 else:
+                    provision.request_end = header_end_offset
                     provision.state = ConnectionState.processing()
 
             provision.last_parse_len = len(provision.recv_buffer)
@@ -680,9 +723,12 @@ def handle_connection[
                     body_st.bytes_read = decoded_so_far
                     provision.body_state = body_st
                     if ret >= 0:
-                        provision.recv_buffer.resize(
-                            raw_body_start + decoded_so_far, 0
-                        )
+                        # `pending_bytes` bytes remain past the chunked
+                        # data — the next pipelined request. The buffer was
+                        # already resized to keep exactly them above; the
+                        # resize that used to discard them here is why a
+                        # pipelined request behind a chunked body was lost.
+                        provision.request_end = raw_body_start + decoded_so_far
                         body_st.content_length = decoded_so_far
                         body_st.bytes_read = decoded_so_far
                         body_st.is_chunked = False
@@ -865,7 +911,7 @@ def handle_connection[
                 break
 
             provision.keepalive_count += 1
-            provision.prepare_for_new_request()
+            provision.prepare_for_new_request(keep_pipelined=True)
             header_start_ns = perf_counter_ns()
             # Switch to idle timeout for next request on keep-alive
             if config.idle_timeout > 0:

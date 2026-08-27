@@ -535,6 +535,25 @@ python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat lr.l
 echo "smoke-large-request OK"
 """
 
+# RFC 9112 §9.3: a server MUST be able to receive pipelined requests. The
+# bytes of request N+1 arrive in the same read that completes request N and
+# get no readiness event of their own, so answering them takes deliberate
+# machinery (`request_end`, the keep-alive reset preserving the tail,
+# `_drain_pipelined`) — which this pins. Every release up to and including
+# v0.12.0 answered only the first request of a pipelined burst and left the
+# client hanging on the rest.
+[tool.poe.tasks.smoke-pipelining]
+help = "Every pipelined request is answered, in order — not just the first"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > pl.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f pl.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
+  || { echo '=== pl.log ==='; cat pl.log; exit 1; }
+python3 scripts/pipeline_probe.py 8080 || { echo '=== pl.log ==='; cat pl.log; exit 1; }
+echo "smoke-pipelining OK"
+"""
+
 [tool.poe.tasks.smoke-ws]
 help = "WebSocket echo demo: handshake, echo, fragmentation, ping/pong, heartbeats, close"
 shell = """

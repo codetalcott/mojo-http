@@ -250,9 +250,12 @@ code depends on:
     - **A slot with a job in flight is untouchable and unrecyclable.** The
       idle and header sweeps skip it, the read path refuses it (clearing
       `slot_read_armed` so a pipelined request is not stranded by the edge it
-      consumed), and a client that disconnects detaches the fd but leaves the
-      provision borrowed — `_close_slot(..., release_provision=False)` — until
-      the completion releases it.
+      consumed), and a client that half-closes or vanishes mid-job keeps its
+      fd attached with `peer_eof` marked — the completion answers through
+      it, and a peer that is really gone surfaces as the failed send there.
+      (The old behaviour detached the fd, which dropped the response the
+      pool thread was about to complete — the offloaded shape of the
+      half-close bug.)
     - **Composes with `--realtime` by forwarding, never by subscribing.**
       The streaming hooks run on the loop's handler, so a pool thread must
       never subscribe its own registries — nothing drains them. On a pool
@@ -654,16 +657,46 @@ Properties of the design, not defects to fix in passing:
   header timeout. Closing there discarded a response already written, which
   the client sees as an RST and a lost answer.
 
-  **The two backends disagree here, and that is why this was invisible in
-  CI**: kqueue sets `EV_EOF` on the read filter for a half-close (data may
-  still be pending), while the epoll backend never registers `EPOLLRDHUP`,
-  so on Linux the same half-close is an ordinary readable event that the
-  header path already handled. Measured before the fix, 30 requests per
-  shape: macOS lost 24-30 of 30 on GET, Content-Length and chunked alike;
-  Linux lost none. `poe smoke-half-close` pins it, and registering
-  `EPOLLRDHUP` to make the platforms identical is a deliberate non-change —
-  it would add an event source on every Linux connection to buy a bounded
-  10 s in one edge case.
+  **The two backends used to disagree here, and that is why this was
+  invisible in CI**: kqueue sets `EV_EOF` on the read filter for a
+  half-close (data may still be pending), while epoll only reports it
+  because `add_read` registers `EPOLLRDHUP` — which it originally did not,
+  so on Linux a half-close was an ordinary readable event that the header
+  path happened to handle. Measured before the fix, 30 requests per shape:
+  macOS lost 24-30 of 30 on GET, Content-Length and chunked alike; Linux
+  lost none — and conversely a half-closed INCOMPLETE request released its
+  slot at once on macOS while Linux held it the full 10 s to the header
+  timeout's 408. Registering `EPOLLRDHUP` was once recorded here as a
+  deliberate non-change "adding an event source per connection"; that was
+  wrong on its own terms — it is one more bit in the existing
+  registration, delivering events only when a peer actually half-closes —
+  and both platforms now behave identically. `poe smoke-half-close` pins
+  the answered response AND the prompt release. One consumer of the flag
+  is subtle: `_handle_read_headers` reuses `bytes_read = 0` as its
+  EAGAIN-with-buffered-data sentinel, so "the peer really hit EOF" travels
+  as `recv_eof`/`peer_eof`, never as a zero byte count — collapsing the
+  two closed every request that was partial at an EAGAIN pass.
+- **Pipelined requests are answered from the buffer, not from events**
+  (RFC 9112 §9.3). The bytes of request N+1 arrive in the same read that
+  completes request N and get no readiness event of their own — the edge
+  that carried them is spent on epoll, and the socket buffer kqueue's
+  level trigger watches no longer holds them. Three pieces make the tail
+  answered rather than silently dropped, which is what every release
+  through v0.12.0 did: `request_end` stamps where the answered request
+  ends (at parse for Content-Length, at completion for chunked — whose
+  completion paths now PRESERVE the bytes past the terminator instead of
+  resizing them away); the keep-alive reset keeps the tail
+  (`prepare_for_new_request(keep_pipelined=True)` — passed ONLY by the
+  keep-alive resets, so accept and close still clear whole and one
+  client's tail can never leak into another connection's first request);
+  and `_drain_pipelined` re-parses the preserved buffer after every
+  completed response, one request per iteration. It is iterative on
+  purpose (recursing through the handler chain nests a call stack per
+  request) and unbounded on purpose (the send buffer is the real bound:
+  an iteration whose response cannot go out whole leaves the slot
+  RESPONDING and exits). The blocking path has the same fix in its own
+  shape — it parses preserved bytes before blocking on a socket that may
+  never speak again. `poe smoke-pipelining` pins all of it.
 - **A chunked request body ends where RFC 9112 says it ends**, because the
   request decoder is built with `consume_trailer = True`. Without it the
   decode completed at `0\r\n` and the terminating `\r\n` every conforming

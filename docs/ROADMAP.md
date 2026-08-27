@@ -285,9 +285,10 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
     address to threads spawned before the loop starts is a lifetime hazard;
     caller-owned storage outlives the loop by construction.
   - No slot-generation array. A slot with a job in flight is never
-    *recycled*: a client that disconnects meanwhile detaches the fd but
-    leaves the provision borrowed, and the completion releases it. A
-    generation counter detects that race; holding the slot removes it.
+    *recycled*: a client that half-closes or vanishes meanwhile is simply
+    held — `peer_eof` marked, fd attached — and the completion answers
+    through it or fails its send and closes. A generation counter detects
+    that race; holding the slot removes it.
 
   The idle and header sweeps skip `PROCESSING`, the read path refuses to
   touch an offloaded slot (clearing `slot_read_armed` so a pipelined request
