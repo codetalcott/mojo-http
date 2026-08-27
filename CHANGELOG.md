@@ -7,6 +7,8 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-26
+
 ### Added
 
 - **WebSocket holds work with `--blocking-threads` and with `--mount`.**
@@ -60,165 +62,6 @@ versions may break the API**.
   composition; `smoke-blocking-threads` and `smoke-doctor` now assert the
   pair is accepted where they asserted the refusal.
 
-### Changed
-
-- **The loop's `before_request` runs before a request is offloaded**, not
-  only on the queue-full fallback — where, under a pool, it never ran on
-  the loop at all. `WSGIHandler` answers its static mounts and the health
-  path there, so under `--blocking-threads` those are served on the loop
-  in Mojo rather than by a pool thread: a stylesheet stays readable
-  whatever the pool is busy with, and `/health` reports the registries the
-  loop actually drains. Before this, under the newly-composed `--realtime
-  --blocking-threads`, it reported zero subscribers while events were
-  being delivered — a pool thread's own registries are always empty.
-
-### Documentation
-
-- **`textshelf` re-measured after stage 1**
-  ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md), *Revisited*).
-  With `--realtime` and the pool composing, the recommendation the record
-  pointed at changed, so it was re-measured rather than re-reasoned. Two
-  findings. m0serve's ASGI executor matches uvicorn and daphne to the
-  millisecond on both a sync and an async generator — whatever streams
-  under them streams under it. And the application's own AI streaming
-  endpoints do not stream anywhere, including its production daphne: the
-  producer is a *sync* generator, which Django's ASGI handler consumes
-  before serving. That makes those endpoints free to move, which leaves
-  the `--mount`-with-`--realtime` refusal as the only thing standing
-  between a mixed application and one process — recorded in the ROADMAP
-  as a re-ordering of stage 2, ahead of the WebSocket half. The real-application
-  pass produced one finding about the shape of the server rather than a
-  defect in it: `--realtime` refuses `--blocking-threads`, so the cheapest
-  way to hold a stream (M0-Hold: +2 MB per 200 held, no Python state, no
-  database connection) costs the pool that cures the hostage pathology —
-  measured on textshelf as a 1 543 ms fast-path p50 under `--realtime`
-  against 0.3 ms with the pool, with eight slow views in flight. The entry
-  records the numbers, the mechanism the executor already uses to solve the
-  identical problem (a reserved begin frame the loop's handler turns into a
-  subscription), a staged design for SSE holds then sockets, the narrower
-  `--mount` refusal that follows from it, and what must be shown before it
-  is built. Verdict recorded with it: the larger of the two is the
-  difference between the realtime claim being demonstrable and deployable.
-
-- **Three real Django projects, served — the record**
-  ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). The plan that
-  file used to hold has been executed: `transcripts` (plain WSGI, `src/`
-  layout), `color-separation` (numpy/Pillow pipelines, uploads, downloads)
-  and `textshelf` (four SSE endpoints, three pubsub modules, WhiteNoise,
-  djstripe) served from clean clones against scratch databases, through
-  `--doctor`, byte-parity against `runserver`, the feature matrix, the
-  topology matrix, a realtime retrofit and a soak. Four defects, all fixed
-  below, three of which no application in `apps/` could have shown. After
-  the cookie fix, every remaining parity difference on every route of all
-  three apps is `connection: keep-alive`, `x-thread`, or Django's debug page
-  echoing its own port.
-
-- **The desktop-Mac hypothesis, and the packaging tension under it**
-  (ROADMAP, Open questions). Recorded because the relevant decision is
-  already shipped and otherwise invisible: `poe build-serve` pins
-  `--target-cpu` to `apple-m1`, the *oldest* Apple Silicon, so the PyPI
-  wheel deliberately forfeits M-series-specific capability — including the
-  +sme/+sme2 matrix extension the build comment notes this M4 would
-  otherwise target. The pin exists because the first release crashed with
-  SIGILL in a clean container, so it is not a mistake to undo; it is a
-  tradeoff that points the other way from "exploit the Mac's silicon", and
-  the two should be reconciled deliberately. Also recorded: what has to be
-  established first, including that this toolchain has no `gpu` module at
-  all, and that the neural engine is a CoreML surface rather than something
-  a language targets directly.
-
-
-### Fixed
-
-- **`--app-dir` is prepended to `sys.path`, not appended.** It appended
-  where gunicorn, uvicorn and `runserver` all `sys.path.insert(0, ...)`, so
-  an application module could be shadowed by an installed package of the
-  same name — and the shadowed application simply is not the one served,
-  with nothing to see. The help text, `cli.mojo` and `app.mojo` had all
-  said "prepended" since the flag existed; now it is true.
-  `prepend_to_path` also declines to move an entry already at the front,
-  and leaves duplicates further down alone — a path the user put there is
-  not the server's to edit. Found by dogfooding the wheel, reconfirmed by
-  the three-project pass, and guarded by a `smoke-serve` phase that puts a
-  module named `django` under `--app-dir` in a venv where the real Django
-  is installed.
-
-- **Every `Set-Cookie` an application set lost its `expires` and `SameSite`
-  attributes.** The WSGI/ASGI bridge parsed each `Set-Cookie` line into a
-  `Cookie` and re-serialised it, and that round trip was lossy four ways:
-  `Expiration` is a stub whose `from_string` parses nothing, `SameSite`
-  matched only lowercase values, a value was cut at its first `=` (base64
-  pads with one), and any attribute the struct does not model was dropped.
-  Django's session and CSRF cookies therefore reached every browser without
-  `expires` or `SameSite` — a persistent cookie silently demoted to a
-  session cookie, and a CSRF cookie without its defence. Application lines
-  are now transmitted **verbatim** (`ResponseCookieJar.add_raw`), which is
-  also the cheaper path on the measured response half of the bridge. Found
-  by serving three real Django projects; `smoke-django` now reads the cookie
-  off the wire and requires all four attributes, because curl's jar stores
-  name and value only and could never have seen it.
-
-- **Uploads between ~1.5 MB and `--max-body` were refused with `400`.** The
-  per-connection receive buffer had its own 2 MB ceiling that `--max-body`
-  never raised, so a body the server advertised as acceptable was rejected
-  by the wrong check with the wrong status — under the default 4 MB cap too.
-  The limit is now derived (`ServerConfig.recv_buffer_limit()` = headers plus
-  body allowance, floored by `recv_buffer_max`), so raising the body cap
-  raises the buffer with it. A 7.1 MB image upload to a real Django app
-  found it.
-
-- **Concurrent ASGI streams truncated each other, and enough of them wedged
-  the executor.** The chunk credit window is per stream (64 KB) while the
-  chunk channel is one shared `SOCK_DGRAM` pair, so N streams over-commit it;
-  `send_stream_chunk` then dropped the datagram it could not place — a short
-  body under a clean terminator, or, with the end frame dropped, a response
-  that never completed at all. Twelve concurrent WhiteNoise `FileResponse`s
-  under Django were enough. Now bounded globally (`_ASGI_TOTAL_WINDOW` in the
-  shim, where waiting is an `await` rather than a Mojo spin that would hold
-  the GIL against the very loop that has to drain the channel), with the loop
-  keeping owed credit and retrying it when the ack channel is momentarily
-  full. `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and
-  checks every byte.
-
-- **`SIGTERM` never returned while a handler thread sat in a response that
-  never ends.** A `StreamingHttpResponse` served under WSGI is buffered, so
-  an SSE generator never returns and its pool thread never comes back;
-  `stop_and_join` waited for it forever, turning `docker stop` into a
-  `SIGKILL` after the grace period. The join now has the same 5 s budget as
-  the drain (`ThreadSet.join_within`), after which the process exits naming
-  how many threads it left inside the application. Nothing in the process can
-  unwind Python on another thread, so leaving is the only correct answer;
-  waiting was not.
-
-
-- **`smoke-wheel` leaked a server on every run, and could pass against the
-  wrong binary.** Nine orphaned `m0serve` processes accumulated over one
-  day of development, all still `LISTEN`ing on port 8129, one of them still
-  answering `200 OK` a day after the run that made it.
-
-  Two independent defects. The launch was
-  `(cd "$work/app" && env ... m0serve ...) &` — a *list*, which bash cannot
-  exec-optimize, so `$!` was the **subshell** rather than the server.
-  `kill $pid` killed the wrapper and left `m0serve` orphaned to init. Adding
-  `exec` makes the subshell become the server, which is how
-  `bench_mixed_workload.sh` had been doing it all along. And the `EXIT` trap
-  only removed the temp directory, so every `fail` after the launch leaked
-  one too; the server pid is in the trap now.
-
-  The consequence was worse than untidiness. The server sets `SO_REUSEPORT`
-  because prefork needs it, so the kernel adds a new listener **alongside**
-  a stale one and load-balances between them: a leaked server from an
-  earlier run can answer this smoke's request, and the assertions then pass
-  against a binary that is not the one under test. `smoke-wheel` now refuses
-  to start when 8129 already has a listener, naming the pids and the command
-  to clear them.
-
-  Verified by running the pre-fix task once (leaks exactly one process,
-  `ppid 1`) against the fixed one (leaks none, on both the success and the
-  failure path), and by putting a decoy listener on 8129 to trip the new
-  refusal.
-
-### Added
 
 - **The isolation benchmark has an artifact, and the ratchet caught sixteen
   stale sentences.** Gate 3's last item. `bench/results/` now carries a
@@ -322,59 +165,18 @@ versions may break the API**.
   a failed install needs, and previously libpython not resolving was visible
   only as a traceback at serve time.
 
-
-### Fixed
-
-- **The README quoted a decomposition its own measurements had retired.**
-  It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
-  1.58x bridge" — numbers from before the CPU-normalized re-run, which
-  WSGI_PERFORMANCE.md had already replaced with ~1.0x × 1.35x and explicitly
-  marked as "records of what was measured, not descriptions of the
-  present". The README kept quoting them, in raw rps, against a comparator
-  since found to be running 1.75 cores. Rewritten from the artifact.
-
-- **"There is no chunked encoding" was no longer true.** The server has
-  chunked transfer-encoding and ASGI responses stream through the executor
-  chunk-framed on HTTP/1.1. WSGI responses are still fully buffered, but
-  the reason is PEP 3333 — a WSGI response carries a `Content-Length`,
-  which means knowing the length — not a missing feature.
-
-- **The PyPI project page told aarch64 users their wheel did not exist.**
-  0.11.0 shipped a `manylinux_2_35_aarch64` wheel and its release notes
-  claimed "the platform matrix on the README is the platform matrix on the
-  index" — which was true of the repository's README and false of
-  `packaging/m0serve/README.md`, the `readme` named by the wheel's
-  pyproject.toml and therefore the page PyPI renders. That one still read
-  `Linux aarch64 | buildable, not yet shipped` for the whole of the
-  release. Two READMEs, one of them published, and the ratchet was pointed
-  at the other.
-
-- **A README number quoted twice, guarded once.** The mounted-isolation
-  p99 (2.8 ms) now appears on the first screen as well as in the mounts
-  section. It is not artifact-backed — `hybrid_isolation.py` asserts a
-  deliberately generous ceiling rather than recording the figure — so
-  `check_hybrid_p99_consistent` checks the two copies against *each other*
-  instead. A number edited in one place and not the other is the ordinary
-  way a README starts contradicting itself.
-
-- **The bench prose was answerable to nothing, and it was wrong.**
-  `render_bench_docs` kept the generated *tables* honest; the sentences
-  around them — where the headline claims actually live — were checked by
-  no one. docs/WSGI_PERFORMANCE.md stated the WSGI result as a
-  decomposition, "roughly 1.0x HTTP layer × ~1.35x bridge", and it does not
-  reconcile with the artifact directly beneath it: the measured per-core gap
-  is **1.21x**, and a 1.35x bridge term requires an HTTP layer term of
-  0.89x — this server's HTTP layer *slower* than the comparator's, which
-  the same sentence denies.
-
-
-- **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its
-  chain with `else: opts.metrics = True`, so a new flag added to `_is_bool`
-  and forgotten in the dispatch silently enabled Prometheus metrics instead
-  of doing its job. `--doctor` would have been the first victim. The `else`
-  now raises, and `test_cli.mojo` asserts each boolean sets only itself.
-
 ### Changed
+
+- **The loop's `before_request` runs before a request is offloaded**, not
+  only on the queue-full fallback — where, under a pool, it never ran on
+  the loop at all. `WSGIHandler` answers its static mounts and the health
+  path there, so under `--blocking-threads` those are served on the loop
+  in Mojo rather than by a pool thread: a stylesheet stays readable
+  whatever the pool is busy with, and `/health` reports the registries the
+  loop actually drains. Before this, under the newly-composed `--realtime
+  --blocking-threads`, it reported zero subscribers while events were
+  being delivered — a pool thread's own registries are always empty.
+
 
 - **The mounted-isolation guard had 138x headroom and now has 12x.**
   `hybrid_isolation.py`'s `ISOLATION_BUDGET_MS` was 400 ms against an
@@ -425,6 +227,201 @@ versions may break the API**.
   the check belongs in `check_docs.py`, where prose facts with a machine
   source live. [docs/RELEASING.md](docs/RELEASING.md) names the fourth bump
   site; `poe check-docs` fails on all four.
+
+### Fixed
+
+- **`--app-dir` is prepended to `sys.path`, not appended.** It appended
+  where gunicorn, uvicorn and `runserver` all `sys.path.insert(0, ...)`, so
+  an application module could be shadowed by an installed package of the
+  same name — and the shadowed application simply is not the one served,
+  with nothing to see. The help text, `cli.mojo` and `app.mojo` had all
+  said "prepended" since the flag existed; now it is true.
+  `prepend_to_path` also declines to move an entry already at the front,
+  and leaves duplicates further down alone — a path the user put there is
+  not the server's to edit. Found by dogfooding the wheel, reconfirmed by
+  the three-project pass, and guarded by a `smoke-serve` phase that puts a
+  module named `django` under `--app-dir` in a venv where the real Django
+  is installed.
+
+- **Every `Set-Cookie` an application set lost its `expires` and `SameSite`
+  attributes.** The WSGI/ASGI bridge parsed each `Set-Cookie` line into a
+  `Cookie` and re-serialised it, and that round trip was lossy four ways:
+  `Expiration` is a stub whose `from_string` parses nothing, `SameSite`
+  matched only lowercase values, a value was cut at its first `=` (base64
+  pads with one), and any attribute the struct does not model was dropped.
+  Django's session and CSRF cookies therefore reached every browser without
+  `expires` or `SameSite` — a persistent cookie silently demoted to a
+  session cookie, and a CSRF cookie without its defence. Application lines
+  are now transmitted **verbatim** (`ResponseCookieJar.add_raw`), which is
+  also the cheaper path on the measured response half of the bridge. Found
+  by serving three real Django projects; `smoke-django` now reads the cookie
+  off the wire and requires all four attributes, because curl's jar stores
+  name and value only and could never have seen it.
+
+- **Uploads between ~1.5 MB and `--max-body` were refused with `400`.** The
+  per-connection receive buffer had its own 2 MB ceiling that `--max-body`
+  never raised, so a body the server advertised as acceptable was rejected
+  by the wrong check with the wrong status — under the default 4 MB cap too.
+  The limit is now derived (`ServerConfig.recv_buffer_limit()` = headers plus
+  body allowance, floored by `recv_buffer_max`), so raising the body cap
+  raises the buffer with it. A 7.1 MB image upload to a real Django app
+  found it.
+
+- **Concurrent ASGI streams truncated each other, and enough of them wedged
+  the executor.** The chunk credit window is per stream (64 KB) while the
+  chunk channel is one shared `SOCK_DGRAM` pair, so N streams over-commit it;
+  `send_stream_chunk` then dropped the datagram it could not place — a short
+  body under a clean terminator, or, with the end frame dropped, a response
+  that never completed at all. Twelve concurrent WhiteNoise `FileResponse`s
+  under Django were enough. Now bounded globally (`_ASGI_TOTAL_WINDOW` in the
+  shim, where waiting is an `await` rather than a Mojo spin that would hold
+  the GIL against the very loop that has to drain the channel), with the loop
+  keeping owed credit and retrying it when the ack channel is momentarily
+  full. `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and
+  checks every byte.
+
+- **`SIGTERM` never returned while a handler thread sat in a response that
+  never ends.** A `StreamingHttpResponse` served under WSGI is buffered, so
+  an SSE generator never returns and its pool thread never comes back;
+  `stop_and_join` waited for it forever, turning `docker stop` into a
+  `SIGKILL` after the grace period. The join now has the same 5 s budget as
+  the drain (`ThreadSet.join_within`), after which the process exits naming
+  how many threads it left inside the application. Nothing in the process can
+  unwind Python on another thread, so leaving is the only correct answer;
+  waiting was not.
+
+
+- **`smoke-wheel` leaked a server on every run, and could pass against the
+  wrong binary.** Nine orphaned `m0serve` processes accumulated over one
+  day of development, all still `LISTEN`ing on port 8129, one of them still
+  answering `200 OK` a day after the run that made it.
+
+  Two independent defects. The launch was
+  `(cd "$work/app" && env ... m0serve ...) &` — a *list*, which bash cannot
+  exec-optimize, so `$!` was the **subshell** rather than the server.
+  `kill $pid` killed the wrapper and left `m0serve` orphaned to init. Adding
+  `exec` makes the subshell become the server, which is how
+  `bench_mixed_workload.sh` had been doing it all along. And the `EXIT` trap
+  only removed the temp directory, so every `fail` after the launch leaked
+  one too; the server pid is in the trap now.
+
+  The consequence was worse than untidiness. The server sets `SO_REUSEPORT`
+  because prefork needs it, so the kernel adds a new listener **alongside**
+  a stale one and load-balances between them: a leaked server from an
+  earlier run can answer this smoke's request, and the assertions then pass
+  against a binary that is not the one under test. `smoke-wheel` now refuses
+  to start when 8129 already has a listener, naming the pids and the command
+  to clear them.
+
+  Verified by running the pre-fix task once (leaks exactly one process,
+  `ppid 1`) against the fixed one (leaks none, on both the success and the
+  failure path), and by putting a decoy listener on 8129 to trip the new
+  refusal.
+
+
+- **The README quoted a decomposition its own measurements had retired.**
+  It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
+  1.58x bridge" — numbers from before the CPU-normalized re-run, which
+  WSGI_PERFORMANCE.md had already replaced with ~1.0x × 1.35x and explicitly
+  marked as "records of what was measured, not descriptions of the
+  present". The README kept quoting them, in raw rps, against a comparator
+  since found to be running 1.75 cores. Rewritten from the artifact.
+
+- **"There is no chunked encoding" was no longer true.** The server has
+  chunked transfer-encoding and ASGI responses stream through the executor
+  chunk-framed on HTTP/1.1. WSGI responses are still fully buffered, but
+  the reason is PEP 3333 — a WSGI response carries a `Content-Length`,
+  which means knowing the length — not a missing feature.
+
+- **The PyPI project page told aarch64 users their wheel did not exist.**
+  0.11.0 shipped a `manylinux_2_35_aarch64` wheel and its release notes
+  claimed "the platform matrix on the README is the platform matrix on the
+  index" — which was true of the repository's README and false of
+  `packaging/m0serve/README.md`, the `readme` named by the wheel's
+  pyproject.toml and therefore the page PyPI renders. That one still read
+  `Linux aarch64 | buildable, not yet shipped` for the whole of the
+  release. Two READMEs, one of them published, and the ratchet was pointed
+  at the other.
+
+- **A README number quoted twice, guarded once.** The mounted-isolation
+  p99 (2.8 ms) now appears on the first screen as well as in the mounts
+  section. It is not artifact-backed — `hybrid_isolation.py` asserts a
+  deliberately generous ceiling rather than recording the figure — so
+  `check_hybrid_p99_consistent` checks the two copies against *each other*
+  instead. A number edited in one place and not the other is the ordinary
+  way a README starts contradicting itself.
+
+- **The bench prose was answerable to nothing, and it was wrong.**
+  `render_bench_docs` kept the generated *tables* honest; the sentences
+  around them — where the headline claims actually live — were checked by
+  no one. docs/WSGI_PERFORMANCE.md stated the WSGI result as a
+  decomposition, "roughly 1.0x HTTP layer × ~1.35x bridge", and it does not
+  reconcile with the artifact directly beneath it: the measured per-core gap
+  is **1.21x**, and a 1.35x bridge term requires an HTTP layer term of
+  0.89x — this server's HTTP layer *slower* than the comparator's, which
+  the same sentence denies.
+
+
+- **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its
+  chain with `else: opts.metrics = True`, so a new flag added to `_is_bool`
+  and forgotten in the dispatch silently enabled Prometheus metrics instead
+  of doing its job. `--doctor` would have been the first victim. The `else`
+  now raises, and `test_cli.mojo` asserts each boolean sets only itself.
+
+### Documentation
+
+- **`textshelf` re-measured after stage 1**
+  ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md), *Revisited*).
+  With `--realtime` and the pool composing, the recommendation the record
+  pointed at changed, so it was re-measured rather than re-reasoned. Two
+  findings. m0serve's ASGI executor matches uvicorn and daphne to the
+  millisecond on both a sync and an async generator — whatever streams
+  under them streams under it. And the application's own AI streaming
+  endpoints do not stream anywhere, including its production daphne: the
+  producer is a *sync* generator, which Django's ASGI handler consumes
+  before serving. That makes those endpoints free to move, which leaves
+  the `--mount`-with-`--realtime` refusal as the only thing standing
+  between a mixed application and one process — recorded in the ROADMAP
+  as a re-ordering of stage 2, ahead of the WebSocket half. The real-application
+  pass produced one finding about the shape of the server rather than a
+  defect in it: `--realtime` refuses `--blocking-threads`, so the cheapest
+  way to hold a stream (M0-Hold: +2 MB per 200 held, no Python state, no
+  database connection) costs the pool that cures the hostage pathology —
+  measured on textshelf as a 1 543 ms fast-path p50 under `--realtime`
+  against 0.3 ms with the pool, with eight slow views in flight. The entry
+  records the numbers, the mechanism the executor already uses to solve the
+  identical problem (a reserved begin frame the loop's handler turns into a
+  subscription), a staged design for SSE holds then sockets, the narrower
+  `--mount` refusal that follows from it, and what must be shown before it
+  is built. Verdict recorded with it: the larger of the two is the
+  difference between the realtime claim being demonstrable and deployable.
+
+- **Three real Django projects, served — the record**
+  ([REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). The plan that
+  file used to hold has been executed: `transcripts` (plain WSGI, `src/`
+  layout), `color-separation` (numpy/Pillow pipelines, uploads, downloads)
+  and `textshelf` (four SSE endpoints, three pubsub modules, WhiteNoise,
+  djstripe) served from clean clones against scratch databases, through
+  `--doctor`, byte-parity against `runserver`, the feature matrix, the
+  topology matrix, a realtime retrofit and a soak. Four defects, all fixed
+  below, three of which no application in `apps/` could have shown. After
+  the cookie fix, every remaining parity difference on every route of all
+  three apps is `connection: keep-alive`, `x-thread`, or Django's debug page
+  echoing its own port.
+
+- **The desktop-Mac hypothesis, and the packaging tension under it**
+  (ROADMAP, Open questions). Recorded because the relevant decision is
+  already shipped and otherwise invisible: `poe build-serve` pins
+  `--target-cpu` to `apple-m1`, the *oldest* Apple Silicon, so the PyPI
+  wheel deliberately forfeits M-series-specific capability — including the
+  +sme/+sme2 matrix extension the build comment notes this M4 would
+  otherwise target. The pin exists because the first release crashed with
+  SIGILL in a clean container, so it is not a mistake to undo; it is a
+  tradeoff that points the other way from "exploit the Mac's silicon", and
+  the two should be reconciled deliberately. Also recorded: what has to be
+  established first, including that this toolchain has no `gpu` module at
+  all, and that the neural engine is a CoreML surface rather than something
+  a language targets directly.
 
 ## [0.11.0] — 2026-08-26
 
@@ -1927,6 +1924,9 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.12.0
+[0.11.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.11.0
+[0.10.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.10.0
 [0.9.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.9.0
 [0.8.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.8.0
 [0.7.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.7.0
