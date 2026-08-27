@@ -452,3 +452,37 @@ def test_ordinary_files_are_unaffected() raises:
     var hit = static.serve(_get("/static/style.css"))
     var resp = hit.take()
     assert_equal(resp.status_code, 200)
+
+
+# --- encoded slashes ---------------------------------------------------------
+
+def test_an_encoded_slash_does_not_become_a_path_separator() raises:
+    """`%2F` must not open a new segment.
+
+    The traversal defense is lexical and per segment, so a `%2F` that
+    decoded to a real `/` would hand it segments it never inspected.
+    """
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/sub%2F..%2F..%2Fsecret.txt"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 404)
+
+
+def test_an_encoded_slash_does_not_silently_vanish() raises:
+    """`%2F` used to be DELETED from the path, so `/static/sub%2Findex.html`
+    became `/static/subindex.html` — a different file than the client asked
+    for, and a target no component in front would agree on. It is now kept
+    encoded, which matches no real file here, so: 404."""
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/sub%2Findex.html"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 404)
+
+
+def test_ordinary_percent_escapes_still_decode() raises:
+    """The change is scoped to the disallowed byte; everything else decodes
+    as before, which is what PATH_INFO is supposed to carry."""
+    var static = StaticFiles(_fixture_root())
+    var hit = static.serve(_get("/static/style%2Ecss"))
+    var resp = hit.take()
+    assert_equal(resp.status_code, 200)

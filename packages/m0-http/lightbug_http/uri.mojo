@@ -4,7 +4,34 @@ from lightbug_http.io.bytes import ByteReader, Bytes, ByteView
 from lightbug_http.strings import find_all, http, https, strHttp10, strHttp11
 
 
+def _hex_upper(v: Int) -> String:
+    """One uppercase hex digit."""
+    return String("0123456789ABCDEF"[byte=v : v + 1])
+
+
 def unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: List[String] = List[String]()) -> String:
+    """Percent-decode `input_str`, leaving `disallowed_escapes` encoded.
+
+    A byte named in `disallowed_escapes` is NOT decoded: its `%XX` form is
+    kept (canonicalised to uppercase hex), so the result cannot contain a
+    character the caller said must not appear through an escape. Entries
+    are matched a byte at a time; the only caller passes `["/"]`, to keep
+    `%2F` from becoming a path separator.
+
+    It used to DELETE such a byte instead — `replace(disallowed, "")` — and
+    that silently rewrote the request target: `/adm%2Fin` arrived at
+    routing, at `PATH_INFO`, and at the access log as `/admin`. Anything in
+    front making a decision on the raw target (a WAF, a proxy's location
+    rules, a CDN's cache key) sees a path this server does not agree with,
+    which is a path-rule bypass wearing a normalisation bug's clothes. It
+    also meant an encoded slash inside a segment — an encoded id, say —
+    could never survive to the application.
+
+    Decoding it to a literal `/` would be the other wrong answer: that
+    fabricates a segment boundary the client did not send. Keeping the
+    escape is what nginx does with `AllowEncodedSlashes off`, and it leaves
+    the path distinct from every path containing a real slash.
+    """
     var encoded_str = input_str.replace(QueryDelimiters.PLUS_ESCAPED_SPACE, " ") if expand_plus else input_str
 
     var percent_idxs: List[Int] = find_all(encoded_str, URIDelimiters.CHAR_ESCAPE)
@@ -45,10 +72,32 @@ def unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: Li
             current_offset = percent_idxs[current_idx]
 
         if len(str_bytes) > 0:
-            var sub_str_from_bytes = String(unsafe_from_utf8=Span(str_bytes))
-            for disallowed in disallowed_escapes:
-                sub_str_from_bytes = sub_str_from_bytes.replace(disallowed, "")
-            sub_strings.append(sub_str_from_bytes)
+            if len(disallowed_escapes) == 0:
+                sub_strings.append(String(unsafe_from_utf8=Span(str_bytes)))
+            else:
+                # Re-emit a disallowed byte as `%XX` rather than dropping
+                # it, so the escape survives instead of the character
+                # vanishing. Built byte-wise because the decision is per
+                # byte; see this function's docstring for why deleting was
+                # wrong.
+                var kept = List[UInt8]()
+                for i in range(len(str_bytes)):
+                    var b = str_bytes[i]
+                    var is_disallowed = False
+                    for disallowed in disallowed_escapes:
+                        var db = disallowed.as_bytes()
+                        if len(db) == 1 and db[0] == b:
+                            is_disallowed = True
+                            break
+                    if is_disallowed:
+                        kept.append(UInt8(ord("%")))
+                        for c in _hex_upper(Int(b) >> 4).as_bytes():
+                            kept.append(c)
+                        for c in _hex_upper(Int(b) & 0xF).as_bytes():
+                            kept.append(c)
+                    else:
+                        kept.append(b)
+                sub_strings.append(String(unsafe_from_utf8=Span(kept)))
             str_bytes.clear()
 
         slice_start = current_offset

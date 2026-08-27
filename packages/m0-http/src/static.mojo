@@ -11,7 +11,10 @@ percent-DECODED (the fork's URI parser resolves `%2e` before anything here
 runs), so traversal is rejected lexically, segment by segment: `..`, `.`,
 empty segments (`//`), backslashes, and NUL all answer 404 — 404 and not
 400, because a traversal probe deserves no confirmation that it was
-understood. What this does NOT defend against is a symlink inside the root
+understood. The one escape the parser deliberately leaves encoded is
+`%2F`: it reaches here as those three characters, so it can never open a
+segment this loop did not inspect, and it matches no file whose name does
+not literally contain them. What this does NOT defend against is a symlink inside the root
 pointing out of it: like most servers' defaults, following symlinks is the
 filesystem owner's decision.
 
