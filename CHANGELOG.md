@@ -53,6 +53,19 @@ versions may break the API**.
   against uvicorn with uvloop). Table and artifacts in
   docs/WSGI_PERFORMANCE.md; `bench-asgi`'s stdlib gate stays at ≥0.8x
   as a regression floor, its harness having read 1.4x the same day.
+- **The executor pump parks in `run_forever`, one `stop()` per pass**,
+  instead of a `run_until_complete(batch())` per pass (38 µs on stdlib
+  asyncio against 17): every shim event is appended to a list, the first
+  append while the pump is parked schedules the stop for the end of the
+  next iteration, and `wait_events` returns the list. Measured on top of
+  batching: +16% at 16 connections (50,747 rps, 0.90x `uvicorn --loop
+  asyncio`), +18% at 64 (67,258, 1.17x), +2% at 256. A stop is armed
+  only while the pump itself is parked — never inside
+  `finish_executor`'s post-pill gather or `lifespan_shutdown`, which it
+  would end early with "Event loop stopped before Future completed",
+  skipping the application's shutdown; `smoke-asgi`'s new
+  outlive-the-drain phase pins it, and `apps/asgi_bare` writes
+  `M0_SHUTDOWN_MARKER` from its lifespan shutdown so the phase can tell.
 - The benchmark page's ASGI row is re-measured (0.72x → 0.75x
   against `uvicorn --loop asyncio` at 16 connections, executor on
   uvloop) and now also states the uvloop number a default `pip install

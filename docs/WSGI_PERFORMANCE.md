@@ -1132,20 +1132,20 @@ differently run to run, which is why every figure here is a median of
 three with the comparator re-measured beside it, and why a single-round
 difference under 5% on this row means nothing.
 
-**The pass itself is the next lever, and it was measured before it was
-built into the tree.** With batching in, the executor's remaining
-per-request Python cost is dominated by how the pump parks: every pass
-is a `run_until_complete(batch())` — a Task for the pump coroutine,
+**The pass itself was the next lever, measured as a prototype and then
+landed.** With batching in, the executor's remaining per-request Python
+cost was dominated by how the pump parked: every pass was a
+`run_until_complete(batch())` — a Task for the pump coroutine,
 `run_forever` setup and teardown — at **38 µs on stdlib asyncio** (64 on
 uvloop), against 17 µs for parking in `run_forever` and having the first
 queued event schedule `loop.stop()` for the end of the next iteration.
-A shim-only prototype of that shape (no Mojo change; every event that
-used to be `put_nowait` on a queue is appended to a list that stops the
-loop once per pass) measured in the same session, on top of batching,
-executor on stdlib asyncio, artifacts `asgi-wrk-conns-*.json` with
-`variant` naming the prototype:
+That shape (shim-only, no Mojo change; every event that used to be
+`put_nowait` on a queue is appended to a list that stops the loop once
+per pass) was measured in the same session as a prototype, on top of
+batching, executor on stdlib asyncio — artifacts `asgi-wrk-conns-*.json`
+with `variant` naming it — and is what the tree runs now:
 
-| connections | batched (in the tree) | batched + cheap pass (prototype) | Δ | ÷ `uvicorn --loop asyncio` | ÷ uvicorn + uvloop |
+| connections | batched | batched + `run_forever` pump | Δ | ÷ `uvicorn --loop asyncio` | ÷ uvicorn + uvloop |
 |---:|---:|---:|---:|---:|---:|
 | 16 | 43,581 rps @ 0.88 cores | 50,747 @ 1.01 | **+16%** | 0.90 | 0.64 |
 | 64 | 57,135 @ 0.99 | 67,258 @ 1.00 | **+18%** | **1.17** | 0.83 |
@@ -1159,11 +1159,17 @@ and almost nothing at 256, where batching had already amortised the
 passes. From the executor of the morning (no batching) the two together
 are +22% at 16 connections, +26% at 64 and +21% at 256; the cores column
 reads 1.01 at 16 connections for the first time, which is the executor
-thread finally busy rather than waiting. What the prototype has not had
-is the review the seam demands — a `stop()` left pending across a
-shutdown `run_until_complete` would end it early, and the drain and
-shutdown paths have to be walked with that in mind — so it is a branch
-and a measurement, not a change in this tree.
+thread finally busy rather than waiting. The review the seam demanded
+found one rule: a stop may be armed only while the pump itself is parked
+(`_pump_parked`), never inside another caller's `run_until_complete`.
+Without it, a request task completing inside `finish_executor`'s
+post-pill gather scheduled the pump's stop, the gather ended with "Event
+loop stopped before Future completed", and the application's lifespan
+shutdown never ran — reachable with two requests that outlive the 5 s
+drain and finish in different iterations (buffered request tasks are not
+cancelled by the farewell; stream tasks are). `smoke-asgi`'s
+outlive-the-drain phase pins it, and was verified to fail against the
+unguarded prototype before it counted.
 
 The stdlib-client `bench-asgi` harness read the executor at **1.41–1.46x
 uvicorn** the same afternoon, before and after batching alike, where

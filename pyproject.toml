@@ -3551,6 +3551,32 @@ wait $pid 2>/dev/null; rc=$?
 kill $stream_pid 2>/dev/null; wait $stream_pid 2>/dev/null
 [ "$rc" = "0" ] || fail "SIGTERM with a live stream: exit $rc, want 0"
 
+# Two requests that outlive the 5 s drain and finish in DIFFERENT loop
+# iterations after the pill: the executor's post-pill gather must run both
+# to completion and lifespan shutdown must still reach the application.
+# A pump stop() scheduled inside that gather ended it with "Event loop
+# stopped before Future completed" and skipped shutdown -- the marker file
+# is the discriminator (it is written by the app's lifespan.shutdown), the
+# log line the tell. Buffered request tasks are not cancelled by the
+# farewell (only stream tasks are), which is what keeps them in flight.
+M0_SHUTDOWN_MARKER="$out/shutdown.marker" "$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'restart for the outlive-the-drain phase did not answer'
+curl -s -m 15 "$B/slow?ms=5800" -o /dev/null &
+c1=$!
+curl -s -m 15 "$B/slow?ms=6800" -o /dev/null &
+c2=$!
+sleep 0.3
+kill -TERM $pid
+wait $c1 $c2 2>/dev/null
+wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM with two requests outliving the drain: exit $rc, want 0"
+grep -q 'stopped before Future completed' asgi.log \
+  && fail 'the post-pill gather was cut short by the pump stop'
+[ -f "$out/shutdown.marker" ] \
+  || fail 'lifespan shutdown did not reach the application after the drain'
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.

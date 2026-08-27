@@ -21,10 +21,15 @@ Routes:
     /stream-forever an infinite SSE-shaped stream: pins the buffered
                     bridge's watchdog error, and later a streaming
                     server's actual streaming
+
+Lifespan shutdown writes the file named by ``M0_SHUTDOWN_MARKER`` when that
+variable is set, so a smoke can assert the application was shut down (and
+not merely killed) after a request outlived the server's drain.
 """
 
 import asyncio
 import json
+import os
 
 _LIFESPAN = {"started": False}
 
@@ -40,6 +45,13 @@ async def application(scope, receive, send):
                 scope.get("state", {})["bare_started"] = True
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
+                # Pins that shutdown reaches the application even when a
+                # request outlived the loop's drain: the smoke sets the
+                # marker path and asserts the file exists after exit.
+                marker = os.environ.get("M0_SHUTDOWN_MARKER")
+                if marker:
+                    with open(marker, "w") as fh:
+                        fh.write("lifespan.shutdown\n")
                 await send({"type": "lifespan.shutdown.complete"})
                 return
         return
