@@ -58,7 +58,7 @@ ROW_ORDER = {
         ("granian+bare w4", "`granian` + bare WSGI, 4 workers"),
     ],
     "asgi-wrk-hello": [
-        ("m0serve asgi-executor", "`m0serve` — zero-config asyncio executor"),
+        ("m0serve asgi-executor", "`m0serve` — zero-config executor (its loop is stamped above)"),
         ("uvicorn asyncio", "`uvicorn --loop asyncio`"),
         ("uvicorn uvloop", "`uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default"),
     ],

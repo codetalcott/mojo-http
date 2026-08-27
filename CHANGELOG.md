@@ -53,10 +53,10 @@ versions may break the API**.
   against uvicorn with uvloop). Table and artifacts in
   docs/WSGI_PERFORMANCE.md; `bench-asgi`'s stdlib gate stays at ≥0.8x
   as a regression floor, its harness having read 1.4x the same day.
-- The benchmark page's ASGI row is re-measured (0.72x → 0.78x
+- The benchmark page's ASGI row is re-measured (0.72x → 0.75x
   against `uvicorn --loop asyncio` at 16 connections, executor on
   uvloop) and now also states the uvloop number a default `pip install
-  uvicorn[standard]` produces (0.56x). Which loop the
+  uvicorn[standard]` produces (0.53x). Which loop the
   executor ran on was never recorded before: `bin/m0serve` outside the
   venv embeds the system Python and runs on stdlib asyncio — measured to
   be a wash either way (−3% at 16 connections, +4% at 256).

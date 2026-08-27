@@ -1069,7 +1069,7 @@ The uvicorn baseline row stays `--loop asyncio` per this repo's standing
 benchmark configuration, with the uvloop row recorded in the same
 artifact since 2026-08-27, because `uvicorn[standard]` is what a default
 install runs and the number a developer's own machine produces should be
-on the page: 0.56x at 16 connections, against 0.78x for
+on the page: 0.53x at 16 connections, against 0.75x for
 the asyncio-loop comparator.
 
 **Which loop the executor itself runs on is a property of the
