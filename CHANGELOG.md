@@ -7,6 +7,122 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-27
+
+A security-audit release plus two wire-protocol conformance fixes. Several
+requests that previous versions accepted are now refused, and one class of
+client that previous versions hung is now served — read **Changed** before
+upgrading anything that speaks non-standard HTTP at this server.
+
+### Security
+
+- **A cross-connection injection hole is closed.** Channel names opening
+  with the reserved `\x01` byte address connection SLOTS on the loop, and
+  an application channel is frequently user input (`%01` in a form body
+  decodes to the control byte): an unauthenticated POST could reach
+  another client's SSE stream through `publish()`. Every publish boundary
+  now refuses reserved and over-long names — `publish_to_channels`, the
+  shim's `_M0Broadcast`, and both copies of `m0pub.publish_frame`.
+- **`/ws/message` is the server's path, not an application's.** Under
+  `--realtime` it carries synthetic POSTs with trusted `M0-*` headers and
+  a CSRF exemption; a request for it arriving over the wire is now 404,
+  so only the in-process synthetic one reaches the app.
+- **Response headers carrying CR, LF or NUL are dropped, not transmitted**
+  (and an injected status reason phrase is emptied) — a header an
+  application built from user input can no longer end the header block
+  and add headers or a body of its own.
+- **`Proxy` request headers never reach WSGI/ASGI environs** (httpoxy):
+  CGI's mechanical mapping would turn them into `HTTP_PROXY`, the
+  variable outbound HTTP clients read to choose a proxy. Nothing else is
+  dropped — `X-Forwarded-*` is load-bearing behind a real proxy.
+- **Static mounts serve only regular files**, auth token comparison runs
+  in constant rounds, WebSocket datagrams are bounded, and the WS outbox
+  drops whole frames past a 64 KB cap instead of growing unboundedly.
+
+### Fixed
+
+- **Pipelined requests are all answered, in order** (RFC 9112 §9.3).
+  Every release through v0.12.0 answered only the first request of a
+  pipelined burst and left the client hanging on the rest: the keep-alive
+  reset cleared the receive buffer, and bytes consumed together with a
+  previous request get no readiness event of their own. The request's end
+  is now stamped at dispatch, the keep-alive reset preserves the tail
+  (and ONLY the keep-alive reset — a tail can never leak across
+  connections), and a drain loop answers buffered requests after every
+  completed response, on both backends and on the blocking path.
+  `poe smoke-pipelining` pins it.
+- **A client that half-closes (`shutdown(SHUT_WR)`) after sending gets
+  its response.** kqueue reports a half-close as `EV_EOF`, and closing
+  there discarded the response already written: macOS lost 24–30 of every
+  30 requests on GET, Content-Length and chunked alike; Linux lost none.
+  The loop now finishes the buffered request and only turns off
+  keep-alive. `poe smoke-half-close` pins it.
+- **The epoll backend registers `EPOLLRDHUP`, ending the half-close
+  divergence.** A half-closed INCOMPLETE request now releases its slot
+  promptly on Linux too, where it used to be indistinguishable from a
+  silent client and waited out the full 10 s header timeout for a 408.
+  The guard is layered — a recv returning 0 marks the peer gone even
+  where the flag is absent — and a half-close while a request is out on a
+  `--blocking-threads` pool thread no longer detaches the fd (which
+  dropped the response the pool thread was about to complete): the
+  completion answers through the still-open fd.
+- **A request bigger than one read is answered on epoll too.** The header
+  path performed one recv per readiness edge and never re-armed, so a
+  request over 8192 bytes — a large cookie jar or a JWT, not an attack —
+  stalled on Linux until the header timeout answered 408. Headers now
+  re-arm exactly as the body path always did; requests are served up to
+  the 32 KB header cap and answered 431 beyond it.
+  `poe smoke-large-request` pins the boundary.
+- **A chunked request body is decoded incrementally by one persistent
+  decoder per connection.** Rebuilding the decoder per read event made a
+  dribbled chunked body O(N²) on the loop thread — 3 MB took 1.37 s,
+  0.006 s after — and reset the decoder's own abuse-ratio guard so it
+  could never trip.
+- **The chunked terminator is consumed** (`consume_trailer`), so closing
+  a `Connection: close` socket no longer leaves the final CRLF unread —
+  which made the kernel send RST instead of FIN and discarded the
+  response, measured at up to 53% of chunked requests and 100% when the
+  client paced its writes.
+- **HTML escaping passes UTF-8 through intact** (`escape_html` in
+  m0-core): `café` no longer renders as `cafÃ©`.
+- **An application's `Set-Cookie` goes to the wire verbatim** (subject
+  only to the CR/LF refusal). Round-tripping it through the server's own
+  cookie model silently dropped `expires`, `SameSite`, everything after
+  the first `=` in a value, and any unmodelled attribute — on every
+  Django session and CSRF cookie of every app.
+
+### Changed
+
+Requests that v0.12.0 accepted and this release refuses, or handles
+differently — each is a smuggling or correctness surface:
+
+- **HTTP/1.1 without a `Host` header → 400.** Hand-rolled clients and
+  crude health checkers sometimes omit it.
+- **Malformed `Content-Length` → 400** (`5, 5`, `0x10`, `+5`, `-1`,
+  `5abc`, longer than 18 digits). Previously read as 0 and served as
+  bodyless — which a proxy in front could read differently.
+- **`Transfer-Encoding` whose final coding is not `chunked` → 400.**
+  `gzip` alone was previously served as bodyless.
+- **An encoded slash stays encoded**: `unquote` re-emits disallowed bytes
+  as `%XX` instead of deleting them, so `/adm%2Fin` no longer collapses
+  to `/admin`.
+- **A chunked body is bounded by raw bytes consumed as well as decoded
+  size** — a body whose framing outweighs its payload roughly twice over
+  now answers 413 (1 MB in 3-byte chunks is 3.6 MB on the wire).
+- **A chunked request that omits the final CRLF now waits for it**, as it
+  would for any truncated body, instead of being answered early.
+
+### Added
+
+- `poe smoke-pipelining`, `poe smoke-half-close`, and
+  `poe smoke-large-request` — socket-level regression probes for the
+  fixes above, run on both CI runners because each bug was invisible on
+  one platform.
+- The PyPI publish path is hardened: the `pypi` environment is the
+  authorization boundary (deployment branch policy + required reviewer),
+  the publishing action is pinned, and the wheel set is validated against
+  the tag before upload.
+
 ## [0.12.0] — 2026-08-26
 
 ### Added
@@ -1924,6 +2040,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.13.0
 [0.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.12.0
 [0.11.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.11.0
 [0.10.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.10.0
