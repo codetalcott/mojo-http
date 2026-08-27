@@ -104,10 +104,29 @@ cannot reach:
 1. PyPI → *Your projects* → **Publishing** → add a **pending** publisher:
    project `m0serve`, owner `codetalcott`, repository `mojo-http`, workflow
    `release.yml`, environment `pypi`. Repeat on TestPyPI.
-2. This repository → Settings → Environments → create `pypi`.
+2. This repository → Settings → Environments → `pypi`. It exists and is
+   configured; what it enforces is below.
 3. Settings → Secrets and variables → Actions → Variables → set
    `PUBLISH_TO_PYPI` to `true`. Until then `publish-pypi` is skipped, so a
    tag pushed today produces a GitHub release and no upload.
+
+**The environment is the authorization boundary, not `PUBLISH_TO_PYPI`.**
+Trusted publishing trusts the tuple (owner, repository, workflow,
+environment), so anything that can make `release.yml` reach the `pypi`
+environment can upload under your name. The `PUBLISH_TO_PYPI` variable and
+`publish-pypi`'s wheel-set validation both live inside the repository and are
+editable by anyone with write access; the environment's rules are not. Two
+gates enforce it:
+
+- **A deployment branch policy** admitting only `release/v*` branches and
+  `v*` tags. Those are already the only refs whose runs can pass
+  `publish-pypi`'s version check, which derives the expected version from
+  `GITHUB_REF_NAME` — so this refuses nothing that used to work. It stops a
+  run from any other ref reaching the upload step at all.
+- **A required reviewer.** Every release now *pauses* at `publish-pypi` and
+  waits for an approval on the run's page. That is not a stuck workflow: it
+  is the last moment at which a permanently-burned filename can be called
+  off. Approve it and the upload proceeds.
 
 Then rehearse before anything is burned:
 
