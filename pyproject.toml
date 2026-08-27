@@ -2185,7 +2185,7 @@ fi
 # Phase 2: free-threaded CPython. Four loops, one process, one interpreter.
 "$srv" $SPEC --threads 4 > threads.log 2>&1 &
 pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8096/ | grep -q 'bare wsgi app' \\
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8096/ | grep -q 'bare wsgi app' \
   || fail 'the threaded server never became healthy'
 grep -q 'threaded: 4 loops' threads.log || fail 'startup did not report 4 loops'
 # The conformance routes the bare app carries, through a threaded loop.
