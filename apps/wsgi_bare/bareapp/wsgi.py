@@ -250,6 +250,116 @@ def stuck(environ, start_response):
     return [b"stuck done"]
 
 
+# --- streamed bodies ---------------------------------------------------------
+# A generator with no Content-Length is streamed by a pool thread, chunk by
+# chunk, as the application produces it; a list (`/chunks` above) is joined
+# and sized. Each route below pins one edge of that contract.
+
+
+def _stream_pieces(environ):
+    n = int(_q(environ, "n", "3"))
+    size = int(_q(environ, "size", "0"))
+    delay = float(_q(environ, "delay", "0.1"))
+    return n, size, delay
+
+
+def stream(environ, start_response):
+    """`n` pieces, `delay` seconds apart. `?size=` bytes each (default: a
+    short labelled line), so 16 concurrent 1 MB bodies can be asserted
+    byte-exact and a three-line body can be watched arriving over time."""
+    n, size, delay = _stream_pieces(environ)
+    start_response("200 OK", list(TEXT))
+
+    def gen():
+        for i in range(n):
+            if size:
+                yield (b"%d" % (i % 10)) * size
+            else:
+                yield b"piece %d\n" % i
+            if delay and i + 1 < n:
+                time.sleep(delay)
+
+    return gen()
+
+
+def stream_forever(environ, start_response):
+    """An SSE-shaped generator that never ends: one event per `delay`
+    seconds. The thread producing it returns to the pool only when the
+    client goes away — which is what the smoke asserts."""
+    delay = float(_q(environ, "delay", "0.05"))
+    start_response("200 OK", [("Content-Type", "text/event-stream")])
+
+    def gen():
+        i = 0
+        while True:
+            yield b"data: tick %d\n\n" % i
+            i += 1
+            time.sleep(delay)
+
+    return gen()
+
+
+def stream_raises(environ, start_response):
+    """Two pieces, then an exception: the head is on the wire, so the only
+    honest answer is a truncated body — the connection closes WITHOUT the
+    chunked terminator."""
+    start_response("200 OK", list(TEXT))
+
+    def gen():
+        yield b"first\n"
+        yield b"second\n"
+        raise RuntimeError("the generator raised after two pieces")
+
+    return gen()
+
+
+def stream_empty(environ, start_response):
+    """A generator that yields nothing but empty chunks: no non-empty chunk
+    ever exists, so PEP 3333's headers-after-first-chunk rule sends this
+    down the buffered path as an empty 200 with a Content-Length."""
+    start_response("200 OK", list(TEXT))
+
+    def gen():
+        yield b""
+        yield b""
+
+    return gen()
+
+
+def stream_write_inside(environ, start_response):
+    """write() called from INSIDE the generator, between its yields. PEP 3333
+    allows it, and the bytes must reach the wire in production order."""
+    write = start_response("200 OK", list(TEXT))
+    write(b"w0-")
+
+    def gen():
+        yield b"y0-"
+        write(b"w1-")
+        yield b"y1-"
+        write(b"w2-")
+
+    return gen()
+
+
+def stream_cl(environ, start_response):
+    """A generator WITH an application Content-Length: buffered, as the
+    length the application declared is honoured, not chunked."""
+    body = [b"sized-", b"stream"]
+    start_response("200 OK", list(TEXT) + [("Content-Length", str(sum(map(len, body))))])
+    return (piece for piece in body)
+
+
+def stream_hold(environ, start_response):
+    """A generator with an M0-Hold header: the hold's contract wins — the
+    body LEADS the held stream, so it is joined, never streamed."""
+    start_response(
+        "200 OK",
+        [("Content-Type", "text/event-stream"), ("M0-Hold", "stream"),
+         ("M0-Channel", "held")],
+    )
+    return (piece for piece in [b": one\n\n", b": two\n\n"])
+
+
 def not_found(environ, start_response):
     start_response("404 Not Found", list(TEXT))
     return [b"not found"]
@@ -276,6 +386,13 @@ ROUTES = {
     "/reentrant": reentrant,
     "/slow": slow,
     "/stuck": stuck,
+    "/stream": stream,
+    "/stream-forever": stream_forever,
+    "/stream-raises": stream_raises,
+    "/stream-empty": stream_empty,
+    "/stream-write-inside": stream_write_inside,
+    "/stream-cl": stream_cl,
+    "/stream-hold": stream_hold,
 }
 
 

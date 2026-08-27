@@ -557,11 +557,22 @@ values returns unchanged.
   [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md) is the working record,
   including the leak that once made this paragraph less flattering and the
   re-measurement that retired its previous numbers.
-- **WSGI responses are fully buffered**, so `StreamingHttpResponse` and
-  `FileResponse` are materialized in memory. Not for want of chunked
-  encoding — the server has it, and ASGI responses stream through the
-  executor chunk-framed on HTTP/1.1. It is PEP 3333: a WSGI response
-  carries a `Content-Length`, which means knowing the length.
+- **Unsized WSGI bodies stream; sized ones buffer.** A generator or
+  iterator the application did not size — Django's
+  `StreamingHttpResponse`, a Flask `Response(generator)` — streams from a
+  `--blocking-threads` pool thread (the WSGI zero-config default) through
+  the same chunk channel the ASGI executor uses: chunked on HTTP/1.1 with
+  the connection reusable after, close-delimited on HTTP/1.0, `close()`
+  called, and the thread back in the pool when the client leaves. A body
+  the application sized (`Content-Length` — every Flask page, every Django
+  page behind `CommonMiddleware`, `FileResponse`) and every list body is
+  buffered and sent with its measured length, as before; so is everything
+  on a server with no pool (`--blocking-threads 0`, unmounted
+  `--realtime`), where producing a body on the loop thread would be the
+  hostage problem again. A generator that raises after its head truncates
+  the body honestly — the connection closes without the chunked
+  terminator. Still buffered: an iterator that carries its own
+  `Content-Length` (`FileResponse`), the recorded follow-up.
 - **Request bodies are fully buffered too**, capped by
   `ServerConfig.max_request_body_size` (4 MB default). Raise it for uploads.
 - **No TLS.** `wsgi.url_scheme` is always `http`; terminate at a proxy and set

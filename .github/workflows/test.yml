@@ -268,6 +268,13 @@ jobs:
       # start_response, multi-chunk iterables, wsgi.input read patterns.
       - name: Conformance test the WSGI bridge
         run: uv run poe smoke-wsgi
+      # Streamed WSGI bodies: a generator streams from a pool thread through
+      # the loop's chunk channel -- chunked, keep-alive kept, close() called,
+      # the thread back when the client leaves -- while lists and sized
+      # bodies still buffer. Both runners, because every stream bug in this
+      # tree has been invisible on one of them.
+      - name: Smoke test streamed WSGI bodies
+        run: uv run poe smoke-wsgi-stream
       # Proves the WSGI bridge end to end: a real Django request/response cycle,
       # two Set-Cookie headers surviving a Dict-backed Headers, and a body of all
       # 256 byte values coming back unchanged.

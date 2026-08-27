@@ -172,9 +172,30 @@ struct WSGIApp(Movable):
         catches handler exceptions and answers `InternalError()`.
         """
         var result = self._bridge.run(req)
+        # A 4-tuple whose last element is true is a streamed WSGI body: the
+        # shim kept the iterable and this is its head. The pool thread asks
+        # `stream_pending` after `func` and produces the body through
+        # `stream_next`/`stream_close`. `len()` on a PythonObject is one of
+        # the crossings the bridge documents as leak-free.
+        var streaming = len(result) >= 4 and Bool(py=result[3])
+        self._bridge.stream_pending = streaming
         return build_response(
-            self._bridge, String(py=result[0]), result[1], result[2]
+            self._bridge, String(py=result[0]), result[1], result[2],
+            streaming=streaming,
         )
+
+    def set_stream_capable(mut self, flag: Bool) raises:
+        """Startup-only: let the shim stream iterables (a pool thread with a
+        chunk channel), or keep joining them (the loop's own handler)."""
+        self._bridge.set_stream_capable(flag)
+
+    def stream_next(mut self) raises -> List[UInt8]:
+        """The next chunk of the streamed body; empty at the end."""
+        return self._bridge.stream_next()
+
+    def stream_close(mut self):
+        """Close the streamed iterable. Idempotent; never raises."""
+        self._bridge.stream_close()
 
     def shutdown(mut self):
         """Run the application's teardown; a no-op for WSGI.

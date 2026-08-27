@@ -42,7 +42,7 @@ from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
-from lightbug_http.offload import OffloadPool
+from lightbug_http.offload import OffloadPool, stream_gen_seed
 from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame,
@@ -232,10 +232,19 @@ def _executor_serve(block: ThreadBlock) raises:
     var methods = List[String](capacity=pool.capacity)
     var paths = List[String](capacity=pool.capacity)
     var pending_101 = OwningList[Optional[HTTPResponse]](capacity=pool.capacity)
+    # Each stream's generation: allocated at its begin, stamped on every
+    # frame of it, carried by its head — what lets the loop's handler drop
+    # a frame that outlived its connection even when a DIFFERENT producer
+    # (a pool thread, another executor) has since subscribed the recycled
+    # slot. This executor's generations are disjoint from every other
+    # producer's by construction (`stream_gen_seed`).
+    var gens = List[Int](capacity=pool.capacity)
     for _ in range(pool.capacity):
         methods.append(String(""))
         paths.append(String(""))
         pending_101.append(None)
+        gens.append(0)
+    var next_gen = stream_gen_seed(lane + 1)
 
     var stopping = False
     while True:
@@ -243,7 +252,8 @@ def _executor_serve(block: ThreadBlock) raises:
         # CPython releases the GIL — while every spawned task progresses.
         var events = handler.apps[0]._bridge.wait_events()
         _pump_events(
-            pool, handler, events, methods, paths, pending_101, stopping, lane
+            pool, handler, events, methods, paths, pending_101, gens,
+            next_gen, stopping, lane,
         )
         if stopping:
             break
@@ -255,7 +265,8 @@ def _executor_serve(block: ThreadBlock) raises:
     var leftover = handler.apps[0]._bridge.drain_events_nowait()
     var ignored = False
     _pump_events(
-        pool, handler, leftover, methods, paths, pending_101, ignored, lane
+        pool, handler, leftover, methods, paths, pending_101, gens,
+        next_gen, ignored, lane,
     )
     handler.shutdown()
 
@@ -267,6 +278,8 @@ def _pump_events(
     mut methods: List[String],
     mut paths: List[String],
     mut pending_101: OwningList[Optional[HTTPResponse]],
+    mut gens: List[Int],
+    mut next_gen: Int,
     mut stopping: Bool,
     lane: Int = -1,
 ) raises:
@@ -373,26 +386,30 @@ def _pump_events(
             # closes the wrongful-early-close race. It also anchors the
             # FIFO that keeps a recycled slot safe: every frame of this
             # stream sits between its begin and its end on one channel.
+            gens[slot] = next_gen
+            next_gen += 1
             var begin = List[UInt8]()
             var begin_frame = encode_bus_frame(
-                asgi_stream_url(String("b"), slot, lane), NO_EVENT_ID, Span(begin)
+                asgi_stream_url(String("b"), slot, lane), gens[slot], Span(begin)
             )
             _ = _send_chunk_frame(pool, Span(begin_frame))
             # The head: an ordinary completion whose response is marked
             # streaming — _finish_response pops content-length, keeps the
             # connection, and flips the slot into streaming state once the
             # head is on the wire. From here this slot's bytes travel ONLY
-            # as chunk frames; the completion channel is done with it.
+            # as chunk frames; the completion channel carries nothing more
+            # for it except, if the app raises mid-body, the abort.
             var response: HTTPResponse
             var raised = False
             try:
                 response = build_response(
-                    handler.apps[0]._bridge, String(py=ev[2]), ev[3], ev[4]
+                    handler.apps[0]._bridge, String(py=ev[2]), ev[3], ev[4],
+                    streaming=True,
                 )
-                response.sse_streaming = True
             except:
                 response = InternalError()
                 raised = True
+            response.stream_gen = gens[slot]
             handler.after_response(methods[slot], paths[slot], response)
             pool.put_response(slot, response^, raised)
             pool.complete(slot)
@@ -403,7 +420,7 @@ def _pump_events(
             # is a corrupt body.
             var chunk = handler.apps[0]._bridge.body_bytes(ev[2])
             var frame = encode_bus_frame(
-                asgi_stream_url(String("s"), slot, lane), NO_EVENT_ID, Span(chunk)
+                asgi_stream_url(String("s"), slot, lane), gens[slot], Span(chunk)
             )
             if not _send_chunk_frame(pool, Span(frame)):
                 # Unplaceable even after waiting detached: the loop is not
@@ -419,9 +436,16 @@ def _pump_events(
         elif kind == "stream_end":
             var empty = List[UInt8]()
             var frame = encode_bus_frame(
-                asgi_stream_url(String("e"), slot, lane), NO_EVENT_ID, Span(empty)
+                asgi_stream_url(String("e"), slot, lane), gens[slot], Span(empty)
             )
             _ = _send_chunk_frame(pool, Span(frame))
+        elif kind == "stream_abort":
+            # The app raised after its head went out: the loop closes the
+            # connection WITHOUT the chunked terminator, so the client sees
+            # a truncated body rather than a short one under a clean end.
+            # Rides the completion channel, gen-checked there against the
+            # head this slot last completed.
+            _ = pool.abort_stream(slot, gens[slot])
         elif kind == "stream_note":
             print(
                 "asgi-executor: stream raised after its head: "
@@ -432,13 +456,16 @@ def _pump_events(
             # Begin frame before the 101 — the same FIFO anchor as a
             # stream's head, for the sockets registry this time.
             if pending_101[slot]:
+                gens[slot] = next_gen
+                next_gen += 1
                 var begin = List[UInt8]()
                 var begin_frame = encode_bus_frame(
-                    asgi_stream_url(String("B"), slot, lane), NO_EVENT_ID,
+                    asgi_stream_url(String("B"), slot, lane), gens[slot],
                     Span(begin),
                 )
                 _ = _send_chunk_frame(pool, Span(begin_frame))
                 var held = pending_101[slot].take()
+                held.stream_gen = gens[slot]
                 handler.after_response(methods[slot], paths[slot], held)
                 pool.put_response(slot, held^, False)
                 pool.complete(slot)
@@ -457,7 +484,7 @@ def _pump_events(
                 WS_OP_TEXT if opcode == 1 else WS_OP_BINARY, Span(payload)
             )
             var frame = encode_bus_frame(
-                asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
+                asgi_stream_url(String("w"), slot, lane), gens[slot],
                 Span(frame_bytes),
             )
             _ = _send_chunk_frame(pool, Span(frame))
@@ -470,13 +497,13 @@ def _pump_events(
             close_body.append(UInt8(code & 0xFF))
             var close_frame = encode_ws_frame(WS_OP_CLOSE, Span(close_body))
             var f1 = encode_bus_frame(
-                asgi_stream_url(String("w"), slot, lane), NO_EVENT_ID,
+                asgi_stream_url(String("w"), slot, lane), gens[slot],
                 Span(close_frame),
             )
             _ = _send_chunk_frame(pool, Span(f1))
             var empty = List[UInt8]()
             var f2 = encode_bus_frame(
-                asgi_stream_url(String("x"), slot, lane), NO_EVENT_ID, Span(empty)
+                asgi_stream_url(String("x"), slot, lane), gens[slot], Span(empty)
             )
             _ = _send_chunk_frame(pool, Span(f2))
 

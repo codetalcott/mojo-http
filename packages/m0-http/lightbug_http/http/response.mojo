@@ -159,6 +159,17 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     var body_fd_len: Int
     """How many bytes to send from `body_fd_offset`."""
 
+    var stream_gen: Int
+    """Which generation of channel stream this head opens, or 0.
+
+    Set by a producer that streams a body through the event loop's chunk
+    channel (the asyncio executor, a `--blocking-threads` pool thread
+    streaming a WSGI iterable) beside `sse_streaming`. The loop records it
+    per slot and checks a stream-abort datagram against it, so an abort
+    for a stream the slot no longer serves is dropped rather than closing
+    whatever connection recycled the slot. 0 (`STREAM_GEN_NONE` in
+    `offload.mojo`) means "not a channel stream"."""
+
     @staticmethod
     def from_bytes(b: Span[Byte, _]) raises ResponseParseError -> HTTPResponse:
         var cookies = ResponseCookieJar()
@@ -326,6 +337,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.body_fd = -1
         self.body_fd_offset = 0
         self.body_fd_len = 0
+        self.stream_gen = 0
         if HeaderKey.CONNECTION not in self.headers:
             self.set_connection_keep_alive()
         if HeaderKey.CONTENT_LENGTH not in self.headers:
@@ -358,6 +370,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.body_fd = -1
         self.body_fd_offset = 0
         self.body_fd_len = 0
+        self.stream_gen = 0
         if HeaderKey.CONNECTION not in self.headers:
             self.set_connection_keep_alive()
         if HeaderKey.CONTENT_LENGTH not in self.headers:
@@ -388,6 +401,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.body_fd = -1
         self.body_fd_offset = 0
         self.body_fd_len = 0
+        self.stream_gen = 0
         self.set_content_length(len(self.body_raw))
         if HeaderKey.CONNECTION not in self.headers:
             self.set_connection_keep_alive()

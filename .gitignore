@@ -60,6 +60,9 @@ shutdown3.log
 pool.log
 reload.log
 rt4.log
+rt5.log
+rt6.log
+stream.log
 ht.log
 canary.log
 # Per-connection probe output from the multi-worker and realtime smokes:

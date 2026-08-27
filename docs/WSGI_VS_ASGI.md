@@ -516,6 +516,42 @@ on `m0serve` with zero configuration.**
 The M0-Hold/GRIP path is untouched by all three phases and remains the
 recommended realtime surface for synchronous WSGI codebases.
 
+**Phase 3c (2026-08-27) — streamed WSGI bodies, through the same seam.**
+A generator the application did not size — `StreamingHttpResponse`, a
+Flask `Response` over a generator — used to be joined whole by the shim:
+the buffered-bridge limit applied to WSGI, and the one
+[REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md) found illegible on
+textshelf (a never-ending SSE generator that never answered and held its
+thread until shutdown). A `--blocking-threads` pool thread is now a
+**second producer on the executor's chunk channel**: the same
+begin-before-head order, the same `s`/`e` frames into the same loop-owned
+registry, the same loop-side chunked framing and end-of-stream — with
+stop-and-wait credit on a per-thread ack pair instead of the executor's
+64 KB window, and a non-blocking poll of that pair before every piece so
+the disconnect the loop sends there is noticed by a stream of small events.
+What buffers is decided by the shim's rules in order — an app-supplied
+`Content-Length` first (every Flask page, every Django page behind
+`CommonMiddleware`, `FileResponse`), then list bodies, Django's
+`HttpResponse`, HEAD, bodiless statuses and `M0-Hold` — so no framework
+page changes on the wire, and the loop thread never streams: a server with
+no pool keeps joining.
+
+Two things this forced on the shared seam, both for the executor too.
+Every stream frame now carries a per-stream **generation** in the bus
+frame's id: a slot freed by one producer and re-subscribed by another has
+no FIFO between the two writers, so "queue only if subscribed" was not
+enough once there were two. And a stream that raises after its head
+**aborts** through the completion channel and the loop closes WITHOUT the
+chunked terminator — a truncated body, which is the truth; the executor
+used to end such a body cleanly. The hold stays the zero-thread realtime
+surface; a streamed generator holds a pool thread for as long as a client
+reads it, gunicorn's shape, and one asleep between events is still the
+bounded straggler at shutdown. Recorded follow-ups: an iterator that
+carries its own `Content-Length` still buffers rather than streaming with
+its declared length (both protocols), and a framed stream ignores the
+request's `Connection: close` at its end (both protocols, pre-existing).
+`smoke-wsgi-stream` pins all of it.
+
 ## 9. Mounts (2026-08): several applications, one process
 
 The gateway answers "*which* protocol is this app?" The premise that

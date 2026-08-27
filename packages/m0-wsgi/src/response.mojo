@@ -84,9 +84,18 @@ def split_status(status: String) -> Tuple[Int, String]:
 
 
 def build_response(
-    bridge: PyBridge, status: String, headers: PythonObject, body: PythonObject
+    bridge: PyBridge, status: String, headers: PythonObject, body: PythonObject,
+    streaming: Bool = False,
 ) raises -> HTTPResponse:
-    """Assemble an `HTTPResponse` from what the WSGI application returned."""
+    """Assemble an `HTTPResponse` from what the WSGI application returned.
+
+    `streaming` builds the HEAD of a body that will follow as chunk-channel
+    frames — a pool thread streaming a WSGI iterable, or the executor's
+    `stream_start`. The head carries an EMPTY body and no `Content-Length`:
+    `_finish_response` writes `body_raw` verbatim after the headers, before
+    any `size CRLF` framing, so a first chunk placed here would go out
+    unframed on a chunked stream. The first chunk is the first `s` frame.
+    """
     var code_and_text = split_status(status)
 
     var out_headers = Headers()
@@ -120,13 +129,28 @@ def build_response(
         else:
             out_headers[name] = value
 
+    # The framing is the server's, never the application's: a buffered
+    # body gets the measured Content-Length, a streamed one gets the event
+    # loop's chunked framing (or close-delimiting on HTTP/1.0), and an
+    # application's own `Transfer-Encoding` would frame a body the client
+    # cannot then parse.
+    out_headers.pop(HeaderKey.TRANSFER_ENCODING)
+    if streaming:
+        out_headers.pop(HeaderKey.CONTENT_LENGTH)
+        var head = HTTPResponse(
+            owned_body=List[UInt8](),
+            headers=out_headers^,
+            cookies=cookies^,
+            status_code=code_and_text[0],
+            status_text=code_and_text[1],
+        )
+        head.sse_streaming = True
+        return head^
+
     var body_bytes = bridge.body_bytes(body)
     # Content-Length is authoritative here, not whatever the application
-    # guessed: responses are fully buffered, so the real length is known.
+    # guessed: a buffered response's real length is known.
     out_headers[HeaderKey.CONTENT_LENGTH] = String(len(body_bytes))
-    # This server does not chunk-encode responses, so an application that asked
-    # for it would produce a body the client cannot frame.
-    out_headers.pop(HeaderKey.TRANSFER_ENCODING)
 
     return HTTPResponse(
         owned_body=body_bytes^,

@@ -62,6 +62,7 @@ is sized for that many.
 
 from std.collections import Optional
 from std.ffi import c_int, external_call
+from std.sys.info import CompilationTarget
 
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import (
@@ -89,6 +90,33 @@ comptime _JOB_BYTES = 8
 """One job is one little-endian Int64 slot index. `_POISON` ends a thread."""
 
 comptime _POISON = -1
+
+comptime TAG_STREAM_ABORT = UInt8(5)
+"""First byte of a stream-abort datagram on the COMPLETION channel.
+
+`[tag=5][slot i64 LE][gen i64 LE]`, 17 bytes, sent by a producer whose
+stream died after its head went out — a WSGI generator that raised
+mid-body, an ASGI app that raised after its first `more_body` chunk. The
+loop closes the connection WITHOUT the chunked terminator, so the client
+sees a truncated body rather than a clean one; a clean terminator on a
+short body is the one lie this server refuses to tell. Rides the
+completion channel because it is a loop-level signal about a slot, and
+that channel already carries exactly those. Distinguished from a plain
+completion by length (a completion is 8 bytes) and by the tag.
+
+The generation is what makes it safe on a recycled slot: the head
+carried it (`HTTPResponse.stream_gen`), the loop recorded it, and an
+abort for a stream that is no longer the slot's current one is dropped.
+"""
+
+comptime _ABORT_BYTES = 17
+
+comptime STREAM_GEN_NONE = 0
+"""`HTTPResponse.stream_gen` of a response that is not a channel stream.
+Real generations are never 0: `stream_gen_seed` starts every producer
+above it."""
+
+comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(0x40)
 
 comptime TAG_WS_MESSAGE = UInt8(2)
 """First byte of an inbound-WebSocket datagram on a submit channel.
@@ -175,6 +203,21 @@ def _decode_job(buf: Span[Byte, _]) -> Int:
     for i in range(_JOB_BYTES):
         bits |= UInt64(buf[i]) << UInt64(i * 8)
     return Int(Int64(bits))
+
+
+def stream_gen_seed(producer: Int) -> Int:
+    """The first generation a stream producer hands out; it counts up from here.
+
+    A generation names ONE stream on a slot, so a frame that outlived its
+    connection cannot be mistaken for the next stream's — and it must be
+    unique across every producer on a loop (an executor per ASGI lane, N
+    pool threads), which would otherwise need a shared counter. Instead
+    each producer owns a disjoint range: the high 32 bits are its id, the
+    low 32 its own count. Executors use `1 + lane` (the unmounted executor's
+    lane is -1, so it takes 0 → seed 1), pool threads `1024 + index`; both
+    start their low half at 1, so no generation is ever `STREAM_GEN_NONE`.
+    """
+    return ((producer + 1) << 32) + 1
 
 
 def match_path_prefix(prefixes: List[String], path: String) -> Int:
@@ -264,15 +307,16 @@ struct OffloadPool(Movable):
     var stream_chunk_write: Int
     var stream_ack_read: Int
     var stream_ack_write: Int
-    """The ASGI streaming channel, -1 until `enable_stream_channel` (only
-    the asyncio-executor mode calls it). Chunks travel executor→loop as
-    bus-shaped datagrams — `stream_chunk_read` is what the wiring passes to
-    `run_event_loop` as its `bus_read_fd` — and drain acks travel
-    loop→executor as `(slot: i32, bytes: i32)` datagrams, which is what
-    makes the producer's `await send(...)` mean something. `stream_active`
-    is also the loop's marker that streaming slots are ASGI streams (with
-    end-of-stream close and no comment heartbeats), which is sound because
-    `--realtime` is refused with every offload mode."""
+    """The streaming channels, -1 until enabled. Chunks travel producer→loop
+    as bus-shaped datagrams on ONE pair (`enable_stream_channel`) —
+    `stream_chunk_read` is what the wiring passes to `run_event_loop` as its
+    `bus_read_fd` — from an asyncio executor and from `--blocking-threads`
+    pool threads streaming WSGI iterables alike. Drain acks travel
+    loop→producer as `(slot: i32, bytes: i32)` datagrams, which is what
+    makes a producer's wait for credit mean something: the executor's base
+    pair is `enable_base_stream_ack` (a lane's is `enable_stream_ack`), and
+    a pool thread's is its own, registered per slot in `slot_ack_fd`.
+    `stream_active` marks an executor; `chunk_active` marks the channel."""
 
     var hold_notify_fd: Int
     """This loop's own BroadcastBus write end, or -1: where a pool thread
@@ -297,6 +341,25 @@ struct OffloadPool(Movable):
     addressed, and one datagram queue is globally FIFO, which is what keeps
     the recycled-slot argument true with two writers — but acks cannot
     share: credit belongs to the executor that owns the slot."""
+
+    var slot_ack_fd: List[Int]
+    """Per slot, the ack fd of a POOL THREAD streaming this slot's body, or -1.
+
+    A pool thread streaming a WSGI iterable is a second producer on the
+    chunk channel, and its credit has to come back to that thread — not to
+    a lane, since N threads share one. So the thread writes its own ack
+    write end here (before its begin frame; the frame's send publishes the
+    write), `ack_stream` routes by it first, and `slot_channel_stream`
+    reads it to know the slot is a channel stream at all. The LOOP clears
+    it — at accept, and where a stream ends — because a stale entry would
+    make a later `M0-Hold` on the same slot look like a channel stream:
+    chunk-framed, acked into a pair nobody reads, and denied the comment
+    heartbeat that keeps it alive through a proxy."""
+
+    var aborts: List[Int]
+    """`(slot, gen)` pairs `drain_completions` took off the channel as
+    `TAG_STREAM_ABORT` datagrams, flattened; the loop takes them with
+    `take_aborts`. Loop-side only."""
 
     var capacity: Int
 
@@ -324,8 +387,11 @@ struct OffloadPool(Movable):
         self.lane_ack_write = List[Int]()
         var slots = capacity if capacity > 0 else 1
         self.slot_lane = List[Int](capacity=slots)
+        self.slot_ack_fd = List[Int](capacity=slots)
         for _ in range(slots):
             self.slot_lane.append(0)
+            self.slot_ack_fd.append(-1)
+        self.aborts = List[Int]()
         self.requests = OwningList[Optional[HTTPRequest]](capacity=slots)
         self.responses = OwningList[Optional[HTTPResponse]](capacity=slots)
         self.errored = List[Bool](capacity=slots)
@@ -372,6 +438,8 @@ struct OffloadPool(Movable):
         self.lane_ack_read = move.lane_ack_read^
         self.lane_ack_write = move.lane_ack_write^
         self.slot_lane = move.slot_lane^
+        self.slot_ack_fd = move.slot_ack_fd^
+        self.aborts = move.aborts^
         self.submit_read = move.submit_read
         self.submit_write = move.submit_write
         self.complete_read = move.complete_read
@@ -391,32 +459,48 @@ struct OffloadPool(Movable):
         self.hold_notify_fd = fd
 
     def enable_stream_channel(mut self) raises:
-        """Create the ASGI streaming pairs. Executor wiring only, once,
-        before the executor thread spawns.
+        """Create the chunk channel: once, by the wiring, before any producer
+        thread spawns — an executor, or a `--blocking-threads` pool whose
+        threads stream WSGI iterables through the same pair.
 
-        All four ends are non-blocking: the loop must never park in a
-        send, and the executor's asyncio loop watches its two ends with
-        `add_reader`. The writers therefore need the retry-with-yield
-        policy (`send_stream_chunk`, `ack_stream`) rather than blocking —
-        a dropped chunk is a corrupt body and a dropped ack is a stalled
-        stream, so neither may use the bus's drop-on-EAGAIN policy.
+        Both ends are non-blocking: the loop must never park in a send,
+        and the executor's asyncio loop watches its end with `add_reader`.
+        The writers therefore need the retry-with-yield policy
+        (`send_stream_chunk`) rather than blocking — a dropped chunk is a
+        corrupt body, so it may not use the bus's drop-on-EAGAIN policy.
+
+        The executor's base drain-ack pair is `enable_base_stream_ack`,
+        deliberately separate: `stream_active()` means "an executor
+        exists", and a pool server that streams must not look like one —
+        `slot_is_executor`'s unmounted shortcut would otherwise turn every
+        `M0-Hold` on the default topology into a chunk-framed stream.
         """
         var chunks = socketpair_dgram()
-        var acks = socketpair_dgram()
         self.stream_chunk_read = chunks[0]
         self.stream_chunk_write = chunks[1]
+        for fd in [self.stream_chunk_read, self.stream_chunk_write]:
+            _size_socket(fd)
+            _set_nonblocking_fd(fd)
+
+    def enable_base_stream_ack(mut self) raises:
+        """The unmounted executor's drain-ack pair. Executor wiring only,
+        after `enable_stream_channel`; this is what flips `stream_active`."""
+        var acks = socketpair_dgram()
         self.stream_ack_read = acks[0]
         self.stream_ack_write = acks[1]
-        for fd in [
-            self.stream_chunk_read, self.stream_chunk_write,
-            self.stream_ack_read, self.stream_ack_write,
-        ]:
+        for fd in [self.stream_ack_read, self.stream_ack_write]:
             _size_socket(fd)
             _set_nonblocking_fd(fd)
 
     def stream_active(self) -> Bool:
-        """Whether the ASGI streaming channel exists (executor mode)."""
+        """Whether an asyncio executor serves this loop (its base ack pair
+        exists). NOT whether the chunk channel does — see `chunk_active`."""
         return self.stream_ack_write >= 0
+
+    def chunk_active(self) -> Bool:
+        """Whether the chunk channel exists: an executor or a streaming pool
+        may be producing on it. What gates the loop's drain acks."""
+        return self.stream_chunk_write >= 0
 
     def send_stream_chunk(self, frame: Span[Byte, _]) -> Bool:
         """One bus-shaped chunk datagram, executor side. Returns whether it went.
@@ -540,6 +624,66 @@ struct OffloadPool(Movable):
         )
         return lane < len(self.lane_ack_write) and self.lane_ack_write[lane] >= 0
 
+    def slot_channel_stream(self, slot: Int) -> Bool:
+        """Whether this slot's stream rides the chunk channel — from an
+        executor OR from a pool thread streaming a WSGI iterable.
+
+        The loop's four stream decisions (chunk framing, drain acks, the
+        suppressed comment heartbeat, end-of-stream) belong to a channel
+        stream and none of them to an `M0-Hold`. The pool thread's mark is
+        per SLOT (`slot_ack_fd`, set by the thread before its begin frame
+        and cleared by the loop when the stream ends); the executor's is
+        per lane, as before."""
+        if not self.chunk_active():
+            return False
+        if slot >= 0 and slot < len(self.slot_ack_fd) and self.slot_ack_fd[slot] >= 0:
+            return True
+        return self.slot_is_executor(slot)
+
+    def set_slot_ack_fd(mut self, slot: Int, fd: Int):
+        """A pool thread's registration, made BEFORE its begin frame goes out
+        so the frame's send publishes it. See `slot_ack_fd`."""
+        if slot >= 0 and slot < len(self.slot_ack_fd):
+            self.slot_ack_fd[slot] = fd
+
+    def clear_slot_ack_fd(mut self, slot: Int):
+        """The loop's half: at accept and wherever a stream ends."""
+        if slot >= 0 and slot < len(self.slot_ack_fd):
+            self.slot_ack_fd[slot] = -1
+
+    def abort_stream(self, slot: Int, gen: Int) -> Bool:
+        """Tell the loop that generation `gen` of `slot`'s stream died after
+        its head: close without a terminator. Producer side, either kind.
+
+        Retried like `complete`, and for the same reason: an abort that is
+        lost is a connection the loop keeps waiting on for an end frame
+        that will never come. Returns whether it went."""
+        var msg = List[UInt8](capacity=_ABORT_BYTES)
+        msg.append(TAG_STREAM_ABORT)
+        var s = UInt64(Int64(slot))
+        for shift in range(0, 64, 8):
+            msg.append(UInt8((s >> UInt64(shift)) & 0xFF))
+        var g = UInt64(Int64(gen))
+        for shift in range(0, 64, 8):
+            msg.append(UInt8((g >> UInt64(shift)) & 0xFF))
+        for _ in range(64):
+            try:
+                _ = send(
+                    FileDescriptor(self.complete_write),
+                    Span(msg), UInt(len(msg)), 0,
+                )
+                return True
+            except:
+                _sched_yield()
+        return False
+
+    def take_aborts(mut self) -> List[Int]:
+        """The `(slot, gen)` pairs the last `drain_completions` found,
+        flattened `[slot, gen, slot, gen, ...]`; empties the list."""
+        var out = self.aborts^
+        self.aborts = List[Int]()
+        return out^
+
     def ack_stream(self, slot: Int, bytes_flushed: Int) -> Bool:
         """One drain-ack datagram, loop side: `(slot: i32, bytes: i32)` LE.
 
@@ -563,7 +707,11 @@ struct OffloadPool(Movable):
             if slot >= 0 and slot < len(self.slot_lane) else 0
         )
         var ack_fd = self.stream_ack_write
-        if lane < len(self.lane_ack_write) and self.lane_ack_write[lane] >= 0:
+        if slot >= 0 and slot < len(self.slot_ack_fd) and self.slot_ack_fd[slot] >= 0:
+            # A pool thread's stream: credit goes to THAT thread's pair,
+            # never to a lane, since N threads share one.
+            ack_fd = self.slot_ack_fd[slot]
+        elif lane < len(self.lane_ack_write) and self.lane_ack_write[lane] >= 0:
             ack_fd = self.lane_ack_write[lane]
         var msg = List[UInt8](capacity=8)
         var s = UInt32(slot)
@@ -669,16 +817,28 @@ struct OffloadPool(Movable):
         contract, and the same reason, as `drain_bus_channel`.
         """
         var done = List[Int]()
-        var buf = List[UInt8](capacity=_JOB_BYTES)
-        for _ in range(_JOB_BYTES):
+        # Sized for the largest datagram the channel carries — an abort —
+        # and not for a completion: a SOCK_DGRAM `recv` into a short buffer
+        # silently discards the excess, on both platforms.
+        var buf = List[UInt8](capacity=_ABORT_BYTES)
+        for _ in range(_ABORT_BYTES):
             buf.append(0)
         var fd = FileDescriptor(self.complete_read)
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(_JOB_BYTES), 0)
+                n = recv(fd, Span(buf), UInt(_ABORT_BYTES), 0)
             except:
                 break  # EAGAIN: drained
+            if n == UInt(_ABORT_BYTES) and buf[0] == TAG_STREAM_ABORT:
+                var s = UInt64(0)
+                var g = UInt64(0)
+                for i in range(8):
+                    s |= UInt64(buf[1 + i]) << UInt64(i * 8)
+                    g |= UInt64(buf[9 + i]) << UInt64(i * 8)
+                self.aborts.append(Int(Int64(s)))
+                self.aborts.append(Int(Int64(g)))
+                continue
             if n < UInt(_JOB_BYTES):
                 break  # EOF, or a truncated datagram that cannot be ours
             done.append(_decode_job(Span(buf)))
@@ -826,6 +986,43 @@ struct OffloadPool(Movable):
                 _sched_yield()
 
 
+def make_stream_ack_pair() raises -> Tuple[Int, Int]:
+    """A pool thread's own drain-ack pair: `(read_end, write_end)`.
+
+    The READ end stays blocking — the thread sleeps on it (detached) while
+    it waits for credit — and the WRITE end is non-blocking, because the
+    loop sends on it and must never park. Sized like every other channel
+    here. Created once per thread and kept for the process's life: the raw
+    fd number travels in the thread's begin frames, and a closed-and-reused
+    number would let a stale disconnect land in a client's TCP stream.
+    """
+    var pair = socketpair_dgram()
+    _size_socket(pair[0])
+    _size_socket(pair[1])
+    _set_nonblocking_fd(pair[1])
+    return (pair[0], pair[1])
+
+
+def drain_ack_fd(fd: Int):
+    """Discard every datagram waiting on an ack read end, without blocking.
+
+    A pool thread calls this before each stream's begin frame: the previous
+    stream's final ack — and its disconnect, if the client vanished — may
+    still be queued, and either would be misread as credit or as an early
+    disconnect for the stream about to start.
+    """
+    var buf = List[UInt8](capacity=8)
+    for _ in range(8):
+        buf.append(0)
+    for _ in range(4096):
+        try:
+            var n = recv(FileDescriptor(fd), Span(buf), UInt(8), _MSG_DONTWAIT)
+            if n == 0:
+                return
+        except:
+            return
+
+
 def _sched_yield():
     _ = external_call["sched_yield", c_int]()
 
@@ -894,6 +1091,12 @@ struct OffloadLoopState(Movable):
     var inflight: Int
     """Jobs submitted and not yet completed. Bounded by OFFLOAD_MAX_INFLIGHT."""
 
+    var stream_gen: List[Int]
+    """The generation the head of each slot's current channel stream
+    carried (`HTTPResponse.stream_gen`), `STREAM_GEN_NONE` otherwise. What
+    an abort datagram is checked against: an abort naming any other
+    generation is about a stream this slot no longer serves."""
+
 
     def __init__(out self, addr: Int, capacity: Int):
         self.addr = addr
@@ -905,6 +1108,7 @@ struct OffloadLoopState(Movable):
         self.chunked = List[Bool](capacity=capacity)
         self.ack_payload = List[Int](capacity=capacity)
         self.ack_owed = List[Int](capacity=capacity)
+        self.stream_gen = List[Int](capacity=capacity)
         for _ in range(capacity):
             self.offloaded.append(False)
             self.is_head.append(False)
@@ -912,6 +1116,7 @@ struct OffloadLoopState(Movable):
             self.chunked.append(False)
             self.ack_payload.append(0)
             self.ack_owed.append(0)
+            self.stream_gen.append(STREAM_GEN_NONE)
 
     def __init__(out self, *, deinit move: Self):
         self.addr = move.addr
@@ -923,12 +1128,35 @@ struct OffloadLoopState(Movable):
         self.ack_owed = move.ack_owed^
         self.ack_owed_count = move.ack_owed_count
         self.inflight = move.inflight
+        self.stream_gen = move.stream_gen^
 
     def slot_is_executor(self, slot: Int) -> Bool:
         """`OffloadPool.slot_is_executor`, inert when the pool is disabled."""
         if not self.enabled():
             return False
         return self.pool()[].slot_is_executor(slot)
+
+    def slot_channel_stream(self, slot: Int) -> Bool:
+        """`OffloadPool.slot_channel_stream`, inert when the pool is disabled."""
+        if not self.enabled():
+            return False
+        return self.pool()[].slot_channel_stream(slot)
+
+    def chunk_active(self) -> Bool:
+        """`OffloadPool.chunk_active`, inert when the pool is disabled."""
+        if not self.enabled():
+            return False
+        return self.pool()[].chunk_active()
+
+    def clear_stream(mut self, slot: Int):
+        """Forget a slot's channel stream: its producer's ack fd and its
+        generation. The loop's half of the pool-thread handshake — called
+        at accept and wherever a stream ends, so a recycled slot cannot
+        inherit either."""
+        if slot >= 0 and slot < len(self.stream_gen):
+            self.stream_gen[slot] = STREAM_GEN_NONE
+        if self.enabled():
+            self.pool()[].clear_slot_ack_fd(slot)
 
     def enabled(self) -> Bool:
         return self.addr != 0

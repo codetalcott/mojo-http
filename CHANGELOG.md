@@ -7,6 +7,44 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **Unsized WSGI bodies stream.** A generator or iterator the application
+  did not size — Django's `StreamingHttpResponse`, a Flask
+  `Response(generator)` — is produced chunk by chunk from a
+  `--blocking-threads` pool thread (the WSGI zero-config default) through
+  the same chunk channel the ASGI executor streams through: chunked on
+  HTTP/1.1 with the connection reusable after, close-delimited on
+  HTTP/1.0, `close()` called, and the thread back in the pool when the
+  client leaves. Every release before this joined such a body whole, so a
+  never-ending SSE generator never answered and pinned its thread until
+  shutdown. Sized bodies (`Content-Length` — every Flask page, every Django
+  page behind `CommonMiddleware`, `FileResponse`), list bodies, Django's
+  `HttpResponse`, HEAD, bodiless statuses and `M0-Hold` responses buffer
+  exactly as before, so no framework page changes on the wire; a server
+  with no pool keeps joining. `poe smoke-wsgi-stream` pins the contract.
+- `apps/wsgi_bare` gains `/stream`, `/stream-forever`, `/stream-raises`,
+  `/stream-empty`, `/stream-write-inside`, `/stream-cl` and `/stream-hold`;
+  `apps/django_wsgi` gains `/events`, a `StreamingHttpResponse`.
+
+### Fixed
+
+- **A stream that raises after its head is truncated honestly.** The
+  connection closes without the chunked terminator — for a WSGI generator
+  and for an ASGI application alike; the executor used to end such a body
+  cleanly, which made a short body indistinguishable from a complete one.
+- **A chunk that outlived its connection can no longer land in a
+  recycled slot's new stream.** Every stream frame carries its stream's
+  generation and the loop handler drops one that is not the
+  subscription's. One producer's frames are FIFO behind its own begin;
+  with two producers on one loop (an executor and a pool thread, two
+  executors, or a hold arriving on the other bus fd) there was no order
+  between them at all.
+- **A stream whose head completes during the shutdown drain is now told
+  goodbye.** The drain loop dispatches write-readiness only, so such a
+  connection was never closed and its producer waited out the bounded
+  join as a straggler; a second farewell pass after the drain closes it.
+
 ## [0.13.0] — 2026-08-27
 
 A security-audit release plus two wire-protocol conformance fixes. Several

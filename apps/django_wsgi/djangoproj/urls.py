@@ -3,7 +3,7 @@
 import os
 import time
 
-from django.http import HttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.urls import path
 
 
@@ -102,6 +102,31 @@ def slow(request):
     time.sleep(held)
     return HttpResponse(f"slow done pid={os.getpid()}", content_type="text/plain")
 
+def events(request):
+    """A `StreamingHttpResponse` — the shape every Django SSE tutorial uses.
+
+    Under gunicorn the events reach the client as the generator yields them.
+    On this server they used to be buffered whole, so a never-ending stream
+    never answered and pinned its handler thread until shutdown; a pool
+    thread now streams them through the loop's chunk channel. `?n=` events,
+    `?delay=` seconds apart; the smoke asserts the first arrives before the
+    last is generated.
+    """
+    try:
+        n = int(request.GET.get("n", 3))
+        delay = float(request.GET.get("delay", 0.1))
+    except (TypeError, ValueError):
+        n, delay = 3, 0.1
+
+    def gen():
+        for i in range(n):
+            yield f"data: event {i}\n\n"
+            if delay and i + 1 < n:
+                time.sleep(delay)
+
+    return StreamingHttpResponse(gen(), content_type="text/event-stream")
+
+
 def pep3333_canary(request):
     """A deliberate PEP 3333 violation, so the smoke test can prove the
     validator is engaged.
@@ -130,5 +155,6 @@ urlpatterns = [
     path("boom", boom),
     path("wsgi", wsgi),
     path("slow", slow),
+    path("events", events),
     path("pep3333/canary", pep3333_canary),
 ]

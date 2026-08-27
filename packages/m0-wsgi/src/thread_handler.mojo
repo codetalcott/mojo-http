@@ -13,6 +13,7 @@ here, now" — is stated where only threads can see it.
 """
 
 from lightbug_http import HTTPService
+from lightbug_http.offload import OffloadPool
 
 
 trait ThreadHandler(HTTPService, Movable, Deinitable):
@@ -76,6 +77,36 @@ trait ThreadHandler(HTTPService, Movable, Deinitable):
         """
         ...
 
+    def stream_pending(self) -> Bool:
+        """Whether the response `func` just returned is the HEAD of a body
+        this handler still has to produce — a WSGI iterable it decided to
+        stream rather than join. A pool thread asks after every `func`;
+        the loop's own handler never streams (it buffers on the loop
+        thread), so its answer is always False.
+        """
+        ...
+
+    def stream_begin(mut self, slot: Int, gen: Int, ack_fd: Int) -> Bool:
+        """Send the stream's begin frame on the chunk channel, BEFORE the
+        head completes: `\x01P/<slot>/<lane>/<ack_fd>` with `gen` as the
+        frame's id. `ack_fd` is the calling thread's own ack write end,
+        which is how the loop's `sse_slot_disconnected` reaches this
+        thread if the client vanishes. Returns whether the frame went.
+        """
+        ...
+
+    def stream_pump(
+        mut self, slot: Int, gen: Int, ack_read_fd: Int, mut pool: OffloadPool
+    ):
+        """Produce the body: pull chunks from the application's iterable,
+        send each as an `s` frame under stop-and-wait credit read off
+        `ack_read_fd` (detached while it waits), end with an `e` frame —
+        or `pool.abort_stream` if the iterable raised — and always close
+        the iterable. Called on the pool thread after the head completed.
+        Must not raise; a stream has nowhere to send an error.
+        """
+        ...
+
     def shutdown(mut self):
         """Teardown the handler owes its application before destruction.
 
@@ -120,12 +151,21 @@ struct ThreadContext(Copyable, Movable):
     those stay readable whatever the pool is busy with and the health
     counts come from the registries the loop actually drains."""
 
+    var stream_fd: Int
+    """The chunk channel's write end (`OffloadPool.stream_chunk_write`), or
+    -1. A pool thread streams a WSGI iterable through it, frame by frame,
+    the way the asyncio executor streams an ASGI body; with -1 the handler
+    joins every iterable, as it always did. Only a pool thread's handler
+    is given one — the loop's own handler must never stream from the loop
+    thread, which is the whole hostage problem again."""
+
     def __init__(
         out self, index: Int, user: Int, lane: Int = -1, hold_fd: Int = -1,
-        pool: Bool = False,
+        pool: Bool = False, stream_fd: Int = -1,
     ):
         self.index = index
         self.user = user
         self.lane = lane
         self.hold_fd = hold_fd
         self.pool = pool
+        self.stream_fd = stream_fd
