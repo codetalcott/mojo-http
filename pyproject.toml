@@ -523,6 +523,18 @@ python3 scripts/half_close_probe.py 8080 || { echo '=== hc.log ==='; cat hc.log;
 echo "smoke-half-close OK"
 """
 
+[tool.poe.tasks.smoke-large-request]
+help = "A request bigger than one read must be answered, not stalled"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > lr.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f lr.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
+  || { echo '=== lr.log ==='; cat lr.log; exit 1; }
+python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat lr.log; exit 1; }
+echo "smoke-large-request OK"
+"""
+
 [tool.poe.tasks.smoke-ws]
 help = "WebSocket echo demo: handshake, echo, fragmentation, ping/pong, heartbeats, close"
 shell = """

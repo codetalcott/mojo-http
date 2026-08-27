@@ -627,6 +627,24 @@ Properties of the design, not defects to fix in passing:
   parses nothing), `SameSite` (lowercase-only match), everything after the
   first `=` in a value, and any unmodelled attribute — on every Django
   session and CSRF cookie of every app. Do not "normalise" that path.
+- **The two backends do not have the same trigger semantics, and every read
+  path must satisfy the stricter one.** `add_read` is `EV_ADD` on kqueue —
+  no `EV_CLEAR`, so connection reads are LEVEL triggered and a partial drain
+  is simply reported again — while epoll registers `EPOLLIN | EPOLLET`,
+  where bytes already in the socket buffer when the edge fired produce no
+  further edge. (`add_read_listen` differs the other way: both edge
+  triggered. A write registration replaces the read registration on epoll
+  and not on kqueue, which is what `slot_read_armed` tracks.)
+
+  So each platform forgives a different mistake, and macOS will pass without
+  the re-arm that Linux requires. `_handle_read_headers` performs exactly
+  ONE `recv` of `recv_staging.capacity()` (4096) per call and did not re-arm
+  while headers were incomplete: a request bigger than the eager read at
+  accept plus one edge — 8192 bytes exactly, measured — stalled on Linux
+  until the header timeout answered 408, while macOS served any size. 8 KB
+  of request headers is a large cookie jar or a JWT, not an attack. The body
+  path had the fix already, with a comment giving this exact reason; it just
+  had not been extended to headers. `poe smoke-large-request` pins it.
 - **`EV_EOF` on a read event means "no more request bytes", not "connection
   over".** A client may half-close (`shutdown(SHUT_WR)`) to say it has sent
   the whole request and still be waiting to read the answer, so the loop
