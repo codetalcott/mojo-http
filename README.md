@@ -58,8 +58,8 @@ multi-tab sync**, and CI executes every command in it on every pull request
   the same one applies here.
 - **Not the fastest server on raw throughput**, and
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says so with numbers: ~0.85x
-  Granian per measured core on bare WSGI, 0.75x uvicorn on ASGI at 16
-  connections (0.53x against uvicorn with uvloop) and 1.10x at 256.
+  Granian per measured core on bare WSGI, 1.06x uvicorn on ASGI at 16
+  connections (0.74x against uvicorn with uvloop) and 1.22x at 256.
   What it does win is the fast-request tail under mixed load. Every figure there
   cites a dated artifact and CI recomputes the prose against it.
 - **Pre-1.0**, and the API will change ([CHANGELOG](CHANGELOG.md)).

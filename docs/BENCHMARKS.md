@@ -63,7 +63,7 @@ says otherwise. Where a comparator wins, the row stays.
 | question | answer |
 |---|---|
 | Fastest per core on bare WSGI? | **No** — Granian, by ~1.2x |
-| Fastest per core on bare ASGI? | **No** at 16 connections — uvicorn, by ~1.12x with `--loop asyncio`, and by ~1.57x with uvloop, which is what `pip install uvicorn[standard]` runs by default. At 256 connections the executor is ahead of the asyncio comparator (1.10x) and 0.85x the uvloop one |
+| Fastest per core on bare ASGI? | **Against `uvicorn --loop asyncio`, yes** — the executor is ahead by ~1.06x per core at 16 connections and 1.22x at 256. **Against uvloop, no** — uvicorn is ahead, and by ~1.36x with uvloop, which is what `pip install uvicorn[standard]` runs by default; 0.94x at 256 connections |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
 | Fastest HTTP layer, Python excluded? | **Yes** — but see the note on why that is not the interesting number |
 
@@ -120,42 +120,42 @@ locates the cost, not because it is a win.
 asserted between the two responses, single process each:
 
 <!-- generated: asgi-wrk-hello -- edit bench/results, not this table -->
-Source: [`asgi-wrk-hello-20260827T182310Z.json`](../bench/results/asgi-wrk-hello-20260827T182310Z.json) — 2026-08-27T18:23:10+00:00, commit `92e8b1c`.
+Source: [`asgi-wrk-hello-20260827T195533Z.json`](../bench/results/asgi-wrk-hello-20260827T195533Z.json) — 2026-08-27T19:55:33+00:00, commit `eee3878`.
 Environment: Python 3.13.6; Apple M4 (10 cores); wrk -t2 -c16 -d8s, browser headers; executor loop: uvloop.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `m0serve` — zero-config executor (its loop is stamped above) | 43,221 | 0.83 | 52,074 |
-| `uvicorn --loop asyncio` | 57,569 | 0.99 | 58,150 |
-| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 80,876 | 0.99 | 81,693 |
+| `m0serve` — zero-config executor (its loop is stamped above) | 60,268 | 0.99 | 60,876 |
+| `uvicorn --loop asyncio` | 57,014 | 0.99 | 57,590 |
+| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 81,670 | 0.99 | 82,494 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: asgi-wrk-hello -->
 
-**uvicorn wins this one at 16 connections, and the concurrency says
-why.** The executor loses the row while consuming 0.83 cores against
-uvicorn's 0.99 — wakeup-bound, not CPU-bound: every request
-serializes through loop thread → submit datagram → executor thread →
-completion datagram → loop thread, and both threads idle between
-handoffs. The pump has been batched in both directions since
-2026-08-27, and what that is worth depends on how many connections
-supply the batches: +5% here, where a loop pass batches three submits on
-average, and +19% at 256 connections — where the executor is **1.10x
-`uvicorn --loop asyncio`** and 0.85x uvicorn with uvloop, on 1.02 cores.
-The row stays at `-c16` because that is the standing configuration; the
-concurrency table, which loop the executor itself runs on (this row:
-uvloop; measured to be a wash), and the next lever — a cheaper pass
-shape, prototyped at +16% on this row — are in
-[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md). The uvloop row is on the
-page because it is the number a developer's own `uvicorn[standard]`
-install produces: 0.53x.
+**Against `uvicorn --loop asyncio` the executor wins this row, and the
+cores column says what changed.** It used to lose it at 0.83–0.90 cores
+against uvicorn's 0.99 — wakeup-bound, not CPU-bound: every request
+serialized through loop thread → submit datagram → executor thread →
+completion datagram → loop thread, and both threads idled between
+handoffs. On 2026-08-27 the pump was batched in both directions (+5%
+here, +19% at 256 connections), and then inverted: Python calls into
+Mojo for every event through a type built in-process, and the executor
+thread never leaves `run_forever` — which is what finally let its
+opportunistic uvloop pay. This row runs on uvloop at 0.99 cores and
+reads **1.06x `uvicorn --loop asyncio`**; at 256 connections, 1.22x. Against
+uvicorn with uvloop it is still behind — 0.74x here, 0.94x at 256 — and
+that row is on the page because it is the number a developer's own
+`uvicorn[standard]` install produces: 0.74x. The concurrency tables and
+the loop-by-loop comparison are in
+[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 Worth recording because it inverted a conclusion: an earlier run of this
 comparison used a stdlib `http.client` harness and reported 0.88–0.94x. The
 assumption was that the stdlib client understated the Mojo layer's parsing
-edge. Under wrk the ratio is 0.75x at 16 connections (0.72x before the
-pump was batched) — the stdlib client had been *flattering* the
-executor, and the fix path derived from it was aimed the wrong way.
+edge. Under wrk the ratio is 1.06x at 16 connections (0.72x before the
+pump was batched and then inverted) — the stdlib client had been
+*flattering* the executor as it stood, and the fix path derived from it
+was aimed the wrong way.
 
 ## Fast-request tail under mixed load
 
