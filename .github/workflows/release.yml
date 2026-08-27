@@ -371,7 +371,10 @@ jobs:
   #      `release.yml`, environment `pypi`. Pending publishers exist exactly
   #      so a project that does not exist yet can be claimed by a workflow,
   #      so no API token is ever created.
-  #   2. Create the `pypi` environment in this repository's settings.
+  #   2. Create the `pypi` environment in this repository's settings, and
+  #      configure it -- it is the authorization boundary, not the variable
+  #      below. See docs/RELEASING.md, "The environment is the authorization
+  #      boundary".
   #   3. Rehearse on TestPyPI with an rc first, then set PUBLISH_TO_PYPI.
   publish-pypi:
     if: vars.PUBLISH_TO_PYPI == 'true'
@@ -402,4 +405,11 @@ jobs:
           [ "v$vers" = "$tag" ] \
             || { echo "::error::wheel version $vers does not match tag $tag"; exit 1; }
           echo "publishing $vers: ${wheels[*]}"
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # SHA-pinned, deliberately not `@release/v1`. This is the only step in
+      # the repository holding a credential that can publish to PyPI
+      # (`id-token: write` + trusted publishing), and a branch ref is
+      # rewritable by whoever controls the action's repository. The pin is
+      # v1.14.2 -- exactly what `release/v1` pointed at when it was set, so
+      # this froze current behaviour rather than changing it. Dependabot's
+      # github-actions ecosystem keeps it current and rewrites the comment.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
