@@ -1059,7 +1059,8 @@ datagram → executor thread → completion datagram → loop thread, and both
 threads idle between handoffs. That confirms **pump batching** (amortize
 the wakeups across queued requests) as the one real lever, retires
 "measure under wrk" as done, and is why `bench-asgi`'s throughput gate
-now reads ≥0.8x rather than ≥1.0x: the deficit is a located mechanism
+read ≥0.8x rather than ≥1.0x until it was retired the same day batching
+landed (below): the deficit is a located mechanism
 cost, a red-by-design gate trains people to ignore red, and the gate that
 carries the executor's actual claim — fast-request tail under mixed load
 — still requires beating uvicorn. Ratchet the threshold back up if pump
@@ -1174,9 +1175,10 @@ unguarded prototype before it counted.
 The stdlib-client `bench-asgi` harness read the executor at **1.41–1.46x
 uvicorn** the same afternoon, before and after batching alike, where
 its 2026-08-25 artifact read 0.96x and wrk reads 0.73–1.10x; nothing on
-the server side moved that way. It measures its own client. Its ≥0.8x
-gate stays where it is as a regression floor only; the wrk artifacts
-are the record.
+the server side moved that way. It measures its own client, so its
+throughput gate is retired: the ratio it prints is information, its
+mixed-tail gate — the executor's actual claim — stays, and the wrk
+artifacts are the record.
 
 ## History: three fixes, and what the tails actually were
 

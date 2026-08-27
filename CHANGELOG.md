@@ -56,8 +56,10 @@ versions may break the API**.
   (a pass batches three submits on average there), +7% at 64 and +19% at
   256, where the executor passes `uvicorn --loop asyncio` (1.10x; 0.85x
   against uvicorn with uvloop). Table and artifacts in
-  docs/WSGI_PERFORMANCE.md; `bench-asgi`'s stdlib gate stays at ≥0.8x
-  as a regression floor, its harness having read 1.4x the same day.
+  docs/WSGI_PERFORMANCE.md; `bench-asgi`'s stdlib throughput gate is
+  retired — its harness read 1.4x the same day wrk read 0.75x, so it
+  measures its own client; the ratio is printed as information and the
+  mixed-tail gate stays.
 - **The executor pump parks in `run_forever`, one `stop()` per pass**,
   instead of a `run_until_complete(batch())` per pass (38 µs on stdlib
   asyncio against 17): every shim event is appended to a list, the first

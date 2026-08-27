@@ -3397,7 +3397,7 @@ echo "smoke-wsgi-stream OK"
 # shared runners make latency gates flaky; run it where the numbers go
 # into WSGI_PERFORMANCE.md.
 [tool.poe.tasks.bench-asgi]
-help = "Bench the ASGI executor against uvicorn on apps/asgi_bare (gates: rps ratio floor, mixed-tail p99)"
+help = "Bench the ASGI executor against uvicorn on apps/asgi_bare (gate: mixed-tail p99; the rps ratio is informational)"
 deps = ["build-serve"]
 cmd = "python3 scripts/bench_asgi.py"
 

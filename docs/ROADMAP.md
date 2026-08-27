@@ -618,7 +618,8 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   unguarded prototype);
   and `bench-asgi`'s stdlib harness now reads the executor at 1.4x
   uvicorn where wrk reads 0.7–1.1x — it measures its own client — so its
-  ≥0.8x gate stays where it is as a regression floor only, and the wrk
+  throughput gate is retired (the ratio is printed as information; the
+  mixed-tail gate, the executor's actual claim, stays) and the wrk
   artifacts are the record.
 - **Django ASGI parity is proven, not inferred.** `apps/django_asgi`
   runs Django's own `ASGIHandler` through the executor (`poe
