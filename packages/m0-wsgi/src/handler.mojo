@@ -820,10 +820,16 @@ struct WSGIHandler(ThreadHandler):
         # `websocket.receive` loop — forward it to the executor thread as
         # a tagged datagram and never enter Python on the loop thread.
         if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
-            _send_ws_message_tag(
+            if not _send_ws_message_tag(
                 self._notify_fd_for(self.sockets.filter_url(slot)),
                 slot, opcode, payload,
-            )
+            ):
+                print(
+                    "ws_message: the executor's channel would not take an"
+                    " inbound message for slot " + String(slot)
+                    + "; it is lost",
+                    flush=True,
+                )
             return
         # GRIP mode: an inbound message, handed to a plain synchronous view
         # as a POST. This runs ON the event loop thread, so it costs
@@ -962,6 +968,25 @@ def _upgrade_required() -> HTTPResponse:
 # `state["m0"].publish(...)` take an arbitrary string, and in the reference
 # app that string is a request field.
 
+comptime WS_CHANNEL_DATAGRAM_MAX = 65546
+"""The receive buffer both channel readers post for an inbound WS message.
+
+`blocking_pool.WS_JOB_BUFFER` and the executor shim's own read size are
+this number, and both READ WITHOUT `MSG_TRUNC`: a SOCK_DGRAM datagram
+larger than the buffer is copied up to the buffer and the remainder is
+DISCARDED, with the short count looking exactly like a short message. The
+comment at each of those buffers claimed the loop's `max_message_size` kept
+assembled messages underneath it, which is wrong by a factor of 64 --
+`max_message_size` is `max_request_body_size`, 4 MB by default, so any
+inbound frame between ~64 KB and the socket's send-buffer limit was handed
+to the application truncated and presented as complete.
+
+Refusing to send is the honest answer: an oversized message is dropped and
+logged, the same way one too big for the socket buffer already was. It is
+declared here rather than beside either buffer because both senders live in
+this file, and a bound that is not shared with the check is not a bound.
+"""
+
 comptime ASGI_URL_CONTROL = UInt8(1)
 
 
@@ -1066,6 +1091,10 @@ def _send_ws_pool_message(
     loop — so the name it joined with has to travel with the message. Bounded
     retry, never a park: this runs on the event loop."""
     var chan = channel.as_bytes()
+    # See WS_CHANNEL_DATAGRAM_MAX: past this the reader silently drops the
+    # tail, so the message must not be sent at all.
+    if 12 + len(chan) + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
+        return False
     var msg = List[UInt8](capacity=12 + len(chan) + len(payload))
     msg.append(2)
     var bits = UInt64(Int64(slot))
@@ -1088,13 +1117,18 @@ def _send_ws_pool_message(
     return False
 
 
-def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):
+def _send_ws_message_tag(
+    fd: Int, slot: Int, opcode: Int, payload: List[UInt8]
+) -> Bool:
     """One `[tag=2 u8][slot i64 LE][opcode u8][payload]` datagram.
 
     The payload rides IN the datagram, so it is bounded by the channel's
-    frame size; the loop's own `max_message_size` keeps assembled messages
-    under it. Retried like the disconnect tag — a lost inbound message is
-    an app-visible gap."""
+    frame size — and by WS_CHANNEL_DATAGRAM_MAX, which is what the reader
+    can actually take. Over that it is refused rather than truncated;
+    `ws_message` logs the drop. Retried like the disconnect tag — a lost
+    inbound message is an app-visible gap."""
+    if 10 + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
+        return False
     var msg = List[UInt8](capacity=10 + len(payload))
     msg.append(2)
     var bits = UInt64(Int64(slot))
@@ -1108,8 +1142,9 @@ def _send_ws_message_tag(fd: Int, slot: Int, opcode: Int, payload: List[UInt8]):
             c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
         )
         if rc == len(msg):
-            return
+            return True
         _ = external_call["sched_yield", c_int]()
+    return False
 
 
 def _send_disconnect_tag(fd: Int, slot: Int):
