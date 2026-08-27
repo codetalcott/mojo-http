@@ -1327,9 +1327,16 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     _send_raw_to_fd(fd_val, "HTTP/1.1 100 Continue\r\n\r\n".as_bytes())
 
             var effective_length = config.max_request_body_size if is_chunked else content_length
+            # For a chunked body `bytes_read` counts DECODED bytes, and
+            # nothing has been decoded yet — the buffered bytes below are
+            # still raw. Seeding it with the raw count instead made the
+            # resumed decode start past bytes it had never consumed, and the
+            # chunk framing in the gap was read as body: a 300 KB upload in
+            # 64-byte chunks arrived 12 bytes long, carrying two chunks'
+            # `40\r\n...\r\n` inside it.
             provision_pool.provisions[slot].body_state = BodyReadState(
                 content_length=effective_length,
-                bytes_read=body_bytes_in_buffer,
+                bytes_read=0 if is_chunked else body_bytes_in_buffer,
                 header_end_offset=header_end_offset,
                 is_chunked=is_chunked,
             )
@@ -1338,24 +1345,38 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             if config.body_read_timeout > 0:
                 backend.try_add_timer(UInt(fd_val) + TIMER_BODY, config.body_read_timeout * 1000)
 
-            # Phase 1b: attempt immediate chunked decode on bytes already buffered
+            # Phase 1b: decode whatever of the body arrived with the headers,
+            # through the CONNECTION's decoder — the same one the
+            # READING_BODY branch resumes. A throwaway decoder here would
+            # consume these bytes and then throw away the chunk state it
+            # built, leaving the resumed decode to start mid-chunk.
             if is_chunked and body_bytes_in_buffer > 0:
-                var chunk_buf = Bytes(capacity=body_bytes_in_buffer)
-                for j in range(header_end_offset, len(provision_pool.provisions[slot].recv_buffer)):
-                    chunk_buf.append(provision_pool.provisions[slot].recv_buffer[j])
-                var decoder = HTTPChunkedDecoder()
-                var (ret, decoded_size) = decoder.decode(Span(chunk_buf))
+                var ret: Int
+                var decoded_size: Int
+                ret, decoded_size = provision_pool.provisions[
+                    slot
+                ].chunk_decoder.decode(
+                    Span(provision_pool.provisions[slot].recv_buffer)[
+                        header_end_offset:
+                    ]
+                )
                 if ret == -1:
                     _send_error_to_fd(fd_val, BadRequest())
                     _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
                     return
-                elif ret >= 0:
-                    var new_buf = Bytes(capacity=header_end_offset + decoded_size)
-                    for j in range(header_end_offset):
-                        new_buf.append(provision_pool.provisions[slot].recv_buffer[j])
-                    for j in range(decoded_size):
-                        new_buf.append(chunk_buf[j])
-                    provision_pool.provisions[slot].recv_buffer = new_buf^
+                var leftover = provision_pool.provisions[
+                    slot
+                ].chunk_decoder.pending_bytes
+                provision_pool.provisions[slot].recv_buffer.resize(
+                    header_end_offset + decoded_size + leftover, 0
+                )
+                var body_st0 = provision_pool.provisions[slot].body_state.value()
+                body_st0.bytes_read = decoded_size
+                provision_pool.provisions[slot].body_state = body_st0
+                if ret >= 0:
+                    provision_pool.provisions[slot].recv_buffer.resize(
+                        header_end_offset + decoded_size, 0
+                    )
                     var body_st = provision_pool.provisions[slot].body_state.value()
                     body_st.content_length = decoded_size
                     body_st.bytes_read = decoded_size

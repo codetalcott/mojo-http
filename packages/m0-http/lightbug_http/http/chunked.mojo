@@ -76,7 +76,8 @@ struct HTTPChunkedDecoder(Defaultable):
         var ret = -2  # incomplete
         var buffer_len = len(buf)
 
-        self._total_read += buffer_len
+        # NB: the totals are accumulated at the BOTTOM, from `src`/`dst`, not
+        # here from `buffer_len`. See the abuse-ratio block.
 
         while True:
             if self._state == DecoderState.IN_CHUNK_SIZE:
@@ -238,11 +239,33 @@ struct HTTPChunkedDecoder(Defaultable):
         # docstring for why this is recorded rather than recomputed.
         self.pending_bytes = buffer_len - src
 
-        # Check for excessive overhead
+        # Check for excessive overhead: a body that is mostly chunk framing
+        # and hardly any data.
+        #
+        # Measured against what this call actually CONSUMED (`src`) and
+        # produced (`dst`), so the framing cost is `src - dst`.
+        #
+        # It was `buffer_len - dst`, which charged the whole
+        # not-yet-decodable tail as overhead. That was harmless while a
+        # throwaway decoder saw the entire body in one call, and is wrong
+        # now that one decoder is fed per read: the unconsumed tail is
+        # re-offered on the next call, so those bytes were charged again
+        # every time, and `_total_read` double-counted them alongside. No
+        # request is known to have been refused because of it — the ratio
+        # needs 100 KB of charged overhead before it can fire, and the
+        # 400s seen while building this were the `bytes_read` desync in
+        # `event_loop.mojo`, not this. It is corrected because the numbers
+        # should mean what they say; `test_a_body_that_is_mostly_framing_
+        # still_trips_the_abuse_guard` pins that the guard still fires on
+        # what it was written for.
         if ret == -2:
-            self._total_overhead += buffer_len - dst
+            self._total_read += src
+            self._total_overhead += src - dst
             if self._total_overhead >= 100 * 1024 and self._total_read - self._total_overhead < self._total_read // 4:
                 ret = -1
+        else:
+            self._total_read += src
+            self._total_overhead += src - dst
 
         return (ret, new_bufsz)
 

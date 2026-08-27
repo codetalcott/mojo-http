@@ -22,6 +22,7 @@ from lightbug_http.header import (
     HeaderKey,
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
+from lightbug_http.io.bytes import Bytes
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -445,3 +446,112 @@ def test_empty_chunk_size_is_rejected() raises:
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
+
+
+# --- the incremental chunked decoder ----------------------------------------
+
+
+def _feed_incrementally(raw: String, piece: Int) raises -> Tuple[Int, String]:
+    """Drive one decoder the way the event loop does: a buffer holding
+    `[decoded][raw tail]`, fed only the bytes that just arrived.
+
+    Returns (final ret, decoded body). This is the loop's arithmetic in
+    miniature — if it is wrong here it is wrong there, and unlike the loop
+    it can be asserted without a socket.
+    """
+    var dec = HTTPChunkedDecoder()
+    var buf = Bytes()
+    var decoded = 0
+    var ret = -2
+    var src = raw.as_bytes()
+    var at = 0
+    while at < len(src):
+        var upto = at + piece
+        if upto > len(src):
+            upto = len(src)
+        for i in range(at, upto):
+            buf.append(src[i])
+        at = upto
+
+        if len(buf) > decoded:
+            var produced: Int
+            ret, produced = dec.decode(Span(buf)[decoded:])
+            if ret == -1:
+                return (ret, String(""))
+            var leftover = dec.pending_bytes
+            buf.resize(decoded + produced + leftover, 0)
+            decoded += produced
+            if ret >= 0:
+                buf.resize(decoded, 0)
+                break
+    return (
+        ret,
+        String(unsafe_from_utf8=Span(buf)[:decoded]),
+    )
+
+
+def test_incremental_decode_matches_a_single_pass() raises:
+    """The same body fed one byte at a time must decode to the same bytes.
+
+    The decoder carries chunk state across calls, so feeding it only the
+    NEW bytes is what makes a chunked body linear rather than quadratic in
+    the number of reads. Every split lands somewhere different — mid size
+    line, mid data, between CR and LF — and all of them must agree.
+    """
+    var raw = String("5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n")
+    for piece in range(1, 12):
+        var got = _feed_incrementally(raw, piece)
+        assert_equal(got[0] >= 0, True)
+        assert_equal(got[1], "Hello World")
+
+
+def test_incremental_decode_does_not_leak_framing_into_the_body() raises:
+    """Chunk framing must never appear in the decoded output.
+
+    It did: the first pass over bytes that arrived WITH the headers seeded
+    `bytes_read` from the raw count rather than the decoded one, so the
+    resumed decode began past bytes it had not consumed and read the
+    `<size>\r\n ... \r\n` in the gap as body. A 300 KB upload in 64-byte
+    chunks came out 12 bytes long, holding two chunks' framing.
+    """
+    var sixteen = String("A") * 16
+    var raw = String()
+    for _ in range(12):  # 12 chunks of 16 bytes = 192
+        raw += "10\r\n" + sixteen + "\r\n"
+    raw += "0\r\n\r\n"
+    for piece in range(1, 9):
+        var got = _feed_incrementally(raw, piece)
+        assert_equal(got[0] >= 0, True)
+        assert_equal(got[1].byte_length(), 192)
+        # Nothing but the payload byte survives.
+        for c in got[1].as_bytes():
+            assert_equal(c, UInt8(ord("A")))
+
+
+def test_a_long_ordinary_body_does_not_trip_the_abuse_guard() raises:
+    """The overhead ratio must measure framing, not the unread tail.
+
+    Charging `buffer_len - dst` counts the not-yet-decodable remainder as
+    overhead on every call — and, since the remainder is re-offered on the
+    next call, counts it again each time. This body is almost all payload
+    (8 bytes of framing per 8 KB chunk) and must decode whole.
+    """
+    var chunk = String("B") * 8192
+    var raw = String()
+    for _ in range(40):  # 320 KB of payload, 8 bytes of framing per chunk
+        raw += "2000\r\n" + chunk + "\r\n"
+    raw += "0\r\n\r\n"
+    var got = _feed_incrementally(raw, 1500)
+    assert_equal(got[0] >= 0, True)
+    assert_equal(got[1].byte_length(), 40 * 8192)
+
+
+def test_a_body_that_is_mostly_framing_still_trips_the_abuse_guard() raises:
+    """The guard must still fire on what it was written for: one-byte
+    chunks are 5 bytes of framing for every byte of data."""
+    var raw = String()
+    for _ in range(40000):
+        raw += "1\r\nx\r\n"
+    raw += "0\r\n\r\n"
+    var got = _feed_incrementally(raw, 4096)
+    assert_equal(got[0], -1)
