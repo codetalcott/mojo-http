@@ -615,7 +615,12 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
   `finish_executor`'s post-pill gather, which it would otherwise end early
   and skip the application's lifespan shutdown (`smoke-asgi`'s
   outlive-the-drain phase pins it, sabotage-verified against the
-  unguarded prototype);
+  unguarded prototype) — and then inverted outright: `ExecutorPort`, a
+  Python type built in-process with `PythonModuleBuilder`, lets the shim
+  call INTO Mojo for every event, so the executor thread parks in one
+  `run_forever` for its life and the per-pass cost is gone (+1%
+  more at 16 connections on asyncio; on uvloop, which the old shape could
+  not use, 1.05x the asyncio comparator on the standing row);
   and `bench-asgi`'s stdlib harness now reads the executor at 1.4x
   uvicorn where wrk reads 0.7–1.1x — it measures its own client — so its
   throughput gate is retired (the ratio is printed as information; the

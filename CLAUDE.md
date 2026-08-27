@@ -256,22 +256,36 @@ code depends on:
     not an option, because a buffered slot is invisible to everything that
     reads `offloaded` as "a worker owns it". Pool lanes are never batched —
     one thread takes one job — and `next_job` says so loudly if a batch
-    ever reaches one. **The pump parks in `run_forever`, never in a
-    per-pass `run_until_complete`**: every event the shim produces is
-    appended to a list, the first append while the pump is parked
-    schedules `loop.stop()` for the end of the NEXT iteration (so a whole
-    iteration's done-callbacks land in one batch), and `wait_events`
-    returns the list. A `run_until_complete(batch())` pass cost 38 µs on
-    stdlib asyncio (a Task for the pump coroutine, loop setup and
-    teardown); this shape costs 17, and was worth +16% at 16 connections
-    on top of batching. The rule that makes it safe: a stop is armed ONLY
-    while the pump itself is parked (`_pump_parked`), never inside another
-    caller's `run_until_complete` — `finish_executor`'s post-pill gather,
-    `lifespan_shutdown` — where it ends that call with "Event loop stopped
-    before Future completed" and skips the application's shutdown.
-    `smoke-asgi`'s outlive-the-drain phase pins it (two requests past the
-    5 s drain, finishing in different iterations; the app's lifespan
-    shutdown must still write its marker).
+    ever reaches one. **Python calls INTO Mojo for every event, and the
+    executor thread never leaves `run_forever`.** `ExecutorPort`
+    (`asgi_executor.mojo`) is a Python type built with
+    `PythonModuleBuilder` inside the interpreter this binary embeds — no
+    shared library, no `PyInit_`, no ctypes; a call costs ~70 ns — and set
+    into the shim as `_port` before the submit reader exists. Every event
+    the shim used to queue for a Mojo pass (`('job', slot)`, `('done',
+    ...)`, `stream_*`, `ws_*`) is `_port.dispatch(ev)`, handled at once on
+    the executor thread inside the loop iteration that produced it; the
+    Mojo side of the thread is *build the handler, build the port, park in
+    one `run_forever`, flush, shut down*. A `run_until_complete` per pass
+    cost 38 µs on stdlib asyncio and 64 on uvloop — the shape uvloop is
+    built not to pay — and is gone. Completions are parked as before and
+    poked to the loop once per loop iteration by `_port.flush`, which the
+    shim schedules with `call_soon` on the first event of an iteration:
+    batching without a batch buffer, uvicorn's write-coalescing shape.
+    Three rules: the port's methods run ATTACHED with the GIL, exactly
+    where the pass used to run, so a send that may block detaches first
+    (`_send_chunk_frame`, `_flush_completions`) and the seam's ordering
+    (begin frame before its head is parked; a flush before every
+    non-begin chunk frame) is inside `dispatch`, unchanged; the bound
+    type holds four integers and reaches its tables through
+    `ExecutorState` by address, because `add_type` wraps `__repr__`
+    through a `Writable` the compiler DERIVES from the fields (an
+    explicit `write_to` does not stop it, and an `OwningList` cannot be
+    derived); and the pill only sets `stopping` — the shim then runs the
+    in-flight tasks to completion (their events dispatch as they finish)
+    and stops the loop, so the executor's final flush and lifespan
+    shutdown run after `run_forever` returns. `smoke-asgi`'s
+    outlive-the-drain phase and its 10k-request RSS guard pin the shape.
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind

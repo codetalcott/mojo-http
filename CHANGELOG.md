@@ -77,6 +77,23 @@ versions may break the API**.
   skipping the application's shutdown; `smoke-asgi`'s new
   outlive-the-drain phase pins it, and `apps/asgi_bare` writes
   `M0_SHUTDOWN_MARKER` from its lifespan shutdown so the phase can tell.
+- **Python calls into Mojo for every executor event; the executor thread
+  never leaves `run_forever`.** `ExecutorPort` is a Python type built
+  with `PythonModuleBuilder` inside the embedded interpreter (no shared
+  library, no `PyInit_`, no ctypes; ~70 ns a call) and set into the shim
+  as `_port`; every event that used to be queued for a Mojo pass is
+  `_port.dispatch(ev)`, handled at once inside the loop iteration that
+  produced it, and completions are poked to the loop once per iteration
+  by a `call_soon`-scheduled `_port.flush`. The per-pass
+  `run_until_complete` (38 µs on asyncio, 64 on uvloop) is gone.
+  Measured beside the `run_forever`+`stop()` pump: on stdlib asyncio
+  within noise at 16 connections (49,713 rps, 0.93x
+  `uvicorn --loop asyncio`) and 1.07x / 1.13x at 64 / 256; on
+  uvloop, which this shape finally lets pay, 60,419 rps at 16
+  connections — +24% over the pump on the same loop, 1.05x the
+  asyncio comparator, 0.74x uvicorn with uvloop — and 0.94x uvicorn
+  with uvloop at 256. `bench_asgi_wrk.sh`
+  gains `BENCH_EXECUTOR_PYTHON=system` for an A/B of the executor's loop.
 - The benchmark page's ASGI row is re-measured (0.72x → 0.75x
   against `uvicorn --loop asyncio` at 16 connections, executor on
   uvloop) and now also states the uvloop number a default `pip install

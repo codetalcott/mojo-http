@@ -1,0 +1,135 @@
+{
+  "bench": "asgi_wrk_conns",
+  "recorded_utc": "2026-08-27T19:33:42+00:00",
+  "environment": {
+    "git_sha": "570b547",
+    "git_dirty": true,
+    "os": "Darwin 25.6.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "cpu": "Apple M4",
+    "cores_physical": "10"
+  },
+  "parameters": {
+    "client": "wrk -t2 -c16 -d8s, browser headers",
+    "app": "apps/asgi_bare",
+    "rounds": "3",
+    "server": "bin/m0serve",
+    "executor_python": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+    "executor_loop": "asyncio",
+    "variant": "ExecutorPort (Python calls into Mojo), executor on asyncio",
+    "note": "port A/B, 2026-08-27; the pump rows are bin/m0serve-151 (#151's head), the port rows the tree at this artifact's sha"
+  },
+  "rows": [
+    {
+      "round": 1,
+      "name": "m0serve asgi-executor",
+      "rps": 49712.63,
+      "p50_us": 294.0,
+      "p90_us": 364.0,
+      "p99_us": 707.0,
+      "max_us": 5820.0,
+      "cores": 0.98
+    },
+    {
+      "round": 1,
+      "name": "uvicorn asyncio",
+      "rps": 53351.69,
+      "p50_us": 255.0,
+      "p90_us": 450.0,
+      "p99_us": 1860.0,
+      "max_us": 10860.0,
+      "cores": 0.98
+    },
+    {
+      "round": 1,
+      "name": "uvicorn uvloop",
+      "rps": 32428.23,
+      "p50_us": 396.0,
+      "p90_us": 1470.0,
+      "p99_us": 8660.0,
+      "max_us": 40500.0,
+      "cores": 0.71
+    },
+    {
+      "round": 2,
+      "name": "m0serve asgi-executor",
+      "rps": 10234.79,
+      "p50_us": 1250.0,
+      "p90_us": 3260.0,
+      "p99_us": 8119.999999999999,
+      "max_us": 14510.0,
+      "cores": 0.53
+    },
+    {
+      "round": 2,
+      "name": "uvicorn asyncio",
+      "rps": 50665.17,
+      "p50_us": 271.0,
+      "p90_us": 556.0,
+      "p99_us": 30750.0,
+      "max_us": 117690.0,
+      "cores": 0.97
+    },
+    {
+      "round": 2,
+      "name": "uvicorn uvloop",
+      "rps": 56473.68,
+      "p50_us": 186.0,
+      "p90_us": 1580.0,
+      "p99_us": 29570.0,
+      "max_us": 65209.99999999999,
+      "cores": 0.87
+    },
+    {
+      "round": 3,
+      "name": "m0serve asgi-executor",
+      "rps": 50232.66,
+      "p50_us": 291.0,
+      "p90_us": 349.0,
+      "p99_us": 2190.0,
+      "max_us": 15760.0,
+      "cores": 0.98
+    },
+    {
+      "round": 3,
+      "name": "uvicorn asyncio",
+      "rps": 58328.32,
+      "p50_us": 270.0,
+      "p90_us": 287.0,
+      "p99_us": 385.0,
+      "max_us": 6020.0,
+      "cores": 0.98
+    },
+    {
+      "round": 3,
+      "name": "uvicorn uvloop",
+      "rps": 80526.4,
+      "p50_us": 183.0,
+      "p90_us": 203.0,
+      "p99_us": 469.0,
+      "max_us": 5150.0,
+      "cores": 0.98
+    }
+  ],
+  "medians": {
+    "m0serve asgi-executor": {
+      "rps": 49712.63,
+      "cores": 0.98,
+      "rps_per_core": 50727
+    },
+    "uvicorn asyncio": {
+      "rps": 53351.69,
+      "cores": 0.98,
+      "rps_per_core": 54440
+    },
+    "uvicorn uvloop": {
+      "rps": 56473.68,
+      "cores": 0.87,
+      "rps_per_core": 64912
+    }
+  }
+}
