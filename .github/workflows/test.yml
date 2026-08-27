@@ -204,13 +204,16 @@ jobs:
       # a keep-alive gap past the header timeout must NOT be answered 408.
       - name: Smoke test the header read timeout
         run: uv run poe smoke-header-timeout
-      # The two backends genuinely disagree about half-close and about
-      # trigger mode, and each disagreement hid a bug on the platform that
-      # forgives it. Both smokes run on both runners for that reason.
+      # The two backends genuinely disagree about trigger mode, and used to
+      # disagree about half-close too; each disagreement hid a bug on the
+      # platform that forgives it. These smokes run on both runners for
+      # that reason.
       #
-      # kqueue reports the peer's shutdown as EV_EOF on the read filter and
-      # epoll does not (EPOLLRDHUP is never registered), so the bug this
-      # pins lost nearly every response on macOS and none on Linux.
+      # kqueue reports the peer's shutdown as EV_EOF on the read filter,
+      # and epoll only matches it because add_read registers EPOLLRDHUP —
+      # the bug this pins lost nearly every response on macOS and none on
+      # Linux, and its truncated-request case now holds BOTH platforms to
+      # a prompt close (Linux used to sit out the header timeout).
       - name: Smoke test a half-closed client
         run: uv run poe smoke-half-close
       # The mirror image: connection reads are level triggered on kqueue and
@@ -218,6 +221,13 @@ jobs:
       # Linux at exactly 8192 bytes while macOS served any size.
       - name: Smoke test a request larger than one read
         run: uv run poe smoke-large-request
+      # RFC 9112 §9.3: pipelined requests get no readiness event of their
+      # own — the read that completes request N consumed request N+1's
+      # bytes with it — so answering them takes deliberate machinery, on
+      # both backends. Every release through v0.12.0 answered only the
+      # first request of a burst.
+      - name: Smoke test pipelined requests
+        run: uv run poe smoke-pipelining
       # The framework showcase: routing with :id and a real 405, content
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API

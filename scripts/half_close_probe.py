@@ -9,10 +9,17 @@ response already written, which the client sees as an RST and a lost answer.
 
 This is a socket-level property, so it lives in a probe rather than a unit
 test. It is also PLATFORM-SENSITIVE, which is why it earns a smoke: kqueue
-reports the half-close as `EV_EOF` on the read filter, while the epoll
-backend never registers `EPOLLRDHUP` and so sees an ordinary readable event.
-The bug this pins lost 24-30 of every 30 requests on macOS and none on
-Linux — a CI that only ran Linux would never have seen it.
+reports the half-close as `EV_EOF` on the read filter, and epoll matches it
+because `add_read` registers `EPOLLRDHUP`. The bug this pins lost 24-30 of
+every 30 requests on macOS and none on Linux — a CI that only ran Linux
+would never have seen it.
+
+What the probe pins is the BEHAVIOUR, not one mechanism: the guard is
+layered, and a recv that returns 0 marks `peer_eof` even where the flag is
+absent, so removing EPOLLRDHUP alone does not fail this probe — removing
+both layers does (verified by sabotage). The flag's own value is parity
+(the EV_EOF path runs on both platforms, so macOS-only code paths stop
+existing) and seeing the half-close in the same event as the final data.
 
 usage: half_close_probe.py PORT
 """
@@ -70,27 +77,21 @@ for label, payload in (("GET", GET), ("Content-Length", CL), ("chunked", CHUNKED
                         "broken for ordinary requests, not just this case" % label)
 
 # A request that is still INCOMPLETE when the peer half-closes can never be
-# completed, so the connection must end — but HOW it ends is platform
-# dependent, and asserting the faster answer here would be asserting a macOS
-# detail as though it were the contract.
-#
-# kqueue reports the half-close as EV_EOF, so the loop knows at once that no
-# more bytes can arrive and releases the slot immediately. The epoll backend
-# does not register EPOLLRDHUP, so on Linux this is an ordinary readable
-# event and the request simply stops arriving — indistinguishable from a
-# client that went quiet, which the header timeout answers with 408. Both
-# are correct. What must NOT happen is the connection outliving that
-# timeout, or the truncated request being answered as though complete.
-#
-# So the wait is the header timeout plus slack, not a snap judgement. An
-# earlier version of this probe waited 10s and failed on Linux for doing
-# exactly what Linux is supposed to do.
-HEADER_TIMEOUT_SLACK = 20
-s = socket.create_connection(("127.0.0.1", PORT), timeout=HEADER_TIMEOUT_SLACK)
+# completed: the kernel has already said no more bytes are coming, so the
+# connection must end PROMPTLY — on both backends, now that epoll registers
+# EPOLLRDHUP. It used not to, which made this case diverge: Linux saw only
+# an ordinary readable event, indistinguishable from a client gone quiet,
+# and held the slot until the header timeout answered 408 — bounded, but
+# ten seconds of a connection the kernel knew was dead. The bound here is
+# deliberately far inside that timeout: ending AT the timeout is exactly
+# the behaviour this pins out, and an earlier version of this probe had to
+# tolerate it as a platform difference.
+TRUNCATED_DEADLINE = 5
+s = socket.create_connection(("127.0.0.1", PORT), timeout=TRUNCATED_DEADLINE)
 try:
     s.sendall(b"GET /health HTT")           # truncated request line
     s.shutdown(socket.SHUT_WR)
-    s.settimeout(HEADER_TIMEOUT_SLACK)
+    s.settimeout(TRUNCATED_DEADLINE)
     got = b""
     while True:
         c = s.recv(65536)
@@ -103,8 +104,9 @@ except ConnectionResetError:
     pass                                     # an abrupt close is acceptable here
 except socket.timeout:
     failures.append("a truncated request + half-close was still open after %ds "
-                    "— past the header timeout, so nothing is going to end it"
-                    % HEADER_TIMEOUT_SLACK)
+                    "— the half-close went unseen, so the slot is being held "
+                    "for a request that can never complete"
+                    % TRUNCATED_DEADLINE)
 finally:
     s.close()
 

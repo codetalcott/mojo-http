@@ -253,13 +253,15 @@ request path. Measure before building.
 
 ## Non-goals, considered and rejected
 
-- **Pipelined-request support** (draining a second buffered request without
-  a fresh read edge): today `prepare_for_new_request` clears `recv_buffer`,
-  so pipelined bytes are dropped; real browsers and proxies don't pipeline,
-  and wrk only does with `--script`. Worth knowing when comparing against
-  TechEmpower plaintext numbers, which *are* pipelined (16 deep) — that
-  benchmark shape flatters servers that batch parse/write, and mojo-http
-  currently can't run it. Revisit only if that comparison ever matters.
+- **Pipelined-request support** — no longer a non-goal: implemented
+  (RFC 9112 §9.3), because dropping the tail was never just a benchmark
+  gap — it was a hang for any client that pipelines. `request_end` marks
+  where an answered request ends, the keep-alive reset preserves the bytes
+  past it, and `_drain_pipelined` answers them without a fresh read edge;
+  `poe smoke-pipelining` pins it. The benchmark note this entry used to
+  carry still stands: TechEmpower plaintext runs 16-deep pipelining and
+  flatters servers that batch parse/write — mojo-http now answers that
+  shape, but attempts no batching: one response per parse, one send each.
 - **`writev` for header/body split** — the response is already assembled
   into one buffer and sent with one syscall; vectored IO would only help if
   encode stopped copying the body, i.e. after next-step 4.

@@ -369,6 +369,16 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                                 slot_sse, slot_ws, slot_ws_state,
                             )
+                    # The eager read may have taken MORE than one request.
+                    _drain_pipelined(
+                        backend, slot, fd_val, handler, config,
+                        server_address, tcp_keep_alive,
+                        slot_fds, slot_response, slot_send_offset,
+                        slot_header_start, fd_to_slot, provision_pool,
+                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
+                        date_cache_sec, date_cache, offload,
+                    )
                 continue
 
             # --- Timer events ---
@@ -503,12 +513,20 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 # until the completion arrives (see `_close_slot`).
                 if offload.offloaded[slot]:
                     if (backend.event_flags(i) & EV_EOF) != 0:
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                            release_provision=False,
-                        )
+                        # The peer half-closed while its request was out on
+                        # a pool thread. That is not "the client left" — a
+                        # half-close says "that is the whole request" while
+                        # the client waits for the answer, and detaching
+                        # the fd here dropped the response the pool thread
+                        # was about to complete. Record what is true (no
+                        # more request bytes exist) and let the completion
+                        # answer through the still-open fd; a peer that is
+                        # REALLY gone surfaces as a failed send there.
+                        # `should_close` is NOT set: the tail may hold a
+                        # pipelined request the drain still owes an answer,
+                        # and the recv->0 after the last one closes cleanly.
+                        provision_pool.provisions[slot].peer_eof = True
+                        slot_read_armed[slot] = False
                     else:
                         # A pipelined request arrived mid-flight. Both backends
                         # are edge-triggered, so consuming this event without
@@ -525,14 +543,17 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # read the response — and closing here discarded it,
                     # which the client sees as an RST and a lost answer.
                     #
-                    # kqueue sets EV_EOF on the read filter for exactly this
-                    # (data can still be pending), which is why it was macOS
-                    # that lost responses: the epoll backend never registers
-                    # EPOLLRDHUP, so a half-close there is an ordinary
-                    # readable event and the header path already handled it.
-                    # Measured before the change, 30 requests per shape:
-                    # macOS lost 24-30 of 30 on every request shape, Linux
-                    # none.
+                    # kqueue sets EV_EOF on the read filter for exactly
+                    # this (data can still be pending), and epoll's
+                    # `add_read` registers EPOLLRDHUP so Linux reports it
+                    # the same way (see `event_flags`). It was macOS that
+                    # lost responses when this path closed instead of
+                    # falling through — 24-30 of 30 requests on every
+                    # request shape, Linux none, because epoll then left
+                    # EPOLLRDHUP unregistered and saw only an ordinary
+                    # readable event. The flag also ends a half-closed
+                    # INCOMPLETE request promptly on both platforms, where
+                    # Linux used to hold it until the header timeout's 408.
                     #
                     # A stream has no request left to answer, so those still
                     # close here. Everything else falls through to the read
@@ -749,11 +770,12 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             body_st.bytes_read = decoded_so_far
                             provision_pool.provisions[slot].body_state = body_st
                             if ret >= 0:
-                                # Complete: trailing bytes after the body are
-                                # discarded with the rest of the buffer on
-                                # keep-alive reset, exactly as before.
-                                provision_pool.provisions[slot].recv_buffer.resize(
-                                    raw_body_start + decoded_so_far, 0
+                                # Complete. `pending_bytes` bytes past the
+                                # chunked data stay in the buffer: they are
+                                # the next pipelined request, and the
+                                # keep-alive reset preserves them.
+                                provision_pool.provisions[slot].request_end = (
+                                    raw_body_start + decoded_so_far
                                 )
                                 body_st.content_length = decoded_so_far
                                 body_st.bytes_read = decoded_so_far
@@ -803,6 +825,18 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         backend.try_add_read(fd_val)
                         slot_read_armed[slot] = True
 
+                # A response completed inline above may have left the NEXT
+                # pipelined request whole in recv_buffer, with no event ever
+                # coming to announce it.
+                _drain_pipelined(
+                    backend, slot, fd_val, handler, config,
+                    server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset,
+                    slot_header_start, fd_to_slot, provision_pool,
+                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache, offload,
+                )
                 continue
 
             # --- Write events on connection sockets ---
@@ -856,6 +890,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         slot_sse, slot_ws, slot_ws_state,
                         slot_read_armed, slot_idle_deadline,
                     )
+                    _drain_pipelined(
+                        backend, slot, fd_val, handler, config,
+                        server_address, tcp_keep_alive,
+                        slot_fds, slot_response, slot_send_offset,
+                        slot_header_start, fd_to_slot, provision_pool,
+                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
+                        date_cache_sec, date_cache, offload,
+                    )
                     continue
 
                 var fd_desc = FileDescriptor(fd_val)
@@ -902,6 +945,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                         fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                         slot_read_armed, slot_idle_deadline,
+                    )
+                    _drain_pipelined(
+                        backend, slot, fd_val, handler, config,
+                        server_address, tcp_keep_alive,
+                        slot_fds, slot_response, slot_send_offset,
+                        slot_header_start, fd_to_slot, provision_pool,
+                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                        slot_read_armed, slot_idle_deadline,
+                        date_cache_sec, date_cache, offload,
                     )
                 else:
                     try:
@@ -1010,6 +1062,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                                     fd_to_slot, provision_pool, active_count, metrics,
                                     slot_sse, slot_ws, slot_ws_state,
                                     slot_read_armed, slot_idle_deadline,
+                                )
+                                _drain_pipelined(
+                                    backend, s, slot_fds[s], handler, config,
+                                    server_address, tcp_keep_alive,
+                                    slot_fds, slot_response, slot_send_offset,
+                                    slot_header_start, fd_to_slot, provision_pool,
+                                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                                    slot_read_armed, slot_idle_deadline,
+                                    date_cache_sec, date_cache, offload,
                                 )
                             else:
                                 _close_slot(
@@ -1231,6 +1292,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     Called both eagerly from the accept path (to handle data already buffered
     before kqueue registration) and from the EVFILT_READ handler.
     """
+    var entry_keepalive = provision_pool.provisions[slot].keepalive_count
     if config.header_read_timeout > 0:
         # 0 means "no request in progress" — the first bytes of a keep-alive
         # request start the clock here rather than inheriting a deadline from
@@ -1251,6 +1313,12 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     provision_pool.provisions[slot].recv_staging.clear()
     var fd_desc = FileDescriptor(fd_val)
     var bytes_read: UInt
+    # True only when recv itself RETURNED 0 — the peer's EOF. `bytes_read`
+    # alone cannot carry that: the EAGAIN branch below reuses 0 as its
+    # "no new data, parse what is buffered" sentinel, and reading THAT as
+    # EOF closed every request that was partial at an EAGAIN pass — a
+    # dribbled request died on its second byte.
+    var recv_eof = False
     try:
         bytes_read = recv(
             fd_desc,
@@ -1258,6 +1326,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             UInt(provision_pool.provisions[slot].recv_staging.capacity()),
             0,
         )
+        recv_eof = bytes_read == 0
     except recv_err:
         if recv_err.isa[RecvEAGAINError]():
             # No new data — check for pipelined data already in recv_buffer.
@@ -1279,6 +1348,14 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             slot_sse, slot_ws, slot_ws_state,
         )
         return
+
+    if recv_eof:
+        # recv returning 0 IS the peer's EOF, however the event was
+        # flagged. Without this, a preserved pipelined tail holding only a
+        # PARTIAL request would re-arm and re-poll a socket that can never
+        # complete it — on kqueue a level-triggered event storm until the
+        # header timeout — instead of closing at the peer_eof check below.
+        provision_pool.provisions[slot].peer_eof = True
 
     if bytes_read > 0:
         provision_pool.provisions[slot].recv_staging._len = Int(bytes_read)
@@ -1377,6 +1454,13 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 header_end_offset=header_end_offset,
                 is_chunked=is_chunked,
             )
+            # Where this request will end in recv_buffer — knowable now for
+            # Content-Length, only at completion for chunked (0 until then).
+            # Bytes past it are the next pipelined request; see
+            # `ConnectionProvision.request_end`.
+            provision_pool.provisions[slot].request_end = (
+                0 if is_chunked else header_end_offset + content_length
+            )
             provision_pool.provisions[slot].state = ConnectionState.reading_body(effective_length)
 
             if config.body_read_timeout > 0:
@@ -1411,8 +1495,13 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 body_st0.bytes_read = decoded_size
                 provision_pool.provisions[slot].body_state = body_st0
                 if ret >= 0:
-                    provision_pool.provisions[slot].recv_buffer.resize(
-                        header_end_offset + decoded_size, 0
+                    # `pending_bytes` bytes remain past the chunked data —
+                    # the next pipelined request. The resize above already
+                    # kept exactly them; the resize that used to discard
+                    # them here is why a request behind a chunked body was
+                    # lost.
+                    provision_pool.provisions[slot].request_end = (
+                        header_end_offset + decoded_size
                     )
                     var body_st = provision_pool.provisions[slot].body_state.value()
                     body_st.content_length = decoded_size
@@ -1445,6 +1534,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     date_cache_sec, date_cache, offload,
                 )
         else:
+            provision_pool.provisions[slot].request_end = header_end_offset
             provision_pool.provisions[slot].state = ConnectionState.processing()
             _process_request(
                 backend, slot, fd_val,
@@ -1508,7 +1598,81 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         backend.try_add_read(fd_val)
         slot_read_armed[slot] = True
 
-    provision_pool.provisions[slot].last_parse_len = len(provision_pool.provisions[slot].recv_buffer)
+    # After an inline-completed request the keep-alive reset zeroed
+    # `last_parse_len` for the PRESERVED pipelined tail; stamping the buffer
+    # length over it would start the next terminator search past headers it
+    # has never scanned.
+    if provision_pool.provisions[slot].keepalive_count == entry_keepalive:
+        provision_pool.provisions[slot].last_parse_len = len(provision_pool.provisions[slot].recv_buffer)
+
+
+def _drain_pipelined[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    slot: Int,
+    fd_val: Int,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+):
+    """Answer requests already sitting whole in `recv_buffer`.
+
+    Bytes past an answered request were read off the socket with it, so no
+    readiness event will ever announce them again — the edge that carried
+    them is spent on epoll, and the socket buffer kqueue's level trigger
+    watches no longer holds them. After a response completes, whatever the
+    keep-alive reset preserved is parsed here, one request per iteration,
+    until the buffer holds no complete request or the slot has closed,
+    started streaming, gone to a pool thread, or still owes response bytes.
+
+    Iterative on purpose: recursing through the handler chain would nest
+    one whole call stack per pipelined request, and a single 4 KB read of
+    tiny requests is hundreds of them.
+
+    Not otherwise bounded, also on purpose — the send buffer is the real
+    bound. An iteration whose response cannot go out whole leaves the slot
+    RESPONDING and the loop exits, so a client that pipelines more than the
+    kernel will buffer back stops costing this loop anything until it
+    drains its side.
+    """
+    while (
+        slot_fds[slot] != UNUSED
+        and provision_pool.provisions[slot].state.kind
+        == ConnectionState.READING_HEADERS
+        and len(provision_pool.provisions[slot].recv_buffer) > 0
+        and not offload.offloaded[slot]
+    ):
+        var before = provision_pool.provisions[slot].keepalive_count
+        _handle_read_headers(
+            backend, slot, fd_val, handler, config,
+            server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset,
+            slot_header_start, fd_to_slot, provision_pool,
+            active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload,
+        )
+        if (
+            slot_fds[slot] == UNUSED
+            or provision_pool.provisions[slot].keepalive_count == before
+        ):
+            break
 
 
 def _process_request[T: HTTPService, B: EventLoopBackend](
@@ -1740,6 +1904,18 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
             slot_sse, slot_ws, slot_ws_state, slot_read_armed, slot_idle_deadline,
             date_cache_sec, date_cache, offload, response^,
         )
+        # A request pipelined behind the one this pool thread just answered
+        # is already in recv_buffer; nothing else will ever announce it.
+        _drain_pipelined(
+            backend, slot, slot_fds[slot], handler, config,
+            server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset,
+            slot_header_start, fd_to_slot, provision_pool,
+            active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload,
+        )
+
 
 
 comptime BODY_FD_DONE = 1
@@ -2134,7 +2310,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
 
     # Keep-alive: prepare for next request
     provision_pool.provisions[slot].keepalive_count += 1
-    provision_pool.provisions[slot].prepare_for_new_request()
+    provision_pool.provisions[slot].prepare_for_new_request(keep_pipelined=True)
     # Park the buffer just sent as the slot's encode scratch instead of
     # dropping its allocation. The swap hands back whatever was parked
     # there — the empty stand-in `_process_request` left behind — so the
@@ -2183,15 +2359,22 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     (and, once the slot is reused, misdirecting queued bytes) after a client
     vanishes without the clean recv→0 the read path handles.
 
-    `release_provision=False` is the one exception, and it exists for exactly
-    one caller: a client that vanishes while its request is in a
-    `--blocking-threads` pool thread. Everything here still runs — the fd is
-    closed, the registrations dropped, the slot marked UNUSED — but the
-    provision stays borrowed, because a pool thread still holds a reference
-    into this slot's job storage. Releasing it here would hand the slot to the
-    next connection while another thread was still writing into it. The
-    completion, when it arrives, finds `slot_fds[slot] == UNUSED` and releases
-    it then.
+    `release_provision=False` is the escape valve for closing a slot whose
+    request is out on a `--blocking-threads` pool thread: everything here
+    still runs — the fd is closed, the registrations dropped, the slot
+    marked UNUSED — but the provision stays borrowed, because a pool thread
+    still holds a reference into this slot's job storage, and releasing it
+    would hand the slot to the next connection while another thread was
+    still writing into it. A completion that finds `slot_fds[slot] ==
+    UNUSED` releases it then.
+
+    As of the half-close fix NOTHING passes it. The read path used to
+    detach a half-closed offloaded slot this way, which dropped the
+    response the pool thread was about to complete; it now marks
+    `peer_eof` and keeps the fd attached for the completion to answer
+    through. The parameter and the UNUSED-completion handling stay,
+    because the borrow rule they encode is what any future path that must
+    close an offloaded slot's fd has to obey.
     """
     if slot_sse[slot] or slot_ws[slot]:
         # One disconnect hook serves both stream kinds — the handler-side
