@@ -413,6 +413,7 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         # executor owning the slot, and an ack routed elsewhere is a stream
         # stalled forever.
         pool.enable_stream_channel()
+        pool.enable_base_stream_ack()
         if len(asgi_lanes) == 0:
             handler.set_asgi_notify(pool.submit_write_fd(-1))
         for k in range(len(asgi_lanes)):
@@ -423,6 +424,10 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         if len(exec_lanes) == 0:
             exec_lanes.append(-1)
         exec_thread.start(pool_addr, ctx.user, exec_lanes^)
+    if pool_threads.count > 0 and not pool.chunk_active():
+        # Pool threads stream WSGI iterables through the same channel the
+        # executor uses; a pure-WSGI pool server needs it created too.
+        pool.enable_stream_channel()
     if pool_threads.count > 0:
         # See `_serve_offloaded`: read the lanes before `start` moves them.
         if opts[].realtime:
@@ -433,11 +438,11 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
                     pool_lanes[wl], pool.submit_write_fd(pool_lanes[wl])
                 )
         pool_threads.start[T](pool_addr, ctx.user, pool_lanes^)
-    # The executor's chunk channel consumes `bus_read_fd`, so this thread's
-    # own BroadcastBus channel rides the loop's second registered fd. Both
-    # are drained identically (same codec, same `sse_peer_frame`), which is
+    # The chunk channel consumes `bus_read_fd`, so this thread's own
+    # BroadcastBus channel rides the loop's second registered fd. Both are
+    # drained identically (same codec, same `sse_peer_frame`), which is
     # what lets the chunk channel displace it without losing `state["m0"]`.
-    var stream_bus_fd = pool.stream_chunk_read if run_executor else -1
+    var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
     var peer_fd = block.get(BLK_BUS_FD)
 
     comptime if CompilationTarget.is_macos():

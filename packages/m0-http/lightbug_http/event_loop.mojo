@@ -241,7 +241,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     fd_to_slot, provision_pool, active_count, metrics,
                     slot_sse, slot_ws, slot_ws_state,
                     slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload,
+                    date_cache_sec, date_cache, offload, bus_read_fd,
                 )
                 continue
 
@@ -328,6 +328,11 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     slot_header_start[slot] = perf_counter_ns()
                     slot_read_armed[slot] = False
                     slot_idle_deadline[slot] = 0
+                    # A recycled slot must not inherit the previous
+                    # connection's channel-stream state: a pool thread's
+                    # ack fd left here would make the next M0-Hold on this
+                    # slot look like a chunk-framed stream.
+                    offload.clear_stream(slot)
                     fd_to_slot[fd_val] = slot
                     active_count += 1
                     if config.enable_metrics:
@@ -434,7 +439,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # with an executor's, and a hold is one frame per event
                     # with nothing to land between — the heartbeat is what
                     # keeps it alive through an idle proxy.
-                    if not hb_is_ws and offload.slot_is_executor(hb_slot):
+                    if not hb_is_ws and offload.slot_channel_stream(hb_slot):
                         continue
                     var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
                     if provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
@@ -931,7 +936,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # length — chunk framing makes those differ, and the
                     # window must count what the application produced. The
                     # stream head lands here too, with 0 owed.
-                    if offload.ack_payload[slot] > 0 and offload.slot_is_executor(slot):
+                    if offload.ack_payload[slot] > 0 and offload.slot_channel_stream(slot):
                         if not offload.pool()[].ack_stream(slot, offload.ack_payload[slot]):
                             if offload.ack_owed[slot] == 0:
                                 offload.ack_owed_count += 1
@@ -974,7 +979,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         # closed forfeits what it was owed; the head of the next stream on
         # that slot seeds a fresh window.
         if offload.ack_owed_count > 0:
-            var can_ack = offload.enabled() and offload.pool()[].stream_active()
+            var can_ack = offload.chunk_active()
             for s in range(max_conns):
                 if offload.ack_owed[s] <= 0:
                     continue
@@ -992,15 +997,16 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 slot_ws[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
             )
             if s_idle and slot_fds[s] != UNUSED and not offload.offloaded[s]:
-                # An executor's stream (asked per slot: a held stream on
-                # another mount is drained by the same pass and is none of
-                # this): drained bytes are acked back to the producer's
-                # credit window, and `sse_is_streaming` — unread by the loop
-                # anywhere else — becomes the end-of-stream signal: the
-                # handler unsubscribes once the final chunk has been handed
-                # out, and the loop closes after those bytes land. Close is
-                # how a content-length-free streamed body ends.
-                var asgi_stream = offload.slot_is_executor(s)
+                # A channel stream — an executor's, or a pool thread's WSGI
+                # iterable (asked per slot: a held stream on the same loop
+                # is drained by the same pass and is none of this): drained
+                # bytes are acked back to the producer's credit window, and
+                # `sse_is_streaming` — unread by the loop anywhere else —
+                # becomes the end-of-stream signal: the handler unsubscribes
+                # once the final chunk has been handed out, and the loop
+                # closes after those bytes land. Close is how a
+                # content-length-free streamed body ends.
+                var asgi_stream = offload.slot_channel_stream(s)
                 var pending = handler.sse_drain_slot(s)
                 # Read ONCE per pass: `sse_drain_slot` above is what makes it
                 # go false, so asking twice can straddle the transition and
@@ -1046,6 +1052,11 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                                     offload.ack_owed_count += 1
                                 offload.ack_owed[s] += payload_len
                         if ended:
+                            # Whatever comes next on this slot is not this
+                            # stream: forget its producer's ack fd and its
+                            # generation before the connection is reused
+                            # or closed.
+                            offload.clear_stream(s)
                             if framed:
                                 # The terminator landed: the message is
                                 # complete and the connection is reusable.
@@ -1082,6 +1093,16 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                             continue
                         provision_pool.provisions[s].state = ConnectionState.streaming_ws() if slot_ws[s] else ConnectionState.streaming_sse()
                     else:
+                        if ended:
+                            # The final buffer is on its way; the stream's
+                            # bookkeeping is over even so. The credit its
+                            # last bytes owe was recorded in `ack_payload`
+                            # before this and is acked by the write-ready
+                            # path through `slot_channel_stream` — which
+                            # stays true for an executor's slot (lane) and,
+                            # for a pool thread's, is answered by the ack
+                            # the eager send already covered.
+                            offload.clear_stream(s)
                         if ended and not framed:
                             # The rest of the final buffer flushes through
                             # the write-ready path; _after_send's existing
@@ -1100,6 +1121,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     # End marked with nothing left to send. Only reachable
                     # unframed: a framed stream always has a terminator to
                     # write, so `out` is never empty when it ends.
+                    offload.clear_stream(s)
                     _close_slot(
                         backend, handler, s, slot_fds[s],
                         slot_fds, fd_to_slot, provision_pool,
@@ -1243,7 +1265,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     fd_to_slot, provision_pool, active_count, metrics,
                     slot_sse, slot_ws, slot_ws_state,
                     slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload,
+                    date_cache_sec, date_cache, offload, bus_read_fd,
                 )
                 for di in range(drain_events):
                     if (backend.event_flags(di) & EV_ERROR) != 0:
@@ -1259,6 +1281,29 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                                 slot_sse, slot_ws, slot_ws_state,
                             )
+            # A stream whose head completed DURING the drain — a pool
+            # thread answering a streamed WSGI response in its last job —
+            # became a streaming slot after the farewell pass above, and
+            # the drain loop dispatches EVFILT_WRITE only, so nothing in it
+            # would close that connection. Say goodbye to it now, so the
+            # producer thread gets its disconnect and comes back before the
+            # bounded join, instead of being abandoned as a straggler.
+            for s in range(max_conns):
+                if (slot_sse[s] or slot_ws[s]) and slot_fds[s] != UNUSED:
+                    var late_farewell: List[UInt8]
+                    if slot_ws[s]:
+                        late_farewell = close_frame(WS_CLOSE_GOING_AWAY)
+                    else:
+                        late_farewell = List[UInt8](String(": close\n\n").as_bytes())
+                    try:
+                        _ = send(FileDescriptor(slot_fds[s]), Span(late_farewell), UInt(len(late_farewell)), 0)
+                    except:
+                        pass
+                    _close_slot(
+                        backend, handler, s, slot_fds[s],
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
             break
 
 
@@ -1849,6 +1894,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     mut date_cache_sec: Int64,
     mut date_cache: String,
     mut offload: OffloadLoopState,
+    bus_read_fd: Int = -1,
 ) raises:
     """Take every finished job off the completion channel and answer it.
 
@@ -1858,11 +1904,18 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     already closed and `slot_fds[slot]` is UNUSED, so the response is dropped
     and the provision — deliberately kept borrowed by `_close_slot` — is
     released here, where nothing else can be holding it.
+
+    The channel carries one more shape: a stream abort, a producer saying
+    that generation `gen` of `slot`'s stream died after its head. That slot
+    is closed WITHOUT the chunked terminator — the client sees a truncated
+    body, which is the truth — but only if it is still streaming that very
+    generation; an abort for a stream the slot no longer serves is dropped.
     """
     if not offload.enabled():
         return
     ref pool = offload.pool()[]
     var finished = pool.drain_completions()
+    var aborts = pool.take_aborts()
     for f in range(len(finished)):
         var slot = finished[f]
         if slot < 0 or slot >= len(slot_fds):
@@ -1896,6 +1949,22 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
             pool.discard(slot)
             provision_pool.release(slot)
             continue
+        if response.sse_streaming and bus_read_fd >= 0 and offload.slot_channel_stream(slot):
+            # Begin-before-head, made deterministic. The producer sent its
+            # begin frame on the chunk channel BEFORE this completion, so
+            # the datagram is in that socket now — but whether this pass's
+            # event batch happens to carry the chunk channel's readiness
+            # ahead of the completion's is the kernel's ready-list order,
+            # not ours. Draining it here, before the head goes out, means
+            # the handler is subscribed before the slot can ever be seen
+            # streaming, whatever order the events arrived in.
+            var begin_frames = drain_bus_channel(bus_read_fd)
+            for bf in range(len(begin_frames)):
+                handler.sse_peer_frame(
+                    begin_frames[bf].url,
+                    begin_frames[bf].event_id,
+                    begin_frames[bf].frame,
+                )
         _finish_response(
             backend, slot, slot_fds[slot], handler, config, server_address,
             tcp_keep_alive,
@@ -1916,6 +1985,39 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
             date_cache_sec, date_cache, offload,
         )
 
+
+    # Aborts AFTER the completions of the same batch: an abort follows its
+    # own head on this FIFO channel, and the head is what makes the slot a
+    # stream (`slot_sse`) with a generation to check against. Handled
+    # first, an abort that arrived beside its head would find nothing to
+    # abort and the stream would stay open for good. Whatever the producer
+    # managed to send before it died is handed out first — one eager,
+    # chunk-framed send — so the client gets the bytes that exist and then
+    # a close with no terminator, which is the truth about the body.
+    var a = 0
+    while a + 1 < len(aborts):
+        var abort_slot = aborts[a]
+        var abort_gen = aborts[a + 1]
+        a += 2
+        if abort_slot < 0 or abort_slot >= len(slot_fds):
+            continue
+        if slot_fds[abort_slot] == UNUSED or not slot_sse[abort_slot]:
+            continue
+        if offload.stream_gen[abort_slot] != abort_gen:
+            continue
+        var last = handler.sse_drain_slot(abort_slot)
+        if len(last) > 0:
+            var out = encode_chunk(Span(last)) if offload.chunked[abort_slot] else Bytes(Span(last))
+            try:
+                _ = send(FileDescriptor(slot_fds[abort_slot]), Span(out), UInt(len(out)), 0)
+            except:
+                pass
+        offload.clear_stream(abort_slot)
+        _close_slot(
+            backend, handler, abort_slot, slot_fds[abort_slot],
+            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state,
+        )
 
 
 comptime BODY_FD_DONE = 1
@@ -2073,7 +2175,12 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         offload.ack_owed_count -= 1
     if response.sse_streaming:
         response.headers.pop("content-length")
-        var asgi_stream = offload.slot_is_executor(slot)
+        var asgi_stream = offload.slot_channel_stream(slot)
+        # The head names its stream's generation; an abort datagram is
+        # checked against this, so one for an earlier stream on a recycled
+        # slot cannot close this connection.
+        if slot < len(offload.stream_gen):
+            offload.stream_gen[slot] = response.stream_gen
         # RFC 9110 §6.4.1: a 1xx, 204 or 304 carries no body at all, so
         # there is nothing to frame and a `0\r\n\r\n` would itself be a
         # body. An application streaming into one of these is already
@@ -2099,6 +2206,9 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
             response.headers[HeaderKey.TRANSFER_ENCODING] = "chunked"
     else:
         offload.chunked[slot] = False
+        # Not a stream: whatever channel-stream state the slot carried is
+        # over. Defensive — every ending path clears it too.
+        offload.clear_stream(slot)
 
     # Stamp the Date header from the loop's per-second cache (encode()
     # would otherwise format a fresh date string for every response).

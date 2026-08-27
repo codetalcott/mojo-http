@@ -12,11 +12,28 @@ from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
+from lightbug_http.c.socket import recv
 from lightbug_http.offload import (
     JOB_STOP,
-    OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT,
+    OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
+    make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
 )
 from lightbug_http.uri import URI
+
+
+def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
+    """One `(slot i32, credit i32)` datagram off an ack pair's read end."""
+    var buf = List[UInt8](capacity=8)
+    for _ in range(8):
+        buf.append(0)
+    var n = recv(FileDescriptor(fd), Span(buf), UInt(8), 0)
+    assert_equal(Int(n), 8)
+    var s = UInt32(0)
+    var c = UInt32(0)
+    for i in range(4):
+        s |= UInt32(buf[i]) << UInt32(8 * i)
+        c |= UInt32(buf[4 + i]) << UInt32(8 * i)
+    return (Int(s), Int(c))
 
 
 def _job_buffer() -> List[UInt8]:
@@ -203,6 +220,133 @@ def test_loop_state_reaches_the_pool_it_was_given() raises:
     var state = OffloadLoopState(pool.addr(), 9)
     assert_equal(state.pool()[].capacity, 9)
     _ = pool.capacity
+
+
+# --- streamed WSGI bodies: a pool thread as a second chunk-channel producer ---
+
+
+def test_chunk_channel_and_executor_ack_pair_are_separate_switches() raises:
+    """A pure-WSGI pool server enables the chunk channel and NOT the
+    executor's ack pair: `stream_active` must stay false there, or every
+    M0-Hold on the default topology would be read as an executor stream."""
+    var pool = OffloadPool(8)
+    assert_false(pool.chunk_active())
+    assert_false(pool.stream_active())
+    pool.enable_stream_channel()
+    assert_true(pool.chunk_active())
+    assert_false(pool.stream_active())
+    assert_false(pool.slot_is_executor(3))
+    assert_false(pool.slot_channel_stream(3))
+    pool.enable_base_stream_ack()
+    assert_true(pool.stream_active())
+    # Unmounted with an executor: every slot is the executor's, as before.
+    assert_true(pool.slot_is_executor(3))
+    assert_true(pool.slot_channel_stream(3))
+
+
+def test_a_slot_with_a_pool_ack_fd_is_a_channel_stream_until_cleared() raises:
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var pair = make_stream_ack_pair()
+    pool.set_slot_ack_fd(5, pair[1])
+    assert_true(pool.slot_channel_stream(5))
+    assert_false(pool.slot_channel_stream(4))
+    assert_false(pool.slot_is_executor(5))
+    pool.clear_slot_ack_fd(5)
+    assert_false(pool.slot_channel_stream(5))
+
+
+def test_ack_stream_routes_to_the_pool_threads_own_pair() raises:
+    """Credit for a pool thread's stream reaches THAT thread's fd, ahead of
+    any lane default; a slot without one still takes the lane path."""
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    pool.enable_base_stream_ack()
+    var pair = make_stream_ack_pair()
+    pool.set_slot_ack_fd(2, pair[1])
+    assert_true(pool.ack_stream(2, 16384))
+    var got = _read_ack(pair[0])
+    assert_equal(got[0], 2)
+    assert_equal(got[1], 16384)
+    # Another slot's ack goes to the base (executor) pair, not this thread.
+    assert_true(pool.ack_stream(3, 100))
+    var base = _read_ack(pool.stream_ack_read)
+    assert_equal(base[0], 3)
+    assert_equal(base[1], 100)
+
+
+def test_drain_ack_fd_discards_what_is_queued() raises:
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var pair = make_stream_ack_pair()
+    pool.set_slot_ack_fd(1, pair[1])
+    assert_true(pool.ack_stream(1, 1))
+    assert_true(pool.ack_stream(1, 2))
+    drain_ack_fd(pair[0])
+    # A fresh ack after the drain is the first thing read.
+    assert_true(pool.ack_stream(1, 3))
+    var got = _read_ack(pair[0])
+    assert_equal(got[1], 3)
+
+
+def test_abort_rides_the_completion_channel_beside_completions() raises:
+    """An abort datagram and an ordinary completion share one channel and one
+    drain; the drain keeps them apart and preserves the completions' order."""
+    var pool = OffloadPool(8)
+    pool.park_request(2, _request("/a"))
+    assert_true(pool.submit(2))
+    _ = _next_slot(pool)
+    _ = pool.take_request(2)
+    pool.put_response(2, OK(String("two")))
+    pool.complete(2)
+    assert_true(pool.abort_stream(6, 4294967297))
+    pool.park_request(3, _request("/b"))
+    assert_true(pool.submit(3))
+    _ = _next_slot(pool)
+    _ = pool.take_request(3)
+    pool.put_response(3, OK(String("three")))
+    pool.complete(3)
+
+    var done = pool.drain_completions()
+    assert_equal(len(done), 2)
+    assert_equal(done[0], 2)
+    assert_equal(done[1], 3)
+    var aborts = pool.take_aborts()
+    assert_equal(len(aborts), 2)
+    assert_equal(aborts[0], 6)
+    assert_equal(aborts[1], 4294967297)
+    # Taken once: a second take is empty.
+    assert_equal(len(pool.take_aborts()), 0)
+
+
+def test_generation_seeds_are_disjoint_across_producers() raises:
+    """Executors (lane + 1) and pool threads (1024 + index) can never hand
+    out the same generation, however many streams each produces."""
+    var exec_unmounted = stream_gen_seed(0)
+    var exec_lane_0 = stream_gen_seed(1)
+    var pool_thread_0 = stream_gen_seed(1024)
+    var pool_thread_1 = stream_gen_seed(1025)
+    assert_true(exec_unmounted != STREAM_GEN_NONE)
+    assert_true(exec_lane_0 - exec_unmounted >= (1 << 32))
+    assert_true(pool_thread_0 - exec_lane_0 >= (1 << 32))
+    assert_true(pool_thread_1 - pool_thread_0 == (1 << 32))
+    # A producer's own range: a billion streams stay inside it.
+    assert_true(exec_unmounted + 1_000_000_000 < exec_lane_0)
+
+
+def test_loop_state_clear_stream_forgets_fd_and_generation() raises:
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var state = OffloadLoopState(pool.addr(), 8)
+    var pair = make_stream_ack_pair()
+    pool.set_slot_ack_fd(4, pair[1])
+    state.stream_gen[4] = 77
+    assert_true(state.slot_channel_stream(4))
+    assert_true(state.chunk_active())
+    state.clear_stream(4)
+    assert_false(state.slot_channel_stream(4))
+    assert_equal(state.stream_gen[4], STREAM_GEN_NONE)
+    assert_false(pool.slot_channel_stream(4))
 
 
 def main() raises:

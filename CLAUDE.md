@@ -222,7 +222,12 @@ code depends on:
     reports failure and the loop retries the owed credit
     (`OffloadLoopState.ack_owed`) -- a lost ack is a window that never
     refills. And comment heartbeats stay suppressed on ASGI streams (a
-    chunk-split SSE event with a comment inside is corrupt). WebSocket scopes use the same seam — the held
+    chunk-split SSE event with a comment inside is corrupt). Every stream
+    frame carries its stream's GENERATION in the bus frame's id and an
+    app that raises after its head sends `stream_abort`, not
+    `stream_end` — the rules are spelled out under the pool bullet below,
+    because a pool thread is now the channel's second producer and both
+    obey them. WebSocket scopes use the same seam — the held
     101 is only released behind its begin frame, outbound frames ride
     the chunk channel, inbound ones are tagged submit-channel datagrams
     — and a handshake the app never answers must resolve as a 403, never
@@ -277,6 +282,52 @@ code depends on:
       asking that one first hands every socket's message to an executor
       that never accepted the connection (docs/ROADMAP.md, "Hold on a pool
       thread").
+    - **A pool thread streams an unsized WSGI iterable, as a second
+      producer on the executor's chunk channel.** The shim decides
+      (`_stream_this` in `bridge.mojo`): an app-supplied `Content-Length`,
+      a list/tuple/bytes body, a Django `HttpResponse` (`streaming is
+      False`), HEAD, a bodiless status or an `M0-Hold` header all buffer
+      as before — which is what keeps every framework page byte-identical
+      on the wire; anything else streams, and only where
+      `set_stream_capable` was set: pool threads with a chunk fd, never
+      the loop's own handler. The rules that make it safe, each pinned by
+      `smoke-wsgi-stream`:
+      - The thread registers its OWN ack pair per slot
+        (`OffloadPool.set_slot_ack_fd`, BEFORE its `P` begin frame, whose
+        send publishes the write) and keeps the pair for the process's
+        life (its fd number rides in the frame); the LOOP clears it at
+        accept and where the stream ends (`OffloadLoopState.clear_stream`)
+        — a stale entry would make a later `M0-Hold` on that slot look like
+        a channel stream, the phase-6 silent-wrong.
+      - Begin before head, exactly the executor's order — and the loop now
+        drains the chunk channel inline before finishing any channel-stream
+        head, so the argument no longer rests on kernel ready-list order.
+        The head carries an EMPTY body: `_finish_response` writes
+        `body_raw` before any `size CRLF`, so a first chunk there would go
+        out unframed.
+      - Stop-and-wait credit (`STREAM_PIECE`), with a NON-BLOCKING ack poll
+        before every piece: a stream of small events never exhausts the
+        window, and the disconnect — `(slot, -1)` on the thread's own pair,
+        sent by `sse_slot_disconnected` for a `P` url — rides the same fd.
+        `Int(Int32(UInt32(0xFFFFFFFF)))` is 4294967295 on this toolchain,
+        which is why `_i32` exists.
+      - Every frame carries its stream's generation (`stream_gen_seed`:
+        executors `lane + 1`, pool threads `1024 + index` — disjoint ranges,
+        no shared counter) and the loop handler drops an `s`/`e`/`w`/`x`
+        whose generation is not the subscription's. A slot freed by one
+        producer and re-subscribed by another has no FIFO between the two
+        writers; this is the hole one channel cannot close.
+      - A generator that raises after its head sends `TAG_STREAM_ABORT`
+        on the completion channel; the loop handles aborts AFTER that
+        batch's completions (an abort follows its own head on that FIFO,
+        and the head is what makes the slot a stream with a generation to
+        check against `HTTPResponse.stream_gen`), flushes what the producer
+        managed to send, and closes without a terminator.
+      - `enable_stream_channel` creates the chunk pair alone;
+        `stream_active()` still means "an executor exists"
+        (`enable_base_stream_ack`) and `slot_is_executor` stays lane-only.
+        `slot_channel_stream` is the per-slot question the loop's four
+        stream decisions ask; the drain-ack gate asks `chunk_active()`.
     - **The shutdown join is bounded, and leaving is correct.** A response
       that never ends -- a `StreamingHttpResponse` served under WSGI, which
       buffers it -- holds its pool thread for the life of the process, and

@@ -126,6 +126,103 @@ _lifespan_ok = False
 _ASGI_BUFFER_CAP = 16 * 1024 * 1024
 _ASGI_STREAM_GRACE = 10.0
 
+# --- streamed WSGI bodies ---------------------------------------------------
+# On a pool thread with a chunk channel, an iterable the application did not
+# size is streamed rather than joined: `run` returns the head and keeps the
+# iterable here, and the thread pulls chunks through wsgi_stream_next until
+# it is exhausted, then wsgi_stream_close. The loop's own handler never
+# enables this -- streaming from the loop thread is the hostage problem the
+# pool exists to remove.
+_stream_capable = False
+_stream_result = None
+_stream_iter = None
+_stream_first = b''
+_stream_written = None
+
+
+def set_stream_capable(flag):
+    global _stream_capable
+    _stream_capable = bool(flag)
+
+
+def _stream_this(result, environ, status, headers):
+    # What streams and what buffers, in order. Rule 1 is what keeps every
+    # framework page byte-identical on the wire: Werkzeug computes a
+    # Content-Length for every list body, Django's CommonMiddleware adds
+    # one, FileResponse sets its own. Rule 3 catches Django's HttpResponse
+    # -- an iterable, not a list -- for a project without CommonMiddleware
+    # (a bare settings.configure()), where without it every page would go
+    # out chunked through the channel. What is left is a lazily produced
+    # body: a generator, StreamingHttpResponse, a Flask Response over one,
+    # wsgiref.validate's IteratorWrapper.
+    if not _stream_capable:
+        return False
+    if isinstance(result, (bytes, bytearray, list, tuple)):
+        return False
+    if getattr(result, 'streaming', None) is False:
+        return False
+    if environ.get('REQUEST_METHOD') == 'HEAD':
+        return False
+    try:
+        code = int(status[:3])
+    except (TypeError, ValueError):
+        return False
+    if code < 200 or code == 204 or code == 304:
+        return False
+    for name, value in headers:
+        n = name.lower()
+        if n == 'content-length' or n == 'm0-hold':
+            return False
+    return True
+
+
+def wsgi_stream_next():
+    # The next chunk to send, b'' at the end. Empty chunks the application
+    # yields are skipped here so b'' means exactly one thing. Anything the
+    # application passed to write() since the last chunk goes out first:
+    # PEP 3333 lets a generator call write() between its yields, and the
+    # bytes must reach the wire in the order they were produced.
+    global _stream_first
+    if _stream_iter is None:
+        return b''
+    if _stream_first:
+        first, _stream_first = _stream_first, b''
+        return first
+    written = _stream_written
+    while True:
+        try:
+            chunk = next(_stream_iter)
+        except StopIteration:
+            if written:
+                out = b''.join(written)
+                del written[:]
+                return out
+            return b''
+        if chunk:
+            if written:
+                out = b''.join(written) + bytes(chunk)
+                del written[:]
+                return out
+            return bytes(chunk)
+
+
+def wsgi_stream_close():
+    # Idempotent, and safe to call whether the iterable was exhausted, the
+    # client vanished, or the generator raised: close() goes to the
+    # ORIGINAL result (wsgiref.validate's wrapper asserts exactly that),
+    # once, and the iterator is dropped so a later wsgi_stream_next
+    # answers b'' instead of iterating a closed object.
+    global _stream_result, _stream_iter, _stream_first, _stream_written
+    result = _stream_result
+    _stream_result = None
+    _stream_iter = None
+    _stream_first = b''
+    _stream_written = None
+    if result is not None:
+        close = getattr(result, 'close', None)
+        if close is not None:
+            close()
+
 
 def set_app(app, forced='auto', run_lifespan=True):
     # run_lifespan=False builds an ASGI bridge whose loop exists but whose
@@ -916,15 +1013,22 @@ async def _serve_one_exec(slot, scope, body):
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP)
 
+    aborted = [False]
     try:
         await _app(scope, receive, send)
+    except BaseException:
+        aborted[0] = True
+        raise
     finally:
         if streaming[0] and slot not in _exec_disconnected:
-            # End of stream -- normal completion AND an application error
-            # alike: the head is long gone, so the only honest signal left
-            # is closing the connection (a content-length-free body ends
-            # at close; an early close is how truncation is reported).
-            _exec_queue.put_nowait(('stream_end', slot))
+            # End of stream. A normal completion ends with the chunked
+            # terminator and the connection returns to keep-alive; an
+            # application error after the head -- or a cancellation that
+            # was not a disconnect -- aborts instead, and the loop closes
+            # WITHOUT the terminator, so the client sees a truncated body
+            # rather than a short one under a clean ending.
+            _exec_queue.put_nowait(
+                ('stream_abort' if aborted[0] else 'stream_end', slot))
 
     if streaming[0]:
         return None
@@ -1124,13 +1228,17 @@ def _run_wsgi(environ, body):
 
     captured = {}
     written = []
+    sent = [False]
 
     def start_response(status, headers, exc_info=None):
         # PEP 3333: a second call without exc_info is an application error.
         # With exc_info it must replace the stored status and headers, and may
         # only re-raise once the headers have actually gone out -- which for a
-        # fully-buffering server is never, so replacing is always the branch
-        # taken here.
+        # buffered response is never, so replacing is the branch taken; for a
+        # STREAMED one the head is on the wire, and re-raising is the only
+        # honest answer left.
+        if exc_info is not None and sent[0]:
+            raise exc_info[1].with_traceback(exc_info[2])
         if captured and exc_info is None:
             raise AssertionError('start_response() called twice without exc_info')
         captured['status'] = status
@@ -1138,6 +1246,44 @@ def _run_wsgi(environ, body):
         return written.append
 
     result = _app(environ, start_response)
+    if captured and _stream_this(result, environ, captured['status'],
+                                 captured['headers']):
+        # Stream. PEP 3333 forbids sending the headers before the first
+        # non-empty chunk exists, so it is pulled now: an application that
+        # raises before producing anything is still an ordinary 500, and
+        # an iterable that exhausts with nothing takes the buffered path
+        # with whatever write() produced.
+        global _stream_result, _stream_iter, _stream_first, _stream_written
+        it = iter(result)
+        first = b''
+        try:
+            while True:
+                chunk = next(it)
+                if chunk:
+                    first = bytes(chunk)
+                    break
+        except StopIteration:
+            it = None
+        except BaseException:
+            close = getattr(result, 'close', None)
+            if close is not None:
+                close()
+            raise
+        if it is not None:
+            _stream_result = result
+            _stream_iter = it
+            _stream_written = written
+            _stream_first = b''.join(written) + first
+            del written[:]
+            sent[0] = True
+            return (captured['status'], captured['headers'], b'', True)
+        try:
+            _body = b''.join(written)
+        finally:
+            close = getattr(result, 'close', None)
+            if close is not None:
+                close()
+        return (captured['status'], captured['headers'], _body, False)
     try:
         # PEP 3333: everything passed to write() is transmitted before the
         # iterable's output. The iterable is drained FIRST even so, because an
@@ -1150,7 +1296,7 @@ def _run_wsgi(environ, body):
         if close is not None:
             close()
     return (captured.get('status', '500 Internal Server Error'),
-            captured.get('headers', []), _body)
+            captured.get('headers', []), _body, False)
 """
 
 
@@ -1260,6 +1406,16 @@ struct PyBridge(Movable):
     values that need it. Kept on the bridge so a request allocates neither.
     Two of them because a header's name and value are in flight at once."""
 
+    var _stream_next_fn: PythonObject
+    var _stream_close_fn: PythonObject
+    """The shim's streamed-body half, resolved once: zero-argument calls,
+    which the interop leaks nothing on."""
+
+    var stream_pending: Bool
+    """`run` returned the HEAD of a streamed WSGI body and the shim still
+    holds the iterable; `stream_next`/`stream_close` finish it. Cleared by
+    `stream_close`."""
+
     def __init__(out self) raises:
         var builtins = Python.import_module("builtins")
         self._ns = Python.dict()
@@ -1269,6 +1425,9 @@ struct PyBridge(Movable):
         self._spawn_ws = self._ns["spawn_ws"]
         self._wait_events = self._ns["wait_events"]
         self._drain_events = self._ns["drain_events_nowait"]
+        self._stream_next_fn = self._ns["wsgi_stream_next"]
+        self._stream_close_fn = self._ns["wsgi_stream_close"]
+        self.stream_pending = False
 
         self._script_len = 0
         self._k_method = _py_str("REQUEST_METHOD")
@@ -1313,6 +1472,31 @@ struct PyBridge(Movable):
         self._dict_copy = move._dict_copy
         self._scratch_name = move._scratch_name^
         self._scratch_value = move._scratch_value^
+        self._stream_next_fn = move._stream_next_fn^
+        self._stream_close_fn = move._stream_close_fn^
+        self.stream_pending = move.stream_pending
+
+    def set_stream_capable(self, flag: Bool) raises:
+        """Let the shim stream unsized iterables (a pool thread with a chunk
+        channel) or keep joining them. Startup-only: the argument leaks one
+        reference, bounded like `set_app`'s."""
+        _ = self._ns["set_stream_capable"](PythonObject(flag))
+
+    def stream_next(mut self) raises -> List[UInt8]:
+        """The next chunk of a streamed body, copied out binary-safe; empty
+        at the end. A zero-argument call, then `body_bytes` — no per-request
+        argument crosses, so nothing leaks."""
+        var chunk = self._stream_next_fn()
+        return self.body_bytes(chunk)
+
+    def stream_close(mut self):
+        """Close the streamed iterable (idempotent) and clear `stream_pending`.
+        Never raises: a `close()` that raises has nowhere to report."""
+        self.stream_pending = False
+        try:
+            _ = self._stream_close_fn()
+        except:
+            pass
 
     def set_app(
         self,

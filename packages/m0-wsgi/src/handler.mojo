@@ -33,13 +33,17 @@ forked copy of a live interpreter is not safe — see `WSGIApp`.
 from lightbug_http.broadcast import encode_bus_frame
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
+from lightbug_http.offload import OffloadPool, STREAM_GEN_NONE
 from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame, WS_OP_TEXT,
 )
 
-from std.ffi import c_int, external_call
+from std.ffi import c_int, external_call, get_errno
+from std.python import Python
+from std.sys.info import CompilationTarget
+from std.time import sleep
 
 from m0_http import SSERegistry, StaticFiles, sse_data_payload
 from m0_http.sse.format import NO_EVENT_ID
@@ -68,6 +72,22 @@ Not -1: that is the unmounted pool's own lane, and a sentinel a real lane
 can equal would route an executor's socket into a pool."""
 
 comptime WS_MESSAGE_PATH = "/ws/message"
+
+comptime STREAM_PIECE = 16 * 1024
+"""Largest `s` frame a pool thread sends, and its whole credit window:
+stop-and-wait, one piece in flight per stream. Small on purpose — the chunk
+channel is ONE 256 KB pair shared by every executor (128 KB global window)
+and every pool thread, and on Linux the kernel charges each datagram's whole
+skb against the receiver's buffer (`rmem_max`, ~212 KB). N threads at one
+piece each is what keeps that sum bounded; the never-drop wait in
+`_place_stream_frame` is the backstop when it is not."""
+
+comptime STREAM_GEN_HELD = -2
+"""`stream_gen` of a slot subscribed by an `M0-Hold` (`h`/`H`): no chunk
+frame carries this generation, so a stale `s`/`e` for a stream that used
+to have this slot number is dropped rather than queued into the hold."""
+
+comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(0x40)
 """Where an inbound WebSocket message is delivered inside the application.
 
 A constant rather than a flag: it is one half of a contract with the
@@ -124,6 +144,24 @@ struct WSGIHandler(ThreadHandler):
     pending: the final `sse_drain_slot` hands those bytes out and then
     unsubscribes, which is what flips `sse_is_streaming` and lets the loop
     close the connection after they land."""
+    var stream_gen: List[Int]
+    """Per slot, the generation of the channel stream it is subscribed to
+    — the begin frame's id (`b`/`B`/`P`) — or `STREAM_GEN_HELD` for a hold,
+    `STREAM_GEN_NONE` for nothing. Every `s`/`e`/`w`/`x` frame carries its
+    stream's generation and is dropped on a mismatch. The FIFO argument
+    covers one writer; this covers two: a slot freed by `_close_slot` is
+    reused at the next accept, and a producer still inside the application
+    can send its next chunk after a DIFFERENT producer's begin subscribed
+    the recycled slot — a pool thread's stream and an executor's, or an
+    executor's and a hold arriving on the other bus fd — with no channel
+    order between them at all."""
+    var stream_fd: Int
+    """The chunk channel's write end, or -1: where this handler streams a
+    WSGI iterable's body when it is a pool thread's (`ThreadContext.
+    stream_fd`). The loop's own handler never has one."""
+    var stream_app: Int
+    """Which application `func` last served; the one `stream_pending` and
+    the stream methods ask."""
     var asgi_notify_fd: Int
     """Executor mode only (-1 otherwise): the submit channel's write end,
     used to send the executor a disconnect tag when a streaming slot
@@ -229,9 +267,13 @@ struct WSGIHandler(ThreadHandler):
         self.sockets = SSERegistry(slots)
         self.asgi_done = List[Bool](capacity=slots)
         self.hold_lane = List[Int](capacity=slots)
+        self.stream_gen = List[Int](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
             self.hold_lane.append(NOT_POOL_HELD)
+            self.stream_gen.append(STREAM_GEN_NONE)
+        self.stream_fd = -1
+        self.stream_app = -1
 
     @staticmethod
     def mounts_for(opts: ServeOptions) -> List[StaticFiles]:
@@ -373,6 +415,14 @@ struct WSGIHandler(ThreadHandler):
         handler.hold_notify_fd = ctx.hold_fd
         handler.lane = ctx.lane
         handler.answers_local = not ctx.pool
+        handler.stream_fd = ctx.stream_fd
+        if ctx.pool and ctx.stream_fd >= 0:
+            # A pool thread with a chunk channel streams the iterables an
+            # application does not size. Never the loop's own handler: a
+            # body produced on the loop thread is the hostage problem the
+            # pool exists to remove, so there the shim keeps joining.
+            for i in range(len(handler.apps)):
+                handler.apps[i].set_stream_capable(True)
         return handler^
 
     def mount(mut self, var prefix: String, var app: WSGIApp):
@@ -509,6 +559,7 @@ struct WSGIHandler(ThreadHandler):
         if which < 0:
             return _unmounted()
 
+        self.stream_app = which
         if not self.realtime:
             return self.apps[which].serve(req)
 
@@ -627,6 +678,123 @@ struct WSGIHandler(ThreadHandler):
         if self.thread_index >= 0:
             resp.headers["x-thread"] = String(self.thread_index)
 
+    # --- Streamed WSGI bodies: the pool thread as a chunk-channel producer. ---
+
+    def stream_pending(self) -> Bool:
+        return (
+            self.stream_app >= 0
+            and self.stream_app < len(self.apps)
+            and self.apps[self.stream_app]._bridge.stream_pending
+        )
+
+    def stream_begin(mut self, slot: Int, gen: Int, ack_fd: Int) -> Bool:
+        if self.stream_fd < 0 or not self.stream_pending():
+            return False
+        var empty = List[UInt8]()
+        var frame = encode_bus_frame(
+            pool_stream_url(slot, self.lane, ack_fd), gen, Span(empty)
+        )
+        if _send_frame_bounded(self.stream_fd, frame):
+            return True
+        # The channel would not take ~60 bytes after 64 tries: the loop is
+        # not draining it. Nothing will feed this stream; close the iterable
+        # so the caller can answer with a response the client can parse.
+        self.apps[self.stream_app].stream_close()
+        self.stream_app = -1
+        return False
+
+    def stream_pump(
+        mut self, slot: Int, gen: Int, ack_read_fd: Int, mut pool: OffloadPool
+    ):
+        if self.stream_app < 0 or self.stream_app >= len(self.apps):
+            return
+        var app_index = self.stream_app
+        var credit = STREAM_PIECE
+        var gone = False
+        var aborted = False
+        while True:
+            var chunk: List[UInt8]
+            try:
+                chunk = self.apps[app_index].stream_next()
+            except e:
+                # The generator raised after its head went out. The head
+                # is on the wire, so the only honest answer is a truncated
+                # body: abort, and the loop closes without a terminator.
+                print(
+                    "m0serve: streamed response raised after its head: "
+                    + String(e),
+                    flush=True,
+                )
+                aborted = True
+                break
+            if len(chunk) == 0:
+                break
+            var offset = 0
+            while offset < len(chunk):
+                var n = STREAM_PIECE
+                if len(chunk) - offset < n:
+                    n = len(chunk) - offset
+                # Before every piece, take whatever the loop has already
+                # acked without blocking — credit, or the disconnect that
+                # rides the same fd. A stream of small events never runs
+                # out of a 16 KB window, so without this poll a thread
+                # whose client vanished would produce until shutdown.
+                var polled = _poll_acks(ack_read_fd, slot, credit)
+                if polled < 0:
+                    gone = True
+                    break
+                credit = polled
+                # Stop-and-wait: the previous piece must have been drained
+                # and acked before the next goes out. The wait is detached;
+                # a disconnect arrives on the same fd as credit does.
+                while credit < n:
+                    var acked = _wait_ack(ack_read_fd, slot)
+                    if acked < 0:
+                        gone = True
+                        break
+                    credit += acked
+                if gone:
+                    break
+                var frame = encode_bus_frame(
+                    asgi_stream_url(String("s"), slot, self.lane), gen,
+                    Span(chunk)[offset : offset + n],
+                )
+                var placed = _place_stream_frame(
+                    self.stream_fd, frame, ack_read_fd, slot
+                )
+                if placed == 0:
+                    gone = True
+                    break
+                if placed < 0:
+                    # Unplaceable after waiting detached ~5 s: the loop is
+                    # not draining the channel at all. Abort rather than
+                    # let a truncated body look complete.
+                    print(
+                        "m0serve: chunk channel full, abandoning slot "
+                        + String(slot) + "'s stream — the response is truncated",
+                        flush=True,
+                    )
+                    aborted = True
+                    break
+                credit -= n
+                offset += n
+            if gone or aborted:
+                break
+        # Always: the application's close(), once, whatever ended this.
+        self.apps[app_index].stream_close()
+        self.stream_app = -1
+        if gone:
+            return
+        if aborted:
+            _ = pool.abort_stream(slot, gen)
+            return
+        var empty = List[UInt8]()
+        var end = encode_bus_frame(
+            asgi_stream_url(String("e"), slot, self.lane), gen, Span(empty)
+        )
+        if _place_stream_frame(self.stream_fd, end, ack_read_fd, slot) < 0:
+            _ = pool.abort_stream(slot, gen)
+
     # --- Held connections. Inert at capacity 0, so no `realtime` branch. ---
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
@@ -670,18 +838,30 @@ struct WSGIHandler(ThreadHandler):
             or self.sockets.is_slot_streaming(slot)
             or (slot < len(self.asgi_done) and self.asgi_done[slot])
         )
-        # The slot's reserved channel name carries its executor's lane;
-        # read it before the unsubscribes erase it.
+        # The slot's reserved channel name carries its producer's address
+        # — an executor's lane, or a pool thread's own ack fd; read it
+        # before the unsubscribes erase it.
         var slot_url = self.streams.filter_url(slot)
         if slot_url.byte_length() == 0:
             slot_url = self.sockets.filter_url(slot)
+        var pool_ack_fd = pool_stream_ack_fd(slot_url) if (
+            self.streams.is_slot_streaming(slot)
+        ) else -1
         self.streams.unsubscribe(slot)
         self.sockets.unsubscribe(slot)
         if slot < len(self.hold_lane):
             self.hold_lane[slot] = NOT_POOL_HELD
         if slot < len(self.asgi_done):
             self.asgi_done[slot] = False
-        if was_asgi:
+        if slot < len(self.stream_gen):
+            self.stream_gen[slot] = STREAM_GEN_NONE
+        if pool_ack_fd >= 0:
+            # A pool thread's stream: its disconnect is an ack of -1 on the
+            # thread's own pair — the fd it is already waiting on — never
+            # the executor's tag, which on a POOL submit lane would be a
+            # nine-byte datagram `next_job` cannot decode.
+            _send_pool_disconnect(pool_ack_fd, slot)
+        elif was_asgi:
             _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
@@ -710,26 +890,31 @@ struct WSGIHandler(ThreadHandler):
             var slot = _parse_stream_slot(ub)
             if slot < 0:
                 return
-            if ub[1] == UInt8(ord("b")):
-                # Begin: sent before the stream's head completion, so this
-                # subscription exists before the loop ever drains the slot
-                # as a stream.
+            if ub[1] == UInt8(ord("b")) or ub[1] == UInt8(ord("P")):
+                # Begin — an executor's (`b`) or a pool thread's (`P`, whose
+                # name also carries the thread's ack fd): sent before the
+                # stream's head completion, so this subscription exists
+                # before the loop ever drains the slot as a stream. The
+                # frame's id is the stream's generation; every chunk and
+                # the end must carry the same one.
                 self.streams.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                self._set_stream_gen(slot, event_id)
             elif ub[1] == UInt8(ord("s")):
-                # A response chunk — for a SUBSCRIBED slot only. Never
-                # subscribe here: a chunk that outlived its connection
-                # (sent before the disconnect tag reached the executor)
-                # must be dropped, not injected into whatever request the
-                # recycled slot serves now. The channel's FIFO guarantees
-                # a new stream's begin frame sorts after every frame of
-                # the old one.
-                if self.streams.is_slot_streaming(slot):
+                # A response chunk — for a SUBSCRIBED slot only, and only
+                # for the stream that subscribed it. Never subscribe here:
+                # a chunk that outlived its connection must be dropped,
+                # not injected into whatever the recycled slot serves now.
+                # One writer's frames are FIFO behind its own begin; the
+                # generation is what tells two writers' apart.
+                if self.streams.is_slot_streaming(slot) and self._gen_matches(slot, event_id):
                     _ = self.streams.queue_frame(slot, NO_EVENT_ID, frame)
             elif ub[1] == UInt8(ord("e")):
                 # End of stream: hand out anything still pending, then
                 # stop being a stream (which is what lets the loop close).
+                if not self._gen_matches(slot, event_id):
+                    return
                 if self.streams.has_pending(slot):
                     if slot < len(self.asgi_done):
                         self.asgi_done[slot] = True
@@ -746,6 +931,7 @@ struct WSGIHandler(ThreadHandler):
                     String(StringSlice(unsafe_from_utf8=Span(frame))),
                     event_id,
                 )
+                self._set_stream_gen(slot, STREAM_GEN_HELD)
             elif ub[1] == UInt8(ord("H")):
                 # A socket hold taken on a pool thread. Subscribe it here,
                 # where the registries are drained, and remember the lane:
@@ -755,6 +941,7 @@ struct WSGIHandler(ThreadHandler):
                 self.sockets.subscribe(slot, chan, event_id)
                 if slot < len(self.hold_lane):
                     self.hold_lane[slot] = _parse_stream_lane(ub)
+                self._set_stream_gen(slot, STREAM_GEN_HELD)
             elif ub[1] == UInt8(ord("B")):
                 # A WebSocket's begin: sent before its held 101 completes,
                 # same FIFO anchor as a stream's begin — but into the
@@ -762,15 +949,18 @@ struct WSGIHandler(ThreadHandler):
                 self.sockets.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                self._set_stream_gen(slot, event_id)
             elif ub[1] == UInt8(ord("w")):
                 # An outbound WS frame, already RFC 6455-encoded by the
                 # executor. Subscribed slots only, same recycled-slot
-                # safety rule as 's'.
-                if self.sockets.is_slot_streaming(slot):
+                # safety rule as 's', same generation check.
+                if self.sockets.is_slot_streaming(slot) and self._gen_matches(slot, event_id):
                     _ = self.sockets.queue_frame(slot, NO_EVENT_ID, frame)
             elif ub[1] == UInt8(ord("x")):
                 # WebSocket end (the close frame is already queued ahead
                 # of this on the same channel).
+                if not self._gen_matches(slot, event_id):
+                    return
                 if self.sockets.has_pending(slot):
                     if slot < len(self.asgi_done):
                         self.asgi_done[slot] = True
@@ -808,6 +998,16 @@ struct WSGIHandler(ThreadHandler):
             _ = self.sockets.notify_frame(
                 url, event_id, encode_ws_frame(WS_OP_TEXT, Span(data))
             )
+
+    def _set_stream_gen(mut self, slot: Int, gen: Int):
+        if slot >= 0 and slot < len(self.stream_gen):
+            self.stream_gen[slot] = gen
+
+    def _gen_matches(self, slot: Int, gen: Int) -> Bool:
+        """Whether a chunk/end frame belongs to the stream the slot is
+        subscribed to. A slot outside the table (no registries) matches
+        nothing, which is the same answer its registry gives."""
+        return slot >= 0 and slot < len(self.stream_gen) and self.stream_gen[slot] == gen
 
     def tick(mut self, now_ms: Int):
         pass
@@ -1069,6 +1269,174 @@ def asgi_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
         for ch in String(lane).as_bytes():
             b.append(ch)
     return String(StringSlice(unsafe_from_utf8=Span(b)))
+
+
+def pool_stream_url(slot: Int, lane: Int, ack_fd: Int) -> String:
+    """A pool thread's begin-frame name: `\x01P/<slot>/<lane>/<ack_fd>`.
+
+    Its own encoder rather than `asgi_stream_url`, which omits a negative
+    lane: the unmounted pool's lane IS -1, and the ack fd has to sit at a
+    fixed position for `pool_stream_ack_fd` to find it. The lane is written
+    literally, `-1` included; nothing parses it out of a `P` name.
+    """
+    var b = List[UInt8]()
+    b.append(ASGI_URL_CONTROL)
+    b.append(UInt8(ord("P")))
+    b.append(UInt8(ord("/")))
+    for ch in String(slot).as_bytes():
+        b.append(ch)
+    b.append(UInt8(ord("/")))
+    for ch in String(lane).as_bytes():
+        b.append(ch)
+    b.append(UInt8(ord("/")))
+    for ch in String(ack_fd).as_bytes():
+        b.append(ch)
+    return String(StringSlice(unsafe_from_utf8=Span(b)))
+
+
+def pool_stream_ack_fd(url: String) -> Int:
+    """The ack fd a `P` name carries, or -1 for any other name."""
+    var ub = url.as_bytes()
+    if len(ub) < 3 or ub[0] != ASGI_URL_CONTROL or ub[1] != UInt8(ord("P")):
+        return -1
+    return _parse_url_number(ub, 2)
+
+
+def _send_pool_disconnect(fd: Int, slot: Int):
+    """`(slot: i32, -1: i32)` on a pool thread's ack pair: the client is
+    gone. The same shape as a credit ack, so the thread's one blocking
+    read learns both. Bounded retry, never a park: this runs on the loop."""
+    var msg = List[UInt8](capacity=8)
+    var s = UInt32(slot)
+    for i in range(4):
+        msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
+    for _ in range(4):
+        msg.append(UInt8(0xFF))
+    for _ in range(64):
+        var rc = external_call["send", Int](
+            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
+        )
+        if rc == len(msg):
+            return
+        _ = external_call["sched_yield", c_int]()
+
+
+def _send_frame_bounded(fd: Int, frame: List[UInt8]) -> Bool:
+    """One datagram on a non-blocking channel, 64 tries with yields."""
+    for _ in range(64):
+        var rc = external_call["send", Int](
+            c_int(fd), frame.unsafe_ptr(), UInt(len(frame)), c_int(0)
+        )
+        if rc == len(frame):
+            return True
+        _ = external_call["sched_yield", c_int]()
+    return False
+
+
+def _read_ack(fd: Int, flags: c_int, mut slot_out: Int, mut credit_out: Int) -> Int:
+    """One `(slot i32, credit i32)` datagram off an ack pair.
+
+    Returns 1 with the fields filled, 0 for nothing there (non-blocking
+    only), -1 for EOF or an error other than EINTR (retried inside)."""
+    var buf = List[UInt8](capacity=8)
+    for _ in range(8):
+        buf.append(0)
+    while True:
+        var rc = external_call["recv", Int](
+            c_int(fd), buf.unsafe_ptr(), UInt(8), flags
+        )
+        if rc == 8:
+            var s = UInt32(0)
+            var c = UInt32(0)
+            for i in range(4):
+                s |= UInt32(buf[i]) << UInt32(8 * i)
+                c |= UInt32(buf[4 + i]) << UInt32(8 * i)
+            slot_out = _i32(s)
+            credit_out = _i32(c)
+            return 1
+        if rc < 0:
+            var err = get_errno()
+            if err == err.EINTR:
+                continue
+            # EAGAIN on a non-blocking read, or a dead channel.
+            return 0 if flags != c_int(0) else -1
+        return -1
+
+
+def _poll_acks(fd: Int, slot: Int, credit: Int) -> Int:
+    """Consume every ack already waiting, without blocking: the new credit
+    total, or -1 if one of them was the disconnect for `slot`."""
+    var total = credit
+    var got_slot = -1
+    var amount = 0
+    while True:
+        var rc = _read_ack(fd, _MSG_DONTWAIT, got_slot, amount)
+        if rc <= 0:
+            return total
+        if got_slot != slot:
+            continue
+        if amount < 0:
+            return -1
+        total += amount
+
+
+def _i32(v: UInt32) -> Int:
+    """Sign-extend a wire `i32`. `Int(Int32(UInt32(0xFFFFFFFF)))` is
+    4294967295 on Mojo 1.0, not -1 — the conversion does not wrap — so the
+    disconnect ack (`-1`) has to be recovered by hand."""
+    var n = Int(v)
+    if n >= 0x80000000:
+        n -= 0x100000000
+    return n
+
+
+def _wait_ack(fd: Int, slot: Int) -> Int:
+    """Block, DETACHED, until an ack for `slot` arrives on this thread's own
+    pair: the credited byte count, or -1 for a disconnect (`-1` credit) or
+    a dead channel. Acks naming another slot are stale — the previous
+    stream's — and skipped."""
+    ref cpy = Python().cpython()
+    var got_slot = -1
+    var credit = 0
+    while True:
+        var ts = cpy.PyEval_SaveThread()
+        var rc = _read_ack(fd, c_int(0), got_slot, credit)
+        cpy.PyEval_RestoreThread(ts)
+        if rc < 0:
+            return -1
+        if got_slot != slot:
+            continue
+        return credit
+
+
+def _place_stream_frame(fd: Int, frame: List[UInt8], ack_fd: Int, slot: Int) -> Int:
+    """Place one chunk datagram: 1 placed, 0 the client is gone, -1 gave up.
+
+    A dropped chunk is a corrupt body, so a full channel is waited out —
+    but DETACHED, the `_send_chunk_frame` discipline: the thread that has
+    to drain the channel is the loop, which needs to attach for other
+    work. While waiting, the ack pair is polled for a disconnect, so a dead
+    client's stream does not sit against a full channel until shutdown.
+    Bounded at ~5 s, matching the drain: past that the loop is not
+    draining at all and nothing this thread does will help."""
+    if _send_frame_bounded(fd, frame):
+        return 1
+    ref cpy = Python().cpython()
+    var ts = cpy.PyEval_SaveThread()
+    var result = -1
+    var got_slot = -1
+    var credit = 0
+    for _ in range(25000):
+        sleep(0.0002)
+        var rc = _read_ack(ack_fd, _MSG_DONTWAIT, got_slot, credit)
+        if rc == 1 and got_slot == slot and credit < 0:
+            result = 0
+            break
+        if _send_frame_bounded(fd, frame):
+            result = 1
+            break
+    cpy.PyEval_RestoreThread(ts)
+    return result
 
 
 def _parse_url_number(url_bytes: Span[Byte, _], which: Int) -> Int:

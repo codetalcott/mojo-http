@@ -326,6 +326,21 @@ lightbug_http
         remote_port, ConnectionProvision.peer_host/peer_port) so WSGI's
         REMOTE_ADDR and ASGI's scope["client"] carry the real peer.
 
+      - offload.mojo grew a second producer on the chunk channel (a
+        --blocking-threads pool thread streaming a WSGI iterable): per-slot
+        ack fds (`slot_ack_fd`, `slot_channel_stream`, `make_stream_ack_pair`,
+        `drain_ack_fd`), the chunk pair split from the executor's ack pair
+        (`enable_base_stream_ack`, `chunk_active`), per-producer stream
+        generations (`stream_gen_seed`), and a `TAG_STREAM_ABORT` datagram
+        on the completion channel (`abort_stream`, `take_aborts`).
+        event_loop.mojo asks the per-slot `slot_channel_stream` at its four
+        stream decisions, clears the stream state at accept and at every
+        stream end, drains the chunk channel inline before finishing a
+        channel-stream head, handles aborts after their batch's completions
+        (flushing the produced bytes, then closing without a terminator),
+        and repeats the farewell pass after the shutdown drain.
+        http/response.mojo gained `stream_gen`.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

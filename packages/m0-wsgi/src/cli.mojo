@@ -130,9 +130,11 @@ struct ServeOptions(Copyable, Movable):
     executor's — the executor's own app is built with lifespan on,
     explicitly."""
     var asgi_streaming: Bool
-    """Internal, never a flag: executor mode with the streaming channel —
-    handlers built from these options size their registries so ASGI
-    response chunks have per-slot outboxes to ride."""
+    """Internal, never a flag: the loop will have a chunk channel — an
+    asyncio executor, or a handler pool streaming WSGI iterables — so
+    handlers built from these options size their registries to give every
+    slot the outbox its chunks ride. The name predates the pool's use of
+    the channel."""
     var app_dir: String
     """Prepended to `sys.path` so `module` can be imported; relative to cwd."""
     var static_prefixes: List[String]

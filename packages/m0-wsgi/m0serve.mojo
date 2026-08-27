@@ -788,7 +788,10 @@ def main() raises:
     # app owns the one lifespan this process runs. Its registries do size
     # up, though — they are the outboxes ASGI response chunks ride.
     opts.handler_lifespan = not executor_mode
-    opts.asgi_streaming = executor_mode
+    # Registries size up wherever the chunk channel will exist: for the
+    # executor's ASGI streams, and for the WSGI iterables a handler pool
+    # streams through the same channel.
+    opts.asgi_streaming = executor_mode or opts.blocking_threads > 0
 
     var handler: WSGIHandler
     try:
@@ -952,6 +955,7 @@ def _serve_offloaded(
         # that mount's own submit channel, since that is where its
         # executor is parked.
         pool.enable_stream_channel()
+        pool.enable_base_stream_ack()
         if len(asgi_lanes) == 0:
             handler.set_asgi_notify(pool.submit_write_fd(-1))
         for k in range(len(asgi_lanes)):
@@ -959,6 +963,14 @@ def _serve_offloaded(
             pool.enable_stream_ack(lane)
             handler.set_lane_notify(lane, pool.submit_write_fd(lane))
         exec_thread.start(pool.addr(), opts_addr, asgi_lanes.copy())
+    if pool_threads.count > 0 and not pool.chunk_active():
+        # Pool threads stream WSGI iterables through the same chunk channel
+        # the executor uses — a second producer on one FIFO — so a
+        # pure-WSGI pool server creates it too. NOT the executor's ack
+        # pair: `stream_active()` keeps meaning "an executor exists", which
+        # is what keeps an M0-Hold on this loop from being mistaken for a
+        # channel stream.
+        pool.enable_stream_channel()
     if pool_threads.count > 0:
         # Where an inbound WebSocket message goes when a pool thread's view
         # held the socket: that mount's own submit lane, so the frame is
@@ -972,7 +984,7 @@ def _serve_offloaded(
                     wsgi_lanes[wl], pool.submit_write_fd(wsgi_lanes[wl])
                 )
         pool_threads.start[WSGIHandler](pool.addr(), opts_addr, wsgi_lanes^)
-    var stream_bus_fd = pool.stream_chunk_read if run_executor else -1
+    var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
 
     comptime if CompilationTarget.is_macos():
         from lightbug_http.c.kqueue_backend import KqueueBackend
@@ -1084,9 +1096,10 @@ def _serve_threaded(
     var executor_mode = use_asgi_executor(opts, is_asgi)
     # Each serving thread's own loop handler is only the fallback in
     # executor mode; the one lifespan per loop belongs to that loop's
-    # executor. Registries size up for the ASGI chunk outboxes.
+    # executor. Registries size up for the chunk outboxes — the executor's
+    # ASGI streams and the pool's streamed WSGI iterables alike.
     opts.handler_lifespan = not executor_mode
-    opts.asgi_streaming = executor_mode
+    opts.asgi_streaming = executor_mode or opts.blocking_threads > 0
 
     var shutdown_fd = install_shutdown_signals()
     var opts_ptr = Pointer(to=opts)

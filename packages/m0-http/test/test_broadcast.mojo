@@ -168,6 +168,7 @@ def test_publish_rejects_reserved_channel() raises:
     var kinds = [
         String("s"), String("e"), String("b"), String("h"),
         String("H"), String("B"), String("w"), String("x"),
+        String("P"),
     ]
     for kind in kinds:
         publish_to_channels(

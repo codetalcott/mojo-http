@@ -3093,6 +3093,258 @@ rm -f wsgi.log
 echo "smoke-wsgi OK"
 """
 
+# Streamed WSGI bodies. A generator the application did not size streams
+# from a `--blocking-threads` pool thread through the loop's chunk channel
+# -- chunk by chunk, as it is produced, chunked on HTTP/1.1 with the
+# connection reusable after -- where it used to be joined whole. Lists and
+# sized bodies still buffer. Every edge of that contract is pinned here,
+# against the bare app first and Django's StreamingHttpResponse last, plus
+# the two things that used to be wrong: a never-ending generator pinned its
+# thread until shutdown, and the thread never noticed its client leaving.
+[tool.poe.tasks.smoke-wsgi-stream]
+help = "Streamed WSGI bodies: a generator streams from a pool thread, chunked, keep-alive kept; lists still buffer"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8081"
+B=http://127.0.0.1:8081
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -f stream.log
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f stream.log ]; then echo '=== stream.log ==='; cat stream.log; fi
+  exit 1
+}
+ready() {
+  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail "$1" > /dev/null || fail "never became healthy: $1"
+}
+
+"$srv" $SPEC --blocking-threads 4 > stream.log 2>&1 &
+pid=$!
+ready $B/
+
+# --- what buffers -------------------------------------------------------------
+# A list body, a generator the application sized with Content-Length, and a
+# generator that yields nothing non-empty all take the buffered path: a
+# measured Content-Length, no Transfer-Encoding.
+for path in /chunks /stream-cl /stream-empty /; do
+  hdr=$(curl -s -D - -o /dev/null "$B$path" | tr -d '\\r')
+  echo "$hdr" | grep -qi '^content-length:' || fail "$path lost its content-length"
+  echo "$hdr" | grep -qi '^transfer-encoding' && fail "$path was chunked; it must buffer"
+done
+[ "$(curl -s $B/chunks)" = "one-two-three" ] || fail '/chunks body changed'
+[ "$(curl -s $B/stream-cl)" = "sized-stream" ] || fail '/stream-cl body changed'
+
+# --- what streams, and that it really does -------------------------------------
+# Three pieces 300 ms apart: the first must arrive well before the last is
+# produced. The ceiling is loose (1 s against a 600 ms body) because CI
+# machines are shared; the failure it catches is the whole body arriving at
+# once after 600 ms, which is what joining looks like.
+python3 - <<'PYEOF' || fail 'the generator did not stream: pieces arrived together'
+import socket, time, sys
+s = socket.create_connection(("127.0.0.1", 8081), timeout=10)
+t0 = time.time()
+s.sendall(b"GET /stream?n=3&delay=0.3 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+data, stamps = b"", []
+while b"\\r\\n0\\r\\n\\r\\n" not in data:
+    data += s.recv(65536); stamps.append(time.time() - t0)
+head, _, body = data.partition(b"\\r\\n\\r\\n")
+if b"transfer-encoding: chunked" not in head.lower():
+    print("not chunked:", head); sys.exit(1)
+if b"content-length" in head.lower():
+    print("a chunked response carried content-length"); sys.exit(1)
+if b"piece 0" not in body or b"piece 2" not in body:
+    print("body incomplete:", body); sys.exit(1)
+first = min(stamps); total = max(stamps)
+print("first piece at %.2fs, last at %.2fs" % (first, total))
+if first > 1.0 or total < 0.55 or len(stamps) < 2:
+    print("timing says the body was joined, not streamed"); sys.exit(1)
+# The same connection must still work after the stream.
+s.sendall(b"GET / HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+if b"200 OK" not in s.recv(4096):
+    print("the connection did not survive the stream"); sys.exit(1)
+PYEOF
+
+# The raw-socket probe the ASGI row uses: a 1 MB body hand-decoded and
+# compared byte for byte, a second request on the same connection, and the
+# HTTP/1.0 refusal to frame.
+M0_PORT=8081 M0_STREAM_PATH='/stream?n=64&size=16384&delay=0' M0_STREAM_LEN=1048576 M0_SECOND_PATH=/ \
+  python3 scripts/chunked_keepalive.py || fail 'the chunked keep-alive probe failed against a streamed WSGI body'
+
+# write() from inside the generator, between its yields: production order.
+[ "$(curl -s $B/stream-write-inside)" = "w0-y0-w1-y1-w2-" ] \
+  || fail "write() inside the generator lost its order: got '$(curl -s $B/stream-write-inside)'"
+
+# A generator that raises after its head: the pieces it produced arrive,
+# then the connection closes WITHOUT the chunked terminator -- a truncated
+# body, which is the truth, never a short body under a clean ending.
+python3 - <<'PYEOF' || fail '/stream-raises did not truncate honestly'
+import socket, sys
+s = socket.create_connection(("127.0.0.1", 8081), timeout=15)
+s.sendall(b"GET /stream-raises HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+data = b""
+while True:
+    c = s.recv(65536)
+    if not c: break
+    data += c
+head, _, body = data.partition(b"\\r\\n\\r\\n")
+if b"first\\nsecond\\n" not in body:
+    print("the pieces produced before the raise were lost:", body); sys.exit(1)
+if body.endswith(b"0\\r\\n\\r\\n"):
+    print("a raising generator got a clean terminator:", body); sys.exit(1)
+print("stream-raises: pieces delivered, then closed without a terminator")
+PYEOF
+grep -q 'streamed response raised after its head' stream.log \
+  || fail 'the raise inside the generator was not reported'
+
+# Sixteen 1 MB streams at once on four threads: every byte, in order, and
+# the server answers afterwards. This is the channel's shared capacity
+# under pressure -- a dropped chunk here is a short body.
+python3 - <<'PYEOF' || fail '16 concurrent 1 MB streams were not byte-exact'
+import socket, threading, sys
+EXP = b"".join((b"%d" % (k % 10)) * 16384 for k in range(64))
+out = [None] * 16
+def one(i):
+    # Read to the chunked terminator, not to EOF: a framed stream leaves
+    # the connection open afterwards, which is the point of the framing.
+    s = socket.create_connection(("127.0.0.1", 8081), timeout=60)
+    s.sendall(b"GET /stream?n=64&size=16384&delay=0 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+    data = b""
+    while not data.endswith(b"\\r\\n0\\r\\n\\r\\n"):
+        c = s.recv(1 << 16)
+        if not c: break
+        data += c
+    s.close()
+    head, _, raw = data.partition(b"\\r\\n\\r\\n")
+    body, rest = b"", raw
+    while True:
+        size_line, _, rest = rest.partition(b"\\r\\n")
+        n = int(size_line.split(b";")[0], 16)
+        if n == 0: break
+        body += rest[:n]; rest = rest[n + 2:]
+    out[i] = (len(body), body == EXP)
+ts = [threading.Thread(target=one, args=(i,)) for i in range(16)]
+[t.start() for t in ts]; [t.join() for t in ts]
+bad = [r for r in out if r != (1048576, True)]
+print("16 x 1 MB:", "all byte-exact" if not bad else bad)
+sys.exit(1 if bad else 0)
+PYEOF
+curl -s --fail --max-time 5 $B/ > /dev/null || fail 'server did not answer after the 16-stream burst'
+
+# --- the client leaves ----------------------------------------------------------
+# Five never-ending streams opened and abandoned in turn on a FOUR-thread
+# pool. The thread producing each must come back when its client goes, or
+# the fifth has no thread to run on and the fast request after it queues.
+for i in 1 2 3 4 5; do
+  curl -s -N --max-time 0.4 $B/stream-forever > /dev/null 2>&1
+done
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 10 $B/)
+ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
+[ "$ms" -lt 2000 ] || fail "after five abandoned streams a fast request took ${ms}ms: the threads did not return to the pool"
+echo "five abandoned never-ending streams; fast request answered in ${ms}ms"
+
+# --- shutdown -------------------------------------------------------------------
+# SIGTERM with a live stream: the farewell reaches the producer as a
+# disconnect, it comes back, and the process exits promptly -- no 5 s
+# drain, no straggler.
+curl -s -N --max-time 30 $B/stream-forever > /dev/null 2>&1 &
+client=$!
+sleep 0.5
+t0=$(python3 -c 'import time; print(time.time())')
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+took=$(python3 -c "import time, sys; print(round(time.time() - float(sys.argv[1]), 2))" "$t0")
+kill $client 2>/dev/null; wait $client 2>/dev/null
+[ "$rc" = "0" ] || fail "SIGTERM with a live stream: exit $rc, want 0"
+python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)" "$took" \
+  || fail "SIGTERM with a live stream took ${took}s: the producer did not come back"
+grep -q 'still inside the application' stream.log && fail 'a live stream was abandoned as a straggler at shutdown'
+echo "SIGTERM with a live stream exited in ${took}s"
+
+# A generator ASLEEP between events cannot notice the disconnect until it
+# wakes; that thread is still the bounded straggler, and the exit says so.
+"$srv" $SPEC --blocking-threads 2 > stream.log 2>&1 &
+pid=$!
+ready $B/
+curl -s -N --max-time 60 "$B/stream-forever?delay=30" > /dev/null 2>&1 &
+client=$!
+sleep 0.5
+t0=$(date +%s)
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+took=$(( $(date +%s) - t0 ))
+kill $client 2>/dev/null; wait $client 2>/dev/null
+[ "$rc" = "0" ] || fail "SIGTERM with a sleeping generator: exit $rc, want 0"
+[ "$took" -lt 20 ] || fail "SIGTERM with a sleeping generator took ${took}s"
+grep -q 'still inside the application' stream.log || fail 'the sleeping generator was not reported as a straggler'
+echo "SIGTERM with a generator asleep for 30 s exited in ${took}s, naming the straggler"
+
+# --- wsgiref.validate, on a pool ---------------------------------------------------
+# The validator's IteratorWrapper is an iterator, so under it every route
+# streams -- and it asserts close() is called on the ORIGINAL iterable and
+# never iterated after. smoke-wsgi's own validator phase runs M0_WORKERS=2,
+# which is explicit topology and so has no pool; this is the pool's turn.
+M0_WSGI_VALIDATE=1 "$srv" $SPEC --blocking-threads 4 > stream.log 2>&1 &
+pid=$!
+ready $B/
+[ "$(curl -s $B/chunks)" = "one-two-three" ] || fail 'validator: /chunks body wrong on a pool'
+[ "$(curl -s $B/write/mixed)" = "firstsecondthird" ] || fail 'validator: write()/iterable order wrong on a pool'
+python3 - <<'PYEOF' || fail 'validator: close() was not called on a streamed iterable'
+import http.client, sys
+c = http.client.HTTPConnection("127.0.0.1", 8081, timeout=10)
+def get(p):
+    c.request("GET", p); return c.getresponse().read()
+before = int(get("/close/count")); get("/close"); after = int(get("/close/count"))
+sys.exit(0 if after > before else 1)
+PYEOF
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/no-content-type)
+[ "$code" = "500" ] || fail "validator not engaged on a pool: /no-content-type answered $code"
+grep -qiE 'assertionerror|not being closed' stream.log \
+  && fail 'the validator reported a violation from a streamed iterable (see stream.log)'
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+# --- Django ---------------------------------------------------------------------
+# StreamingHttpResponse, the shape every Django SSE tutorial uses, on the
+# zero-config pool: events arrive as they are yielded, chunked, and the
+# connection is reusable after; an ordinary page still carries its
+# Content-Length and no Transfer-Encoding.
+"$srv" djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8081 > stream.log 2>&1 &
+pid=$!
+ready $B/
+hdr=$(curl -s -D - -o /dev/null $B/ | tr -d '\\r')
+echo "$hdr" | grep -qi '^content-length:' || fail 'Django / lost its content-length'
+echo "$hdr" | grep -qi '^transfer-encoding' && fail 'Django / was chunked; HttpResponse must buffer'
+python3 - <<'PYEOF' || fail 'Django StreamingHttpResponse did not stream'
+import socket, time, sys
+s = socket.create_connection(("127.0.0.1", 8081), timeout=10)
+t0 = time.time()
+s.sendall(b"GET /events?n=3&delay=0.3 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+data, stamps = b"", []
+while b"\\r\\n0\\r\\n\\r\\n" not in data:
+    data += s.recv(65536); stamps.append(time.time() - t0)
+head, _, body = data.partition(b"\\r\\n\\r\\n")
+if b"transfer-encoding: chunked" not in head.lower() or b"text/event-stream" not in head.lower():
+    print("head:", head); sys.exit(1)
+if body.count(b"data: event") != 3:
+    print("body:", body); sys.exit(1)
+if min(stamps) > 1.0 or max(stamps) < 0.55 or len(stamps) < 2:
+    print("timing says the events were joined:", stamps); sys.exit(1)
+s.sendall(b"GET / HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+if b"200 OK" not in s.recv(4096):
+    print("keep-alive lost after the stream"); sys.exit(1)
+print("django events: first at %.2fs, last at %.2fs, connection reused" % (min(stamps), max(stamps)))
+PYEOF
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+
+rm -f stream.log
+echo "smoke-wsgi-stream OK"
+"""
+
 # The Phase-2 benchmark gate (docs/WSGI_VS_ASGI.md section 8): the asyncio
 # executor against uvicorn (single process, no uvloop), same app, same
 # stdlib client — so the numbers only mean anything as a ratio. Not in CI:

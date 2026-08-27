@@ -42,8 +42,9 @@ from std.python import Python
 
 from lightbug_http.offload import (
     OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP,
+    make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
 )
-from lightbug_http.http import HTTPResponse
+from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
 from lightbug_http.http.common_response import InternalError
 
 from m0_http import (
@@ -76,12 +77,16 @@ comptime JOIN_TIMEOUT_NS = 5_000_000_000
 """How long a shutdown waits for handler threads after the loop has drained.
 
 The same 5 s the loop gives its own drain. A pool thread is inside the
-application for as long as the application keeps it, and a response that
-never ends — an SSE generator served under WSGI, which buffers it, is the
-real case (docs/REAL_APP_VALIDATION.md, textshelf, 2026-08-26) — keeps it
-for the life of the process. `stop_and_join` used to wait for that forever:
-SIGTERM did nothing, and `docker stop` ended in SIGKILL. Past this budget
-the process leaves without the stragglers.
+application for as long as the application keeps it. An SSE generator
+served under WSGI used to be the real case (docs/REAL_APP_VALIDATION.md,
+textshelf, 2026-08-26): buffered, it never ended, and kept its thread for
+the life of the process. It streams now, and its thread comes back when the
+client goes — but a generator asleep inside the application (`time.sleep`
+between events) does not notice the disconnect until it wakes, and a view
+that never returns is still a view that never returns. `stop_and_join`
+used to wait for those forever: SIGTERM did nothing, and `docker stop`
+ended in SIGKILL. Past this budget the process leaves without the
+stragglers.
 """
 
 
@@ -223,12 +228,34 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
         unsafe_from_address=block.get(BLK_POOL)
     )[]
     var lane = block.get(BLK_LANE)
+    var index = block.get(BLK_INDEX)
+
+    # This thread's own drain-ack pair, for the WSGI iterables it streams
+    # through the loop's chunk channel: the loop acks each drained buffer
+    # to the fd this thread registered for the slot (`slot_ack_fd`), and
+    # sends a disconnect the same way. One pair per THREAD, not per lane —
+    # N threads share a lane — and kept for the process's life, because
+    # its number rides in the begin frame. No pair (no chunk channel, or
+    # the socketpair failed) means this thread joins iterables as before.
+    var ack_read = -1
+    var ack_write = -1
+    if pool.chunk_active():
+        try:
+            var pair = make_stream_ack_pair()
+            ack_read = pair[0]
+            ack_write = pair[1]
+        except:
+            pass
     var ctx = ThreadContext(
-        block.get(BLK_INDEX), block.get(BLK_USER), lane, pool.hold_notify_fd,
+        index, block.get(BLK_USER), lane, pool.hold_notify_fd,
         pool=True,
+        stream_fd=pool.stream_chunk_write if ack_write >= 0 else -1,
     )
     var handler = T.make(ctx)
     ref cpy = Python().cpython()
+    # Generations name this thread's streams, disjointly from every other
+    # producer's (`stream_gen_seed`); one per stream, counting up.
+    var gen = stream_gen_seed(1024 + index)
 
     # One receive buffer for this thread's life. An ordinary job is 8 bytes,
     # but an inbound WebSocket message rides in the datagram, so the buffer
@@ -294,6 +321,34 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
                 raised = True
         handler.after_response(request_method, request_path, response)
 
+        if response.sse_streaming and ack_write >= 0 and handler.stream_pending():
+            # A streamed WSGI body: this thread is its producer, on the
+            # same chunk channel the executor uses, and the order below is
+            # the executor's. Register where credit comes back FIRST (the
+            # begin frame's send publishes it), send the begin frame
+            # SECOND, and only then complete the head — begin before head,
+            # so the loop's handler is subscribed before the slot can ever
+            # be seen streaming. Stale acks from this thread's previous
+            # stream are discarded first, or one would pre-credit this one.
+            drain_ack_fd(ack_read)
+            pool.set_slot_ack_fd(slot, ack_write)
+            response.stream_gen = gen
+            if handler.stream_begin(slot, gen, ack_write):
+                pool.put_response(slot, response^, raised)
+                pool.complete(slot)
+                # The body: chunk by chunk, credit by credit, until the
+                # iterable ends, raises, or the client is gone.
+                handler.stream_pump(slot, gen, ack_read, pool)
+                gen += 1
+                continue
+            # The channel would not take the begin frame — the loop is not
+            # draining it. `stream_begin` closed the iterable; answer with
+            # something the client can parse rather than an empty head that
+            # promises a body.
+            pool.clear_slot_ack_fd(slot)
+            response = _stream_unavailable()
+            raised = True
+
         # Park, THEN poke: the completion send is the happens-before edge that
         # publishes this write to the loop thread. Reversing them is a race
         # that would read a half-written response, and it would be rare enough
@@ -304,6 +359,17 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     # After the poison pill, before the handler's destructors: the one
     # point where this thread is attached, idle, and still owns its app.
     handler.shutdown()
+
+
+def _stream_unavailable() -> HTTPResponse:
+    return HTTPResponse(
+        body_bytes=String(
+            '{"error":"the stream channel would not take this response"}'
+        ).as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=503,
+        status_text="Service Unavailable",
+    )
 
 
 def _pool_body[T: ThreadHandler](arg: Int) -> Int:
