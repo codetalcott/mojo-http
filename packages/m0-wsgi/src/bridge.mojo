@@ -775,7 +775,7 @@ def asgi_executor_init(fd, ack_fd):
     # (slot: i32, bytes: i32) LE -- drained bytes to re-credit.
     global _exec_queue, _exec_global_evt
     import asyncio, os
-    _exec_queue = asyncio.Queue()
+    _exec_queue = None  # events ride _exec_events (see _exec_put)
     # Created here rather than at import: an asyncio.Event binds to the
     # running loop, and this is the first point where that loop exists.
     _exec_global_evt = asyncio.Event()
@@ -788,10 +788,10 @@ def asgi_executor_init(fd, ack_fd):
                 return
             except OSError:
                 _loop.remove_reader(fd)
-                _exec_queue.put_nowait(('job', -1))
+                _exec_put(('job', -1))
                 return
             if len(data) == 8:
-                _exec_queue.put_nowait(
+                _exec_put(
                     ('job', int.from_bytes(data, 'little', signed=True)))
             elif (len(data) >= 9 and data[0] == _TAG_JOB_BATCH
                   and (len(data) - 1) % 8 == 0):
@@ -799,7 +799,7 @@ def asgi_executor_init(fd, ack_fd):
                 # submits in one datagram. Checked BEFORE the generic
                 # fallthrough, which treats an unknown shape as EOF.
                 for at in range(1, len(data), 8):
-                    _exec_queue.put_nowait(
+                    _exec_put(
                         ('job', int.from_bytes(data[at:at + 8], 'little',
                                                signed=True)))
             elif len(data) == 9 and data[0] == _TAG_DISCONNECT:
@@ -819,7 +819,7 @@ def asgi_executor_init(fd, ack_fd):
                     data[11 + _ulen:])
             else:
                 _loop.remove_reader(fd)
-                _exec_queue.put_nowait(('job', -1))
+                _exec_put(('job', -1))
                 return
 
     def _on_ack():
@@ -858,23 +858,32 @@ def asgi_executor_init(fd, ack_fd):
         _loop.add_reader(ack_fd, _on_ack)
 
 
+_exec_events = []
+_exec_stop_armed = [False]
+
+
+def _exec_put(ev):
+    # Append, and end the pump's run_forever after the NEXT loop iteration,
+    # so every done-callback the current one schedules lands in the same
+    # batch. One stop per pass. (A pass through run_until_complete cost
+    # 38 us on stdlib asyncio -- a Task for the pump coroutine, run_forever
+    # setup and teardown; this shape costs 17.)
+    _exec_events.append(ev)
+    if not _exec_stop_armed[0] and _loop.is_running():
+        _exec_stop_armed[0] = True
+        _loop.call_soon(_loop.stop)
+
+
 def wait_events():
-    # One await, then drain without blocking: a single run_until_complete
-    # enter/exit amortizes over every event that is already ready, and the
-    # spawned tasks make progress the whole time this thread is parked
-    # inside it.
-    import asyncio
-
-    async def batch():
-        first = await _exec_queue.get()
-        out = [first]
-        while True:
-            try:
-                out.append(_exec_queue.get_nowait())
-            except asyncio.QueueEmpty:
-                return out
-
-    return _loop.run_until_complete(batch())
+    # Park in the loop until at least one event exists; the spawned tasks
+    # make progress the whole time this thread is inside run_forever.
+    while not _exec_events:
+        _exec_stop_armed[0] = False
+        _loop.run_forever()
+    out = list(_exec_events)
+    del _exec_events[:]
+    _exec_stop_armed[0] = False
+    return out
 
 
 # The request-invariant half of every executor scope, built once by
@@ -968,7 +977,7 @@ async def _serve_one_exec(slot, scope, body):
             _exec_credits[slot] -= len(piece)
             _exec_global_credit[0] -= len(piece)
             _exec_inflight[slot] = _exec_inflight.get(slot, 0) + len(piece)
-            _exec_queue.put_nowait(('stream_chunk', slot, piece))
+            _exec_put(('stream_chunk', slot, piece))
 
     async def send(message):
         t = message.get('type', '')
@@ -1002,7 +1011,7 @@ async def _serve_one_exec(slot, scope, body):
                     (n.decode('latin-1'), v.decode('latin-1'))
                     for n, v in captured['headers']
                 ]
-                _exec_queue.put_nowait((
+                _exec_put((
                     'stream_start', slot,
                     '%d %s' % (status, _reasons.get(status, '')),
                     head_headers, b'',
@@ -1037,7 +1046,7 @@ async def _serve_one_exec(slot, scope, body):
             # was not a disconnect -- aborts instead, and the loop closes
             # WITHOUT the terminator, so the client sees a truncated body
             # rather than a short one under a clean ending.
-            _exec_queue.put_nowait(
+            _exec_put(
                 ('stream_abort' if aborted[0] else 'stream_end', slot))
 
     if streaming[0]:
@@ -1090,20 +1099,20 @@ def _task_done(slot):
             if not t.cancelled():
                 exc = t.exception()
                 if exc is not None:
-                    _exec_queue.put_nowait((
+                    _exec_put((
                         'stream_note', slot,
                         '%s: %s' % (type(exc).__name__, exc)))
             return
         if t.cancelled():
-            _exec_queue.put_nowait(('err', slot, 'cancelled'))
+            _exec_put(('err', slot, 'cancelled'))
             return
         exc = t.exception()
         if exc is not None:
-            _exec_queue.put_nowait(
+            _exec_put(
                 ('err', slot, '%s: %s' % (type(exc).__name__, exc)))
             return
         status, headers, body_bytes = t.result()
-        _exec_queue.put_nowait(('done', slot, status, headers, body_bytes))
+        _exec_put(('done', slot, status, headers, body_bytes))
     return _done
 
 
@@ -1132,25 +1141,25 @@ async def _serve_one_ws(slot, scope):
         if t == 'websocket.accept':
             _exec_ws_accepted.add(slot)
             resolved[0] = True
-            _exec_queue.put_nowait(('ws_accept', slot))
+            _exec_put(('ws_accept', slot))
         elif t == 'websocket.send':
             if slot not in _exec_ws_accepted:
                 raise RuntimeError('websocket.send before websocket.accept')
             data = message.get('bytes')
             if data is None:
                 text = message.get('text') or ''
-                _exec_queue.put_nowait(
+                _exec_put(
                     ('ws_send', slot, 1, text.encode('utf-8')))
             else:
-                _exec_queue.put_nowait(('ws_send', slot, 2, bytes(data)))
+                _exec_put(('ws_send', slot, 2, bytes(data)))
         elif t == 'websocket.close':
             if slot in _exec_ws_accepted:
-                _exec_queue.put_nowait(
+                _exec_put(
                     ('ws_close', slot, int(message.get('code', 1000))))
                 _exec_ws_accepted.discard(slot)
             else:
                 resolved[0] = True
-                _exec_queue.put_nowait(('ws_reject', slot))
+                _exec_put(('ws_reject', slot))
 
     try:
         await _app(scope, receive, send)
@@ -1159,11 +1168,11 @@ async def _serve_one_ws(slot, scope):
             if slot in _exec_ws_accepted:
                 # The app returned with the socket open: close it for it,
                 # uvicorn's contract.
-                _exec_queue.put_nowait(('ws_close', slot, 1000))
+                _exec_put(('ws_close', slot, 1000))
             elif not resolved[0]:
                 # Returned (or raised) without ever answering the
                 # handshake: the held 101 must not leak its slot.
-                _exec_queue.put_nowait(('ws_reject', slot))
+                _exec_put(('ws_reject', slot))
     return None
 
 
@@ -1211,13 +1220,10 @@ def finish_executor():
 
 
 def drain_events_nowait():
-    import asyncio
-    out = []
-    while True:
-        try:
-            out.append(_exec_queue.get_nowait())
-        except asyncio.QueueEmpty:
-            return out
+    out = list(_exec_events)
+    del _exec_events[:]
+    _exec_stop_armed[0] = False
+    return out
 
 
 def run(environ, body):
