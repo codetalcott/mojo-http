@@ -178,6 +178,115 @@ def test_http10_without_host_is_accepted() raises:
     assert_true(_accepted("GET / HTTP/1.0\r\n\r\n"))
 
 
+def test_http11_requires_host_to_be_present_at_all() raises:
+    """RFC 9112 3.2 asks for 400, and the empty-Host check did not cover
+    this: `headers.get()` returned None, which short-circuited the `and`
+    and let the request through with its target host unstated."""
+    assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
+    assert_true(_rejected("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n"))
+
+
+# --- Transfer-Encoding is case-insensitive (RFC 9112 7.1) --------------------
+
+
+def test_uppercase_chunked_is_recognised_as_chunked() raises:
+    """`CHUNKED` used to answer False to `is_chunked_body` and, having no
+    Content-Length either, was dispatched as a bodyless request while its
+    body stayed in the buffer. A proxy in front reading the same header per
+    spec would frame that body: two hops, two framings."""
+    var raw = String(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED\r\n\r\n"
+    )
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_true(parsed.is_chunked_body())
+
+
+def test_mixed_case_chunked_is_recognised() raises:
+    var raw = String(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: Chunked\r\n\r\n"
+    )
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_true(parsed.is_chunked_body())
+
+
+def test_uppercase_chunked_not_last_is_still_rejected() raises:
+    """The must-be-last rule was skipped entirely for uppercase, because its
+    own guard tested the raw value."""
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED, zorg\r\n\r\n"
+        )
+    )
+
+
+def test_a_non_chunked_encoding_is_not_mistaken_for_chunked() raises:
+    """The match must not be a loose substring: `xchunkedy` is not chunked,
+    and gzip alone certainly is not."""
+    var raw = String(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n"
+        "Content-Length: 0\r\n\r\n"
+    )
+    # TE+CL together is rejected outright, so this asserts the pair rule
+    # still fires rather than the encoding being read as chunked.
+    assert_true(_rejected(raw))
+
+
+# --- Content-Length must be a plain digit run (RFC 9112 6.3) ----------------
+
+
+def test_content_length_list_is_rejected() raises:
+    """`5, 5` is two hops having already disagreed. It parsed as 0 before,
+    so the body stayed unread and unframed instead of being refused."""
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5, 5\r\n\r\n")
+    )
+
+
+def test_non_digit_content_lengths_are_rejected() raises:
+    """Each of these silently became 0."""
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0x10\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: +5\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5abc\r\n\r\n")
+    )
+    assert_true(
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: \r\n\r\n")
+    )
+
+
+def test_overflowing_content_length_is_rejected() raises:
+    """A 20-digit length wraps Int64 in `content_length()`, so the value
+    acted on would not be the value sent."""
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551621\r\n\r\n"
+        )
+    )
+
+
+def test_ordinary_content_lengths_are_still_accepted() raises:
+    """The guard must not cost a legitimate request: plain digits, zero, and
+    a large-but-representable length all still parse."""
+    assert_true(
+        _accepted("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+    )
+    assert_true(
+        _accepted("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1024\r\n\r\n")
+    )
+    assert_true(
+        _accepted(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 999999999999999999\r\n\r\n"
+        )
+    )
+
+
 # --- Resource bounds: the slowloris family -----------------------------------
 
 
