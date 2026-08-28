@@ -36,6 +36,39 @@ versions may break the API**.
 
 ### Added
 
+- **A handler pool for Mojo handlers** (`lightbug_http/mojo_pool.mojo`):
+  `MojoPool` puts N handler threads behind one event loop for an
+  `HTTPService` written in Mojo, the way `--blocking-threads` does for a
+  WSGI app — no interpreter, no GIL, no `DetachingBackend`. A handler
+  conforms to `PoolHandler` (two methods: `make`, `shutdown`; the rest is
+  `HTTPService` and its defaults) and the loop becomes an acceptor:
+  `Server.listen_and_serve_nonblocking` now carries the `offload_addr`
+  parameter `run_event_loop` always took and `Server` dropped.
+
+  Measured (`apps/pool_spike`, three runs, M4): p99 of `/fast` on a
+  keep-alive connection beside N handlers blocking 400 ms in a syscall —
+
+  | configuration | slow=0 | slow=1 | slow=2 |
+  |---|---:|---:|---:|
+  | loop only | 0.1 ms | 406.0 ms | 405.9 ms |
+  | pool of 4 | 0.2 ms | 0.2 ms | 0.3 ms |
+
+  At `slow=2` the loop-only **p50** is 405 ms — every request, not a tail.
+  Deliberately only for handlers that *block*: CPU-bound work already
+  parallelises inside one handler with `std.runtime.asyncrt`'s `TaskGroup`
+  (measured 3.6x on four tasks), so the pool exists for threads parked in a
+  syscall. A streaming response from a pool thread is refused with 409 (the
+  loop drains its own handler's registries, not a pool thread's), and
+  `before_request` runs on both the loop's handler and the pool thread's —
+  the loop's is where an always-responsive `/health` belongs.
+
+  Guards: `test_mojo_pool.mojo` (in `test-http`), `poe smoke-pool` (in CI:
+  which thread served, saturation behaviour, clean SIGTERM), `poe
+  sabotage-pool` (in CI on Linux, where all four rules are observable —
+  closing the submit channel wakes a blocked `recv` on macOS and not on
+  Linux), and `poe probe-pool`, the pre-release p99 table with a deliberate
+  saturation column.
+
 - **`m0_http.reply`** — the response constructors every Mojo app was writing
   for itself. `apps/notes_api`, `apps/datastar_todo` and
   `apps/datastar_counter` each carried their own `_json`, `_html`,

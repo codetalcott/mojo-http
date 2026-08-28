@@ -18,6 +18,15 @@ job there. The deterministic half of the same guard, `poe test-shim`,
 runs in CI inside `test-all`. Tune with `M0_STRESS_ITERS` and
 `M0_STRESS_HOGS`; it must be N of N.
 
+**And `uv run poe probe-pool`**, the Mojo handler pool's timing half —
+pre-release for the same reason stress-asgi is: a p99 table from a shared
+runner is noise. The pooled row must hold single-digit milliseconds at
+`slow=1` and `slow=2` (measured 0.2–0.3 ms on an M4; the loop-only row
+collapsing to ~the blocking duration is expected and is the point), and
+the final column is the deliberate saturation boundary — more blockers
+than threads — where the pooled row is EXPECTED to collapse too. The
+deterministic halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
+
 The steps, in order:
 
 1. **Update [CHANGELOG.md](../CHANGELOG.md).** Add a `## [X.Y.Z] — date`

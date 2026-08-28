@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 
-FAST_REQUESTS = 300
+FAST_REQUESTS = 300  # default; override with --fast-requests
 SLOW_MS = 400
 WARMUP = 20
 
@@ -80,11 +80,11 @@ class SlowLoad(threading.Thread):
                     time.sleep(0.01)
 
 
-def measure_fast(port: int) -> dict:
+def measure_fast(port: int, fast_requests: int) -> dict:
     """p50/p99 of `/fast` on ONE keep-alive connection."""
     latencies = []
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    for i in range(FAST_REQUESTS + WARMUP):
+    for i in range(fast_requests + WARMUP):
         t = time.perf_counter()
         try:
             c.request("GET", "/fast")
@@ -109,7 +109,7 @@ def measure_fast(port: int) -> dict:
     }
 
 
-def run_config(binary: str, pool_threads: int, slow: int) -> dict:
+def run_config(binary: str, pool_threads: int, slow: int, fast_requests: int) -> dict:
     port = _free_port()
     env = dict(os.environ)
     env["M0_PORT"] = str(port)
@@ -125,7 +125,7 @@ def run_config(binary: str, pool_threads: int, slow: int) -> dict:
             ld.start()
         if slow:
             time.sleep(0.4)  # let the slow requests actually be in flight
-        result = measure_fast(port)
+        result = measure_fast(port, fast_requests)
         for ld in loads:
             ld.stop.set()
         result["slow_completed"] = sum(ld.completed for ld in loads)
@@ -143,25 +143,30 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", default="/tmp/pool_spike")
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--fast-requests", type=int, default=FAST_REQUESTS)
     ap.add_argument("--json", help="write the raw table here")
     args = ap.parse_args()
 
     configs = [("loop only", 0), (f"pool of {args.threads}", args.threads)]
-    slows = [0, 1, 2]
+    # The last column is the capacity boundary, deliberately: more blockers
+    # than pool threads. The pool is N threads, not magic, and the honest
+    # table shows where it saturates instead of implying it cannot.
+    slows = [0, 1, 2, args.threads + 2]
     table: dict = {
         "slow_ms": SLOW_MS,
-        "fast_requests": FAST_REQUESTS,
+        "fast_requests": args.fast_requests,
         "rows": [],
     }
 
-    print(f"/slow blocks {SLOW_MS} ms; p99 of {FAST_REQUESTS} keep-alive /fast requests\n")
+    print(f"/slow blocks {SLOW_MS} ms; p99 of {args.fast_requests} keep-alive /fast requests")
+    print(f"(last column is {args.threads + 2} blockers against {args.threads} pool threads — the saturation boundary)\n")
     header = f"{'configuration':<16}" + "".join(f"{'slow=' + str(s):>12}" for s in slows)
     print(header)
     print("-" * len(header))
     for label, pool_threads in configs:
         cells, row = [], {"config": label, "pool_threads": pool_threads, "cells": {}}
         for s in slows:
-            r = run_config(args.binary, pool_threads, s)
+            r = run_config(args.binary, pool_threads, s, args.fast_requests)
             row["cells"][str(s)] = r
             cells.append(f"{r['p99']:>9.1f} ms")
         row_line = f"{label:<16}" + "".join(f"{c:>12}" for c in cells)

@@ -34,6 +34,16 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
   registries — so a stream begun on a pool thread has no producer the loop
   can drain. `_pool_serve` answers 409 rather than serving a head that
   promises a body nothing will write.
+- **`before_request` runs TWICE per pooled request**, and that is the loop's
+  contract, not an accident here: once on the LOOP's handler before the job
+  is submitted (`event_loop.mojo` — what answers there never becomes a job),
+  and once on the pool thread's own handler inside `_pool_serve`. The WSGI
+  pool has the same double call and `WSGIHandler` neutralises its pool-side
+  one; a Mojo handler whose `before_request` has side effects (a rate
+  counter, a metric) must expect both. The useful consequence: put the paths
+  that must stay responsive whatever the pool is doing — `/health` above
+  all — in the LOOP handler's `before_request`, or they queue behind a
+  saturated pool like everything else.
 """
 
 from lightbug_http.offload import OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP
@@ -294,11 +304,11 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
                 # handler may return 500 deliberately — so it is signalled.
                 response = InternalError()
                 raised = True
-        handler.after_response(request_method, request_path, response)
-
         if response.sse_streaming:
             # See the module docstring: the loop drains ITS handler, not this
-            # one, so this stream would have no producer.
+            # one, so this stream would have no producer. Refused BEFORE
+            # `after_response`, so that hook observes the 409 that actually
+            # goes to the wire rather than a response that never will.
             print(
                 "mojo-pool["
                 + String(index)
@@ -311,6 +321,7 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
             )
             response = _streaming_refused()
             raised = True
+        handler.after_response(request_method, request_path, response)
 
         # Park, THEN poke: the completion send is the happens-before edge that
         # publishes this write to the loop thread. Reversing them is a race

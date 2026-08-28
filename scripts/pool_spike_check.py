@@ -64,6 +64,13 @@ class Server:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait(timeout=5)
+        # SIGTERM must be a graceful drain, not a request for SIGKILL. A
+        # negative returncode means a signal ended the process; for the
+        # pooled server it would mean stop_and_join hung on a thread that
+        # missed its pill -- the exact bug the sabotage script can only
+        # observe on Linux, caught here behaviourally on both platforms.
+        check(self.proc.returncode == 0,
+              f"SIGTERM exits cleanly (rc={self.proc.returncode})")
 
     def get(self, path: str, timeout: float = 30) -> tuple[int, str]:
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
