@@ -9,6 +9,22 @@ versions may break the API**.
 
 ### Changed
 
+- **Header parsing no longer builds a `String` per name and per value.**
+  `HTTPHeader` holds four offsets into the parse buffer instead of two
+  `String`s that existed only to be read back as bytes and copied into the
+  `Headers` blob — two copies of every header per request, the first made
+  to be the source of the second. Measured with the new
+  `scripts/bench_http_parts.mojo` on the twelve-header browser GET:
+  `parse_request_headers` 2.52 → 2.05 µs, the whole user-space request
+  3.74 → 3.31 µs (−12%). The instrument is the point as much as the number:
+  SERVER_PERFORMANCE.md's "allocations are invisible" verdict came from
+  loopback sampling at 50k rps, and at 116k rps the parse turns out to be
+  two thirds of the user-space request. Nothing on the wire changed; the
+  eight parse-sensitive smokes and all m0-http tests pass unchanged.
+  `parse_http_version` also stopped allocating a list of the literal it
+  compares against (39 ns, fixed because it was silly, not because it
+  showed).
+
 - **`HTTPService` now requires only `func`.** The trait's other eight methods
   carry default bodies, so a handler writes the hooks it uses and nothing
   else. `apps/hello` went from 57 lines to 30 — 4 lines of handler had been

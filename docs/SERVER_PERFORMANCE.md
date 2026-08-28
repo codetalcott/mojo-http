@@ -256,6 +256,60 @@ loopback. The next honest win is likely more sockets doing the sending —
 everything here compounds per worker — rather than more shaving in the
 request path. Measure before building.
 
+## The instrument, and what it overturned (2026-08-28)
+
+Everything above was measured with `wrk` and gdb stack samples, and the
+post-header profile's verdict — 31 of 35 samples in `__libc_send`, "no
+remaining allocation on this path is large enough to see through loopback
+noise" — retired the rest of the header work. That verdict was drawn at
+~50k rps, when a request cost ~20 µs. The server now does 116k rps/core, a
+request costs ~8.6 µs, and a cost that was 5% of the old request is 12% of
+the new one. Loopback sampling cannot see a change of a few hundred
+nanoseconds; a per-part instrument can, and `scripts/bench_http_parts.mojo`
+is that instrument — the same shape as `bench_bridge_parts.mojo`, one layer
+down. Twelve-header browser GET, 20k iterations, Apple M4:
+
+| part | before | after |
+|---|---:|---:|
+| `find_header_end` | 0.047 µs | 0.046 µs |
+| **`parse_request_headers`** | **2.520 µs** | **2.052 µs** |
+| `from_parsed` (derived) | 0.261 µs | 0.281 µs |
+| `Headers` lookups (`in`, `get`, `value_equals_ic`, `content_length`) | 40–70 ns | 40–75 ns |
+| `Router.match` hit / miss | 0.100 / 0.027 µs | 0.099 / 0.029 µs |
+| `OK()` construct | 0.672 µs | 0.651 µs |
+| `encode_into` (derived) | 0.275 µs | 0.347 µs |
+| **whole user-space request** | **3.743 µs** | **3.309 µs** |
+
+Two things the table says that the profile did not. The parse is **two
+thirds** of the user-space request, not a leaf; and the two allocation
+findings this pass set out to measure are noise — the
+`Array[HTTPHeader, 100]` fill was 66 ns and `parse_http_version`'s List
+39 ns. What was not noise was the item ranked first in "Where the remaining
+gap lives" and then retired: the two `String`s per header that
+`parse_headers` built for `parse_request_headers` to read back as bytes and
+copy into the blob. `HTTPHeader` now holds four offsets into the buffer the
+parser was given, the token scanners expose their spans (`scan_token`,
+`scan_to_eol`; the `String` wrappers stay for the request line and the
+response status), and the wrappers slice the buffer they already hold. The
+Array fill became 3.2 KB of integers as a side effect, and
+`parse_http_version` compares seven bytes instead of building a list.
+
+**−0.47 µs on the parse, −12% on the user-space request**, with all 556
+m0-http tests and the eight parse-sensitive smokes (pipelining, the 8 KB
+request, half-close, the client's response parser, cookies, the WebSocket
+handshake, the header timeout) unchanged. Less than the 1.2 µs a scratch
+attribution predicted for 24 allocations: short names and values fit
+Mojo's inline string storage and never touched the heap, which is the kind
+of thing only the measurement settles.
+
+What is left in the 2.05 µs is the next lever, recorded and not taken:
+below 64 bytes remaining the scanners fall back to a `try_peek` per byte,
+`set_bytes` appends and lowercases twelve names into the blob, and the
+wrapper's three RFC checks are three linear `in` scans. A state-machine
+parser in the picohttpparser shape would be a rewrite of `parsing.mojo`,
+and the honest ceiling on it is the 3.3 µs row — the remaining 5.3 µs of a
+request is the two syscalls, which no parser touches.
+
 ## Non-goals, considered and rejected
 
 - **Pipelined-request support** — no longer a non-goal: implemented
