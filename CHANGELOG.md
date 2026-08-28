@@ -7,6 +7,24 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-27
+
+A streaming and throughput release. Three changes are visible on the wire
+or in your terminal, so read them before upgrading: unsized WSGI bodies (a
+generator, Django's `StreamingHttpResponse`) now **stream** chunked where
+0.13.0 buffered them into one sized response; a second `m0serve` on a busy
+port now **fails to bind** instead of silently sharing it, `SO_REUSEPORT`
+having become opt-in; and `m0serve`'s **startup output** is one line of its
+own, printed after the application loads, so "ready" means ready.
+
+The ASGI executor went from 0.72x to **1.06x** `uvicorn --loop asyncio` on
+the benchmark page's 16-connection row — 1.22x at 256 — by inverting the
+pump: Python calls into Mojo through a type built in-process, and the
+executor thread never leaves its event loop. And one silent hang is fixed:
+a stream on a recycled connection slot could leave the loop holding a
+subscription with no producer, which a client saw as a stall on a clean
+server log.
+
 ### Added
 
 - `check-docs` counts the tests in the tree (`def test_` per
@@ -2203,6 +2221,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.0
 [0.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.13.0
 [0.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.12.0
 [0.11.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.11.0
