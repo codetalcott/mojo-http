@@ -2093,6 +2093,12 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                     offload.offloaded[slot] = True
                     offload.inflight += 1
                     slot_idle_deadline[slot] = 0
+                    # The inversion's submit seam: a handler running as the
+                    # executor's own loop takes the parked request here, on
+                    # this thread, and no datagram is sent. Every other handler
+                    # declines (the trait's default) and gets the batch below.
+                    if handler.direct_job(slot):
+                        return
                     if offload.queue_submit(slot, lane):
                         # The lane's batch is full: send it now, and run
                         # inline whatever it could not carry — the same
@@ -2315,72 +2321,13 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     var finished = pool.drain_completions()
     var aborts = pool.take_aborts()
     for f in range(len(finished)):
-        var slot = finished[f]
-        if slot < 0 or slot >= len(slot_fds):
-            continue
-        if not offload.offloaded[slot]:
-            continue
-        offload.offloaded[slot] = False
-        offload.inflight -= 1
-        if not pool.has_response(slot):
-            # A pool thread completed without parking a response. Nothing can
-            # produce this today; if it ever does, the slot is freed rather
-            # than leaked and the connection is closed rather than hung.
-            pool.discard(slot)
-            if slot_fds[slot] == UNUSED:
-                provision_pool.release(slot)
-            else:
-                _close_slot(
-                    backend, handler, slot, slot_fds[slot],
-                    slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse, slot_ws, slot_ws_state,
-                )
-            continue
-        var response = pool.take_response(slot)
-        # The synchronous path sets this when `func` raises; the pool thread
-        # cannot reach the provision, so it reports and the loop applies it.
-        if pool.raised(slot):
-            provision_pool.provisions[slot].should_close = True
-        if slot_fds[slot] == UNUSED:
-            # Abandoned mid-flight: the response has nowhere to go, and this
-            # is the point at which the slot is finally safe to reuse.
-            pool.discard(slot)
-            provision_pool.release(slot)
-            continue
-        if response.sse_streaming and bus_read_fd >= 0 and offload.slot_channel_stream(slot):
-            # Begin-before-head, made deterministic. The producer sent its
-            # begin frame on the chunk channel BEFORE this completion, so
-            # the datagram is in that socket now — but whether this pass's
-            # event batch happens to carry the chunk channel's readiness
-            # ahead of the completion's is the kernel's ready-list order,
-            # not ours. Draining it here, before the head goes out, means
-            # the handler is subscribed before the slot can ever be seen
-            # streaming, whatever order the events arrived in.
-            var begin_frames = drain_bus_channel(bus_read_fd)
-            for bf in range(len(begin_frames)):
-                handler.sse_peer_frame(
-                    begin_frames[bf].url,
-                    begin_frames[bf].event_id,
-                    begin_frames[bf].frame,
-                )
-        _finish_response(
-            backend, slot, slot_fds[slot], handler, config, server_address,
-            tcp_keep_alive,
+        _complete_one(
+            backend, handler, config, server_address, tcp_keep_alive,
             slot_fds, slot_response, slot_send_offset, slot_header_start,
             fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse, slot_ws, slot_ws_state, slot_read_armed, slot_idle_deadline,
-            date_cache_sec, date_cache, offload, response^,
-        )
-        # A request pipelined behind the one this pool thread just answered
-        # is already in recv_buffer; nothing else will ever announce it.
-        _drain_pipelined(
-            backend, slot, slot_fds[slot], handler, config,
-            server_address, tcp_keep_alive,
-            slot_fds, slot_response, slot_send_offset,
-            slot_header_start, fd_to_slot, provision_pool,
-            active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-            slot_read_armed, slot_idle_deadline,
-            date_cache_sec, date_cache, offload,
+            slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+            slot_idle_deadline, date_cache_sec, date_cache, offload,
+            finished[f], bus_read_fd,
         )
 
 
@@ -2418,6 +2365,163 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state,
         )
+
+
+def _complete_one[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+    slot: Int,
+    bus_read_fd: Int,
+) raises:
+    """Answer ONE finished job: the per-slot body of `_service_completions`.
+
+    Shared by the datagram path (a completion arrived on the channel) and the
+    inversion's direct path (`service_direct_completions`: the executor,
+    on this same thread, hands the loop the slots it parked responses for).
+    """
+    ref pool = offload.pool()[]
+    if slot < 0 or slot >= len(slot_fds):
+        return
+    if not offload.offloaded[slot]:
+        return
+    offload.offloaded[slot] = False
+    offload.inflight -= 1
+    if not pool.has_response(slot):
+        # A pool thread completed without parking a response. Nothing can
+        # produce this today; if it ever does, the slot is freed rather
+        # than leaked and the connection is closed rather than hung.
+        pool.discard(slot)
+        if slot_fds[slot] == UNUSED:
+            provision_pool.release(slot)
+        else:
+            _close_slot(
+                backend, handler, slot, slot_fds[slot],
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+        return
+    var response = pool.take_response(slot)
+    # The synchronous path sets this when `func` raises; the pool thread
+    # cannot reach the provision, so it reports and the loop applies it.
+    if pool.raised(slot):
+        provision_pool.provisions[slot].should_close = True
+    if slot_fds[slot] == UNUSED:
+        # Abandoned mid-flight: the response has nowhere to go, and this
+        # is the point at which the slot is finally safe to reuse.
+        pool.discard(slot)
+        provision_pool.release(slot)
+        return
+    if response.sse_streaming and bus_read_fd >= 0 and offload.slot_channel_stream(slot):
+        # Begin-before-head, made deterministic. The producer sent its
+        # begin frame on the chunk channel BEFORE this completion, so
+        # the datagram is in that socket now — but whether this pass's
+        # event batch happens to carry the chunk channel's readiness
+        # ahead of the completion's is the kernel's ready-list order,
+        # not ours. Draining it here, before the head goes out, means
+        # the handler is subscribed before the slot can ever be seen
+        # streaming, whatever order the events arrived in.
+        var begin_frames = drain_bus_channel(bus_read_fd)
+        for bf in range(len(begin_frames)):
+            handler.sse_peer_frame(
+                begin_frames[bf].url,
+                begin_frames[bf].event_id,
+                begin_frames[bf].frame,
+            )
+    _finish_response(
+        backend, slot, slot_fds[slot], handler, config, server_address,
+        tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset, slot_header_start,
+        fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, slot_read_armed, slot_idle_deadline,
+        date_cache_sec, date_cache, offload, response^,
+    )
+    # A request pipelined behind the one this pool thread just answered
+    # is already in recv_buffer; nothing else will ever announce it.
+    _drain_pipelined(
+        backend, slot, slot_fds[slot], handler, config,
+        server_address, tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset,
+        slot_header_start, fd_to_slot, provision_pool,
+        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+        slot_read_armed, slot_idle_deadline,
+        date_cache_sec, date_cache, offload,
+    )
+
+
+def service_direct_completions[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slots: List[Int],
+) raises:
+    """The inversion's completion seam: answer `slots` without a datagram.
+
+    The executor, running on this same thread, parked a response for each
+    slot exactly as a pool thread would and then calls this instead of
+    poking the completion channel. Same per-slot code as the channel path
+    (`_complete_one`); only the delivery differs. **Call `run_pass_once`
+    FIRST**: a streamed response's begin frame rides the chunk channel and
+    is drained by a pass, so a head completed here before that pass would
+    precede its own begin frame — the recycled-slot hazard the streaming
+    rules exist to prevent. On one thread the order is simply the order
+    these two are called in.
+    """
+    if not st.offload.enabled():
+        return
+    ref slot_fds = st.slot_fds
+    ref slot_response = st.slot_response
+    ref slot_send_offset = st.slot_send_offset
+    ref slot_header_start = st.slot_header_start
+    ref fd_to_slot = st.fd_to_slot
+    ref provision_pool = st.provision_pool
+    ref active_count = st.active_count
+    ref metrics = st.metrics
+    ref slot_sse = st.slot_sse
+    ref slot_ws = st.slot_ws
+    ref slot_ws_state = st.slot_ws_state
+    ref slot_read_armed = st.slot_read_armed
+    ref slot_idle_deadline = st.slot_idle_deadline
+    ref date_cache_sec = st.date_cache_sec
+    ref date_cache = st.date_cache
+    ref offload = st.offload
+    for i in range(len(slots)):
+        _complete_one(
+            backend, handler, st.config, st.server_address, st.tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset, slot_header_start,
+            fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+            slot_idle_deadline, date_cache_sec, date_cache, offload,
+            slots[i], st.bus_read_fd,
+        )
+
+
+def run_pass_once[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+) raises -> Bool:
+    """One non-blocking pass: poll the backend with a zero timeout and run
+    `_run_pass` over whatever is ready. The inversion's driver calls this
+    from an asyncio readiness callback on the backend's own fd, and from a
+    1 Hz timer for the sweeps that assume a wake per second. Returns True
+    when the shutdown pipe fired.
+    """
+    var n_events = backend.wait(0)
+    return _run_pass(handler, backend, st, n_events)
 
 
 comptime BODY_FD_DONE = 1

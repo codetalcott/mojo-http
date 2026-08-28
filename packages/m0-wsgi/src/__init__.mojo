@@ -54,7 +54,7 @@ from .threaded import (
 )
 from .doctor import Report, DOCTOR_OK
 from .blocking_pool import BlockingPool, JOIN_TIMEOUT_NS
-from .asgi_executor import AsgiExecutor
+from .asgi_executor import AsgiExecutor, serve_inverted
 from .cli import (
     ServeOptions,
     parse_args,

@@ -70,7 +70,7 @@ from m0_http.multiworker import SharedAtomics
 from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
-    AsgiExecutor, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
+    AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
     effective_cpus, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
@@ -978,6 +978,22 @@ def _serve_offloaded(
         opts.blocking_threads
         if (len(wsgi_lanes) > 0 or not executor) else 0
     )
+    if (
+        executor and not mounted and pool_count == 0 and not opts.realtime
+        and getenv("M0_INVERTED", "") == "1"
+    ):
+        # M0_INVERTED: the loop inversion, on one thread. Unmounted,
+        # pool-free ASGI only -- the benchmark shape -- and behind the
+        # variable until its gate passes (docs/ROADMAP.md, "The loop
+        # inversion"), so the A/B against the pump is one env var. Every
+        # other topology stays on the pump below.
+        pool.enable_stream_channel()
+        pool.enable_base_stream_ack()
+        serve_inverted(
+            opts, listener.socket.fd, config, opts.address(), shutdown_fd,
+            pool, peer_bus_fd,
+        )
+        return
     var pool_threads = BlockingPool(0 if (executor and not mounted) else pool_count)
     var exec_thread = AsgiExecutor(
         len(asgi_lanes) if len(asgi_lanes) > 0 else 1

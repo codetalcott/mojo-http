@@ -82,6 +82,23 @@ trait HTTPService:
         """
         pass
 
+    def direct_job(mut self, slot: Int) -> Bool:
+        """Take a parked request for an executor lane on THIS thread, or decline.
+
+        The loop inversion's submit seam. When the event loop runs as a
+        callback inside an asyncio loop — one thread, the executor's — a
+        request bound for the executor no longer needs a datagram and a
+        wake to reach it: the loop parks the request in the `OffloadPool`
+        as it always did, then asks the handler to take it HERE. A handler
+        that returns True has started the job (typically by handing the
+        parked request to its asyncio loop as a task) and will answer it
+        through the pool's completion path; one that returns False gets the
+        datagram it always got. The default declines, so every handler that
+        is not the inverted executor is unaffected. Only ever called for a
+        slot the loop has already marked offloaded and stamped with its lane.
+        """
+        return False
+
 
 @fieldwise_init
 struct Printer(HTTPService):

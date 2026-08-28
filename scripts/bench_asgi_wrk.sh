@@ -128,4 +128,5 @@ echo "results in $OUT"
 python3 "$(dirname "$0")/bench_record.py" "$BENCH_NAME" "$OUT" \
   --meta "client=wrk -t2 -c$CONNS -d$DUR, browser headers" --meta "app=$APP_DIR $M0_SPEC $REQ_PATH" --meta "rounds=$ROUNDS" --meta "server=$M0" \
   --meta "executor_python=$m0_python" --meta "executor_loop=$m0_loop" \
+  --meta "inverted=${M0_INVERTED:-0}" \
   || echo "WARN: could not write the bench artifact (see above)"

@@ -1047,6 +1047,38 @@ def run_forever():
     _loop.run_forever()
 
 
+def run_forever_inverted(backend_fd):
+    # M0_INVERTED: the event loop runs INSIDE this loop. The backend's own
+    # kqueue/epoll fd is a readable fd like any other, so one readiness
+    # callback runs one non-blocking pass of the Mojo loop on this thread;
+    # the pass parks executor-bound requests and calls direct_job, which
+    # spawns their tasks here with no datagram and no wake. Completions
+    # are parked as ever and handed straight to the loop by _port.flush,
+    # which in this mode runs a pass first (see the port). A 1 Hz tick
+    # runs a pass for the sweeps and caches that assume one wake a second.
+    import asyncio
+
+    def _on_backend():
+        if _port.pass_():
+            _loop.remove_reader(backend_fd)
+            _loop.create_task(_finish_and_stop())
+            return
+        if not _flush_armed[0]:
+            _flush_armed[0] = True
+            _loop.call_soon(_flush)
+
+    def _tick():
+        if _port.pass_():
+            _loop.remove_reader(backend_fd)
+            _loop.create_task(_finish_and_stop())
+            return
+        _loop.call_later(1.0, _tick)
+
+    _loop.add_reader(backend_fd, _on_backend)
+    _loop.call_later(1.0, _tick)
+    _loop.run_forever()
+
+
 # The request-invariant half of every executor scope, built once by
 # set_scope_base. The executor path never builds a WSGI environ at all:
 # Mojo hands over method/path/query/headers directly (headers as ready
@@ -1562,6 +1594,12 @@ struct PyBridge(Movable):
     """`run_forever`: the executor thread's whole serving life, one
     zero-argument call. Events reach Mojo through the `ExecutorPort` the
     thread set with `set_port`, not through a per-pass return value."""
+    var _on_disconnect: PythonObject
+    """`_exec_on_disconnect`: the shim's per-slot disconnect, called
+    DIRECTLY under the loop inversion (`notify_disconnect`) rather than
+    tagged onto the submit channel. Cached at construction like the rest,
+    so the per-call path builds one tuple through the C API and never
+    passes a `PythonObject` argument."""
     var _base: PythonObject
     """The request-invariant environ entries, held as one finished Python
     dict. Built in `set_base`; every request starts from
@@ -1617,6 +1655,7 @@ struct PyBridge(Movable):
         self._spawn = self._ns["spawn"]
         self._spawn_ws = self._ns["spawn_ws"]
         self._run_forever = self._ns["run_forever"]
+        self._on_disconnect = self._ns["_exec_on_disconnect"]
         self._stream_next_fn = self._ns["wsgi_stream_next"]
         self._stream_close_fn = self._ns["wsgi_stream_close"]
         self.stream_pending = False
@@ -1650,6 +1689,7 @@ struct PyBridge(Movable):
         self._spawn = move._spawn^
         self._spawn_ws = move._spawn_ws^
         self._run_forever = move._run_forever^
+        self._on_disconnect = move._on_disconnect^
         self._base = move._base^
         self._script_len = move._script_len
         self._k_method = move._k_method^
@@ -1750,6 +1790,38 @@ struct PyBridge(Movable):
         leak-free; while this thread is inside it every request task
         makes progress and every event is dispatched into the port."""
         _ = self._run_forever()
+
+    def run_forever_inverted(mut self, backend_fd: Int) raises:
+        """`M0_INVERTED`: park in the shim's loop with the event loop's own
+        backend fd registered on it, so the Mojo pass runs as a readiness
+        callback on this thread. Startup-only: the one argument leaks one
+        reference, bounded. Returns once the shutdown pipe has fired, the
+        drain has run and the in-flight tasks have finished."""
+        _ = self._ns["run_forever_inverted"](PythonObject(backend_fd))
+
+    def notify_disconnect(mut self, slot: Int) raises:
+        """`M0_INVERTED`: tell the shim `slot`'s connection is gone, NOW.
+
+        On the pump this is a `TAG_DISCONNECT` datagram on the submit
+        channel, and the FIFO there is what keeps it ahead of the slot's
+        next job. Inverted, the next job is spawned directly from the pass
+        that accepted it and would overtake a tag still sitting in the
+        channel, stamping the NEW task as disconnected: the ASGI smoke's
+        HTTP/1.0-then-1.1 probe found exactly that as a second stream that
+        never arrived. A direct call keeps program order — the close runs
+        in the pass before the accept that recycles the slot — and costs
+        no syscall. One tuple through the C API, no `PythonObject`
+        argument, so nothing leaks per call."""
+        ref cpy = Python().cpython()
+        var args = cpy.PyTuple_New(1)
+        if not args:
+            raise cpy.get_error()
+        _ = cpy.PyTuple_SetItem(args, 0, cpy.PyLong_FromSsize_t(slot))
+        var result = cpy.PyObject_CallObject(self._on_disconnect._obj_ptr, args)
+        cpy.Py_DecRef(args)
+        if not result:
+            raise cpy.get_error()
+        cpy.Py_DecRef(result)
 
     def _py_text(
         mut self, ref cpy: CPython, value: Span[Byte, _]
