@@ -65,9 +65,8 @@ comptime MAX_EVENTS = 64
 comptime UNUSED: Int = -1
 
 
-def run_event_loop[T: HTTPService, B: EventLoopBackend](
+def prepare_loop[B: EventLoopBackend](
     listen_fd: FileDescriptor,
-    mut handler: T,
     mut backend: B,
     config: ServerConfig,
     server_address: String,
@@ -76,28 +75,12 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     bus_read_fd: Int = -1,
     offload_addr: Int = 0,
     peer_bus_fd: Int = -1,
-) raises:
-    """Run the IO-multiplexed event loop.
-
-    `bus_read_fd`, when >= 0, is this worker's `BroadcastBus` channel: SSE
-    frames broadcast by other workers arrive here as datagrams, and each is
-    handed to the handler through `sse_peer_frame` so it can queue them for
-    its own subscribers. The subsequent outbox drain in the same loop pass
-    then pushes them to the wire.
-
-    `offload_addr`, when non-zero, is the address of a caller-owned
-    `OffloadPool` (`--blocking-threads`): this loop becomes an acceptor that
-    parks requests for a pool of handler threads instead of calling
-    `HTTPService.func` itself, and is woken by the pool's completion channel
-    the same way it is woken by a bus channel. The streaming hooks are NOT
-    offloaded and cannot be — `sse_drain_slot`, `sse_slot_disconnected` and
-    `ws_message` are called on THIS thread's handler, while `func` would run
-    against a pool thread's own handler and its own registries. The caller
-    refuses the combination rather than letting the two drift.
-
-    Parameters:
-        T: The HTTP service handler type.
-        B: The IO multiplexing backend (KqueueBackend on macOS, EpollBackend on Linux).
+) raises -> LoopState:
+    """The setup half of `run_event_loop`: register the listener, the
+    shutdown pipe, the bus channels, the completion channel and the app
+    timer on `backend`; build the slot tables; return the state a pass
+    runs over. Split from the driver so the loop inversion can prepare a
+    loop it will drive one pass at a time from an asyncio callback.
     """
     set_nonblocking(listen_fd)
 
@@ -191,311 +174,658 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     else:
         print("Event loop started (epoll, max_connections=" + String(max_conns) + ")")
 
-    var should_shutdown = False
     var last_idle_sweep = perf_counter_ns()
     # Date-header cache: IMF-fixdate has one-second granularity, so format
     # it once per second instead of once per response (~10 String
     # allocations + gmtime each time — measured ~9% of hello throughput).
     var date_cache_sec: Int64 = unix_now()
     var date_cache = http_date_from_unix(date_cache_sec)
+    return LoopState(
+        offload^, offload_complete_fd, max_conns, provision_pool^,
+        slot_fds^, slot_response^, slot_send_offset^, slot_header_start^,
+        slot_sse^, slot_ws^, slot_read_armed^, slot_idle_deadline^,
+        slot_ws_state^, fd_map_size, fd_to_slot^, active_count,
+        metrics^, last_idle_sweep, date_cache_sec, date_cache^,
+        listen_fd, config.copy(), server_address, tcp_keep_alive,
+        shutdown_read_fd, bus_read_fd, peer_bus_fd,
+    )
+
+
+def run_event_loop[T: HTTPService, B: EventLoopBackend](
+    listen_fd: FileDescriptor,
+    mut handler: T,
+    mut backend: B,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    shutdown_read_fd: Int = -1,
+    bus_read_fd: Int = -1,
+    offload_addr: Int = 0,
+    peer_bus_fd: Int = -1,
+) raises:
+    """Run the IO-multiplexed event loop.
+
+    `bus_read_fd`, when >= 0, is this worker's `BroadcastBus` channel: SSE
+    frames broadcast by other workers arrive here as datagrams, and each is
+    handed to the handler through `sse_peer_frame` so it can queue them for
+    its own subscribers. The subsequent outbox drain in the same loop pass
+    then pushes them to the wire.
+
+    `offload_addr`, when non-zero, is the address of a caller-owned
+    `OffloadPool` (`--blocking-threads`): this loop becomes an acceptor that
+    parks requests for a pool of handler threads instead of calling
+    `HTTPService.func` itself, and is woken by the pool's completion channel
+    the same way it is woken by a bus channel. The streaming hooks are NOT
+    offloaded and cannot be — `sse_drain_slot`, `sse_slot_disconnected` and
+    `ws_message` are called on THIS thread's handler, while `func` would run
+    against a pool thread's own handler and its own registries. The caller
+    refuses the combination rather than letting the two drift.
+
+    Parameters:
+        T: The HTTP service handler type.
+        B: The IO multiplexing backend (KqueueBackend on macOS, EpollBackend on Linux).
+    """
+    var st = prepare_loop(
+        listen_fd, backend, config, server_address,
+        tcp_keep_alive, shutdown_read_fd, bus_read_fd, offload_addr,
+        peer_bus_fd,
+    )
     while True:
         var n_events = backend.wait(1000)
+        if _run_pass(handler, backend, st, n_events):
+            _run_shutdown(handler, backend, st)
+            break
 
-        for i in range(n_events):
-            if (backend.event_flags(i) & EV_ERROR) != 0:
-                continue
 
-            # Phase 4a: shutdown pipe — write end closed, exit cleanly
-            if shutdown_read_fd >= 0 and Int(backend.event_ident(i)) == shutdown_read_fd:
-                should_shutdown = True
-                break
+struct LoopState(Movable):
+    """Everything one event loop owns between passes.
 
-            # --- Cross-worker broadcast channel ---
-            # Registration is edge-triggered, so every waiting datagram must
-            # be consumed now; drain_bus_channel reads until EAGAIN. The
-            # handler queues each frame for its local subscribers, and the
-            # SSE outbox drain at the bottom of this pass sends them out.
-            var _ident = Int(backend.event_ident(i))
-            var _is_bus = bus_read_fd >= 0 and _ident == bus_read_fd
-            var _is_peer_bus = peer_bus_fd >= 0 and _ident == peer_bus_fd
-            if _is_bus or _is_peer_bus:
-                var peer_frames = drain_bus_channel(
-                    bus_read_fd if _is_bus else peer_bus_fd
+    `run_event_loop` used to hold all of this as locals of one 1,300-line
+    function, with the pass inline in its `while`. It is a struct so the
+    pass can be a FUNCTION -- `_run_pass` -- that something other than
+    that `while` can call: the loop inversion registers the backend's
+    kqueue/epoll fd with an asyncio loop and runs one pass per readiness
+    callback, on the executor's own thread, with no datagram and no wake
+    between a request and the app that answers it. `handler` and `backend`
+    are deliberately NOT fields: both are borrowed from the caller for the
+    loop's life, and a pass takes them as arguments beside the state.
+
+    The extraction was a verbatim move (the pass body and the shutdown
+    drain are the same text, dedented, behind `ref` bindings to these
+    fields), gated on the whole suite and every smoke passing unchanged.
+    """
+
+    var offload: OffloadLoopState
+    var offload_complete_fd: Int
+    var max_conns: Int
+    var provision_pool: ProvisionPool
+    var slot_fds: List[Int]
+    var slot_response: OwningList[Bytes]
+    var slot_send_offset: List[Int]
+    var slot_header_start: List[Int]
+    var slot_sse: List[Bool]
+    var slot_ws: List[Bool]
+    var slot_read_armed: List[Bool]
+    var slot_idle_deadline: List[Int]
+    var slot_ws_state: OwningList[WSState]
+    var fd_map_size: Int
+    var fd_to_slot: List[Int]
+    var active_count: Int
+    var metrics: ServerMetrics
+    var last_idle_sweep: Int
+    var date_cache_sec: Int64
+    var date_cache: String
+    var listen_fd: FileDescriptor
+    var config: ServerConfig
+    var server_address: String
+    var tcp_keep_alive: Bool
+    var shutdown_read_fd: Int
+    var bus_read_fd: Int
+    var peer_bus_fd: Int
+
+    def __init__(
+        out self,
+        var offload: OffloadLoopState,
+        offload_complete_fd: Int,
+        max_conns: Int,
+        var provision_pool: ProvisionPool,
+        var slot_fds: List[Int],
+        var slot_response: OwningList[Bytes],
+        var slot_send_offset: List[Int],
+        var slot_header_start: List[Int],
+        var slot_sse: List[Bool],
+        var slot_ws: List[Bool],
+        var slot_read_armed: List[Bool],
+        var slot_idle_deadline: List[Int],
+        var slot_ws_state: OwningList[WSState],
+        fd_map_size: Int,
+        var fd_to_slot: List[Int],
+        active_count: Int,
+        var metrics: ServerMetrics,
+        last_idle_sweep: Int,
+        date_cache_sec: Int64,
+        var date_cache: String,
+        listen_fd: FileDescriptor,
+        var config: ServerConfig,
+        var server_address: String,
+        tcp_keep_alive: Bool,
+        shutdown_read_fd: Int,
+        bus_read_fd: Int,
+        peer_bus_fd: Int,
+    ):
+        self.offload = offload^
+        self.offload_complete_fd = offload_complete_fd
+        self.max_conns = max_conns
+        self.provision_pool = provision_pool^
+        self.slot_fds = slot_fds^
+        self.slot_response = slot_response^
+        self.slot_send_offset = slot_send_offset^
+        self.slot_header_start = slot_header_start^
+        self.slot_sse = slot_sse^
+        self.slot_ws = slot_ws^
+        self.slot_read_armed = slot_read_armed^
+        self.slot_idle_deadline = slot_idle_deadline^
+        self.slot_ws_state = slot_ws_state^
+        self.fd_map_size = fd_map_size
+        self.fd_to_slot = fd_to_slot^
+        self.active_count = active_count
+        self.metrics = metrics^
+        self.last_idle_sweep = last_idle_sweep
+        self.date_cache_sec = date_cache_sec
+        self.date_cache = date_cache^
+        self.listen_fd = listen_fd
+        self.config = config^
+        self.server_address = server_address^
+        self.tcp_keep_alive = tcp_keep_alive
+        self.shutdown_read_fd = shutdown_read_fd
+        self.bus_read_fd = bus_read_fd
+        self.peer_bus_fd = peer_bus_fd
+
+
+def _run_pass[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, n_events: Int,
+) raises -> Bool:
+    """One pass of the event loop over `n_events` ready events.
+
+    Everything between one `backend.wait` and the next: dispatch the
+    events, retry owed acks, drain the outboxes, flush buffered submits,
+    sweep the timeouts. Returns True when the shutdown pipe fired, and the
+    caller then runs `_run_shutdown` once. The body is the former inline
+    loop body, unchanged; the `ref` bindings below are what let it stay
+    that way.
+    """
+    ref offload = st.offload
+    ref offload_complete_fd = st.offload_complete_fd
+    ref max_conns = st.max_conns
+    ref provision_pool = st.provision_pool
+    ref slot_fds = st.slot_fds
+    ref slot_response = st.slot_response
+    ref slot_send_offset = st.slot_send_offset
+    ref slot_header_start = st.slot_header_start
+    ref slot_sse = st.slot_sse
+    ref slot_ws = st.slot_ws
+    ref slot_read_armed = st.slot_read_armed
+    ref slot_idle_deadline = st.slot_idle_deadline
+    ref slot_ws_state = st.slot_ws_state
+    ref fd_to_slot = st.fd_to_slot
+    ref active_count = st.active_count
+    ref metrics = st.metrics
+    ref last_idle_sweep = st.last_idle_sweep
+    ref date_cache_sec = st.date_cache_sec
+    ref date_cache = st.date_cache
+    ref listen_fd = st.listen_fd
+    ref config = st.config
+    ref server_address = st.server_address
+    ref tcp_keep_alive = st.tcp_keep_alive
+    ref shutdown_read_fd = st.shutdown_read_fd
+    ref bus_read_fd = st.bus_read_fd
+    ref peer_bus_fd = st.peer_bus_fd
+    var should_shutdown = False
+
+    for i in range(n_events):
+        if (backend.event_flags(i) & EV_ERROR) != 0:
+            continue
+
+        # Phase 4a: shutdown pipe — write end closed, exit cleanly
+        if shutdown_read_fd >= 0 and Int(backend.event_ident(i)) == shutdown_read_fd:
+            should_shutdown = True
+            break
+
+        # --- Cross-worker broadcast channel ---
+        # Registration is edge-triggered, so every waiting datagram must
+        # be consumed now; drain_bus_channel reads until EAGAIN. The
+        # handler queues each frame for its local subscribers, and the
+        # SSE outbox drain at the bottom of this pass sends them out.
+        var _ident = Int(backend.event_ident(i))
+        var _is_bus = bus_read_fd >= 0 and _ident == bus_read_fd
+        var _is_peer_bus = peer_bus_fd >= 0 and _ident == peer_bus_fd
+        if _is_bus or _is_peer_bus:
+            var peer_frames = drain_bus_channel(
+                bus_read_fd if _is_bus else peer_bus_fd
+            )
+            for f in range(len(peer_frames)):
+                handler.sse_peer_frame(
+                    peer_frames[f].url,
+                    peer_frames[f].event_id,
+                    peer_frames[f].frame,
                 )
-                for f in range(len(peer_frames)):
-                    handler.sse_peer_frame(
-                        peer_frames[f].url,
-                        peer_frames[f].event_id,
-                        peer_frames[f].frame,
-                    )
-                continue
+            continue
 
-            # --- `--blocking-threads` completion channel ---
-            # A pool thread finished a request. Edge-triggered like the bus,
-            # so drain it fully; each completion re-enters the ordinary
-            # RESPONDING write path.
-            if offload_complete_fd >= 0 and Int(backend.event_ident(i)) == offload_complete_fd:
-                _service_completions(
-                    backend, handler, config, server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset, slot_header_start,
-                    fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload, bus_read_fd,
-                )
-                continue
+        # --- `--blocking-threads` completion channel ---
+        # A pool thread finished a request. Edge-triggered like the bus,
+        # so drain it fully; each completion re-enters the ordinary
+        # RESPONDING write path.
+        if offload_complete_fd >= 0 and Int(backend.event_ident(i)) == offload_complete_fd:
+            _service_completions(
+                backend, handler, config, server_address, tcp_keep_alive,
+                slot_fds, slot_response, slot_send_offset, slot_header_start,
+                fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+                slot_read_armed, slot_idle_deadline,
+                date_cache_sec, date_cache, offload, bus_read_fd,
+            )
+            continue
 
-            # --- Listen socket: accept new connections ---
-            if Int(backend.event_ident(i)) == listen_fd.value and backend.event_filter(i) == EVFILT_READ:
-                # kqueue reports the pending backlog depth in the event data
-                # field; epoll has no equivalent and returns 0 for "unknown".
-                #
-                # Both backends arm the listen socket edge-triggered, so a
-                # burst of simultaneous connections produces exactly ONE
-                # readiness event. Accepting a single connection per event
-                # would strand the rest in the backlog until some later
-                # connection happened to trigger a fresh edge. When the depth
-                # is unknown, drain until accept() raises EAGAIN instead — the
-                # listen socket is non-blocking (set above) and the loop below
-                # breaks on the first failed accept.
-                var pending = backend.event_data(i)
-                var accept_budget = pending if pending > 0 else max_conns
-                for _accept_idx in range(accept_budget):
-                    var new_fd: FileDescriptor
-                    var peer_host: String
-                    var peer_port: Int
-                    try:
-                        var accepted = accept_with_peer(listen_fd)
-                        new_fd = accepted[0]
-                        peer_host = accepted[1]
-                        peer_port = accepted[2]
-                    except accept_err:
-                        # EAGAIN: backlog drained — this readiness event is done.
-                        if accept_err.isa[AcceptEAGAINError]():
-                            break
-                        # ECONNABORTED (the client gave up while queued) and
-                        # EINTR are per-attempt transients. They MUST NOT end
-                        # the drain: the listen socket is edge-triggered on
-                        # both backends, so connections left in the backlog
-                        # here are owed no new readiness edge until some later
-                        # connection arrives — under bursty load that strands
-                        # live clients behind a dead one.
-                        if accept_err.isa[AcceptECONNABORTEDError]() or accept_err.isa[AcceptEINTRError]():
-                            continue
-                        # Anything else (EMFILE, ENFILE, ...) won't be cured
-                        # by accepting harder; stop and let the loop breathe.
+        # --- Listen socket: accept new connections ---
+        if Int(backend.event_ident(i)) == listen_fd.value and backend.event_filter(i) == EVFILT_READ:
+            # kqueue reports the pending backlog depth in the event data
+            # field; epoll has no equivalent and returns 0 for "unknown".
+            #
+            # Both backends arm the listen socket edge-triggered, so a
+            # burst of simultaneous connections produces exactly ONE
+            # readiness event. Accepting a single connection per event
+            # would strand the rest in the backlog until some later
+            # connection happened to trigger a fresh edge. When the depth
+            # is unknown, drain until accept() raises EAGAIN instead — the
+            # listen socket is non-blocking (set above) and the loop below
+            # breaks on the first failed accept.
+            var pending = backend.event_data(i)
+            var accept_budget = pending if pending > 0 else max_conns
+            for _accept_idx in range(accept_budget):
+                var new_fd: FileDescriptor
+                var peer_host: String
+                var peer_port: Int
+                try:
+                    var accepted = accept_with_peer(listen_fd)
+                    new_fd = accepted[0]
+                    peer_host = accepted[1]
+                    peer_port = accepted[2]
+                except accept_err:
+                    # EAGAIN: backlog drained — this readiness event is done.
+                    if accept_err.isa[AcceptEAGAINError]():
                         break
-
-                    var slot: Int
-                    try:
-                        slot = provision_pool.borrow()
-                    except:
-                        try:
-                            close(new_fd)
-                        except:
-                            pass
+                    # ECONNABORTED (the client gave up while queued) and
+                    # EINTR are per-attempt transients. They MUST NOT end
+                    # the drain: the listen socket is edge-triggered on
+                    # both backends, so connections left in the backlog
+                    # here are owed no new readiness edge until some later
+                    # connection arrives — under bursty load that strands
+                    # live clients behind a dead one.
+                    if accept_err.isa[AcceptECONNABORTEDError]() or accept_err.isa[AcceptEINTRError]():
                         continue
+                    # Anything else (EMFILE, ENFILE, ...) won't be cured
+                    # by accepting harder; stop and let the loop breathe.
+                    break
 
-                    var fd_val = new_fd.value
-
-                    if fd_val >= len(fd_to_slot):
-                        var new_len = fd_val + 1024
-                        for _ in range(len(fd_to_slot), new_len):
-                            fd_to_slot.append(UNUSED)
-
+                var slot: Int
+                try:
+                    slot = provision_pool.borrow()
+                except:
                     try:
-                        set_nonblocking(new_fd)
+                        close(new_fd)
                     except:
-                        provision_pool.release(slot)
-                        try:
-                            close(new_fd)
-                        except:
-                            pass
-                        continue
-
-                    # Nagle off: single-send responses have nothing to
-                    # coalesce, and leaving it on stalls a response behind
-                    # the previous response's ACK. Best-effort.
-                    set_tcp_nodelay(new_fd)
-
-                    slot_fds[slot] = fd_val
-                    # One capture per connection covers every request the
-                    # keep-alive carries; overwritten at the slot's next
-                    # accept, so no clearing on close.
-                    provision_pool.provisions[slot].peer_host = peer_host^
-                    provision_pool.provisions[slot].peer_port = peer_port
-                    slot_send_offset[slot] = 0
-                    slot_header_start[slot] = perf_counter_ns()
-                    slot_read_armed[slot] = False
-                    slot_idle_deadline[slot] = 0
-                    # A recycled slot must not inherit the previous
-                    # connection's channel-stream state: a pool thread's
-                    # ack fd left here would make the next M0-Hold on this
-                    # slot look like a chunk-framed stream.
-                    offload.clear_stream(slot)
-                    fd_to_slot[fd_val] = slot
-                    active_count += 1
-                    if config.enable_metrics:
-                        metrics.accepts_total += 1
-
-                    provision_pool.provisions[slot].prepare_for_new_request()
-                    provision_pool.provisions[slot].keepalive_count = 0
-
-                    # No header timerfd: the once-a-second sweep owns this
-                    # deadline now. `slot_header_start` stamped just above is
-                    # the whole mechanism, and it costs no fd and no syscall.
-
-                    # Eager read: try to process data already buffered.
-                    # EVFILT_READ is NOT registered yet — we register it only
-                    # if the eager read gets EAGAIN (no data).  This avoids
-                    # kqueue state confusion when recv() consumes data that
-                    # kqueue hasn't delivered yet.
-                    _handle_read_headers(
-                        backend, slot, fd_val, handler, config,
-                        server_address, tcp_keep_alive,
-                        slot_fds, slot_response, slot_send_offset,
-                        slot_header_start, fd_to_slot, provision_pool,
-                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                        slot_read_armed, slot_idle_deadline,
-                        date_cache_sec, date_cache, offload,
-                    )
-
-                    # If the slot is still active and in reading_headers state,
-                    # the eager read got EAGAIN — register EVFILT_READ now.
-                    # (_after_send may already have armed it if the eager read
-                    # carried a complete request; skip the redundant syscall.)
-                    if slot_fds[slot] != UNUSED and (not slot_read_armed[slot]) and provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
-                        try:
-                            backend.add_read(fd_val)
-                            slot_read_armed[slot] = True
-                        except:
-                            _close_slot(
-                                backend, handler, slot, fd_val,
-                                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                                slot_sse, slot_ws, slot_ws_state,
-                            )
-                    # The eager read may have taken MORE than one request.
-                    _drain_pipelined(
-                        backend, slot, fd_val, handler, config,
-                        server_address, tcp_keep_alive,
-                        slot_fds, slot_response, slot_send_offset,
-                        slot_header_start, fd_to_slot, provision_pool,
-                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                        slot_read_armed, slot_idle_deadline,
-                        date_cache_sec, date_cache, offload,
-                    )
-                continue
-
-            # --- Timer events ---
-            if backend.event_filter(i) == EVFILT_TIMER:
-                var timer_ident = backend.event_ident(i)
-                var fd_val: Int
-
-                # Application tick: hand the handler its scheduled wakeup.
-                if timer_ident >= TIMER_APP_TICK:
-                    # Re-arm FIRST — one-shot on both backends, and on epoll
-                    # the re-arm is also what clears the fired timerfd's
-                    # readability (the same level-triggered storm the SSE
-                    # heartbeat hit; see that handler below).
-                    backend.try_add_timer(TIMER_APP_TICK, config.app_tick_ms)
-                    handler.tick(Int(perf_counter_ns() // 1_000_000))
-                    # Whatever the handler broadcast is queued in per-slot
-                    # outboxes now; the SSE drain at the bottom of this pass
-                    # pushes it to the wire.
+                        pass
                     continue
 
-                # Stream heartbeat timer: an SSE comment or a WebSocket ping,
-                # depending on what the slot is — same cadence, same job
-                # (keep intermediaries from timing the connection out, and
-                # discover dead clients that never sent a FIN).
-                if timer_ident >= TIMER_SSE_HEARTBEAT:
-                    fd_val = Int(timer_ident - TIMER_SSE_HEARTBEAT)
-                    if fd_val >= len(fd_to_slot):
-                        continue
-                    var hb_slot = fd_to_slot[fd_val]
-                    if hb_slot == UNUSED or not (slot_sse[hb_slot] or slot_ws[hb_slot]):
-                        # The stream this timer belonged to is gone (or the fd
-                        # now serves a non-streaming connection); retire the timer.
-                        backend.try_delete_timer(timer_ident)
-                        continue
-                    var hb_is_ws = slot_ws[hb_slot]
-                    # Re-arm FIRST, unconditionally. Timers are one-shot on
-                    # both backends (kqueue EV_ONESHOT; epoll timerfd with no
-                    # interval), so without this a stream gets exactly one
-                    # heartbeat ever. On epoll the re-arm is also what clears
-                    # the fired timerfd's expiration count — the timerfd is
-                    # registered level-triggered and nothing read()s it, so an
-                    # expired-and-unrearmed timer would be returned by every
-                    # subsequent epoll_wait: a heartbeat storm at loop speed.
-                    backend.try_add_timer(timer_ident, config.sse_heartbeat_ms)
-                    # An executor's stream: no comment injection. An SSE
-                    # event may span two chunks, and a `: heartbeat` landing
-                    # between them corrupts the frame for any parser
-                    # (Datastar's included). Dead clients are still
-                    # discovered — by chunk-send failures and read-EOF, both
-                    # of which close the slot. WS pings are frame-atomic and
-                    # stay. Asked per SLOT, not per server: under
-                    # `--realtime --mount` a held stream shares this loop
-                    # with an executor's, and a hold is one frame per event
-                    # with nothing to land between — the heartbeat is what
-                    # keeps it alive through an idle proxy.
-                    if not hb_is_ws and offload.slot_channel_stream(hb_slot):
-                        continue
-                    var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
-                    if provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
-                        # Mid-send of a real event; skip this beat, keep the next.
-                        continue
-                    if hb_is_ws:
-                        slot_response[hb_slot] = Bytes(Span(encode_ws_frame(WS_OP_PING, "hb".as_bytes())))
-                    else:
-                        var hb = String(": heartbeat\n\n")
-                        slot_response[hb_slot] = Bytes(hb.as_bytes())
-                    slot_send_offset[hb_slot] = 0
-                    provision_pool.provisions[hb_slot].state = ConnectionState.responding()
-                    var fd_desc = FileDescriptor(fd_val)
-                    var hb_dead = False
+                var fd_val = new_fd.value
+
+                if fd_val >= len(fd_to_slot):
+                    var new_len = fd_val + 1024
+                    for _ in range(len(fd_to_slot), new_len):
+                        fd_to_slot.append(UNUSED)
+
+                try:
+                    set_nonblocking(new_fd)
+                except:
+                    provision_pool.release(slot)
                     try:
-                        var sent = send(fd_desc, Span(slot_response[hb_slot]), UInt(len(slot_response[hb_slot])), 0)
-                        slot_send_offset[hb_slot] = Int(sent)
-                    except hb_err:
-                        # EPIPE/ECONNRESET here is the heartbeat doing its
-                        # other job: discovering a dead subscriber that never
-                        # sent a FIN. Close it (which notifies the handler)
-                        # rather than leaving a zombie stream.
-                        if not hb_err.isa[SendEAGAINError]():
-                            hb_dead = True
-                    if hb_dead:
+                        close(new_fd)
+                    except:
+                        pass
+                    continue
+
+                # Nagle off: single-send responses have nothing to
+                # coalesce, and leaving it on stalls a response behind
+                # the previous response's ACK. Best-effort.
+                set_tcp_nodelay(new_fd)
+
+                slot_fds[slot] = fd_val
+                # One capture per connection covers every request the
+                # keep-alive carries; overwritten at the slot's next
+                # accept, so no clearing on close.
+                provision_pool.provisions[slot].peer_host = peer_host^
+                provision_pool.provisions[slot].peer_port = peer_port
+                slot_send_offset[slot] = 0
+                slot_header_start[slot] = perf_counter_ns()
+                slot_read_armed[slot] = False
+                slot_idle_deadline[slot] = 0
+                # A recycled slot must not inherit the previous
+                # connection's channel-stream state: a pool thread's
+                # ack fd left here would make the next M0-Hold on this
+                # slot look like a chunk-framed stream.
+                offload.clear_stream(slot)
+                fd_to_slot[fd_val] = slot
+                active_count += 1
+                if config.enable_metrics:
+                    metrics.accepts_total += 1
+
+                provision_pool.provisions[slot].prepare_for_new_request()
+                provision_pool.provisions[slot].keepalive_count = 0
+
+                # No header timerfd: the once-a-second sweep owns this
+                # deadline now. `slot_header_start` stamped just above is
+                # the whole mechanism, and it costs no fd and no syscall.
+
+                # Eager read: try to process data already buffered.
+                # EVFILT_READ is NOT registered yet — we register it only
+                # if the eager read gets EAGAIN (no data).  This avoids
+                # kqueue state confusion when recv() consumes data that
+                # kqueue hasn't delivered yet.
+                _handle_read_headers(
+                    backend, slot, fd_val, handler, config,
+                    server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset,
+                    slot_header_start, fd_to_slot, provision_pool,
+                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache, offload,
+                )
+
+                # If the slot is still active and in reading_headers state,
+                # the eager read got EAGAIN — register EVFILT_READ now.
+                # (_after_send may already have armed it if the eager read
+                # carried a complete request; skip the redundant syscall.)
+                if slot_fds[slot] != UNUSED and (not slot_read_armed[slot]) and provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
+                    try:
+                        backend.add_read(fd_val)
+                        slot_read_armed[slot] = True
+                    except:
                         _close_slot(
-                            backend, handler, hb_slot, fd_val,
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                # The eager read may have taken MORE than one request.
+                _drain_pipelined(
+                    backend, slot, fd_val, handler, config,
+                    server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset,
+                    slot_header_start, fd_to_slot, provision_pool,
+                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache, offload,
+                )
+            continue
+
+        # --- Timer events ---
+        if backend.event_filter(i) == EVFILT_TIMER:
+            var timer_ident = backend.event_ident(i)
+            var fd_val: Int
+
+            # Application tick: hand the handler its scheduled wakeup.
+            if timer_ident >= TIMER_APP_TICK:
+                # Re-arm FIRST — one-shot on both backends, and on epoll
+                # the re-arm is also what clears the fired timerfd's
+                # readability (the same level-triggered storm the SSE
+                # heartbeat hit; see that handler below).
+                backend.try_add_timer(TIMER_APP_TICK, config.app_tick_ms)
+                handler.tick(Int(perf_counter_ns() // 1_000_000))
+                # Whatever the handler broadcast is queued in per-slot
+                # outboxes now; the SSE drain at the bottom of this pass
+                # pushes it to the wire.
+                continue
+
+            # Stream heartbeat timer: an SSE comment or a WebSocket ping,
+            # depending on what the slot is — same cadence, same job
+            # (keep intermediaries from timing the connection out, and
+            # discover dead clients that never sent a FIN).
+            if timer_ident >= TIMER_SSE_HEARTBEAT:
+                fd_val = Int(timer_ident - TIMER_SSE_HEARTBEAT)
+                if fd_val >= len(fd_to_slot):
+                    continue
+                var hb_slot = fd_to_slot[fd_val]
+                if hb_slot == UNUSED or not (slot_sse[hb_slot] or slot_ws[hb_slot]):
+                    # The stream this timer belonged to is gone (or the fd
+                    # now serves a non-streaming connection); retire the timer.
+                    backend.try_delete_timer(timer_ident)
+                    continue
+                var hb_is_ws = slot_ws[hb_slot]
+                # Re-arm FIRST, unconditionally. Timers are one-shot on
+                # both backends (kqueue EV_ONESHOT; epoll timerfd with no
+                # interval), so without this a stream gets exactly one
+                # heartbeat ever. On epoll the re-arm is also what clears
+                # the fired timerfd's expiration count — the timerfd is
+                # registered level-triggered and nothing read()s it, so an
+                # expired-and-unrearmed timer would be returned by every
+                # subsequent epoll_wait: a heartbeat storm at loop speed.
+                backend.try_add_timer(timer_ident, config.sse_heartbeat_ms)
+                # An executor's stream: no comment injection. An SSE
+                # event may span two chunks, and a `: heartbeat` landing
+                # between them corrupts the frame for any parser
+                # (Datastar's included). Dead clients are still
+                # discovered — by chunk-send failures and read-EOF, both
+                # of which close the slot. WS pings are frame-atomic and
+                # stay. Asked per SLOT, not per server: under
+                # `--realtime --mount` a held stream shares this loop
+                # with an executor's, and a hold is one frame per event
+                # with nothing to land between — the heartbeat is what
+                # keeps it alive through an idle proxy.
+                if not hb_is_ws and offload.slot_channel_stream(hb_slot):
+                    continue
+                var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
+                if provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
+                    # Mid-send of a real event; skip this beat, keep the next.
+                    continue
+                if hb_is_ws:
+                    slot_response[hb_slot] = Bytes(Span(encode_ws_frame(WS_OP_PING, "hb".as_bytes())))
+                else:
+                    var hb = String(": heartbeat\n\n")
+                    slot_response[hb_slot] = Bytes(hb.as_bytes())
+                slot_send_offset[hb_slot] = 0
+                provision_pool.provisions[hb_slot].state = ConnectionState.responding()
+                var fd_desc = FileDescriptor(fd_val)
+                var hb_dead = False
+                try:
+                    var sent = send(fd_desc, Span(slot_response[hb_slot]), UInt(len(slot_response[hb_slot])), 0)
+                    slot_send_offset[hb_slot] = Int(sent)
+                except hb_err:
+                    # EPIPE/ECONNRESET here is the heartbeat doing its
+                    # other job: discovering a dead subscriber that never
+                    # sent a FIN. Close it (which notifies the handler)
+                    # rather than leaving a zombie stream.
+                    if not hb_err.isa[SendEAGAINError]():
+                        hb_dead = True
+                if hb_dead:
+                    _close_slot(
+                        backend, handler, hb_slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                    continue
+                if slot_send_offset[hb_slot] >= len(slot_response[hb_slot]):
+                    provision_pool.provisions[hb_slot].state = ConnectionState.streaming_ws() if hb_is_ws else ConnectionState.streaming_sse()
+                else:
+                    backend.try_add_write_oneshot(fd_val)
+                    slot_read_armed[hb_slot] = False
+                continue
+
+            if timer_ident >= TIMER_IDLE:
+                fd_val = Int(timer_ident - TIMER_IDLE)
+            elif timer_ident >= TIMER_BODY:
+                fd_val = Int(timer_ident - TIMER_BODY)
+            else:
+                continue
+
+            if fd_val >= len(fd_to_slot):
+                continue
+            var slot = fd_to_slot[fd_val]
+            if slot == UNUSED:
+                continue
+
+            # Phase 1d: idle timeout is expected client behaviour — close cleanly.
+            # Only send 408 for header/body timeouts on the first request.
+            if timer_ident < TIMER_IDLE and provision_pool.provisions[slot].keepalive_count == 0:
+                _send_error_to_fd(fd_val, RequestTimeout())
+
+            _close_slot(
+                backend, handler, slot, fd_val,
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+            continue
+
+        # --- Read events on connection sockets ---
+        if backend.event_filter(i) == EVFILT_READ:
+            var fd_val = Int(backend.event_ident(i))
+            if fd_val >= len(fd_to_slot):
+                continue
+            var slot = fd_to_slot[fd_val]
+            if slot == UNUSED:
+                continue
+
+            # A slot whose request is in a pool thread belongs to that
+            # thread: its job storage is being written right now. Detach
+            # the connection if the client left, but hold the provision
+            # until the completion arrives (see `_close_slot`).
+            if offload.offloaded[slot]:
+                if (backend.event_flags(i) & EV_EOF) != 0:
+                    # The peer half-closed while its request was out on
+                    # a pool thread. That is not "the client left" — a
+                    # half-close says "that is the whole request" while
+                    # the client waits for the answer, and detaching
+                    # the fd here dropped the response the pool thread
+                    # was about to complete. Record what is true (no
+                    # more request bytes exist) and let the completion
+                    # answer through the still-open fd; a peer that is
+                    # REALLY gone surfaces as a failed send there.
+                    # `should_close` is NOT set: the tail may hold a
+                    # pipelined request the drain still owes an answer,
+                    # and the recv->0 after the last one closes cleanly.
+                    provision_pool.provisions[slot].peer_eof = True
+                    slot_read_armed[slot] = False
+                else:
+                    # A pipelined request arrived mid-flight. Both backends
+                    # are edge-triggered, so consuming this event without
+                    # reading would lose the only edge those bytes ever
+                    # get; clearing the armed flag makes `_after_send`
+                    # re-register, which regenerates readiness for them.
+                    slot_read_armed[slot] = False
+                continue
+
+            if (backend.event_flags(i) & EV_EOF) != 0:
+                # The peer shut down its WRITE side. That is not the end
+                # of the connection: a client may half-close to say
+                # "that is the whole request" and still be waiting to
+                # read the response — and closing here discarded it,
+                # which the client sees as an RST and a lost answer.
+                #
+                # kqueue sets EV_EOF on the read filter for exactly
+                # this (data can still be pending), and epoll's
+                # `add_read` registers EPOLLRDHUP so Linux reports it
+                # the same way (see `event_flags`). It was macOS that
+                # lost responses when this path closed instead of
+                # falling through — 24-30 of 30 requests on every
+                # request shape, Linux none, because epoll then left
+                # EPOLLRDHUP unregistered and saw only an ordinary
+                # readable event. The flag also ends a half-closed
+                # INCOMPLETE request promptly on both platforms, where
+                # Linux used to hold it until the header timeout's 408.
+                #
+                # A stream has no request left to answer, so those still
+                # close here. Everything else falls through to the read
+                # path, which finishes the buffered request; keep-alive
+                # is off, because the peer cannot send another.
+                var _eof_state = provision_pool.provisions[slot].state.kind
+                if (
+                    _eof_state == ConnectionState.STREAMING_SSE
+                    or _eof_state == ConnectionState.STREAMING_WS
+                ):
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                    continue
+                provision_pool.provisions[slot].should_close = True
+                provision_pool.provisions[slot].peer_eof = True
+
+            if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_WS:
+                # WebSocket frames from the client. The parser answers
+                # control frames itself (ping→pong, close→close echo);
+                # complete data messages go to the handler, whose queued
+                # replies the outbox drain below this pass sends.
+                provision_pool.provisions[slot].recv_staging.clear()
+                var ws_fd = FileDescriptor(fd_val)
+                var ws_read: UInt
+                try:
+                    ws_read = recv(
+                        ws_fd,
+                        Span(provision_pool.provisions[slot].recv_staging),
+                        UInt(provision_pool.provisions[slot].recv_staging.capacity()),
+                        0,
+                    )
+                except ws_recv_err:
+                    if ws_recv_err.isa[RecvEAGAINError]():
+                        continue
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                    continue
+                if ws_read == 0:
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                    continue
+                provision_pool.provisions[slot].recv_staging._len = Int(ws_read)
+                var ws_res = slot_ws_state[slot].feed(
+                    Span(provision_pool.provisions[slot].recv_staging)
+                )
+                if len(ws_res.reply) > 0:
+                    # Pongs and close echoes are tiny; a send failure that
+                    # isn't EAGAIN means the client is gone. A dropped
+                    # pong on EAGAIN is fine — the next ping repeats it.
+                    var ws_reply_dead = False
+                    try:
+                        _ = send(ws_fd, Span(ws_res.reply), UInt(len(ws_res.reply)), 0)
+                    except ws_send_err:
+                        if not ws_send_err.isa[SendEAGAINError]():
+                            ws_reply_dead = True
+                    if ws_reply_dead:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
                             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse, slot_ws, slot_ws_state,
                         )
                         continue
-                    if slot_send_offset[hb_slot] >= len(slot_response[hb_slot]):
-                        provision_pool.provisions[hb_slot].state = ConnectionState.streaming_ws() if hb_is_ws else ConnectionState.streaming_sse()
-                    else:
-                        backend.try_add_write_oneshot(fd_val)
-                        slot_read_armed[hb_slot] = False
-                    continue
+                for m in range(len(ws_res.msg_opcodes)):
+                    handler.ws_message(
+                        slot, ws_res.msg_opcodes[m], ws_res.msg_payloads[m]
+                    )
+                if ws_res.close_after_reply:
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                continue
 
-                if timer_ident >= TIMER_IDLE:
-                    fd_val = Int(timer_ident - TIMER_IDLE)
-                elif timer_ident >= TIMER_BODY:
-                    fd_val = Int(timer_ident - TIMER_BODY)
-                else:
-                    continue
-
-                if fd_val >= len(fd_to_slot):
-                    continue
-                var slot = fd_to_slot[fd_val]
-                if slot == UNUSED:
-                    continue
-
-                # Phase 1d: idle timeout is expected client behaviour — close cleanly.
-                # Only send 408 for header/body timeouts on the first request.
-                if timer_ident < TIMER_IDLE and provision_pool.provisions[slot].keepalive_count == 0:
-                    _send_error_to_fd(fd_val, RequestTimeout())
-
+            if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_SSE:
+                # SSE client disconnect: recv→0 means client closed
+                # connection. _close_slot notifies the handler.
                 _close_slot(
                     backend, handler, slot, fd_val,
                     slot_fds, fd_to_slot, provision_pool, active_count, metrics,
@@ -503,148 +833,34 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 )
                 continue
 
-            # --- Read events on connection sockets ---
-            if backend.event_filter(i) == EVFILT_READ:
-                var fd_val = Int(backend.event_ident(i))
-                if fd_val >= len(fd_to_slot):
-                    continue
-                var slot = fd_to_slot[fd_val]
-                if slot == UNUSED:
-                    continue
+            elif provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
+                _handle_read_headers(
+                    backend, slot, fd_val, handler, config,
+                    server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset,
+                    slot_header_start, fd_to_slot, provision_pool,
+                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache, offload,
+                )
 
-                # A slot whose request is in a pool thread belongs to that
-                # thread: its job storage is being written right now. Detach
-                # the connection if the client left, but hold the provision
-                # until the completion arrives (see `_close_slot`).
-                if offload.offloaded[slot]:
-                    if (backend.event_flags(i) & EV_EOF) != 0:
-                        # The peer half-closed while its request was out on
-                        # a pool thread. That is not "the client left" — a
-                        # half-close says "that is the whole request" while
-                        # the client waits for the answer, and detaching
-                        # the fd here dropped the response the pool thread
-                        # was about to complete. Record what is true (no
-                        # more request bytes exist) and let the completion
-                        # answer through the still-open fd; a peer that is
-                        # REALLY gone surfaces as a failed send there.
-                        # `should_close` is NOT set: the tail may hold a
-                        # pipelined request the drain still owes an answer,
-                        # and the recv->0 after the last one closes cleanly.
-                        provision_pool.provisions[slot].peer_eof = True
-                        slot_read_armed[slot] = False
-                    else:
-                        # A pipelined request arrived mid-flight. Both backends
-                        # are edge-triggered, so consuming this event without
-                        # reading would lose the only edge those bytes ever
-                        # get; clearing the armed flag makes `_after_send`
-                        # re-register, which regenerates readiness for them.
-                        slot_read_armed[slot] = False
-                    continue
+            elif provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY:
+                var body_st = provision_pool.provisions[slot].body_state.value()
 
-                if (backend.event_flags(i) & EV_EOF) != 0:
-                    # The peer shut down its WRITE side. That is not the end
-                    # of the connection: a client may half-close to say
-                    # "that is the whole request" and still be waiting to
-                    # read the response — and closing here discarded it,
-                    # which the client sees as an RST and a lost answer.
-                    #
-                    # kqueue sets EV_EOF on the read filter for exactly
-                    # this (data can still be pending), and epoll's
-                    # `add_read` registers EPOLLRDHUP so Linux reports it
-                    # the same way (see `event_flags`). It was macOS that
-                    # lost responses when this path closed instead of
-                    # falling through — 24-30 of 30 requests on every
-                    # request shape, Linux none, because epoll then left
-                    # EPOLLRDHUP unregistered and saw only an ordinary
-                    # readable event. The flag also ends a half-closed
-                    # INCOMPLETE request promptly on both platforms, where
-                    # Linux used to hold it until the header timeout's 408.
-                    #
-                    # A stream has no request left to answer, so those still
-                    # close here. Everything else falls through to the read
-                    # path, which finishes the buffered request; keep-alive
-                    # is off, because the peer cannot send another.
-                    var _eof_state = provision_pool.provisions[slot].state.kind
-                    if (
-                        _eof_state == ConnectionState.STREAMING_SSE
-                        or _eof_state == ConnectionState.STREAMING_WS
-                    ):
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                        continue
-                    provision_pool.provisions[slot].should_close = True
-                    provision_pool.provisions[slot].peer_eof = True
-
-                if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_WS:
-                    # WebSocket frames from the client. The parser answers
-                    # control frames itself (ping→pong, close→close echo);
-                    # complete data messages go to the handler, whose queued
-                    # replies the outbox drain below this pass sends.
-                    provision_pool.provisions[slot].recv_staging.clear()
-                    var ws_fd = FileDescriptor(fd_val)
-                    var ws_read: UInt
-                    try:
-                        ws_read = recv(
-                            ws_fd,
-                            Span(provision_pool.provisions[slot].recv_staging),
-                            UInt(provision_pool.provisions[slot].recv_staging.capacity()),
-                            0,
-                        )
-                    except ws_recv_err:
-                        if ws_recv_err.isa[RecvEAGAINError]():
-                            continue
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                        continue
-                    if ws_read == 0:
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                        continue
-                    provision_pool.provisions[slot].recv_staging._len = Int(ws_read)
-                    var ws_res = slot_ws_state[slot].feed(
-                        Span(provision_pool.provisions[slot].recv_staging)
+                # Phase 2a: recv into per-slot staging buffer (avoids per-recv heap alloc)
+                provision_pool.provisions[slot].recv_staging.clear()
+                var fd_desc = FileDescriptor(fd_val)
+                var bytes_read: UInt
+                try:
+                    bytes_read = recv(
+                        fd_desc,
+                        Span(provision_pool.provisions[slot].recv_staging),
+                        UInt(provision_pool.provisions[slot].recv_staging.capacity()),
+                        0,
                     )
-                    if len(ws_res.reply) > 0:
-                        # Pongs and close echoes are tiny; a send failure that
-                        # isn't EAGAIN means the client is gone. A dropped
-                        # pong on EAGAIN is fine — the next ping repeats it.
-                        var ws_reply_dead = False
-                        try:
-                            _ = send(ws_fd, Span(ws_res.reply), UInt(len(ws_res.reply)), 0)
-                        except ws_send_err:
-                            if not ws_send_err.isa[SendEAGAINError]():
-                                ws_reply_dead = True
-                        if ws_reply_dead:
-                            _close_slot(
-                                backend, handler, slot, fd_val,
-                                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                                slot_sse, slot_ws, slot_ws_state,
-                            )
-                            continue
-                    for m in range(len(ws_res.msg_opcodes)):
-                        handler.ws_message(
-                            slot, ws_res.msg_opcodes[m], ws_res.msg_payloads[m]
-                        )
-                    if ws_res.close_after_reply:
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                    continue
-
-                if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_SSE:
-                    # SSE client disconnect: recv→0 means client closed
-                    # connection. _close_slot notifies the handler.
+                except recv_err:
+                    if recv_err.isa[RecvEAGAINError]():
+                        continue
                     _close_slot(
                         backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
@@ -652,187 +868,214 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     )
                     continue
 
-                elif provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
-                    _handle_read_headers(
-                        backend, slot, fd_val, handler, config,
-                        server_address, tcp_keep_alive,
+                if bytes_read == 0:
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                    continue
+
+                provision_pool.provisions[slot].recv_staging._len = Int(bytes_read)
+                provision_pool.provisions[slot].recv_buffer.extend(
+                    Span(provision_pool.provisions[slot].recv_staging)
+                )
+
+                if not body_st.is_chunked:
+                    body_st.bytes_read += Int(bytes_read)
+                    provision_pool.provisions[slot].body_state = body_st
+
+                if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_limit():
+                    _send_error_to_fd(fd_val, BadRequest())
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                    continue
+
+                # Phase 1b: chunked body decode, resumed not restarted.
+                #
+                # The buffer is laid out [headers][decoded so far][raw
+                # tail], and only the raw tail is handed to the
+                # connection's own decoder — which carries its chunk
+                # state across reads, so it continues where it stopped.
+                # Decoded output lands at the front of that tail, i.e.
+                # contiguous with what was already decoded, and the
+                # partial header it could not finish is left just after
+                # it (`pending_bytes`). Total work is linear in the body
+                # rather than quadratic in the number of reads; see
+                # `ConnectionProvision.chunk_decoder`.
+                if body_st.is_chunked:
+                    var raw_body_start = body_st.header_end_offset
+                    var decoded_so_far = body_st.bytes_read
+                    var tail_start = raw_body_start + decoded_so_far
+                    var buf_len = len(provision_pool.provisions[slot].recv_buffer)
+                    # The cap is on the DECODED body plus whatever raw
+                    # tail is still buffered — the same quantity the old
+                    # code compared, now that consumed framing bytes are
+                    # dropped as they are decoded.
+                    # Two bounds, because a chunked body has two sizes.
+                    # The decoded body is what the application sees; the
+                    # raw stream is what the connection cost. Framing is
+                    # consumed and dropped as it is decoded, so without
+                    # the second an attacker could send the body limit
+                    # in real data and then keep going in chunk-extension
+                    # bytes, bounded only by the decoder's ratio guard.
+                    if (
+                        buf_len - raw_body_start > config.max_request_body_size
+                        or provision_pool.provisions[slot].chunk_decoder._total_read
+                        > 2 * config.max_request_body_size
+                    ):
+                        _send_error_to_fd(fd_val, PayloadTooLarge())
+                        _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
+                        continue
+                    if buf_len > tail_start:
+                        var ret: Int
+                        var produced: Int
+                        ret, produced = provision_pool.provisions[
+                            slot
+                        ].chunk_decoder.decode(
+                            Span(provision_pool.provisions[slot].recv_buffer)[
+                                tail_start:
+                            ]
+                        )
+                        if ret == -1:
+                            _send_error_to_fd(fd_val, BadRequest())
+                            _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
+                            continue
+                        var leftover = provision_pool.provisions[
+                            slot
+                        ].chunk_decoder.pending_bytes
+                        # Drop the framing bytes this pass consumed, so
+                        # the next read appends straight onto the tail.
+                        provision_pool.provisions[slot].recv_buffer.resize(
+                            tail_start + produced + leftover, 0
+                        )
+                        decoded_so_far += produced
+                        body_st.bytes_read = decoded_so_far
+                        provision_pool.provisions[slot].body_state = body_st
+                        if ret >= 0:
+                            # Complete. `pending_bytes` bytes past the
+                            # chunked data stay in the buffer: they are
+                            # the next pipelined request, and the
+                            # keep-alive reset preserves them.
+                            provision_pool.provisions[slot].request_end = (
+                                raw_body_start + decoded_so_far
+                            )
+                            body_st.content_length = decoded_so_far
+                            body_st.bytes_read = decoded_so_far
+                            body_st.is_chunked = False
+                            provision_pool.provisions[slot].body_state = body_st
+                            if config.body_read_timeout > 0:
+                                backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
+                            provision_pool.provisions[slot].state = ConnectionState.processing()
+                            _process_request(
+                                backend, slot, fd_val, handler,
+                                config, server_address, tcp_keep_alive,
+                                slot_fds, slot_response, slot_send_offset, slot_header_start,
+                                fd_to_slot, provision_pool, active_count, metrics,
+                                slot_sse, slot_ws, slot_ws_state,
+                                slot_read_armed, slot_idle_deadline,
+                                date_cache_sec, date_cache, offload,
+                            )
+                    # ret == -2 or empty: wait for more data via EVFILT_READ
+                elif body_st.bytes_read >= body_st.content_length:
+                    if config.body_read_timeout > 0:
+                        backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
+
+                    provision_pool.provisions[slot].state = ConnectionState.processing()
+                    _process_request(
+                        backend, slot, fd_val,
+                        handler,
+                        config, server_address, tcp_keep_alive,
                         slot_fds, slot_response, slot_send_offset,
-                        slot_header_start, fd_to_slot, provision_pool,
-                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                        slot_header_start,
+                        fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
                         slot_read_armed, slot_idle_deadline,
                         date_cache_sec, date_cache, offload,
                     )
 
-                elif provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY:
-                    var body_st = provision_pool.provisions[slot].body_state.value()
+                # One recv per event does not drain an edge-triggered
+                # socket: a body larger than the staging buffer leaves
+                # bytes pending that will never raise another edge on
+                # their own. Re-register to regenerate readiness for
+                # them, the same reason as the arm in
+                # _handle_read_headers.
+                if (
+                    slot_fds[slot] != UNUSED
+                    and provision_pool.provisions[slot].state.kind
+                    == ConnectionState.READING_BODY
+                ):
+                    backend.try_add_read(fd_val)
+                    slot_read_armed[slot] = True
 
-                    # Phase 2a: recv into per-slot staging buffer (avoids per-recv heap alloc)
-                    provision_pool.provisions[slot].recv_staging.clear()
-                    var fd_desc = FileDescriptor(fd_val)
-                    var bytes_read: UInt
-                    try:
-                        bytes_read = recv(
-                            fd_desc,
-                            Span(provision_pool.provisions[slot].recv_staging),
-                            UInt(provision_pool.provisions[slot].recv_staging.capacity()),
-                            0,
-                        )
-                    except recv_err:
-                        if recv_err.isa[RecvEAGAINError]():
-                            continue
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                        continue
+            # A response completed inline above may have left the NEXT
+            # pipelined request whole in recv_buffer, with no event ever
+            # coming to announce it.
+            _drain_pipelined(
+                backend, slot, fd_val, handler, config,
+                server_address, tcp_keep_alive,
+                slot_fds, slot_response, slot_send_offset,
+                slot_header_start, fd_to_slot, provision_pool,
+                active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                slot_read_armed, slot_idle_deadline,
+                date_cache_sec, date_cache, offload,
+            )
+            continue
 
-                    if bytes_read == 0:
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                        continue
+        # --- Write events on connection sockets ---
+        if backend.event_filter(i) == EVFILT_WRITE:
+            var fd_val = Int(backend.event_ident(i))
+            if fd_val >= len(fd_to_slot):
+                continue
+            var slot = fd_to_slot[fd_val]
+            if slot == UNUSED:
+                continue
 
-                    provision_pool.provisions[slot].recv_staging._len = Int(bytes_read)
-                    provision_pool.provisions[slot].recv_buffer.extend(
-                        Span(provision_pool.provisions[slot].recv_staging)
+            if provision_pool.provisions[slot].state.kind != ConnectionState.RESPONDING:
+                continue
+
+            if offload.offloaded[slot]:
+                continue
+
+            var remaining = len(slot_response[slot]) - slot_send_offset[slot]
+            if remaining <= 0:
+                # Head already drained: this readiness belongs to the
+                # file body, if one is still owed.
+                var pumped = _pump_body_fd(
+                    provision_pool.provisions[slot], fd_val
+                )
+                if pumped == BODY_FD_FATAL:
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool,
+                        active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
                     )
-
-                    if not body_st.is_chunked:
-                        body_st.bytes_read += Int(bytes_read)
-                        provision_pool.provisions[slot].body_state = body_st
-
-                    if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_limit():
-                        _send_error_to_fd(fd_val, BadRequest())
+                    continue
+                if pumped == BODY_FD_MORE:
+                    try:
+                        backend.add_write_oneshot(fd_val)
+                        slot_read_armed[slot] = False
+                    except:
                         _close_slot(
                             backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_fds, fd_to_slot, provision_pool,
+                            active_count, metrics,
                             slot_sse, slot_ws, slot_ws_state,
                         )
-                        continue
-
-                    # Phase 1b: chunked body decode, resumed not restarted.
-                    #
-                    # The buffer is laid out [headers][decoded so far][raw
-                    # tail], and only the raw tail is handed to the
-                    # connection's own decoder — which carries its chunk
-                    # state across reads, so it continues where it stopped.
-                    # Decoded output lands at the front of that tail, i.e.
-                    # contiguous with what was already decoded, and the
-                    # partial header it could not finish is left just after
-                    # it (`pending_bytes`). Total work is linear in the body
-                    # rather than quadratic in the number of reads; see
-                    # `ConnectionProvision.chunk_decoder`.
-                    if body_st.is_chunked:
-                        var raw_body_start = body_st.header_end_offset
-                        var decoded_so_far = body_st.bytes_read
-                        var tail_start = raw_body_start + decoded_so_far
-                        var buf_len = len(provision_pool.provisions[slot].recv_buffer)
-                        # The cap is on the DECODED body plus whatever raw
-                        # tail is still buffered — the same quantity the old
-                        # code compared, now that consumed framing bytes are
-                        # dropped as they are decoded.
-                        # Two bounds, because a chunked body has two sizes.
-                        # The decoded body is what the application sees; the
-                        # raw stream is what the connection cost. Framing is
-                        # consumed and dropped as it is decoded, so without
-                        # the second an attacker could send the body limit
-                        # in real data and then keep going in chunk-extension
-                        # bytes, bounded only by the decoder's ratio guard.
-                        if (
-                            buf_len - raw_body_start > config.max_request_body_size
-                            or provision_pool.provisions[slot].chunk_decoder._total_read
-                            > 2 * config.max_request_body_size
-                        ):
-                            _send_error_to_fd(fd_val, PayloadTooLarge())
-                            _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
-                            continue
-                        if buf_len > tail_start:
-                            var ret: Int
-                            var produced: Int
-                            ret, produced = provision_pool.provisions[
-                                slot
-                            ].chunk_decoder.decode(
-                                Span(provision_pool.provisions[slot].recv_buffer)[
-                                    tail_start:
-                                ]
-                            )
-                            if ret == -1:
-                                _send_error_to_fd(fd_val, BadRequest())
-                                _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
-                                continue
-                            var leftover = provision_pool.provisions[
-                                slot
-                            ].chunk_decoder.pending_bytes
-                            # Drop the framing bytes this pass consumed, so
-                            # the next read appends straight onto the tail.
-                            provision_pool.provisions[slot].recv_buffer.resize(
-                                tail_start + produced + leftover, 0
-                            )
-                            decoded_so_far += produced
-                            body_st.bytes_read = decoded_so_far
-                            provision_pool.provisions[slot].body_state = body_st
-                            if ret >= 0:
-                                # Complete. `pending_bytes` bytes past the
-                                # chunked data stay in the buffer: they are
-                                # the next pipelined request, and the
-                                # keep-alive reset preserves them.
-                                provision_pool.provisions[slot].request_end = (
-                                    raw_body_start + decoded_so_far
-                                )
-                                body_st.content_length = decoded_so_far
-                                body_st.bytes_read = decoded_so_far
-                                body_st.is_chunked = False
-                                provision_pool.provisions[slot].body_state = body_st
-                                if config.body_read_timeout > 0:
-                                    backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
-                                provision_pool.provisions[slot].state = ConnectionState.processing()
-                                _process_request(
-                                    backend, slot, fd_val, handler,
-                                    config, server_address, tcp_keep_alive,
-                                    slot_fds, slot_response, slot_send_offset, slot_header_start,
-                                    fd_to_slot, provision_pool, active_count, metrics,
-                                    slot_sse, slot_ws, slot_ws_state,
-                                    slot_read_armed, slot_idle_deadline,
-                                    date_cache_sec, date_cache, offload,
-                                )
-                        # ret == -2 or empty: wait for more data via EVFILT_READ
-                    elif body_st.bytes_read >= body_st.content_length:
-                        if config.body_read_timeout > 0:
-                            backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
-
-                        provision_pool.provisions[slot].state = ConnectionState.processing()
-                        _process_request(
-                            backend, slot, fd_val,
-                            handler,
-                            config, server_address, tcp_keep_alive,
-                            slot_fds, slot_response, slot_send_offset,
-                            slot_header_start,
-                            fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                            slot_read_armed, slot_idle_deadline,
-                            date_cache_sec, date_cache, offload,
-                        )
-
-                    # One recv per event does not drain an edge-triggered
-                    # socket: a body larger than the staging buffer leaves
-                    # bytes pending that will never raise another edge on
-                    # their own. Re-register to regenerate readiness for
-                    # them, the same reason as the arm in
-                    # _handle_read_headers.
-                    if (
-                        slot_fds[slot] != UNUSED
-                        and provision_pool.provisions[slot].state.kind
-                        == ConnectionState.READING_BODY
-                    ):
-                        backend.try_add_read(fd_val)
-                        slot_read_armed[slot] = True
-
-                # A response completed inline above may have left the NEXT
-                # pipelined request whole in recv_buffer, with no event ever
-                # coming to announce it.
+                    continue
+                _after_send(
+                    backend, slot, fd_val,
+                    handler, config, server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset,
+                    slot_header_start,
+                    fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                )
                 _drain_pipelined(
                     backend, slot, fd_val, handler, config,
                     server_address, tcp_keep_alive,
@@ -844,294 +1087,404 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                 )
                 continue
 
-            # --- Write events on connection sockets ---
-            if backend.event_filter(i) == EVFILT_WRITE:
-                var fd_val = Int(backend.event_ident(i))
-                if fd_val >= len(fd_to_slot):
+            var fd_desc = FileDescriptor(fd_val)
+            var sent: UInt
+            try:
+                sent = send(
+                    fd_desc,
+                    Span(slot_response[slot])[slot_send_offset[slot]:],
+                    UInt(remaining),
+                    0,
+                )
+            except send_err:
+                if send_err.isa[SendEAGAINError]():
+                    backend.try_add_write_oneshot(fd_val)
+                    slot_read_armed[slot] = False
                     continue
-                var slot = fd_to_slot[fd_val]
-                if slot == UNUSED:
-                    continue
+                _close_slot(
+                    backend, handler, slot, fd_val,
+                    slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                )
+                continue
 
-                if provision_pool.provisions[slot].state.kind != ConnectionState.RESPONDING:
-                    continue
+            slot_send_offset[slot] += Int(sent)
 
-                if offload.offloaded[slot]:
-                    continue
-
-                var remaining = len(slot_response[slot]) - slot_send_offset[slot]
-                if remaining <= 0:
-                    # Head already drained: this readiness belongs to the
-                    # file body, if one is still owed.
-                    var pumped = _pump_body_fd(
-                        provision_pool.provisions[slot], fd_val
-                    )
-                    if pumped == BODY_FD_FATAL:
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool,
-                            active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                        continue
-                    if pumped == BODY_FD_MORE:
-                        try:
-                            backend.add_write_oneshot(fd_val)
-                            slot_read_armed[slot] = False
-                        except:
-                            _close_slot(
-                                backend, handler, slot, fd_val,
-                                slot_fds, fd_to_slot, provision_pool,
-                                active_count, metrics,
-                                slot_sse, slot_ws, slot_ws_state,
-                            )
-                        continue
-                    _after_send(
-                        backend, slot, fd_val,
-                        handler, config, server_address, tcp_keep_alive,
-                        slot_fds, slot_response, slot_send_offset,
-                        slot_header_start,
-                        fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                        slot_read_armed, slot_idle_deadline,
-                    )
-                    _drain_pipelined(
-                        backend, slot, fd_val, handler, config,
-                        server_address, tcp_keep_alive,
-                        slot_fds, slot_response, slot_send_offset,
-                        slot_header_start, fd_to_slot, provision_pool,
-                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                        slot_read_armed, slot_idle_deadline,
-                        date_cache_sec, date_cache, offload,
-                    )
-                    continue
-
-                var fd_desc = FileDescriptor(fd_val)
-                var sent: UInt
+            if slot_send_offset[slot] >= len(slot_response[slot]):
+                # The partial-send completion of a streaming buffer: ack
+                # the PAYLOAD the drain recorded for it (the drain pass
+                # acked nothing, having sent only part). Not the buffer
+                # length — chunk framing makes those differ, and the
+                # window must count what the application produced. The
+                # stream head lands here too, with 0 owed.
+                if offload.ack_payload[slot] > 0 and offload.slot_channel_stream(slot):
+                    if not offload.pool()[].ack_stream(slot, offload.ack_payload[slot]):
+                        if offload.ack_owed[slot] == 0:
+                            offload.ack_owed_count += 1
+                        offload.ack_owed[slot] += offload.ack_payload[slot]
+                offload.ack_payload[slot] = 0
+                _after_send(
+                    backend, slot, fd_val,
+                    handler, config, server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset,
+                    slot_header_start,
+                    fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                )
+                _drain_pipelined(
+                    backend, slot, fd_val, handler, config,
+                    server_address, tcp_keep_alive,
+                    slot_fds, slot_response, slot_send_offset,
+                    slot_header_start, fd_to_slot, provision_pool,
+                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                    slot_read_armed, slot_idle_deadline,
+                    date_cache_sec, date_cache, offload,
+                )
+            else:
                 try:
-                    sent = send(
-                        fd_desc,
-                        Span(slot_response[slot])[slot_send_offset[slot]:],
-                        UInt(remaining),
-                        0,
-                    )
-                except send_err:
-                    if send_err.isa[SendEAGAINError]():
-                        backend.try_add_write_oneshot(fd_val)
-                        slot_read_armed[slot] = False
-                        continue
+                    backend.add_write_oneshot(fd_val)
+                    slot_read_armed[slot] = False
+                except:
                     _close_slot(
                         backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
-                    continue
 
-                slot_send_offset[slot] += Int(sent)
-
-                if slot_send_offset[slot] >= len(slot_response[slot]):
-                    # The partial-send completion of a streaming buffer: ack
-                    # the PAYLOAD the drain recorded for it (the drain pass
-                    # acked nothing, having sent only part). Not the buffer
-                    # length — chunk framing makes those differ, and the
-                    # window must count what the application produced. The
-                    # stream head lands here too, with 0 owed.
-                    if offload.ack_payload[slot] > 0 and offload.slot_channel_stream(slot):
-                        if not offload.pool()[].ack_stream(slot, offload.ack_payload[slot]):
-                            if offload.ack_owed[slot] == 0:
-                                offload.ack_owed_count += 1
-                            offload.ack_owed[slot] += offload.ack_payload[slot]
-                    offload.ack_payload[slot] = 0
-                    _after_send(
-                        backend, slot, fd_val,
-                        handler, config, server_address, tcp_keep_alive,
-                        slot_fds, slot_response, slot_send_offset,
-                        slot_header_start,
-                        fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                        slot_read_armed, slot_idle_deadline,
-                    )
-                    _drain_pipelined(
-                        backend, slot, fd_val, handler, config,
-                        server_address, tcp_keep_alive,
-                        slot_fds, slot_response, slot_send_offset,
-                        slot_header_start, fd_to_slot, provision_pool,
-                        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                        slot_read_armed, slot_idle_deadline,
-                        date_cache_sec, date_cache, offload,
-                    )
-                else:
-                    try:
-                        backend.add_write_oneshot(fd_val)
-                        slot_read_armed[slot] = False
-                    except:
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-
-        # Credit the ack channel refused earlier (`ack_stream` returned
-        # False: EAGAIN, the executor not reading at that instant — most
-        # likely because it was itself waiting for THIS loop to drain its
-        # chunks). Retried every pass and never dropped: a window short by
-        # one ack is a `send()` that awaits forever. A slot that has since
-        # closed forfeits what it was owed; the head of the next stream on
-        # that slot seeds a fresh window.
-        if offload.ack_owed_count > 0:
-            var can_ack = offload.chunk_active()
-            for s in range(max_conns):
-                if offload.ack_owed[s] <= 0:
-                    continue
-                if slot_fds[s] == UNUSED or (can_ack and offload.pool()[].ack_stream(s, offload.ack_owed[s])):
-                    offload.ack_owed[s] = 0
-                    offload.ack_owed_count -= 1
-
-        # Outbox drain: push pending bytes to streaming connections — SSE
-        # events and WebSocket frames share the same per-slot outbox contract
-        # (sse_drain_slot returns whichever the handler queued).
+    # Credit the ack channel refused earlier (`ack_stream` returned
+    # False: EAGAIN, the executor not reading at that instant — most
+    # likely because it was itself waiting for THIS loop to drain its
+    # chunks). Retried every pass and never dropped: a window short by
+    # one ack is a `send()` that awaits forever. A slot that has since
+    # closed forfeits what it was owed; the head of the next stream on
+    # that slot seeds a fresh window.
+    if offload.ack_owed_count > 0:
+        var can_ack = offload.chunk_active()
         for s in range(max_conns):
-            var s_idle = (
-                slot_sse[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_SSE
-            ) or (
-                slot_ws[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
-            )
-            if s_idle and slot_fds[s] != UNUSED and not offload.offloaded[s]:
-                # A channel stream — an executor's, or a pool thread's WSGI
-                # iterable (asked per slot: a held stream on the same loop
-                # is drained by the same pass and is none of this): drained
-                # bytes are acked back to the producer's credit window, and
-                # `sse_is_streaming` — unread by the loop anywhere else —
-                # becomes the end-of-stream signal: the handler unsubscribes
-                # once the final chunk has been handed out, and the loop
-                # closes after those bytes land. Close is how a
-                # content-length-free streamed body ends.
-                var asgi_stream = offload.slot_channel_stream(s)
-                var pending = handler.sse_drain_slot(s)
-                # Read ONCE per pass: `sse_drain_slot` above is what makes it
-                # go false, so asking twice can straddle the transition and
-                # send a terminator on a stream that just queued more.
-                var ended = asgi_stream and not handler.sse_is_streaming(s)
-                var framed = offload.chunked[s]
+            if offload.ack_owed[s] <= 0:
+                continue
+            if slot_fds[s] == UNUSED or (can_ack and offload.pool()[].ack_stream(s, offload.ack_owed[s])):
+                offload.ack_owed[s] = 0
+                offload.ack_owed_count -= 1
 
-                # Payload bytes are what the producer's credit window counts.
-                # Framing bytes are added below and deliberately excluded: a
-                # window replenished by wire bytes shrinks by the framing
-                # overhead on every chunk, and a long stream starves itself.
-                var payload_len = len(pending)
-                var out = Bytes()
-                if framed:
-                    if payload_len > 0:
-                        out = encode_chunk(Span(pending))
+    # Outbox drain: push pending bytes to streaming connections — SSE
+    # events and WebSocket frames share the same per-slot outbox contract
+    # (sse_drain_slot returns whichever the handler queued).
+    for s in range(max_conns):
+        var s_idle = (
+            slot_sse[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_SSE
+        ) or (
+            slot_ws[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
+        )
+        if s_idle and slot_fds[s] != UNUSED and not offload.offloaded[s]:
+            # A channel stream — an executor's, or a pool thread's WSGI
+            # iterable (asked per slot: a held stream on the same loop
+            # is drained by the same pass and is none of this): drained
+            # bytes are acked back to the producer's credit window, and
+            # `sse_is_streaming` — unread by the loop anywhere else —
+            # becomes the end-of-stream signal: the handler unsubscribes
+            # once the final chunk has been handed out, and the loop
+            # closes after those bytes land. Close is how a
+            # content-length-free streamed body ends.
+            var asgi_stream = offload.slot_channel_stream(s)
+            var pending = handler.sse_drain_slot(s)
+            # Read ONCE per pass: `sse_drain_slot` above is what makes it
+            # go false, so asking twice can straddle the transition and
+            # send a terminator on a stream that just queued more.
+            var ended = asgi_stream and not handler.sse_is_streaming(s)
+            var framed = offload.chunked[s]
+
+            # Payload bytes are what the producer's credit window counts.
+            # Framing bytes are added below and deliberately excluded: a
+            # window replenished by wire bytes shrinks by the framing
+            # overhead on every chunk, and a long stream starves itself.
+            var payload_len = len(pending)
+            var out = Bytes()
+            if framed:
+                if payload_len > 0:
+                    out = encode_chunk(Span(pending))
+                if ended:
+                    out.extend(chunked_terminator())
+            elif payload_len > 0:
+                out = Bytes(Span(pending))
+
+            if len(out) > 0:
+                slot_response[s] = out^
+                slot_send_offset[s] = 0
+                # What the write-ready completion owes the producer if
+                # this buffer does not land in one send below.
+                offload.ack_payload[s] = payload_len if asgi_stream else 0
+                provision_pool.provisions[s].state = ConnectionState.responding()
+                # Eager send
+                var sse_fd = FileDescriptor(slot_fds[s])
+                try:
+                    var sent = send(sse_fd, Span(slot_response[s]), UInt(len(slot_response[s])), 0)
+                    slot_send_offset[s] = Int(sent)
+                except:
+                    pass
+                if slot_send_offset[s] >= len(slot_response[s]):
+                    # Landed in one send: ack here and cancel what the
+                    # write-ready path would otherwise have owed.
+                    offload.ack_payload[s] = 0
+                    if asgi_stream and payload_len > 0:
+                        if not offload.pool()[].ack_stream(s, payload_len):
+                            if offload.ack_owed[s] == 0:
+                                offload.ack_owed_count += 1
+                            offload.ack_owed[s] += payload_len
                     if ended:
-                        out.extend(chunked_terminator())
-                elif payload_len > 0:
-                    out = Bytes(Span(pending))
-
-                if len(out) > 0:
-                    slot_response[s] = out^
-                    slot_send_offset[s] = 0
-                    # What the write-ready completion owes the producer if
-                    # this buffer does not land in one send below.
-                    offload.ack_payload[s] = payload_len if asgi_stream else 0
-                    provision_pool.provisions[s].state = ConnectionState.responding()
-                    # Eager send
-                    var sse_fd = FileDescriptor(slot_fds[s])
-                    try:
-                        var sent = send(sse_fd, Span(slot_response[s]), UInt(len(slot_response[s])), 0)
-                        slot_send_offset[s] = Int(sent)
-                    except:
-                        pass
-                    if slot_send_offset[s] >= len(slot_response[s]):
-                        # Landed in one send: ack here and cancel what the
-                        # write-ready path would otherwise have owed.
-                        offload.ack_payload[s] = 0
-                        if asgi_stream and payload_len > 0:
-                            if not offload.pool()[].ack_stream(s, payload_len):
-                                if offload.ack_owed[s] == 0:
-                                    offload.ack_owed_count += 1
-                                offload.ack_owed[s] += payload_len
-                        if ended:
-                            # Whatever comes next on this slot is not this
-                            # stream: forget its producer's ack fd and its
-                            # generation before the connection is reused
-                            # or closed.
-                            offload.clear_stream(s)
-                            if framed:
-                                # The terminator landed: the message is
-                                # complete and the connection is reusable.
-                                # Clearing the stream flag is what routes
-                                # `_after_send` down its keep-alive path
-                                # instead of back into streaming.
-                                slot_sse[s] = False
-                                offload.chunked[s] = False
-                                _after_send(
-                                    backend, s, slot_fds[s],
-                                    handler, config, server_address, tcp_keep_alive,
-                                    slot_fds, slot_response, slot_send_offset,
-                                    slot_header_start,
-                                    fd_to_slot, provision_pool, active_count, metrics,
-                                    slot_sse, slot_ws, slot_ws_state,
-                                    slot_read_armed, slot_idle_deadline,
-                                )
-                                _drain_pipelined(
-                                    backend, s, slot_fds[s], handler, config,
-                                    server_address, tcp_keep_alive,
-                                    slot_fds, slot_response, slot_send_offset,
-                                    slot_header_start, fd_to_slot, provision_pool,
-                                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                                    slot_read_armed, slot_idle_deadline,
-                                    date_cache_sec, date_cache, offload,
-                                )
-                            else:
-                                _close_slot(
-                                    backend, handler, s, slot_fds[s],
-                                    slot_fds, fd_to_slot, provision_pool,
-                                    active_count, metrics,
-                                    slot_sse, slot_ws, slot_ws_state,
-                                )
-                            continue
-                        provision_pool.provisions[s].state = ConnectionState.streaming_ws() if slot_ws[s] else ConnectionState.streaming_sse()
-                    else:
-                        if ended:
-                            # The final buffer is on its way; the stream's
-                            # bookkeeping is over even so. The credit its
-                            # last bytes owe was recorded in `ack_payload`
-                            # before this and is acked by the write-ready
-                            # path through `slot_channel_stream` — which
-                            # stays true for an executor's slot (lane) and,
-                            # for a pool thread's, is answered by the ack
-                            # the eager send already covered.
-                            offload.clear_stream(s)
-                        if ended and not framed:
-                            # The rest of the final buffer flushes through
-                            # the write-ready path; _after_send's existing
-                            # should_close branch closes it there.
-                            provision_pool.provisions[s].should_close = True
-                        elif ended and framed:
-                            # Same flush, but the message ends with the
-                            # terminator already in this buffer — so the
-                            # write-ready completion must finish it as a
-                            # keep-alive response, not a close.
+                        # Whatever comes next on this slot is not this
+                        # stream: forget its producer's ack fd and its
+                        # generation before the connection is reused
+                        # or closed.
+                        offload.clear_stream(s)
+                        if framed:
+                            # The terminator landed: the message is
+                            # complete and the connection is reusable.
+                            # Clearing the stream flag is what routes
+                            # `_after_send` down its keep-alive path
+                            # instead of back into streaming.
                             slot_sse[s] = False
                             offload.chunked[s] = False
-                        backend.try_add_write_oneshot(slot_fds[s])
-                        slot_read_armed[s] = False
-                elif ended:
-                    # End marked with nothing left to send. Only reachable
-                    # unframed: a framed stream always has a terminator to
-                    # write, so `out` is never empty when it ends.
-                    offload.clear_stream(s)
+                            _after_send(
+                                backend, s, slot_fds[s],
+                                handler, config, server_address, tcp_keep_alive,
+                                slot_fds, slot_response, slot_send_offset,
+                                slot_header_start,
+                                fd_to_slot, provision_pool, active_count, metrics,
+                                slot_sse, slot_ws, slot_ws_state,
+                                slot_read_armed, slot_idle_deadline,
+                            )
+                            _drain_pipelined(
+                                backend, s, slot_fds[s], handler, config,
+                                server_address, tcp_keep_alive,
+                                slot_fds, slot_response, slot_send_offset,
+                                slot_header_start, fd_to_slot, provision_pool,
+                                active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                                slot_read_armed, slot_idle_deadline,
+                                date_cache_sec, date_cache, offload,
+                            )
+                        else:
+                            _close_slot(
+                                backend, handler, s, slot_fds[s],
+                                slot_fds, fd_to_slot, provision_pool,
+                                active_count, metrics,
+                                slot_sse, slot_ws, slot_ws_state,
+                            )
+                        continue
+                    provision_pool.provisions[s].state = ConnectionState.streaming_ws() if slot_ws[s] else ConnectionState.streaming_sse()
+                else:
+                    if ended:
+                        # The final buffer is on its way; the stream's
+                        # bookkeeping is over even so. The credit its
+                        # last bytes owe was recorded in `ack_payload`
+                        # before this and is acked by the write-ready
+                        # path through `slot_channel_stream` — which
+                        # stays true for an executor's slot (lane) and,
+                        # for a pool thread's, is answered by the ack
+                        # the eager send already covered.
+                        offload.clear_stream(s)
+                    if ended and not framed:
+                        # The rest of the final buffer flushes through
+                        # the write-ready path; _after_send's existing
+                        # should_close branch closes it there.
+                        provision_pool.provisions[s].should_close = True
+                    elif ended and framed:
+                        # Same flush, but the message ends with the
+                        # terminator already in this buffer — so the
+                        # write-ready completion must finish it as a
+                        # keep-alive response, not a close.
+                        slot_sse[s] = False
+                        offload.chunked[s] = False
+                    backend.try_add_write_oneshot(slot_fds[s])
+                    slot_read_armed[s] = False
+            elif ended:
+                # End marked with nothing left to send. Only reachable
+                # unframed: a framed stream always has a terminator to
+                # write, so `out` is never empty when it ends.
+                offload.clear_stream(s)
+                _close_slot(
+                    backend, handler, s, slot_fds[s],
+                    slot_fds, fd_to_slot, provision_pool,
+                    active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                )
+
+    # The pass's executor submits, one datagram per lane. After the
+    # outbox drain and before this loop can park in `wait`: a slot left
+    # buffered across a wait is a request nothing would ever run.
+    _flush_submits(
+        backend, handler, config, server_address, tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset, slot_header_start,
+        fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+        slot_idle_deadline, date_cache_sec, date_cache, offload,
+    )
+
+    # Idle-timeout sweep. Replaces the old per-request timerfd re-arm
+    # (one timerfd_settime per keep-alive request) with a once-a-second
+    # scan of active slots. Timeouts are whole seconds, so the 1 s sweep
+    # granularity changes nothing observable; the loop's wait() timeout
+    # of 1000 ms guarantees the sweep runs even when the server is idle.
+    if config.idle_timeout > 0 or config.header_read_timeout > 0:
+        var sweep_now = perf_counter_ns()
+        if sweep_now - last_idle_sweep >= 1_000_000_000:
+            last_idle_sweep = sweep_now
+            var header_ns = config.header_read_timeout * 1_000_000_000
+            for s in range(max_conns):
+                if slot_fds[s] == UNUSED:
+                    continue
+                # A slot with a job in a pool thread is working, not idle,
+                # and its request belongs to another thread — closing it
+                # here would release a provision still in use.
+                if offload.offloaded[s]:
+                    continue
+                if (
+                    config.idle_timeout > 0
+                    and slot_idle_deadline[s] != 0
+                    and sweep_now > slot_idle_deadline[s]
+                ):
                     _close_slot(
                         backend, handler, s, slot_fds[s],
-                        slot_fds, fd_to_slot, provision_pool,
-                        active_count, metrics,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+                    continue
+                # Header deadline, sweeping rather than by timerfd. A client
+                # that connects and says nothing produces no read event, so
+                # the check in `_read_headers` can never fire for it and
+                # something has to notice on its own. Unlike the timerfd this
+                # replaces, it also covers a client that stalls midway through
+                # headers on a REUSED connection — that timer was armed on
+                # accept and retired at the first complete header parse.
+                if (
+                    config.header_read_timeout > 0
+                    and slot_header_start[s] != 0
+                    and provision_pool.provisions[s].state.kind
+                    == ConnectionState.READING_HEADERS
+                    and sweep_now - slot_header_start[s] > header_ns
+                ):
+                    if provision_pool.provisions[s].keepalive_count == 0:
+                        _send_error_to_fd(slot_fds[s], RequestTimeout())
+                    _close_slot(
+                        backend, handler, s, slot_fds[s],
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
 
-        # The pass's executor submits, one datagram per lane. After the
-        # outbox drain and before this loop can park in `wait`: a slot left
-        # buffered across a wait is a request nothing would ever run.
+    return should_shutdown
+
+
+def _run_shutdown[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+) raises:
+    """The graceful shutdown: close the listener, say goodbye to streams,
+    drain in-flight requests within the budget, flush the last submits.
+    The former `if should_shutdown:` branch, unchanged.
+    """
+    ref offload = st.offload
+    ref max_conns = st.max_conns
+    ref provision_pool = st.provision_pool
+    ref slot_fds = st.slot_fds
+    ref slot_response = st.slot_response
+    ref slot_send_offset = st.slot_send_offset
+    ref slot_header_start = st.slot_header_start
+    ref slot_sse = st.slot_sse
+    ref slot_ws = st.slot_ws
+    ref slot_read_armed = st.slot_read_armed
+    ref slot_idle_deadline = st.slot_idle_deadline
+    ref slot_ws_state = st.slot_ws_state
+    ref fd_to_slot = st.fd_to_slot
+    ref active_count = st.active_count
+    ref metrics = st.metrics
+    ref date_cache_sec = st.date_cache_sec
+    ref date_cache = st.date_cache
+    ref listen_fd = st.listen_fd
+    ref config = st.config
+    ref server_address = st.server_address
+    ref tcp_keep_alive = st.tcp_keep_alive
+    ref bus_read_fd = st.bus_read_fd
+
+    # Graceful shutdown: close listener, drain in-flight, close SSE
+    try:
+        close(listen_fd)
+    except:
+        pass
+
+
+    # Tell every streaming client we're going: an SSE close comment,
+    # or a WebSocket close frame (1001 going away).
+    for s in range(max_conns):
+        if (slot_sse[s] or slot_ws[s]) and slot_fds[s] != UNUSED:
+            var farewell: List[UInt8]
+            if slot_ws[s]:
+                farewell = close_frame(WS_CLOSE_GOING_AWAY)
+            else:
+                farewell = List[UInt8](String(": close\n\n").as_bytes())
+            try:
+                _ = send(FileDescriptor(slot_fds[s]), Span(farewell), UInt(len(farewell)), 0)
+            except:
+                pass
+            _close_slot(
+                backend, handler, s, slot_fds[s],
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+
+    # Close the connections that have nothing to drain, before timing
+    # anything. `active_count` counts a connection that is merely
+    # *open* the same as one with a request in flight, so without this
+    # a server holding idle keep-alive connections waited out the
+    # whole DRAIN_TIMEOUT_NS budget for clients that had already been
+    # answered — measured at 5.02 s to exit against 0.02 s idle, in
+    # every execution mode, which is most of `docker stop`'s 10 s.
+    #
+    # A slot in READING_HEADERS with an empty receive buffer is
+    # between requests: `prepare_for_new_request` clears the buffer
+    # after each response, and the first byte of the next request
+    # both refills it and moves the state on. Such a connection
+    # cannot be served by the drain loop under any circumstance —
+    # that loop dispatches EVFILT_WRITE only, so a request arriving
+    # during the drain is not read there today either. Closing it now
+    # therefore drops nothing that waiting would have delivered, and
+    # leaves the whole budget to connections genuinely mid-request or
+    # mid-response.
+    #
+    # Skipped, for the reasons the idle and header sweeps skip them:
+    # a slot with a job in a pool thread is working, not idle, and its
+    # provision is still borrowed by another thread.
+    for s in range(max_conns):
+        if slot_fds[s] == UNUSED or offload.offloaded[s]:
+            continue
+        if (
+            provision_pool.provisions[s].state.kind
+            == ConnectionState.READING_HEADERS
+            and len(provision_pool.provisions[s].recv_buffer) == 0
+        ):
+            _close_slot(
+                backend, handler, s, slot_fds[s],
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+
+    # Drain in-flight: wait for active non-SSE connections (max 5s).
+    #
+    # `offload.inflight` is in the condition as well as `active_count`,
+    # and not redundantly: a client that vanished while its request was
+    # in a pool thread has already been subtracted from `active_count`,
+    # but its slot stays borrowed until the completion arrives. Without
+    # the second term a shutdown could leave that job unclaimed.
+    # Requests still inside a pool thread are answered here rather than
+    # dropped, on the same 5 s budget — `_service_completions` runs on
+    # every pass below, before the events are dispatched.
+    var drain_start = perf_counter_ns()
+    comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
+    while active_count > 0 or offload.inflight > 0:
+        if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
+            break
+        # Nothing new is read during the drain, so this only ever
+        # sends what the pass that saw the shutdown had buffered —
+        # but it must go before this wait, for the reason above.
         _flush_submits(
             backend, handler, config, server_address, tcp_keep_alive,
             slot_fds, slot_response, slot_send_offset, slot_header_start,
@@ -1139,204 +1492,63 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             slot_sse, slot_ws, slot_ws_state, slot_read_armed,
             slot_idle_deadline, date_cache_sec, date_cache, offload,
         )
-
-        # Idle-timeout sweep. Replaces the old per-request timerfd re-arm
-        # (one timerfd_settime per keep-alive request) with a once-a-second
-        # scan of active slots. Timeouts are whole seconds, so the 1 s sweep
-        # granularity changes nothing observable; the loop's wait() timeout
-        # of 1000 ms guarantees the sweep runs even when the server is idle.
-        if config.idle_timeout > 0 or config.header_read_timeout > 0:
-            var sweep_now = perf_counter_ns()
-            if sweep_now - last_idle_sweep >= 1_000_000_000:
-                last_idle_sweep = sweep_now
-                var header_ns = config.header_read_timeout * 1_000_000_000
-                for s in range(max_conns):
-                    if slot_fds[s] == UNUSED:
-                        continue
-                    # A slot with a job in a pool thread is working, not idle,
-                    # and its request belongs to another thread — closing it
-                    # here would release a provision still in use.
-                    if offload.offloaded[s]:
-                        continue
-                    if (
-                        config.idle_timeout > 0
-                        and slot_idle_deadline[s] != 0
-                        and sweep_now > slot_idle_deadline[s]
-                    ):
-                        _close_slot(
-                            backend, handler, s, slot_fds[s],
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                        continue
-                    # Header deadline, sweeping rather than by timerfd. A client
-                    # that connects and says nothing produces no read event, so
-                    # the check in `_read_headers` can never fire for it and
-                    # something has to notice on its own. Unlike the timerfd this
-                    # replaces, it also covers a client that stalls midway through
-                    # headers on a REUSED connection — that timer was armed on
-                    # accept and retired at the first complete header parse.
-                    if (
-                        config.header_read_timeout > 0
-                        and slot_header_start[s] != 0
-                        and provision_pool.provisions[s].state.kind
-                        == ConnectionState.READING_HEADERS
-                        and sweep_now - slot_header_start[s] > header_ns
-                    ):
-                        if provision_pool.provisions[s].keepalive_count == 0:
-                            _send_error_to_fd(slot_fds[s], RequestTimeout())
-                        _close_slot(
-                            backend, handler, s, slot_fds[s],
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-
-        if should_shutdown:
-            # Graceful shutdown: close listener, drain in-flight, close SSE
+        var drain_events = backend.wait(100)
+        _service_completions(
+            backend, handler, config, server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset, slot_header_start,
+            fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload, bus_read_fd,
+        )
+        for di in range(drain_events):
+            if (backend.event_flags(di) & EV_ERROR) != 0:
+                continue
+            var drain_ident = Int(backend.event_ident(di))
+            var drain_filter = backend.event_filter(di)
+            # Handle write completions during drain
+            if drain_filter == EVFILT_WRITE:
+                var drain_slot = fd_to_slot[drain_ident] if drain_ident < len(fd_to_slot) else UNUSED
+                if drain_slot != UNUSED:
+                    _close_slot(
+                        backend, handler, drain_slot, drain_ident,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
+    # A stream whose head completed DURING the drain — a pool
+    # thread answering a streamed WSGI response in its last job —
+    # became a streaming slot after the farewell pass above, and
+    # the drain loop dispatches EVFILT_WRITE only, so nothing in it
+    # would close that connection. Say goodbye to it now, so the
+    # producer thread gets its disconnect and comes back before the
+    # bounded join, instead of being abandoned as a straggler.
+    for s in range(max_conns):
+        if (slot_sse[s] or slot_ws[s]) and slot_fds[s] != UNUSED:
+            var late_farewell: List[UInt8]
+            if slot_ws[s]:
+                late_farewell = close_frame(WS_CLOSE_GOING_AWAY)
+            else:
+                late_farewell = List[UInt8](String(": close\n\n").as_bytes())
             try:
-                close(listen_fd)
+                _ = send(FileDescriptor(slot_fds[s]), Span(late_farewell), UInt(len(late_farewell)), 0)
             except:
                 pass
-
-
-            # Tell every streaming client we're going: an SSE close comment,
-            # or a WebSocket close frame (1001 going away).
-            for s in range(max_conns):
-                if (slot_sse[s] or slot_ws[s]) and slot_fds[s] != UNUSED:
-                    var farewell: List[UInt8]
-                    if slot_ws[s]:
-                        farewell = close_frame(WS_CLOSE_GOING_AWAY)
-                    else:
-                        farewell = List[UInt8](String(": close\n\n").as_bytes())
-                    try:
-                        _ = send(FileDescriptor(slot_fds[s]), Span(farewell), UInt(len(farewell)), 0)
-                    except:
-                        pass
-                    _close_slot(
-                        backend, handler, s, slot_fds[s],
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                    )
-
-            # Close the connections that have nothing to drain, before timing
-            # anything. `active_count` counts a connection that is merely
-            # *open* the same as one with a request in flight, so without this
-            # a server holding idle keep-alive connections waited out the
-            # whole DRAIN_TIMEOUT_NS budget for clients that had already been
-            # answered — measured at 5.02 s to exit against 0.02 s idle, in
-            # every execution mode, which is most of `docker stop`'s 10 s.
-            #
-            # A slot in READING_HEADERS with an empty receive buffer is
-            # between requests: `prepare_for_new_request` clears the buffer
-            # after each response, and the first byte of the next request
-            # both refills it and moves the state on. Such a connection
-            # cannot be served by the drain loop under any circumstance —
-            # that loop dispatches EVFILT_WRITE only, so a request arriving
-            # during the drain is not read there today either. Closing it now
-            # therefore drops nothing that waiting would have delivered, and
-            # leaves the whole budget to connections genuinely mid-request or
-            # mid-response.
-            #
-            # Skipped, for the reasons the idle and header sweeps skip them:
-            # a slot with a job in a pool thread is working, not idle, and its
-            # provision is still borrowed by another thread.
-            for s in range(max_conns):
-                if slot_fds[s] == UNUSED or offload.offloaded[s]:
-                    continue
-                if (
-                    provision_pool.provisions[s].state.kind
-                    == ConnectionState.READING_HEADERS
-                    and len(provision_pool.provisions[s].recv_buffer) == 0
-                ):
-                    _close_slot(
-                        backend, handler, s, slot_fds[s],
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                    )
-
-            # Drain in-flight: wait for active non-SSE connections (max 5s).
-            #
-            # `offload.inflight` is in the condition as well as `active_count`,
-            # and not redundantly: a client that vanished while its request was
-            # in a pool thread has already been subtracted from `active_count`,
-            # but its slot stays borrowed until the completion arrives. Without
-            # the second term a shutdown could leave that job unclaimed.
-            # Requests still inside a pool thread are answered here rather than
-            # dropped, on the same 5 s budget — `_service_completions` runs on
-            # every pass below, before the events are dispatched.
-            var drain_start = perf_counter_ns()
-            comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
-            while active_count > 0 or offload.inflight > 0:
-                if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
-                    break
-                # Nothing new is read during the drain, so this only ever
-                # sends what the pass that saw the shutdown had buffered —
-                # but it must go before this wait, for the reason above.
-                _flush_submits(
-                    backend, handler, config, server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset, slot_header_start,
-                    fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse, slot_ws, slot_ws_state, slot_read_armed,
-                    slot_idle_deadline, date_cache_sec, date_cache, offload,
-                )
-                var drain_events = backend.wait(100)
-                _service_completions(
-                    backend, handler, config, server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset, slot_header_start,
-                    fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload, bus_read_fd,
-                )
-                for di in range(drain_events):
-                    if (backend.event_flags(di) & EV_ERROR) != 0:
-                        continue
-                    var drain_ident = Int(backend.event_ident(di))
-                    var drain_filter = backend.event_filter(di)
-                    # Handle write completions during drain
-                    if drain_filter == EVFILT_WRITE:
-                        var drain_slot = fd_to_slot[drain_ident] if drain_ident < len(fd_to_slot) else UNUSED
-                        if drain_slot != UNUSED:
-                            _close_slot(
-                                backend, handler, drain_slot, drain_ident,
-                                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                                slot_sse, slot_ws, slot_ws_state,
-                            )
-            # A stream whose head completed DURING the drain — a pool
-            # thread answering a streamed WSGI response in its last job —
-            # became a streaming slot after the farewell pass above, and
-            # the drain loop dispatches EVFILT_WRITE only, so nothing in it
-            # would close that connection. Say goodbye to it now, so the
-            # producer thread gets its disconnect and comes back before the
-            # bounded join, instead of being abandoned as a straggler.
-            for s in range(max_conns):
-                if (slot_sse[s] or slot_ws[s]) and slot_fds[s] != UNUSED:
-                    var late_farewell: List[UInt8]
-                    if slot_ws[s]:
-                        late_farewell = close_frame(WS_CLOSE_GOING_AWAY)
-                    else:
-                        late_farewell = List[UInt8](String(": close\n\n").as_bytes())
-                    try:
-                        _ = send(FileDescriptor(slot_fds[s]), Span(late_farewell), UInt(len(late_farewell)), 0)
-                    except:
-                        pass
-                    _close_slot(
-                        backend, handler, s, slot_fds[s],
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                    )
-            # Once more before returning: the executor's pill goes out on
-            # its lane after this loop returns, and it must be FIFO behind
-            # every job — a job still buffered here would arrive after the
-            # pill and never run.
-            _flush_submits(
-                backend, handler, config, server_address, tcp_keep_alive,
-                slot_fds, slot_response, slot_send_offset, slot_header_start,
-                fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse, slot_ws, slot_ws_state, slot_read_armed,
-                slot_idle_deadline, date_cache_sec, date_cache, offload,
+            _close_slot(
+                backend, handler, s, slot_fds[s],
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
             )
-            break
+    # Once more before returning: the executor's pill goes out on
+    # its lane after this loop returns, and it must be FIFO behind
+    # every job — a job still buffered here would arrive after the
+    # pill and never run.
+    _flush_submits(
+        backend, handler, config, server_address, tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset, slot_header_start,
+        fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+        slot_idle_deadline, date_cache_sec, date_cache, offload,
+    )
 
 
 def _handle_read_headers[T: HTTPService, B: EventLoopBackend](

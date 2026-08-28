@@ -1140,6 +1140,53 @@ loop↔executor handoff — so optimising the 116k layer buys nothing here.
   the layer's time. `mojo-framework/packages/m0-data` has an SoA arena to
   start from.
 
+### The loop inversion — in progress 2026-08-28
+
+The handoff's item 1: run the Mojo loop's pass as a callback inside the
+executor's `run_forever`, on one thread, so a request goes parse → app →
+response with no datagram and no cross-thread wake. At c16 the pump batches
+about one submit per pass, so every request pays two wakes today; removing
+them is the whole bet, and the gate is unchanged — ≥1.0x
+`uvicorn --loop asyncio` at c16 on stdlib asyncio, both loops measured, RSS
+0 KB over 10k requests, `stress-asgi` N of N.
+
+Landed so far, each a verbatim move with zero behaviour change:
+`run_event_loop` is `prepare_loop` → `LoopState` + a `while` over
+`_run_pass` / `_run_shutdown`. Established on the way: asyncio's
+`KqueueSelector` fires `add_reader` on a kqueue fd (spiked live);
+`backend.wait(0)` is a real non-blocking poll; field-projected `ref`
+bindings of one `mut` struct pass exclusivity as separate `mut` arguments.
+
+The design, so it is not re-derived:
+
+- **Scope:** unmounted single-executor ASGI only — the benchmark shape.
+  Every other topology stays on the pump. Behind `M0_INVERTED=1` until the
+  gate passes, so the A/B is one environment variable.
+- **Submit:** a defaulted `HTTPService` hook (`direct_job(slot) -> Bool`,
+  default False — Phase 1 made adding one non-breaking). The loop still
+  parks the request; on an executor lane it asks the handler first and
+  sends the datagram only when it declines. `WSGIHandler` in inverted mode
+  answers by running the port's job branch, factored into one function
+  shared with the port.
+- **Complete:** the port keeps parking responses; its per-iteration
+  `_flush` calls `service_direct_completions[T,B](handler, backend, st,
+  slots)` — the per-slot body of `_service_completions` — instead of a
+  datagram. The port grows the loop state's and backend's addresses; the
+  backend is the platform one, no `DetachingBackend`, because `wait(0)`
+  never blocks attached.
+- **The ordering rule that makes it safe:** a stream's begin frame rides
+  the chunk channel and is drained by a PASS, while its head is a direct
+  completion. `_flush` therefore runs a pass first and completions second,
+  or a head could precede its own begin frame — the recycled-slot hazard
+  the 0.14.1 rules exist for. Deterministic on one thread.
+- **Driver:** `add_reader(kq_fd, _on_mojo)` → `port.pass_()`, plus a 1 Hz
+  `call_later` for the idle sweep, the date cache and the heartbeats,
+  which assume a wake per second. Acks and credit unchanged.
+- **Shutdown reshaped:** `_run_shutdown`'s drain waits in `backend.wait`,
+  which inside an asyncio callback blocks the very tasks it waits for.
+  Inverted, the drain is polled from `call_later` passes until
+  `active_count == 0` or the 5 s budget, then `loop.stop()`.
+
 ### The Mojo handler pool — shipped 2026-08-28
 
 The offload pool, for handlers written in Mojo. Planned as a kill-criterion
