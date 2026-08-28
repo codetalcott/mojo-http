@@ -134,7 +134,7 @@ struct NotesHandler(HTTPService):
         # added in after_response, which runs for this response too.
         if req.method == "OPTIONS":
             var resp = _empty(204, "No Content")
-            resp.headers[HeaderKey.ALLOW] = self._allow_header(path)
+            resp.headers[HeaderKey.ALLOW] = self.router.allow_header(path)
             return resp^
 
         var m = self.router.match(req.method, path)
@@ -145,7 +145,7 @@ struct NotesHandler(HTTPService):
             var resp = _problem(405, "Method Not Allowed", String(
                 req.method, " is not supported by ", path
             ), path)
-            resp.headers[HeaderKey.ALLOW] = self._allow_header(path)
+            resp.headers[HeaderKey.ALLOW] = self.router.allow_header(path)
             return resp^
 
         if not m.matched:
@@ -272,25 +272,6 @@ struct NotesHandler(HTTPService):
         _ = self.titles.pop()
         _ = self.bodies.pop()
         return _empty(204, "No Content")
-
-    def _allow_header(self, path: String) -> String:
-        """Methods the router would accept for this path, plus OPTIONS."""
-        var methods = List[String]()
-        methods.append("GET")
-        methods.append("POST")
-        methods.append("PUT")
-        methods.append("DELETE")
-        var allow = String()
-        for method in methods:
-            if self.router.match(method, path).matched:
-                if allow.byte_length() > 0:
-                    allow += ", "
-                allow += method
-        if allow.byte_length() > 0:
-            allow += ", OPTIONS"
-        else:
-            allow = "OPTIONS"
-        return allow
 
     # --- hooks ---------------------------------------------------------------
 

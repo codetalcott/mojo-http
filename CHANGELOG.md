@@ -24,6 +24,16 @@ versions may break the API**.
   longer breaks every implementer in the repo at once, which is what the old
   contract's warning was about. Adding one **without** a default still does.
 
+- **`Router.allow_header(path)`** builds a 405's `Allow:` from the routing
+  table. `apps/notes_api` had been probing the router once per method over a
+  hardcoded `["GET","POST","PUT","DELETE"]` list — five `match` calls to
+  answer a question the table already knew, and a route registered in any
+  other method (`PATCH`, `HEAD`) was silently missing from the header it
+  produced. `match` and `allow_header` now share one `_path_matches`, so the
+  two cannot disagree about which routes a path reaches; `Router.method_of`
+  reads a registration back. The header `smoke-notes` asserts byte for byte
+  (`GET, PUT, DELETE, OPTIONS`) is unchanged.
+
 ### Added
 
 - `packages/m0-http/test/test_service.mojo` — the guard for the above, and the
