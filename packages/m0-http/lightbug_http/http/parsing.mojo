@@ -62,16 +62,33 @@ def _simd_find_cr_or_control(ptr: Pointer[UInt8, _], length: Int) -> Int:
     return -1
 
 
-struct HTTPHeader(Copyable):
-    var name: String
+struct HTTPHeader(Copyable, Movable):
+    """One parsed field, as OFFSETS into the buffer the parser was given.
+
+    Four integers, no Strings. It used to carry `name: String` and
+    `value: String`, materialised by the scanners and then read back as
+    bytes by the one consumer — `parse_request_headers` / the response
+    twin — which copied them AGAIN into the `Headers` blob. Two copies of
+    every header per request, the first of which existed only to be the
+    source of the second; measured at 1.2 µs of a 3.7 µs user-space request
+    on the twelve-header browser shape (`scripts/bench_http_parts.mojo`).
+    As offsets the intermediate is gone, and the 100-element fill the
+    parser preallocates is 3.2 KB of integers rather than 200 String
+    constructions.
+
+    `name_len == 0` is an obs-fold continuation line, exactly as an empty
+    `name` String was.
+    """
+
+    var name_start: Int
     var name_len: Int
-    var value: String
+    var value_start: Int
     var value_len: Int
 
     def __init__(out self):
-        self.name = String()
+        self.name_start = 0
         self.name_len = 0
-        self.value = String()
+        self.value_start = 0
         self.value_len = 0
 
 
@@ -163,9 +180,19 @@ def create_string_from_reader[origin: ImmOrigin](reader: ByteReader[origin], sta
     return String()
 
 
-def get_token_to_eol[
+def scan_to_eol[
     origin: ImmOrigin
-](mut buf: ByteReader[origin], mut token: String, mut token_len: Int) raises HTTPParseError:
+](mut buf: ByteReader[origin], mut start: Int, mut length: Int) raises HTTPParseError:
+    """Advance past one field value to its line end, reported as an offset pair.
+
+    `start` and `length` index `buf`'s underlying span; nothing is copied.
+    `get_token_to_eol` is this plus a `String`, for the two callers that
+    need one (the response status message); `parse_headers` uses this
+    directly, because a header's value only ever becomes bytes in the
+    `Headers` blob — the `String` it used to build was a copy made to be
+    copied again, and at twelve headers per request that copying was a
+    third of the whole user-space request (`scripts/bench_http_parts.mojo`).
+    """
     var token_start = buf.read_pos
 
     # SIMD fast path: scan 64-byte chunks for control chars / line terminator.
@@ -206,15 +233,22 @@ def get_token_to_eol[
         var next_byte = try_peek(buf)
         if not next_byte or next_byte.value() != BytesConstant.LF:
             raise ParseError()
-        token_len = buf.read_pos - 1 - token_start
+        length = buf.read_pos - 1 - token_start
         buf.increment()
     elif current_byte.value() == BytesConstant.LF:
-        token_len = buf.read_pos - token_start
+        length = buf.read_pos - token_start
         buf.increment()
     else:
         raise ParseError()
+    start = token_start
 
-    token = create_string_from_reader(buf, token_start, token_len)
+
+def get_token_to_eol[
+    origin: ImmOrigin
+](mut buf: ByteReader[origin], mut token: String, mut token_len: Int) raises HTTPParseError:
+    var start = 0
+    scan_to_eol(buf, start, token_len)
+    token = create_string_from_reader(buf, start, token_len)
 
 
 def is_complete[origin: ImmOrigin](mut buf: ByteReader[origin], last_len: Int) raises HTTPParseError:
@@ -248,9 +282,13 @@ def is_complete[origin: ImmOrigin](mut buf: ByteReader[origin], last_len: Int) r
     raise IncompleteError()
 
 
-def parse_token[
+def scan_token[
     origin: ImmOrigin
-](mut buf: ByteReader[origin], mut token: String, mut token_len: Int, next_char: UInt8,) raises HTTPParseError:
+](mut buf: ByteReader[origin], next_char: UInt8, mut start: Int, mut length: Int) raises HTTPParseError:
+    """Advance past one token up to `next_char`, reported as an offset pair.
+
+    The offset-only core of `parse_token`; see `scan_to_eol` for why.
+    """
     var buf_start = buf.read_pos
 
     # SIMD fast path: find next_char (colon or space) in 64-byte chunks.
@@ -265,8 +303,8 @@ def parse_token[
                 if not is_token_char(buf._inner[buf.read_pos + j]):
                     raise ParseError()
             buf.read_pos += found
-            token_len = buf.read_pos - buf_start
-            token = create_string_from_reader(buf, buf_start, token_len)
+            start = buf_start
+            length = buf.read_pos - buf_start
             return
 
     # Scalar fallback for short tokens or no SIMD match
@@ -276,8 +314,8 @@ def parse_token[
             raise IncompleteError()
 
         if byte.value() == next_char:
-            token_len = buf.read_pos - buf_start
-            token = create_string_from_reader(buf, buf_start, token_len)
+            start = buf_start
+            length = buf.read_pos - buf_start
             return
         elif not is_token_char(byte.value()):
             raise ParseError()
@@ -286,23 +324,34 @@ def parse_token[
     raise IncompleteError()
 
 
+def parse_token[
+    origin: ImmOrigin
+](mut buf: ByteReader[origin], mut token: String, mut token_len: Int, next_char: UInt8,) raises HTTPParseError:
+    var start = 0
+    scan_token(buf, next_char, start, token_len)
+    token = create_string_from_reader(buf, start, token_len)
+
+
+@always_inline
+def _expect_byte[origin: ImmOrigin](mut buf: ByteReader[origin], want: UInt8) raises HTTPParseError:
+    var byte = try_get_byte(buf)
+    if not byte or byte.value() != want:
+        raise ParseError()
+
+
 def parse_http_version[origin: ImmOrigin](mut buf: ByteReader[origin], mut minor_version: Int) raises HTTPParseError:
     if buf.remaining() < 9:
         raise IncompleteError()
 
-    var checks = List[UInt8](capacity=7)
-    checks.append(BytesConstant.H)
-    checks.append(BytesConstant.T)
-    checks.append(BytesConstant.T)
-    checks.append(BytesConstant.P)
-    checks.append(BytesConstant.SLASH)
-    checks.append(BytesConstant.ONE)
-    checks.append(BytesConstant.DOT)
-
-    for i in range(len(checks)):
-        var byte = try_get_byte(buf)
-        if not byte or byte.value() != checks[i]:
-            raise ParseError()
+    # "HTTP/1." as seven constant compares. This used to build a
+    # List[UInt8] of the literal on every request to loop over it.
+    _expect_byte(buf, BytesConstant.H)
+    _expect_byte(buf, BytesConstant.T)
+    _expect_byte(buf, BytesConstant.T)
+    _expect_byte(buf, BytesConstant.P)
+    _expect_byte(buf, BytesConstant.SLASH)
+    _expect_byte(buf, BytesConstant.ONE)
+    _expect_byte(buf, BytesConstant.DOT)
 
     var version_byte = try_peek(buf)
     if not version_byte:
@@ -345,13 +394,13 @@ def parse_headers[
             raise ParseError()
 
         if num_headers == 0 or (byte.value() != BytesConstant.whitespace and byte.value() != BytesConstant.TAB):
-            var name = String()
+            var name_start = 0
             var name_len = 0
-            parse_token(buf, name, name_len, BytesConstant.COLON)
+            scan_token(buf, BytesConstant.COLON, name_start, name_len)
             if name_len == 0:
                 raise ParseError()
 
-            headers[num_headers].name = name
+            headers[num_headers].name_start = name_start
             headers[num_headers].name_len = name_len
             buf.increment()
 
@@ -363,21 +412,24 @@ def parse_headers[
                     break
                 buf.increment()
         else:
-            headers[num_headers].name = String()
+            # obs-fold continuation: no name, the value joins the previous
+            # field's. An empty span, exactly what the empty String was.
+            headers[num_headers].name_start = 0
             headers[num_headers].name_len = 0
 
-        var value = String()
+        var value_start = 0
         var value_len = 0
-        get_token_to_eol(buf, value, value_len)
+        scan_to_eol(buf, value_start, value_len)
 
+        # Trailing OWS comes off the LENGTH. This used to re-slice the value
+        # into a third String when any was present.
         while value_len > 0:
-            var c = value[byte=value_len - 1 : value_len]
-            ref c_byte = c.as_bytes()[0]
-            if c_byte != BytesConstant.whitespace and c_byte != BytesConstant.TAB:
+            var c = buf._inner[value_start + value_len - 1]
+            if c != BytesConstant.whitespace and c != BytesConstant.TAB:
                 break
             value_len -= 1
 
-        headers[num_headers].value = String(value[byte=:value_len]) if value_len < value.byte_length() else value
+        headers[num_headers].value_start = value_start
         headers[num_headers].value_len = value_len
         num_headers += 1
 

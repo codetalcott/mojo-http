@@ -1195,14 +1195,20 @@ C API at the Python boundary, `ExecutorPort` at ~70 ns. What was missing was
 expressiveness, and `HTTPService`'s default bodies and `m0_http.reply` are
 that gap closed. The rest is recorded here.
 
-- **More SIMD in the request path.** Refused by our own profile, not by
-  taste: after the header work, 31 of 35 stack samples sit in `__libc_send`
-  and one in the allocator (SERVER_PERFORMANCE.md). `escape_html`,
-  `chunked.mojo`'s copy loops and `Headers._name_matches` are all still
-  scalar and all still invisible at this rate. Revisit only if a profile
-  disagrees — and build a Mojo-level microbenchmark for `m0-http` first,
-  because there is none: every claim in SERVER_PERFORMANCE.md came from wrk
-  plus gdb sampling, and `scripts/bench_bridge_parts.mojo` is the template.
+- **More SIMD in the request path.** Was refused by our own profile — 31 of
+  35 stack samples in `__libc_send` (SERVER_PERFORMANCE.md) — and the
+  instrument that entry asked for, once built, disagreed with the profile.
+  `scripts/bench_http_parts.mojo` (2026-08-28) put `parse_request_headers`
+  at **two thirds** of the user-space request: the profile's verdict was
+  drawn at 50k rps and the server now does 116k, so a cost that was
+  invisible in loopback noise is a quarter of every request. The
+  span-based `HTTPHeader` that fell out of it took the parse from 2.52 to
+  2.05 µs (−12% on the whole user-space request). What remains — the
+  byte-at-a-time scanner tail below 64 bytes, twelve `set_bytes` appends,
+  three linear RFC checks — is the next lever, 2.05 µs against a 5.3 µs
+  syscall floor no parser can touch. `escape_html`, `chunked.mojo`'s copy
+  loops and `Headers._name_matches` are still scalar and, per the same
+  instrument's lookup rows (40–75 ns each), still not worth it.
 - **`simdwidthof` / SIMD width portability.** Every one of the 18 SIMD sites
   hardcodes 64/16/8/4 lanes and `simdwidthof` appears nowhere. Moot for the
   shipped artifact regardless: `build-serve` pins `--target-cpu apple-m1`,

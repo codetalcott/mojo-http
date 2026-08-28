@@ -790,16 +790,20 @@ def parse_request_headers(
     var cookies = List[String]()
     var seen_content_length = False
 
+    # The header array holds OFFSETS into `buffer`; every name and value is a
+    # slice of it. Sliced from an immutable view, or two slices of one
+    # mutable origin handed to `set_bytes` trip the exclusivity check.
+    var view = buffer.as_imm()
     for i in range(num_headers):
         # One `ref` to the element: a second subscript would invalidate the
         # interior reference taken by the first.
         ref h = headers_array[i]
-        var name_bytes = h.name.as_bytes()
+        var name_bytes = view[h.name_start : h.name_start + h.name_len]
         # Phase 1c: RFC 9110 §5.5 — trim OWS (SP / HTAB) from field values.
         # picohttpparser preserves surrounding whitespace; we normalise here.
         # Trimming the span rather than calling `.strip()` keeps this
         # allocation-free: only a cookie (rare) materializes a String.
-        var vb = h.value.as_bytes()
+        var vb = view[h.value_start : h.value_start + h.value_len]
         var vs = 0
         var ve = len(vb)
         while vs < ve and (vb[vs] == 0x20 or vb[vs] == 0x09):
@@ -956,16 +960,18 @@ def parse_response_headers(
         else:  # ret == -2
             raise ResponseParseError(IncompleteHTTPResponseError())
 
-    # Build headers dict and extract cookies
+    # Build headers dict and extract cookies. Offsets into `buffer`, sliced
+    # from an immutable view for the same reason as the request parser.
     var headers = Headers()
     var cookies = List[String]()
+    var view = buffer.as_imm()
 
     for i in range(num_headers):
         # One `ref` to the element: two separate subscripts would invalidate
         # the first interior reference before the second is taken.
         ref h = headers_array[i]
-        var name_bytes = h.name.as_bytes()
-        var value = h.value.as_bytes()
+        var name_bytes = view[h.name_start : h.name_start + h.name_len]
+        var value = view[h.value_start : h.value_start + h.value_len]
 
         if name_is(name_bytes, HeaderKey.SET_COOKIE):
             cookies.append(String(unsafe_from_utf8=value))
