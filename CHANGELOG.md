@@ -49,6 +49,13 @@ versions may break the API**.
 
 ### Changed
 
+- `m0serve`'s ready line carries the Mojo flame: `🔥 m0serve: app:application
+  on http://…`. One emoji, once per worker, on the line that already means
+  "ready" — the fork's `🔥🐝 Lightbug is listening` banner it replaced was
+  Lightbug's branding (attribution lives in NOTICE) and printed *before*
+  the application loaded. Error and shutdown lines stay plain: a flame on
+  a failure reads as celebration. The Mojo example apps keep the fork's
+  banner unchanged.
 - **The loop↔executor pump is batched in both directions.** The loop
   sends a pass's submits to an executor lane as one datagram at the
   bottom of the pass, and the executor answers a pump pass's completions
