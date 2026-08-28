@@ -1331,6 +1331,30 @@ otherwise be invisible to whoever picks this hypothesis up.
   workaround can be retired if a future toolchain fixes the leak (re-test
   with `smoke-django`'s RSS guard, which must stay at 0 KB over 10k
   requests).
+
+  **The fix has landed upstream** (checked 2026-08-28 via the Mojo docs
+  MCP server): the nightly release notes say "`PythonObject` no longer
+  leaks a CPython reference per positional argument when calling a Python
+  object, nor when setting an item, attribute, or set literal element."
+  `poe canary` will confirm when it reaches a pinnable release. Retiring
+  the workaround is then *optional*, not automatic — the raw C-API environ
+  build is also the 14.9 µs → 3.5 µs path, so the leak rules stop being a
+  correctness constraint but the C API stays for speed. The RSS guard
+  remains the instrument either way.
+
+  The same nightly notes carry the breaks the next pin will hit, recorded
+  here so the canary's first red run is a checklist rather than a surprise:
+  `Atomic` is reparameterized on a value type (`Atomic[DType.int64]` →
+  `Atomic[Int64]`; 10 sites here), the compile-time-parameter forms of
+  `Bench`/`Bencher` closures are removed (`m0-core/run_benchmarks.mojo` is
+  built entirely on them — `bench-core` will not compile), `Pointer.mut_cast`
+  is deprecated (2 sites), and `CompilationTarget.is_x86()` changes meaning
+  from "has SSE4" to "is the x86 architecture" — which is the semantics
+  `EPOLL_EVENT_WORDS` in `c/epoll.mojo` always wanted, since epoll's packed
+  event layout is a fact about the architecture, not about SSE4; on the old
+  meaning, a baseline x86-64 build without SSE4.1 would have read 16-byte
+  events on a 12-byte ABI. Uncaught exceptions also move to stderr; every
+  smoke that greps for `Traceback` captures `2>&1` logs, so none care.
 - **Suspected race: the WebSocket close path can RST instead of FIN.**
   Seen twice, both on macOS CI runners and never locally — most recently on
   PR #113, a change touching only `scripts/binfmt.py` and `release.yml`,
