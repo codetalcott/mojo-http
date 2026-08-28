@@ -82,6 +82,15 @@ jobs:
         run: python3 scripts/binfmt.py --selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
+      # The Mojo pool's guards, proven able to fail: each rule in
+      # mojo_pool.mojo is reverted in turn and test_mojo_pool must go red for
+      # every one. Deterministic, so it belongs in CI (the shim sabotage's
+      # argument); ubuntu only because the one-pill-per-thread rule is
+      # invisible on macOS -- closing the submit channel wakes a blocked recv
+      # there and does not on Linux (OffloadPool.stop's documented lesson).
+      - name: Sabotage the Mojo pool's rules (Linux observes all four)
+        if: matrix.os == 'ubuntu-latest'
+        run: uv run poe sabotage-pool
       # m0-wsgi embeds CPython, so its interpreter has to resolve on both
       # runners. Failing here rather than inside a smoke test makes a
       # libpython discovery problem legible.
@@ -341,6 +350,13 @@ jobs:
       # exists, so it is asserted here rather than only in a benchmark.
       - name: Smoke test the blocking-threads pool
         run: uv run poe smoke-blocking-threads
+      # The Mojo handler pool, same claim without an interpreter: func on a
+      # pool thread (the response names which), every thread dealt work, a
+      # streaming response refused with 409, and SIGTERM a clean exit -- the
+      # last one is the pill-count rule the sabotage script can only observe
+      # on Linux, asserted here behaviourally on both platforms.
+      - name: Smoke test the Mojo handler pool
+        run: uv run poe smoke-pool
       # Hot reload: a changed .py must be served by a NEW worker pid, at one
       # worker and at two, without any of it going through the crash-respawn
       # path -- a reload is a graceful shutdown followed by a fork.

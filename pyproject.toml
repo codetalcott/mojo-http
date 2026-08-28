@@ -3438,6 +3438,38 @@ cmd = "bash scripts/bench_asgi_wrk.sh"
 # a whole day. `poe test-shim` is the deterministic half and IS in CI; this
 # is the pre-release half (docs/RELEASING.md). Tune with M0_STRESS_ITERS and
 # M0_STRESS_HOGS.
+# The Mojo handler pool's three guards, mirroring the WSGI pool's split:
+# the smoke is behavioural and in CI (which thread served, saturation
+# refusals, clean SIGTERM); the sabotage proves the unit tests can fail and
+# is CI-viable because it is deterministic (one rule is Linux-only to
+# OBSERVE -- see the script -- so Linux CI is where all four count); the
+# probe is the p99 measurement and stays pre-release like stress-asgi,
+# because a timing table from a shared runner is noise.
+[tool.poe.tasks.smoke-pool]
+help = "The Mojo handler pool serves from its threads, refuses streams, exits clean"
+deps = ["build-core", "build-http"]
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike" || exit 1
+python3 scripts/pool_spike_check.py --binary "$out/pool_spike"
+"""
+
+[tool.poe.tasks.sabotage-pool]
+help = "Revert each mojo_pool rule and insist test_mojo_pool fails for every one"
+deps = ["build-core", "build-http"]
+shell = "python3 scripts/pool_sabotage.py"
+
+[tool.poe.tasks.probe-pool]
+help = "PRE-RELEASE: p99 of /fast beside blocking handlers, loop vs pool (not in CI)"
+deps = ["build-core", "build-http"]
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike" || exit 1
+python3 scripts/pool_spike_probe.py --binary "$out/pool_spike" --json "pool-probe-$(date -u +%Y%m%dT%H%M%SZ).json"
+"""
+
 [tool.poe.tasks.stress-asgi]
 help = "Pre-release: N streamed keep-alive rounds under CPU load, on recycled slots (not in CI)"
 deps = ["build-serve"]

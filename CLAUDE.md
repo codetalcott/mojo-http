@@ -491,9 +491,16 @@ a `List[Struct]` anyway.
 
 There is one cycle, and it is intentional: files throughout `m0-http/src/`
 import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
-them — and `lightbug_http/event_loop.mojo` imports `m0_http.log`. Both sides
-live inside `packages/m0-http/`, so the cycle never crosses a package
-boundary.
+them — and two fork files import back: `lightbug_http/event_loop.mojo` imports
+`m0_http.log`, and `lightbug_http/mojo_pool.mojo` imports `m0_http.threads`.
+Both sides live inside `packages/m0-http/`, so the cycle never crosses a
+package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` out of
+necessity, not style: an app-facing trait must be source-visible on the same
+resolution path as the types its methods name, or conformance is accepted and
+the witness table silently never emitted — behind the `.mojoc`,
+`PoolHandler`'s inherited methods would name `m0_http`'s `HTTPRequest` while
+an app's conformance names `lightbug_http`'s. `build-apps` compiling
+`apps/pool_spike` is the guard against moving it back.
 
 `m0-core/ffi_exports.mojo` (package root, deliberately outside `src/`) holds
 the C-ABI exports for foreign callers (Bun `dlopen`, N-API, `ctypes`); `poe
