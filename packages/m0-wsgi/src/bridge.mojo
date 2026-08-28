@@ -560,6 +560,12 @@ _exec_credit_evts = {}
 _exec_disconnects = {}
 _exec_disconnected = set()
 _exec_stream_tasks = {}
+# slot -> the task that currently owns the slot's per-slot state (spawned
+# last). A slot is recycled the instant the loop closes its connection,
+# and the previous task may still be alive for an iteration or two; only
+# the OWNER may clean the slot up, and a disconnect is delivered to the
+# task, not left on the slot for its successor to trip over.
+_exec_slot_task = {}
 
 _ASGI_CREDIT_WINDOW = 64 * 1024
 _ASGI_CHUNK_SPLIT = 32 * 1024
@@ -739,6 +745,23 @@ _exec_ws_inbox = {}
 _exec_ws_accepted = set()
 
 
+def _task_gone(slot):
+    # `import asyncio` here, not at module scope: this shim is a string
+    # exec'd into a fresh namespace and every function that needs the
+    # module imports it itself (a sys.modules hit). Without it this
+    # function raises NameError -- which surfaced as every ASGI stream
+    # truncating at its first credit window, since the raise happens
+    # after the head has gone out.
+    import asyncio
+    # Disconnected: the slot's mark (set by the loop's tag, cleared when a
+    # new task takes the slot), or THIS task's own (stamped on the owner at
+    # the time of the tag, and never cleared) -- a task that lingers past
+    # its slot's reuse must not keep producing under the successor's
+    # generation, nor end the successor's stream in its finally.
+    return (slot in _exec_disconnected
+            or getattr(asyncio.current_task(), '_m0_disconnected', False))
+
+
 def _exec_on_disconnect(slot):
     # The loop closed this slot (client vanished, or end-of-stream close
     # raced): resolve the pending receive() into http.disconnect (or
@@ -746,6 +769,18 @@ def _exec_on_disconnect(slot):
     # task -- uvicorn's contract. The cancellation is what stops an
     # EventStream generator; frameworks handle CancelledError as cleanup.
     _exec_disconnected.add(slot)
+    owner = _exec_slot_task.get(slot)
+    if owner is not None:
+        owner._m0_disconnected = True
+    # The bytes this slot still had in flight are the OLD connection's:
+    # its acks are not coming, and its own cleanup may be skipped below
+    # if a new task has taken the slot by then. Refund here, where the
+    # slot is still unambiguously the old task's.
+    stranded = _exec_inflight.pop(slot, 0)
+    if stranded:
+        _exec_global_credit[0] += stranded
+        if _exec_global_evt is not None:
+            _exec_global_evt.set()
     fut = _exec_disconnects.get(slot)
     if fut is not None and not fut.done():
         fut.set_result(True)
@@ -800,7 +835,7 @@ def asgi_executor_init(fd, ack_fd):
     # (slot: i32, bytes: i32) LE -- drained bytes to re-credit.
     global _exec_queue, _exec_global_evt
     import asyncio, os
-    _exec_queue = None  # events ride _exec_events (see _exec_put)
+    _exec_queue = None  # every event goes straight to _port (see _exec_put)
     # Created here rather than at import: an asyncio.Event binds to the
     # running loop, and this is the first point where that loop exists.
     _exec_global_evt = asyncio.Event()
@@ -883,45 +918,59 @@ def asgi_executor_init(fd, ack_fd):
         _loop.add_reader(ack_fd, _on_ack)
 
 
-_exec_events = []
-_exec_stop_armed = [False]
-_pump_parked = [False]
+# The Mojo side of the pump: an m0native.ExecutorPort the executor thread
+# built inside this interpreter and set here before the submit reader
+# existed. Every event is handed to it NOW, on this thread, inside the
+# loop iteration that produced it -- a ~70 ns call into Mojo -- and the
+# loop is never left: the executor thread parks in one run_forever for
+# its life (run_forever below), not a run_until_complete per pass.
+_port = None
+_flush_armed = [False]
+
+
+def set_port(port):
+    global _port
+    _port = port
 
 
 def _exec_put(ev):
-    # Append, and end the pump's run_forever after the NEXT loop iteration,
-    # so every done-callback the current one schedules lands in the same
-    # batch. One stop per pass. (A pass through run_until_complete cost
-    # 38 us on stdlib asyncio -- a Task for the pump coroutine, run_forever
-    # setup and teardown; this shape costs 17.)
-    #
-    # Only the pump's OWN run_forever may be stopped. The loop also runs
-    # inside other callers' run_until_complete -- finish_executor's gather
-    # of the in-flight tasks after the pill, lifespan_shutdown -- and a
-    # stop() scheduled there ends that call early with "Event loop stopped
-    # before Future completed", losing the completions it was collecting.
-    # An event appended while the pump is not parked simply waits in the
-    # list for the next wait_events / drain_events_nowait.
-    _exec_events.append(ev)
-    if _pump_parked[0] and not _exec_stop_armed[0]:
-        _exec_stop_armed[0] = True
-        _loop.call_soon(_loop.stop)
+    # Dispatch, and arm ONE flush for the end of this loop iteration: the
+    # port parks each completion and pokes the loop for all of them at
+    # once when _flush runs -- every done-callback of the iteration lands
+    # in the same datagram, batching without a batch buffer. The port's
+    # own ordering rules (begin frame before head, flush before any
+    # non-begin chunk frame) are inside dispatch and unchanged.
+    stopping = _port.dispatch(ev)
+    if not _flush_armed[0]:
+        _flush_armed[0] = True
+        _loop.call_soon(_flush)
+    if stopping:
+        # The pill: the submit channel is quiet behind it. Run the
+        # in-flight tasks to completion -- their events dispatch here as
+        # they finish -- then stop the loop, which returns run_forever to
+        # the executor thread for the final flush and lifespan shutdown.
+        _loop.create_task(_finish_and_stop())
 
 
-def wait_events():
-    # Park in the loop until at least one event exists; the spawned tasks
-    # make progress the whole time this thread is inside run_forever.
-    while not _exec_events:
-        _exec_stop_armed[0] = False
-        _pump_parked[0] = True
-        try:
-            _loop.run_forever()
-        finally:
-            _pump_parked[0] = False
-    out = list(_exec_events)
-    del _exec_events[:]
-    _exec_stop_armed[0] = False
-    return out
+def _flush():
+    _flush_armed[0] = False
+    _port.flush()
+
+
+async def _finish_and_stop():
+    import asyncio
+    if _exec_tasks:
+        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    await asyncio.sleep(0)
+    _loop.stop()
+
+
+def run_forever():
+    # The executor thread's whole serving life. Returns after the pill,
+    # via _finish_and_stop; a task that never completes (a chunk credit
+    # that never arrives) keeps it here until stop_and_join's budget runs
+    # out, exactly as the per-pass pump was.
+    _loop.run_forever()
 
 
 # The request-invariant half of every executor scope, built once by
@@ -1003,12 +1052,12 @@ async def _serve_one_exec(slot, scope, body):
             piece = bytes(view[start:start + _ASGI_CHUNK_SPLIT])
             evt = _exec_credit_evts[slot]
             while _exec_credits.get(slot, 0) < len(piece):
-                if slot in _exec_disconnected:
+                if _task_gone(slot):
                     raise asyncio.CancelledError()
                 evt.clear()
                 await evt.wait()
             while _exec_global_credit[0] < len(piece):
-                if slot in _exec_disconnected:
+                if _task_gone(slot):
                     raise asyncio.CancelledError()
                 _exec_global_evt.clear()
                 await _exec_global_evt.wait()
@@ -1077,7 +1126,7 @@ async def _serve_one_exec(slot, scope, body):
         aborted[0] = True
         raise
     finally:
-        if streaming[0] and slot not in _exec_disconnected:
+        if streaming[0] and not _task_gone(slot):
             # End of stream. A normal completion ends with the chunked
             # terminator and the connection returns to keep-alive; an
             # application error after the head -- or a cancellation that
@@ -1122,6 +1171,11 @@ def spawn(slot, method, path, query, protocol, headers, body,
     scope['state'] = dict(_lifespan_state)
     task = _loop.create_task(_serve_one_exec(slot, scope, body))
     _exec_tasks.add(task)
+    _exec_slot_task[slot] = task
+    # A disconnect that reached the slot before this task existed was the
+    # previous connection's (the tag precedes this job on the FIFO).
+    _exec_disconnected.discard(slot)
+    _exec_disconnects.pop(slot, None)
     task.add_done_callback(_task_done(slot))
 
 
@@ -1129,7 +1183,12 @@ def _task_done(slot):
     def _done(t):
         _exec_tasks.discard(t)
         was_streaming = getattr(t, '_m0_streaming', False)
-        _exec_cleanup_slot(slot)
+        if _exec_slot_task.get(slot) is t:
+            # Still the slot's owner: the per-slot state is this task's.
+            _exec_slot_task.pop(slot, None)
+            _exec_cleanup_slot(slot)
+        # Otherwise a newer task owns the slot (the loop recycled it while
+        # this one was still winding down); its state is not ours to wipe.
         if was_streaming:
             # The stream's own finally already signalled the loop; the
             # completion channel is off limits (the slot may be recycled).
@@ -1174,7 +1233,7 @@ async def _serve_one_ws(slot, scope):
 
     async def send(message):
         t = message.get('type', '')
-        if slot in _exec_disconnected:
+        if _task_gone(slot):
             return
         if t == 'websocket.accept':
             _exec_ws_accepted.add(slot)
@@ -1202,7 +1261,7 @@ async def _serve_one_ws(slot, scope):
     try:
         await _app(scope, receive, send)
     finally:
-        if slot not in _exec_disconnected:
+        if not _task_gone(slot):
             if slot in _exec_ws_accepted:
                 # The app returned with the socket open: close it for it,
                 # uvicorn's contract.
@@ -1233,6 +1292,9 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     task = _loop.create_task(_serve_one_ws(slot, scope))
     task._m0_streaming = True
     _exec_tasks.add(task)
+    _exec_slot_task[slot] = task
+    _exec_disconnected.discard(slot)
+    _exec_disconnects.pop(slot, None)
     _exec_stream_tasks[slot] = task
     task.add_done_callback(_task_done(slot))
 
@@ -1245,23 +1307,6 @@ def _ws_subprotocols(headers):
     return []
 
 
-def finish_executor():
-    # After the poison pill: the submit channel is quiet (the pill is FIFO
-    # behind every job), so run the in-flight tasks to completion and let
-    # their done-callbacks queue the final events; the extra sleep(0)
-    # flushes callbacks scheduled by the gather itself.
-    import asyncio
-    if _exec_tasks:
-        _loop.run_until_complete(
-            asyncio.gather(*list(_exec_tasks), return_exceptions=True))
-    _loop.run_until_complete(asyncio.sleep(0))
-
-
-def drain_events_nowait():
-    out = list(_exec_events)
-    del _exec_events[:]
-    _exec_stop_armed[0] = False
-    return out
 
 
 def run(environ, body):
@@ -1418,11 +1463,10 @@ struct PyBridge(Movable):
     reason: it is called per request, so the lookup must not be."""
     var _spawn_ws: PythonObject
     """The shim's `spawn_ws`: one WebSocket connection as a task."""
-    var _wait_events: PythonObject
-    var _drain_events: PythonObject
-    """`wait_events` / `drain_events_nowait`: zero-argument calls, the
-    measured non-leaking `PythonObject` operation, so these two may be
-    called as ordinary `PythonObject`s per pump pass."""
+    var _run_forever: PythonObject
+    """`run_forever`: the executor thread's whole serving life, one
+    zero-argument call. Events reach Mojo through the `ExecutorPort` the
+    thread set with `set_port`, not through a per-pass return value."""
     var _base: PythonObject
     """The request-invariant environ entries, held as one finished Python
     dict. Built in `set_base`; every request starts from
@@ -1477,8 +1521,7 @@ struct PyBridge(Movable):
         self._run = self._ns["run"]
         self._spawn = self._ns["spawn"]
         self._spawn_ws = self._ns["spawn_ws"]
-        self._wait_events = self._ns["wait_events"]
-        self._drain_events = self._ns["drain_events_nowait"]
+        self._run_forever = self._ns["run_forever"]
         self._stream_next_fn = self._ns["wsgi_stream_next"]
         self._stream_close_fn = self._ns["wsgi_stream_close"]
         self.stream_pending = False
@@ -1511,8 +1554,7 @@ struct PyBridge(Movable):
         self._run = move._run^
         self._spawn = move._spawn^
         self._spawn_ws = move._spawn_ws^
-        self._wait_events = move._wait_events^
-        self._drain_events = move._drain_events^
+        self._run_forever = move._run_forever^
         self._base = move._base^
         self._script_len = move._script_len
         self._k_method = move._k_method^
@@ -1598,25 +1640,21 @@ struct PyBridge(Movable):
             PythonObject(submit_read_fd), PythonObject(ack_read_fd)
         )
 
-    def wait_events(mut self) raises -> PythonObject:
-        """Park in the shim's loop until at least one event is ready.
+    def set_port(self, port: PythonObject) raises:
+        """Hand the shim this thread's `ExecutorPort` (an `m0native` type
+        built in-process). Startup-only: the one `__setitem__` leaks one
+        reference, bounded. Must precede `executor_init`, whose submit
+        reader produces events the moment the loop runs."""
+        self._ns["_port"] = port
 
-        Returns the batch as a Python list of tuples — `('job', slot)`,
-        `('done', slot, status, headers, body)`, `('err', slot, message)`.
-        A zero-argument call, so per-pass and leak-free; while this thread
-        is parked inside it, every spawned request task makes progress."""
-        return self._wait_events()
+    def run_forever(mut self) raises:
+        """Park in the shim's loop for the executor thread's whole life.
 
-    def drain_events_nowait(mut self) raises -> PythonObject:
-        """Every event already queued, without blocking. For shutdown."""
-        return self._drain_events()
-
-    def finish_executor(self) raises:
-        """Run the in-flight tasks to completion after the poison pill.
-
-        Their completion events are queued for `drain_events_nowait`; call
-        `lifespan_shutdown` after processing them, not before."""
-        _ = self._ns["finish_executor"]()
+        Returns after the poison pill, once the shim has run the in-flight
+        tasks to completion and stopped the loop. A zero-argument call,
+        leak-free; while this thread is inside it every request task
+        makes progress and every event is dispatched into the port."""
+        _ = self._run_forever()
 
     def _py_text(
         mut self, ref cpy: CPython, value: Span[Byte, _]

@@ -30,7 +30,10 @@ PY=${BENCH_PYTHON:-.venv/bin/python}
 # import it. Run bare, PATH found the system python3 and every executor row
 # recorded before 2026-08-27T18Z ran on stdlib asyncio without saying so;
 # the artifact now states both.
-export PATH="$PWD/$(dirname "$PY"):$PATH"
+# BENCH_EXECUTOR_PYTHON=system leaves PATH alone, so the executor embeds
+# whatever python3 the shell finds (no uvloop, on a stock machine): the
+# knob for an A/B of the executor's loop with one binary.
+[ "${BENCH_EXECUTOR_PYTHON:-venv}" = system ] || export PATH="$PWD/$(dirname "$PY"):$PATH"
 # A different build of the server, for an A/B on one box (the uvicorn rows
 # are re-measured every run on purpose: they are the drift control).
 M0=${M0SERVE_BIN:-bin/m0serve}

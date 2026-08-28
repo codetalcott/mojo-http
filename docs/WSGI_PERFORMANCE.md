@@ -1172,6 +1172,53 @@ cancelled by the farewell; stream tasks are). `smoke-asgi`'s
 outlive-the-drain phase pins it, and was verified to fail against the
 unguarded prototype before it counted.
 
+**Then the pump was inverted, and the executor thread stopped leaving the
+loop at all.** The remaining per-pass cost — 17 µs of `run_forever`
+entry and exit on stdlib asyncio, 45 on uvloop — goes away when Python
+calls *into* Mojo instead of Mojo polling Python: `ExecutorPort` is a
+Python type built with `PythonModuleBuilder` inside the interpreter
+m0serve embeds (the manual documents only the extension-module route;
+the builder works in-process because it uses the same `CPython` handle
+the embedding does — a call measured at 50–76 ns), set into the shim as
+`_port`, and every event that used to be queued for a Mojo pass is
+`_port.dispatch(ev)`, handled at once inside the loop iteration that
+produced it. The executor thread's Mojo side is now *build the handler,
+build the port, park in one `run_forever`, flush, shut down*.
+Completions still park and are poked to the loop once per loop
+iteration, by a `call_soon`-scheduled `_port.flush` — batching without a
+batch buffer, uvicorn's write-coalescing shape. Measured in the same
+session as the rows above, `wrk -c16/-c64/-c256`, uvicorn re-measured
+beside every row, artifacts `asgi-wrk-conns-*.json` with `variant`
+naming the port:
+
+| connections | `run_forever`+`stop()` pump, asyncio | port, asyncio | Δ | ÷ `uvicorn --loop asyncio` | port, uvloop | ÷ asyncio comparator | ÷ uvicorn + uvloop |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 49,236 @ 1.00 | 49,713 @ 0.98 | +1% | 0.93 | 60,419 @ 0.99 | 1.05 | 0.74 |
+| 64 | 67,258 @ 1.00 | 60,875 @ 1.03 | — | 1.07 | 70,075 @ 1.02 | 1.20 | 0.84 |
+| 256 | 66,128 @ 1.02 | 65,542 @ 1.01 | — | 1.13 | 72,011 @ 1.02 | 1.22 | 0.94 |
+
+Two readings. On stdlib asyncio the port is the `run_forever`+`stop()`
+pump within noise at 16 connections (49,713 against
+49,236 in the same session) and at parity or ahead of
+`uvicorn --loop asyncio` from 64 connections up — the 17 µs pass it
+removed was already a small share there, and the 64- and 256-connection
+pump figures are the earlier session's, so no delta is claimed for them.
+On uvloop the difference is the whole point: the old pump paid uvloop's
+45 µs `run_forever` entry on every pass and ran at 0.85 cores
+(48,858 rps, 0.84x the asyncio comparator, the same session);
+the port never leaves the loop, runs at 0.99 cores, and reads
+60,419 — **+24% over the pump on the same loop, 1.05x
+`uvicorn --loop asyncio` on the standing 16-connection row, 0.74x uvicorn
+with uvloop** — and 0.94x uvicorn with uvloop at 256 connections. The
+executor's `import uvloop` has been opportunistic since the executor
+existed; this is the first shape in which it pays, and it is what a
+venv with `uvicorn[standard]` in it gets for free. One round in three of
+the eight runs was starved (the server at 0.5–0.75 cores with p50 four
+times its neighbours' — the #151 binary's runs included), which the
+medians absorb and the per-round artifacts show; the comparator's own
+spread across the runs (53.4–59.0k for `--loop asyncio`) is why every
+ratio here is against the comparator measured beside it.
+
 **Framework rows, measured 2026-08-27 with batching and the `run_forever`
 pump in.** The benchmark page's rows are bare handlers on purpose — a
 view's own work hides the server — but a developer's first comparison is

@@ -33,6 +33,8 @@ Streaming is still refused here (the Phase-1 watchdog rides along in
 """
 
 from std.python import Python, PythonObject
+from std.python.bindings import PythonModuleBuilder
+from std.io.write import Writable, Writer
 from std.time import sleep
 
 from std.collections import Optional
@@ -212,6 +214,30 @@ def _executor_serve(block: ThreadBlock) raises:
         opts[],
     )
 
+    # The executor's side of the pump, as a Python type the shim calls
+    # into (`_port.dispatch`, `_port.flush`); the loop below is entered
+    # ONCE. The type is built here rather than at import so each executor
+    # thread (one per ASGI mount) gets its own, bound to its own pool
+    # address and handler; the module object only has to outlive the
+    # instance, and it does -- both are locals of this frame.
+    var native = _ensure_port_type()
+    var state = ExecutorState(lane, pool.capacity)
+    # Addresses the way `OffloadPool.addr` takes its own: a Pointer to the
+    # value, read back through a Pointer to that pointer.
+    var handler_ptr = Pointer(to=handler)
+    var state_ptr = Pointer(to=state)
+    var port_obj = PythonObject(
+        alloc=ExecutorPort(
+            block.get(BLK_POOL),
+            Pointer(to=handler_ptr).unsafe_bitcast[Int]()[],
+            Pointer(to=state_ptr).unsafe_bitcast[Int]()[],
+            lane,
+        )
+    )
+    # The port goes in before the submit reader exists: from
+    # `executor_init` on, a readable submit channel produces events.
+    handler.apps[0]._bridge.set_port(port_obj)
+
     # The shim's loop reads the submit channel itself from here on. The fd
     # must be non-blocking: `add_reader` fires level-ish per readability,
     # and the drain-until-EAGAIN read inside the shim must never park the
@@ -225,119 +251,198 @@ def _executor_serve(block: ThreadBlock) raises:
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
 
-    # Parallel to the slots: what `after_response` needs after the request
-    # itself has crossed into Python, and — for a WebSocket handshake —
-    # the ready 101 held until the application's `websocket.accept` comes
-    # back. Only ever touched by this thread.
-    var methods = List[String](capacity=pool.capacity)
-    var paths = List[String](capacity=pool.capacity)
-    var pending_101 = OwningList[Optional[HTTPResponse]](capacity=pool.capacity)
-    # Each stream's generation: allocated at its begin, stamped on every
-    # frame of it, carried by its head — what lets the loop's handler drop
-    # a frame that outlived its connection even when a DIFFERENT producer
-    # (a pool thread, another executor) has since subscribed the recycled
-    # slot. This executor's generations are disjoint from every other
-    # producer's by construction (`stream_gen_seed`).
-    var gens = List[Int](capacity=pool.capacity)
-    for _ in range(pool.capacity):
-        methods.append(String(""))
-        paths.append(String(""))
-        pending_101.append(None)
-        gens.append(0)
-    var next_gen = stream_gen_seed(lane + 1)
-    # Completions parked this pass and not yet sent: one datagram per pass
-    # pokes the loop for all of them (`complete_many`) instead of one per
-    # response. Flushed at the end of every `_pump_events` — which is
-    # "before this thread parks", since the loop below goes straight back
-    # into `wait_events` — and before any non-begin chunk frame, so the
-    # relative order of a completion and a chunk is exactly what it was.
-    var pending_done = List[Int](capacity=COMPLETE_BATCH_MAX)
-
-    var stopping = False
-    while True:
-        # Parked attached, inside the shim loop's selector — which is where
-        # CPython releases the GIL — while every spawned task progresses.
-        var events = handler.apps[0]._bridge.wait_events()
-        _pump_events(
-            pool, handler, events, methods, paths, pending_101, gens,
-            next_gen, pending_done, stopping, lane,
-        )
-        if stopping:
-            break
-
-    # The pill is FIFO behind every submitted job, so nothing new arrives:
-    # run the in-flight tasks to completion, answer their events, then run
-    # lifespan shutdown and let the destructors fire in this scope.
-    handler.apps[0]._bridge.finish_executor()
-    var leftover = handler.apps[0]._bridge.drain_events_nowait()
-    var ignored = False
-    _pump_events(
-        pool, handler, leftover, methods, paths, pending_101, gens,
-        next_gen, pending_done, ignored, lane,
-    )
+    # Parked attached, inside the loop's selector -- which is where CPython
+    # releases the GIL -- for the thread's whole life; every event is
+    # handled by the port from inside the loop. Returns after the pill,
+    # once the shim has run the in-flight tasks to completion and stopped
+    # the loop.
+    handler.apps[0]._bridge.run_forever()
+    # Anything parked after the last scheduled flush, then lifespan
+    # shutdown and the destructors, in this scope.
+    _flush_completions(pool, state.pending_done)
     handler.shutdown()
+    _ = native
+    _ = port_obj
 
 
-def _pump_events(
-    mut pool: OffloadPool,
-    mut handler: WSGIHandler,
-    events: PythonObject,
-    mut methods: List[String],
-    mut paths: List[String],
-    mut pending_101: OwningList[Optional[HTTPResponse]],
-    mut gens: List[Int],
-    mut next_gen: Int,
-    mut pending_done: List[Int],
-    mut stopping: Bool,
-    lane: Int = -1,
-) raises:
-    """Answer one batch of shim events.
 
-    `('job', slot)` parks nothing here: static mounts and the health path
-    are answered immediately in Mojo (they must stay readable while the
-    application is busy), everything else becomes a task via `spawn_asgi`.
-    `('done', ...)`/`('err', ...)` park the response and QUEUE its
-    completion; the whole pass is poked to the loop as one datagram at the
-    end (`_flush_completions`) — park THEN poke, the same happens-before
-    edge the blocking pool documents, now covering N responses at once. A
-    `('job', -1)` is the pill: it only sets `stopping`, because completions
-    later in the same batch still need answering.
+def _ensure_port_type() raises -> PythonObject:
+    """Build the `m0native` module and the `ExecutorPort` Python type, ONCE
+    per process.
 
-    ORDER, spelled out, because it is the correctness of the streaming
-    seam. A stream's begin frame (`b`/`B`) goes out on the chunk channel
-    immediately, and its head completion is queued behind it: begin still
-    precedes head by construction. Every NON-begin chunk frame (`s`, `e`,
-    `w`, `x`) is preceded by a flush of the queued completions, so no
-    chunk can ever overtake the head — or any completion — it used to
-    follow. Under hello-world load that flush never fires and a pass is
-    one datagram; under streaming load it degrades toward one per
-    response, which is what it was.
+    The stdlib keeps one Python type object per Mojo type for the whole
+    process and refuses a second ("Error building multiple Python type
+    objects bound to Mojo type ..."), and there is one executor thread per
+    ASGI mount and per `--threads` loop, each of which arrives here. The
+    first to arrive builds; every later one hits that refusal and simply
+    goes on -- `PythonObject(alloc=ExecutorPort(...))` finds the type in
+    the same registry. Both run attached, so the registration is complete
+    before a second thread can see it. Any other error is real and is
+    raised. Returns the module (an empty `PythonObject` when this thread
+    did not build it); the caller keeps it alive beside the port.
     """
-    for i in range(len(events)):
-        var ev = events[i]
+    try:
+        var builder = PythonModuleBuilder("m0native")
+        _ = builder.add_type[ExecutorPort]("ExecutorPort").def_method[
+            ExecutorPort.dispatch
+        ]("dispatch").def_method[ExecutorPort.flush]("flush")
+        return builder.finalize()
+    except e:
+        if String(e).find("multiple Python type objects") < 0:
+            raise e
+        return PythonObject(None)
+
+
+struct ExecutorState(Movable):
+    """The executor's per-slot tables, owned by `_executor_serve`'s frame
+    and reached by the port by address.
+
+    Kept OUT of `ExecutorPort` on purpose: `PythonModuleBuilder.add_type`
+    wraps `__repr__` through a `Writable` the compiler DERIVES from the
+    fields — an explicit `write_to` on the type does not stop it — and an
+    `OwningList[Optional[HTTPResponse]]` cannot be derived. Four integers
+    can. Parallel to the slots: what `after_response` needs after the
+    request itself has crossed into Python, the ready 101 held for a
+    WebSocket handshake until the application's `websocket.accept` comes
+    back, each stream's generation, and the completions parked since the
+    last flush. Only ever touched by this thread.
+    """
+
+    var methods: List[String]
+    var paths: List[String]
+    var pending_101: OwningList[Optional[HTTPResponse]]
+    var gens: List[Int]
+    var next_gen: Int
+    var pending_done: List[Int]
+    var stopping: Bool
+
+    def __init__(out self, lane: Int, capacity: Int):
+        self.methods = List[String](capacity=capacity)
+        self.paths = List[String](capacity=capacity)
+        self.pending_101 = OwningList[Optional[HTTPResponse]](capacity=capacity)
+        self.gens = List[Int](capacity=capacity)
+        for _ in range(capacity):
+            self.methods.append(String(""))
+            self.paths.append(String(""))
+            self.pending_101.append(None)
+            self.gens.append(0)
+        # This executor's generations are disjoint from every other
+        # producer's by construction (`stream_gen_seed`).
+        self.next_gen = stream_gen_seed(lane + 1)
+        self.pending_done = List[Int](capacity=COMPLETE_BATCH_MAX)
+        self.stopping = False
+
+
+struct ExecutorPort(Movable, Writable):
+    """The executor's side of the pump, as a Python type Python calls INTO.
+
+    Built by `PythonModuleBuilder` inside the interpreter this binary
+    embeds -- no shared library, no `PyInit_`, no ctypes; a call costs
+    ~70 ns -- and handed to the shim as `_port`. Every event the shim used
+    to queue for a Mojo pass (`('job', slot)`, `('done', ...)`,
+    `stream_*`, `ws_*`) is now `_port.dispatch(ev)`, handled at once on
+    this thread inside the loop iteration that produced it, and the loop
+    never stops: the executor thread parks in ONE `run_forever` for its
+    whole life instead of a `run_until_complete` per pass (38 us on
+    stdlib asyncio, 64 on uvloop -- the shape uvloop is built not to
+    pay). Completions park as before and are poked to the loop once per
+    loop iteration by `flush`, which the shim schedules with `call_soon`
+    on the first event of an iteration -- batching without a batch
+    buffer, uvicorn's write-coalescing shape.
+
+    Runs attached, on the executor thread, with the GIL held -- exactly
+    where the pass used to run -- so every rule of that code holds
+    unchanged: a send that may block detaches first (`_send_chunk_frame`,
+    `_flush_completions`), a begin frame goes out before its head is
+    queued, and every non-begin chunk frame is preceded by a flush of the
+    queued completions. Holds the loop's `OffloadPool` and this thread's
+    handler by ADDRESS: both are locals of `_executor_serve`, alive for
+    as long as `run_forever` runs.
+    """
+
+    var pool_addr: Int
+    var handler_addr: Int
+    var state_addr: Int
+    var lane: Int
+
+    def __init__(out self, pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int):
+        self.pool_addr = pool_addr
+        self.handler_addr = handler_addr
+        self.state_addr = state_addr
+        self.lane = lane
+
+    def write_to[W: Writer, //](self, mut writer: W):
+        writer.write("ExecutorPort(lane=", self.lane, ")")
+
+    @staticmethod
+    def dispatch(py_self: PythonObject, ev: PythonObject) raises -> PythonObject:
+        """`_port.dispatch(ev)`: handle one event now. True after the pill."""
+        var port = py_self.downcast_value_ptr[ExecutorPort]()
+        return PythonObject(port[]._dispatch(ev))
+
+    @staticmethod
+    def flush(py_self: PythonObject) raises -> PythonObject:
+        """`_port.flush()`: poke the loop for every completion parked since
+        the last flush -- once per loop iteration, scheduled by the shim."""
+        var port = py_self.downcast_value_ptr[ExecutorPort]()
+        port[]._flush()
+        return PythonObject(None)
+
+    def _flush(mut self):
+        ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+            unsafe_from_address=self.pool_addr
+        )[]
+        ref st = Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[]
+        _flush_completions(pool, st.pending_done)
+
+    def _dispatch(mut self, ev: PythonObject) raises -> Bool:
+        """One event of the shim's, in the order the pass used to see it.
+
+        ORDER, spelled out, because it is the correctness of the streaming
+        seam. A stream's begin frame (`b`/`B`) goes out on the chunk
+        channel immediately, and its head completion is parked behind it:
+        begin still precedes head by construction. Every NON-begin chunk
+        frame (`s`, `e`, `w`, `x`) is preceded by a flush of the parked
+        completions, so no chunk can ever overtake the head -- or any
+        completion -- it used to follow. A `('job', -1)` is the pill: it
+        only sets `stopping` and reports it; the shim finishes the
+        in-flight tasks (their events arrive here as they complete) and
+        stops the loop.
+        """
+        ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+            unsafe_from_address=self.pool_addr
+        )[]
+        ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+            unsafe_from_address=self.handler_addr
+        )[]
+        ref st = Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[]
         var kind = String(py=ev[0])
         var slot = Int(py=ev[1])
         if kind == "job":
             if slot < 0:
-                stopping = True
-                continue
+                st.stopping = True
+                return True
             var request = pool.take_request(slot)
-            methods[slot] = request.method
-            paths[slot] = request.uri.path
+            st.methods[slot] = request.method
+            st.paths[slot] = request.uri.path
             var early = handler.before_request(request)
             if early:
                 var response = early.take()
-                handler.after_response(methods[slot], paths[slot], response)
+                handler.after_response(st.methods[slot], st.paths[slot], response)
                 pool.put_response(slot, response^, False)
-                _queue_completion(pool, pending_done, slot)
-                continue
+                _queue_completion(pool, st.pending_done, slot)
+                return False
             var local = handler.serve_local(request)
             if local:
                 var response = local.take()
-                handler.after_response(methods[slot], paths[slot], response)
+                handler.after_response(st.methods[slot], st.paths[slot], response)
                 pool.put_response(slot, response^, False)
-                _queue_completion(pool, pending_done, slot)
-                continue
+                _queue_completion(pool, st.pending_done, slot)
+                return False
             # A WebSocket handshake gets a `websocket` scope. The 101 the
             # loop's validator built is held here — the application
             # APPROVES with websocket.accept, this thread PERFORMS, the
@@ -348,20 +453,20 @@ def _pump_events(
                 var probe = upgrade.take()
                 if probe.status_code != 101:
                     # Malformed or wrong-version handshake: 400/426 verbatim.
-                    handler.after_response(methods[slot], paths[slot], probe)
+                    handler.after_response(st.methods[slot], st.paths[slot], probe)
                     pool.put_response(slot, probe^, False)
-                    _queue_completion(pool, pending_done, slot)
-                    continue
-                pending_101[slot] = probe^
+                    _queue_completion(pool, st.pending_done, slot)
+                    return False
+                st.pending_101[slot] = probe^
                 try:
                     handler.apps[0]._bridge.spawn_asgi_ws(slot, request)
                 except:
-                    pending_101[slot] = None
+                    st.pending_101[slot] = None
                     var response = InternalError()
-                    handler.after_response(methods[slot], paths[slot], response)
+                    handler.after_response(st.methods[slot], st.paths[slot], response)
                     pool.put_response(slot, response^, True)
-                    _queue_completion(pool, pending_done, slot)
-                continue
+                    _queue_completion(pool, st.pending_done, slot)
+                return False
             try:
                 handler.apps[0]._bridge.spawn_asgi(slot, request)
             except:
@@ -369,9 +474,9 @@ def _pump_events(
                 # same policy as a raising handler — 500 and a closed
                 # connection, because what it left behind is unknown.
                 var response = InternalError()
-                handler.after_response(methods[slot], paths[slot], response)
+                handler.after_response(st.methods[slot], st.paths[slot], response)
                 pool.put_response(slot, response^, True)
-                _queue_completion(pool, pending_done, slot)
+                _queue_completion(pool, st.pending_done, slot)
         elif kind == "done":
             var response: HTTPResponse
             var raised = False
@@ -382,18 +487,18 @@ def _pump_events(
             except:
                 response = InternalError()
                 raised = True
-            handler.after_response(methods[slot], paths[slot], response)
+            handler.after_response(st.methods[slot], st.paths[slot], response)
             pool.put_response(slot, response^, raised)
-            _queue_completion(pool, pending_done, slot)
+            _queue_completion(pool, st.pending_done, slot)
         elif kind == "err":
             print(
                 "asgi-executor: request raised: " + String(py=ev[2]),
                 flush=True,
             )
             var response = InternalError()
-            handler.after_response(methods[slot], paths[slot], response)
+            handler.after_response(st.methods[slot], st.paths[slot], response)
             pool.put_response(slot, response^, True)
-            _queue_completion(pool, pending_done, slot)
+            _queue_completion(pool, st.pending_done, slot)
         elif kind == "stream_start":
             # ORDER IS THE CORRECTNESS HERE. The begin frame goes out on
             # the chunk channel BEFORE the head completion: its send
@@ -405,11 +510,11 @@ def _pump_events(
             # closes the wrongful-early-close race. It also anchors the
             # FIFO that keeps a recycled slot safe: every frame of this
             # stream sits between its begin and its end on one channel.
-            gens[slot] = next_gen
-            next_gen += 1
+            st.gens[slot] = st.next_gen
+            st.next_gen += 1
             var begin = List[UInt8]()
             var begin_frame = encode_bus_frame(
-                asgi_stream_url(String("b"), slot, lane), gens[slot], Span(begin)
+                asgi_stream_url(String("b"), slot, self.lane), st.gens[slot], Span(begin)
             )
             _ = _send_chunk_frame(pool, Span(begin_frame))
             # The head: an ordinary completion whose response is marked
@@ -428,19 +533,19 @@ def _pump_events(
             except:
                 response = InternalError()
                 raised = True
-            response.stream_gen = gens[slot]
-            handler.after_response(methods[slot], paths[slot], response)
+            response.stream_gen = st.gens[slot]
+            handler.after_response(st.methods[slot], st.paths[slot], response)
             pool.put_response(slot, response^, raised)
-            _queue_completion(pool, pending_done, slot)
+            _queue_completion(pool, st.pending_done, slot)
         elif kind == "stream_chunk":
-            _flush_completions(pool, pending_done)
+            _flush_completions(pool, st.pending_done)
             # Park-then-poke does not apply here: the chunk's bytes ride
             # IN the datagram, so the send is both the publish and the
             # happens-before edge. Retried, never dropped — a lost chunk
             # is a corrupt body.
             var chunk = handler.apps[0]._bridge.body_bytes(ev[2])
             var frame = encode_bus_frame(
-                asgi_stream_url(String("s"), slot, lane), gens[slot], Span(chunk)
+                asgi_stream_url(String("s"), slot, self.lane), st.gens[slot], Span(chunk)
             )
             if not _send_chunk_frame(pool, Span(frame)):
                 # Unplaceable even after waiting detached: the loop is not
@@ -454,10 +559,10 @@ def _pump_events(
                     flush=True,
                 )
         elif kind == "stream_end":
-            _flush_completions(pool, pending_done)
+            _flush_completions(pool, st.pending_done)
             var empty = List[UInt8]()
             var frame = encode_bus_frame(
-                asgi_stream_url(String("e"), slot, lane), gens[slot], Span(empty)
+                asgi_stream_url(String("e"), slot, self.lane), st.gens[slot], Span(empty)
             )
             _ = _send_chunk_frame(pool, Span(frame))
         elif kind == "stream_abort":
@@ -466,7 +571,7 @@ def _pump_events(
             # a truncated body rather than a short one under a clean end.
             # Rides the completion channel, gen-checked there against the
             # head this slot last completed.
-            _ = pool.abort_stream(slot, gens[slot])
+            _ = pool.abort_stream(slot, st.gens[slot])
         elif kind == "stream_note":
             print(
                 "asgi-executor: stream raised after its head: "
@@ -476,42 +581,42 @@ def _pump_events(
         elif kind == "ws_accept":
             # Begin frame before the 101 — the same FIFO anchor as a
             # stream's head, for the sockets registry this time.
-            if pending_101[slot]:
-                gens[slot] = next_gen
-                next_gen += 1
+            if st.pending_101[slot]:
+                st.gens[slot] = st.next_gen
+                st.next_gen += 1
                 var begin = List[UInt8]()
                 var begin_frame = encode_bus_frame(
-                    asgi_stream_url(String("B"), slot, lane), gens[slot],
+                    asgi_stream_url(String("B"), slot, self.lane), st.gens[slot],
                     Span(begin),
                 )
                 _ = _send_chunk_frame(pool, Span(begin_frame))
-                var held = pending_101[slot].take()
-                held.stream_gen = gens[slot]
-                handler.after_response(methods[slot], paths[slot], held)
+                var held = st.pending_101[slot].take()
+                held.stream_gen = st.gens[slot]
+                handler.after_response(st.methods[slot], st.paths[slot], held)
                 pool.put_response(slot, held^, False)
-                _queue_completion(pool, pending_done, slot)
+                _queue_completion(pool, st.pending_done, slot)
         elif kind == "ws_reject":
             # The application refused (or never answered) the handshake.
-            if pending_101[slot]:
-                _ = pending_101[slot].take()
+            if st.pending_101[slot]:
+                _ = st.pending_101[slot].take()
                 var response = _ws_forbidden()
-                handler.after_response(methods[slot], paths[slot], response)
+                handler.after_response(st.methods[slot], st.paths[slot], response)
                 pool.put_response(slot, response^, False)
-                _queue_completion(pool, pending_done, slot)
+                _queue_completion(pool, st.pending_done, slot)
         elif kind == "ws_send":
-            _flush_completions(pool, pending_done)
+            _flush_completions(pool, st.pending_done)
             var opcode = Int(py=ev[2])
             var payload = handler.apps[0]._bridge.body_bytes(ev[3])
             var frame_bytes = encode_ws_frame(
                 WS_OP_TEXT if opcode == 1 else WS_OP_BINARY, Span(payload)
             )
             var frame = encode_bus_frame(
-                asgi_stream_url(String("w"), slot, lane), gens[slot],
+                asgi_stream_url(String("w"), slot, self.lane), st.gens[slot],
                 Span(frame_bytes),
             )
             _ = _send_chunk_frame(pool, Span(frame))
         elif kind == "ws_close":
-            _flush_completions(pool, pending_done)
+            _flush_completions(pool, st.pending_done)
             # A close frame with the app's code, then the end marker that
             # lets the loop close after it lands.
             var code = Int(py=ev[2])
@@ -520,18 +625,16 @@ def _pump_events(
             close_body.append(UInt8(code & 0xFF))
             var close_frame = encode_ws_frame(WS_OP_CLOSE, Span(close_body))
             var f1 = encode_bus_frame(
-                asgi_stream_url(String("w"), slot, lane), gens[slot],
+                asgi_stream_url(String("w"), slot, self.lane), st.gens[slot],
                 Span(close_frame),
             )
             _ = _send_chunk_frame(pool, Span(f1))
             var empty = List[UInt8]()
             var f2 = encode_bus_frame(
-                asgi_stream_url(String("x"), slot, lane), gens[slot], Span(empty)
+                asgi_stream_url(String("x"), slot, self.lane), st.gens[slot], Span(empty)
             )
             _ = _send_chunk_frame(pool, Span(f2))
-    # The pass is over: everything parked above is poked to the loop at once.
-    _flush_completions(pool, pending_done)
-
+        return False
 
 
 def _queue_completion(mut pool: OffloadPool, mut pending: List[Int], slot: Int):

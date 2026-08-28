@@ -84,6 +84,23 @@ versions may break the API**.
   skipping the application's shutdown; `smoke-asgi`'s new
   outlive-the-drain phase pins it, and `apps/asgi_bare` writes
   `M0_SHUTDOWN_MARKER` from its lifespan shutdown so the phase can tell.
+- **Python calls into Mojo for every executor event; the executor thread
+  never leaves `run_forever`.** `ExecutorPort` is a Python type built
+  with `PythonModuleBuilder` inside the embedded interpreter (no shared
+  library, no `PyInit_`, no ctypes; ~70 ns a call) and set into the shim
+  as `_port`; every event that used to be queued for a Mojo pass is
+  `_port.dispatch(ev)`, handled at once inside the loop iteration that
+  produced it, and completions are poked to the loop once per iteration
+  by a `call_soon`-scheduled `_port.flush`. The per-pass
+  `run_until_complete` (38 µs on asyncio, 64 on uvloop) is gone.
+  Measured beside the `run_forever`+`stop()` pump: on stdlib asyncio
+  within noise at 16 connections (49,713 rps, 0.93x
+  `uvicorn --loop asyncio`) and 1.07x / 1.13x at 64 / 256; on
+  uvloop, which this shape finally lets pay, 60,419 rps at 16
+  connections — +24% over the pump on the same loop, 1.05x the
+  asyncio comparator, 0.74x uvicorn with uvloop — and 0.94x uvicorn
+  with uvloop at 256. `bench_asgi_wrk.sh`
+  gains `BENCH_EXECUTOR_PYTHON=system` for an A/B of the executor's loop.
 - The benchmark page's ASGI row is re-measured (0.72x → 0.75x
   against `uvicorn --loop asyncio` at 16 connections, executor on
   uvloop) and now also states the uvloop number a default `pip install
@@ -94,6 +111,23 @@ versions may break the API**.
 
 ### Fixed
 
+- **A stream on a recycled slot could stall silently.** The executor's
+  per-slot state (credit window, event, disconnect mark) was keyed by
+  slot alone; the loop recycles a slot the instant it closes a
+  connection, and the previous task lives on for an iteration or two.
+  When the HTTP/1.0 client of `chunked_keepalive.py` closed after the
+  head and the keep-alive stream that followed landed on the same slot,
+  the new task saw the OLD connection's disconnect mark, cancelled its
+  own stream, and — the mark being the slot's — skipped its end signal,
+  leaving the loop a subscribed stream with no producer: the client
+  waited 30 s on a clean server log (CI macOS, 1 in 2; 8 of 11 runs
+  under twelve CPU hogs locally). A stale task's late cleanup could
+  also wipe the live task's window. Now a slot's state belongs to the
+  slot's current task (`_exec_slot_task`): cleanup only by the owner, a
+  disconnect stamped on the task it hit (with the dead connection's
+  in-flight bytes refunded there), a stale mark cleared when a new task
+  takes the slot, and every "am I gone" check asking both. 0 of 6 under six CPU hogs (the plain build: 4 of 5)
+  after, same load.
 - **A second `m0serve` on a busy port fails, loudly, instead of binding
   beside the first.** `SO_REUSEPORT` was set unconditionally on every
   listener, so a second server on an occupied port bound successfully,

@@ -305,6 +305,7 @@ def check_bench_prose():
         "granian's measured cores at --workers 1": gran_cores,
         "asgi rps ratio m0÷uvicorn": am0["rps"] / auv["rps"],
         "asgi per-core gap uvicorn÷m0": auv["rps_per_core"] / am0["rps_per_core"],
+        "asgi per-core ratio m0÷uvicorn": am0["rps_per_core"] / auv["rps_per_core"],
     }
     if auvl:
         q["asgi rps ratio m0÷uvloop"] = am0["rps"] / auvl["rps"]
@@ -318,7 +319,7 @@ def check_bench_prose():
         ("docs/BENCHMARKS.md", "the WSGI verdict row",
          r"Granian, by ~([\d.]+)x", "gran÷m0"),
         ("docs/BENCHMARKS.md", "the ASGI verdict row",
-         r"uvicorn, by ~([\d.]+)x", "asgi per-core gap uvicorn÷m0"),
+         r"the executor is ahead by ~([\d.]+)x per core", "asgi per-core ratio m0÷uvicorn"),
         ("docs/BENCHMARKS.md", "the hello row quoted in prose",
          r"runs at \*\*([\d.]+)k\s*rps/core\*\*", "hello/1000"),
         ("docs/BENCHMARKS.md", "Granian's end-to-end rate quoted in prose",
