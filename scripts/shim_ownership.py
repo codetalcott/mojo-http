@@ -142,8 +142,9 @@ class Harness:
             if slot < 0:
                 return True
             behaviour = self.jobs.pop(0)
-            if behaviour == "ws":
-                self.ns["spawn_ws"](slot, "/ws", b"", "HTTP/1.1", [])
+            if behaviour.startswith("ws"):
+                path = "/ws/flood" if behaviour == "wsflood" else "/ws"
+                self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
                 self.ns["spawn"](slot, "GET", "/",
                                  ("b=%s" % behaviour).encode(),
@@ -156,9 +157,17 @@ class Harness:
 
     # --- the application ---------------------------------------------------
 
+    WS_FLOOD_FRAMES = 100
+    WS_FLOOD_SIZE = 4096
+
     async def _app(self, scope, receive, send):
         if scope["type"] == "websocket":
             await send({"type": "websocket.accept"})
+            if scope["path"] == "/ws/flood":
+                for _ in range(self.WS_FLOOD_FRAMES):
+                    await send({"type": "websocket.send",
+                                "bytes": b"x" * self.WS_FLOOD_SIZE})
+                await send({"type": "websocket.close", "code": 1000})
             return
         q = dict(p.split("=", 1) for p in
                  scope["query_string"].decode().split("&") if p)
@@ -391,6 +400,40 @@ def test_a_websocket_spawn_clears_the_slots_stale_disconnect(h):
         "the handshake was rejected: %r" % (kinds,))
 
 
+def test_a_websocket_send_waits_for_its_window(h):
+    """`websocket.send` is credit-gated, so a flooding app waits.
+
+    Ungated it filled the loop's per-slot outbox, and every frame past
+    `MAX_PENDING_BYTES` was refused -- a message stream with holes the peer
+    has no protocol-level way to detect. The loop already acked a socket's
+    drained bytes; the window they are credited to is seeded at
+    `websocket.accept`.
+
+    Credit is charged in ENCODED frame bytes, which is what the loop acks,
+    so the count here is exact rather than approximate."""
+    window = h.ns["_ASGI_CREDIT_WINDOW"]
+    frame = h.ns["_ws_frame_bytes"](Harness.WS_FLOOD_SIZE)
+    fits = window // frame
+    h.job(0, "wsflood")
+    h.settle()
+    sends = h.kinds(0).count("ws_send")
+    assert sends == fits, (
+        "%d frames left the app with no acks; one window of %d bytes holds "
+        "%d frames of %d. The send is not waiting for credit."
+        % (sends, window, fits, frame)
+    )
+    assert "ws_close" not in h.kinds(0), (
+        "the app reached its close while still blocked on the window")
+    # Drain-acks for eight frames: exactly eight more must go out.
+    h.ack(0, frame * 8)
+    h.settle()
+    assert h.kinds(0).count("ws_send") == fits + 8, (
+        "credit for 8 frames released %d, not 8: %r"
+        % (h.kinds(0).count("ws_send") - fits, h.kinds(0)))
+    # And the window never exceeds itself, whatever arrives.
+    assert h.ns["_exec_credits"][0] <= window
+
+
 TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
@@ -398,6 +441,7 @@ TESTS = [
     test_a_spawn_clears_the_slots_stale_disconnect,
     test_a_stale_ack_cannot_inflate_the_successors_window,
     test_a_websocket_spawn_clears_the_slots_stale_disconnect,
+    test_a_websocket_send_waits_for_its_window,
 ]
 
 
@@ -441,6 +485,21 @@ SABOTAGES = [
         "    _exec_stream_tasks[slot] = task",
         "    _exec_disconnects.pop(slot, None)\n"
         "    _exec_stream_tasks[slot] = task",
+    ),
+    (
+        "websocket.send is not credit-gated",
+        "            await _ws_spend(slot, _ws_frame_bytes(len(payload)))\n"
+        "            if _task_gone(slot):\n"
+        "                return\n"
+        "            _exec_put(('ws_send', slot, opcode, payload))",
+        "            _exec_put(('ws_send', slot, opcode, payload))",
+    ),
+    (
+        "a websocket window is never seeded",
+        "            _exec_credits[slot] = _ASGI_CREDIT_WINDOW\n"
+        "            _exec_credit_evts[slot] = asyncio.Event()\n"
+        "            resolved[0] = True",
+        "            resolved[0] = True",
     ),
     (
         "a drain ack is added rather than clamped to the window",

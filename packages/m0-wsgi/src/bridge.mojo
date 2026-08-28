@@ -745,6 +745,65 @@ _exec_ws_inbox = {}
 _exec_ws_accepted = set()
 
 
+def _ws_frame_bytes(n):
+    '''What the LOOP will queue for a message of `n` payload bytes.
+
+    `encode_ws_frame` builds an unmasked server frame, so the header is 2,
+    4 or 10 bytes. Credit is charged in THESE bytes rather than the
+    payload's, because these are the bytes the loop acks back: its outbox
+    drain acks `len(pending)`, and pending holds encoded frames. Charging
+    the payload and being credited the frame drifts by the header on every
+    message -- threefold on one-byte sends, which is exactly the traffic
+    that reaches the outbox cap first.
+    '''
+    if n <= 125:
+        return n + 2
+    if n <= 0xFFFF:
+        return n + 4
+    return n + 10
+
+
+async def _ws_spend(slot, nbytes):
+    '''Wait for room in BOTH windows, then charge them -- `_emit` for a socket.
+
+    Until this existed `websocket.send` was not gated at all. An
+    application that outran its client filled the loop's 64 KB per-slot
+    outbox, and the frame the loop then had to refuse was a message the
+    peer has no protocol-level way to notice is missing: measured at
+    430,693 of 1,638,400 bytes delivered under a clean close frame. The
+    loop was already acking a socket's drained bytes -- a WS slot on an
+    executor lane answers `slot_channel_stream` -- so what was missing was
+    only the window to credit them to, seeded at `websocket.accept`.
+
+    A message bigger than the window is charged the whole window rather
+    than waiting for credit that can never exist; the ack that follows
+    over-credits by the difference and the clamp in `_on_ack` absorbs it.
+    (Such a message is refused by the outbox anyway -- `queue_frame` caps a
+    single frame at `MAX_PENDING_BYTES` -- and now says so.)
+    '''
+    import asyncio
+    evt = _exec_credit_evts.get(slot)
+    if evt is None:
+        # No window: a socket the loop is not acking (a `--realtime` hold
+        # on a WSGI lane). Nothing to wait for and nothing to charge.
+        return
+    if nbytes > _ASGI_CREDIT_WINDOW:
+        nbytes = _ASGI_CREDIT_WINDOW
+    while _exec_credits.get(slot, 0) < nbytes:
+        if _task_gone(slot):
+            raise asyncio.CancelledError()
+        evt.clear()
+        await evt.wait()
+    while _exec_global_credit[0] < nbytes:
+        if _task_gone(slot):
+            raise asyncio.CancelledError()
+        _exec_global_evt.clear()
+        await _exec_global_evt.wait()
+    _exec_credits[slot] -= nbytes
+    _exec_global_credit[0] -= nbytes
+    _exec_inflight[slot] = _exec_inflight.get(slot, 0) + nbytes
+
+
 def _task_gone(slot):
     # `import asyncio` here, not at module scope: this shim is a string
     # exec'd into a fresh namespace and every function that needs the
@@ -1252,6 +1311,12 @@ async def _serve_one_ws(slot, scope):
             return
         if t == 'websocket.accept':
             _exec_ws_accepted.add(slot)
+            # The send window, seeded BEFORE the accept reaches the pump:
+            # from that moment the loop can drain frames and ack them, and
+            # an ack for a slot with no window is discarded. See
+            # `_ws_spend`.
+            _exec_credits[slot] = _ASGI_CREDIT_WINDOW
+            _exec_credit_evts[slot] = asyncio.Event()
             resolved[0] = True
             _exec_put(('ws_accept', slot))
         elif t == 'websocket.send':
@@ -1259,13 +1324,28 @@ async def _serve_one_ws(slot, scope):
                 raise RuntimeError('websocket.send before websocket.accept')
             data = message.get('bytes')
             if data is None:
-                text = message.get('text') or ''
-                _exec_put(
-                    ('ws_send', slot, 1, text.encode('utf-8')))
+                payload = (message.get('text') or '').encode('utf-8')
+                opcode = 1
             else:
-                _exec_put(('ws_send', slot, 2, bytes(data)))
+                payload = bytes(data)
+                opcode = 2
+            # Backpressure: this await is the whole point. An application
+            # faster than its client waits here, exactly as a streaming
+            # HTTP response waits in `_emit`.
+            await _ws_spend(slot, _ws_frame_bytes(len(payload)))
+            if _task_gone(slot):
+                return
+            _exec_put(('ws_send', slot, opcode, payload))
         elif t == 'websocket.close':
             if slot in _exec_ws_accepted:
+                # The close frame rides the same outbox, so it is charged
+                # the same way. A peer that has genuinely gone is what
+                # `_task_gone` covers; a merely slow one is worth waiting
+                # for, because a close that overflows the outbox takes the
+                # connection down without its close frame.
+                await _ws_spend(slot, _ws_frame_bytes(2))
+                if _task_gone(slot):
+                    return
                 _exec_put(
                     ('ws_close', slot, int(message.get('code', 1000))))
                 _exec_ws_accepted.discard(slot)

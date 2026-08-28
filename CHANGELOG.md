@@ -52,8 +52,7 @@ versions may break the API**.
   - a **WebSocket frame** the outbox refuses delivered 430,693 of
     1,638,400 bytes under a *clean close frame* — a message stream with
     holes the peer had no way to detect. It now flushes what is queued and
-    closes abruptly (1006). Reproduced with an ordinary client: ASGI
-    `websocket.send` is not credit-gated at all, unlike a response chunk.
+    closes abruptly (1006).
   - the **WebSocket begin** frame and the close/end pair get the same
     treatment — and a socket can now be aborted at all: the loop's abort
     path gated on `slot_sse`, which a held 101 never sets, so aborting a
@@ -69,6 +68,29 @@ versions may break the API**.
   A tear-down is claimed once per stream (`stream_lost`): the producer
   does not learn its connection is gone until the loop closes it, so one
   flooding WebSocket announced itself 336 times before.
+
+- **`websocket.send` applies backpressure.** It was the one path above
+  reachable by an ordinary application, and until now it was not
+  credit-gated at all: an ASGI app that sent faster than its client read
+  filled the loop's 64 KB per-slot outbox and every frame past it was
+  dropped — 430,693 of 1,638,400 bytes under a clean close. It now waits
+  for drain credit exactly as a streaming HTTP response does, so the same
+  flood arrives complete and in order (measured byte for byte: 400 x 4 KB
+  plus framing, 1,640,193 bytes on the wire). Almost all of the machinery
+  was already running — the loop acks a socket's drained bytes, because a
+  WS slot on an executor lane answers `slot_channel_stream` — and what was
+  missing was the window to credit them to, seeded at `websocket.accept`.
+  Credit is charged in ENCODED frame bytes, which is what the loop acks;
+  charging the payload instead drifts by the header on every message,
+  threefold on one-byte sends. `apps/asgi_bare` grew a `/ws/flood` route
+  and `ws_probe.py` a phase that asserts the exact count, so `smoke-asgi`
+  fails if the gating is removed (measured: 15 of 400 frames arrive).
+
+  Two limits this does not lift, both now loud rather than silent: a
+  single WebSocket message larger than `MAX_PENDING_BYTES` (64 KB) is
+  still refused by the outbox, since the cap applies to one frame as well
+  as to the queue; and a `--realtime` hold on a WSGI lane has no window,
+  because the loop does not ack those sockets.
 
 ## [0.14.0] — 2026-08-27
 
