@@ -1140,6 +1140,70 @@ loop↔executor handoff — so optimising the 116k layer buys nothing here.
   the layer's time. `mojo-framework/packages/m0-data` has an SoA arena to
   start from.
 
+### Mojo language capabilities, surveyed 2026-08-28
+
+A pass over what the tree uses of the language, prompted by "are we fully
+tapping Mojo?". The short answer is yes wherever it was measured to pay —
+SoA span-based headers (+72%, the largest single win here), SIMD parsing, an
+allocation-free router, 14 `comptime if` platform specialisations, the raw
+C API at the Python boundary, `ExecutorPort` at ~70 ns. What was missing was
+expressiveness, and `HTTPService`'s default bodies and `m0_http.reply` are
+that gap closed. The rest is recorded here.
+
+- **More SIMD in the request path.** Refused by our own profile, not by
+  taste: after the header work, 31 of 35 stack samples sit in `__libc_send`
+  and one in the allocator (SERVER_PERFORMANCE.md). `escape_html`,
+  `chunked.mojo`'s copy loops and `Headers._name_matches` are all still
+  scalar and all still invisible at this rate. Revisit only if a profile
+  disagrees — and build a Mojo-level microbenchmark for `m0-http` first,
+  because there is none: every claim in SERVER_PERFORMANCE.md came from wrk
+  plus gdb sampling, and `scripts/bench_bridge_parts.mojo` is the template.
+- **`simdwidthof` / SIMD width portability.** Every one of the 18 SIMD sites
+  hardcodes 64/16/8/4 lanes and `simdwidthof` appears nowhere. Moot for the
+  shipped artifact regardless: `build-serve` pins `--target-cpu apple-m1`,
+  so the wheel already forfeits newer width. Related to the desktop-Mac open
+  question below, not separable from it.
+- **GPU / MAX.** Established and declined. Mojo 1.0 moved the accelerator
+  APIs out of the stdlib into the `max` package, which this repo does not
+  pin — `from gpu.host import DeviceContext` fails here, and that is now a
+  fact about the language's packaging rather than about our install. Linking
+  MAX into an HTTP server to serve a request is a different product; the
+  open question below is where that belongs if it belongs anywhere.
+- **Native async Mojo handlers (an `async def` handler on a Mojo reactor).**
+  Distinct from the coroutine entry above, and refused for a different
+  reason. There is no async I/O in the language to build on: the tree
+  contains zero `async fn`, `Coroutine` or `TaskGroup` in Mojo, the 19
+  `async def` are all inside embedded Python strings in `bridge.mojo`, and
+  Mojo 1.0 shipped no awaitable I/O primitive. The reactor would be ours to
+  write and maintain, for handlers that today block a pool thread perfectly
+  well. Gate it on a real application that needs it.
+- **`std.base64` / `std.hashlib` for the WebSocket handshake.**
+  `websocket.mojo:24-27` already argues the hand-rolled SHA-1 and base64:
+  one hash of one short string per connection open, and nothing else in the
+  repo needs either. Recorded so the argument is not re-run.
+
+### Considered, not built: routes that carry a function
+
+`Router.match` returns an `Int` and the caller dispatches on it, which is why
+three of five Mojo apps skip the router and hand-write `if path == …`.
+Route-to-function **is** reachable on Mojo 1.0 — verified by spike, not
+assumed. The spelling is `thin`: a closure trait (`def (X) raises -> Y`) is
+an `AnyTrait`, refused as a `List` element and refused outright as a struct
+field, but `def (X) thin raises -> Y` is a concrete type that lists and
+struct fields both take, including generically —
+`List[def (mut Self.T, ...) thin raises -> HTTPResponse]` inside a
+`struct RouteTable[T]` dispatches and mutates `T` correctly.
+
+What stopped it is a type cycle, not the language. Every Mojo app in this
+tree keeps its state in the handler and the handler owns the router, so
+`RouteTable[NotesHandler]` as a field of `NotesHandler` is infinitely
+recursive. The fix is to split app state into a type the handler owns
+alongside the table — a real design, and a real rewrite of the showcase app.
+Building the table before an app wants it would add an API with zero call
+sites, which is the condition `auth.mojo` and `response_cache.mojo` are
+already in. Build it with the first app that asks; the spelling above is the
+part that was unknown.
+
 ## Open questions
 
 ### The desktop-Mac server, and what the wheel gives up to ship
