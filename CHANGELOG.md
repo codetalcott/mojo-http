@@ -7,6 +7,21 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-08-28
+
+A hardening release for the ASGI streaming seam. No wire format, default
+or API changed, and one thing is visible to an application:
+**`websocket.send` now applies backpressure.** An app that sends faster
+than its client reads waits, where before it silently lost messages:
+430,693 of 1,638,400 bytes arrived under a *clean close frame*, a message
+stream with holes the peer had no protocol-level way to detect. The same
+flood now arrives whole, byte for byte.
+
+The rest turns failures that were invisible into failures that are named
+and terminal, and adds the two guards the 0.14.0 slot-ownership fix
+shipped without. If you run ASGI streams or WebSockets under `m0serve`,
+this is worth taking; if you run WSGI only, nothing here reaches you.
+
 ### Added
 
 - **The slot-ownership race has guards.** 0.14.0 fixed a silent hang in
@@ -19,10 +34,11 @@ versions may break the API**.
     ownership rules with no server, no Mojo and no threads:
     `scripts/shim_ownership.py` extracts `SHIM_SOURCE` from
     `bridge.mojo`, `exec`s it, and drives it through real socketpairs
-    exactly as the event loop does. Six tests, one per rule; four of the
-    six fail on the shim reverted to its pre-fix shape. `--sabotage`
-    reverts each rule in turn and insists the suite fails for every one,
-    so the repo's sabotage rule is enforced rather than remembered.
+    exactly as the event loop does. Seven tests, one per rule; four of
+    them fail on the shim reverted to its pre-fix ownership shape.
+    `--sabotage` reverts each of the eight rules in turn and insists the
+    suite fails for every one, so the repo's sabotage rule is enforced
+    rather than remembered.
   - `poe stress-asgi` (a pre-release check, deliberately not in CI) runs
     `chunked_keepalive.py` N times under CPU hogs — the shape that
     recycles a slot mid-stream. Reverted build: failed on round 5 of 15.
@@ -2311,6 +2327,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.14.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.1
 [0.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.0
 [0.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.13.0
 [0.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.12.0
