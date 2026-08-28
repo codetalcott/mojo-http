@@ -91,14 +91,6 @@ struct ChatHandler(HTTPService):
 
         return NotFound(path)
 
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(
-        mut self, req_method: String, req_path: String, mut resp: HTTPResponse
-    ):
-        pass
-
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return self.hub.drain(slot)
 
@@ -112,9 +104,6 @@ struct ChatHandler(HTTPService):
         # A message another worker broadcast: the frame is already an
         # encoded WebSocket frame — queue it for this worker's sockets.
         self.hub.deliver_peer(frame)
-
-    def tick(mut self, now_ms: Int):
-        pass
 
     def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         # The chat: whatever one socket says, every socket hears — the

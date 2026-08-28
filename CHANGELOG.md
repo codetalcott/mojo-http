@@ -7,6 +7,34 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Changed
+
+- **`HTTPService` now requires only `func`.** The trait's other eight methods
+  carry default bodies, so a handler writes the hooks it uses and nothing
+  else. `apps/hello` went from 57 lines to 30 — 4 lines of handler had been
+  carrying 25 lines of empty stubs — and 268 lines of the same boilerplate
+  came out of the five demo services in `service.mojo`, all six Mojo apps and
+  the README example. Nothing on the wire changed: every stub deleted was
+  byte-identical to the default replacing it, and `smoke-hello`,
+  `smoke-notes`, `smoke-counter`, `smoke-todo`, `smoke-ws`, `smoke-chat` and
+  `smoke-client` pass unchanged.
+
+  Overriding a default is ordinary — define the method and yours wins. The
+  practical effect is on the trait itself: adding a hook **with** a default no
+  longer breaks every implementer in the repo at once, which is what the old
+  contract's warning was about. Adding one **without** a default still does.
+
+### Added
+
+- `packages/m0-http/test/test_service.mojo` — the guard for the above, and the
+  first unit coverage the handler contract has had. `MinimalService`
+  implements `func` and nothing else, so the file failing to compile *is* the
+  failure; the value assertions pin that the defaults return what the event
+  loop expects (no short-circuit, an empty drain, a non-streaming slot), since
+  a wrong default would be a silent behaviour change across every app rather
+  than a compile error. Proven by reverting each of the eight defaults to
+  `...` in turn and confirming the suite fails for every one.
+
 ## [0.14.1] — 2026-08-28
 
 A hardening release for the ASGI streaming seam. No wire format, default

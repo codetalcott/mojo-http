@@ -191,6 +191,11 @@ gets the allocation win without touching a single caller — `Headers`'s
 public API (`get`, `[]`, `in`, `pop`, `keys`, `content_length`) is
 unchanged, which is why this landed as a pure internal substitution.
 
+(`HTTPService`'s methods later gained default bodies, which does not change
+this. A default removes the cost of *adding* a hook; it does nothing for
+*changing a signature*, and `func` — the one method with no default — is the
+one an origin parameter would rewrite.)
+
 ## Where the remaining gap lives
 
 The canonical fast HTTP/1.1 servers (fasthttp, may-minihttp/ntex, and

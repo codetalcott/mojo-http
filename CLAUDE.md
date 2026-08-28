@@ -667,8 +667,10 @@ back-edge pulls it in — `event_loop.mojo` → `m0_http.log` →
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has nine methods and no
-defaults: `func`, `before_request` (called on the LOOP before a request
+`HTTPService` (`lightbug_http/service.mojo`) has nine methods, and **only
+`func` is required** — the other eight carry default bodies in the trait
+(`return None`, `pass`, an empty list, `False`), so a handler declares just
+the hooks it uses. The methods are: `func`, `before_request` (called on the LOOP before a request
 is offloaded to a pool thread — what answers it there never becomes a
 job; `WSGIHandler` answers static mounts and the health path this way),
 `after_response`, four SSE hooks —
@@ -681,10 +683,16 @@ it quick), and `ws_message`, which receives complete WebSocket messages
 `sse_*` names are historical: the outbox drain and the disconnect hook serve
 WebSocket slots identically — a WS handler queues `encode_ws_frame(...)`
 bytes and returns them from `sse_drain_slot`. A handler that streams
-nothing and schedules nothing returns the empty defaults. Adding a method
-to the trait breaks every handler in the repo at once: every app under
-`apps/`, plus the five demo services inside `service.mojo` itself, plus the
-example in README.md.
+nothing and schedules nothing writes none of them.
+
+Adding a method **with a default** is now a non-breaking change; adding one
+**without** a default still breaks every implementer at once — every app
+under `apps/`, the five demo services inside `service.mojo`, `WSGIHandler`,
+and the example in README.md — so give a new hook a default unless there is
+a reason not to. The guard is `packages/m0-http/test/test_service.mojo`,
+whose `MinimalService` implements `func` and nothing else: reverting any
+default in the trait to `...` makes that file fail to compile, which is
+checked by sabotaging all eight.
 
 **SSE and WebSockets require `listen_and_serve_nonblocking`,** not
 `listen_and_serve`. Only the non-blocking event loop assigns `req.slot_id`,

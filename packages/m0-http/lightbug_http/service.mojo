@@ -5,30 +5,46 @@ from lightbug_http.http import OK, HTTPRequest, HTTPResponse, NotFound
 
 
 trait HTTPService:
+    """The handler contract. `func` is the only method you must write.
+
+    The other eight carry default bodies — the same empty implementations
+    every handler used to spell out by hand — so a handler declares only the
+    hooks it actually uses. Overriding one is ordinary: define it and yours
+    wins.
+
+    That is also what makes the trait extensible. A method added here WITH a
+    default no longer breaks every implementer in the repo at once; a method
+    added without one still does, so give new hooks a default unless there is
+    a reason not to. `test_service.mojo` holds a handler that implements
+    `func` alone, and exists to fail compilation if a default is ever
+    removed.
+    """
+
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        """Answer a request. The one method with no default."""
         ...
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
         """Called before func(). Return a response to short-circuit (e.g. CORS preflight, auth).
         Return None to continue to func().
         """
-        ...
+        return None
 
     def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
         """Called after func() with the response. Add headers, log, etc."""
-        ...
+        pass
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         """Return and clear pending SSE outbound data for a slot."""
-        ...
+        return List[UInt8]()
 
     def sse_is_streaming(self, slot: Int) -> Bool:
         """Check if a slot is in SSE streaming mode."""
-        ...
+        return False
 
     def sse_slot_disconnected(mut self, slot: Int):
         """Notify the service that an SSE client disconnected."""
-        ...
+        pass
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         """Deliver an SSE frame broadcast by ANOTHER worker (BroadcastBus).
@@ -38,7 +54,7 @@ trait HTTPService:
         for local subscribers of `url` — `DatastarStream.deliver_peer` is the
         standard wiring. Non-streaming handlers leave it empty.
         """
-        ...
+        pass
 
     def tick(mut self, now_ms: Int):
         """Scheduled wakeup from the event loop — the application timer hook.
@@ -50,7 +66,7 @@ trait HTTPService:
         inbound request required. Keep it quick — the tick runs on the event
         loop thread, and every connection waits while it does.
         """
-        ...
+        pass
 
     def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         """A complete WebSocket message from the client on `slot`.
@@ -64,7 +80,7 @@ trait HTTPService:
         cleanup) is shared between SSE and WebSocket slots. Handlers that
         never upgrade leave this empty.
         """
-        ...
+        pass
 
 
 @fieldwise_init
@@ -80,31 +96,6 @@ struct Printer(HTTPService):
 
         return OK(req.body_raw)
 
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
-        pass
-
-    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
-        return List[UInt8]()
-
-    def sse_is_streaming(self, slot: Int) -> Bool:
-        return False
-
-    def sse_slot_disconnected(mut self, slot: Int):
-        pass
-
-    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        pass
-
-    def tick(mut self, now_ms: Int):
-        pass
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass
-
-
 @fieldwise_init
 struct Welcome(HTTPService):
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
@@ -117,31 +108,6 @@ struct Welcome(HTTPService):
                 return OK(Bytes(f.read_bytes()), "image/png")
 
         return NotFound(req.uri.path)
-
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
-        pass
-
-    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
-        return List[UInt8]()
-
-    def sse_is_streaming(self, slot: Int) -> Bool:
-        return False
-
-    def sse_slot_disconnected(mut self, slot: Int):
-        pass
-
-    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        pass
-
-    def tick(mut self, now_ms: Int):
-        pass
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass
-
 
 @fieldwise_init
 struct ExampleRouter(HTTPService):
@@ -157,31 +123,6 @@ struct ExampleRouter(HTTPService):
 
         return OK(req.body_raw)
 
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
-        pass
-
-    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
-        return List[UInt8]()
-
-    def sse_is_streaming(self, slot: Int) -> Bool:
-        return False
-
-    def sse_slot_disconnected(mut self, slot: Int):
-        pass
-
-    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        pass
-
-    def tick(mut self, now_ms: Int):
-        pass
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass
-
-
 @fieldwise_init
 struct TechEmpowerRouter(HTTPService):
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
@@ -191,31 +132,6 @@ struct TechEmpowerRouter(HTTPService):
             return OK('{"message": "Hello, World!"}', "application/json")
 
         return OK("Hello world!")  # text/plain is the default
-
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
-        pass
-
-    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
-        return List[UInt8]()
-
-    def sse_is_streaming(self, slot: Int) -> Bool:
-        return False
-
-    def sse_slot_disconnected(mut self, slot: Int):
-        pass
-
-    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        pass
-
-    def tick(mut self, now_ms: Int):
-        pass
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass
-
 
 @fieldwise_init
 struct Counter(HTTPService):
@@ -227,27 +143,3 @@ struct Counter(HTTPService):
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         self.counter += 1
         return OK("I have been called: " + String(self.counter) + " times")
-
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(mut self, req_method: String, req_path: String, mut resp: HTTPResponse):
-        pass
-
-    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
-        return List[UInt8]()
-
-    def sse_is_streaming(self, slot: Int) -> Bool:
-        return False
-
-    def sse_slot_disconnected(mut self, slot: Int):
-        pass
-
-    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        pass
-
-    def tick(mut self, now_ms: Int):
-        pass
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass

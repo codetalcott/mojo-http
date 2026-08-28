@@ -197,14 +197,6 @@ struct TodoHandler(HTTPService):
             self._broadcast()
         return _no_content()
 
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(
-        mut self, req_method: String, req_path: String, mut resp: HTTPResponse
-    ):
-        pass
-
     # --- The three SSE hooks, wired straight through to the stream ----------
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
@@ -220,13 +212,6 @@ struct TodoHandler(HTTPService):
         # A broadcast from another worker: queue it for this worker's
         # subscribers (and journal it, so replay works on every worker).
         self.stream.deliver_peer(url, event_id, frame)
-
-    def tick(mut self, now_ms: Int):
-        pass
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass
-
 
 def _html(body: String) -> HTTPResponse:
     return HTTPResponse(

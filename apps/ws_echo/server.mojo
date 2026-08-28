@@ -77,14 +77,6 @@ struct EchoHandler(HTTPService):
 
         return NotFound(path)
 
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(
-        mut self, req_method: String, req_path: String, mut resp: HTTPResponse
-    ):
-        pass
-
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         if slot < 0 or slot >= MAX_SLOTS:
             return List[UInt8]()
@@ -99,12 +91,6 @@ struct EchoHandler(HTTPService):
         if slot >= 0 and slot < MAX_SLOTS:
             self.connected[slot] = False
             self.outbox[slot].clear()
-
-    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        pass
-
-    def tick(mut self, now_ms: Int):
-        pass
 
     def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         # The echo: same opcode, same payload, queued for the same slot.
