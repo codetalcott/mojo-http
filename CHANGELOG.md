@@ -36,6 +36,22 @@ versions may break the API**.
 
 ### Added
 
+- **`m0_http.reply`** — the response constructors every Mojo app was writing
+  for itself. `apps/notes_api`, `apps/datastar_todo` and
+  `apps/datastar_counter` each carried their own `_json`, `_html`,
+  `_no_content` and `_parse_id`, the last two byte-identical copies. The
+  module holds `json`, `html`, `empty`, `no_content`, `redirect`, `problem`
+  (RFC 9457), `vary_accept`, `accept_header`, `body_string` and `param_int`,
+  lifted from those bodies rather than invented, and all three apps now use
+  it — `apps/notes_api` went from 388 lines to 308. `redirect` is new
+  surface: `common_response.mojo` shipped only `SeeOther`, so 301/302/307/308
+  had no constructor at all.
+
+  One behaviour change came with it. `param_int` refuses a parameter longer
+  than 18 digits; the hand-written copies multiplied without bound, so
+  `/notes/99999999999999999999` wrapped to some other note's id. Every caller
+  already treats `-1` as a 404.
+
 - `packages/m0-http/test/test_service.mojo` — the guard for the above, and the
   first unit coverage the handler contract has had. `MinimalService`
   implements `func` and nothing else, so the file failing to compile *is* the

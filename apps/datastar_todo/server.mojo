@@ -43,6 +43,7 @@ from lightbug_http.header import Headers, Header, HeaderKey
 
 from m0_core.json_parse import parse_json_field
 
+from m0_http import reply
 from m0_http import AppConfig, Router, install_shutdown_signals
 
 from m0_datastar.stream import DatastarStream
@@ -157,14 +158,14 @@ struct TodoHandler(HTTPService):
 
         if path == "/":
             var rows = self._load()
-            return _html(render_page(rows[0], rows[1], rows[2]))
+            return reply.html(render_page(rows[0], rows[1], rows[2]))
 
         if path == STREAM_URL:
             return self.stream.open(req, STREAM_URL)
 
         var m = self.router.match(req.method, path)
         if not m.matched:
-            return _not_found()
+            return reply.json(404, String("Not Found"), String('{"error":"not found"}'))
 
         if m.handler_id == H_ADD:
             # The browser posts its signal store; the draft is all we want.
@@ -178,9 +179,9 @@ struct TodoHandler(HTTPService):
                 self._broadcast()
             # Empty drafts are ignored, not an error: the Add button is
             # always clickable and a 4xx would surface nothing useful.
-            return _no_content()
+            return reply.no_content()
 
-        var id = _parse_id(m.params[0])
+        var id = reply.param_int(m.params[0])
         if id >= 0:
             # A stale tab racing a delete makes these no-ops; the broadcast
             # below still runs and corrects that tab's view. 204 either way.
@@ -195,7 +196,7 @@ struct TodoHandler(HTTPService):
                 rm.bind_int(1, id)
                 _ = rm.step()
             self._broadcast()
-        return _no_content()
+        return reply.no_content()
 
     # --- The three SSE hooks, wired straight through to the stream ----------
 
@@ -213,46 +214,8 @@ struct TodoHandler(HTTPService):
         # subscribers (and journal it, so replay works on every worker).
         self.stream.deliver_peer(url, event_id, frame)
 
-def _html(body: String) -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=body.as_bytes(),
-        headers=Headers(
-            Header(HeaderKey.CONTENT_TYPE, "text/html; charset=utf-8")
-        ),
-        status_code=200,
-        status_text="OK",
-    )
 
 
-def _no_content() -> HTTPResponse:
-    # Mutations need no body: the update arrives over the stream.
-    return HTTPResponse(
-        body_bytes=String("").as_bytes(),
-        status_code=204,
-        status_text="No Content",
-    )
-
-
-def _not_found() -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=String('{"error":"not found"}').as_bytes(),
-        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
-        status_code=404,
-        status_text="Not Found",
-    )
-
-
-def _parse_id(s: String) -> Int:
-    if s.byte_length() == 0:
-        return -1
-    var result = 0
-    var bytes = s.as_bytes()
-    for i in range(s.byte_length()):
-        var c = Int(bytes[i])
-        if c < ord("0") or c > ord("9"):
-            return -1
-        result = result * 10 + (c - ord("0"))
-    return result
 
 
 def main() raises:

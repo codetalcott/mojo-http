@@ -36,6 +36,7 @@ from lightbug_http.c.process import getpid
 from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
 
+from m0_http import reply
 from m0_http import (
     AppConfig, WorkerSupervisor, install_shutdown_signals, exit_worker,
 )
@@ -92,7 +93,7 @@ struct CounterHandler(HTTPService):
             )
 
         if path == "/":
-            return _html(render_page(
+            return reply.html(render_page(
                 shared_load(self.count_addr), shared_load(self.uptime_addr)
             ))
 
@@ -172,14 +173,6 @@ struct CounterHandler(HTTPService):
             '{"uptime":' + String(up)
             + ',"count":' + String(shared_load(self.count_addr)) + "}",
         )
-
-def _html(body: String) -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=body.as_bytes(),
-        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/html; charset=utf-8")),
-        status_code=200,
-        status_text="OK",
-    )
 
 
 def main() raises:
