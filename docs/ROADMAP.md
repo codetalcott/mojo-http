@@ -1171,12 +1171,33 @@ that gap closed. The rest is recorded here.
   open question below is where that belongs if it belongs anywhere.
 - **Native async Mojo handlers (an `async def` handler on a Mojo reactor).**
   Distinct from the coroutine entry above, and refused for a different
-  reason. There is no async I/O in the language to build on: the tree
-  contains zero `async fn`, `Coroutine` or `TaskGroup` in Mojo, the 19
-  `async def` are all inside embedded Python strings in `bridge.mojo`, and
-  Mojo 1.0 shipped no awaitable I/O primitive. The reactor would be ours to
-  write and maintain, for handlers that today block a pool thread perfectly
-  well. Gate it on a real application that needs it.
+  reason than "the language cannot". It can, partly — measured 2026-08-28,
+  not assumed:
+
+  `std.runtime.asyncrt` **exists on the pinned 1.0.0** and exports
+  `TaskGroup`, `create_task`, `Task`, `TaskGroupContext` and
+  `parallelism_level` (4 on this M4). It works, and it is genuinely
+  multi-threaded: four CPU-bound `async def`s in a `TaskGroup` ran **3.6x**
+  faster than the same work serially. `create_task(coro).wait()` from a sync
+  `main` is fine — but `Task(coro).wait()`, the spelling recorded elsewhere
+  as segfaulting, still crashes, so the constructor is the trap, not
+  async-from-sync.
+
+  **What it is not is a reactor.** There is no awaitable I/O: no `sleep`, no
+  `block_on`, nothing that takes a file descriptor. A blocking syscall inside
+  a task occupies a runtime worker. Sixteen tasks each blocking 200 ms took
+  **816 ms**, against 800 ms predicted for a 4-worker pool and 200 ms for a
+  reactor — so this is a work-stealing compute pool, and connection
+  concurrency is exactly the thing it cannot give us. Anything reactor-shaped
+  is still ours to write and maintain, for handlers that today block a pool
+  thread perfectly well. Gate it on a real application that needs it.
+
+  The positive half is worth keeping in view: `asyncrt` is the right tool for
+  **CPU fan-out inside one handler** — a Mojo handler doing real computation
+  can parallelise it with no pool, no threads of our own and no `--blocking-
+  threads`. That also sharpens what the handler pool is *for*: blocking, not
+  computing. Which is why the pool spike's kill criterion measures a handler
+  that blocks.
 - **`std.base64` / `std.hashlib` for the WebSocket handshake.**
   `websocket.mojo:24-27` already argues the hand-rolled SHA-1 and base64:
   one hash of one short string per connection open, and nothing else in the
