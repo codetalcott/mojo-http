@@ -78,8 +78,9 @@ versions may break the API**.
 
   Correct, proven: `smoke-asgi` (0 KB RSS over 10k requests), `-fanout`,
   `smoke-django-asgi`, `smoke-fasthtml` and `stress-asgi` (30/30 under 20
-  hogs) all pass under the variable; CI runs the ASGI smoke under it on
-  both platforms. Two single-thread rules were found on the way and are
+  hogs) all pass under the variable, on kqueue and — verified in a Linux
+  container before CI, `scripts/epoll_inverted_check.sh` — on epoll; CI
+  runs the ASGI smoke under it on both platforms. Two single-thread rules were found on the way and are
   documented on `ExecutorPort._place_frame` and `PyBridge.notify_disconnect`:
   a producer that waits for the loop to drain waits for itself, so a full
   chunk channel is drained by running a pass; and a direct job would

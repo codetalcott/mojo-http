@@ -1159,7 +1159,10 @@ bindings of one `mut` struct pass exclusivity as separate `mut` arguments.
 
 **Built and measured, first cut (2026-08-28, `M0_INVERTED=1`).** Correct
 under every gate: `smoke-asgi` with 0 KB RSS, fan-out, Django ASGI,
-FastHTML, `stress-asgi` 30/30. Two single-thread traps found and fixed on
+FastHTML, `stress-asgi` 30/30 — on kqueue, and on **epoll** too, verified
+in a Linux container before CI (`scripts/epoll_inverted_check.sh` under
+colima, linux/aarch64: the smoke with 0 KB RSS, the recycled-slot probe,
+`stress-asgi` 30/30 under 8 hogs). Two single-thread traps found and fixed on
 the way — a producer waiting for the loop to drain the chunk channel was
 waiting for itself (`_place_frame` runs a pass instead), and a direct job
 overtook the slot's disconnect tag on the FIFO submit channel and stamped
