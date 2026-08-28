@@ -1181,7 +1181,10 @@ that gap closed. The rest is recorded here.
   faster than the same work serially. `create_task(coro).wait()` from a sync
   `main` is fine — but `Task(coro).wait()`, the spelling recorded elsewhere
   as segfaulting, still crashes, so the constructor is the trap, not
-  async-from-sync.
+  async-from-sync. The module also ships `RaisingTask` /
+  `create_raising_task`, which is the pair that would matter here:
+  `HTTPService.func` is the one method that `raises`, so a handler task
+  cannot use plain `create_task`.
 
   **What it is not is a reactor.** There is no awaitable I/O: no `sleep`, no
   `block_on`, nothing that takes a file descriptor. A blocking syscall inside
