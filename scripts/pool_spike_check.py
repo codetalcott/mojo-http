@@ -19,6 +19,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 FAILURES: list[str] = []
@@ -102,14 +103,28 @@ def main() -> int:
         first = json.loads(body)["thread"]
         check(first >= 0, f"func ran on a POOL thread (thread == {first} >= 0)")
 
-        # Every thread should take work: 40 requests over 4 threads, and the
-        # loop deals them round-robin, so seeing only one would mean the pool
-        # is a single thread wearing a hat.
-        seen = set()
-        for _ in range(40):
-            seen.add(json.loads(s.get("/fast")[1])["thread"])
+        # Every thread should take work — but only CONCURRENT BLOCKING
+        # requests can assert that. Sequential instant requests assert a
+        # fairness property the FIFO datagram queue does not have: the
+        # kernel wakes one of the blocked receivers per datagram, often the
+        # same one, and CI's 3-core runner served an entire burst from a
+        # single thread. A thread asleep in /slow is not in recv, so six
+        # overlapping 300 ms requests MUST spread across at least two.
+        seen: set[int] = set()
+        lock = threading.Lock()
+
+        def one_slow() -> None:
+            _, body = s.get("/slow?ms=300")
+            with lock:
+                seen.add(json.loads(body)["thread"])
+
+        workers = [threading.Thread(target=one_slow) for _ in range(6)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
         check(len(seen) > 1,
-              f"more than one pool thread served (saw {sorted(seen)})")
+              f"concurrent blocking requests spread across threads (saw {sorted(seen)})")
 
         status, body = s.get("/slow?ms=50")
         check(status == 200 and json.loads(body)["ms"] == 50,

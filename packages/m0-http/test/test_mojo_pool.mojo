@@ -6,6 +6,7 @@ NOT covered here is the p99 behaviour the pool exists for; that is the
 measurement in `scripts/pool_spike_probe.py` against a live server.
 """
 
+from std.ffi import c_int, external_call
 from std.testing import TestSuite, assert_equal, assert_true
 from std.time import perf_counter_ns
 
@@ -28,6 +29,24 @@ struct EchoHandler(PoolHandler):
         return Self(ctx.index)
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return json(200, String("OK"), String('{"thread":', self.index, "}"))
+
+    def shutdown(mut self):
+        pass
+
+
+@fieldwise_init
+struct SleepyHandler(PoolHandler):
+    """Blocks 60 ms per request, so a burst of jobs MUST spread across threads."""
+
+    var index: Int
+
+    @staticmethod
+    def make(ctx: PoolContext) raises -> Self:
+        return Self(ctx.index)
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        _ = external_call["usleep", c_int, c_int](c_int(60_000))
         return json(200, String("OK"), String('{"thread":', self.index, "}"))
 
     def shutdown(mut self):
@@ -86,13 +105,21 @@ def test_every_thread_gets_its_own_handler() raises:
     version of this test only counted completions, and `scripts/
     pool_sabotage.py` caught it: building every handler with index 0 —
     the shape a shared handler would have — passed cleanly.
+
+    The jobs BLOCK (60 ms each), and that is load-bearing too: with
+    instant jobs this asserted a fairness property the FIFO queue does not
+    have, and CI's 3-core runner promptly disproved it — one thread
+    drained all 24 before the others were ever scheduled. A burst of
+    blocking jobs is different: a thread asleep in `usleep` is not in
+    `recv`, so the next datagram wakes a different thread. Eight 60 ms
+    jobs on one thread would be 480 ms of serial sleeping; another thread
+    only has to wake once in that window.
     """
     var pool = OffloadPool(64)
     var threads = MojoPool(3)
-    threads.start[EchoHandler](pool.addr())
+    threads.start[SleepyHandler](pool.addr())
 
-    # More jobs than threads, so every thread is dealt at least one.
-    comptime JOBS = 24
+    comptime JOBS = 8
     var seen = 0
     var indices = List[Int]()
     var deadline = perf_counter_ns() + 10_000_000_000
