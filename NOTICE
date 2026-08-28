@@ -339,7 +339,12 @@ lightbug_http
         channel-stream head, handles aborts after their batch's completions
         (flushing the produced bytes, then closing without a terminator),
         and repeats the farewell pass after the shutdown drain.
-        http/response.mojo gained `stream_gen`.
+        http/response.mojo gained `stream_gen`. An abort also applies to a
+        WebSocket slot (`slot_sse or slot_ws`), and a 101 records its
+        generation in `OffloadLoopState.stream_gen` after the non-stream
+        clear, so an outbound frame the chunk channel will not take closes
+        the socket rather than leaving it open with a hole in its message
+        stream.
       - The pump between the event loop and the asyncio executor is
         batched in both directions (offload.mojo, event_loop.mojo): the
         loop buffers a pass's submits to an executor lane and sends them

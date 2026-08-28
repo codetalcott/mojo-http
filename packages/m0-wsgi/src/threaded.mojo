@@ -384,6 +384,10 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var use_offload = blocking > 0 or run_executor
     var pool = OffloadPool(server[].config.max_connections if use_offload else 0)
     var pool_addr = pool.addr() if use_offload else 0
+    # This loop's handler needs the pool for one thing: a chunk frame its
+    # outbox refuses must abort the stream rather than vanish. See
+    # `WSGIHandler.abort_pool_addr`.
+    handler.set_abort_pool(pool_addr)
     if use_offload and opts[].realtime and ctx.index < len(server[].bus_write_fds):
         # A pool thread's hold must land in THIS loop's registries, so it
         # rides this loop's own bus channel -- never another loop's, whose

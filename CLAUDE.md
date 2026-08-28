@@ -304,6 +304,47 @@ code depends on:
     CPU hogs — `chunked_keepalive.py`'s HTTP/1.0 probe closes after the
     head and the keep-alive stream that follows lands on the same slot —
     and traced to this ordering; 0 of 6 under six hogs (the plain build: 4 of 5) after.
+    **Two guards hold it, and the split is deliberate.** `poe test-shim`
+    is deterministic and IS in CI (inside `test-all`): the shim is a
+    Python program in a Mojo string, so `scripts/shim_ownership.py`
+    extracts `SHIM_SOURCE`, execs it, and drives it through real
+    socketpairs exactly as the loop does — no server, no Mojo, no
+    threads. Four of its six tests fail on the pre-fix shim, and
+    `--sabotage` reverts each rule in the extracted source and insists
+    the suite fails for every one, so a renamed or deleted guard line is
+    itself a failure. `poe stress-asgi` is the timing half and is
+    deliberately NOT in CI (`chunked_keepalive.py` N times under CPU
+    hogs: round 5 of 15 on the broken build, 45 of 45 on this one) —
+    shared runners cannot reproduce this reliably, which is exactly why
+    CI passed with the bug live; it is a pre-release step
+    (docs/RELEASING.md). **Every frame this seam cannot place is
+    terminal and named** — the result of `_send_chunk_frame` is never
+    discarded, and neither is `queue_frame`'s refusal in the loop
+    handler's `s`/`w` branches. Each was measured both ways: a dropped
+    begin frame served a clean EMPTY 200, a dropped end frame hung the
+    client to its own timeout against a silent log, and a refused
+    WebSocket frame delivered 430,693 of 1,638,400 bytes under a clean
+    close frame. The recoveries differ because the shapes do: a begin
+    that never lands must not be followed by a streaming head (500,
+    close, and a disconnect tag to this executor's own lane, since the
+    loop never saw a stream and will send none); anything after the head
+    aborts, so the client sees truncation rather than a short body under
+    a clean ending; and the loop-side refusal ends a WebSocket through
+    `asgi_done` rather than `abort_stream`, because a socket's outbox is
+    unframed and those queued bytes are real. **An abort now reaches a
+    socket at all**: the loop's abort path gated on `slot_sse`, which a
+    held 101 never sets, so aborting one was a silent no-op — it reads
+    `slot_sse or slot_ws`, and a 101 records its generation AFTER the
+    non-stream branch's `clear_stream`, which was wiping it. Give-up is
+    claimed ONCE per stream
+    (`ExecutorState.lost`, `WSGIHandler.stream_lost`): the producer does
+    not learn its connection is gone until the loop closes it, so one
+    flooding socket announced itself 336 times before. And a **drain ack
+    is clamped to the window, never merely added** — an ack names a slot
+    and carries no generation, so one for the stream that just ended can
+    land after the next stream on that slot has seeded its window whole,
+    and `credit + in flight == the window` is the invariant that keeps N
+    streams from over-committing the one chunk channel they share.
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind
@@ -488,6 +529,8 @@ send patches. Changes there are ordinary changes to this repo.
 uv run poe                  # list every task
 uv run poe build-all        # each package -> .mojoc, in dependency order
 uv run poe test-all         # builds first, then runs all tests
+uv run poe test-shim        # the executor shim's ownership rules, sabotage-proven
+uv run poe stress-asgi      # PRE-RELEASE: N streamed rounds under CPU hogs (not in CI)
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers

@@ -62,7 +62,7 @@ from .app import WSGIApp
 from .blocking_pool import BLK_POOL
 from m0_http import BLK_LANE
 from .cli import ServeOptions
-from .handler import WSGIHandler, asgi_stream_url
+from .handler import WSGIHandler, asgi_stream_url, _send_disconnect_tag
 from .response import build_response
 from .thread_handler import ThreadContext
 
@@ -312,6 +312,14 @@ struct ExecutorState(Movable):
     var paths: List[String]
     var pending_101: OwningList[Optional[HTTPResponse]]
     var gens: List[Int]
+    var lost: List[Bool]
+    """Per slot: this stream lost a frame the chunk channel would not take,
+    and has been torn down. Every later frame of it is pointless — and
+    expensive, because `_send_chunk_frame` waits ~5 s before giving up —
+    so they are skipped rather than retried one by one. Cleared where a
+    slot starts a new stream, which is the only place it can be true of
+    the previous one."""
+
     var next_gen: Int
     var pending_done: List[Int]
     var stopping: Bool
@@ -321,11 +329,13 @@ struct ExecutorState(Movable):
         self.paths = List[String](capacity=capacity)
         self.pending_101 = OwningList[Optional[HTTPResponse]](capacity=capacity)
         self.gens = List[Int](capacity=capacity)
+        self.lost = List[Bool](capacity=capacity)
         for _ in range(capacity):
             self.methods.append(String(""))
             self.paths.append(String(""))
             self.pending_101.append(None)
             self.gens.append(0)
+            self.lost.append(False)
         # This executor's generations are disjoint from every other
         # producer's by construction (`stream_gen_seed`).
         self.next_gen = stream_gen_seed(lane + 1)
@@ -512,11 +522,31 @@ struct ExecutorPort(Movable, Writable):
             # stream sits between its begin and its end on one channel.
             st.gens[slot] = st.next_gen
             st.next_gen += 1
+            st.lost[slot] = False
             var begin = List[UInt8]()
             var begin_frame = encode_bus_frame(
                 asgi_stream_url(String("b"), slot, self.lane), st.gens[slot], Span(begin)
             )
-            _ = _send_chunk_frame(pool, Span(begin_frame))
+            if not _send_chunk_frame(pool, Span(begin_frame)):
+                # The begin never landed, so the loop will never subscribe
+                # this slot -- and a streaming head on an unsubscribed slot
+                # is read as a stream that ended before it began: an empty
+                # 200 under a clean terminator, while the application goes
+                # on producing into a channel nobody is listening to until
+                # its credit runs out and it awaits forever, holding its
+                # share of the global window for the life of the process.
+                # So the head does NOT go out as a stream. 500 and close,
+                # and the task is told the connection is gone through the
+                # same disconnect tag the loop would send -- which the loop
+                # cannot send here, because it never saw a stream.
+                st.lost[slot] = True
+                _report_lost(String("stream begin"), slot, len(begin_frame))
+                _send_disconnect_tag(pool.submit_write_fd(self.lane), slot)
+                var failed = InternalError()
+                handler.after_response(st.methods[slot], st.paths[slot], failed)
+                pool.put_response(slot, failed^, True)
+                _queue_completion(pool, st.pending_done, slot)
+                return False
             # The head: an ordinary completion whose response is marked
             # streaming — _finish_response pops content-length, keeps the
             # connection, and flips the slot into streaming state once the
@@ -538,6 +568,8 @@ struct ExecutorPort(Movable, Writable):
             pool.put_response(slot, response^, raised)
             _queue_completion(pool, st.pending_done, slot)
         elif kind == "stream_chunk":
+            if st.lost[slot]:
+                return False
             _flush_completions(pool, st.pending_done)
             # Park-then-poke does not apply here: the chunk's bytes ride
             # IN the datagram, so the send is both the publish and the
@@ -549,29 +581,42 @@ struct ExecutorPort(Movable, Writable):
             )
             if not _send_chunk_frame(pool, Span(frame)):
                 # Unplaceable even after waiting detached: the loop is not
-                # draining this channel at all, so this body is short and
-                # saying so is the only honest thing left — a truncated 200
-                # is indistinguishable from a good one on the wire.
-                print(
-                    "asgi-executor: chunk channel full, dropped "
-                    + String(len(frame)) + " bytes for slot " + String(slot)
-                    + " — this response is truncated",
-                    flush=True,
-                )
+                # draining this channel at all, so this body is short. It is
+                # ABORTED rather than left to end normally, because the end
+                # frame that follows would put a clean chunked terminator
+                # after a truncated body — a 200 indistinguishable from a
+                # good one, which is the silent-wrong this whole seam is
+                # built to refuse. `stream_pump` (the pool thread's copy of
+                # this decision) does the same thing for the same reason.
+                st.lost[slot] = True
+                _report_lost(String("stream chunk"), slot, len(frame))
+                _report_abort(pool, slot, st.gens[slot])
         elif kind == "stream_end":
+            if st.lost[slot]:
+                return False
             _flush_completions(pool, st.pending_done)
             var empty = List[UInt8]()
             var frame = encode_bus_frame(
                 asgi_stream_url(String("e"), slot, self.lane), st.gens[slot], Span(empty)
             )
-            _ = _send_chunk_frame(pool, Span(frame))
+            if not _send_chunk_frame(pool, Span(frame)):
+                # The body is whole but its end marker cannot be delivered,
+                # and the loop only closes a stream it has been told ended:
+                # dropped, this connection streams nothing and closes never.
+                # The abort rides the COMPLETION channel — a different
+                # socket, which is why it is worth trying — and closes
+                # without the terminator, so a client sees a truncated body
+                # rather than a hang.
+                st.lost[slot] = True
+                _report_lost(String("stream end"), slot, len(frame))
+                _report_abort(pool, slot, st.gens[slot])
         elif kind == "stream_abort":
             # The app raised after its head went out: the loop closes the
             # connection WITHOUT the chunked terminator, so the client sees
             # a truncated body rather than a short one under a clean end.
             # Rides the completion channel, gen-checked there against the
             # head this slot last completed.
-            _ = pool.abort_stream(slot, st.gens[slot])
+            _report_abort(pool, slot, st.gens[slot])
         elif kind == "stream_note":
             print(
                 "asgi-executor: stream raised after its head: "
@@ -584,12 +629,28 @@ struct ExecutorPort(Movable, Writable):
             if st.pending_101[slot]:
                 st.gens[slot] = st.next_gen
                 st.next_gen += 1
+                st.lost[slot] = False
                 var begin = List[UInt8]()
                 var begin_frame = encode_bus_frame(
                     asgi_stream_url(String("B"), slot, self.lane), st.gens[slot],
                     Span(begin),
                 )
-                _ = _send_chunk_frame(pool, Span(begin_frame))
+                if not _send_chunk_frame(pool, Span(begin_frame)):
+                    # Without the begin the sockets registry never learns
+                    # about this slot, so the 101 would hand the connection
+                    # to a frame mode with no producer and no outbox: a
+                    # socket that connects and then says nothing, for ever.
+                    # Release the held 101 as a 500 and close, and tell the
+                    # task its connection is gone.
+                    st.lost[slot] = True
+                    _report_lost(String("websocket begin"), slot, len(begin_frame))
+                    _ = st.pending_101[slot].take()
+                    _send_disconnect_tag(pool.submit_write_fd(self.lane), slot)
+                    var failed = InternalError()
+                    handler.after_response(st.methods[slot], st.paths[slot], failed)
+                    pool.put_response(slot, failed^, True)
+                    _queue_completion(pool, st.pending_done, slot)
+                    return False
                 var held = st.pending_101[slot].take()
                 held.stream_gen = st.gens[slot]
                 handler.after_response(st.methods[slot], st.paths[slot], held)
@@ -604,6 +665,8 @@ struct ExecutorPort(Movable, Writable):
                 pool.put_response(slot, response^, False)
                 _queue_completion(pool, st.pending_done, slot)
         elif kind == "ws_send":
+            if st.lost[slot]:
+                return False
             _flush_completions(pool, st.pending_done)
             var opcode = Int(py=ev[2])
             var payload = handler.apps[0]._bridge.body_bytes(ev[3])
@@ -614,8 +677,28 @@ struct ExecutorPort(Movable, Writable):
                 asgi_stream_url(String("w"), slot, self.lane), st.gens[slot],
                 Span(frame_bytes),
             )
-            _ = _send_chunk_frame(pool, Span(frame))
+            if not _send_chunk_frame(pool, Span(frame)):
+                # A WebSocket message that silently never arrives is worse
+                # than a closed socket: the peer waits on a protocol that
+                # gives it no way to know. Unlike a stream's chunks, these
+                # are not credit-gated at all — the shim's `websocket.send`
+                # has no window — so this is the reachable one. Abort: the
+                # loop flushes what is queued and closes, and the
+                # application's task learns of it through the disconnect
+                # that follows. (The loop's abort path had to learn about
+                # sockets for this: it gated on `slot_sse`, which a 101
+                # never sets, so an abort of a socket used to be a silent
+                # no-op.)
+                st.lost[slot] = True
+                _report_lost(String("websocket frame"), slot, len(frame))
+                _report_abort(pool, slot, st.gens[slot])
         elif kind == "ws_close":
+            if st.lost[slot]:
+                # Already torn down (a frame this socket needed did not go
+                # out, and the abort that followed closes the connection).
+                # Trying anyway costs two more ~5 s detached waits on a
+                # channel that is not draining, and answers nothing.
+                return False
             _flush_completions(pool, st.pending_done)
             # A close frame with the app's code, then the end marker that
             # lets the loop close after it lands.
@@ -628,13 +711,58 @@ struct ExecutorPort(Movable, Writable):
                 asgi_stream_url(String("w"), slot, self.lane), st.gens[slot],
                 Span(close_frame),
             )
-            _ = _send_chunk_frame(pool, Span(f1))
+            if not _send_chunk_frame(pool, Span(f1)):
+                st.lost[slot] = True
+                _report_lost(String("websocket close frame"), slot, len(f1))
+                _report_abort(pool, slot, st.gens[slot])
+                return False
             var empty = List[UInt8]()
             var f2 = encode_bus_frame(
                 asgi_stream_url(String("x"), slot, self.lane), st.gens[slot], Span(empty)
             )
-            _ = _send_chunk_frame(pool, Span(f2))
+            if not _send_chunk_frame(pool, Span(f2)):
+                # The close frame is queued but the end marker that lets the
+                # loop close after it lands is not: without one the socket
+                # stays subscribed for ever.
+                st.lost[slot] = True
+                _report_lost(String("websocket end"), slot, len(f2))
+                _report_abort(pool, slot, st.gens[slot])
         return False
+
+
+def _report_lost(what: String, slot: Int, nbytes: Int):
+    """Name a frame the chunk channel would not take, and its consequence.
+
+    Every one of these was a silent failure until 0.14.1: the send's result
+    was discarded at five of the six sites, so a dropped begin was a stream
+    the loop never subscribed, a dropped end a connection that never closed,
+    and a dropped WebSocket frame a message the peer had no way to miss.
+    The channel only refuses after `_send_chunk_frame` has waited detached
+    for ~5 s, so reaching here means the loop is not draining at all — the
+    caller tears the connection down, and this says which one and why."""
+    print(
+        "asgi-executor: chunk channel would not take " + String(nbytes)
+        + " bytes of " + what + " for slot " + String(slot)
+        + " after ~5s — tearing this connection down rather than hanging it",
+        flush=True,
+    )
+
+
+def _report_abort(mut pool: OffloadPool, slot: Int, gen: Int):
+    """Abort a stream, and say so if even the abort will not go.
+
+    The abort rides the COMPLETION channel, not the chunk channel, so it is
+    genuinely a second chance when the chunk channel is the one that is
+    wedged. If it is refused too there is nothing left to do but name it:
+    the connection stays open until the client or the shutdown budget ends
+    it."""
+    if not pool.abort_stream(slot, gen):
+        print(
+            "asgi-executor: could not abort slot " + String(slot)
+            + "'s stream — the completion channel is full too; the "
+            "connection will hang until the client closes it",
+            flush=True,
+        )
 
 
 def _queue_completion(mut pool: OffloadPool, mut pending: List[Int], slot: Int):

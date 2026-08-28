@@ -94,6 +94,43 @@ def check_smoke_coverage():
         fail("test.yml runs smoke task(s) that do not exist: " + ", ".join(ghosts))
 
 
+def check_test_coverage():
+    """Every test-* poe task must be reachable from `test-all`.
+
+    `check_smoke_coverage`'s twin, for the other half of CI. Smokes are
+    listed one by one in test.yml and so are checked against it; the Mojo
+    and shim tests are run as ONE step (`uv run poe test-all`), so a test
+    task drops out of CI simply by leaving that sequence -- no ghost step,
+    no red tick, nothing to notice. Sequences nest (`test-sqlite` refers to
+    `test-sqlite-mojo`), so this follows them.
+    """
+    toml = (REPO / "pyproject.toml").read_text()
+    tasks = set(re.findall(r"^\[tool\.poe\.tasks\.(test-[a-z0-9-]+)\]", toml, re.M))
+    sequences = {
+        name: re.findall(r'"([a-z0-9-]+)"', body)
+        for name, body in re.findall(
+            r"^\[tool\.poe\.tasks\.([a-z0-9-]+)\]$(.*?)(?=^\[tool\.poe\.tasks\.)",
+            toml + "\n[tool.poe.tasks.__end__]\n",
+            re.M | re.S,
+        )
+        for _ in [0]
+        if "sequence" in body
+    }
+    reached, queue = set(), ["test-all"]
+    while queue:
+        name = queue.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        queue.extend(sequences.get(name, ()))
+    missing = sorted(tasks - reached)
+    if missing:
+        fail(
+            "test task(s) defined but not reachable from `poe test-all`, "
+            "which is what CI runs: " + ", ".join(missing)
+        )
+
+
 def check_bench_region():
     """The generated table must match the newest committed artifact."""
     results = REPO / "bench" / "results"
@@ -733,6 +770,7 @@ def check_test_counts():
 def main():
     check_warning_counts()
     check_smoke_coverage()
+    check_test_coverage()
     check_bench_region()
     check_version_single_source()
     check_wheel_platform_claims()

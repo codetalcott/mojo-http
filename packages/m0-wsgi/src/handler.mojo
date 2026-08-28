@@ -46,6 +46,7 @@ from std.sys.info import CompilationTarget
 from std.time import sleep
 
 from m0_http import SSERegistry, StaticFiles, sse_data_payload
+from m0_http.sse.registry import MAX_PENDING_BYTES
 from m0_http.sse.format import NO_EVENT_ID
 
 from .app import WSGIApp
@@ -221,6 +222,33 @@ struct WSGIHandler(ThreadHandler):
     executor's begin-frame seam applied to a second producer. -1 on the
     loop's own handler, whose registries are the ones that count."""
 
+    var stream_lost: List[Bool]
+    """Loop side, per slot: this stream's outbox has already refused a frame
+    and the connection is being torn down.
+
+    Without it the tear-down is announced and attempted once per refused
+    frame — measured at 336 log lines and 336 aborts for ONE flooding
+    WebSocket, because the producer does not learn the connection is gone
+    until the loop closes it. Cleared where a slot subscribes, which is the
+    only place it can still be true of the previous stream."""
+
+    var abort_pool_addr: Int
+    """Loop side: this loop's `OffloadPool` address, or 0.
+
+    The one thing a handler cannot otherwise do about a frame it must
+    refuse. `sse_peer_frame` runs ON the loop, and its `s`/`w` branches
+    queue a producer's bytes into a slot's outbox — a queue that can say
+    no (`MAX_PENDING_BYTES`). Refused and discarded, an `s` frame's bytes
+    are never drained, so their credit never returns and the producer
+    awaits it for ever, while the client is served a body that is short
+    under a clean chunked terminator; a refused `w` frame is a WebSocket
+    message the peer has no protocol-level way to notice is missing. Both
+    end the connection instead, so the truncation is something the client
+    can see — a response through `abort_stream`, which is on the pool and
+    is the only reason the pool has to be reachable from here; a socket
+    through `asgi_done`, because a held 101 never sets `sse_streaming` and
+    the loop's abort path requires it."""
+
     var lane_notify_fds: List[Int]
     """Per-lane submit write ends, indexed by mount (`--mount` with more
     than one ASGI mount); -1 where a lane has no executor. A disconnect
@@ -255,6 +283,7 @@ struct WSGIHandler(ThreadHandler):
         self.mounted = False
         self.answers_local = True
         self.hold_notify_fd = -1
+        self.abort_pool_addr = 0
         self.lane_notify_fds = List[Int]()
         # Capacity 0 when neither mode is on. Every `SSERegistry` method
         # already guards on `slot >= _capacity`, so the hooks below stay
@@ -268,10 +297,12 @@ struct WSGIHandler(ThreadHandler):
         self.asgi_done = List[Bool](capacity=slots)
         self.hold_lane = List[Int](capacity=slots)
         self.stream_gen = List[Int](capacity=slots)
+        self.stream_lost = List[Bool](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
             self.hold_lane.append(NOT_POOL_HELD)
             self.stream_gen.append(STREAM_GEN_NONE)
+            self.stream_lost.append(False)
         self.stream_fd = -1
         self.stream_app = -1
 
@@ -442,6 +473,66 @@ struct WSGIHandler(ThreadHandler):
     def set_asgi_notify(mut self, fd: Int):
         """Executor-mode wiring: where stream disconnect tags are sent."""
         self.asgi_notify_fd = fd
+
+    def set_abort_pool(mut self, addr: Int):
+        """Loop-side wiring: this loop's `OffloadPool`, for `abort_stream`.
+
+        Set unconditionally beside the pool the loop is given, on the LOOP's
+        handler only — a pool thread aborts through the pool it is already
+        holding. See `abort_pool_addr`."""
+        self.abort_pool_addr = addr
+
+    def _claim_lost(mut self, slot: Int, what: String) -> Bool:
+        """Name a frame this handler's outbox refused, ONCE per stream.
+
+        Returns whether this caller is the one that has to tear the
+        connection down — False if the stream has already been given up on,
+        which is the common case: the producer goes on sending until the
+        loop closes the connection and its disconnect reaches it, so one
+        overflowing WebSocket produced 336 refusals where one is the news.
+        Named at all because every one of these was silent before: the
+        queue's refusal was discarded at both call sites and the frame
+        simply vanished."""
+        if slot < 0 or slot >= len(self.stream_lost):
+            return False
+        if self.stream_lost[slot]:
+            return False
+        self.stream_lost[slot] = True
+        print(
+            "m0serve: slot " + String(slot) + "'s outbox refused a "
+            + what + " (backpressure at " + String(MAX_PENDING_BYTES)
+            + " bytes pending) — ending this connection rather than "
+            "dropping bytes the client cannot know are missing",
+            flush=True,
+        )
+        return True
+
+    def _abort_stream(mut self, slot: Int, gen: Int):
+        """Close a streamed RESPONSE without its chunked terminator.
+
+        The abort rides the completion channel and the loop applies it after
+        that batch's completions. Unsubscribing instead would end the stream
+        the ordinary way — a short body under a clean terminator, which is
+        exactly the silent-wrong this refuses. Only for an `s` stream: the
+        loop's abort path requires the slot to be `slot_sse`, which a
+        WebSocket's 101 never sets."""
+        if self.abort_pool_addr == 0:
+            return
+        ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+            unsafe_from_address=self.abort_pool_addr
+        )[]
+        _ = pool.abort_stream(slot, gen)
+
+    def _end_socket(mut self, slot: Int):
+        """Close a WebSocket after flushing what is already queued.
+
+        A socket's outbox is unframed, so `asgi_done` is the whole
+        mechanism: the next drain hands out every pending byte, unsubscribes,
+        and the loop's `ended and not framed` branch closes the connection.
+        The peer sees the bytes that exist and then a close with no close
+        frame — the truth about a message stream with a hole in it."""
+        if slot >= 0 and slot < len(self.asgi_done):
+            self.asgi_done[slot] = True
 
     def set_ws_pool_notify(mut self, lane: Int, fd: Int):
         """Realtime-with-a-pool wiring: lane `lane`'s submit write end.
@@ -855,6 +946,8 @@ struct WSGIHandler(ThreadHandler):
             self.asgi_done[slot] = False
         if slot < len(self.stream_gen):
             self.stream_gen[slot] = STREAM_GEN_NONE
+        if slot < len(self.stream_lost):
+            self.stream_lost[slot] = False
         if pool_ack_fd >= 0:
             # A pool thread's stream: its disconnect is an ack of -1 on the
             # thread's own pair — the fd it is already waiting on — never
@@ -900,6 +993,7 @@ struct WSGIHandler(ThreadHandler):
                 self.streams.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                self._clear_lost(slot)
                 self._set_stream_gen(slot, event_id)
             elif ub[1] == UInt8(ord("s")):
                 # A response chunk — for a SUBSCRIBED slot only, and only
@@ -909,7 +1003,21 @@ struct WSGIHandler(ThreadHandler):
                 # One writer's frames are FIFO behind its own begin; the
                 # generation is what tells two writers' apart.
                 if self.streams.is_slot_streaming(slot) and self._gen_matches(slot, event_id):
-                    _ = self.streams.queue_frame(slot, NO_EVENT_ID, frame)
+                    if not self.streams.queue_frame(slot, NO_EVENT_ID, frame):
+                        # Only backpressure can refuse here (the slot is
+                        # streaming and the id is NO_EVENT_ID), and the
+                        # producer's credit window is sized to make that
+                        # unreachable: a stream may have at most one
+                        # window of un-acked bytes outstanding, bytes are
+                        # acked only once they have left this outbox, and
+                        # the window equals `MAX_PENDING_BYTES`. Reaching
+                        # this is therefore a broken invariant, not a busy
+                        # server — and the cost of being wrong about it
+                        # silently is a stream that stalls for ever, since
+                        # the dropped bytes are never drained and so never
+                        # credited back.
+                        if self._claim_lost(slot, String("response chunk")):
+                            self._abort_stream(slot, event_id)
             elif ub[1] == UInt8(ord("e")):
                 # End of stream: hand out anything still pending, then
                 # stop being a stream (which is what lets the loop close).
@@ -931,6 +1039,7 @@ struct WSGIHandler(ThreadHandler):
                     String(StringSlice(unsafe_from_utf8=Span(frame))),
                     event_id,
                 )
+                self._clear_lost(slot)
                 self._set_stream_gen(slot, STREAM_GEN_HELD)
             elif ub[1] == UInt8(ord("H")):
                 # A socket hold taken on a pool thread. Subscribe it here,
@@ -941,6 +1050,7 @@ struct WSGIHandler(ThreadHandler):
                 self.sockets.subscribe(slot, chan, event_id)
                 if slot < len(self.hold_lane):
                     self.hold_lane[slot] = _parse_stream_lane(ub)
+                self._clear_lost(slot)
                 self._set_stream_gen(slot, STREAM_GEN_HELD)
             elif ub[1] == UInt8(ord("B")):
                 # A WebSocket's begin: sent before its held 101 completes,
@@ -949,13 +1059,22 @@ struct WSGIHandler(ThreadHandler):
                 self.sockets.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                self._clear_lost(slot)
                 self._set_stream_gen(slot, event_id)
             elif ub[1] == UInt8(ord("w")):
                 # An outbound WS frame, already RFC 6455-encoded by the
                 # executor. Subscribed slots only, same recycled-slot
                 # safety rule as 's', same generation check.
                 if self.sockets.is_slot_streaming(slot) and self._gen_matches(slot, event_id):
-                    _ = self.sockets.queue_frame(slot, NO_EVENT_ID, frame)
+                    if not self.sockets.queue_frame(slot, NO_EVENT_ID, frame):
+                        # Reachable, unlike the `s` case above: an ASGI
+                        # application's `websocket.send` is not credit-gated
+                        # at all, so a producer faster than the socket
+                        # drains fills this outbox. A dropped frame is a
+                        # message the peer cannot know it missed, which is
+                        # worse than a closed socket — so close it.
+                        if self._claim_lost(slot, String("websocket frame")):
+                            self._end_socket(slot)
             elif ub[1] == UInt8(ord("x")):
                 # WebSocket end (the close frame is already queued ahead
                 # of this on the same channel).
@@ -998,6 +1117,12 @@ struct WSGIHandler(ThreadHandler):
             _ = self.sockets.notify_frame(
                 url, event_id, encode_ws_frame(WS_OP_TEXT, Span(data))
             )
+
+    def _clear_lost(mut self, slot: Int):
+        """A slot subscribing is a NEW stream; whatever the last one lost is
+        no longer this one's business."""
+        if slot >= 0 and slot < len(self.stream_lost):
+            self.stream_lost[slot] = False
 
     def _set_stream_gen(mut self, slot: Int, gen: Int):
         if slot >= 0 and slot < len(self.stream_gen):
