@@ -345,6 +345,21 @@ code depends on:
     land after the next stream on that slot has seeded its window whole,
     and `credit + in flight == the window` is the invariant that keeps N
     streams from over-committing the one chunk channel they share.
+    **`websocket.send` is credit-gated too**, on the same window, seeded
+    at `websocket.accept` and awaited in the shim's `send` — without it an
+    app faster than its client filled the loop's 64 KB outbox and the
+    frames it then refused were messages the peer could not know it had
+    missed (430,693 of 1,638,400 bytes under a clean close). The loop was
+    already acking a socket's drained bytes (a WS slot on an executor lane
+    answers `slot_channel_stream`); only the window to credit them to was
+    missing. Charge ENCODED frame bytes, never payload bytes —
+    `_ws_frame_bytes` mirrors `encode_ws_frame`'s unmasked 2/4/10-byte
+    header, and charging the payload drifts by that header on every
+    message, threefold on one-byte sends. A message over
+    `MAX_PENDING_BYTES` is still refused by the outbox (its cap bounds one
+    frame as well as the queue), and a `--realtime` hold on a WSGI lane
+    has no window because the loop does not ack those sockets; `_ws_spend`
+    returns uncharged there rather than pretending to gate.
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
     `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind

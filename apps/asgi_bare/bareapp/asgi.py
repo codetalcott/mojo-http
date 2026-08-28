@@ -33,6 +33,12 @@ import os
 
 _LIFESPAN = {"started": False}
 
+# /ws/flood's shape. 400 x 4 KB is ~25 send windows' worth, so the
+# executor's backpressure is exercised many times over rather than
+# incidentally; the probe asserts the exact byte count, framing included.
+FLOOD_FRAMES = 400
+FLOOD_SIZE = 4096
+
 
 async def application(scope, receive, send):
     if scope["type"] == "lifespan":
@@ -59,6 +65,19 @@ async def application(scope, receive, send):
     if scope["type"] == "websocket":
         # The echo server: accept, prefix-echo text, byte-echo binary,
         # close(1000) on "bye", reject any path but /ws.
+        if scope["path"] == "/ws/flood":
+            # The backpressure exerciser: FLOOD_FRAMES x FLOOD_SIZE with no
+            # pause and no reads. A client that stalls before reading cannot
+            # keep up, so every one of these sends has to WAIT on the
+            # executor's send window; ungated they filled the loop's 64 KB
+            # outbox and the frames it then refused were messages the peer
+            # had no way to know it had missed.
+            await send({"type": "websocket.accept"})
+            for _ in range(FLOOD_FRAMES):
+                await send({"type": "websocket.send",
+                            "bytes": b"x" * FLOOD_SIZE})
+            await send({"type": "websocket.close", "code": 1000})
+            return
         if scope["path"] != "/ws":
             await send({"type": "websocket.close"})
             return
