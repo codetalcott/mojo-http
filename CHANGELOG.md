@@ -9,6 +9,21 @@ versions may break the API**.
 
 ### Changed
 
+- **`run_event_loop` is now three functions and a struct**, with no change
+  in behaviour: `prepare_loop` (the registrations and slot tables, returning
+  a `LoopState`), `_run_pass` (everything between one `backend.wait` and the
+  next; returns whether the shutdown pipe fired) and `_run_shutdown` (the
+  drain). The pass and the drain are the former inline `while` body, moved
+  verbatim behind `ref` bindings into the state, so the nine helpers' 20-
+  argument signatures are untouched. This is the step the loop inversion
+  needs — a pass that something other than that `while` can call, one per
+  asyncio readiness callback on the executor's own thread — and it is
+  landed on its own so the zero-diff claim is checkable in isolation: the
+  full suite, the warning ratchet (68, baseline) and the nine seam smokes
+  (shutdown, ASGI streaming with its RSS guard, the blocking pool, the
+  counter under prefork, pipelining, the Mojo pool, hybrid mounts, the
+  Django WebSocket hold) pass unchanged, and `stress-asgi` N of N.
+
 - **Header parsing no longer builds a `String` per name and per value.**
   `HTTPHeader` holds four offsets into the parse buffer instead of two
   `String`s that existed only to be read back as bytes and copied into the

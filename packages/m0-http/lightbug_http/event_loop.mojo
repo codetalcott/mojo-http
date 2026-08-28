@@ -65,9 +65,8 @@ comptime MAX_EVENTS = 64
 comptime UNUSED: Int = -1
 
 
-def run_event_loop[T: HTTPService, B: EventLoopBackend](
+def prepare_loop[B: EventLoopBackend](
     listen_fd: FileDescriptor,
-    mut handler: T,
     mut backend: B,
     config: ServerConfig,
     server_address: String,
@@ -76,28 +75,12 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     bus_read_fd: Int = -1,
     offload_addr: Int = 0,
     peer_bus_fd: Int = -1,
-) raises:
-    """Run the IO-multiplexed event loop.
-
-    `bus_read_fd`, when >= 0, is this worker's `BroadcastBus` channel: SSE
-    frames broadcast by other workers arrive here as datagrams, and each is
-    handed to the handler through `sse_peer_frame` so it can queue them for
-    its own subscribers. The subsequent outbox drain in the same loop pass
-    then pushes them to the wire.
-
-    `offload_addr`, when non-zero, is the address of a caller-owned
-    `OffloadPool` (`--blocking-threads`): this loop becomes an acceptor that
-    parks requests for a pool of handler threads instead of calling
-    `HTTPService.func` itself, and is woken by the pool's completion channel
-    the same way it is woken by a bus channel. The streaming hooks are NOT
-    offloaded and cannot be — `sse_drain_slot`, `sse_slot_disconnected` and
-    `ws_message` are called on THIS thread's handler, while `func` would run
-    against a pool thread's own handler and its own registries. The caller
-    refuses the combination rather than letting the two drift.
-
-    Parameters:
-        T: The HTTP service handler type.
-        B: The IO multiplexing backend (KqueueBackend on macOS, EpollBackend on Linux).
+) raises -> LoopState:
+    """The setup half of `run_event_loop`: register the listener, the
+    shutdown pipe, the bus channels, the completion channel and the app
+    timer on `backend`; build the slot tables; return the state a pass
+    runs over. Split from the driver so the loop inversion can prepare a
+    loop it will drive one pass at a time from an asyncio callback.
     """
     set_nonblocking(listen_fd)
 
@@ -197,7 +180,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     # allocations + gmtime each time — measured ~9% of hello throughput).
     var date_cache_sec: Int64 = unix_now()
     var date_cache = http_date_from_unix(date_cache_sec)
-    var st = LoopState(
+    return LoopState(
         offload^, offload_complete_fd, max_conns, provision_pool^,
         slot_fds^, slot_response^, slot_send_offset^, slot_header_start^,
         slot_sse^, slot_ws^, slot_read_armed^, slot_idle_deadline^,
@@ -205,6 +188,47 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         metrics^, last_idle_sweep, date_cache_sec, date_cache^,
         listen_fd, config.copy(), server_address, tcp_keep_alive,
         shutdown_read_fd, bus_read_fd, peer_bus_fd,
+    )
+
+
+def run_event_loop[T: HTTPService, B: EventLoopBackend](
+    listen_fd: FileDescriptor,
+    mut handler: T,
+    mut backend: B,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    shutdown_read_fd: Int = -1,
+    bus_read_fd: Int = -1,
+    offload_addr: Int = 0,
+    peer_bus_fd: Int = -1,
+) raises:
+    """Run the IO-multiplexed event loop.
+
+    `bus_read_fd`, when >= 0, is this worker's `BroadcastBus` channel: SSE
+    frames broadcast by other workers arrive here as datagrams, and each is
+    handed to the handler through `sse_peer_frame` so it can queue them for
+    its own subscribers. The subsequent outbox drain in the same loop pass
+    then pushes them to the wire.
+
+    `offload_addr`, when non-zero, is the address of a caller-owned
+    `OffloadPool` (`--blocking-threads`): this loop becomes an acceptor that
+    parks requests for a pool of handler threads instead of calling
+    `HTTPService.func` itself, and is woken by the pool's completion channel
+    the same way it is woken by a bus channel. The streaming hooks are NOT
+    offloaded and cannot be — `sse_drain_slot`, `sse_slot_disconnected` and
+    `ws_message` are called on THIS thread's handler, while `func` would run
+    against a pool thread's own handler and its own registries. The caller
+    refuses the combination rather than letting the two drift.
+
+    Parameters:
+        T: The HTTP service handler type.
+        B: The IO multiplexing backend (KqueueBackend on macOS, EpollBackend on Linux).
+    """
+    var st = prepare_loop(
+        listen_fd, backend, config, server_address,
+        tcp_keep_alive, shutdown_read_fd, bus_read_fd, offload_addr,
+        peer_bus_fd,
     )
     while True:
         var n_events = backend.wait(1000)
