@@ -32,6 +32,7 @@ from m0_core.json_escape import escape_json_string
 from m0_core.html_escape import escape_html
 from m0_core.json_parse import parse_json_field
 
+from m0_http import reply
 from m0_http import (
     AppConfig,
     CorsConfig,
@@ -121,7 +122,7 @@ struct NotesHandler(HTTPService):
         var path = req.uri.path
 
         if path == "/health":
-            return _json(200, "OK", self.health.to_json())
+            return reply.json(200, "OK", self.health.to_json())
 
         # Static files answer before the router: everything under /static/
         # is the mount's business, including its 404s. `serve` returns None
@@ -133,8 +134,8 @@ struct NotesHandler(HTTPService):
         # CORS preflight: answer before routing. The actual CORS headers are
         # added in after_response, which runs for this response too.
         if req.method == "OPTIONS":
-            var resp = _empty(204, "No Content")
-            resp.headers[HeaderKey.ALLOW] = self._allow_header(path)
+            var resp = reply.empty(204, "No Content")
+            resp.headers[HeaderKey.ALLOW] = self.router.allow_header(path)
             return resp^
 
         var m = self.router.match(req.method, path)
@@ -142,14 +143,14 @@ struct NotesHandler(HTTPService):
         if m.method_not_allowed:
             # The router distinguishes "no such path" from "path exists, verb
             # doesn't" — surface that distinction the way RFC 9110 asks.
-            var resp = _problem(405, "Method Not Allowed", String(
+            var resp = reply.problem(405, "Method Not Allowed", String(
                 req.method, " is not supported by ", path
             ), path)
-            resp.headers[HeaderKey.ALLOW] = self._allow_header(path)
+            resp.headers[HeaderKey.ALLOW] = self.router.allow_header(path)
             return resp^
 
         if not m.matched:
-            return _problem(404, "Not Found", "no route for this path", path)
+            return reply.problem(404, "Not Found", "no route for this path", path)
 
         if m.handler_id == H_LIST:
             return self._list(req)
@@ -158,9 +159,9 @@ struct NotesHandler(HTTPService):
 
         # The :id routes. A non-integer id matches the route pattern but can
         # never name a note, and 404 is about the resource, not the syntax.
-        var id = _parse_id(m.params[0])
+        var id = reply.param_int(m.params[0])
         if id < 0:
-            return _problem(404, "Not Found", "note ids are integers", path)
+            return reply.problem(404, "Not Found", "note ids are integers", path)
 
         if m.handler_id == H_GET:
             return self._get_one(req, id)
@@ -169,7 +170,7 @@ struct NotesHandler(HTTPService):
         return self._delete(req, id)
 
     def _list(self, req: HTTPRequest) raises -> HTTPResponse:
-        var accept = parse_accept(_accept_header(req))
+        var accept = parse_accept(reply.accept_header(req))
         if accept.wants_html:
             var html = String("<ul>")
             for i in range(len(self.ids)):
@@ -178,22 +179,22 @@ struct NotesHandler(HTTPService):
                     escape_html(self.titles[i]), "</a></li>",
                 )
             html += "</ul>"
-            return _vary_accept(_html(html))
+            return reply.vary_accept(reply.html(html))
         var json = String("[")
         for i in range(len(self.ids)):
             if i > 0:
                 json += ","
             json += self._note_json(i)
         json += "]"
-        return _vary_accept(_json(200, "OK", json))
+        return reply.vary_accept(reply.json(200, "OK", json))
 
     def _create(mut self, req: HTTPRequest) raises -> HTTPResponse:
-        var body = _body_string(req)
+        var body = reply.body_string(req)
         var title = parse_json_field(body, "title")
         if title.byte_length() == 0:
             # RFC 9457: the error body says what was wrong, machine-readably,
             # instead of a bare status code.
-            return _problem(
+            return reply.problem(
                 400, "Invalid Note",
                 'the request body must be JSON with a non-empty "title"',
                 "/notes",
@@ -204,21 +205,21 @@ struct NotesHandler(HTTPService):
         self.ids.append(id)
         self.titles.append(title)
         self.bodies.append(note_body)
-        var resp = _json(201, "Created", self._note_json(len(self.ids) - 1))
+        var resp = reply.json(201, "Created", self._note_json(len(self.ids) - 1))
         resp.headers[HeaderKey.LOCATION] = String("/notes/", id)
         return resp^
 
     def _get_one(self, req: HTTPRequest, id: Int) raises -> HTTPResponse:
         var i = self._find(id)
         if i < 0:
-            return _problem(
+            return reply.problem(
                 404, "Not Found", "no note with this id",
                 String("/notes/", id),
             )
 
-        var accept = parse_accept(_accept_header(req))
+        var accept = parse_accept(reply.accept_header(req))
         if accept.wants_html:
-            return _vary_accept(_html(self._note_html(i)))
+            return reply.vary_accept(reply.html(self._note_html(i)))
 
         # ETag + 304 on the JSON representation: hash the exact bytes that
         # would be served, compare against If-None-Match, and skip the body
@@ -230,36 +231,36 @@ struct NotesHandler(HTTPService):
         var inm = req.headers.get(HeaderKey.IF_NONE_MATCH)
         if inm:
             if etag_matches(etag, inm.value()):
-                var not_modified = _empty(304, "Not Modified")
+                var not_modified = reply.empty(304, "Not Modified")
                 not_modified.headers[HeaderKey.ETAG] = etag
-                return _vary_accept(not_modified^)
-        var resp = _json(200, "OK", json)
+                return reply.vary_accept(not_modified^)
+        var resp = reply.json(200, "OK", json)
         resp.headers[HeaderKey.ETAG] = etag
-        return _vary_accept(resp^)
+        return reply.vary_accept(resp^)
 
     def _update(mut self, req: HTTPRequest, id: Int) raises -> HTTPResponse:
         var i = self._find(id)
         if i < 0:
-            return _problem(
+            return reply.problem(
                 404, "Not Found", "no note with this id",
                 String("/notes/", id),
             )
-        var body = _body_string(req)
+        var body = reply.body_string(req)
         var title = parse_json_field(body, "title")
         if title.byte_length() == 0:
-            return _problem(
+            return reply.problem(
                 400, "Invalid Note",
                 'the request body must be JSON with a non-empty "title"',
                 String("/notes/", id),
             )
         self.titles[i] = title
         self.bodies[i] = parse_json_field(body, "body")
-        return _json(200, "OK", self._note_json(i))
+        return reply.json(200, "OK", self._note_json(i))
 
     def _delete(mut self, req: HTTPRequest, id: Int) raises -> HTTPResponse:
         var i = self._find(id)
         if i < 0:
-            return _problem(
+            return reply.problem(
                 404, "Not Found", "no note with this id",
                 String("/notes/", id),
             )
@@ -271,31 +272,9 @@ struct NotesHandler(HTTPService):
         _ = self.ids.pop()
         _ = self.titles.pop()
         _ = self.bodies.pop()
-        return _empty(204, "No Content")
-
-    def _allow_header(self, path: String) -> String:
-        """Methods the router would accept for this path, plus OPTIONS."""
-        var methods = List[String]()
-        methods.append("GET")
-        methods.append("POST")
-        methods.append("PUT")
-        methods.append("DELETE")
-        var allow = String()
-        for method in methods:
-            if self.router.match(method, path).matched:
-                if allow.byte_length() > 0:
-                    allow += ", "
-                allow += method
-        if allow.byte_length() > 0:
-            allow += ", OPTIONS"
-        else:
-            allow = "OPTIONS"
-        return allow
+        return reply.empty(204, "No Content")
 
     # --- hooks ---------------------------------------------------------------
-
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
 
     def after_response(
         mut self, req_method: String, req_path: String, mut resp: HTTPResponse
@@ -304,118 +283,18 @@ struct NotesHandler(HTTPService):
         # the OPTIONS preflight. This is the whole CORS story.
         apply_cors_headers(resp, self.cors)
 
-    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
-        return List[UInt8]()
-
-    def sse_is_streaming(self, slot: Int) -> Bool:
-        return False
-
-    def sse_slot_disconnected(mut self, slot: Int):
-        pass
-
-    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        pass
-
-    def tick(mut self, now_ms: Int):
-        pass
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass
-
-
 # --- response constructors ---------------------------------------------------
 
 
-def _json(status: Int, text: String, body: String) -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=body.as_bytes(),
-        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
-        status_code=status,
-        status_text=text,
-    )
 
 
-def _html(body: String) -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=body.as_bytes(),
-        headers=Headers(
-            Header(HeaderKey.CONTENT_TYPE, "text/html; charset=utf-8")
-        ),
-        status_code=200,
-        status_text="OK",
-    )
 
-
-def _vary_accept(var resp: HTTPResponse) -> HTTPResponse:
-    """Mark a response whose representation was chosen by the Accept header.
-
-    Without `Vary: Accept`, a shared cache that stored the HTML answer would
-    happily replay it to a JSON client. Every negotiated representation gets
-    it — the 304 included, per RFC 9110 §15.4.5.
-    """
-    resp.headers[HeaderKey.VARY] = "Accept"
-    return resp^
-
-
-def _empty(status: Int, text: String) -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=String("").as_bytes(),
-        status_code=status,
-        status_text=text,
-    )
-
-
-def _problem(
-    status: Int, title: String, detail: String, instance: String
-) -> HTTPResponse:
-    """An RFC 9457 problem+json response."""
-    # escape_json_string wraps its result in double quotes itself.
-    var body = String(
-        '{"type":"about:blank","title":', escape_json_string(title),
-        ',"status":', status,
-        ',"detail":', escape_json_string(detail),
-        ',"instance":', escape_json_string(instance), "}",
-    )
-    return HTTPResponse(
-        body_bytes=body.as_bytes(),
-        headers=Headers(
-            Header(HeaderKey.CONTENT_TYPE, "application/problem+json")
-        ),
-        status_code=status,
-        status_text=title,
-    )
 
 
 # --- small helpers -----------------------------------------------------------
 
 
-def _accept_header(req: HTTPRequest) raises -> String:
-    """The Accept header, with absence meaning "anything" per RFC 9110 —
-    which this app's negotiation policy resolves to JSON."""
-    var accept = req.headers.get(HeaderKey.ACCEPT)
-    if accept:
-        return accept.value()
-    return String("*/*")
 
-
-def _body_string(req: HTTPRequest) -> String:
-    if len(req.body_raw) == 0:
-        return String("")
-    return String(StringSlice(unsafe_from_utf8=Span(req.body_raw)))
-
-
-def _parse_id(s: String) -> Int:
-    """Parse a decimal note id; -1 when the segment is not a number."""
-    if s.byte_length() == 0:
-        return -1
-    var result = 0
-    var bytes = s.as_bytes()
-    for i in range(s.byte_length()):
-        var c = Int(bytes[i])
-        if c < ord("0") or c > ord("9"):
-            return -1
-        result = result * 10 + (c - ord("0"))
-    return result
 
 
 def main() raises:

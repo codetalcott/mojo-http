@@ -7,6 +7,60 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Changed
+
+- **`HTTPService` now requires only `func`.** The trait's other eight methods
+  carry default bodies, so a handler writes the hooks it uses and nothing
+  else. `apps/hello` went from 57 lines to 30 — 4 lines of handler had been
+  carrying 25 lines of empty stubs — and 268 lines of the same boilerplate
+  came out of the five demo services in `service.mojo`, all six Mojo apps and
+  the README example. Nothing on the wire changed: every stub deleted was
+  byte-identical to the default replacing it, and `smoke-hello`,
+  `smoke-notes`, `smoke-counter`, `smoke-todo`, `smoke-ws`, `smoke-chat` and
+  `smoke-client` pass unchanged.
+
+  Overriding a default is ordinary — define the method and yours wins. The
+  practical effect is on the trait itself: adding a hook **with** a default no
+  longer breaks every implementer in the repo at once, which is what the old
+  contract's warning was about. Adding one **without** a default still does.
+
+- **`Router.allow_header(path)`** builds a 405's `Allow:` from the routing
+  table. `apps/notes_api` had been probing the router once per method over a
+  hardcoded `["GET","POST","PUT","DELETE"]` list — five `match` calls to
+  answer a question the table already knew, and a route registered in any
+  other method (`PATCH`, `HEAD`) was silently missing from the header it
+  produced. `match` and `allow_header` now share one `_path_matches`, so the
+  two cannot disagree about which routes a path reaches; `Router.method_of`
+  reads a registration back. The header `smoke-notes` asserts byte for byte
+  (`GET, PUT, DELETE, OPTIONS`) is unchanged.
+
+### Added
+
+- **`m0_http.reply`** — the response constructors every Mojo app was writing
+  for itself. `apps/notes_api`, `apps/datastar_todo` and
+  `apps/datastar_counter` each carried their own `_json`, `_html`,
+  `_no_content` and `_parse_id`, the last two byte-identical copies. The
+  module holds `json`, `html`, `empty`, `no_content`, `redirect`, `problem`
+  (RFC 9457), `vary_accept`, `accept_header`, `body_string` and `param_int`,
+  lifted from those bodies rather than invented, and all three apps now use
+  it — `apps/notes_api` went from 388 lines to 308. `redirect` is new
+  surface: `common_response.mojo` shipped only `SeeOther`, so 301/302/307/308
+  had no constructor at all.
+
+  One behaviour change came with it. `param_int` refuses a parameter longer
+  than 18 digits; the hand-written copies multiplied without bound, so
+  `/notes/99999999999999999999` wrapped to some other note's id. Every caller
+  already treats `-1` as a 404.
+
+- `packages/m0-http/test/test_service.mojo` — the guard for the above, and the
+  first unit coverage the handler contract has had. `MinimalService`
+  implements `func` and nothing else, so the file failing to compile *is* the
+  failure; the value assertions pin that the defaults return what the event
+  loop expects (no short-circuit, an empty drain, a non-streaming slot), since
+  a wrong default would be a silent behaviour change across every app rather
+  than a compile error. Proven by reverting each of the eight defaults to
+  `...` in turn and confirming the suite fails for every one.
+
 ## [0.14.1] — 2026-08-28
 
 A hardening release for the ASGI streaming seam. No wire format, default

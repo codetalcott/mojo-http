@@ -36,6 +36,7 @@ from lightbug_http.c.process import getpid
 from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
 
+from m0_http import reply
 from m0_http import (
     AppConfig, WorkerSupervisor, install_shutdown_signals, exit_worker,
 )
@@ -92,7 +93,7 @@ struct CounterHandler(HTTPService):
             )
 
         if path == "/":
-            return _html(render_page(
+            return reply.html(render_page(
                 shared_load(self.count_addr), shared_load(self.uptime_addr)
             ))
 
@@ -133,14 +134,6 @@ struct CounterHandler(HTTPService):
             status_text="Not Found",
         )
 
-    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return None
-
-    def after_response(
-        mut self, req_method: String, req_path: String, mut resp: HTTPResponse
-    ):
-        pass
-
     # --- The four SSE hooks, wired straight through to the stream ----------
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
@@ -180,18 +173,6 @@ struct CounterHandler(HTTPService):
             '{"uptime":' + String(up)
             + ',"count":' + String(shared_load(self.count_addr)) + "}",
         )
-
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
-        pass
-
-
-def _html(body: String) -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=body.as_bytes(),
-        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/html; charset=utf-8")),
-        status_code=200,
-        status_text="OK",
-    )
 
 
 def main() raises:

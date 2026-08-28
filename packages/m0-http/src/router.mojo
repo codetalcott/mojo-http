@@ -25,6 +25,25 @@ comptime _SLASH = UInt8(47)  # '/'
 comptime _COLON = UInt8(58)  # ':'
 
 
+@always_inline
+def _list_contains(list: String, item: String) -> Bool:
+    """Whether a `", "`-separated header value already names `item`."""
+    var start = 0
+    var n = list.byte_length()
+    var b = list.as_bytes()
+    while start < n:
+        var end = start
+        while end < n and b[end] != UInt8(44):  # ','
+            end += 1
+        var s = start
+        while s < end and b[s] == UInt8(32):  # ' '
+            s += 1
+        if StringSlice(unsafe_from_utf8=b[s:end]) == item:
+            return True
+        start = end + 1
+    return False
+
+
 struct MatchResult(Copyable, Movable):
     """Result of matching a request against registered routes."""
     var matched: Bool
@@ -152,6 +171,67 @@ struct Router:
             count += 1
         return count
 
+    @always_inline
+    def _path_matches(self, r: Int, pb: Span[Byte, _], req_count: Int) -> Bool:
+        """Whether route `r`'s pattern matches this path, method aside.
+
+        Extracted so `match` and `allow_header` cannot answer it differently —
+        a 405's `Allow:` that disagrees with what the router accepts is worse
+        than no header at all.
+        """
+        if Int(self._r_seg_count[r]) != req_count:
+            return False
+        var n = len(pb)
+        var base = Int(self._r_seg_start[r])
+        var pos = 0
+        for j in range(req_count):
+            while pos < n and pb[pos] == _SLASH:
+                pos += 1
+            var start = pos
+            while pos < n and pb[pos] != _SLASH:
+                pos += 1
+            var k = base + j
+            if self._seg_is_param[k]:
+                continue
+            if not self._segment_eq(k, pb[start:pos]):
+                return False
+        return True
+
+    def allow_header(self, path: String) -> String:
+        """The `Allow:` value for a 405 on `path` — every method registered for it.
+
+        Read off the routing table rather than probed with a hardcoded method
+        list, so a route added in a method nobody enumerated is still
+        announced. `OPTIONS` is appended because the server answers preflight
+        itself; a path with no routes at all gets `OPTIONS` alone rather than
+        an empty header.
+        """
+        var pb = path.as_bytes()
+        var req_count = Self._count_segments(pb)
+        var allow = String()
+        for r in range(len(self._r_handler)):
+            if not self._path_matches(r, pb, req_count):
+                continue
+            var m = self.method_of(r)
+            # Two routes can share a path and a method only by mistake, but a
+            # duplicate in a header is a defect either way.
+            if _list_contains(allow, m):
+                continue
+            if allow.byte_length() > 0:
+                allow += ", "
+            allow += m
+        if allow.byte_length() > 0:
+            allow += ", OPTIONS"
+        else:
+            allow = String("OPTIONS")
+        return allow
+
+    def method_of(self, r: Int) -> String:
+        """The method route `r` was registered with."""
+        var off = Int(self._r_meth_off[r])
+        var l = Int(self._r_meth_len[r])
+        return String(unsafe_from_utf8=Span(self._buf)[off : off + l])
+
     def match(self, method: String, path: String) -> MatchResult:
         """Match method + path against registered routes.
 
@@ -165,29 +245,12 @@ struct Router:
         var path_matched = False
 
         for r in range(len(self._r_handler)):
-            # The cheap rejection first: a route with a different number of
-            # segments cannot match, and is dismissed without scanning.
-            if Int(self._r_seg_count[r]) != req_count:
+            # The cheap rejection (a differing segment count) is inside
+            # `_path_matches`, which dismisses such a route without scanning.
+            if not self._path_matches(r, pb, req_count):
                 continue
 
             var base = Int(self._r_seg_start[r])
-            var ok = True
-            var pos = 0
-            for j in range(req_count):
-                while pos < n and pb[pos] == _SLASH:
-                    pos += 1
-                var start = pos
-                while pos < n and pb[pos] != _SLASH:
-                    pos += 1
-                var k = base + j
-                if self._seg_is_param[k]:
-                    continue  # a param segment matches any non-empty segment
-                if not self._segment_eq(k, pb[start:pos]):
-                    ok = False
-                    break
-            if not ok:
-                continue
-
             if not self._method_eq(r, mb):
                 path_matched = True
                 continue

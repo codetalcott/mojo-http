@@ -259,5 +259,73 @@ def test_param_does_not_match_across_a_separator() raises:
     assert_false(m.method_not_allowed)
 
 
+def test_allow_header_lists_registered_methods() raises:
+    """`Allow:` is read off the table, not probed with a guessed method list."""
+    var r = Router()
+    r.add("GET", "/notes/:id", 1)
+    r.add("PUT", "/notes/:id", 2)
+    r.add("DELETE", "/notes/:id", 3)
+    assert_equal(r.allow_header("/notes/7"), "GET, PUT, DELETE, OPTIONS")
+
+
+def test_allow_header_includes_methods_nobody_enumerated() raises:
+    """The old hand-rolled version probed a hardcoded GET/POST/PUT/DELETE list.
+
+    A route registered in any other method was silently missing from the 405.
+    """
+    var r = Router()
+    r.add("GET", "/notes/:id", 1)
+    r.add("PATCH", "/notes/:id", 2)
+    assert_equal(r.allow_header("/notes/7"), "GET, PATCH, OPTIONS")
+
+
+def test_allow_header_on_an_unrouted_path_is_options_only() raises:
+    """Never an empty header value: a path with no routes still allows OPTIONS."""
+    var r = Router()
+    r.add("GET", "/notes", 1)
+    assert_equal(r.allow_header("/nothing/here"), "OPTIONS")
+
+
+def test_allow_header_ignores_paths_that_do_not_match() raises:
+    """Segment count and literal segments both gate a route out."""
+    var r = Router()
+    r.add("GET", "/notes", 1)
+    r.add("POST", "/notes", 2)
+    r.add("DELETE", "/notes/:id", 3)
+    assert_equal(r.allow_header("/notes"), "GET, POST, OPTIONS")
+    assert_equal(r.allow_header("/notes/7"), "DELETE, OPTIONS")
+
+
+def test_allow_header_does_not_repeat_a_method() raises:
+    """Two routes sharing a path and method must not double the header value."""
+    var r = Router()
+    r.add("GET", "/notes/:id", 1)
+    r.add("GET", "/notes/:slug", 2)
+    assert_equal(r.allow_header("/notes/7"), "GET, OPTIONS")
+
+
+def test_allow_header_agrees_with_match() raises:
+    """The two must not disagree — they share `_path_matches` for that reason."""
+    var r = Router()
+    r.add("GET", "/a/:x/b", 1)
+    r.add("POST", "/a/:x/b", 2)
+    var allow = r.allow_header("/a/1/b")
+    assert_true("GET" in allow)
+    assert_true("POST" in allow)
+    assert_true(r.match("GET", "/a/1/b").matched)
+    assert_true(r.match("POST", "/a/1/b").matched)
+    # a method absent from Allow must be a 405, not a match
+    assert_false("DELETE" in allow)
+    assert_true(r.match("DELETE", "/a/1/b").method_not_allowed)
+
+
+def test_method_of_reads_back_the_registration() raises:
+    var r = Router()
+    r.add("GET", "/x", 1)
+    r.add("DELETE", "/y", 2)
+    assert_equal(r.method_of(0), "GET")
+    assert_equal(r.method_of(1), "DELETE")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
