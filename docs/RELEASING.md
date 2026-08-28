@@ -50,7 +50,10 @@ The steps, in order:
      for automation whose credentials can push branches but not tags, and
      whose workflow dispatches run with a capped GITHUB_TOKEN (an
      integration-dispatched run cannot create releases; a push-triggered
-     run can). Delete the branch afterwards.
+     run can). Delete the branch afterwards — `poe check-docs` fails on a
+     `release/v*` branch whose tag exists, so this is not remembered by
+     hand either. It went unremembered four times before that check
+     existed.
 
 5. **The C-ABI bundle is gated, not checked by hand.** CI runs
    `poe bundle-ffi` on every commit and the release workflow runs it again,

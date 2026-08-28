@@ -131,6 +131,74 @@ def check_test_coverage():
         )
 
 
+def check_release_branches_cleaned():
+    """A `release/v*` branch whose tag exists is finished — delete it.
+
+    RELEASING.md step 4 ends "Delete the branch afterwards", and nothing
+    checked that it happened: four of them (v0.1.0, v0.2.0, v0.3.0,
+    v0.9.0) sat on the remote until someone happened to list branches.
+    Same class of miss as the smoke and test coverage guards above — a
+    step that is remembered rather than enforced eventually is not.
+
+    Both halves come from `git ls-remote`, deliberately. The remote is the
+    only place these branches live, and a CI checkout has neither the
+    branch refs nor (at the default fetch depth) the tags — a check that
+    read local `git tag` would find nothing to compare against and could
+    never fire, which is the failure mode this file exists to prevent.
+
+    Network, unlike every other check here, so a failure to ASK is a skip
+    rather than a failure: an offline tree, a clone with no `origin`, or a
+    sandbox without credentials must not turn this into a red build over
+    something it cannot see.
+
+    One narrow false positive, self-correcting: the Release workflow
+    creates the tag from the branch, so both exist for the ~15 minutes a
+    release takes. `Tests` runs only on pushes and PRs to `main`, never on
+    a `release/v*` push, so only a PR opened inside that window sees it —
+    and what it asks for is what the release ends with anyway.
+    """
+    def ls_remote(*args):
+        try:
+            r = subprocess.run(
+                ["git", "ls-remote", *args, "origin"],
+                capture_output=True, text=True, timeout=30, cwd=REPO,
+            )
+        except Exception:
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    heads = ls_remote("--heads")
+    if heads is None:
+        return
+    branches = [
+        line.split("refs/heads/", 1)[1]
+        for line in heads.splitlines()
+        if "refs/heads/release/v" in line
+    ]
+    if not branches:
+        return
+    tag_out = ls_remote("--tags")
+    if tag_out is None:
+        return
+    # `^{}` entries are an annotated tag's dereferenced commit; the tag
+    # name is the same either way, so strip the suffix and dedupe.
+    tags = {
+        line.split("refs/tags/", 1)[1].removesuffix("^{}")
+        for line in tag_out.splitlines()
+        if "refs/tags/" in line
+    }
+    stale = sorted(b for b in branches if b[len("release/"):] in tags)
+    if stale:
+        fail(
+            "release branch(es) still on the remote after their release: "
+            + ", ".join(stale)
+            + " — RELEASING.md step 4 ends 'Delete the branch afterwards'. "
+            + "Run `git push origin --delete " + " ".join(stale) + "`. "
+            + "(If a release is running right now, wait for it to finish "
+            "and delete the branch then.)"
+        )
+
+
 def check_bench_region():
     """The generated table must match the newest committed artifact."""
     results = REPO / "bench" / "results"
@@ -771,6 +839,7 @@ def main():
     check_warning_counts()
     check_smoke_coverage()
     check_test_coverage()
+    check_release_branches_cleaned()
     check_bench_region()
     check_version_single_source()
     check_wheel_platform_claims()
