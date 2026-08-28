@@ -1066,6 +1066,7 @@ struct Server(Movable):
         mut self, address: StringSlice, mut handler: T,
         shutdown_read_fd: Int = -1,
         bus_read_fd: Int = -1,
+        offload_addr: Int = 0,
     ) raises ServerError:
         """Listen and serve using the non-blocking kqueue event loop.
 
@@ -1075,6 +1076,15 @@ struct Server(Movable):
         Args:
             address: The address (host:port) to listen on.
             handler: An object that handles incoming HTTP requests.
+            shutdown_read_fd: Read end of the graceful-shutdown pipe, or -1.
+            bus_read_fd: This worker's `BroadcastBus` channel, or -1.
+            offload_addr: A caller-owned `OffloadPool`'s address, or 0.
+                Non-zero makes the loop an acceptor: it parks each request and
+                submits the slot instead of calling `handler.func` itself, and
+                the pool's threads answer. `m0serve` passed this to
+                `run_event_loop` directly because it needed a `DetachingBackend`
+                for the GIL; a Mojo handler needs no such thing, so the plain
+                entry point carries it. See `m0_http.mojo_pool`.
 
         Raises:
             ServerError: If listener setup fails or an unrecoverable error occurs.
@@ -1091,7 +1101,9 @@ struct Server(Movable):
         var effective_shutdown_fd = shutdown_read_fd if shutdown_read_fd >= 0 else self.shutdown_read_fd
 
         try:
-            self.serve_nonblocking(listener, handler, effective_shutdown_fd, bus_read_fd)
+            self.serve_nonblocking(
+                listener, handler, effective_shutdown_fd, bus_read_fd, offload_addr
+            )
         except server_err:
             raise server_err^
 
@@ -1099,6 +1111,7 @@ struct Server(Movable):
         self, ln: NoTLSListener[NetworkType.tcp4], mut handler: T,
         shutdown_read_fd: Int = -1,
         bus_read_fd: Int = -1,
+        offload_addr: Int = 0,
     ) raises ServerError:
         """Serve HTTP requests using the non-blocking kqueue event loop.
 
@@ -1108,6 +1121,11 @@ struct Server(Movable):
         Args:
             ln: TCP server that listens for incoming connections.
             handler: An object that handles incoming HTTP requests.
+
+            shutdown_read_fd: Read end of the graceful-shutdown pipe, or -1.
+            bus_read_fd: This worker's `BroadcastBus` channel, or -1.
+            offload_addr: A caller-owned `OffloadPool`'s address, or 0. See
+                `listen_and_serve_nonblocking`.
 
         Raises:
             ServerError: If an unrecoverable error occurs.
@@ -1127,6 +1145,7 @@ struct Server(Movable):
                     self.tcp_keep_alive,
                     shutdown_read_fd,
                     bus_read_fd,
+                    offload_addr,
                 )
             except e:
                 raise e^
@@ -1143,6 +1162,7 @@ struct Server(Movable):
                     self.tcp_keep_alive,
                     shutdown_read_fd,
                     bus_read_fd,
+                    offload_addr,
                 )
             except e:
                 raise e^
