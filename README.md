@@ -351,6 +351,23 @@ bin/m0serve myproject.wsgi:application --app-dir /path/to/project \
     --static /static/=/path/to/static --static-cache-control 'public, max-age=3600'
 ```
 
+It prints one line per worker when it is up:
+
+```text
+🔥 m0serve: myproject.wsgi:application on http://0.0.0.0:8000 (protocol=wsgi workers=4) blocking-threads=8 (auto)
+```
+
+**That line is the ready signal**, and it is printed *after* the application
+has been imported — so a project whose import fails prints a traceback and
+exits 1 rather than announcing itself first. Startup failures and the
+shutdown report use the same `m0serve: ` prefix without the flame. Nothing
+else is written to stdout unless `--access-log` is on.
+
+Do not scrape it from an orchestrator, though: readiness there is
+`--health-path /health` (a probe endpoint answered in Mojo, before the
+application) or a plain TCP check on the port, and `m0serve --doctor` for a
+configuration report that exits with the code the server itself would use.
+
 `MODULE[:ATTR]` names the callable (`ATTR` defaults to `application`, and a
 bare `MODULE` also tries `MODULE.asgi`, `MODULE.wsgi`, `MODULE:app` and
 `MODULE.main:app` by convention); **the protocol is detected from the

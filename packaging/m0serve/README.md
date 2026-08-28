@@ -51,6 +51,12 @@ The protocol is detected from the object, so the same command serves WSGI and
 ASGI. `m0serve --help` lists the flags; `--workers N`, `--threads N` (on
 free-threaded CPython) and `--blocking-threads N` are the topology ones.
 
+When it is up it prints one line per worker — `🔥 m0serve: myproject.wsgi:
+application on http://0.0.0.0:8000 (protocol=wsgi workers=4)` — after the
+application has been imported, so "it printed" means "it is serving". For an
+orchestrator use `--health-path /health` or a TCP check rather than the log
+line.
+
 If something will not start, `m0serve --doctor myproject.wsgi` prints a JSON
 report — the interpreter it resolved and the virtualenv it came from, the
 spec it discovered, the topology it settled on, and every startup check with

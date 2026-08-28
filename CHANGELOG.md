@@ -68,7 +68,12 @@ server log.
 ### Changed
 
 - `m0serve`'s ready line carries the Mojo flame: `🔥 m0serve: app:application
-  on http://…`. One emoji, once per worker, on the line that already means
+  on http://…`, and both READMEs now document it as the contract it is —
+  printed once per worker, after the application is imported, so "it
+  printed" means "it is serving". There is no cross-server standard to
+  match here (uvicorn says `Uvicorn running on …`, gunicorn `Listening
+  at: …`); for an orchestrator use `--health-path /health` or a TCP check
+  rather than the log line. One emoji, once per worker, on the line that already means
   "ready" — the fork's `🔥🐝 Lightbug is listening` banner it replaced was
   Lightbug's branding (attribution lives in NOTICE) and printed *before*
   the application loaded. Error and shutdown lines stay plain: a flame on
