@@ -961,6 +961,10 @@ def _serve_offloaded(
     channel) and is still refused with the executor and with `--mount`.
     """
     var pool = OffloadPool(config.max_connections)
+    # The loop's handler needs the pool for one thing only: a chunk frame
+    # its outbox has to refuse must abort the stream rather than vanish.
+    # See `WSGIHandler.abort_pool_addr`.
+    handler.set_abort_pool(pool.addr())
     if hold_notify_fd >= 0:
         pool.set_hold_notify(hold_notify_fd)
     var mounted = len(opts.mount_prefixes) > 0

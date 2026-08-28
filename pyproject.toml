@@ -101,6 +101,19 @@ echo "all apps built"
 help = "Test m0-wsgi (mapping logic only; needs no interpreter)"
 shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
 
+# The executor shim's ownership rules, with no server and no Mojo. The shim
+# is a Python program inside a Mojo string, so it can be extracted, exec'd,
+# and driven through real socketpairs exactly as the loop drives it — which
+# makes the slot-ownership race a deterministic test rather than a
+# reproducer that needed twelve CPU hogs and eleven tries. `--sabotage`
+# reverts each rule in the extracted source and insists the suite fails for
+# every one, so the repo's sabotage rule holds permanently rather than by
+# memory; a patch that no longer applies is itself a failure, because that
+# means a guarded line was renamed or deleted.
+[tool.poe.tasks.test-shim]
+help = "Test the ASGI executor shim's slot-ownership rules, and sabotage-prove them"
+shell = "python3 scripts/shim_ownership.py --sabotage"
+
 # m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
 # m0-http, not a layer on them — so it needs no -I at build time, and consumers
 # need only -I packages/m0-sqlite. It links against the system libsqlite3.
@@ -337,7 +350,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-sqlite", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "test-sqlite", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -3409,6 +3422,77 @@ cmd = "python3 scripts/bench_asgi.py"
 help = "wrk: the ASGI executor vs uvicorn (asyncio and uvloop), recorded as a bench artifact"
 deps = ["build-serve"]
 cmd = "bash scripts/bench_asgi_wrk.sh"
+
+# The slot-ownership stress: the shape that found the 0.14.0 race, run to a
+# count. `chunked_keepalive.py`'s HTTP/1.0 probe closes after its head and
+# the keep-alive stream that follows lands on the SAME slot, which is
+# exactly the recycle the executor's per-slot state has to survive; CPU hogs
+# are what make the previous task's cancellation and done-callback land late
+# enough to collide with the successor. Measured on the broken build: 8 of
+# 11 smoke-asgi runs failed under twelve hogs, 4 of 5 for this probe; 0 of 6
+# after the fix.
+#
+# Deliberately NOT in CI, and deliberately not the only guard. Shared
+# runners are already loaded, so the timing this depends on is not
+# reproducible there — that is precisely why CI passed with the bug live for
+# a whole day. `poe test-shim` is the deterministic half and IS in CI; this
+# is the pre-release half (docs/RELEASING.md). Tune with M0_STRESS_ITERS and
+# M0_STRESS_HOGS.
+[tool.poe.tasks.stress-asgi]
+help = "Pre-release: N streamed keep-alive rounds under CPU load, on recycled slots (not in CI)"
+deps = ["build-serve"]
+shell = """
+iters=${M0_STRESS_ITERS:-30}
+hogs=${M0_STRESS_HOGS:-$(( $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) * 2 ))}
+port=${M0_STRESS_PORT:-8188}
+
+# A stray server on this port would answer instead — SO_REUSEPORT means a
+# second bind SUCCEEDS and silently takes a share of the connections, so
+# "it passed" would mean nothing.
+if pgrep -f "m0serve .*--port $port" > /dev/null 2>&1; then
+  echo "stress-asgi: an m0serve is already on port $port; kill it first"
+  exit 1
+fi
+
+hog_pids=""
+# `wait` after each kill reaps the hog then and there; without it the shell
+# announces every one of them as "Terminated" on the next command.
+cleanup() {
+  for h in $hog_pids; do kill $h 2>/dev/null; wait $h 2>/dev/null; done
+  kill $pid 2>/dev/null
+}
+trap cleanup EXIT
+
+bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port \
+  > stress.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://localhost:$port/ > /dev/null || { echo 'stress-asgi: server never became healthy'; cat stress.log; exit 1; }
+
+for _ in $(seq 1 $hogs); do
+  ( while :; do :; done ) &
+  hog_pids="$hog_pids $!"
+done
+echo "stress-asgi: $iters rounds under $hogs CPU hogs on port $port"
+
+i=1
+while [ $i -le $iters ]; do
+  if ! M0_PORT=$port python3 scripts/chunked_keepalive.py > /dev/null 2>&1; then
+    echo "stress-asgi: FAILED on round $i of $iters"
+    M0_PORT=$port python3 scripts/chunked_keepalive.py
+    echo '=== stress.log ==='; cat stress.log
+    exit 1
+  fi
+  i=$((i + 1))
+done
+
+for h in $hog_pids; do kill $h 2>/dev/null; wait $h 2>/dev/null; done
+hog_pids=""
+curl -s --fail --max-time 10 http://localhost:$port/ | grep -q 'hello from asgi_bare' \
+  || { echo 'stress-asgi: the server did not survive the load'; cat stress.log; exit 1; }
+rm -f stress.log
+echo "stress-asgi OK: $iters/$iters rounds under $hogs hogs"
+"""
 
 [tool.poe.tasks.serve-asgi-bare]
 help = "Serve the bare ASGI example on :8088 with m0serve"

@@ -77,6 +77,17 @@ trait ThreadHandler(HTTPService, Movable, Deinitable):
         """
         ...
 
+    def set_abort_pool(mut self, addr: Int):
+        """This loop's `OffloadPool` address, for `abort_stream`.
+
+        On the trait for the same reason `set_asgi_notify` is — the generic
+        `_serve_one` body can only call what the trait names. What it buys
+        is one thing: a chunk frame the loop handler's outbox has to refuse
+        aborts the stream instead of vanishing into a stall. A handler with
+        no streams ignores it.
+        """
+        ...
+
     def stream_pending(self) -> Bool:
         """Whether the response `func` just returned is the HEAD of a body
         this handler still has to produce — a WSGI iterable it decided to

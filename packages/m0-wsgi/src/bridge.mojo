@@ -896,7 +896,22 @@ def asgi_executor_init(fd, ack_fd):
             slot = int.from_bytes(data[0:4], 'little')
             n = int.from_bytes(data[4:8], 'little')
             if slot in _exec_credits:
-                _exec_credits[slot] += n
+                # CLAMPED to the window, never merely added. An ack names a
+                # SLOT and carries no generation, and the loop recycles a
+                # slot the instant it closes a connection -- so an ack for
+                # the stream that just ended can land after the next stream
+                # on that slot has seeded its window whole. Added, that
+                # lets the new stream put more than one window of bytes
+                # into the ONE shared chunk channel, which is the
+                # over-commit `_ASGI_TOTAL_WINDOW` exists to prevent and
+                # whose symptom is a dropped datagram: a short body under a
+                # clean terminator. `credit + in flight == the window` is
+                # the invariant a live stream keeps; min() is what makes a
+                # stale ack unable to break it.
+                credited = _exec_credits[slot] + n
+                if credited > _ASGI_CREDIT_WINDOW:
+                    credited = _ASGI_CREDIT_WINDOW
+                _exec_credits[slot] = credited
                 evt = _exec_credit_evts.get(slot)
                 if evt is not None:
                     evt.set()

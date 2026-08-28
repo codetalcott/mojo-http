@@ -7,6 +7,69 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **The slot-ownership race has guards.** 0.14.0 fixed a silent hang in
+  the ASGI executor — a stream on a recycled connection slot could leave
+  the loop holding a subscription with no producer, which a client saw as
+  a 30 s stall against a clean server log — but the fix was verified only
+  by an ad-hoc reproducer, so nothing would have caught a
+  re-introduction. Two guards now do:
+  - `poe test-shim` (in CI, inside `test-all`) exercises the shim's
+    ownership rules with no server, no Mojo and no threads:
+    `scripts/shim_ownership.py` extracts `SHIM_SOURCE` from
+    `bridge.mojo`, `exec`s it, and drives it through real socketpairs
+    exactly as the event loop does. Six tests, one per rule; four of the
+    six fail on the shim reverted to its pre-fix shape. `--sabotage`
+    reverts each rule in turn and insists the suite fails for every one,
+    so the repo's sabotage rule is enforced rather than remembered.
+  - `poe stress-asgi` (a pre-release check, deliberately not in CI) runs
+    `chunked_keepalive.py` N times under CPU hogs — the shape that
+    recycles a slot mid-stream. Reverted build: failed on round 5 of 15.
+    Current: 45 of 45 across three runs.
+- `check-docs` fails when a `test-*` poe task is not reachable from
+  `test-all`, which is the single step CI runs. Its `smoke-*` twin exists
+  because a smoke once shipped that CI never ran; a test task can drop out
+  the same way, with no ghost step to notice.
+
+### Fixed
+
+- **Six silent failures in the streaming seam are now terminal and
+  named.** A frame the seam could not place was discarded at five of six
+  sites, and a drain ack could credit the wrong stream. Each was measured
+  by forcing the failure:
+  - a dropped stream **begin** frame served a clean, EMPTY 200 (the log
+    naming only a downstream `KeyError`) and left the application's task
+    awaiting credit for the life of the process; it now answers 500,
+    closes, and cancels that task through the same disconnect tag the
+    loop would have sent.
+  - a dropped stream **end** frame hung the client until its own timeout
+    (12 s, curl exit 28) against a silent log; it now aborts — the body's
+    bytes, then a close with no terminator — in 13 ms, and says so.
+  - a **response chunk** the loop's outbox refuses aborted nothing and
+    hung the connection for 12 s; it now aborts, so the truncation is
+    visible to the client.
+  - a **WebSocket frame** the outbox refuses delivered 430,693 of
+    1,638,400 bytes under a *clean close frame* — a message stream with
+    holes the peer had no way to detect. It now flushes what is queued and
+    closes abruptly (1006). Reproduced with an ordinary client: ASGI
+    `websocket.send` is not credit-gated at all, unlike a response chunk.
+  - the **WebSocket begin** frame and the close/end pair get the same
+    treatment — and a socket can now be aborted at all: the loop's abort
+    path gated on `slot_sse`, which a held 101 never sets, so aborting a
+    socket was a silent no-op. It reads `slot_sse or slot_ws` now, and a
+    101 records its generation after the non-stream branch that was
+    clearing it.
+  - a **stale drain ack** — acks name a slot and carry no generation, and
+    the loop recycles a slot the instant it closes a connection — could
+    credit a recycled slot's new stream past its window, over-committing
+    the one chunk channel every stream on an executor shares. Credit is
+    now clamped to the window.
+
+  A tear-down is claimed once per stream (`stream_lost`): the producer
+  does not learn its connection is gone until the loop closes it, so one
+  flooding WebSocket announced itself 336 times before.
+
 ## [0.14.0] — 2026-08-27
 
 A streaming and throughput release. Three changes are visible on the wire

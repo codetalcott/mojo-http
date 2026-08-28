@@ -2187,7 +2187,9 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
         a += 2
         if abort_slot < 0 or abort_slot >= len(slot_fds):
             continue
-        if slot_fds[abort_slot] == UNUSED or not slot_sse[abort_slot]:
+        if slot_fds[abort_slot] == UNUSED or not (
+            slot_sse[abort_slot] or slot_ws[abort_slot]
+        ):
             continue
         if offload.stream_gen[abort_slot] != abort_gen:
             continue
@@ -2395,6 +2397,17 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # Not a stream: whatever channel-stream state the slot carried is
         # over. Defensive — every ending path clears it too.
         offload.clear_stream(slot)
+
+    if upgraded_ws and slot < len(offload.stream_gen):
+        # A socket's generation, recorded for the same reason a stream's is
+        # above: an abort names a slot AND a generation, so one meant for
+        # the connection this slot used to hold cannot close the one it
+        # holds now. AFTER the clear, not before — a 101 is not an
+        # `sse_streaming` response, so it takes the `else` branch, which
+        # clears exactly this. Its absence is what made an executor's abort
+        # of a socket a silent no-op, and a WebSocket frame the chunk
+        # channel would not take therefore a connection that never closed.
+        offload.stream_gen[slot] = response.stream_gen
 
     # Stamp the Date header from the loop's per-second cache (encode()
     # would otherwise format a fresh date string for every response).

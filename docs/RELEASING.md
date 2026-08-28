@@ -5,6 +5,19 @@ Releases are tag-driven: pushing a `v*` tag runs the `Release` workflow
 macOS, proves each artifact through the same `ctypes` smoke that CI runs on
 every commit, and publishes a GitHub release with both attached.
 
+**Before any of it: `uv run poe stress-asgi`.** The one check CI cannot
+run. It drives `chunked_keepalive.py` thirty times under CPU hogs, which
+is the shape that finds a slot-ownership race in the ASGI executor: the
+probe's HTTP/1.0 request closes after its head, so the keep-alive stream
+behind it lands on the same connection slot, and the hogs are what make
+the previous task's cancellation and done-callback land late enough to
+collide with its successor. Measured on the broken build it failed on
+round 5 of 15; on shared CI runners it did not fail at all for a whole
+day with the bug live, which is why this is a step here rather than a
+job there. The deterministic half of the same guard, `poe test-shim`,
+runs in CI inside `test-all`. Tune with `M0_STRESS_ITERS` and
+`M0_STRESS_HOGS`; it must be N of N.
+
 The steps, in order:
 
 1. **Update [CHANGELOG.md](../CHANGELOG.md).** Add a `## [X.Y.Z] — date`
