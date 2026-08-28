@@ -97,6 +97,15 @@ from here either.
 """
 
 
+def _decline_direct(
+    pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int, slot: Int,
+) raises -> Bool:
+    """The default `WSGIHandler.direct_fn`: never called, because
+    `direct_job` declines before consulting it while `direct_state_addr`
+    is 0 — but a function-typed field needs a value, and this is it."""
+    return False
+
+
 struct WSGIHandler(ThreadHandler):
     """Serve a WSGI application, with optional static mounts in front of it.
 
@@ -249,6 +258,19 @@ struct WSGIHandler(ThreadHandler):
     through `asgi_done`, because a held 101 never sets `sse_streaming` and
     the loop's abort path requires it."""
 
+    var direct_fn: def (Int, Int, Int, Int, Int) thin raises -> Bool
+    """The loop inversion's job entry, or `_decline_direct`.
+
+    Set by `set_direct_executor` on the ONE handler that is both the loop's
+    and the executor's under `M0_INVERTED`: `direct_job` calls it with the
+    pool, this handler, the executor state, the lane and the slot, and it
+    runs the port's job branch on this thread. A function value rather than
+    an import so `handler.mojo` never imports `asgi_executor.mojo`, which
+    imports it. The default declines, which is what every other handler
+    does."""
+    var direct_pool_addr: Int
+    var direct_state_addr: Int
+    var direct_lane: Int
     var lane_notify_fds: List[Int]
     """Per-lane submit write ends, indexed by mount (`--mount` with more
     than one ASGI mount); -1 where a lane has no executor. A disconnect
@@ -284,6 +306,10 @@ struct WSGIHandler(ThreadHandler):
         self.answers_local = True
         self.hold_notify_fd = -1
         self.abort_pool_addr = 0
+        self.direct_fn = _decline_direct
+        self.direct_pool_addr = 0
+        self.direct_state_addr = 0
+        self.direct_lane = -1
         self.lane_notify_fds = List[Int]()
         # Capacity 0 when neither mode is on. Every `SSERegistry` method
         # already guards on `slot >= _capacity`, so the hooks below stay
@@ -481,6 +507,39 @@ struct WSGIHandler(ThreadHandler):
         handler only — a pool thread aborts through the pool it is already
         holding. See `abort_pool_addr`."""
         self.abort_pool_addr = addr
+
+    def set_direct_executor(
+        mut self, pool_addr: Int, state_addr: Int, lane: Int,
+        job_fn: def (Int, Int, Int, Int, Int) thin raises -> Bool,
+    ):
+        """Inverted-mode wiring: this handler is the loop's AND the executor's,
+        on one thread, and `direct_job` takes jobs itself through `job_fn`."""
+        self.direct_pool_addr = pool_addr
+        self.direct_state_addr = state_addr
+        self.direct_lane = lane
+        self.direct_fn = job_fn
+
+    def direct_job(mut self, slot: Int) -> Bool:
+        """`HTTPService.direct_job`: take the parked request on this thread.
+
+        Only the inverted executor's handler has a `direct_fn` that does
+        anything; everywhere else this is the trait's default, declining.
+        A raise inside the job branch is already a 500 parked for the slot,
+        so it is logged rather than propagated — the read path that calls
+        this is non-raising, like every other hook it calls.
+        """
+        if self.direct_state_addr == 0:
+            return False
+        var self_ptr = Pointer(to=self)
+        var self_addr = Pointer(to=self_ptr).unsafe_bitcast[Int]()[]
+        try:
+            _ = self.direct_fn(
+                self.direct_pool_addr, self_addr, self.direct_state_addr,
+                self.direct_lane, slot,
+            )
+        except e:
+            print("inverted executor: direct job raised: " + String(e), flush=True)
+        return True
 
     def _claim_lost(mut self, slot: Int, what: String) -> Bool:
         """Name a frame this handler's outbox refused, ONCE per stream.
@@ -955,7 +1014,17 @@ struct WSGIHandler(ThreadHandler):
             # nine-byte datagram `next_job` cannot decode.
             _send_pool_disconnect(pool_ack_fd, slot)
         elif was_asgi:
-            _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
+            if self.direct_state_addr != 0:
+                # Inverted: the executor is this thread; tell it directly
+                # so the disconnect lands before the slot's next job, which
+                # would otherwise overtake a tag on the channel (see
+                # `PyBridge.notify_disconnect`).
+                try:
+                    self.apps[0]._bridge.notify_disconnect(slot)
+                except e:
+                    print("inverted executor: disconnect notify raised: " + String(e), flush=True)
+            else:
+                _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open

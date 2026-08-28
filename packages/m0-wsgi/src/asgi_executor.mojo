@@ -45,6 +45,17 @@ from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
 from lightbug_http.offload import OffloadPool, stream_gen_seed, COMPLETE_BATCH_MAX
+from lightbug_http.event_loop import (
+    LoopState,
+    prepare_loop,
+    run_pass_once,
+    service_direct_completions,
+    _run_shutdown,
+)
+from lightbug_http.server_config import ServerConfig
+from lightbug_http.event_loop_backend import EventLoopBackend
+from std.sys.info import CompilationTarget
+from std.io import FileDescriptor
 from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame,
@@ -285,7 +296,9 @@ def _ensure_port_type() raises -> PythonObject:
         var builder = PythonModuleBuilder("m0native")
         _ = builder.add_type[ExecutorPort]("ExecutorPort").def_method[
             ExecutorPort.dispatch
-        ]("dispatch").def_method[ExecutorPort.flush]("flush")
+        ]("dispatch").def_method[ExecutorPort.flush]("flush").def_method[
+            ExecutorPort.pass_
+        ]("pass_")
         return builder.finalize()
     except e:
         if String(e).find("multiple Python type objects") < 0:
@@ -374,15 +387,135 @@ struct ExecutorPort(Movable, Writable):
     var handler_addr: Int
     var state_addr: Int
     var lane: Int
+    var loop_addr: Int
+    """Inverted mode only: the `LoopState` this port drives, by address."""
+    var backend_addr: Int
+    """Inverted mode only: the platform backend (`KqueueBackend` on macOS,
+    `EpollBackend` on Linux — never a `DetachingBackend`, there is nothing
+    to detach from when the wait is `wait(0)`), by address."""
+    var inverted: Int
+    """1 when this port drives the event loop itself (`M0_INVERTED`), 0 on
+    the pump. An Int, not a Bool: the bound type's fields must be ones the
+    compiler can derive a `Writable` for."""
 
-    def __init__(out self, pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int):
+    def __init__(
+        out self, pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int,
+        loop_addr: Int = 0, backend_addr: Int = 0, inverted: Int = 0,
+    ):
         self.pool_addr = pool_addr
         self.handler_addr = handler_addr
         self.state_addr = state_addr
         self.lane = lane
+        self.loop_addr = loop_addr
+        self.backend_addr = backend_addr
+        self.inverted = inverted
 
     def write_to[W: Writer, //](self, mut writer: W):
-        writer.write("ExecutorPort(lane=", self.lane, ")")
+        writer.write("ExecutorPort(lane=", self.lane, ", inverted=", self.inverted, ")")
+
+    @staticmethod
+    def pass_(py_self: PythonObject) raises -> PythonObject:
+        """`_port.pass_()`: one non-blocking pass of the event loop, on this
+        thread. Inverted mode only. True once the shutdown pipe has fired
+        and the drain has run."""
+        var port = py_self.downcast_value_ptr[ExecutorPort]()
+        return PythonObject(port[]._pass())
+
+    def _pass(mut self) raises -> Bool:
+        comptime if CompilationTarget.is_macos():
+            from lightbug_http.c.kqueue_backend import KqueueBackend
+            return self._pass_with[KqueueBackend]()
+        else:
+            from lightbug_http.c.epoll_backend import EpollBackend
+            return self._pass_with[EpollBackend]()
+
+    def _pass_with[B: EventLoopBackend](mut self) raises -> Bool:
+        ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+            unsafe_from_address=self.handler_addr
+        )[]
+        ref st = Pointer[LoopState, MutUntrackedOrigin](
+            unsafe_from_address=self.loop_addr
+        )[]
+        ref xs = Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[]
+        ref backend = Pointer[B, MutUntrackedOrigin](
+            unsafe_from_address=self.backend_addr
+        )[]
+        if xs.stopping:
+            return True
+        var shutdown = run_pass_once(handler, backend, st)
+        if shutdown:
+            # First cut: the drain as it is, blocking inside this callback
+            # for at most its 5 s budget. The reshaped, polled drain is the
+            # design's item 6 and follows.
+            _run_shutdown(handler, backend, st)
+            xs.stopping = True
+        return shutdown
+
+    def _place_frame(mut self, mut pool: OffloadPool, frame: Span[Byte, _]) -> Bool:
+        """Place one chunk datagram: `_send_chunk_frame` on the pump, or the
+        pump-the-loop-yourself version under inversion.
+
+        `_send_chunk_frame` waits DETACHED for the event loop to drain the
+        channel, which on the pump is another thread. Inverted, the loop is
+        THIS thread, and that wait is a self-deadlock until its 5 s give-up
+        — which the ASGI smoke found on its first inverted run as a 237 KB
+        stream that stopped mid-body (the three-piece one just before it
+        fit the channel and passed). The shim suspends only on credit, 64 KB
+        per stream, and a Unix datagram pair holds far less than that, so
+        the producer fills it synchronously. The answer is the design's own
+        argument taken one step further: the producer is the loop, so when
+        the channel is full it runs a pass — drain, write, ack — and retries.
+        Bounded like the original: past that the client is not reading and
+        the outbox is what is full, which no pass can help.
+        """
+        if self.inverted == 0:
+            return _send_chunk_frame(pool, frame)
+        comptime if CompilationTarget.is_macos():
+            from lightbug_http.c.kqueue_backend import KqueueBackend
+            return self._place_frame_with[KqueueBackend](pool, frame)
+        else:
+            from lightbug_http.c.epoll_backend import EpollBackend
+            return self._place_frame_with[EpollBackend](pool, frame)
+
+    def _place_frame_with[B: EventLoopBackend](
+        mut self, mut pool: OffloadPool, frame: Span[Byte, _]
+    ) -> Bool:
+        if pool.send_stream_chunk(frame):
+            return True
+        for _ in range(25000):
+            try:
+                _ = self._pass_with[B]()
+            except e:
+                print("inverted executor: pass inside a frame wait raised: " + String(e), flush=True)
+                return False
+            if pool.send_stream_chunk(frame):
+                return True
+            sleep(0.0002)
+        return False
+
+    def _flush_inverted[B: EventLoopBackend](mut self, mut st: ExecutorState) raises:
+        # A PASS first, then the completions — a streamed response's begin
+        # frame rides the chunk channel and is drained by the pass, so a
+        # head completed before it would precede its own begin frame, the
+        # recycled-slot hazard the streaming rules exist for. On one thread
+        # the order is the order of these two calls.
+        _ = self._pass_with[B]()
+        if len(st.pending_done) == 0:
+            return
+        ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+            unsafe_from_address=self.handler_addr
+        )[]
+        ref loop = Pointer[LoopState, MutUntrackedOrigin](
+            unsafe_from_address=self.loop_addr
+        )[]
+        ref backend = Pointer[B, MutUntrackedOrigin](
+            unsafe_from_address=self.backend_addr
+        )[]
+        var slots = st.pending_done.copy()
+        st.pending_done.clear()
+        service_direct_completions(handler, backend, loop, slots)
 
     @staticmethod
     def dispatch(py_self: PythonObject, ev: PythonObject) raises -> PythonObject:
@@ -405,7 +538,22 @@ struct ExecutorPort(Movable, Writable):
         ref st = Pointer[ExecutorState, MutUntrackedOrigin](
             unsafe_from_address=self.state_addr
         )[]
-        _flush_completions(pool, st.pending_done)
+        if self.inverted == 0:
+            _flush_completions(pool, st.pending_done)
+            return
+        # Inverted: no datagram; see `_flush_inverted` for the ordering.
+        comptime if CompilationTarget.is_macos():
+            from lightbug_http.c.kqueue_backend import KqueueBackend
+            try:
+                self._flush_inverted[KqueueBackend](st)
+            except e:
+                print("inverted executor: flush raised: " + String(e), flush=True)
+        else:
+            from lightbug_http.c.epoll_backend import EpollBackend
+            try:
+                self._flush_inverted[EpollBackend](st)
+            except e:
+                print("inverted executor: flush raised: " + String(e), flush=True)
 
     def _dispatch(mut self, ev: PythonObject) raises -> Bool:
         """One event of the shim's, in the order the pass used to see it.
@@ -433,60 +581,7 @@ struct ExecutorPort(Movable, Writable):
         var kind = String(py=ev[0])
         var slot = Int(py=ev[1])
         if kind == "job":
-            if slot < 0:
-                st.stopping = True
-                return True
-            var request = pool.take_request(slot)
-            st.methods[slot] = request.method
-            st.paths[slot] = request.uri.path
-            var early = handler.before_request(request)
-            if early:
-                var response = early.take()
-                handler.after_response(st.methods[slot], st.paths[slot], response)
-                pool.put_response(slot, response^, False)
-                _queue_completion(pool, st.pending_done, slot)
-                return False
-            var local = handler.serve_local(request)
-            if local:
-                var response = local.take()
-                handler.after_response(st.methods[slot], st.paths[slot], response)
-                pool.put_response(slot, response^, False)
-                _queue_completion(pool, st.pending_done, slot)
-                return False
-            # A WebSocket handshake gets a `websocket` scope. The 101 the
-            # loop's validator built is held here — the application
-            # APPROVES with websocket.accept, this thread PERFORMS, the
-            # same split as M0-Hold, for the same reason: the accept value
-            # comes from the original request's key.
-            var upgrade = websocket_upgrade(request)
-            if upgrade:
-                var probe = upgrade.take()
-                if probe.status_code != 101:
-                    # Malformed or wrong-version handshake: 400/426 verbatim.
-                    handler.after_response(st.methods[slot], st.paths[slot], probe)
-                    pool.put_response(slot, probe^, False)
-                    _queue_completion(pool, st.pending_done, slot)
-                    return False
-                st.pending_101[slot] = probe^
-                try:
-                    handler.apps[0]._bridge.spawn_asgi_ws(slot, request)
-                except:
-                    st.pending_101[slot] = None
-                    var response = InternalError()
-                    handler.after_response(st.methods[slot], st.paths[slot], response)
-                    pool.put_response(slot, response^, True)
-                    _queue_completion(pool, st.pending_done, slot)
-                return False
-            try:
-                handler.apps[0]._bridge.spawn_asgi(slot, request)
-            except:
-                # The spawn itself failed (environ build, task creation):
-                # same policy as a raising handler — 500 and a closed
-                # connection, because what it left behind is unknown.
-                var response = InternalError()
-                handler.after_response(st.methods[slot], st.paths[slot], response)
-                pool.put_response(slot, response^, True)
-                _queue_completion(pool, st.pending_done, slot)
+            return dispatch_job(pool, handler, st, self.lane, slot)
         elif kind == "done":
             var response: HTTPResponse
             var raised = False
@@ -527,7 +622,7 @@ struct ExecutorPort(Movable, Writable):
             var begin_frame = encode_bus_frame(
                 asgi_stream_url(String("b"), slot, self.lane), st.gens[slot], Span(begin)
             )
-            if not _send_chunk_frame(pool, Span(begin_frame)):
+            if not self._place_frame(pool, Span(begin_frame)):
                 # The begin never landed, so the loop will never subscribe
                 # this slot -- and a streaming head on an unsubscribed slot
                 # is read as a stream that ended before it began: an empty
@@ -579,7 +674,7 @@ struct ExecutorPort(Movable, Writable):
             var frame = encode_bus_frame(
                 asgi_stream_url(String("s"), slot, self.lane), st.gens[slot], Span(chunk)
             )
-            if not _send_chunk_frame(pool, Span(frame)):
+            if not self._place_frame(pool, Span(frame)):
                 # Unplaceable even after waiting detached: the loop is not
                 # draining this channel at all, so this body is short. It is
                 # ABORTED rather than left to end normally, because the end
@@ -599,7 +694,7 @@ struct ExecutorPort(Movable, Writable):
             var frame = encode_bus_frame(
                 asgi_stream_url(String("e"), slot, self.lane), st.gens[slot], Span(empty)
             )
-            if not _send_chunk_frame(pool, Span(frame)):
+            if not self._place_frame(pool, Span(frame)):
                 # The body is whole but its end marker cannot be delivered,
                 # and the loop only closes a stream it has been told ended:
                 # dropped, this connection streams nothing and closes never.
@@ -635,7 +730,7 @@ struct ExecutorPort(Movable, Writable):
                     asgi_stream_url(String("B"), slot, self.lane), st.gens[slot],
                     Span(begin),
                 )
-                if not _send_chunk_frame(pool, Span(begin_frame)):
+                if not self._place_frame(pool, Span(begin_frame)):
                     # Without the begin the sockets registry never learns
                     # about this slot, so the 101 would hand the connection
                     # to a frame mode with no producer and no outbox: a
@@ -677,7 +772,7 @@ struct ExecutorPort(Movable, Writable):
                 asgi_stream_url(String("w"), slot, self.lane), st.gens[slot],
                 Span(frame_bytes),
             )
-            if not _send_chunk_frame(pool, Span(frame)):
+            if not self._place_frame(pool, Span(frame)):
                 # A WebSocket message that silently never arrives is worse
                 # than a closed socket: the peer waits on a protocol that
                 # gives it no way to know. Unlike a stream's chunks, these
@@ -711,7 +806,7 @@ struct ExecutorPort(Movable, Writable):
                 asgi_stream_url(String("w"), slot, self.lane), st.gens[slot],
                 Span(close_frame),
             )
-            if not _send_chunk_frame(pool, Span(f1)):
+            if not self._place_frame(pool, Span(f1)):
                 st.lost[slot] = True
                 _report_lost(String("websocket close frame"), slot, len(f1))
                 _report_abort(pool, slot, st.gens[slot])
@@ -720,7 +815,7 @@ struct ExecutorPort(Movable, Writable):
             var f2 = encode_bus_frame(
                 asgi_stream_url(String("x"), slot, self.lane), st.gens[slot], Span(empty)
             )
-            if not _send_chunk_frame(pool, Span(f2)):
+            if not self._place_frame(pool, Span(f2)):
                 # The close frame is queued but the end marker that lets the
                 # loop close after it lands is not: without one the socket
                 # stays subscribed for ever.
@@ -728,6 +823,205 @@ struct ExecutorPort(Movable, Writable):
                 _report_lost(String("websocket end"), slot, len(f2))
                 _report_abort(pool, slot, st.gens[slot])
         return False
+
+
+
+
+def dispatch_job(
+    mut pool: OffloadPool, mut handler: WSGIHandler, mut st: ExecutorState,
+    lane: Int, slot: Int,
+) raises -> Bool:
+    """One `('job', slot)`: take the parked request and start it.
+
+    The port's job branch, as a function, because the loop inversion has a
+    second caller: `WSGIHandler.direct_job`, invoked by the event loop on
+    this same thread with the request already parked, which is exactly
+    what the datagram path delivered. Returns True for the pill.
+    """
+    if slot < 0:
+        st.stopping = True
+        return True
+    var request = pool.take_request(slot)
+    st.methods[slot] = request.method
+    st.paths[slot] = request.uri.path
+    var early = handler.before_request(request)
+    if early:
+        var response = early.take()
+        handler.after_response(st.methods[slot], st.paths[slot], response)
+        pool.put_response(slot, response^, False)
+        _queue_completion(pool, st.pending_done, slot)
+        return False
+    var local = handler.serve_local(request)
+    if local:
+        var response = local.take()
+        handler.after_response(st.methods[slot], st.paths[slot], response)
+        pool.put_response(slot, response^, False)
+        _queue_completion(pool, st.pending_done, slot)
+        return False
+    # A WebSocket handshake gets a `websocket` scope. The 101 the
+    # loop's validator built is held here — the application
+    # APPROVES with websocket.accept, this thread PERFORMS, the
+    # same split as M0-Hold, for the same reason: the accept value
+    # comes from the original request's key.
+    var upgrade = websocket_upgrade(request)
+    if upgrade:
+        var probe = upgrade.take()
+        if probe.status_code != 101:
+            # Malformed or wrong-version handshake: 400/426 verbatim.
+            handler.after_response(st.methods[slot], st.paths[slot], probe)
+            pool.put_response(slot, probe^, False)
+            _queue_completion(pool, st.pending_done, slot)
+            return False
+        st.pending_101[slot] = probe^
+        try:
+            handler.apps[0]._bridge.spawn_asgi_ws(slot, request)
+        except:
+            st.pending_101[slot] = None
+            var response = InternalError()
+            handler.after_response(st.methods[slot], st.paths[slot], response)
+            pool.put_response(slot, response^, True)
+            _queue_completion(pool, st.pending_done, slot)
+        return False
+    try:
+        handler.apps[0]._bridge.spawn_asgi(slot, request)
+    except:
+        # The spawn itself failed (environ build, task creation):
+        # same policy as a raising handler — 500 and a closed
+        # connection, because what it left behind is unknown.
+        var response = InternalError()
+        handler.after_response(st.methods[slot], st.paths[slot], response)
+        pool.put_response(slot, response^, True)
+        _queue_completion(pool, st.pending_done, slot)
+    return False
+
+
+def _direct_job_thunk(
+    pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int, slot: Int,
+) raises -> Bool:
+    """`WSGIHandler.direct_fn` under `M0_INVERTED`: the port's job branch,
+    reached through addresses so `handler.mojo` needs no import of this
+    module. Same function the datagram path runs (`dispatch_job`)."""
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=pool_addr
+    )[]
+    ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+        unsafe_from_address=handler_addr
+    )[]
+    ref st = Pointer[ExecutorState, MutUntrackedOrigin](
+        unsafe_from_address=state_addr
+    )[]
+    return dispatch_job(pool, handler, st, lane, slot)
+
+
+def serve_inverted(
+    opts: ServeOptions,
+    listen_fd: FileDescriptor,
+    config: ServerConfig,
+    address: String,
+    shutdown_fd: Int,
+    mut pool: OffloadPool,
+    peer_bus_fd: Int = -1,
+) raises:
+    """`M0_INVERTED`: serve an unmounted ASGI application on ONE thread.
+
+    The executor's asyncio loop is the driver and the Mojo event loop runs
+    inside it, one non-blocking pass per readiness of the backend's own fd
+    (`run_forever_inverted`). One handler is both the loop's and the
+    executor's, built with the lifespan; a request reaches the app through
+    `WSGIHandler.direct_job` → `dispatch_job` with no datagram, and its
+    response reaches the wire through `service_direct_completions` with no
+    wake. The submit and ack channels stay registered on the asyncio loop:
+    disconnect tags, WebSocket messages and stream credit still ride them,
+    to this same thread.
+
+    Runs on the calling thread — `m0serve`'s main, which is attached since
+    `Py_Initialize` — so there is no thread to spawn and nothing to detach:
+    the only wait is asyncio's own selector, which releases the GIL itself.
+    """
+    var lane = -1
+    var handler = WSGIHandler.for_options(
+        WSGIApp(
+            opts.module,
+            server_name=opts.host,
+            server_port=String(opts.port),
+            attribute=opts.attribute,
+            multiprocess=opts.workers > 1,
+            multithread=False,
+            protocol="asgi",
+            lifespan=True,
+        ),
+        opts,
+    )
+    handler.set_abort_pool(pool.addr())
+    handler.set_asgi_notify(pool.submit_write_fd(lane))
+
+    var native = _ensure_port_type()
+    var state = ExecutorState(lane, pool.capacity)
+    var handler_ptr = Pointer(to=handler)
+    var state_ptr = Pointer(to=state)
+    var handler_addr = Pointer(to=handler_ptr).unsafe_bitcast[Int]()[]
+    var state_addr = Pointer(to=state_ptr).unsafe_bitcast[Int]()[]
+    handler.set_direct_executor(pool.addr(), state_addr, lane, _direct_job_thunk)
+
+    var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
+
+    comptime if CompilationTarget.is_macos():
+        from lightbug_http.c.kqueue_backend import KqueueBackend
+        var backend = KqueueBackend()
+        var st = prepare_loop(
+            listen_fd, backend, config, address, True, shutdown_fd,
+            stream_bus_fd, pool.addr(), peer_bus_fd,
+        )
+        var st_ptr = Pointer(to=st)
+        var backend_ptr = Pointer(to=backend)
+        var port_obj = PythonObject(
+            alloc=ExecutorPort(
+                pool.addr(), handler_addr, state_addr, lane,
+                Pointer(to=st_ptr).unsafe_bitcast[Int]()[],
+                Pointer(to=backend_ptr).unsafe_bitcast[Int]()[],
+                1,
+            )
+        )
+        handler.apps[0]._bridge.set_port(port_obj)
+        set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
+        set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
+        handler.apps[0]._bridge.executor_init(
+            pool.submit_read_fd(lane), pool.ack_read_fd(lane)
+        )
+        print("inverted: the event loop runs inside asyncio (kqueue fd " + String(backend.kq.value) + ")", flush=True)
+        handler.apps[0]._bridge.run_forever_inverted(backend.kq.value)
+        _ = st
+        _ = port_obj
+    else:
+        from lightbug_http.c.epoll_backend import EpollBackend
+        var backend = EpollBackend()
+        var st = prepare_loop(
+            listen_fd, backend, config, address, True, shutdown_fd,
+            stream_bus_fd, pool.addr(), peer_bus_fd,
+        )
+        var st_ptr = Pointer(to=st)
+        var backend_ptr = Pointer(to=backend)
+        var port_obj = PythonObject(
+            alloc=ExecutorPort(
+                pool.addr(), handler_addr, state_addr, lane,
+                Pointer(to=st_ptr).unsafe_bitcast[Int]()[],
+                Pointer(to=backend_ptr).unsafe_bitcast[Int]()[],
+                1,
+            )
+        )
+        handler.apps[0]._bridge.set_port(port_obj)
+        set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
+        set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
+        handler.apps[0]._bridge.executor_init(
+            pool.submit_read_fd(lane), pool.ack_read_fd(lane)
+        )
+        print("inverted: the event loop runs inside asyncio (epoll fd " + String(backend.epfd.value) + ")", flush=True)
+        handler.apps[0]._bridge.run_forever_inverted(backend.epfd.value)
+        _ = st
+        _ = port_obj
+    handler.shutdown()
+    _ = native
+    _ = state
 
 
 def _report_lost(what: String, slot: Int, nbytes: Int):

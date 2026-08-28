@@ -357,6 +357,13 @@ jobs:
       # on Linux, asserted here behaviourally on both platforms.
       - name: Smoke test the Mojo handler pool
         run: uv run poe smoke-pool
+      # The loop inversion (M0_INVERTED=1): the whole ASGI smoke -- streaming,
+      # WebSockets, the RSS guard, the recycled-slot probe -- on the path where
+      # the event loop runs INSIDE asyncio, on one thread. Both platforms, and
+      # ubuntu is the important one: the epoll half of the inversion has no
+      # other exerciser, the development box being a Mac.
+      - name: Smoke test the ASGI executor under the loop inversion
+        run: M0_INVERTED=1 uv run poe smoke-asgi
       # Hot reload: a changed .py must be served by a NEW worker pid, at one
       # worker and at two, without any of it going through the crash-respawn
       # path -- a reload is a graceful shutdown followed by a fork.

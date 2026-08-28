@@ -1157,6 +1157,34 @@ Landed so far, each a verbatim move with zero behaviour change:
 `backend.wait(0)` is a real non-blocking poll; field-projected `ref`
 bindings of one `mut` struct pass exclusivity as separate `mut` arguments.
 
+**Built and measured, first cut (2026-08-28, `M0_INVERTED=1`).** Correct
+under every gate: `smoke-asgi` with 0 KB RSS, fan-out, Django ASGI,
+FastHTML, `stress-asgi` 30/30. Two single-thread traps found and fixed on
+the way — a producer waiting for the loop to drain the chunk channel was
+waiting for itself (`_place_frame` runs a pass instead), and a direct job
+overtook the slot's disconnect tag on the FIFO submit channel and stamped
+the new task (`notify_disconnect` goes direct). Both showed as the
+recycled-slot probe timing out with a clean log.
+
+The bet was half right. Same session, uvloop executor, c16, two samples of
+three rounds: inverted **59.1–59.6k rps at 0.87–0.88 cores** (p50 263 µs),
+pump **62.6–63.1k at 0.98** (p50 237 µs), uvicorn asyncio ~57.5k and
+uvicorn uvloop ~82.4k at ~0.99. The wakes were ~1 µs of CPU each and are
+gone — that is the −11% of cores — but the pump's two threads were also
+overlapping Mojo parse/write with Python app work, and at c16 wrk is a
+closed loop (16 ÷ p50 is the rps), so +27 µs of serialized latency per
+request is −6% rps. Per core the inversion is +5% (~67.6k vs ~64.5k
+rps/core); against uvicorn asyncio it is 1.03x on uvloop. On stdlib asyncio
+— the gate's own row, executor on the system Python 3.13 with no uvloop —
+inverted **~54.0k at 0.89 cores** and pump **~53.4k at 0.99** against
+uvicorn asyncio ~57.6k: +1% rps at −10% CPU, **+12% per core**, and BOTH
+arms at 0.93x uvicorn asyncio, so the gate (≥1.0x at c16 on stdlib
+asyncio) is met by neither. Artifacts, both arms and both loops:
+`bench/results/inverted-ab/`. The default stays the pump. What would change the verdict is not fewer
+wakes but less serialized work per request — the 2.05 µs parse and the
+per-pass 1,024-slot outbox sweep are the two named levers — or a workload
+where CPU, not closed-loop latency, is the bound.
+
 The design, so it is not re-derived:
 
 - **Scope:** unmounted single-executor ASGI only — the benchmark shape.

@@ -67,6 +67,38 @@ versions may break the API**.
 
 ### Added
 
+- **`M0_INVERTED=1` — the loop inversion, experimental and behind the
+  variable.** For an unmounted, pool-free ASGI application, the Mojo event
+  loop runs INSIDE the executor's asyncio loop on one thread: the backend's
+  kqueue/epoll fd is registered with `add_reader`, one readiness callback
+  runs one non-blocking pass, a request reaches the app through
+  `WSGIHandler.direct_job` with no datagram, and its response reaches the
+  wire through `service_direct_completions` with no wake. Every other
+  topology stays on the pump, unchanged.
+
+  Correct, proven: `smoke-asgi` (0 KB RSS over 10k requests), `-fanout`,
+  `smoke-django-asgi`, `smoke-fasthtml` and `stress-asgi` (30/30 under 20
+  hogs) all pass under the variable; CI runs the ASGI smoke under it on
+  both platforms. Two single-thread rules were found on the way and are
+  documented on `ExecutorPort._place_frame` and `PyBridge.notify_disconnect`:
+  a producer that waits for the loop to drain waits for itself, so a full
+  chunk channel is drained by running a pass; and a direct job would
+  overtake a disconnect still on the FIFO submit channel, so the disconnect
+  goes direct too.
+
+  Not yet a throughput win, and the numbers say why. Same session, uvloop
+  executor, c16, two samples of three rounds: inverted 59.1–59.6k rps at
+  0.87–0.88 cores (p50 263 µs), pump 62.6–63.1k at 0.98 (p50 237 µs). The
+  two cross-thread wakes per request are gone — that is the −11% of CPU —
+  but the pump's two threads were also overlapping Mojo parse/write with
+  Python app work, and at c16 wrk is a closed loop, so +27 µs of serialized
+  latency is −6% rps. Per core it is +5%; on stdlib asyncio (the gate's
+  row) it is +1% rps at −10% CPU, +12% per core, with both arms at 0.93x
+  uvicorn asyncio. The default therefore stays the pump; the flag is the
+  A/B, `bench_asgi_wrk.sh` now records `inverted=` in its artifact, and the
+  session's eight A/B artifacts are under `bench/results/inverted-ab/`
+  rather than the canonical glob the benchmark page renders from.
+
 - **A handler pool for Mojo handlers** (`lightbug_http/mojo_pool.mojo`):
   `MojoPool` puts N handler threads behind one event loop for an
   `HTTPService` written in Mojo, the way `--blocking-threads` does for a
