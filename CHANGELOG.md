@@ -48,12 +48,16 @@ versions may break the API**.
   Measured (`apps/pool_spike`, three runs, M4): p99 of `/fast` on a
   keep-alive connection beside N handlers blocking 400 ms in a syscall —
 
-  | configuration | slow=0 | slow=1 | slow=2 |
-  |---|---:|---:|---:|
-  | loop only | 0.1 ms | 406.0 ms | 405.9 ms |
-  | pool of 4 | 0.2 ms | 0.2 ms | 0.3 ms |
+  | configuration | slow=0 | slow=1 | slow=2 | slow=6 |
+  |---|---:|---:|---:|---:|
+  | loop only | 0.1 ms | 406.0 ms | 405.9 ms | 2026.5 ms |
+  | pool of 4 | 0.2 ms | 0.2 ms | 0.3 ms | 404.0 ms |
 
   At `slow=2` the loop-only **p50** is 405 ms — every request, not a tail.
+  The last column is the deliberate saturation boundary (6 blockers against
+  4 threads): the pool degrades to about ONE blocking duration (p50
+  31.8 ms) where the bare loop degrades to the queue's sum
+  (`bench/results/pool-probe-20260828T175956Z.json`).
   Deliberately only for handlers that *block*: CPU-bound work already
   parallelises inside one handler with `std.runtime.asyncrt`'s `TaskGroup`
   (measured 3.6x on four tasks), so the pool exists for threads parked in a

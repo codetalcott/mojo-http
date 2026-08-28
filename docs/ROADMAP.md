@@ -1165,8 +1165,12 @@ Boundaries, stated where they were decided:
   `gate_streaming_response` refusal: the loop drains its own handler's
   registries, and a stream begun on a pool thread has no producer.
 - **The saturation boundary is in the probe's own table** (blockers >
-  threads), so the pooled row is shown collapsing where it must rather than
-  implying N threads are magic.
+  threads), so the pooled row is shown degrading where it must rather than
+  implying N threads are magic. Measured at 6 blockers on 4 threads
+  (`bench/results/pool-probe-20260828T175956Z.json`): the pool's fast-route
+  p99 is ~one blocking duration (404 ms, p50 31.8 ms) while the bare loop's
+  is the queue's sum (2026 ms, p50 2022 ms) — saturation degrades a pooled
+  server linearly, not catastrophically.
 - **Untested, recorded not dropped:** composition with `M0_WORKERS` prefork
   (the Python table says prefork alone does not fix stranding — same
   mechanism here, unmeasured); the per-mount `lanes` plumbing has no
