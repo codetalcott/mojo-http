@@ -1,0 +1,170 @@
+{
+ "bench": "hello_wrk",
+ "recorded_utc": "2026-08-29T14:51:48+00:00",
+ "environment": {
+  "git_sha": "19cd994",
+  "git_dirty": false,
+  "os": "Darwin 25.6.0",
+  "machine": "arm64",
+  "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+  "mojo": "Mojo 1.0.0 (ed45d567)",
+  "granian": "",
+  "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+  "cpu": "Apple M4",
+  "cores_physical": "10"
+ },
+ "parameters": {
+  "client": "wrk -t2 -c16/-c64 -d8s, browser headers",
+  "app": "apps/hello",
+  "rounds": "3",
+  "old": "origin/main 0314765 parser",
+  "new": "parse-lever branch parser"
+ },
+ "rows": [
+  {
+   "round": 1,
+   "name": "hello old-parser c16",
+   "rps": 118926.96,
+   "p50_us": 117.0,
+   "p90_us": 225.0,
+   "p99_us": 391.0,
+   "max_us": 14650.0,
+   "cores": 0.99
+  },
+  {
+   "round": 1,
+   "name": "hello new-parser c16",
+   "rps": 142304.68,
+   "p50_us": 95.0,
+   "p90_us": 183.0,
+   "p99_us": 12600.0,
+   "max_us": 34610.0,
+   "cores": 0.96
+  },
+  {
+   "round": 2,
+   "name": "hello old-parser c16",
+   "rps": 117086.47,
+   "p50_us": 116.0,
+   "p90_us": 227.0,
+   "p99_us": 24610.0,
+   "max_us": 41820.0,
+   "cores": 0.98
+  },
+  {
+   "round": 2,
+   "name": "hello new-parser c16",
+   "rps": 141813.3,
+   "p50_us": 94.0,
+   "p90_us": 183.0,
+   "p99_us": 22940.0,
+   "max_us": 41060.0,
+   "cores": 0.97
+  },
+  {
+   "round": 3,
+   "name": "hello old-parser c16",
+   "rps": 120437.91,
+   "p50_us": 114.0,
+   "p90_us": 221.0,
+   "p99_us": 17930.0,
+   "max_us": 39760.0,
+   "cores": 0.97
+  },
+  {
+   "round": 3,
+   "name": "hello new-parser c16",
+   "rps": 147220.31,
+   "p50_us": 91.0,
+   "p90_us": 177.0,
+   "p99_us": 20440.0,
+   "max_us": 42360.0,
+   "cores": 0.97
+  },
+  {
+   "round": 1,
+   "name": "hello old-parser c64",
+   "rps": 122372.54,
+   "p50_us": 491.0,
+   "p90_us": 518.0,
+   "p99_us": 24600.0,
+   "max_us": 43110.0,
+   "cores": 0.97
+  },
+  {
+   "round": 1,
+   "name": "hello new-parser c64",
+   "rps": 151980.13,
+   "p50_us": 392.0,
+   "p90_us": 422.0,
+   "p99_us": 27970.0,
+   "max_us": 50940.0,
+   "cores": 0.98
+  },
+  {
+   "round": 2,
+   "name": "hello old-parser c64",
+   "rps": 122000.66,
+   "p50_us": 490.0,
+   "p90_us": 519.0,
+   "p99_us": 29100.0,
+   "max_us": 44560.0,
+   "cores": 0.99
+  },
+  {
+   "round": 2,
+   "name": "hello new-parser c64",
+   "rps": 151128.01,
+   "p50_us": 392.0,
+   "p90_us": 424.0,
+   "p99_us": 28520.0,
+   "max_us": 44170.0,
+   "cores": 0.98
+  },
+  {
+   "round": 3,
+   "name": "hello old-parser c64",
+   "rps": 121618.12,
+   "p50_us": 491.0,
+   "p90_us": 517.0,
+   "p99_us": 27760.0,
+   "max_us": 43990.0,
+   "cores": 0.95
+  },
+  {
+   "round": 3,
+   "name": "hello new-parser c64",
+   "rps": 152054.74,
+   "p50_us": 391.0,
+   "p90_us": 419.0,
+   "p99_us": 28760.0,
+   "max_us": 45070.0,
+   "cores": 0.98
+  }
+ ],
+ "medians": {
+  "hello old-parser c16": {
+   "rps": 118926.96,
+   "cores": 0.98,
+   "rps_per_core": 121354
+  },
+  "hello new-parser c16": {
+   "rps": 142304.68,
+   "cores": 0.97,
+   "rps_per_core": 146706
+  },
+  "hello old-parser c64": {
+   "rps": 122000.66,
+   "cores": 0.97,
+   "rps_per_core": 125774
+  },
+  "hello new-parser c64": {
+   "rps": 151980.13,
+   "cores": 0.98,
+   "rps_per_core": 155082
+  }
+ },
+ "meta": {
+  "note": "A/B of the parse lever on the Mojo-only hello row, 2026-08-29; not the benchmark page's row"
+ }
+}

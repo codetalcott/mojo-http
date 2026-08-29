@@ -376,6 +376,13 @@ medians):
 | c16 rps / p50 / cores | 122.1k / 113 µs / 0.98 | 150.2k / 90 µs / 0.97 | **+23%** |
 | c64 rps / p50 / cores | 123.1k / 487 µs / 0.98 | 152.1k / 390 µs / 0.96 | **+24%** |
 
+Re-measured later the same day on a machine confirmed idle (another
+Claude Code session had run alongside some of the day's later benchmarks,
+and this row has no in-run comparator to show it clean):
+`hello-wrk-parse-ab-20260829T145148Z.json`, c16 118.9k → 142.3k (+20%),
+c64 122.0k → 152.0k (+25%), p50 114 → 91 µs and 491 → 391 µs — the same
+gain within run-to-run drift, so the first table stands.
+
 That is ~155–158k rps per core on the hello row where the page above
 says 116k, and the arithmetic checks: −1.36 µs of user-space work on a
 request that was ~8.6 µs all-in is −16% of the request, and 1/0.84 is
