@@ -152,6 +152,17 @@ versions may break the API**.
   +12%), not throughput (within noise, and −4% on uvloop), and the
   default is unchanged.
 
+  Evaluated for the default and declined, on two more measurements: at
+  c256 the per-core edge is gone (pump 88.1k @1.02, inverted 85.5k @0.99
+  — +0.6%/core, −2.5% rps, on an idle machine with the comparators
+  within 0.5%), so it does not buy capacity; and under the flag a request
+  mid-await at SIGTERM is answered at the 5 s drain deadline (5.30 s for
+  a 1.5 s request, where the pump answers at 1.50 s), because the drain
+  is still the blocking first cut. That limitation is recorded beside the
+  flag in `m0serve.mojo` and as ROADMAP design item 6, deferred to the
+  inversion's promotion bar rather than built for a mode nothing runs;
+  an inverted server wants a stop grace of 10 s or more.
+
 - **A handler pool for Mojo handlers** (`lightbug_http/mojo_pool.mojo`):
   `MojoPool` puts N handler threads behind one event loop for an
   `HTTPService` written in Mojo, the way `--blocking-threads` does for a
