@@ -276,6 +276,22 @@ shell = "python3 scripts/check_docs.py"
 help = "Render the newest bench/results artifact into WSGI_PERFORMANCE.md"
 shell = "python3 scripts/render_bench_docs.py"
 
+# The spec-sheet ratchet. docs/SPEC.md is a public completeness tracker, so
+# `verified` is defined mechanically: a row may claim it only by naming a CI
+# step, a test function, or a weekly/pre-release gate that exists and runs.
+# `check-docs` runs the same rules; this renders the rollup and spec.json.
+[tool.poe.tasks.render-spec]
+help = "Render docs/SPEC.md's rollup and docs/spec.json from its capability tables"
+shell = "python3 scripts/spec_sheet.py"
+
+# Guard the guard, the way sabotage-pool and test-shim --sabotage do: revert
+# each rule in memory and insist the checker fails for every one. A patch that
+# no longer applies is itself a failure, so renaming a rule out of existence
+# cannot pass quietly.
+[tool.poe.tasks.sabotage-spec]
+help = "Revert each spec-sheet rule in turn; the checker must catch all of them"
+shell = "python3 scripts/spec_sheet.py --sabotage"
+
 [[tool.poe.tasks.check-warnings.args]]
 name = "log"
 positional = true

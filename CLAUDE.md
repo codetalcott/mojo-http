@@ -574,7 +574,48 @@ uv run poe check-warnings compile.log --update   # after genuinely fixing some
 # the doc table renders from the newest one.
 uv run poe check-docs         # fails naming the drifted fact
 uv run poe render-bench-docs  # after committing a new bench artifact
+uv run poe render-spec        # after editing docs/SPEC.md's capability tables
+uv run poe sabotage-spec      # revert each spec-sheet rule; all must be caught
 ```
+
+`docs/SPEC.md` is the public capability matrix and the same philosophy applied
+to claims rather than numbers. One row per capability, four status words
+(`verified`, `implemented`, `planned`, `out of scope`), and every row names its
+evidence: a `test.yml` **step name** plus a cadence, a `test_x.mojo:test_fn`
+that must exist, a `docs/ROADMAP.md` heading that must resolve, or a reason.
+`scripts/spec_sheet.py` holds the rules and `check_spec_sheet` forwards them.
+Three things about it are load-bearing:
+
+- **Cadence is part of the evidence, because a green tick does not cover
+  everything.** CI pins GIL-enabled 3.13, so every `--threads` phase skips and
+  `smoke-threads` proves only the refusal — the step is named "the threaded
+  mode's **guard**" for that reason. Free-threaded serving is `(weekly)`,
+  proven by `py-canary.yml`; `stress-asgi` and `probe-pool` are
+  `(pre-release)`. A row citing a `test.yml` step must say `(every PR)`, and
+  the checker rejects one that carries an `if:`.
+- **Both directions, over two closed sets.** Every `smoke-*` step in
+  `test.yml` must be cited by some row, and every flag in `cli.mojo`'s
+  `_takes_value`/`_is_bool` lists must be named by some row — so a gate or a
+  flag cannot ship unrecorded. A gate that `exit 0`s on a missing import must
+  have that module in `[dependency-groups] dev`, or it is green having tested
+  nothing.
+- **The rules are pure functions of text**, which is what lets
+  `--sabotage` revert one in memory and insist the checker catches it —
+  `shim_ownership.py`'s shape. Four of the seventeen sabotages mutate
+  `pyproject.toml`, `test.yml` or `cli.mojo` rather than the sheet, so every
+  source arrives as an argument. Do not "simplify" the checker into something
+  that reads paths.
+
+What it deliberately cannot do, and the page says so: prove that a cited gate
+exercises the capability its row claims.
+
+`.github/workflows/docs.yml` (**`Docs`**, not `Tests` — the automerge
+workflows key on that exact name) runs `check-docs` and the sabotage with
+**no path filter**. That is the point: `test.yml` ignores `*.md` and `docs/**`,
+so the ratchet was silent on exactly the pull requests that edit prose, and a
+filtered workflow would have the same defect inverted. Unfiltered it always
+reports, which is what makes it the one check `main` can require. Do not add
+it to the automerge triggers — `QUICKSTART.md` is a file CI *executes*.
 
 One test file, without going through poe — the `-I` chain mirrors the package's
 dependencies. `mojo` lives in `.venv`, so every invocation needs `uv run`

@@ -50,6 +50,12 @@ No Windows, no musl, no TLS/HTTP2 (terminate at a proxy).
   one sync-Django file. Every fenced block is executed by CI on every pull
   request (`poe smoke-quickstart`), so the steps are pinned, not aspirational.
 - [README.md](README.md): install matrix, framework docs, limits.
+- [docs/SPEC.md](docs/SPEC.md): the capability matrix — what this
+  server implements and what proves it, one row per capability with a
+  named CI gate, a source file, a roadmap heading or a reason for the
+  refusal. `docs/spec.json` is the same data, generated from it.
+  `verified` there means a gate runs on the stated cadence, not that
+  the capability is correct; the page says so itself.
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md): every performance number, each
   rendered from a dated artifact in `bench/results/` and CI-checked against
   it. States where m0serve loses (raw throughput, against both Granian and

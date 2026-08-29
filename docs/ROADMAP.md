@@ -1500,6 +1500,42 @@ sites, which is the condition `auth.mojo` and `response_cache.mojo` are
 already in. Build it with the first app that asks; the spelling above is the
 part that was unknown.
 
+## Planned
+
+Rows in [SPEC.md](SPEC.md) marked `planned` name a heading here, and the
+checker fails if one does not resolve. So this section is the whole list of
+things that page promises: adding a `planned` row means writing down what it
+means here first.
+
+### A conformance-suite tier
+
+The server is pinned by hand-written probes against the RFC text -- `smoke-ws`
+speaks RFC 6455 from stdlib sockets, `test_parsing.mojo` covers the smuggling
+shapes directly -- and by no external suite at all. Autobahn|Testsuite for
+WebSockets is the first one worth having: it is 500+ cases, it runs against a
+plain server, and the browsers and `websockets` all publish a 517/517 pass, so
+the bar is unambiguous and the result is comparable. A parser fuzzer over the
+request decoder is the second, and cheaper: the decoder is already a pure
+function over bytes with its own unit suite, so the harness is small.
+
+PortSwigger's desync scanner and h2spec are named on the same page and are NOT
+this tier: h2spec needs HTTP/2, which is out of scope, and the desync tooling
+is built to probe a proxy/server PAIR for disagreement rather than to check one
+parser. The smuggling rows stay unit-tested.
+
+### Structured CI results
+
+CI emits no machine-readable output: no `$GITHUB_STEP_SUMMARY`, no JUnit, no
+results JSON, and one failure-only log artifact. Meanwhile the smoke tasks
+measure real quantities and print them into scrollback that expires --
+`sendfile: RSS 12480KB -> 15120KB`, `rss growth over 10k requests`, `fast
+request served in NNNms`. Those are measurements being thrown away.
+
+A small emitter the smokes append one JSON line to would give per-assertion CI
+status, which is what SPEC.md's `verified` rows currently infer from the job's
+exit code, plus RSS and latency trends that today exist nowhere. Latency
+histograms on `/__metrics` are the same shape of gap on the serving side.
+
 ## Open questions
 
 ### The desktop-Mac server, and what the wheel gives up to ship
