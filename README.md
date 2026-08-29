@@ -693,6 +693,8 @@ so it is not worth the ownership complexity yet.
 
 ## Status and limits
 
+[docs/SPEC.md](docs/SPEC.md) is the full capability matrix — every row carries its evidence, and `poe check-docs` fails if a row claims a CI gate that does not exist or does not run. The bullets below are the short version.
+
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
 - Linux `x86_64` and `aarch64` (`epoll`), macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all. See the install table above.
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.

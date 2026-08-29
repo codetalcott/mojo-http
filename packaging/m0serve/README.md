@@ -94,6 +94,9 @@ installing something that crashes.
 Pre-1.0 and deliberately small: HTTP/1.1 only, no TLS, no HTTP/2 — terminate
 at a proxy, which is gunicorn's answer too. The API will change before 1.0.
 
+The full capability matrix, with the CI gate behind each row, is
+[docs/SPEC.md](https://github.com/codetalcott/mojo-http/blob/main/docs/SPEC.md).
+
 Source, documentation and issues: <https://github.com/codetalcott/mojo-http>
 
 ## Licence

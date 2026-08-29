@@ -1,0 +1,60 @@
+# The doc-fact ratchet, on EVERY commit.
+#
+# `Tests` already runs `poe check-docs`, but it carries
+# `paths-ignore: ['*.md', 'docs/**', '.claude/**']` — so a pull request that
+# edits only prose runs no CI at all, and the ratchet is silent on exactly the
+# changes it exists to check. `check_wheel_platform_claims`' docstring records
+# the asymmetry it produces: a PR touching only README.md skips CI entirely,
+# while one touching only packaging/m0serve/README.md runs the full suite,
+# because a GitHub path glob's `*` does not cross `/`.
+#
+# This workflow deliberately has NO path filter. A filtered workflow has the
+# same defect inverted — it would never trigger on a code-only PR — and a check
+# that does not always report can never be a required one. Unfiltered, this
+# always reports, which is what makes it eligible to be the first required
+# status check on `main`. The ruleset declares none today precisely because
+# `Tests` cannot report on every PR.
+#
+# It must NOT be named `Tests`: dependabot-automerge.yml and label-automerge.yml
+# both trigger on `workflow_run` of that exact name. Nor should this workflow be
+# added to their trigger lists — QUICKSTART.md is a file CI *executes*
+# (`poe smoke-quickstart`), so letting a doc-only PR auto-merge on a doc lint
+# alone would land quickstart edits that were never run.
+#
+# Its own concurrency group, for the same class of reason: reusing
+# `tests-${{ github.ref }}` would cancel an in-flight `Tests` run on any PR
+# that touches both code and docs.
+#
+# scripts/check_docs.py imports only the standard library (json, re,
+# subprocess, sys, pathlib), and its one network check treats a failure to ask
+# as a skip. So this needs no uv, no Mojo toolchain, and nothing compiled —
+# verified against a bare Python 3.9.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      # No setup-python: the runner's system python3 is enough, and pinning a
+      # version here would be a third place the interpreter is chosen.
+      - name: Check machine-sourced doc facts
+        run: python3 scripts/check_docs.py
+      # Guard the guard. The spec sheet's rules are only worth the page they
+      # back if reverting one goes red, so each is reverted in memory here and
+      # the checker must catch every one -- and a sabotage whose patch no
+      # longer applies is itself a failure, which is what stops a rule being
+      # renamed out of existence quietly.
+      - name: Sabotage the spec sheet's rules
+        run: python3 scripts/spec_sheet.py --sabotage

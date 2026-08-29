@@ -16,6 +16,16 @@ about the present, and a linter that flagged them would teach people to
 ignore it. Benchmark freshness is delegated to render_bench_docs --check,
 which compares the generated table against the newest committed artifact.
 
+One deliberate widening, recorded rather than drifted into: check_spec_sheet
+covers docs/SPEC.md, whose `implemented`, `planned` and `out of scope` rows
+are claims with no machine source to compare against. They are admitted
+because the rule enforced is still mechanical -- an `implemented` row must
+name a file that exists, a `planned` row a roadmap heading that resolves, an
+`out of scope` row a reason at all -- and because the alternative was a
+public page whose green rows nothing checked. What is NOT admitted, and is
+stated on the page: no check here can tell whether a cited gate exercises the
+capability its row claims.
+
 CI runs this via `uv run poe check-docs` on code changes. test.yml ignores
 *.md, so a doc-only edit is not re-checked — acceptable, because drift is
 caused by code moving, not by doc edits.
@@ -835,6 +845,32 @@ def check_test_counts():
              f" tree has {total}")
 
 
+def check_spec_sheet():
+    """docs/SPEC.md's capability claims vs the gates they name.
+
+    The sheet is a public completeness tracker, so `verified` has to mean
+    something mechanical: a row may claim it only by naming a CI step, a test
+    function, or a weekly/pre-release gate that this repo can be shown to run.
+    The rules, the both-ways cross-references and the seventeen sabotages that
+    prove each of them live in scripts/spec_sheet.py, which is written as a
+    pure function of text so `--sabotage` can revert a rule in memory. This is
+    the four-line wrapper that reads the files and forwards what it says.
+    """
+    import spec_sheet
+
+    src = spec_sheet.read_sources()
+    rows, problems = spec_sheet.analyse(src)
+    for p in problems:
+        fail(p)
+    if problems:
+        return  # a stale rollup is not news while the rows themselves are wrong
+    if spec_sheet.rewrite(src["sheet"], rows) != src["sheet"]:
+        fail("docs/SPEC.md's rollup is stale — run: python3 scripts/spec_sheet.py")
+    out = REPO / "docs" / "spec.json"
+    if not out.exists() or out.read_text() != spec_sheet.spec_json(rows):
+        fail("docs/spec.json is stale — run: python3 scripts/spec_sheet.py")
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
@@ -850,6 +886,7 @@ def main():
     check_consumer_jobs_stay_clean()
     check_pyproject_parses_for_consumers()
     check_test_counts()
+    check_spec_sheet()
     if failures:
         print("check-docs: FAIL")
         for f in failures:
