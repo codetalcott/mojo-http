@@ -148,6 +148,10 @@ PARSERS = {
     # whose rows are bare handlers on purpose.
     "asgi_wrk_fasthtml": _parse_layer_split,
     "asgi_wrk_django": _parse_layer_split,
+    # apps/hello under wrk, two builds side by side (an A/B of the Mojo HTTP
+    # layer alone, no Python): the rows SERVER_PERFORMANCE.md's parse-lever
+    # table quotes. Not on the benchmark page.
+    "hello_wrk": _parse_layer_split,
     "wsgi_modes": _parse_wsgi_modes,
     "mixed_workload": _parse_mixed_workload,
 }

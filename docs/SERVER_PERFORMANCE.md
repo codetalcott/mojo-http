@@ -363,6 +363,36 @@ values, names and targets cross every hand-off between widths in both
 directions (a 16-wide block returning its lane without its base fails the
 value sweep and nothing else — that is what the sweeps are for).
 
+**On the wire it is +23% to +24%.** `apps/hello` built from the old and
+the new parser, run side by side on distinct ports (SO_REUSEPORT would
+otherwise let one take the other's connections), byte parity asserted
+first, browser headers, keep-alive, three rounds alternating between the
+two so drift lands on both, cores measured off each process
+(`bench/results/parse-lever-ab/hello-wrk-parse-ab-20260829T043918Z.json`,
+medians):
+
+| | old | new | |
+|---|---:|---:|---|
+| c16 rps / p50 / cores | 122.1k / 113 µs / 0.98 | 150.2k / 90 µs / 0.97 | **+23%** |
+| c64 rps / p50 / cores | 123.1k / 487 µs / 0.98 | 152.1k / 390 µs / 0.96 | **+24%** |
+
+That is ~155–158k rps per core on the hello row where the page above
+says 116k, and the arithmetic checks: −1.36 µs of user-space work on a
+request that was ~8.6 µs all-in is −16% of the request, and 1/0.84 is
+1.19 before the cache effects of touching less memory per request. The
+p50s move by 23 µs at c16 and 97 µs at c64 — the same per-request cost
+removed, multiplied by the connections queued behind it in a closed-loop
+client.
+
+Through the ASGI executor the same change is worth +8–10%, because the
+parse is a smaller share of a request that also runs Python: on the
+benchmark page's row (stdlib asyncio, c16, uvicorn asyncio re-measured
+beside each arm, `bench/results/parse-lever-ab/`) the pump went 55.7k →
+60.1k rps and `M0_INVERTED=1` 54.5k → 59.7k — both now above the
+comparator's ~58.5k, which neither was before — and on the uvloop
+executor 63.2k → 69.1k and 60.2k → 66.4k. ROADMAP.md's inversion entry
+carries the reading.
+
 What remains is ~0.86 µs of parse against the 5.3 µs of a request that is
 the two syscalls, which no parser touches. The per-byte token validation
 (`is_token_char` over a name's bytes) was measured against a bit table and

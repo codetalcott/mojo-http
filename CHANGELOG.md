@@ -30,6 +30,13 @@ versions may break the API**.
   set in the loop that already dispatches on the name — the Host one had
   been building a `String` to measure it.
 
+  On the wire, byte-identical responses: `apps/hello` under wrk with
+  browser headers, old and new builds side by side, **122.1k → 150.2k rps
+  at c16 (+23%)** and 123.1k → 152.1k at c64, p50 113 → 90 µs
+  (`bench/results/parse-lever-ab/hello-wrk-parse-ab-*.json`); through the
+  ASGI executor on stdlib asyncio, 55.7k → 60.1k (+8%) — see the
+  `M0_INVERTED` entry below for what that did to the inversion's gate.
+
   One answer changed, and it was wrong before: the wide scan looked for
   the first **CR** and only then for any other control byte, so a field
   value ended by a bare LF ran on to the next line's CR whenever one lay
@@ -133,6 +140,17 @@ versions may break the API**.
   A/B, `bench_asgi_wrk.sh` now records `inverted=` in its artifact, and the
   session's eight A/B artifacts are under `bench/results/inverted-ab/`
   rather than the canonical glob the benchmark page renders from.
+
+  Re-measured after the parser change above, on the gate's own row
+  (stdlib asyncio, c16, medians of three, uvicorn asyncio beside each arm;
+  `bench/results/parse-lever-ab/`): pump 55.7k → **60.1k rps, 1.03x
+  uvicorn asyncio**; inverted 54.5k → **59.7k, 1.01x**, at 0.88 cores
+  (67.9k/core against uvicorn's 59.6k). On uvloop: pump 63.2k → **69.1k**
+  (0.83x uvicorn uvloop), inverted 60.2k → **66.4k at 0.86 cores**,
+  77.2k/core (0.79x on rps, 0.92x per core). Both arms now clear the
+  gate; the inversion's edge over the pump is still per-core (+9% and
+  +12%), not throughput (within noise, and −4% on uvloop), and the
+  default is unchanged.
 
 - **A handler pool for Mojo handlers** (`lightbug_http/mojo_pool.mojo`):
   `MojoPool` puts N handler threads behind one event loop for an
