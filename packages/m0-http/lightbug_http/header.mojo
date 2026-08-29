@@ -1,5 +1,6 @@
 from lightbug_http.http.parsing import (
     HTTPHeader,
+    _first_lane,
     http_parse_headers,
     http_parse_request_headers,
     http_parse_response_headers,
@@ -580,12 +581,24 @@ struct Headers(Copyable, Writable):
             out.append(String(unsafe_from_utf8=self.name_span(i)))
         return out^
 
+    def reserve(mut self, bytes: Int, entries: Int):
+        """Size the blob and the index for what is about to be inserted.
+
+        A parse knows both numbers before it inserts anything — the bytes
+        it consumed bound the blob, the fields it counted bound the index —
+        and without them the twelve inserts of a browser request grew the
+        blob through nine reallocations and the index through seven.
+        """
+        self._buf.reserve(bytes)
+        self._idx.reserve(4 * entries)
+
     def set_bytes(mut self, name: Span[Byte, _], value: Span[Byte, _]):
         """Insert or overwrite, taking both sides as raw bytes.
 
         The parser's entry point: it hands over slices of the receive
         buffer, and the name is lowercased on the way into the blob so no
-        separate `.lower()` copy is ever made.
+        separate `.lower()` copy is ever made. The value goes in as one
+        copy; only the name is walked, for the lowercasing.
 
         An overwrite appends the new value and repoints the index rather
         than compacting the blob. The stranded bytes are bounded by the
@@ -593,8 +606,7 @@ struct Headers(Copyable, Writable):
         """
         var i = self._find(name)
         var v_off = len(self._buf)
-        for j in range(len(value)):
-            self._buf.append(value[j])
+        self._buf.extend(value)
         if i >= 0:
             self._idx[4 * i + 2] = Int32(v_off)
             self._idx[4 * i + 3] = Int32(len(value))
@@ -747,7 +759,11 @@ def parse_request_headers(
     var path = String()
     var minor_version = -1
     var max_headers = 100
-    var headers_array = Array[HTTPHeader, 100](fill=HTTPHeader())
+    # Uninitialized on purpose: the parser writes all four offsets of entry
+    # `i` before it counts it, and nothing below reads past the count. The
+    # `fill=` this replaces was 3.2 KB of stores per request — 0.3 µs of a
+    # 1.07 µs parse once the scanners around it got cheap.
+    var headers_array = Array[HTTPHeader, 100](uninitialized=True)
     var num_headers = max_headers
 
     var ret = http_parse_request_headers(
@@ -787,8 +803,16 @@ def parse_request_headers(
             path = "/"
 
     var headers = Headers()
+    # Every name and value is a slice of the bytes consumed, so that is the
+    # blob's bound; the index needs exactly the count.
+    headers.reserve(ret, num_headers)
     var cookies = List[String]()
     var seen_content_length = False
+    var seen_transfer_encoding = False
+    # -1 while no Host field has been seen; the last one's length after.
+    # `set_bytes` keeps the last of duplicate fields, so the length the
+    # RFC 9112 §3.2 check below wants is the last one's.
+    var host_len = -1
 
     # The header array holds OFFSETS into `buffer`; every name and value is a
     # slice of it. Sliced from an immutable view, or two slices of one
@@ -842,6 +866,13 @@ def parse_request_headers(
                 raise RequestParseError(InvalidHTTPRequestError())
             headers.set_bytes(name_bytes, value)
         else:
+            # The two fields the RFC checks below ask about are noted on
+            # the way past. They used to be three scans of the finished
+            # collection — and the Host one built a String to measure it.
+            if name_is(name_bytes, HeaderKey.HOST):
+                host_len = len(value)
+            elif name_is(name_bytes, HeaderKey.TRANSFER_ENCODING):
+                seen_transfer_encoding = True
             headers.set_bytes(name_bytes, value)
 
     # Put the cookies back as one `Cookie` field. RFC 6265 §5.4 sends a single
@@ -854,32 +885,32 @@ def parse_request_headers(
         headers.set_bytes(HeaderKey.COOKIE.as_bytes(), joined.as_bytes())
 
     # RFC 7230 §3.3.3: reject requests with both Transfer-Encoding and Content-Length
-    if HeaderKey.TRANSFER_ENCODING in headers and HeaderKey.CONTENT_LENGTH in headers:
+    if seen_transfer_encoding and seen_content_length:
         raise RequestParseError(InvalidHTTPRequestError())
 
     # RFC 9112 §3.2: an HTTP/1.1 request MUST carry exactly one Host field,
     # and a server MUST respond 400 to one that does not. Both halves are
-    # checked: a *missing* Host used to pass, because `host_opt` being None
-    # short-circuited the `and` — which leaves the request's target host
-    # unstated in any deployment that routes or caches on it.
+    # checked: a *missing* Host used to pass, because the check was an
+    # `and` that a None short-circuited — which leaves the request's
+    # target host unstated in any deployment that routes or caches on it.
     #
     # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
     # the parser's OWS skip and are rejected by the same check.
-    if minor_version == 1:
-        var host_opt = headers.get(HeaderKey.HOST)
-        if not host_opt or host_opt.value().byte_length() == 0:
-            raise RequestParseError(InvalidHTTPRequestError())
+    if minor_version == 1 and host_len <= 0:
+        raise RequestParseError(InvalidHTTPRequestError())
 
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".
-    var te_opt = headers.get(HeaderKey.TRANSFER_ENCODING)
-    if te_opt:
+    if seen_transfer_encoding:
+        # `get` for the value rather than the loop's span: with duplicate
+        # fields it is the last one that `set_bytes` kept, and this path
+        # runs only for requests that carry the header at all.
+        var te_str = headers.get(HeaderKey.TRANSFER_ENCODING).value().lower()
         # Lowercased before the test, not only for `last_te`: transfer-coding
         # names are case-insensitive (RFC 9112 §7.1), so testing the raw
         # value let `Transfer-Encoding: CHUNKED` skip this check entirely —
         # and skip being recognised as a chunked body at all. See
         # `is_chunked_body`.
-        var te_str = te_opt.value().lower()
         var te_parts = te_str.split(",")
         var last_te = String(String(te_parts[len(te_parts) - 1]).strip())
         # RFC 9112 §6.3: if a request carries Transfer-Encoding, the FINAL
@@ -893,7 +924,15 @@ def parse_request_headers(
         if last_te != "chunked":
             raise RequestParseError(InvalidHTTPRequestError())
 
-    var protocol = String("HTTP/1.", minor_version)
+    # The two versions this server speaks are literals; formatting an Int
+    # into a String on every request was the only other way to spell them.
+    var protocol: String
+    if minor_version == 1:
+        protocol = "HTTP/1.1"
+    elif minor_version == 0:
+        protocol = "HTTP/1.0"
+    else:
+        protocol = String("HTTP/1.", minor_version)
 
     return ParsedRequestHeaders(
         method=method^,
@@ -940,7 +979,8 @@ def parse_response_headers(
     var status = 0
     var msg = String()
     var max_headers = 100
-    var headers_array = Array[HTTPHeader, 100](fill=HTTPHeader())
+    # Uninitialized for the reason the request parser gives.
+    var headers_array = Array[HTTPHeader, 100](uninitialized=True)
     var num_headers = max_headers
 
     var ret = http_parse_response_headers(
@@ -963,6 +1003,7 @@ def parse_response_headers(
     # Build headers dict and extract cookies. Offsets into `buffer`, sliced
     # from an immutable view for the same reason as the request parser.
     var headers = Headers()
+    headers.reserve(ret, num_headers)
     var cookies = List[String]()
     var view = buffer.as_imm()
 
@@ -1037,10 +1078,9 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
         var combined = (v0 ^ cr_vec) | (v1 ^ lf_vec) | (v2 ^ cr_vec) | (v3 ^ lf_vec)
 
         if combined.reduce_min() == 0:
-            # At least one lane matched — find the first zero
-            for lane in range(64):
-                if combined[lane] == 0:
-                    return i + lane + 4
+            # At least one lane matched; `_first_lane` names it without a
+            # scalar walk over the vector (see `parsing.mojo`).
+            return i + _first_lane[64](combined.eq(SIMD[DType.uint8, 64](0))) + 4
         i += 64
 
     # Scalar tail: handle remaining < 67 bytes.

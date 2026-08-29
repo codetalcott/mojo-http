@@ -302,13 +302,103 @@ attribution predicted for 24 allocations: short names and values fit
 Mojo's inline string storage and never touched the heap, which is the kind
 of thing only the measurement settles.
 
-What is left in the 2.05 µs is the next lever, recorded and not taken:
-below 64 bytes remaining the scanners fall back to a `try_peek` per byte,
-`set_bytes` appends and lowercases twelve names into the blob, and the
-wrapper's three RFC checks are three linear `in` scans. A state-machine
-parser in the picohttpparser shape would be a rewrite of `parsing.mojo`,
-and the honest ceiling on it is the 3.3 µs row — the remaining 5.3 µs of a
-request is the two syscalls, which no parser touches.
+What was left in the 2.05 µs was recorded as the next lever: below 64
+bytes remaining the scanners fell back to a `try_peek` per byte,
+`set_bytes` appended and lowercased twelve names into the blob, and the
+wrapper's three RFC checks were three linear `in` scans.
+
+## The lever, taken (2026-08-29)
+
+The same instrument, plus a scratch spike splitting the parse row in two,
+said where the 2 µs actually went — and the split was not what the entry
+above assumed. The low-level scanner (`http_parse_request_headers`) was
+1.07 µs, of which **0.3 µs was the `Array[HTTPHeader, 100]` fill** — the
+66 ns the table above measured for it was the fill in isolation, where the
+compiler could elide most of it; in the parse, passed to a function, it is
+3.2 KB of stores per request. The wrapper — the blob build and the RFC
+checks — was **1.16 µs, more than half**. And inside the scanner, the SIMD
+helpers were spending their time not in SIMD: having learned with one
+`reduce_min` that a chunk held a match, they walked up to 64 lanes with a
+scalar loop to find which — **9.4 ns per chunk for a CR at lane 46**,
+against 0.8 ns for a `select` of `iota` and a second `reduce_min` that
+names the lane with no branch.
+
+Four changes, in the order they paid: the lane walk replaced by the
+`select`/`iota` idiom in every scanner, each now running 64 lanes wide,
+then 16, then scalar, so the last headers of a request stop falling to a
+`try_peek` per byte; the offsets array uninitialized rather than filled
+(the parser writes all four offsets of an entry before counting it);
+`Headers.reserve` sizing the blob and index once from the bytes consumed
+and the field count, with a value copied in by one `extend` (twelve inserts
+had been growing the blob through nine reallocations and the index through
+seven); and the three RFC scans folded into the dispatch loop the wrapper
+already ran — the Host check had been building a `String` to measure its
+length. Same twelve-header browser GET, 20k iterations, medians of three:
+
+| part | before | after |
+|---|---:|---:|
+| `find_header_end` | 0.045 µs | 0.016 µs |
+| **`parse_request_headers`** | **1.96 µs** | **0.86 µs** |
+| `from_parsed` (derived) | ~0.2 µs | ~0.2 µs |
+| `Headers` lookups | 32–67 ns | 31–69 ns |
+| `Router.match` hit / miss | 0.099 / 0.027 µs | 0.093 / 0.026 µs |
+| `OK()` construct | 0.66 µs | 0.52 µs |
+| `encode_into` (derived) | 0.37 µs | 0.36 µs |
+| **whole user-space request** | **3.33 µs** | **1.97 µs** |
+
+**−1.1 µs on the parse (−56%), −40% on the user-space request**, with the
+`OK()` row's −0.14 µs a side effect: a response's headers go through the
+same `set_bytes`. The instrument gained a warm-up pass on the way — with
+the parse under a microsecond, its row (the first heavy loop) read the
+allocator's cold start, 0.85 in one run and 1.20 in the next with the
+parse-plus-build row below it.
+
+One answer changed, and the old one was wrong: the wide scan looked for the
+first CR and only then for any other control byte, so a field value ended
+by a bare LF ran on to the next line's CR whenever one lay in the same
+64-byte chunk, and that line vanished into the value. The mask is now the
+scalar tail's own predicate, so the widths agree; the test that pins it
+fails on the old scanner, and length sweeps from 1 to 140 bytes for
+values, names and targets cross every hand-off between widths in both
+directions (a 16-wide block returning its lane without its base fails the
+value sweep and nothing else — that is what the sweeps are for).
+
+**On the wire it is +23% to +24%.** `apps/hello` built from the old and
+the new parser, run side by side on distinct ports (SO_REUSEPORT would
+otherwise let one take the other's connections), byte parity asserted
+first, browser headers, keep-alive, three rounds alternating between the
+two so drift lands on both, cores measured off each process
+(`bench/results/parse-lever-ab/hello-wrk-parse-ab-20260829T043918Z.json`,
+medians):
+
+| | old | new | |
+|---|---:|---:|---|
+| c16 rps / p50 / cores | 122.1k / 113 µs / 0.98 | 150.2k / 90 µs / 0.97 | **+23%** |
+| c64 rps / p50 / cores | 123.1k / 487 µs / 0.98 | 152.1k / 390 µs / 0.96 | **+24%** |
+
+That is ~155–158k rps per core on the hello row where the page above
+says 116k, and the arithmetic checks: −1.36 µs of user-space work on a
+request that was ~8.6 µs all-in is −16% of the request, and 1/0.84 is
+1.19 before the cache effects of touching less memory per request. The
+p50s move by 23 µs at c16 and 97 µs at c64 — the same per-request cost
+removed, multiplied by the connections queued behind it in a closed-loop
+client.
+
+Through the ASGI executor the same change is worth +8–10%, because the
+parse is a smaller share of a request that also runs Python: on the
+benchmark page's row (stdlib asyncio, c16, uvicorn asyncio re-measured
+beside each arm, `bench/results/parse-lever-ab/`) the pump went 55.7k →
+60.1k rps and `M0_INVERTED=1` 54.5k → 59.7k — both now above the
+comparator's ~58.5k, which neither was before — and on the uvloop
+executor 63.2k → 69.1k and 60.2k → 66.4k. ROADMAP.md's inversion entry
+carries the reading.
+
+What remains is ~0.86 µs of parse against the 5.3 µs of a request that is
+the two syscalls, which no parser touches. The per-byte token validation
+(`is_token_char` over a name's bytes) was measured against a bit table and
+is a wash — 1 ns per byte either way — and is not a lever. Nor is a
+state-machine rewrite in the picohttpparser shape: the row it would
+attack is now a fifth of the user-space request and a tenth of the whole.
 
 ## Non-goals, considered and rejected
 

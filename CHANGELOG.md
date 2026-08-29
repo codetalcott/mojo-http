@@ -9,6 +9,47 @@ versions may break the API**.
 
 ### Changed
 
+- **The request parser is under a microsecond.** `parse_request_headers`
+  on the twelve-header browser GET: **1.96 → 0.86 µs**, the whole
+  user-space request **3.33 → 1.97 µs (−40%)**, `find_header_end` 45 →
+  16 ns, and `OK()` construction 0.66 → 0.52 µs as a side effect
+  (`scripts/bench_http_parts.mojo`, medians of three; the instrument
+  gained a warm-up pass, because once the parse got cheap its row — the
+  first heavy loop — was reading the allocator's cold start). Four
+  changes, each measured on its own first: the SIMD scanners name the
+  first matching lane with a `select` of `iota` and one `reduce_min`
+  instead of a scalar walk over up to 64 lanes (9.4 → 0.8 ns per chunk),
+  and run 64 lanes wide, then 16, then scalar, so the last headers of a
+  request no longer fall to a `try_peek` per byte; the 100-entry offsets
+  array is uninitialized rather than filled (3.2 KB of stores per
+  request — 0.3 µs in context, though 66 ns measured alone); the
+  `Headers` blob and index are sized once from the bytes consumed and the
+  field count, and a value goes in as one `extend` rather than a byte at
+  a time; and the wrapper's three post-loop RFC scans (Host, the
+  Transfer-Encoding/Content-Length pair, the last-coding rule) are flags
+  set in the loop that already dispatches on the name — the Host one had
+  been building a `String` to measure it.
+
+  On the wire, byte-identical responses: `apps/hello` under wrk with
+  browser headers, old and new builds side by side, **122.1k → 150.2k rps
+  at c16 (+23%)** and 123.1k → 152.1k at c64, p50 113 → 90 µs
+  (`bench/results/parse-lever-ab/hello-wrk-parse-ab-*.json`); through the
+  ASGI executor on stdlib asyncio, 55.7k → 60.1k (+8%) — see the
+  `M0_INVERTED` entry below for what that did to the inversion's gate.
+
+  One answer changed, and it was wrong before: the wide scan looked for
+  the first **CR** and only then for any other control byte, so a field
+  value ended by a bare LF ran on to the next line's CR whenever one lay
+  in the same 64-byte chunk — the next header vanished into the value.
+  The mask is now the scalar tail's own predicate, so both widths agree
+  (`test_a_bare_lf_ends_the_line_even_with_a_cr_further_on` fails on the
+  old scanner). Ten more tests sweep a line ending across every offset
+  from 1 to 140 bytes for values, names and request targets — every
+  hand-off between the three widths, both sides — and pin the
+  invalid-versus-incomplete verdicts of the token scanner, which are the
+  byte-at-a-time loop's exactly (a header line with no colon is invalid,
+  not "still arriving").
+
 - **`run_event_loop` is now three functions and a struct**, with no change
   in behaviour: `prepare_loop` (the registrations and slot tables, returning
   a `LoopState`), `_run_pass` (everything between one `backend.wait` and the
@@ -99,6 +140,17 @@ versions may break the API**.
   A/B, `bench_asgi_wrk.sh` now records `inverted=` in its artifact, and the
   session's eight A/B artifacts are under `bench/results/inverted-ab/`
   rather than the canonical glob the benchmark page renders from.
+
+  Re-measured after the parser change above, on the gate's own row
+  (stdlib asyncio, c16, medians of three, uvicorn asyncio beside each arm;
+  `bench/results/parse-lever-ab/`): pump 55.7k → **60.1k rps, 1.03x
+  uvicorn asyncio**; inverted 54.5k → **59.7k, 1.01x**, at 0.88 cores
+  (67.9k/core against uvicorn's 59.6k). On uvloop: pump 63.2k → **69.1k**
+  (0.83x uvicorn uvloop), inverted 60.2k → **66.4k at 0.86 cores**,
+  77.2k/core (0.79x on rps, 0.92x per core). Both arms now clear the
+  gate; the inversion's edge over the pump is still per-core (+9% and
+  +12%), not throughput (within noise, and −4% on uvloop), and the
+  default is unchanged.
 
 - **A handler pool for Mojo handlers** (`lightbug_http/mojo_pool.mojo`):
   `MojoPool` puts N handler threads behind one event loop for an

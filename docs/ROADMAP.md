@@ -1185,8 +1185,33 @@ arms at 0.93x uvicorn asyncio, so the gate (≥1.0x at c16 on stdlib
 asyncio) is met by neither. Artifacts, both arms and both loops:
 `bench/results/inverted-ab/`. The default stays the pump. What would change the verdict is not fewer
 wakes but less serialized work per request — the 2.05 µs parse and the
-per-pass 1,024-slot outbox sweep are the two named levers — or a workload
-where CPU, not closed-loop latency, is the bound.
+per-pass 1,024-slot outbox sweep were the two named levers — or a
+workload where CPU, not closed-loop latency, is the bound.
+
+**The parse lever, taken 2026-08-29, moved the gate's row for both arms
+— and cleared it for both.** Same session, one binary per parser, the
+executor on the system Python 3.13 with no uvloop (the gate's own row),
+c16, medians of three, uvicorn asyncio re-measured beside every arm
+(`bench/results/parse-lever-ab/`):
+
+| executor | old parser | new parser |
+|---|---|---|
+| pump, stdlib asyncio | 55.7k @0.96 cores — 0.96x uvicorn asyncio (58.1k) | **60.1k @0.97 — 1.03x** (58.4k) |
+| inverted, stdlib asyncio | 54.5k @0.89 — 0.93x (58.7k) | **59.7k @0.88 — 1.01x** (59.0k), 67.9k/core |
+| pump, uvloop | 63.2k @0.97 — 0.77x uvicorn uvloop (81.9k) | **69.1k @1.00 — 0.83x** (83.4k) |
+| inverted, uvloop | 60.2k @0.88 — 0.72x (83.7k) | **66.4k @0.86 — 0.79x** (84.0k), 77.2k/core |
+
+The parser is the same 1.1 µs cheaper under all four, and on a closed-loop
+client that is +8–9% rps on the pump and +10% on the inversion, on either
+loop. What the lever did NOT change is the inversion's standing against
+the pump: on throughput it is within noise on stdlib asyncio (59.7k
+against 60.1k) and −4% on uvloop (66.4k against 69.1k), and per core it
+keeps +9% and +12% (77.2k/core on uvloop is 0.92x uvicorn-uvloop's, where
+its rps is 0.79x). So the ROADMAP gate as written — ≥1.0x `uvicorn --loop
+asyncio` at c16 on stdlib asyncio — is now met by the pump on its own,
+and the inversion's remaining claim is CPU, not rps. Whether that claim is
+worth making it the default is the 0.15.0 question; the numbers are filed
+either way, and the outbox sweep is the one named lever still untaken.
 
 The design, so it is not re-derived:
 
@@ -1281,12 +1306,24 @@ that gap closed. The rest is recorded here.
   drawn at 50k rps and the server now does 116k, so a cost that was
   invisible in loopback noise is a quarter of every request. The
   span-based `HTTPHeader` that fell out of it took the parse from 2.52 to
-  2.05 µs (−12% on the whole user-space request). What remains — the
+  2.05 µs (−12% on the whole user-space request). What remained — the
   byte-at-a-time scanner tail below 64 bytes, twelve `set_bytes` appends,
-  three linear RFC checks — is the next lever, 2.05 µs against a 5.3 µs
-  syscall floor no parser can touch. `escape_html`, `chunked.mojo`'s copy
-  loops and `Headers._name_matches` are still scalar and, per the same
-  instrument's lookup rows (40–75 ns each), still not worth it.
+  three linear RFC checks — was recorded as the next lever, and **taken
+  2026-08-29: the parse is 0.86 µs and the user-space request 1.97 µs
+  (−40%)**. The instrument, split one level further, said the lever was
+  not where the entry above put it: half the parse was the wrapper's blob
+  build, 0.3 µs was the offsets array's fill (66 ns measured alone, where
+  the compiler elides it), and the SIMD scanners were spending their time
+  in a scalar walk over the lanes of a chunk they had already matched —
+  9.4 ns per chunk against 0.8 for a `select` of `iota`. The story is in
+  SERVER_PERFORMANCE.md; the lesson for this list is that a part measured
+  in isolation can be a fifth of its cost in context, and the instrument
+  has to be split until the number stops moving. What remains is 0.86 µs
+  against a 5.3 µs syscall floor no parser can touch; the per-byte token
+  check was measured against a bit table and is a wash. `escape_html`,
+  `chunked.mojo`'s copy loops and `Headers._name_matches` are still
+  scalar and, per the same instrument's lookup rows (30–70 ns each), still
+  not worth it.
 - **`simdwidthof` / SIMD width portability.** Every one of the 18 SIMD sites
   hardcodes 64/16/8/4 lanes and `simdwidthof` appears nowhere. Moot for the
   shipped artifact regardless: `build-serve` pins `--target-cpu apple-m1`,

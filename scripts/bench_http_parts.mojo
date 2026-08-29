@@ -114,6 +114,14 @@ def main() raises:
     print("request bytes:", len(raw), " iterations:", N)
     print("")
 
+    # Warm the allocator and the caches before the first timed row: once
+    # the parse dropped under a microsecond its row, being the first heavy
+    # loop, read 0.85 in one run and 1.20 in the next — with the next row
+    # (parse PLUS from_parsed) below it, which cannot be.
+    for _ in range(N // 10):
+        var req = _build(_parse(span))
+        _ = req.method
+
     # 1. The CRLFCRLF scan alone.
     var t0 = perf_counter_ns()
     var end_hits = 0
