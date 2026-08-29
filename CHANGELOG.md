@@ -9,6 +9,23 @@ versions may break the API**.
 
 ### Changed
 
+- **The per-pass outbox sweep is skipped while nothing streams — except
+  under the pump.** Every pass swept all 1,024 slots for a streaming
+  connection to drain, and the miss path alone cost 1.2 µs per pass.
+  `OffloadLoopState.streaming_hint` — an upper bound raised by the two
+  sites that set a stream flag and recounted by the sweep itself — now
+  gates it: `apps/hello` **+3.3% at c16** (152.3k → 157.4k rps, +5.5%
+  per core), `M0_INVERTED=1` **+4.6%** (59.3k → 62.0k). The pump's loop
+  keeps sweeping every pass (`OffloadPool.sweep_every_pass`, set by its
+  wiring alone), because measured without it the pump lost 2.9% rps at
+  +6% CPU at c16: the microsecond was accidental pacing — a loop thread
+  that parks sooner batches fewer submits and wakes the executor more —
+  and ±0 at c256. Guarded by the streaming smokes, sabotaged three ways
+  (never sweep; either flag site not raising the hint), each failing
+  exactly the smoke it should. Artifacts under
+  `bench/results/outbox-sweep/`; ROADMAP "Pacing the pump's loop thread"
+  is the follow-up the finding names.
+
 - **The request parser is under a microsecond.** `parse_request_headers`
   on the twelve-header browser GET: **1.96 → 0.86 µs**, the whole
   user-space request **3.33 → 1.97 µs (−40%)**, `find_header_end` 45 →

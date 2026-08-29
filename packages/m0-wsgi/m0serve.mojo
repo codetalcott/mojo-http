@@ -1018,6 +1018,10 @@ def _serve_offloaded(
         # executor is parked.
         pool.enable_stream_channel()
         pool.enable_base_stream_ack()
+        # The pump: the loop thread keeps its per-pass outbox sweep even
+        # with no stream open, because the microsecond it costs is what
+        # lets a pass batch submits (offload.mojo, `sweeps_every_pass`).
+        pool.set_sweep_every_pass()
         if len(asgi_lanes) == 0:
             handler.set_asgi_notify(pool.submit_write_fd(-1))
         for k in range(len(asgi_lanes)):

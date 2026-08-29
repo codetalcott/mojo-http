@@ -401,7 +401,49 @@ executor 63.2k → 69.1k and 60.2k → 66.4k. ROADMAP.md's inversion entry
 carries the reading.
 
 What remains is ~0.86 µs of parse against the 5.3 µs of a request that is
-the two syscalls, which no parser touches. The per-byte token validation
+the two syscalls, which no parser touches.
+
+## The outbox sweep (2026-08-29)
+
+The other per-pass cost the inversion entry in ROADMAP.md had named.
+Every pass swept all 1,024 slots for a streaming connection whose outbox
+needed draining, and the miss path — two flag loads per slot, none set —
+measured **1.2–1.3 µs per pass** in isolation (a scratch spike over two
+`List[Bool]`s of 1,024). A pass carries one or two requests at c16, so
+that is a visible share of a request that costs 8.6 µs on the hello row
+and ~15 µs through the inverted executor.
+
+The ceiling first, with the sweep skipped outright on builds whose
+benchmark routes never stream (`bench/results/outbox-sweep/`, uvicorn
+re-measured beside every executor arm and within the clean band on all
+of them):
+
+| | with sweep | without | |
+|---|---|---|---|
+| hello c16 | 146.5k @0.99 | 151.6k @0.98 | +3.5% |
+| hello c64 | 154.7k @0.99 | 157.9k @0.97 | +2.1% |
+| executor, `M0_INVERTED=1`, c16 | 59.3k @0.88 | 61.7k @0.89 | +4.1% |
+| executor, pump, c16 | 60.0k @0.97 | 58.2k @1.03 | **−2.9%, +6% CPU** |
+| executor, pump, c256 | 79.1k @1.02 | 79.0k @1.01 | ±0 |
+
+The pump row is the finding. Its loop thread does not run the
+application; it parks requests and flushes them to the executor thread
+as one datagram per pass, and a loop that returns to `wait` a
+microsecond sooner finds fewer events waiting, batches fewer submits,
+and wakes the executor more often per request. The sweep's microsecond
+was accidental pacing, and at c256 — where batches are large regardless
+— it makes no difference either way.
+
+So the gate is scoped: `OffloadLoopState.streaming_hint`, an upper bound
+on the flagged slots that the two flag-setting sites raise and the sweep
+itself recounts, skips the sweep while it is zero — except when the pool
+says `sweeps_every_pass`, which only the pump's wiring sets. Realized:
+hello **152.3k → 157.4k at c16 (+3.3%, +5.5% per core)**, +1.3% at c64;
+inverted **59.3k → 62.0k (+4.6%)**; pump 60.0k → 59.7k @0.98, parity
+within noise. The follow-up
+the pump row asks for — an explicit, tunable pause before the flush in
+place of the accidental one — is ROADMAP.md, "Pacing the pump's loop
+thread". The per-byte token validation
 (`is_token_char` over a name's bytes) was measured against a bit table and
 is a wash — 1 ns per byte either way — and is not a lever. Nor is a
 state-machine rewrite in the picohttpparser shape: the row it would

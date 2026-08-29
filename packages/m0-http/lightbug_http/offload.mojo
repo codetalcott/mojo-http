@@ -406,6 +406,21 @@ struct OffloadPool(Movable):
     `TAG_STREAM_ABORT` datagrams, flattened; the loop takes them with
     `take_aborts`. Loop-side only."""
 
+    var sweep_every_pass: Bool
+    """The loop runs its per-pass outbox sweep even when no slot streams.
+
+    Set by the pump wiring — an executor THREAD draining this loop's
+    submits — and by nothing else. The sweep's miss path costs the loop
+    thread 1.2 µs per pass, and under the pump that microsecond turned
+    out to be load-bearing: without it the loop returns to `wait` sooner,
+    a pass batches fewer submits, and the executor takes more wakes per
+    request — measured at −3% rps and +6% CPU at c16 (nothing at c256).
+    Every other shape (a Mojo-native server, the WSGI pool, the inverted
+    executor, which IS the loop's thread) skips the sweep while
+    `OffloadLoopState.streaming_hint` is zero: +3.5% on the hello row,
+    +4% inverted. Accidental pacing, kept deliberately and named
+    (ROADMAP.md, "Pacing the pump's loop thread")."""
+
     var capacity: Int
 
     def __init__(out self, capacity: Int) raises:
@@ -451,6 +466,7 @@ struct OffloadPool(Movable):
         self.stream_ack_read = -1
         self.stream_ack_write = -1
         self.hold_notify_fd = -1
+        self.sweep_every_pass = False
 
         if capacity <= 0:
             self.submit_read = -1
@@ -498,10 +514,18 @@ struct OffloadPool(Movable):
         self.responses = move.responses^
         self.errored = move.errored^
         self.capacity = move.capacity
+        self.sweep_every_pass = move.sweep_every_pass
 
     def set_hold_notify(mut self, fd: Int):
         """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
         self.hold_notify_fd = fd
+
+    def set_sweep_every_pass(mut self):
+        """Pump wiring only: see `sweep_every_pass`."""
+        self.sweep_every_pass = True
+
+    def sweeps_every_pass(self) -> Bool:
+        return self.sweep_every_pass
 
     def enable_stream_channel(mut self) raises:
         """Create the chunk channel: once, by the wiring, before any producer
@@ -1233,11 +1257,29 @@ struct OffloadLoopState(Movable):
 
     var pending_submit_count: Int
 
+    var streaming_hint: Int
+    """An UPPER BOUND on the slots whose `slot_sse`/`slot_ws` flag is set;
+    zero means none is, and the per-pass outbox sweep is skipped.
+
+    Raised by the two sites that set a flag (`_finish_response`), never
+    lowered by the many that clear one: the sweep itself recounts what it
+    finds and stores that, so a stream that ended is noticed by the next
+    sweep and the count decays to zero on its own. Over-approximation
+    costs one sweep; an under-count would be a stream nothing drains,
+    which is why the clear sites are deliberately left out of it.
+
+    The sweep's miss path — 1024 slots, none streaming — is 1.2 µs per
+    pass, and a pass carries one or two requests at low concurrency:
+    +3.5% on the Mojo-only hello row and +4% on the inverted executor
+    when skipped (SERVER_PERFORMANCE.md, "The outbox sweep"). NOT
+    consulted when the pool says `sweeps_every_pass`: see there."""
+
 
     def __init__(out self, addr: Int, capacity: Int):
         self.addr = addr
         self.inflight = 0
         self.ack_owed_count = 0
+        self.streaming_hint = 0
         self.pending_submit = List[List[Int]]()
         self.pending_submit_count = 0
         self.offloaded = List[Bool](capacity=capacity)
@@ -1269,6 +1311,13 @@ struct OffloadLoopState(Movable):
         self.stream_gen = move.stream_gen^
         self.pending_submit = move.pending_submit^
         self.pending_submit_count = move.pending_submit_count
+        self.streaming_hint = move.streaming_hint
+
+    def sweep_every_pass(self) -> Bool:
+        """`OffloadPool.sweeps_every_pass`, False when the pool is disabled."""
+        if not self.enabled():
+            return False
+        return self.pool()[].sweeps_every_pass()
 
     def queue_submit(mut self, slot: Int, lane: Int) -> Bool:
         """Buffer `slot` for `lane`'s executor. True when the lane's batch is

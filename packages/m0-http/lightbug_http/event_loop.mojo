@@ -1171,7 +1171,30 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     # Outbox drain: push pending bytes to streaming connections — SSE
     # events and WebSocket frames share the same per-slot outbox contract
     # (sse_drain_slot returns whichever the handler queued).
-    for s in range(max_conns):
+    #
+    # Skipped whole when no slot streams (`streaming_hint`, an upper
+    # bound the flag-setting sites raise and this sweep recounts) — its
+    # miss path is 1.2 µs per pass, +3.5% on the hello row and +4% on the
+    # inverted executor. EXCEPT under a pump executor, where the loop
+    # thread keeps sweeping every pass: measured, removing the sweep
+    # there cost −3% rps at +6% CPU at c16 (nothing at c256), because a
+    # loop that returns to `wait` a microsecond sooner batches fewer
+    # submits and the executor takes more wakes per request. The
+    # microsecond is accidental pacing; ROADMAP.md, "Pacing the pump's
+    # loop thread", is the follow-up that would make it deliberate.
+    var sweep_slots = (
+        max_conns
+        if (offload.streaming_hint > 0 or offload.sweep_every_pass())
+        else 0
+    )
+    var streaming_seen = 0
+    for s in range(sweep_slots):
+        # The miss path, and it must stay exactly this — one flag pair
+        # and a `continue` — because under the pump it runs 1,024 times
+        # a pass whether anything streams or not.
+        if not (slot_sse[s] or slot_ws[s]):
+            continue
+        streaming_seen += 1
         var s_idle = (
             slot_sse[s] and provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_SSE
         ) or (
@@ -1309,6 +1332,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     active_count, metrics,
                     slot_sse, slot_ws, slot_ws_state,
                 )
+    # The recount: what this sweep saw flagged is the bound for the next
+    # pass. Nothing between the top of the sweep and here sets a flag
+    # (`_finish_response` is not on this path), so a stream that begins
+    # later in this pass raises the hint AFTER this store and is swept
+    # next pass. Under a pump executor the store is harmless: the sweep
+    # runs regardless.
+    offload.streaming_hint = streaming_seen
 
     # The pass's executor submits, one datagram per lane. After the
     # outbox drain and before this loop can park in `wait`: a slot left
@@ -2657,6 +2687,9 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     """
     if response.sse_streaming:
         slot_sse[slot] = True
+        # The outbox sweep's gate: every site that sets a stream flag
+        # raises it, or the sweep skips a stream nothing else drains.
+        offload.streaming_hint += 1
         provision_pool.provisions[slot].should_close = False
 
     # A 101 with Upgrade: websocket switches this connection to frame mode
@@ -2664,6 +2697,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     var upgraded_ws = is_ws_upgrade_response(response)
     if upgraded_ws:
         slot_ws[slot] = True
+        offload.streaming_hint += 1
         slot_ws_state[slot].reset()
         provision_pool.provisions[slot].should_close = False
         # A 1xx response carries no body: drop the defaulted entity headers.

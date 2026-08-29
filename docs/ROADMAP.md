@@ -1211,7 +1211,8 @@ its rps is 0.79x). So the ROADMAP gate as written — ≥1.0x `uvicorn --loop
 asyncio` at c16 on stdlib asyncio — is now met by the pump on its own,
 and the inversion's remaining claim is CPU, not rps. Whether that claim is
 worth making it the default is the 0.15.0 question; the numbers are filed
-either way, and the outbox sweep is the one named lever still untaken.
+either way. (The outbox sweep, the other named lever, was taken later the
+same day — "The outbox sweep", below.)
 
 **Evaluated the same day, and the answer is no — not for 0.15.0.** Two
 more measurements settled it. At **c256** (uvloop executor, pump →
@@ -1232,7 +1233,52 @@ an efficiency mode for low-concurrency, tail-sensitive deployments —
 saturation, one topology — not a throughput default. The bar for ever
 promoting it: design item 6 with a smoke that pins the in-flight
 shutdown case, and a saturation workload showing a gain, which no
-measurement yet does.
+measurement yet does. (The outbox sweep, the other named lever, was
+taken the same day — the next entry — and is worth +4.6% to the
+inversion at c16; it does not change this reading.)
+
+### The outbox sweep — taken, scoped (2026-08-29)
+
+The second lever the inversion entry named. Every pass swept all 1,024
+slots for a streaming one to drain, and the miss path — two flag loads
+per slot, none set — measured **1.2–1.3 µs per pass** in isolation, on a
+pass that carries one or two requests at low concurrency. The ceiling,
+with the sweep skipped outright (`bench/results/outbox-sweep/`,
+comparators within the clean band on every arm): hello **+3.5%** at c16
+and +2% at c64, the inverted executor **+4.1%** at c16 — and the pump
+**−2.9% rps at +6% CPU** at c16, ±0 at c256. That last row is the
+finding: under the pump the microsecond was accidental pacing. A loop
+thread that returns to `wait` a microsecond sooner finds fewer events,
+batches fewer submits, and the executor thread takes more wakes per
+request; at c256 the batches are large regardless and it makes no
+difference either way.
+
+So the gate is scoped. `OffloadLoopState.streaming_hint` is an upper
+bound on the flagged slots — raised by the two sites that set a stream
+flag (both in `_finish_response`), recounted by the sweep itself, never
+touched by the many sites that clear one, so an under-count (a stream
+nothing drains) cannot happen and an over-count costs one sweep — and
+the sweep runs only while it is non-zero. EXCEPT when the pool says
+`sweeps_every_pass`, which the pump wiring sets and nothing else does:
+its loop keeps the per-pass sweep, and the reason is written on the
+field. Realized (same day, comparators clean): hello **152.3k → 157.4k
+at c16 (+3.3%, +5.5% per core)**, +1.3% at c64; the inverted executor
+**59.3k → 62.0k (+4.6%)**, 69.6k/core; the pump 60.0k → 59.7k @0.98,
+parity within noise, as intended. Guards:
+the streaming smokes, sabotaged three ways — never sweep (counter and ws
+fail), the SSE site not raising the hint (counter fails, ws passes), the
+WS site not raising it (ws fails, counter passes).
+
+### Pacing the pump's loop thread
+
+What the sweep measurement exposed: at c16 the pump's throughput depends
+on how long its loop thread spends per pass, in a way that an accidental
+1.2 µs improved by 3%. An *explicit* pause before flushing a partial
+batch — spin N ns, optionally re-poll once and fold the new events'
+submits into the same datagram — is the deliberate form of that, and
+tunable where the sweep was not. Measured next, as an experiment patch
+(spin N ns before a partial flush; optionally `wait(0)` once and fold
+the new events into the same pass), not as shipped code.
 
 The design, so it is not re-derived:
 

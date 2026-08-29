@@ -418,6 +418,9 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         # stalled forever.
         pool.enable_stream_channel()
         pool.enable_base_stream_ack()
+        # The pump shape, per loop: keep the per-pass outbox sweep (see
+        # `_serve_offloaded` and offload.mojo, `sweeps_every_pass`).
+        pool.set_sweep_every_pass()
         if len(asgi_lanes) == 0:
             handler.set_asgi_notify(pool.submit_write_fd(-1))
         for k in range(len(asgi_lanes)):

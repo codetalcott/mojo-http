@@ -1,0 +1,137 @@
+{
+ "bench": "asgi_wrk_hello",
+ "recorded_utc": "2026-08-29T15:37:41+00:00",
+ "environment": {
+  "git_sha": "402c9e2",
+  "git_dirty": false,
+  "os": "Darwin 25.6.0",
+  "machine": "arm64",
+  "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+  "mojo": "Mojo 1.0.0 (ed45d567)",
+  "granian": "",
+  "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+  "cpu": "Apple M4",
+  "cores_physical": "10"
+ },
+ "parameters": {
+  "client": "wrk -t2 -c16 -d8s, browser headers",
+  "app": "apps/asgi_bare bareapp.asgi:application /",
+  "rounds": "3",
+  "server": "bin/m0serve",
+  "executor_python": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+  "executor_loop": "asyncio",
+  "inverted": "0"
+ },
+ "rows": [
+  {
+   "round": 1,
+   "name": "m0serve asgi-executor",
+   "rps": 60058.38,
+   "p50_us": 251.0,
+   "p90_us": 295.0,
+   "p99_us": 370.0,
+   "max_us": 7750.0,
+   "cores": 0.97
+  },
+  {
+   "round": 1,
+   "name": "uvicorn asyncio",
+   "rps": 58542.78,
+   "p50_us": 271.0,
+   "p90_us": 284.0,
+   "p99_us": 313.0,
+   "max_us": 7660.0,
+   "cores": 0.98
+  },
+  {
+   "round": 1,
+   "name": "uvicorn uvloop",
+   "rps": 82749.15,
+   "p50_us": 181.0,
+   "p90_us": 193.0,
+   "p99_us": 216.0,
+   "max_us": 7090.0,
+   "cores": 0.99
+  },
+  {
+   "round": 2,
+   "name": "m0serve asgi-executor",
+   "rps": 59964.05,
+   "p50_us": 251.0,
+   "p90_us": 294.0,
+   "p99_us": 374.0,
+   "max_us": 7430.0,
+   "cores": 0.97
+  },
+  {
+   "round": 2,
+   "name": "uvicorn asyncio",
+   "rps": 58038.13,
+   "p50_us": 273.0,
+   "p90_us": 287.0,
+   "p99_us": 326.0,
+   "max_us": 8240.0,
+   "cores": 0.99
+  },
+  {
+   "round": 2,
+   "name": "uvicorn uvloop",
+   "rps": 83166.5,
+   "p50_us": 179.0,
+   "p90_us": 191.0,
+   "p99_us": 231.0,
+   "max_us": 7430.0,
+   "cores": 0.98
+  },
+  {
+   "round": 3,
+   "name": "m0serve asgi-executor",
+   "rps": 59877.58,
+   "p50_us": 253.0,
+   "p90_us": 294.0,
+   "p99_us": 359.0,
+   "max_us": 7330.0,
+   "cores": 0.98
+  },
+  {
+   "round": 3,
+   "name": "uvicorn asyncio",
+   "rps": 58018.49,
+   "p50_us": 272.0,
+   "p90_us": 287.0,
+   "p99_us": 347.0,
+   "max_us": 7710.0,
+   "cores": 0.99
+  },
+  {
+   "round": 3,
+   "name": "uvicorn uvloop",
+   "rps": 82457.01,
+   "p50_us": 181.0,
+   "p90_us": 192.0,
+   "p99_us": 263.0,
+   "max_us": 7330.0,
+   "cores": 1.0
+  }
+ ],
+ "medians": {
+  "m0serve asgi-executor": {
+   "rps": 59964.05,
+   "cores": 0.97,
+   "rps_per_core": 61819
+  },
+  "uvicorn asyncio": {
+   "rps": 58038.13,
+   "cores": 0.99,
+   "rps_per_core": 58624
+  },
+  "uvicorn uvloop": {
+   "rps": 82749.15,
+   "cores": 0.99,
+   "rps_per_core": 83585
+  }
+ },
+ "meta": {
+  "note": "ceiling arm of the outbox-sweep lever (sweep skipped outright), 2026-08-29 (cur-pump); not the benchmark page's row"
+ }
+}
