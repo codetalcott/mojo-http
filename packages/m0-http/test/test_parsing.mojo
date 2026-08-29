@@ -387,6 +387,110 @@ def test_header_values_are_ows_trimmed() raises:
     )
 
 
+# --- The scanners: one answer at every width ---------------------------------
+#
+# `scan_to_eol`, `scan_token` and the request-target scan each run 64 lanes
+# wide, then 16, then byte by byte, and the three paths must agree. The
+# sweeps below put a line ending at every offset from 1 to 140 bytes into
+# each scanner with the buffer ending just after it, so every hand-off
+# between widths is crossed with both a match and a miss on each side.
+
+
+def _long_value_round_trips(n: Int) raises:
+    var value = String("v") * n
+    var raw = String("GET / HTTP/1.1\r\nHost: x\r\nX-V: ") + value + "\r\n\r\n"
+    assert_equal(_header(raw, "x-v"), value)
+
+
+def test_field_values_end_at_the_right_byte_at_every_length() raises:
+    for n in range(1, 141):
+        _long_value_round_trips(n)
+
+
+def test_field_names_end_at_the_colon_at_every_length() raises:
+    for n in range(1, 141):
+        var name = String("X-") + String("n") * n
+        var raw = String("GET / HTTP/1.1\r\nHost: x\r\n") + name + ": 1\r\n\r\n"
+        assert_equal(_header(raw, name.lower()), "1")
+
+
+def test_request_targets_end_at_the_space_at_every_length() raises:
+    for n in range(1, 141):
+        var path = String("/") + String("p") * n
+        var raw = String("GET ") + path + " HTTP/1.1\r\nHost: x\r\n\r\n"
+        assert_equal(_path_of(raw), path)
+
+
+def test_a_bare_lf_ends_the_line_even_with_a_cr_further_on() raises:
+    """A lone LF is a line terminator here (RFC 9112 §2.2 allows it).
+
+    The wide scan used to look for the first CR and only then for any
+    other control byte, so a value ended by a bare LF ran on to the next
+    line's CR whenever one lay within the same 64-byte chunk — the Host
+    below swallowed the whole Accept line and the Accept header vanished.
+    Two conditions put the bug in reach, and the shape here meets both:
+    at least 64 bytes must remain from the Host value's start (the padding
+    header), or the scalar tail scanned it correctly, and the Accept
+    line's CR must fall inside that first 64-byte chunk (lane 35 here,
+    the LF at lane 17), or the wide scan's second stage found the LF.
+    """
+    var raw = (
+        String(
+            "GET / HTTP/1.1\r\n"
+            "Host: example.com\n"
+            "Accept: text/html\r\n"
+            "X-Pad: "
+        )
+        + String("p") * 70
+        + "\r\n\r\n"
+    )
+    assert_equal(_header(raw, "host"), "example.com")
+    assert_equal(_header(raw, "accept"), "text/html")
+
+
+def test_a_control_byte_in_a_field_name_is_invalid() raises:
+    assert_true(_rejected("GET / HTTP/1.1\r\nHo\x01st: x\r\n\r\n"))
+
+
+def test_a_field_line_without_a_colon_is_invalid_not_incomplete() raises:
+    """The token scanner stops at the line's end, not at the next colon.
+
+    Searching the whole buffer for a colon would find the NEXT line's and
+    report this one as still arriving — and a request the server waits on
+    is a request whose bytes stay in the buffer.
+    """
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nNoColonHere\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nNoColon\r\nX-Next: 1\r\n\r\n"))
+
+
+def test_a_truncated_field_name_is_incomplete() raises:
+    var raw = String("GET / HTTP/1.1\r\nHost: x\r\nAccep")
+    assert_false(_rejected(raw))
+    assert_false(_accepted(raw))
+
+
+def test_a_truncated_field_name_with_a_bad_byte_is_already_invalid() raises:
+    """No need to wait for the rest of a line that can never be a field."""
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nAcc ep"))
+
+
+def test_a_control_byte_in_the_request_target_is_invalid() raises:
+    assert_true(_rejected("GET /a\x01b HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET /a\tb HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET /a\x7fb HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+
+def test_a_truncated_request_target_is_incomplete() raises:
+    var raw = String("GET /still/arriv")
+    assert_false(_rejected(raw))
+    assert_false(_accepted(raw))
+
+
+def test_del_in_a_field_value_is_invalid_and_htab_is_content() raises:
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nX: a\x7fb\r\n\r\n"))
+    assert_equal(_header("GET / HTTP/1.1\r\nHost: x\r\nX: a\tb\r\n\r\n", "x"), "a\tb")
+
+
 # --- Chunked decoding: integer overflow and the truncation CVEs --------------
 
 

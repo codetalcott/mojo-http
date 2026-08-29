@@ -154,6 +154,25 @@ lightbug_http
         formatting into the writer rather than a per-call String. Together
         +25% on the hello row (92.4k -> 115.2k rps) and +20% through the
         WSGI bridge, byte-identical responses verified
+      - http/parsing.mojo: the SIMD scanners rewritten around one idiom. The
+        originals learned with a `reduce_min` that a 64-byte chunk held a
+        match and then walked its lanes with a scalar loop to find which
+        (9.4 ns per chunk); a `select` of `iota` and a second `reduce_min`
+        names the lane in 0.8 ns. Each scanner now searches its whole
+        remaining input — 64 lanes wide, then 16, then scalar — instead of
+        complete 64-byte chunks with a `try_peek`-per-byte tail. One answer
+        corrected on the way: the value scanner's CR-first three-stage
+        check reported the first CR even when an LF or NUL preceded it in
+        the chunk, so a bare-LF line ending followed by a CR within 64
+        bytes swallowed the next header line; the mask is now the scalar
+        tail's own predicate. Tested by length sweeps and a bare-LF case
+        in test_parsing.mojo
+      - header.mojo: `Headers.reserve` added and `set_bytes` copies a value
+        with one `extend`; the parse wrappers size the blob from the bytes
+        consumed and leave the 100-entry offsets array uninitialized (every
+        entry is fully written before it is counted). With the scanners
+        above, `parse_request_headers` 1.96 -> 0.86 us on the twelve-header
+        browser GET and the whole user-space request 3.33 -> 1.97 us
       - fcntl F_SETFL fixed on ARM64 macOS: fcntl is variadic, Darwin
         passes variadic arguments on the stack while external_call used
         registers, so set_nonblocking silently did nothing there for the

@@ -1281,12 +1281,24 @@ that gap closed. The rest is recorded here.
   drawn at 50k rps and the server now does 116k, so a cost that was
   invisible in loopback noise is a quarter of every request. The
   span-based `HTTPHeader` that fell out of it took the parse from 2.52 to
-  2.05 µs (−12% on the whole user-space request). What remains — the
+  2.05 µs (−12% on the whole user-space request). What remained — the
   byte-at-a-time scanner tail below 64 bytes, twelve `set_bytes` appends,
-  three linear RFC checks — is the next lever, 2.05 µs against a 5.3 µs
-  syscall floor no parser can touch. `escape_html`, `chunked.mojo`'s copy
-  loops and `Headers._name_matches` are still scalar and, per the same
-  instrument's lookup rows (40–75 ns each), still not worth it.
+  three linear RFC checks — was recorded as the next lever, and **taken
+  2026-08-29: the parse is 0.86 µs and the user-space request 1.97 µs
+  (−40%)**. The instrument, split one level further, said the lever was
+  not where the entry above put it: half the parse was the wrapper's blob
+  build, 0.3 µs was the offsets array's fill (66 ns measured alone, where
+  the compiler elides it), and the SIMD scanners were spending their time
+  in a scalar walk over the lanes of a chunk they had already matched —
+  9.4 ns per chunk against 0.8 for a `select` of `iota`. The story is in
+  SERVER_PERFORMANCE.md; the lesson for this list is that a part measured
+  in isolation can be a fifth of its cost in context, and the instrument
+  has to be split until the number stops moving. What remains is 0.86 µs
+  against a 5.3 µs syscall floor no parser can touch; the per-byte token
+  check was measured against a bit table and is a wash. `escape_html`,
+  `chunked.mojo`'s copy loops and `Headers._name_matches` are still
+  scalar and, per the same instrument's lookup rows (30–70 ns each), still
+  not worth it.
 - **`simdwidthof` / SIMD width portability.** Every one of the 18 SIMD sites
   hardcodes 64/16/8/4 lanes and `simdwidthof` appears nowhere. Moot for the
   shipped artifact regardless: `build-serve` pins `--target-cpu apple-m1`,

@@ -1,64 +1,107 @@
 from lightbug_http.io.bytes import ByteReader, Bytes, create_string_from_ptr
 from lightbug_http.strings import BytesConstant, is_printable_ascii, is_token_char
+from std.math import iota
 from std.utils import Variant
 
 
-# --- SIMD scan helpers (64-byte chunks) ---
+# --- SIMD scan helpers ---
+#
+# Every scanner here asks one question of a chunk: which lane, if any, is
+# the first in a byte class. It used to be answered in two steps — a
+# `reduce_min` to learn whether ANY lane matched, then a scalar loop over
+# up to 64 lanes to learn which — at 9.4 ns per chunk for a CR at lane 46
+# (measured beside `scripts/bench_http_parts.mojo`). A `select` of `iota`
+# against 255 and one `reduce_min` answers both at once in 0.8 ns, with no
+# branch and no lane extraction. The old CR-first three-stage scan also
+# answered wrong: it reported the first CR even when an LF or a NUL sat
+# ahead of it in the same chunk, which the scalar tail never did — so a
+# bare-LF line ending followed by a CR within 64 bytes swallowed the next
+# line. One mask, the tail's own predicate, is both faster and right.
+#
+# Each search runs 64 lanes wide while it can, 16 wide over what is left,
+# and scalar for the last fifteen bytes. The 64-wide loop alone left up to
+# 63 bytes to a `try_peek` per byte, and a request's last two or three
+# headers always sit in that tail.
+
+comptime _NO_LANE: UInt8 = 255
 
 
-def _simd_find_byte(ptr: Pointer[UInt8, _], length: Int, target: UInt8) -> Int:
-    """Find the first occurrence of `target` in the buffer using 64-byte SIMD.
+@always_inline
+def _first_lane[W: Int](mask: SIMD[DType.bool, W]) -> Int:
+    """Index of the first True lane of `mask`, or -1 if none is."""
+    var lane = mask.select(
+        iota[DType.uint8, W](), SIMD[DType.uint8, W](_NO_LANE)
+    ).reduce_min()
+    if lane == _NO_LANE:
+        return -1
+    return Int(lane)
 
-    Returns the offset of the first match, or -1 if not found.
-    Only scans complete 64-byte chunks; caller handles the remainder.
+
+@always_inline
+def _field_end_lanes[W: Int](chunk: SIMD[DType.uint8, W]) -> SIMD[DType.bool, W]:
+    """Lanes that end a field value: a control byte other than HTAB, or DEL.
+
+    RFC 9110 §5.5 field content is VCHAR / SP / HTAB / obs-text, so the
+    first byte outside that set is the line terminator or an error — the
+    caller looks at the byte to say which.
     """
-    var target_vec = SIMD[DType.uint8, 64](target)
+    var low = chunk.lt(SIMD[DType.uint8, W](0x20)) & chunk.ne(
+        SIMD[DType.uint8, W](BytesConstant.TAB)
+    )
+    return low | chunk.eq(SIMD[DType.uint8, W](0x7F))
+
+
+@always_inline
+def _stop_lanes[W: Int](chunk: SIMD[DType.uint8, W], stop: UInt8) -> SIMD[DType.bool, W]:
+    """Lanes holding `stop`, any control byte (HTAB included), or DEL.
+
+    The token scanner and the request-target scanner each stop at one
+    delimiter, and a control byte before it is an error for both — so one
+    class serves both and the caller tells the two apart by the byte.
+    """
+    var ctl = chunk.lt(SIMD[DType.uint8, W](0x20)) | chunk.eq(SIMD[DType.uint8, W](0x7F))
+    return ctl | chunk.eq(SIMD[DType.uint8, W](stop))
+
+
+def _find_field_end(ptr: Pointer[UInt8, _], length: Int) -> Int:
+    """Offset of the first byte in `length` that cannot be field content, or -1."""
     var i = 0
     while i + 64 <= length:
-        var chunk = ptr.unsafe_offset(i).unsafe_load[width=64]()
-        var diff = chunk ^ target_vec
-        if diff.reduce_min() == 0:
-            for lane in range(64):
-                if diff[lane] == 0:
-                    return i + lane
+        var lane = _first_lane[64](_field_end_lanes[64](ptr.unsafe_offset(i).unsafe_load[width=64]()))
+        if lane >= 0:
+            return i + lane
         i += 64
+    while i + 16 <= length:
+        var lane = _first_lane[16](_field_end_lanes[16](ptr.unsafe_offset(i).unsafe_load[width=16]()))
+        if lane >= 0:
+            return i + lane
+        i += 16
+    while i < length:
+        var b = ptr[unsafe_offset=i]
+        if (b < 0x20 and b != BytesConstant.TAB) or b == 0x7F:
+            return i
+        i += 1
     return -1
 
 
-def _simd_find_cr_or_control(ptr: Pointer[UInt8, _], length: Int) -> Int:
-    """Find the first control character (< 0x20 except TAB) or DEL in the buffer.
-
-    Three-stage SIMD check per 64-byte chunk:
-    1. XOR with CR — fast path for the most common end-of-value marker
-    2. AND with 0xE0 — detects any byte 0x00-0x1F (including CR, LF, TAB)
-    3. XOR with 0x7F — detects DEL
-    If stages 2 or 3 trigger after stage 1 missed, lane scan finds the exact
-    position (rare: only non-CR control chars like NUL, BEL, or DEL).
-
-    Returns offset of first match, or -1 if none found in complete chunks.
-    """
-    var cr_vec = SIMD[DType.uint8, 64](BytesConstant.CR)
-    var mask_e0 = SIMD[DType.uint8, 64](0xE0)
-    var del_vec = SIMD[DType.uint8, 64](0x7F)
+def _find_stop(ptr: Pointer[UInt8, _], length: Int, stop: UInt8) -> Int:
+    """Offset of the first `stop`, control byte or DEL in `length` bytes, or -1."""
     var i = 0
     while i + 64 <= length:
-        var chunk = ptr.unsafe_offset(i).unsafe_load[width=64]()
-        # Stage 1: CR is the most common line terminator
-        var cr_diff = chunk ^ cr_vec
-        if cr_diff.reduce_min() == 0:
-            for lane in range(64):
-                if cr_diff[lane] == 0:
-                    return i + lane
-        # Stage 2+3: any byte < 0x20 (catches LF, NUL, etc.) or == 0x7F
-        var has_low = (chunk & mask_e0).reduce_min() == 0
-        var has_del = (chunk ^ del_vec).reduce_min() == 0
-        if has_low or has_del:
-            # Rare path: lane scan for exact position (excludes TAB 0x09)
-            for lane in range(64):
-                var b = chunk[lane]
-                if (b < 0x20 and b != 0x09) or b == 0x7F:
-                    return i + lane
+        var lane = _first_lane[64](_stop_lanes[64](ptr.unsafe_offset(i).unsafe_load[width=64](), stop))
+        if lane >= 0:
+            return i + lane
         i += 64
+    while i + 16 <= length:
+        var lane = _first_lane[16](_stop_lanes[16](ptr.unsafe_offset(i).unsafe_load[width=16](), stop))
+        if lane >= 0:
+            return i + lane
+        i += 16
+    while i < length:
+        var b = ptr[unsafe_offset=i]
+        if b < 0x20 or b == 0x7F or b == stop:
+            return i
+        i += 1
     return -1
 
 
@@ -195,47 +238,25 @@ def scan_to_eol[
     """
     var token_start = buf.read_pos
 
-    # SIMD fast path: scan 64-byte chunks for control chars / line terminator.
-    var ptr = buf._inner.unsafe_ptr()
-    var total_len = len(buf._inner)
-    var remaining = total_len - buf.read_pos
-    if remaining >= 64:
-        var found = _simd_find_cr_or_control(ptr.unsafe_offset(buf.read_pos), remaining)
-        if found >= 0:
-            buf.read_pos += found
-        else:
-            # No control char in any complete 64-byte chunk — advance past them
-            var chunks = (remaining // 64) * 64
-            buf.read_pos += chunks
-
-    # Scalar tail: handle remaining < 64 bytes
-    while buf.available():
-        var byte = try_peek(buf)
-        if not byte:
-            raise IncompleteError()
-
-        var c = byte.value()
-        # RFC 7230 §3.2.6: reject control characters (< 0x20 except HTAB, and DEL).
-        # Accept SP (0x20), visible ASCII (0x21–0x7E), and obs-text (0x80–0xFF).
-        if (c < 0x20 and c != 0x09) or c == 0x7F:
-            break
-        buf.increment()
-
-    if not buf.available():
+    # RFC 7230 §3.2.6: the value runs to the first control character (< 0x20
+    # except HTAB) or DEL; SP, visible ASCII and obs-text (0x80–0xFF) are
+    # content. The whole remaining buffer is searched here, so "no such
+    # byte" means the line has not finished arriving.
+    var remaining = len(buf._inner) - buf.read_pos
+    var found = _find_field_end(buf._inner.unsafe_ptr().unsafe_offset(buf.read_pos), remaining)
+    if found < 0:
         raise IncompleteError()
+    buf.read_pos += found
 
-    var current_byte = try_peek(buf)
-    if not current_byte:
-        raise IncompleteError()
-
-    if current_byte.value() == BytesConstant.CR:
+    var current_byte = buf._inner[buf.read_pos]
+    if current_byte == BytesConstant.CR:
         buf.increment()
         var next_byte = try_peek(buf)
         if not next_byte or next_byte.value() != BytesConstant.LF:
             raise ParseError()
         length = buf.read_pos - 1 - token_start
         buf.increment()
-    elif current_byte.value() == BytesConstant.LF:
+    elif current_byte == BytesConstant.LF:
         length = buf.read_pos - token_start
         buf.increment()
     else:
@@ -291,36 +312,28 @@ def scan_token[
     """
     var buf_start = buf.read_pos
 
-    # SIMD fast path: find next_char (colon or space) in 64-byte chunks.
-    # If found, validate token chars in the range [buf_start, match) with scalar.
-    var ptr = buf._inner.unsafe_ptr()
+    # Find the delimiter — or a control byte, which can only mean the line
+    # ended without one — then confirm every byte before it is a tchar.
+    # The outcomes are exactly the byte-at-a-time loop's: the delimiter
+    # after a run of token characters succeeds, any other byte before it
+    # is a ParseError, and a buffer that holds neither is incomplete
+    # unless it already holds a byte no token could contain.
     var remaining = len(buf._inner) - buf.read_pos
-    if remaining >= 64:
-        var found = _simd_find_byte(ptr.unsafe_offset(buf.read_pos), remaining, next_char)
-        if found >= 0:
-            # Validate all bytes before the match are valid token chars
-            for j in range(found):
-                if not is_token_char(buf._inner[buf.read_pos + j]):
-                    raise ParseError()
-            buf.read_pos += found
-            start = buf_start
-            length = buf.read_pos - buf_start
-            return
-
-    # Scalar fallback for short tokens or no SIMD match
-    while buf.available():
-        var byte = try_peek(buf)
-        if not byte:
-            raise IncompleteError()
-
-        if byte.value() == next_char:
-            start = buf_start
-            length = buf.read_pos - buf_start
-            return
-        elif not is_token_char(byte.value()):
+    var found = _find_stop(buf._inner.unsafe_ptr().unsafe_offset(buf.read_pos), remaining, next_char)
+    if found >= 0:
+        if buf._inner[buf.read_pos + found] != next_char:
             raise ParseError()
-        buf.increment()
+        for j in range(found):
+            if not is_token_char(buf._inner[buf.read_pos + j]):
+                raise ParseError()
+        buf.read_pos += found
+        start = buf_start
+        length = found
+        return
 
+    for j in range(remaining):
+        if not is_token_char(buf._inner[buf.read_pos + j]):
+            raise ParseError()
     raise IncompleteError()
 
 
@@ -493,36 +506,21 @@ def http_parse_request_headers[
 
         var path_start = buf.read_pos
 
-        # SIMD fast path: find space after URI path
-        var path_ptr = buf._inner.unsafe_ptr()
+        # The request target runs to the SP before the version. A control
+        # byte or DEL inside it is a ParseError; obs-text (>= 0x80) is let
+        # through, as the byte-at-a-time loop this replaces let it through.
+        # `len` is this function's byte-count parameter, hence `__len__`.
         var path_remaining = buf._inner.__len__() - buf.read_pos
-        if path_remaining >= 64:
-            var path_found = _simd_find_byte(path_ptr.unsafe_offset(buf.read_pos), path_remaining, BytesConstant.whitespace)
-            if path_found >= 0:
-                # Validate printable ASCII in the path range
-                for j in range(path_found):
-                    var pb = buf._inner[buf.read_pos + j]
-                    if not is_printable_ascii(pb):
-                        if pb < 0x20 or pb == 0x7F:
-                            return -1
-                buf.read_pos += path_found
-
-        # Scalar fallback for short paths or no SIMD match
-        while buf.available():
-            var byte = try_peek(buf)
-            if not byte:
-                return -2
-
-            if byte.value() == BytesConstant.whitespace:
-                break
-
-            if not is_printable_ascii(byte.value()):
-                if byte.value() < 0x20 or byte.value() == 0x7F:
-                    return -1
-            buf.increment()
-
-        if not buf.available():
+        var path_found = _find_stop(
+            buf._inner.unsafe_ptr().unsafe_offset(buf.read_pos),
+            path_remaining,
+            BytesConstant.whitespace,
+        )
+        if path_found < 0:
             return -2
+        if buf._inner[buf.read_pos + path_found] != BytesConstant.whitespace:
+            return -1
+        buf.read_pos += path_found
 
         var path_len = buf.read_pos - path_start
         path = create_string_from_reader(buf, path_start, path_len)
