@@ -1627,6 +1627,35 @@ otherwise be invisible to whoever picks this hypothesis up.
   meaning, a baseline x86-64 build without SSE4.1 would have read 16-byte
   events on a 12-byte ABI. Uncaught exceptions also move to stderr; every
   smoke that greps for `Traceback` captures `2>&1` logs, so none care.
+- **Suspected scheduling stickiness: two forked workers, one shared
+  listener, and eighty accepts in a row to the same worker.** Seen once
+  (2026-08-29, ubuntu CI runner, PR #168's first run): `smoke-reload`'s
+  two-worker phase re-forked both workers onto the new module — both
+  logged their loop start — and then every one of ten rounds of eight
+  fresh connections was answered by worker 6522; the smoke wants to see
+  both pids and failed. The first recorded failure of that step (none of
+  the eight most recent failed CI runs was it). Not reproduced in **36
+  container runs** on a 4-vCPU Linux VM — six quiet and twelve under
+  three CPU hogs on the branch, the same on `main`'s sources — so it is
+  not something the branch's change (the outbox-sweep gate) makes
+  deterministic, and the container cannot provoke it at all. The CI
+  re-run of the same job on the same head passed.
+
+  The mechanism it looks like: `M0_WORKERS` forks after `listen`, so both
+  workers share ONE listen socket, each registers it edge-triggered in
+  its own epoll, and on a connection both wake and the first to reach
+  `accept()` drains the backlog until EAGAIN while the other gets EAGAIN
+  and parks. Which one is "first" is the scheduler's choice, and on a
+  loaded shared runner that choice can be sticky for as long as the
+  winner keeps returning to `epoll_wait` before the loser is scheduled
+  at all — a fairness property, not a correctness one, since every
+  connection was served promptly. Recorded rather than fixed on one
+  occurrence, by the same rule as the entry below. If it recurs, the fix
+  direction is a per-worker listener (`SO_REUSEPORT`, which the kernel
+  then load-balances by hash) or `EPOLLEXCLUSIVE` on the shared one —
+  either changes the accept path of every prefork deployment and wants
+  the mixed-workload and shutdown smokes re-run beside it; loosening the
+  smoke to accept one worker would hide the very thing it exists to see.
 - **Suspected race: the WebSocket close path can RST instead of FIN.**
   Seen twice, both on macOS CI runners and never locally — most recently on
   PR #113, a change touching only `scripts/binfmt.py` and `release.yml`,
