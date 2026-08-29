@@ -181,6 +181,14 @@ lightbug_http
         the whole 5 s budget for an answered connection (5.35 s against
         1.55 s with Connection: close, measured). Pinned by
         scripts/drain_inflight_probe.py in smoke-shutdown
+      - event_loop.mojo / offload.mojo: the per-pass outbox sweep over all
+        slots runs only while a slot streams (`OffloadLoopState.
+        streaming_hint`, an upper bound raised where a stream flag is set
+        and recounted by the sweep), except under the pump executor, whose
+        loop keeps sweeping every pass (`OffloadPool.sweep_every_pass`)
+        because the 1.2 us the sweep costs there measured as load-bearing
+        pacing for its submit batching (-3% rps without it at c16). hello
+        +3.3% at c16, the inverted executor +4.6%, the pump at parity
       - fcntl F_SETFL fixed on ARM64 macOS: fcntl is variadic, Darwin
         passes variadic arguments on the stack while external_call used
         registers, so set_nonblocking silently did nothing there for the

@@ -1,0 +1,170 @@
+{
+ "bench": "hello_wrk",
+ "recorded_utc": "2026-08-29T15:34:55+00:00",
+ "environment": {
+  "git_sha": "402c9e2",
+  "git_dirty": false,
+  "os": "Darwin 25.6.0",
+  "machine": "arm64",
+  "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+  "mojo": "Mojo 1.0.0 (ed45d567)",
+  "granian": "",
+  "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+  "cpu": "Apple M4",
+  "cores_physical": "10"
+ },
+ "parameters": {
+  "client": "wrk -t2 -c16/-c64 -d8s, browser headers",
+  "app": "apps/hello",
+  "rounds": "3",
+  "a": "main c6d850d",
+  "b": "same with the per-pass outbox sweep skipped"
+ },
+ "rows": [
+  {
+   "round": 1,
+   "name": "hello with-sweep c16",
+   "rps": 146549.87,
+   "p50_us": 93.0,
+   "p90_us": 178.0,
+   "p99_us": 1310.0,
+   "max_us": 19770.0,
+   "cores": 0.99
+  },
+  {
+   "round": 1,
+   "name": "hello no-sweep c16",
+   "rps": 150232.98,
+   "p50_us": 89.0,
+   "p90_us": 172.0,
+   "p99_us": 19610.0,
+   "max_us": 39430.0,
+   "cores": 0.98
+  },
+  {
+   "round": 2,
+   "name": "hello with-sweep c16",
+   "rps": 144105.06,
+   "p50_us": 93.0,
+   "p90_us": 181.0,
+   "p99_us": 27270.0,
+   "max_us": 42020.0,
+   "cores": 0.96
+  },
+  {
+   "round": 2,
+   "name": "hello no-sweep c16",
+   "rps": 151649.42,
+   "p50_us": 88.0,
+   "p90_us": 170.0,
+   "p99_us": 26600.0,
+   "max_us": 41920.0,
+   "cores": 0.98
+  },
+  {
+   "round": 3,
+   "name": "hello with-sweep c16",
+   "rps": 146658.56,
+   "p50_us": 91.0,
+   "p90_us": 177.0,
+   "p99_us": 26750.0,
+   "max_us": 41960.0,
+   "cores": 0.99
+  },
+  {
+   "round": 3,
+   "name": "hello no-sweep c16",
+   "rps": 153631.82,
+   "p50_us": 86.0,
+   "p90_us": 168.0,
+   "p99_us": 25930.0,
+   "max_us": 41340.0,
+   "cores": 0.99
+  },
+  {
+   "round": 1,
+   "name": "hello with-sweep c64",
+   "rps": 153808.4,
+   "p50_us": 386.0,
+   "p90_us": 419.0,
+   "p99_us": 25360.0,
+   "max_us": 43770.0,
+   "cores": 0.94
+  },
+  {
+   "round": 1,
+   "name": "hello no-sweep c64",
+   "rps": 157292.37,
+   "p50_us": 377.0,
+   "p90_us": 410.0,
+   "p99_us": 25730.0,
+   "max_us": 43870.0,
+   "cores": 0.99
+  },
+  {
+   "round": 2,
+   "name": "hello with-sweep c64",
+   "rps": 154743.1,
+   "p50_us": 385.0,
+   "p90_us": 416.0,
+   "p99_us": 27130.0,
+   "max_us": 45650.0,
+   "cores": 0.99
+  },
+  {
+   "round": 2,
+   "name": "hello no-sweep c64",
+   "rps": 157929.06,
+   "p50_us": 376.0,
+   "p90_us": 407.0,
+   "p99_us": 22200.0,
+   "max_us": 44250.0,
+   "cores": 0.97
+  },
+  {
+   "round": 3,
+   "name": "hello with-sweep c64",
+   "rps": 156219.72,
+   "p50_us": 381.0,
+   "p90_us": 410.0,
+   "p99_us": 24700.0,
+   "max_us": 43010.0,
+   "cores": 0.99
+  },
+  {
+   "round": 3,
+   "name": "hello no-sweep c64",
+   "rps": 158339.25,
+   "p50_us": 373.0,
+   "p90_us": 404.0,
+   "p99_us": 25100.0,
+   "max_us": 43100.0,
+   "cores": 0.95
+  }
+ ],
+ "medians": {
+  "hello with-sweep c16": {
+   "rps": 146549.87,
+   "cores": 0.99,
+   "rps_per_core": 148030
+  },
+  "hello no-sweep c16": {
+   "rps": 151649.42,
+   "cores": 0.98,
+   "rps_per_core": 154744
+  },
+  "hello with-sweep c64": {
+   "rps": 154743.1,
+   "cores": 0.99,
+   "rps_per_core": 156306
+  },
+  "hello no-sweep c64": {
+   "rps": 157929.06,
+   "cores": 0.97,
+   "rps_per_core": 162813
+  }
+ },
+ "meta": {
+  "note": "ceiling of the outbox-sweep lever on the Mojo-only hello row (sweep skipped outright), 2026-08-29; not the benchmark page's row"
+ }
+}

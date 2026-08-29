@@ -1211,7 +1211,8 @@ its rps is 0.79x). So the ROADMAP gate as written — ≥1.0x `uvicorn --loop
 asyncio` at c16 on stdlib asyncio — is now met by the pump on its own,
 and the inversion's remaining claim is CPU, not rps. Whether that claim is
 worth making it the default is the 0.15.0 question; the numbers are filed
-either way, and the outbox sweep is the one named lever still untaken.
+either way. (The outbox sweep, the other named lever, was taken later the
+same day — "The outbox sweep", below.)
 
 **Evaluated the same day, and the answer is no — not for 0.15.0.** Two
 more measurements settled it. At **c256** (uvloop executor, pump →
@@ -1232,7 +1233,78 @@ an efficiency mode for low-concurrency, tail-sensitive deployments —
 saturation, one topology — not a throughput default. The bar for ever
 promoting it: design item 6 with a smoke that pins the in-flight
 shutdown case, and a saturation workload showing a gain, which no
-measurement yet does.
+measurement yet does. (The outbox sweep, the other named lever, was
+taken the same day — the next entry — and is worth +4.6% to the
+inversion at c16; it does not change this reading.)
+
+### The outbox sweep — taken, scoped (2026-08-29)
+
+The second lever the inversion entry named. Every pass swept all 1,024
+slots for a streaming one to drain, and the miss path — two flag loads
+per slot, none set — measured **1.2–1.3 µs per pass** in isolation, on a
+pass that carries one or two requests at low concurrency. The ceiling,
+with the sweep skipped outright (`bench/results/outbox-sweep/`,
+comparators within the clean band on every arm): hello **+3.5%** at c16
+and +2% at c64, the inverted executor **+4.1%** at c16 — and the pump
+**−2.9% rps at +6% CPU** at c16, ±0 at c256. That last row is the
+finding: under the pump the microsecond was accidental pacing. A loop
+thread that returns to `wait` a microsecond sooner finds fewer events,
+batches fewer submits, and the executor thread takes more wakes per
+request; at c256 the batches are large regardless and it makes no
+difference either way.
+
+So the gate is scoped. `OffloadLoopState.streaming_hint` is an upper
+bound on the flagged slots — raised by the two sites that set a stream
+flag (both in `_finish_response`), recounted by the sweep itself, never
+touched by the many sites that clear one, so an under-count (a stream
+nothing drains) cannot happen and an over-count costs one sweep — and
+the sweep runs only while it is non-zero. EXCEPT when the pool says
+`sweeps_every_pass`, which the pump wiring sets and nothing else does:
+its loop keeps the per-pass sweep, and the reason is written on the
+field. Realized (same day, comparators clean): hello **152.3k → 157.4k
+at c16 (+3.3%, +5.5% per core)**, +1.3% at c64; the inverted executor
+**59.3k → 62.0k (+4.6%)**, 69.6k/core; the pump 60.0k → 59.7k @0.98,
+parity within noise, as intended. Guards:
+the streaming smokes, sabotaged three ways — never sweep (counter and ws
+fail), the SSE site not raising the hint (counter fails, ws passes), the
+WS site not raising it (ws fails, counter passes).
+
+### Pacing the pump's loop thread
+
+What the sweep measurement exposed: at c16 the pump's throughput depends
+on how long its loop thread spends per pass, in a way that an accidental
+1.2 µs improved by 3%. An *explicit* pause before flushing a partial
+batch — spin N ns, optionally re-poll once and fold the new events'
+submits into the same datagram — is the deliberate form of that, and
+tunable where the sweep was not.
+
+**Measured the same day, as an experiment patch, and recorded rather
+than built** (`bench/results/outbox-sweep/pacing/`, fourteen arms, pump,
+c16, stdlib asyncio, uvicorn asyncio within 58.3–59.3k on every one):
+
+| pump's loop thread, per pass | rps @ cores |
+|---|---|
+| the sweep (today) | 59.95k @0.97 |
+| no sweep, no pause | 58.70k @1.01 |
+| spin 500 / 1000 / 2000 / 4000 ns **before a partial flush only** | 58.6–59.0k @0.97–1.01 |
+| the same, then `wait(0)` and fold the new events into the pass | 58.9–59.3k @**1.05** |
+| spin 1200 / 2000 ns **on every pass** | **60.04k / 60.13k @0.97** |
+| the same, with the re-poll | 55.6–55.8k @**1.08** |
+
+Two things settled. The sweep's effect is a delay on *every* pass —
+including the completion-only passes that write responses and park —
+not on the pass that has submits to flush: pausing only before a
+partial flush is too late, because by then the batch is whatever the
+previous `wait` returned, while a pause after writing responses lets
+the clients' next requests arrive before the loop parks. An explicit
+per-pass spin of 1.2–2 µs reproduces the sweep to within noise, and no
+longer pause improves on it. And the re-poll is simply worse: a nested
+pass costs the loop thread more than a merged batch saves the executor.
+So the pump keeps its pacing through the sweep it already runs, which
+is neither prettier nor uglier than a spin and needs no knob; the
+finding is that ~2% at c16 (and nothing at c256) is what per-pass
+latency on the pump's loop thread is worth, and that it is already
+collected.
 
 The design, so it is not re-derived:
 
@@ -1555,6 +1627,35 @@ otherwise be invisible to whoever picks this hypothesis up.
   meaning, a baseline x86-64 build without SSE4.1 would have read 16-byte
   events on a 12-byte ABI. Uncaught exceptions also move to stderr; every
   smoke that greps for `Traceback` captures `2>&1` logs, so none care.
+- **Suspected scheduling stickiness: two forked workers, one shared
+  listener, and eighty accepts in a row to the same worker.** Seen once
+  (2026-08-29, ubuntu CI runner, PR #168's first run): `smoke-reload`'s
+  two-worker phase re-forked both workers onto the new module — both
+  logged their loop start — and then every one of ten rounds of eight
+  fresh connections was answered by worker 6522; the smoke wants to see
+  both pids and failed. The first recorded failure of that step (none of
+  the eight most recent failed CI runs was it). Not reproduced in **36
+  container runs** on a 4-vCPU Linux VM — six quiet and twelve under
+  three CPU hogs on the branch, the same on `main`'s sources — so it is
+  not something the branch's change (the outbox-sweep gate) makes
+  deterministic, and the container cannot provoke it at all. The CI
+  re-run of the same job on the same head passed.
+
+  The mechanism it looks like: `M0_WORKERS` forks after `listen`, so both
+  workers share ONE listen socket, each registers it edge-triggered in
+  its own epoll, and on a connection both wake and the first to reach
+  `accept()` drains the backlog until EAGAIN while the other gets EAGAIN
+  and parks. Which one is "first" is the scheduler's choice, and on a
+  loaded shared runner that choice can be sticky for as long as the
+  winner keeps returning to `epoll_wait` before the loser is scheduled
+  at all — a fairness property, not a correctness one, since every
+  connection was served promptly. Recorded rather than fixed on one
+  occurrence, by the same rule as the entry below. If it recurs, the fix
+  direction is a per-worker listener (`SO_REUSEPORT`, which the kernel
+  then load-balances by hash) or `EPOLLEXCLUSIVE` on the shared one —
+  either changes the accept path of every prefork deployment and wants
+  the mixed-workload and shutdown smokes re-run beside it; loosening the
+  smoke to accept one worker would hide the very thing it exists to see.
 - **Suspected race: the WebSocket close path can RST instead of FIN.**
   Seen twice, both on macOS CI runners and never locally — most recently on
   PR #113, a change touching only `scripts/binfmt.py` and `release.yml`,
