@@ -495,7 +495,25 @@ trap 'kill $pid 2>/dev/null' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null   || { echo '=== shutdown3.log ==='; cat shutdown3.log; exit 1; }
 python3 scripts/drain_idle_probe.py 8080 $pid 8   || { echo '=== shutdown3.log ==='; cat shutdown3.log; exit 1; }
 trap - EXIT
-rm -f shutdown1.log shutdown3.log
+
+# The other shape: a request still running at SIGTERM, on a pool thread so
+# the loop is free to see the signal, whose response completes DURING the
+# drain. It went out whole, so no write interest was registered and the
+# drain's EVFILT_WRITE dispatch never saw it; the completion re-armed the
+# keep-alive slot and `active_count` held at one to the deadline -- 5.35s to
+# exit against 1.55s with `Connection: close`, the response itself at 1.5s in
+# both. The drain now re-runs the between-requests sweep after every
+# completion pass. Python-free: apps/pool_spike's /slow on the Mojo pool.
+out=$(mktemp -d)
+mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike"   || { echo 'pool_spike failed to build'; exit 1; }
+M0_PORT=8080 M0_POOL_THREADS=2 "$out/pool_spike" > shutdown4.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/fast > /dev/null   || { echo '=== shutdown4.log ==='; cat shutdown4.log; exit 1; }
+python3 scripts/drain_inflight_probe.py 8080 $pid   || { echo '=== shutdown4.log ==='; cat shutdown4.log; exit 1; }
+trap - EXIT
+rm -rf "$out"
+rm -f shutdown1.log shutdown3.log shutdown4.log
 echo "smoke-shutdown OK"
 """
 

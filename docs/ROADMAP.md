@@ -1580,26 +1580,30 @@ otherwise be invisible to whoever picks this hypothesis up.
   a fix for a failure that cannot yet be reproduced cannot be. Loosening
   the probe to tolerate RST would be the wrong repair: the FIN is the
   contract worth keeping, and the probe is doing its job by noticing.
-- **A keep-alive connection whose response completes DURING the drain
-  holds it to the deadline.** The entry below closed the connections that
-  were already idle when SIGTERM landed; this is the one that becomes idle
-  afterwards. Found 2026-08-29 by a probe written for something else (the
-  inversion's shutdown, above): `apps/asgi_bare`, `GET /slow?ms=1500` in
-  flight at SIGTERM, the pump answering it at 1.50 s — and then exiting at
-  **5.35 s with keep-alive against 1.55 s with `Connection: close`**, two
-  trials each. The mechanism is in the drain loop: it dispatches
-  `EVFILT_WRITE` only, and a response that goes out in one `send` never
-  registers a write interest, so the completion takes `_finish_response`'s
-  keep-alive branch and re-arms the slot for a next request the drain will
-  never read; `active_count` then holds at one until the budget runs out.
-  Every execution mode, since the completion path is shared. The fix
-  shape is the existing between-requests sweep run after every
-  completion pass of the drain, not once before it — a slot in
-  `READING_HEADERS` with an empty buffer is the same "between requests"
-  the earlier fix keys on, whenever it got there — with a `smoke-shutdown`
-  phase pinning it (`scripts/drain_inflight_probe.py`, on the Mojo pool so
-  no Python is involved). `docker stop` during traffic then takes about
-  the slowest in-flight request rather than 5 s.
+- ~~**A keep-alive connection whose response completes DURING the drain
+  holds it to the deadline.**~~ — **fixed.** The entry below closed the
+  connections that were already idle when SIGTERM landed; this was the
+  one that becomes idle afterwards. Found 2026-08-29 by a probe written
+  for something else (the inversion's shutdown, above): `apps/asgi_bare`,
+  `GET /slow?ms=1500` in flight at SIGTERM, the pump answering it at
+  1.50 s — and then exiting at **5.35 s with keep-alive against 1.55 s
+  with `Connection: close`**, two trials each. The mechanism was in the
+  drain loop: it dispatches `EVFILT_WRITE` only, and a response that goes
+  out in one `send` never registers a write interest, so the completion
+  took `_finish_response`'s keep-alive branch and re-armed the slot for a
+  next request the drain will never read; `active_count` then held at one
+  until the budget ran out. Every execution mode, since the completion
+  path is shared. The fix is the existing between-requests sweep
+  (`_close_between_requests`) run after every completion pass of the
+  drain, not once before it — a slot in `READING_HEADERS` with an empty
+  buffer is the same "between requests" the earlier fix keys on, whenever
+  it got there. Measured after: the process exits **1.55 s** after the
+  request was sent, 0.04 s after answering it, in both the Mojo pool and
+  the ASGI executor; with the in-drain sweep sabotaged out, 5.33 s.
+  `smoke-shutdown` gained a fourth phase pinning it
+  (`scripts/drain_inflight_probe.py`, `apps/pool_spike`'s `/slow` on the
+  Mojo pool, so no Python is involved). `docker stop` during traffic now
+  takes about the slowest in-flight request rather than 5 s.
 - ~~**Graceful shutdown always waits the full 5 s drain when idle keep-alive
   connections are open**~~ — **fixed.** It did, in every execution mode.
   Measured 2026-08-23 on 3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:

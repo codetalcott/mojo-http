@@ -225,6 +225,26 @@ versions may break the API**.
   than a compile error. Proven by reverting each of the eight defaults to
   `...` in turn and confirming the suite fails for every one.
 
+### Fixed
+
+- **A keep-alive connection answered during the drain no longer holds
+  the drain to its 5 s deadline.** The graceful shutdown closed the
+  connections that were already idle when SIGTERM landed, but a request
+  still running at that moment — on a pool thread or the executor —
+  completed during the drain, went out in one `send`, registered no write
+  interest for the drain's `EVFILT_WRITE`-only dispatch to see, and
+  re-armed its slot for a next request the drain never reads;
+  `active_count` then held at one until the budget ran out. Measured with
+  a 1.5 s request in flight at SIGTERM: the response at 1.5 s either way,
+  but the process exited at **5.35 s with keep-alive against 1.55 s with
+  `Connection: close`**, in every execution mode. The between-requests
+  sweep now runs after every completion pass of the drain as well as
+  before it (`_close_between_requests`); the process exits 0.04 s after
+  answering. `smoke-shutdown` gained a fourth phase on the Mojo pool
+  (`scripts/drain_inflight_probe.py`), which fails at 5.33 s with the
+  in-drain sweep removed. `docker stop` during traffic now costs about the
+  slowest in-flight request rather than 5 s.
+
 ## [0.14.1] — 2026-08-28
 
 A hardening release for the ASGI streaming seam. No wire format, default
