@@ -7,6 +7,49 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-29
+
+The Mojo-native release: the tier for handlers written in Mojo grows the
+ergonomics it lacked, and the HTTP layer under everything gets measurably
+faster. Nothing on the wire changed — every existing response is
+byte-identical, which the parse-sensitive smokes assert — and nothing an
+application already does breaks: `HTTPService` implementers that spell
+out all nine methods keep compiling.
+
+What is visible to an application:
+
+- **A handler is `func` and nothing else.** `HTTPService`'s other eight
+  methods carry defaults, so `apps/hello` is 30 lines instead of 57 and
+  268 lines of empty stubs left the tree. Adding a defaulted hook no
+  longer breaks every implementer — which is how `direct_job` arrived.
+- **`m0_http.reply`** (`json`, `html`, `problem`, `redirect`, `empty`,
+  `no_content`, `body_string`, `param_int`, …) and
+  **`Router.allow_header`** — the helpers three apps had each rewritten.
+- **`MojoPool`**: the handler pool for Mojo handlers, so one blocking
+  Mojo handler no longer stalls the loop (fast-route p50 405 ms → 0.3 ms
+  with two 400 ms blockers in flight).
+- **`M0_INVERTED=1`**, experimental: the Mojo loop inside the executor's
+  asyncio loop on one thread. Correct under every gate, −14% CPU at low
+  concurrency, not the default — the CHANGELOG entry below says exactly
+  why, with the numbers, and the one limitation to know before trying it
+  (a request mid-await at SIGTERM is answered at the 5 s drain deadline).
+- **`docker stop` under traffic costs about the slowest in-flight
+  request, not 5 s**: a keep-alive connection answered during the drain
+  no longer holds the drain to its deadline.
+
+And under it all: the request parser went from 1.96 to 0.86 µs and the
+per-pass outbox sweep is skipped while nothing streams, which together
+take `apps/hello` from ~122k to ~157k rps at c16 on the reference
+machine (+29%), the ASGI executor from 55.7k to 60.1k on the benchmark
+page's row (1.03x `uvicorn --loop asyncio`, above it for the first
+time), and `M0_INVERTED=1` to 62.0k. One wrong answer was fixed on the
+way: a bare-LF line ending followed by a CR within 64 bytes used to
+swallow the next header.
+
+The one API that moved is inside the fork: `lightbug_http`'s
+`HTTPHeader` is four offsets into the parse buffer rather than two
+`String`s. Nothing outside `packages/m0-http` imported it.
+
 ### Changed
 
 - **The per-pass outbox sweep is skipped while nothing streams — except
@@ -2586,6 +2629,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.0
 [0.14.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.1
 [0.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.0
 [0.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.13.0

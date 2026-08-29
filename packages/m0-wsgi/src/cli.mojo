@@ -28,7 +28,7 @@ from lightbug_http.server_config import ServerConfig
 from m0_http.config import AppConfig
 
 
-comptime M0SERVE_VERSION = "0.14.1"
+comptime M0SERVE_VERSION = "0.15.0"
 """Reported by `--version`. Bumped with the release (see docs/RELEASING.md)."""
 
 comptime DEFAULT_ATTRIBUTE = "application"
