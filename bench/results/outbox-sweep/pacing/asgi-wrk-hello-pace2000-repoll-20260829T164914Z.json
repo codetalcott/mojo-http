@@ -1,0 +1,137 @@
+{
+ "bench": "asgi_wrk_hello",
+ "recorded_utc": "2026-08-29T16:49:14+00:00",
+ "environment": {
+  "git_sha": "33b39f1",
+  "git_dirty": true,
+  "os": "Darwin 25.6.0",
+  "machine": "arm64",
+  "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+  "mojo": "Mojo 1.0.0 (ed45d567)",
+  "granian": "",
+  "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+  "cpu": "Apple M4",
+  "cores_physical": "10"
+ },
+ "parameters": {
+  "client": "wrk -t2 -c16 -d8s, browser headers",
+  "app": "apps/asgi_bare bareapp.asgi:application /",
+  "rounds": "3",
+  "server": "bin/m0serve",
+  "executor_python": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+  "executor_loop": "asyncio",
+  "inverted": "0"
+ },
+ "rows": [
+  {
+   "round": 1,
+   "name": "m0serve asgi-executor",
+   "rps": 59340.64,
+   "p50_us": 256.0,
+   "p90_us": 299.0,
+   "p99_us": 364.0,
+   "max_us": 7260.0,
+   "cores": 1.05
+  },
+  {
+   "round": 1,
+   "name": "uvicorn asyncio",
+   "rps": 58890.45,
+   "p50_us": 269.0,
+   "p90_us": 283.0,
+   "p99_us": 315.0,
+   "max_us": 7700.0,
+   "cores": 0.99
+  },
+  {
+   "round": 1,
+   "name": "uvicorn uvloop",
+   "rps": 83800.39,
+   "p50_us": 180.0,
+   "p90_us": 190.0,
+   "p99_us": 212.0,
+   "max_us": 6810.0,
+   "cores": 1.0
+  },
+  {
+   "round": 2,
+   "name": "m0serve asgi-executor",
+   "rps": 59351.23,
+   "p50_us": 256.0,
+   "p90_us": 298.0,
+   "p99_us": 361.0,
+   "max_us": 6780.0,
+   "cores": 1.05
+  },
+  {
+   "round": 2,
+   "name": "uvicorn asyncio",
+   "rps": 58646.92,
+   "p50_us": 270.0,
+   "p90_us": 284.0,
+   "p99_us": 308.0,
+   "max_us": 7590.0,
+   "cores": 0.98
+  },
+  {
+   "round": 2,
+   "name": "uvicorn uvloop",
+   "rps": 83715.6,
+   "p50_us": 180.0,
+   "p90_us": 190.0,
+   "p99_us": 215.0,
+   "max_us": 7150.0,
+   "cores": 0.99
+  },
+  {
+   "round": 3,
+   "name": "m0serve asgi-executor",
+   "rps": 58959.28,
+   "p50_us": 257.0,
+   "p90_us": 299.0,
+   "p99_us": 370.0,
+   "max_us": 7590.0,
+   "cores": 1.06
+  },
+  {
+   "round": 3,
+   "name": "uvicorn asyncio",
+   "rps": 59370.66,
+   "p50_us": 267.0,
+   "p90_us": 280.0,
+   "p99_us": 308.0,
+   "max_us": 7610.0,
+   "cores": 0.99
+  },
+  {
+   "round": 3,
+   "name": "uvicorn uvloop",
+   "rps": 84036.94,
+   "p50_us": 180.0,
+   "p90_us": 190.0,
+   "p99_us": 213.0,
+   "max_us": 6890.0,
+   "cores": 0.98
+  }
+ ],
+ "medians": {
+  "m0serve asgi-executor": {
+   "rps": 59340.64,
+   "cores": 1.05,
+   "rps_per_core": 56515
+  },
+  "uvicorn asyncio": {
+   "rps": 58890.45,
+   "cores": 0.99,
+   "rps_per_core": 59485
+  },
+  "uvicorn uvloop": {
+   "rps": 83800.39,
+   "cores": 0.99,
+   "rps_per_core": 84647
+  }
+ },
+ "meta": {
+  "note": "pacing experiment arm (pace2000-repoll): explicit pause-and-repoll before the pump's submit flush"
+ }
+}

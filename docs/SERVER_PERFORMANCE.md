@@ -440,10 +440,20 @@ itself recounts, skips the sweep while it is zero — except when the pool
 says `sweeps_every_pass`, which only the pump's wiring sets. Realized:
 hello **152.3k → 157.4k at c16 (+3.3%, +5.5% per core)**, +1.3% at c64;
 inverted **59.3k → 62.0k (+4.6%)**; pump 60.0k → 59.7k @0.98, parity
-within noise. The follow-up
-the pump row asks for — an explicit, tunable pause before the flush in
-place of the accidental one — is ROADMAP.md, "Pacing the pump's loop
-thread". The per-byte token validation
+within noise.
+
+The pump row's question — is an explicit pause better than the
+accidental one? — was answered the same day with fourteen more arms
+(`bench/results/outbox-sweep/pacing/`; the table is in ROADMAP.md,
+"Pacing the pump's loop thread"). A spin of 1.2–2 µs on *every* pass
+reproduces the sweep to within noise (60.0–60.1k against 59.95k); a
+spin only before a partial flush does nothing (58.6–59.0k, the same as
+no pause), because the batch is already whatever the previous `wait`
+returned — the pause that matters is the one after writing responses,
+which lets the clients' next requests arrive before the loop parks; and
+re-polling after the pause to fold new events into the same batch is
+worse (55.7k at 1.08 cores). The pump keeps its pacing through the
+sweep it already runs; there is no knob to add. The per-byte token validation
 (`is_token_char` over a name's bytes) was measured against a bit table and
 is a wash — 1 ns per byte either way — and is not a lever. Nor is a
 state-machine rewrite in the picohttpparser shape: the row it would

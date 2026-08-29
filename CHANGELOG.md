@@ -23,8 +23,12 @@ versions may break the API**.
   and ±0 at c256. Guarded by the streaming smokes, sabotaged three ways
   (never sweep; either flag site not raising the hint), each failing
   exactly the smoke it should. Artifacts under
-  `bench/results/outbox-sweep/`; ROADMAP "Pacing the pump's loop thread"
-  is the follow-up the finding names.
+  `bench/results/outbox-sweep/`. The follow-up the finding named — an
+  explicit pause in place of the accidental one — was measured the same
+  day and recorded, not built (ROADMAP "Pacing the pump's loop thread"):
+  a 1.2–2 µs spin on every pass reproduces the sweep exactly, a spin
+  only before a partial flush does nothing, and re-polling to merge
+  batches is worse; the pump keeps the pacing it already has.
 
 - **The request parser is under a microsecond.** `parse_request_headers`
   on the twelve-header browser GET: **1.96 → 0.86 µs**, the whole
