@@ -34,7 +34,12 @@ The steps, in order:
    point here, so this is the document of record.
 2. **Bump `version` in `pyproject.toml`** to match, and `M0SERVE_VERSION`
    in `packages/m0-wsgi/src/cli.mojo` — `smoke-serve` asserts the two agree,
-   so CI catches a bump that forgot one. Then run `uv lock` so `uv.lock`'s
+   so CI catches a bump that forgot one. (Locally, rebuild the package
+   before the binary — `poe build-wsgi` then `poe build-serve` — because
+   `M0SERVE_VERSION` is compiled into the m0-wsgi `.mojoc`, and
+   `build-serve` alone links whatever version that artifact already holds;
+   a `bin/m0serve --version` that still prints the old number after a bump
+   is that, not a bump that missed.) Then run `uv lock` so `uv.lock`'s
    own project version follows (a bare `uv run` later will rewrite it
    otherwise), and update the `m0serve X.Y.Z` echo in
    [QUICKSTART.md](../QUICKSTART.md) — it is the output of a command the

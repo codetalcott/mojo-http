@@ -1,6 +1,6 @@
 [project]
 name = "mojo-http"
-version = "0.14.1"
+version = "0.15.0"
 description = "HTTP server and web framework for Mojo — routing, content negotiation, SSE, and a maintained lightbug_http fork"
 authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.github.com" }]
 requires-python = ">=3.10"
@@ -3485,7 +3485,7 @@ shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike" || exit 1
-python3 scripts/pool_spike_probe.py --binary "$out/pool_spike" --json "pool-probe-$(date -u +%Y%m%dT%H%M%SZ).json"
+python3 scripts/pool_spike_probe.py --binary "$out/pool_spike" --json "bench/results/pool-probe-$(date -u +%Y%m%dT%H%M%SZ).json"
 """
 
 [tool.poe.tasks.stress-asgi]
