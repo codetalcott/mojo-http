@@ -987,6 +987,14 @@ def _serve_offloaded(
         # variable until its gate passes (docs/ROADMAP.md, "The loop
         # inversion"), so the A/B against the pump is one env var. Every
         # other topology stays on the pump below.
+        #
+        # Known limitation, measured 2026-08-29 and recorded rather than
+        # fixed: the drain is the blocking first cut, so a request that
+        # is mid-await at SIGTERM is answered at the 5 s drain deadline
+        # (5.30 s for a 1.5 s request; the pump answers it at 1.50 s).
+        # Give an inverted server a stop grace of 10 s or more. The
+        # reshaped drain is ROADMAP design item 6, deferred to the
+        # inversion's promotion bar.
         pool.enable_stream_channel()
         pool.enable_base_stream_ack()
         serve_inverted(

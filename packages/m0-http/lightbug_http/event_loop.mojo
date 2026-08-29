@@ -1375,12 +1375,75 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     return should_shutdown
 
 
+def _close_between_requests[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut handler: T,
+    max_conns: Int,
+    mut slot_fds: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    offload: OffloadLoopState,
+):
+    """Close every connection that is between requests, during a shutdown.
+
+    `active_count` counts a connection that is merely *open* the same as
+    one with a request in flight, so without this a server holding idle
+    keep-alive connections waited out the whole DRAIN_TIMEOUT_NS budget
+    for clients that had already been answered — measured at 5.02 s to
+    exit against 0.02 s idle, in every execution mode, which is most of
+    `docker stop`'s 10 s.
+
+    A slot in READING_HEADERS with an empty receive buffer is between
+    requests: `prepare_for_new_request` clears the buffer after each
+    response, and the first byte of the next request both refills it and
+    moves the state on. Such a connection cannot be served by the drain
+    loop under any circumstance — that loop dispatches EVFILT_WRITE only,
+    so a request arriving during the drain is not read there. Closing it
+    drops nothing that waiting would have delivered, and leaves the whole
+    budget to connections genuinely mid-request or mid-response.
+
+    Called once before the drain clock starts AND after every completion
+    pass inside it. The second call is the fix for the drain's other
+    hold: a response that completes DURING the drain and goes out in one
+    `send` never registers a write interest, so the drain's EVFILT_WRITE
+    dispatch never sees it — it takes `_finish_response`'s keep-alive
+    branch and re-arms for a next request the drain will never read.
+    Measured with a 1.5 s request in flight at SIGTERM: the process
+    exited at 1.55 s with `Connection: close` and 5.35 s with keep-alive,
+    the response itself delivered at 1.5 s in both.
+
+    Skipped, for the reasons the idle and header sweeps skip them: a slot
+    with a job in a pool thread is working, not idle, and its provision
+    is still borrowed by another thread.
+    """
+    for s in range(max_conns):
+        if slot_fds[s] == UNUSED or offload.offloaded[s]:
+            continue
+        if (
+            provision_pool.provisions[s].state.kind
+            == ConnectionState.READING_HEADERS
+            and len(provision_pool.provisions[s].recv_buffer) == 0
+        ):
+            _close_slot(
+                backend, handler, s, slot_fds[s],
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+
+
 def _run_shutdown[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ) raises:
     """The graceful shutdown: close the listener, say goodbye to streams,
     drain in-flight requests within the budget, flush the last submits.
-    The former `if should_shutdown:` branch, unchanged.
+    The former `if should_shutdown:` branch, unchanged — except that the
+    between-requests sweep now also runs after every completion pass of
+    the drain (`_close_between_requests`).
     """
     ref offload = st.offload
     ref max_conns = st.max_conns
@@ -1432,40 +1495,12 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
             )
 
     # Close the connections that have nothing to drain, before timing
-    # anything. `active_count` counts a connection that is merely
-    # *open* the same as one with a request in flight, so without this
-    # a server holding idle keep-alive connections waited out the
-    # whole DRAIN_TIMEOUT_NS budget for clients that had already been
-    # answered — measured at 5.02 s to exit against 0.02 s idle, in
-    # every execution mode, which is most of `docker stop`'s 10 s.
-    #
-    # A slot in READING_HEADERS with an empty receive buffer is
-    # between requests: `prepare_for_new_request` clears the buffer
-    # after each response, and the first byte of the next request
-    # both refills it and moves the state on. Such a connection
-    # cannot be served by the drain loop under any circumstance —
-    # that loop dispatches EVFILT_WRITE only, so a request arriving
-    # during the drain is not read there today either. Closing it now
-    # therefore drops nothing that waiting would have delivered, and
-    # leaves the whole budget to connections genuinely mid-request or
-    # mid-response.
-    #
-    # Skipped, for the reasons the idle and header sweeps skip them:
-    # a slot with a job in a pool thread is working, not idle, and its
-    # provision is still borrowed by another thread.
-    for s in range(max_conns):
-        if slot_fds[s] == UNUSED or offload.offloaded[s]:
-            continue
-        if (
-            provision_pool.provisions[s].state.kind
-            == ConnectionState.READING_HEADERS
-            and len(provision_pool.provisions[s].recv_buffer) == 0
-        ):
-            _close_slot(
-                backend, handler, s, slot_fds[s],
-                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse, slot_ws, slot_ws_state,
-            )
+    # anything (see `_close_between_requests` for why this is safe).
+    _close_between_requests(
+        backend, handler, max_conns,
+        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, offload,
+    )
 
     # Drain in-flight: wait for active non-SSE connections (max 5s).
     #
@@ -1500,6 +1535,14 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
             slot_sse, slot_ws, slot_ws_state,
             slot_read_armed, slot_idle_deadline,
             date_cache_sec, date_cache, offload, bus_read_fd,
+        )
+        # A completion that just went out whole on a keep-alive
+        # connection re-armed the slot for a request this loop will
+        # never read; close it now rather than at the deadline.
+        _close_between_requests(
+            backend, handler, max_conns,
+            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state, offload,
         )
         for di in range(drain_events):
             if (backend.event_flags(di) & EV_ERROR) != 0:

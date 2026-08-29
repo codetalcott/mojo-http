@@ -1213,6 +1213,27 @@ and the inversion's remaining claim is CPU, not rps. Whether that claim is
 worth making it the default is the 0.15.0 question; the numbers are filed
 either way, and the outbox sweep is the one named lever still untaken.
 
+**Evaluated the same day, and the answer is no — not for 0.15.0.** Two
+more measurements settled it. At **c256** (uvloop executor, pump →
+inverted → pump back to back on an otherwise idle machine, comparators
+within 0.5% across all three arms; the `-c256-` artifacts in
+`parse-lever-ab/`) the per-core edge is gone: pump 88.1k @1.02 and 87.3k
+@1.02 around inverted 85.5k @0.99 — −2.5% rps, +0.6% per core, tails
+identical. The +12% per core at c16 is the ~0.1 core of cross-thread
+handoff the pump pays at light load, and its batching amortizes exactly
+that away where CPU becomes the bound; the edge does not buy capacity.
+(A first c256 run had put the inversion at 73k in one round with a
+23 ms p99; the drift-control rows showed a 13% dent in the comparator
+during that arm — another session on the machine — and the clean rerun
+had no such round.) And the shutdown limitation above is a regression
+the pump does not have. What the inversion honestly is on these numbers:
+an efficiency mode for low-concurrency, tail-sensitive deployments —
+−14% CPU and a better p90/p99 at c16, a worse p50, nothing at
+saturation, one topology — not a throughput default. The bar for ever
+promoting it: design item 6 with a smoke that pins the in-flight
+shutdown case, and a saturation workload showing a gain, which no
+measurement yet does.
+
 The design, so it is not re-derived:
 
 - **Scope:** unmounted single-executor ASGI only — the benchmark shape.
@@ -1238,10 +1259,23 @@ The design, so it is not re-derived:
 - **Driver:** `add_reader(kq_fd, _on_mojo)` → `port.pass_()`, plus a 1 Hz
   `call_later` for the idle sweep, the date cache and the heartbeats,
   which assume a wake per second. Acks and credit unchanged.
-- **Shutdown reshaped:** `_run_shutdown`'s drain waits in `backend.wait`,
-  which inside an asyncio callback blocks the very tasks it waits for.
-  Inverted, the drain is polled from `call_later` passes until
-  `active_count == 0` or the 5 s budget, then `loop.stop()`.
+- **Shutdown — designed, not built, and deliberately skipped
+  (2026-08-29):** `_run_shutdown`'s drain waits in `backend.wait`, which
+  inside an asyncio callback blocks the very tasks it waits for. The
+  design was to poll the drain from `call_later` passes until
+  `active_count == 0` or the 5 s budget, then `loop.stop()`. The first
+  cut runs the drain as it is, blocking, and the consequence is measured:
+  with a 1.5 s request mid-await at SIGTERM the pump answers it at
+  1.50 s, the inversion at **5.30 s** — the drain deadline, after which
+  the shim runs the in-flight tasks to completion and the response goes
+  out. Not dropped, but any stop grace under ~6 s drops it. The
+  reshaping is half a day (split `_run_shutdown` into prepare / step /
+  finish as `run_event_loop` was split, drive the step from a
+  `call_later` cadence) and buys that only under the flag, which nothing
+  runs in production; it is the inversion's promotion bar, not 0.15.0
+  work. Until then an inverted server wants a stop grace of 10 s or more
+  (`docker stop`'s default), and the comment beside the flag in
+  `m0serve.mojo` says so.
 
 ### The Mojo handler pool — shipped 2026-08-28
 
@@ -1546,6 +1580,30 @@ otherwise be invisible to whoever picks this hypothesis up.
   a fix for a failure that cannot yet be reproduced cannot be. Loosening
   the probe to tolerate RST would be the wrong repair: the FIN is the
   contract worth keeping, and the probe is doing its job by noticing.
+- ~~**A keep-alive connection whose response completes DURING the drain
+  holds it to the deadline.**~~ — **fixed.** The entry below closed the
+  connections that were already idle when SIGTERM landed; this was the
+  one that becomes idle afterwards. Found 2026-08-29 by a probe written
+  for something else (the inversion's shutdown, above): `apps/asgi_bare`,
+  `GET /slow?ms=1500` in flight at SIGTERM, the pump answering it at
+  1.50 s — and then exiting at **5.35 s with keep-alive against 1.55 s
+  with `Connection: close`**, two trials each. The mechanism was in the
+  drain loop: it dispatches `EVFILT_WRITE` only, and a response that goes
+  out in one `send` never registers a write interest, so the completion
+  took `_finish_response`'s keep-alive branch and re-armed the slot for a
+  next request the drain will never read; `active_count` then held at one
+  until the budget ran out. Every execution mode, since the completion
+  path is shared. The fix is the existing between-requests sweep
+  (`_close_between_requests`) run after every completion pass of the
+  drain, not once before it — a slot in `READING_HEADERS` with an empty
+  buffer is the same "between requests" the earlier fix keys on, whenever
+  it got there. Measured after: the process exits **1.55 s** after the
+  request was sent, 0.04 s after answering it, in both the Mojo pool and
+  the ASGI executor; with the in-drain sweep sabotaged out, 5.33 s.
+  `smoke-shutdown` gained a fourth phase pinning it
+  (`scripts/drain_inflight_probe.py`, `apps/pool_spike`'s `/slow` on the
+  Mojo pool, so no Python is involved). `docker stop` during traffic now
+  takes about the slowest in-flight request rather than 5 s.
 - ~~**Graceful shutdown always waits the full 5 s drain when idle keep-alive
   connections are open**~~ — **fixed.** It did, in every execution mode.
   Measured 2026-08-23 on 3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:

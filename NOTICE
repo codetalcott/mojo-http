@@ -173,6 +173,14 @@ lightbug_http
         entry is fully written before it is counted). With the scanners
         above, `parse_request_headers` 1.96 -> 0.86 us on the twelve-header
         browser GET and the whole user-space request 3.33 -> 1.97 us
+      - event_loop.mojo: the graceful drain's between-requests sweep runs
+        after every completion pass, not once before the drain clock
+        starts. A response completing during the drain went out in one
+        send, registered no write interest, and re-armed its keep-alive
+        slot for a request the drain never reads; the process then waited
+        the whole 5 s budget for an answered connection (5.35 s against
+        1.55 s with Connection: close, measured). Pinned by
+        scripts/drain_inflight_probe.py in smoke-shutdown
       - fcntl F_SETFL fixed on ARM64 macOS: fcntl is variadic, Darwin
         passes variadic arguments on the stack while external_call used
         registers, so set_nonblocking silently did nothing there for the

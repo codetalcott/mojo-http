@@ -152,6 +152,17 @@ versions may break the API**.
   +12%), not throughput (within noise, and −4% on uvloop), and the
   default is unchanged.
 
+  Evaluated for the default and declined, on two more measurements: at
+  c256 the per-core edge is gone (pump 88.1k @1.02, inverted 85.5k @0.99
+  — +0.6%/core, −2.5% rps, on an idle machine with the comparators
+  within 0.5%), so it does not buy capacity; and under the flag a request
+  mid-await at SIGTERM is answered at the 5 s drain deadline (5.30 s for
+  a 1.5 s request, where the pump answers at 1.50 s), because the drain
+  is still the blocking first cut. That limitation is recorded beside the
+  flag in `m0serve.mojo` and as ROADMAP design item 6, deferred to the
+  inversion's promotion bar rather than built for a mode nothing runs;
+  an inverted server wants a stop grace of 10 s or more.
+
 - **A handler pool for Mojo handlers** (`lightbug_http/mojo_pool.mojo`):
   `MojoPool` puts N handler threads behind one event loop for an
   `HTTPService` written in Mojo, the way `--blocking-threads` does for a
@@ -213,6 +224,26 @@ versions may break the API**.
   a wrong default would be a silent behaviour change across every app rather
   than a compile error. Proven by reverting each of the eight defaults to
   `...` in turn and confirming the suite fails for every one.
+
+### Fixed
+
+- **A keep-alive connection answered during the drain no longer holds
+  the drain to its 5 s deadline.** The graceful shutdown closed the
+  connections that were already idle when SIGTERM landed, but a request
+  still running at that moment — on a pool thread or the executor —
+  completed during the drain, went out in one `send`, registered no write
+  interest for the drain's `EVFILT_WRITE`-only dispatch to see, and
+  re-armed its slot for a next request the drain never reads;
+  `active_count` then held at one until the budget ran out. Measured with
+  a 1.5 s request in flight at SIGTERM: the response at 1.5 s either way,
+  but the process exited at **5.35 s with keep-alive against 1.55 s with
+  `Connection: close`**, in every execution mode. The between-requests
+  sweep now runs after every completion pass of the drain as well as
+  before it (`_close_between_requests`); the process exits 0.04 s after
+  answering. `smoke-shutdown` gained a fourth phase on the Mojo pool
+  (`scripts/drain_inflight_probe.py`), which fails at 5.33 s with the
+  in-drain sweep removed. `docker stop` during traffic now costs about the
+  slowest in-flight request rather than 5 s.
 
 ## [0.14.1] — 2026-08-28
 
