@@ -14,15 +14,39 @@ import os
 import socket
 import struct
 import sys
+import threading
 import time
 
 # /ws/flood's shape, kept in step with apps/asgi_bare/bareapp/asgi.py.
 FLOOD_FRAMES = 400
 FLOOD_SIZE = 4096
 
+# How many app-initiated closes the close-order phase runs at once. The
+# server used to close its side the instant its own Close frame drained, so
+# the peer's reply reached a socket that was already gone and TCP answered
+# with an RST. Concurrency is what widens that window, because the loop's
+# pass gets longer: on the broken server 17 of 20 reset, and 100 of 100. On
+# a fixed one none do at any width, so 64 is decisive without being slow --
+# and `poe stress-asgi` drives this probe every round, so it has to be both.
+CLOSE_CONNS = 64
+
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8088"))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+# Which phase is running, for the crash handler below. The 2026-08-30 CI
+# failure was an unhandled ConnectionResetError, and its traceback named a
+# line in `recv_exact` -- a helper four phases share -- so the log said
+# which CALL reset and not which PHASE was being proven. That is the
+# difference between "the flood connection was reset while the client
+# stalled" and "something, somewhere, reset".
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
 
 
 def fail(msg):
@@ -139,6 +163,7 @@ def handshake(path, what):
 
 
 def main():
+    phase("the echo connection's handshake")
     sock = socket.create_connection((HOST, PORT), timeout=10)
     key = base64.b64encode(os.urandom(16)).decode()
     sock.sendall(
@@ -172,6 +197,7 @@ def main():
         if not accept_line or accept_line[0].split(b":", 1)[1].strip() != want.encode():
             fail("bad Sec-WebSocket-Accept")
 
+    phase("the text and binary echoes")
     send_frame(sock, 0x1, b"hello")
     op, payload = read_data_frame(sock)
     if op != 0x1 or payload != b"echo:hello":
@@ -182,6 +208,7 @@ def main():
     if op != 0x2 or payload != bytes([0, 1, 255, 128]):
         fail("binary echo wrong: op=%d payload=%r" % (op, payload))
 
+    phase("the app-initiated close handshake")
     send_frame(sock, 0x1, b"bye")
     op, payload = read_data_frame(sock)
     if op != 0x8:
@@ -212,6 +239,7 @@ def main():
     # bytes delivered under a clean close frame, a message stream with
     # holes the peer had no protocol-level way to detect. The send window
     # makes the application wait instead, so the count here is exact.
+    phase("the flood connection (a stalled client against a flooding app)")
     sock = handshake("/ws/flood", "the flood connection")
     time.sleep(2.0)          # stall: the outbox is the only place to go
     got = frames = 0
@@ -248,6 +276,65 @@ def main():
         fail("flood: the app's close(1000) never arrived")
     sock.close()
 
+    # --- close order: a Close reply must not be met with an RST ---------
+    # RFC 6455 §5.5.1 has the endpoint that sends Close FIRST wait to
+    # RECEIVE one before closing the connection. Closing straight after the
+    # send instead means the peer's reply lands on a socket that is already
+    # gone, and the RST that answers it flushes the peer's receive queue --
+    # taking our FIN with it and, on a client far enough behind, the Close
+    # frame itself. Measured against the `websockets` library at this width
+    # before the fix: 33 of 200 saw `no close frame received or sent`
+    # instead of the application's own code 1000, so this is not merely a
+    # strict probe being strict.
+    #
+    # Concurrent because that is what widens the window: one connection at
+    # a time, a fast loop closes before the reply is even sent, and the bug
+    # hides. It hid for two investigations.
+    phase("the close order under %d concurrent closes" % CLOSE_CONNS)
+    outcomes = []
+    outcomes_lock = threading.Lock()
+    gate = threading.Barrier(CLOSE_CONNS)
+
+    def close_once():
+        result = "?"
+        try:
+            conn = handshake("/ws", "a close-order connection")
+            gate.wait()
+            send_frame(conn, 0x1, b"bye")
+            op, body = read_data_frame(conn)
+            if op != 0x8:
+                result = "op=0x%x, not a close frame" % op
+            else:
+                send_frame(conn, 0x8, body[:2])
+                conn.settimeout(10)
+                result = "FIN" if conn.recv(1024) == b"" else "trailing bytes"
+            conn.close()
+        except ConnectionResetError:
+            # The finding: our close reply was answered with a reset.
+            result = "RST"
+        except Exception as exc:
+            result = type(exc).__name__
+        with outcomes_lock:
+            outcomes.append(result)
+
+    workers = [threading.Thread(target=close_once) for _ in range(CLOSE_CONNS)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    clean = outcomes.count("FIN")
+    if clean != CLOSE_CONNS:
+        summary = ", ".join(
+            "%dx %s" % (outcomes.count(o), o) for o in sorted(set(outcomes))
+        )
+        fail(
+            "close order: %d of %d closes ended in a clean FIN (%s) -- the "
+            "server is closing before the peer's Close reply, and the RST "
+            "that answers the reply discards the close frame with it"
+            % (clean, CLOSE_CONNS, summary)
+        )
+
+    phase("the abrupt disconnect")
     # Second connection: vanish abruptly after the 101, no close
     # handshake — the disconnect tag must cancel the app task and the
     # server must stay healthy (the smoke checks health right after).
@@ -276,4 +363,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except OSError as exc:
+        # A reset rather than a clean FIN means the server closed a socket
+        # with bytes still queued on it, which the kernel turns into an RST
+        # (CLAUDE.md, the chunked-trailer rule). Reported as a finding with
+        # its phase, because a bare traceback costs the next investigator
+        # the reproduction -- and this probe is driven N times a round by
+        # `poe stress-asgi`, where the round number alone is not enough.
+        import traceback
+        traceback.print_exc()
+        fail("%s: %r" % (PHASE, exc))

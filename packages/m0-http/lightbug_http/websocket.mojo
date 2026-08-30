@@ -442,18 +442,26 @@ struct WSState(Movable):
     var frag_payload: List[UInt8]
     """Accumulated payload of the in-progress fragmented message."""
     var max_message_size: Int
+    var closing: Bool
+    """True once THIS side has sent a Close frame and is waiting for the
+    peer's. RFC 6455 §5.5.1: the endpoint that sends Close first waits to
+    RECEIVE one before closing the underlying connection. The loop reads it
+    to know that a Close arriving now needs no echo — the echo is what this
+    side already sent — and that the slot is lingering rather than idle."""
 
     def __init__(out self, max_message_size: Int):
         self.buffer = List[UInt8]()
         self.frag_opcode = -1
         self.frag_payload = List[UInt8]()
         self.max_message_size = max_message_size
+        self.closing = False
 
     def reset(mut self):
         """Back to a fresh connection's state (slot reuse)."""
         self.buffer.clear()
         self.frag_opcode = -1
         self.frag_payload.clear()
+        self.closing = False
 
     def _fail(mut self, code: Int) -> WSParseResult:
         var res = WSParseResult()

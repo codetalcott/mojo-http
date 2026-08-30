@@ -7,6 +7,52 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A WebSocket the server closes now ends in a FIN, not an RST.** When an
+  application sent `websocket.close(1000)`, the loop wrote its Close frame
+  and closed the TCP connection in the same pass — before the peer could
+  reply. The reply then reached a socket that was already gone, TCP answered
+  with an RST, and that reset flushed the peer's receive queue, taking the
+  FIN with it and, for a client far enough behind, the Close frame itself:
+  against the `websockets` library at 200 concurrent closes, 33 of 200 saw
+  `ConnectionClosedError: no close frame received or sent` instead of the
+  application's own code 1000. The loop now follows RFC 6455 §5.5.1's order
+  — having sent Close, it waits to receive one, bounded by a 2 s deadline so
+  a peer that never replies cannot hold the slot. Measured after: 0 resets
+  at 20, 50, 100 and 200 concurrent closes, and 200 of 200 clean `code=1000`
+  from the real client. `ws_probe.py` gained a close-order phase (64
+  concurrent closes, all required to end in a clean FIN) which reports 2 of
+  64 against the unfixed server.
+
+### Changed
+
+- **`poe stress-asgi` covers the WebSocket path, in both loop modes.** The
+  pre-release timing gate drove `chunked_keepalive.py` only, so the seam a
+  2026-08-30 CI flake landed in — the WS path, the loop inversion and CPU
+  contention together — was gated by nothing. Each round now runs
+  `chunked_keepalive.py` and then `apps/asgi_bare/ws_probe.py`, so the
+  handshake lands on the slot the streamed connection just released, and the
+  whole loop runs on the pump and again under `M0_INVERTED=1` (asserted from
+  the banner, not assumed from the variable), at `smoke-asgi`'s 300 ms
+  heartbeat so a timer is queueing frames into the outbox the application is
+  filling. A failure names its mode, round and probe, and
+  `M0_STRESS_MODES=inverted` reruns just the half that failed. Reverting the
+  `websocket.send` credit gate fails the new gate on round 1 — 15 of 400
+  frames — and passed the old one 30 of 30. It did not reproduce locally
+  (150 rounds per mode across three runs, up to 40 CPU hogs on 10 cores, all
+  green) but **did reproduce on CI**, where the probe's new phase stamp named
+  it at once: see "A WebSocket close races the peer's close reply" under
+  ROADMAP's Known issues.
+- **`ws_probe.py` reports the phase it failed in.** The CI failure was an
+  unhandled `ConnectionResetError` whose traceback named `recv_exact`, a
+  helper four phases share. A reset is now a finding carrying its phase —
+  and, being an `OSError` rather than an `EOFError`, it no longer bypasses
+  the flood phase's frame-count diagnosis in silence. It earned its keep
+  immediately: the next occurrence named **the app-initiated close
+  handshake**, which is a different phase from the one two investigations
+  had assumed, and is what identified the underlying bug.
+
 ## [0.15.0] — 2026-08-29
 
 The Mojo-native release: the tier for handlers written in Mojo grows the

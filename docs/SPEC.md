@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**141 capabilities: 108 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 108 verified, 106 are gated on every pull request, 1 weekly, and 1 before a release.
+**142 capabilities: 109 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 109 verified, 107 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -249,12 +249,13 @@ whose body drifted away from it is the case most likely to have survived.
 | L6 | Streaming responses stream, credit-gated per stream and in total | verified | `Conformance test the ASGI bridge` (every PR) |
 | L7 | Slot ownership across recycled connections, sabotage-proven | verified | `Run unit tests` (every PR) — `poe test-shim` drives the extracted shim through real socketpairs and reverts each rule |
 | L8 | The event loop running inside asyncio (`M0_INVERTED`) | verified | `Smoke test the ASGI executor under the loop inversion` (every PR) |
-| L9 | Slot ownership under CPU contention | verified | `stress-asgi` (pre-release) |
+| L9 | Slot ownership under CPU contention, on the streamed AND WebSocket paths, in both loop modes | verified | `stress-asgi` (pre-release) — each round runs `chunked_keepalive.py` then `ws_probe.py`, so the handshake lands on the slot the streamed connection just released; run under CPU hogs on the pump and again under `M0_INVERTED=1` |
 | L10 | Django's own ASGI handler through the executor | verified | `Serve a Django ASGI project through the executor` (every PR) |
 | L11 | Starlette-family app (FastHTML) through the executor | verified | `Serve a FastHTML app through the ASGI bridge` (every PR) |
 | L12 | Cross-worker pub/sub as `scope["state"]["m0"]` | verified | `ASGI cross-worker fan-out over the BroadcastBus` (every PR) |
 | L13 | `http.response.pathsend` | out of scope | `--static` serves files in Mojo ahead of the application, which is the same saving without the extension |
 | L14 | `http.response.zerocopysend`, `early_hint`, `trailers` | out of scope | no application has asked; the extensions are additive and can be taken later |
+| L15 | An app-initiated close ends in a FIN, not an RST (RFC 6455 §5.5.1's order) | verified | `Conformance test the ASGI bridge` (every PR) — `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server |
 
 ## M. Deployment and operations
 

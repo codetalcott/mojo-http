@@ -6,7 +6,8 @@
 # the release path is rehearsed (docs/RELEASING.md, memory: "prefer local
 # container verification"). First run 2026-08-28: linux/aarch64, CPython
 # 3.13.11 -- smoke-asgi OK with 0 KB RSS over 10k requests, the recycled-slot
-# probe OK, stress-asgi 30/30 under 8 hogs.
+# probe OK, stress-asgi 30/30 under 8 hogs (that run predates the gate's
+# WebSocket half, so a rerun now covers strictly more).
 #
 #   colima start --cpu 4 --memory 8
 #   docker run --rm -v "$PWD":/src:ro ghcr.io/astral-sh/uv:python3.13-bookworm \
@@ -41,6 +42,9 @@ curl -s --retry 30 --retry-delay 1 --retry-all-errors -m 5 -o /dev/null -w 'read
 head -3 /tmp/inv_epoll.log
 M0_PORT=8299 uv run python3 scripts/chunked_keepalive.py 2>&1 | tail -1
 kill -TERM $pid; wait $pid || true
-echo "=== inverted stress-asgi on epoll ==="
-M0_INVERTED=1 uv run poe stress-asgi 2>&1 | tail -2
+# stress-asgi drives both loop modes itself now, and sets M0_INVERTED per
+# mode -- so an M0_INVERTED=1 out here would be inert rather than selecting
+# anything. Both modes on epoll is what this line is for.
+echo "=== stress-asgi (both modes, streamed + WebSocket) on epoll ==="
+uv run poe stress-asgi 2>&1 | tail -4
 echo "=== epoll check done ==="

@@ -390,6 +390,19 @@ lightbug_http
         completions from one datagram (`complete_many`) into a buffer
         sized for a full batch.
 
+      - event_loop.mojo / websocket.mojo: a WebSocket the SERVER closes
+        now lingers for the peer's Close reply rather than closing at
+        once. RFC 6455 5.5.1 has the endpoint that sends Close first wait
+        to receive one; closing immediately meant the peer's reply reached
+        a socket that was gone, and the RST answering it discarded our FIN
+        and, for a client far enough behind, the Close frame itself.
+        `WSState.closing` marks the wait, the three stream-ended close
+        sites and `_after_send`'s should_close branch set a
+        `WS_CLOSE_LINGER_NS` deadline in `slot_idle_deadline` (a
+        WebSocket's is otherwise 0, so a non-zero one IS the linger) and
+        leave the read armed, and the read path drops the parser's close
+        echo because this side already sent one.
+
       - connection.mojo's ListenConfig gained `reuse_port` (default False:
         SO_REUSEPORT had been set unconditionally, so a second server on a
         busy port bound beside the first) and `quiet` (suppresses the

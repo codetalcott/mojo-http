@@ -1859,6 +1859,110 @@ otherwise be invisible to whoever picks this hypothesis up.
 
 ## Recently resolved
 
+- ~~**A WebSocket close races the peer's close reply, and loses as an RST**~~
+  — **fixed 2026-08-30.** When an application sent `websocket.close(1000)`
+  the loop wrote its Close frame and closed the TCP connection in the same
+  pass, before a reply could exist. The peer's Close then arrived at a socket
+  that was gone, TCP answered with an RST, and that reset flushed the peer's
+  receive queue — taking our FIN with it and, for a client far enough behind,
+  the Close frame itself. Against the `websockets` library at 200 concurrent
+  closes: 167 clean `code=1000`, **33 `ConnectionClosedError: no close frame
+  received or sent`** — the application's own close destroyed in transit.
+
+  Two hypotheses were tested and one was wrong, which is why both are
+  written down. The first was that the reply was sitting unread at close
+  time and that closing with unread data queued is what turns a FIN into an
+  RST; draining the receive buffer immediately before `close` changed
+  nothing (98 of 100 still reset). What settled it was the client that sends
+  **nothing** back: 100 of 100 clean FINs. The server was never losing a
+  race to read — it was closing before there was anything to read, and the
+  reset was provoked by the reply hitting a closed socket.
+
+  The fix is RFC 6455 §5.5.1's order: having sent Close, wait to RECEIVE
+  one, then close. `WSState.closing` marks the wait; the three stream-ended
+  close sites and `_after_send`'s `should_close` branch set a 2 s deadline
+  in `slot_idle_deadline` and leave the read armed, so the peer's Close
+  closes the slot and the existing idle sweep reaps a peer that never
+  replies. It needs no new state: a WebSocket's idle deadline is otherwise
+  0, so a non-zero one IS the linger. With idle timeouts switched off there
+  is nothing to bound the wait, so that configuration keeps the old
+  behaviour rather than leaking a slot.
+
+  Measured after: 0 of 20, 50, 100 and 200 concurrent closes reset, and the
+  `websockets` library sees 200 of 200 clean `code=1000`. `ws_probe.py`
+  gained a close-order phase — 64 concurrent app-initiated closes, every one
+  required to end in a clean FIN — which is `smoke-asgi` on every PR and
+  `stress-asgi` every round; against the unfixed server it reports 2 of 64.
+  Concurrency is load-bearing in that guard: one close at a time passes on
+  the broken server, which is how this hid through two investigations.
+
+- ~~**The WebSocket path is not stressed**~~ — **closed 2026-08-30.**
+  `poe stress-asgi` drove `chunked_keepalive.py` and nothing else, so the
+  pre-release timing gate never touched the WebSocket seam — and the CI flake
+  of 2026-08-30 (macOS, `M0_INVERTED=1`, a connection reset in
+  `apps/asgi_bare/ws_probe.py`) landed in exactly the combination that left
+  uncovered: the WS path, the loop inversion and sustained contention
+  together. A flake by every check available — first in twelve runs, a rerun
+  of the identical commit green on both platforms — but the precedent cuts the
+  wrong way, since the slot-ownership race is on record as having passed CI
+  while live and this gate exists because of it.
+
+  **The gate now covers it.** Each round runs `chunked_keepalive.py` and then
+  `ws_probe.py`, so the WebSocket handshake lands on the slot the streamed
+  connection just released — the recycled-slot shape the streamed half already
+  had, with a held 101 on the successor instead of another stream — and the
+  whole loop runs twice, on the pump and under `M0_INVERTED=1`. Three details
+  are load-bearing rather than incidental:
+
+  - **Two modes, two ports.** `SO_REUSEPORT` means a restart that overlaps its
+    predecessor binds anyway and silently splits the connections, and the
+    inverted server's drain deadline is 5 s, so the overlap is not
+    hypothetical.
+  - **The inverted mode asserts the banner**, rather than trusting that
+    exporting the variable did anything. The inversion is gated on a topology
+    (unmounted, pool-free, no `--realtime`); if that gate ever moves, the
+    variable is ignored in silence and the mode proves the pump a second time
+    while reporting itself as the inverted one.
+  - **The server runs at `smoke-asgi`'s 300 ms heartbeat**, not the default,
+    because the run that failed had it: a WS slot gets a protocol PING on that
+    cadence, so the flood phase's two-second stall has a timer-driven second
+    writer queueing into the same outbox the application is filling.
+
+  **Sabotaged both ways, and the coverage gap is measured rather than
+  argued.** Reverting the `websocket.send` credit gate (`_ws_spend` returning
+  before it waits) fails the new gate on round 1 with an exact count — 15 of
+  400 frames, 61,440 of 1,638,400 bytes — and **passed the old chunked-only
+  gate 30 of 30 under 8 hogs**. Making `M0_INVERTED` never match is caught by
+  the banner assert before a round runs.
+
+  **The flake reproduced — on this change's own CI run — and it is a real
+  server bug.** It did NOT reproduce locally: three runs on macOS arm64 (10
+  cores, CPython 3.13), 150 rounds per mode, 300 WebSocket probe runs, all
+  green. What cracked it was the probe's new phase stamp, which named the
+  phase on the first CI failure after it existed: **the app-initiated close
+  handshake**, not the flood phase everyone had been looking at. See
+  "A WebSocket close races the peer's close reply" under Known issues.
+
+  The local negative is still worth its numbers, because it says what this
+  gate can and cannot do. The gate DOES drive the failing path — every round
+  runs the close handshake — so this is not a coverage gap a further widening
+  would close. It is the machine: ten fast cores where CI's macOS runner is
+  three shared virtualized ones, and the server wins the race every time here.
+  `scripts/epoll_inverted_check.sh` picks the new coverage up for free on
+  Linux the next time it runs.
+
+  **The probe's own diagnosis was thinner than the failure deserved**, and was
+  improved on the way past. The CI traceback named a line in `recv_exact`, a
+  helper four phases share, so the log said which call reset and not which
+  phase was being proven; and `ConnectionResetError` is not `EOFError`, so the
+  flood phase's careful "N of 400 frames arrived" diagnosis is skipped
+  entirely when the close arrives as an RST rather than a FIN — which is what
+  the kernel sends for a socket closed with bytes still queued. `ws_probe.py`
+  now stamps a phase and reports an `OSError` as a finding carrying it. This
+  changes nothing about what passes; it changes what the next failure says,
+  and `poe stress-asgi` drives this probe hundreds of times a run, where a
+  round number alone would not be enough.
+
 - ~~**`--app-dir` is appended to `sys.path`, not prepended**~~ — **fixed
   2026-08-26.** It appended where gunicorn, uvicorn and `runserver` all
   `sys.path.insert(0, ...)`, so an application module could be shadowed by

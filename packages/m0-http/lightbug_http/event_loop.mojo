@@ -62,6 +62,11 @@ comptime TIMER_SSE_HEARTBEAT: UInt = 0x400000
 comptime TIMER_APP_TICK: UInt = 0x500000
 
 comptime MAX_EVENTS = 64
+# How long a WebSocket that this side has closed waits for the peer's Close
+# reply before the idle sweep reaps it. Bounded because a peer that never
+# replies must not hold the slot; two seconds is far past any real round
+# trip, and a peer that replies promptly frees the slot in one.
+comptime WS_CLOSE_LINGER_NS: Int = 2_000_000_000
 comptime UNUSED: Int = -1
 
 
@@ -794,6 +799,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 var ws_res = slot_ws_state[slot].feed(
                     Span(provision_pool.provisions[slot].recv_staging)
                 )
+                if len(ws_res.reply) > 0 and slot_ws_state[slot].closing:
+                    # This side already sent its Close; the parser's echo
+                    # would be a SECOND one. Drop it and let
+                    # `close_after_reply` do the closing — which is now the
+                    # RFC's moment for it, both Closes having been
+                    # exchanged.
+                    ws_res.reply.clear()
                 if len(ws_res.reply) > 0:
                     # Pongs and close echoes are tiny; a send failure that
                     # isn't EAGAIN means the client is gone. A dropped
@@ -1287,6 +1299,44 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                                 slot_read_armed, slot_idle_deadline,
                                 date_cache_sec, date_cache, offload,
                             )
+                        elif slot_ws[s] and config.idle_timeout > 0:
+                            # The application's Close frame is on the wire.
+                            # Closing the connection HERE — which is what this
+                            # did — closes it before the peer could possibly
+                            # reply, and the reply then arrives at a socket
+                            # that is fully closed, which TCP answers with an
+                            # RST. That reset flushes the peer's receive
+                            # queue, discarding our FIN and, on a client far
+                            # enough behind, the Close frame itself: measured
+                            # against the `websockets` library at 200
+                            # concurrent closes, 33 of 200 saw
+                            # `ConnectionClosedError: no close frame received
+                            # or sent` instead of the app's own code 1000.
+                            #
+                            # RFC 6455 §5.5.1 is the other order: having sent
+                            # Close, wait to RECEIVE one, and only then close.
+                            # So the slot lingers, read still armed, until the
+                            # peer's Close arrives (the read path closes it) or
+                            # the grace expires (the idle sweep does). It needs
+                            # no state of its own — a WebSocket's idle deadline
+                            # is otherwise 0, so a non-zero one IS the linger.
+                            #
+                            # Gated on `idle_timeout > 0` because the sweep
+                            # that reaps the linger is: with idle timeouts off
+                            # there is nothing to bound a peer that never
+                            # replies, and holding the slot forever is worse
+                            # than the reset. That configuration keeps the old
+                            # behaviour rather than getting a silent leak.
+                            slot_ws_state[s].closing = True
+                            slot_idle_deadline[s] = (
+                                perf_counter_ns() + WS_CLOSE_LINGER_NS
+                            )
+                            if not slot_read_armed[s]:
+                                backend.try_add_read(slot_fds[s])
+                                slot_read_armed[s] = True
+                            provision_pool.provisions[s].state = (
+                                ConnectionState.streaming_ws()
+                            )
                         else:
                             _close_slot(
                                 backend, handler, s, slot_fds[s],
@@ -1310,8 +1360,12 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     if ended and not framed:
                         # The rest of the final buffer flushes through
                         # the write-ready path; _after_send's existing
-                        # should_close branch closes it there.
+                        # should_close branch closes it there — or lingers
+                        # it, for a WebSocket, on the same `closing` flag
+                        # the landed-whole branch above sets.
                         provision_pool.provisions[s].should_close = True
+                        if slot_ws[s] and config.idle_timeout > 0:
+                            slot_ws_state[s].closing = True
                     elif ended and framed:
                         # Same flush, but the message ends with the
                         # terminator already in this buffer — so the
@@ -1326,12 +1380,25 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 # unframed: a framed stream always has a terminator to
                 # write, so `out` is never empty when it ends.
                 offload.clear_stream(s)
-                _close_slot(
-                    backend, handler, s, slot_fds[s],
-                    slot_fds, fd_to_slot, provision_pool,
-                    active_count, metrics,
-                    slot_sse, slot_ws, slot_ws_state,
-                )
+                if slot_ws[s] and config.idle_timeout > 0:
+                    # Same linger as the landed-whole branch above, and for
+                    # the same reason: the peer's Close reply must not reach
+                    # a socket that is already closed.
+                    slot_ws_state[s].closing = True
+                    slot_idle_deadline[s] = perf_counter_ns() + WS_CLOSE_LINGER_NS
+                    if not slot_read_armed[s]:
+                        backend.try_add_read(slot_fds[s])
+                        slot_read_armed[s] = True
+                    provision_pool.provisions[s].state = (
+                        ConnectionState.streaming_ws()
+                    )
+                else:
+                    _close_slot(
+                        backend, handler, s, slot_fds[s],
+                        slot_fds, fd_to_slot, provision_pool,
+                        active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
     # The recount: what this sweep saw flagged is the bound for the next
     # pass. Nothing between the top of the sweep and here sets a flag
     # (`_finish_response` is not on this path), so a stream that begins
@@ -2941,6 +3008,20 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
                 elapsed_us,
                 slot_send_offset[slot],
             )
+        if slot_ws[slot] and slot_ws_state[slot].closing:
+            # The tail of this side's Close frame has landed. Same linger as
+            # the drain's own two close sites: wait for the peer's Close
+            # rather than resetting its reply off the wire.
+            slot_response[slot] = Bytes()
+            slot_send_offset[slot] = 0
+            provision_pool.provisions[slot].state = (
+                ConnectionState.streaming_ws()
+            )
+            slot_idle_deadline[slot] = perf_counter_ns() + WS_CLOSE_LINGER_NS
+            if not slot_read_armed[slot]:
+                backend.try_add_read(fd_val)
+                slot_read_armed[slot] = True
+            return
         _close_slot(
             backend, handler, slot, fd_val,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,

@@ -313,11 +313,17 @@ code depends on:
     `--sabotage` reverts each rule in the extracted source and insists
     the suite fails for every one, so a renamed or deleted guard line is
     itself a failure. `poe stress-asgi` is the timing half and is
-    deliberately NOT in CI (`chunked_keepalive.py` N times under CPU
-    hogs: round 5 of 15 on the broken build, 45 of 45 on this one) —
-    shared runners cannot reproduce this reliably, which is exactly why
-    CI passed with the bug live; it is a pre-release step
-    (docs/RELEASING.md). **Every frame this seam cannot place is
+    deliberately NOT in CI (round 5 of 15 on the broken build, 45 of 45
+    on this one) — shared runners cannot reproduce this reliably, which
+    is exactly why CI passed with the bug live; it is a pre-release step
+    (docs/RELEASING.md). Each of its rounds runs `chunked_keepalive.py`
+    and then `ws_probe.py`, so the WebSocket handshake lands on the slot
+    the streamed connection just released, and the whole thing runs
+    twice — on the pump and under `M0_INVERTED=1`, which the mode
+    asserts from the banner rather than trusting the variable. The
+    WebSocket half is not decorative: with the `websocket.send` credit
+    gate reverted the streamed rounds passed 30 of 30 and the WS round
+    failed on the first. **Every frame this seam cannot place is
     terminal and named** — the result of `_send_chunk_frame` is never
     discarded, and neither is `queue_frame`'s refusal in the loop
     handler's `s`/`w` branches. Each was measured both ways: a dropped
@@ -552,7 +558,7 @@ uv run poe                  # list every task
 uv run poe build-all        # each package -> .mojoc, in dependency order
 uv run poe test-all         # builds first, then runs all tests
 uv run poe test-shim        # the executor shim's ownership rules, sabotage-proven
-uv run poe stress-asgi      # PRE-RELEASE: N streamed rounds under CPU hogs (not in CI)
+uv run poe stress-asgi      # PRE-RELEASE: N streamed + WebSocket rounds, both loop modes
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers
@@ -989,6 +995,26 @@ Properties of the design, not defects to fix in passing:
   RESPONDING and exits). The blocking path has the same fix in its own
   shape — it parses preserved bytes before blocking on a socket that may
   never speak again. `poe smoke-pipelining` pins all of it.
+- **A WebSocket this side closes LINGERS for the peer's Close reply.** RFC
+  6455 §5.5.1: the endpoint that sends Close first waits to RECEIVE one
+  before closing the connection. Closing as soon as the Close frame drained
+  — which is what the loop did — closes the socket before a reply can exist,
+  so the reply reaches a socket that is gone and TCP answers with an RST;
+  that reset flushes the peer's receive queue, taking the FIN and, for a
+  client far enough behind, the Close frame itself (33 of 200 concurrent
+  closes reached the `websockets` library as `no close frame received or
+  sent` rather than the app's own 1000). `WSState.closing` marks the wait,
+  and the three stream-ended close sites plus `_after_send`'s
+  `should_close` branch set a `WS_CLOSE_LINGER_NS` deadline in
+  `slot_idle_deadline` — a WebSocket's is otherwise 0, so a non-zero one IS
+  the linger, and the existing idle sweep reaps a peer that never replies.
+  Two consequences worth keeping straight: with idle timeouts off there is
+  nothing to bound the wait, so that configuration deliberately keeps the
+  old close-at-once behaviour rather than leaking a slot; and the read path
+  drops the parser's close echo while `closing`, because this side already
+  sent one. `ws_probe.py`'s close-order phase is the guard and its
+  CONCURRENCY is load-bearing — one close at a time passes on the broken
+  server, which is how this survived two investigations.
 - **A chunked request body ends where RFC 9112 says it ends**, because the
   request decoder is built with `consume_trailer = True`. Without it the
   decode completed at `0\r\n` and the terminating `\r\n` every conforming

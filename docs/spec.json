@@ -965,9 +965,9 @@
       "id": "L9",
       "section": "L",
       "category": "L. ASGI 3.0",
-      "capability": "Slot ownership under CPU contention",
+      "capability": "Slot ownership under CPU contention, on the streamed AND WebSocket paths, in both loop modes",
       "status": "verified",
-      "evidence": "`stress-asgi` (pre-release)"
+      "evidence": "`stress-asgi` (pre-release) \u2014 each round runs `chunked_keepalive.py` then `ws_probe.py`, so the handshake lands on the slot the streamed connection just released; run under CPU hogs on the pump and again under `M0_INVERTED=1`"
     },
     {
       "id": "L10",
@@ -1008,6 +1008,14 @@
       "capability": "`http.response.zerocopysend`, `early_hint`, `trailers`",
       "status": "out of scope",
       "evidence": "no application has asked; the extensions are additive and can be taken later"
+    },
+    {
+      "id": "L15",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An app-initiated close ends in a FIN, not an RST (RFC 6455 \u00a75.5.1's order)",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server"
     },
     {
       "id": "M1",
