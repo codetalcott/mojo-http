@@ -965,9 +965,9 @@
       "id": "L9",
       "section": "L",
       "category": "L. ASGI 3.0",
-      "capability": "Slot ownership under CPU contention",
+      "capability": "Slot ownership under CPU contention, on the STREAMED path",
       "status": "verified",
-      "evidence": "`stress-asgi` (pre-release)"
+      "evidence": "`stress-asgi` (pre-release) \u2014 it drives `chunked_keepalive.py` only; the WebSocket path is not stressed"
     },
     {
       "id": "L10",

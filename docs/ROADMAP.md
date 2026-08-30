@@ -1606,6 +1606,29 @@ a test added next month will not update the sheet, and nothing will notice --
 the reverse check fires when a whole CI step goes uncited, not when one
 capability quietly drifts away from the gate that used to prove it.
 
+### The WebSocket path is not stressed
+
+`poe stress-asgi` is the pre-release gate for the executor's timing races —
+deliberately not in CI, because shared runners cannot reproduce them, "which is
+exactly why CI passed with the bug live". It drives `chunked_keepalive.py` for
+N rounds under CPU hogs. It does not touch the WebSocket path.
+
+On 2026-08-30 a CI macOS run failed in `apps/asgi_bare/ws_probe.py` under
+`M0_INVERTED=1` with a connection reset. It was a flake by every check
+available — first in twelve runs, a rerun of the identical commit went green on
+both platforms, and six local rounds under six CPU hogs did not reproduce it —
+but it landed in the one combination nothing gates: the WebSocket path, the
+loop inversion, and sustained CPU contention together.
+
+That combination is worth closing rather than arguing about, because the
+precedent cuts the wrong way: the slot-ownership race is on record as having
+passed CI while live, and `stress-asgi` exists because of it.
+
+`SPEC.md` row L9 has been narrowed to say what its gate actually covers — the
+streamed path — and widening it back is what "done" looks like.
+`.claude/handoffs/asgi-ws-stress-gap.md` carries the evidence already gathered
+so it is not gathered twice.
+
 ## Open questions
 
 ### The desktop-Mac server, and what the wheel gives up to ship
