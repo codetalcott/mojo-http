@@ -612,9 +612,10 @@ Adding a measurement is one line beside the `echo` that already computes it.
 Do not add one that can fail, and do not make a gate depend on a recorded
 value — the gate stays the `[ "$x" -lt "$limit" ] || fail` beside it.
 
-`docs/SPEC.md` is the public capability matrix and the same philosophy applied
-to claims rather than numbers. One row per capability, four status words
-(`verified`, `implemented`, `planned`, `out of scope`), and every row names its
+`docs/SPEC.md` is the public capability matrix -- a requirements traceability
+matrix, and the same philosophy applied to claims rather than numbers. One row
+per capability, a permanent **id** (`A7`), four status words (`verified`,
+`implemented`, `planned`, `out of scope`), and every row names its
 evidence: a `test.yml` **step name** plus a cadence, a `test_x.mojo:test_fn`
 that must exist, a `docs/ROADMAP.md` heading that must resolve, or a reason.
 `scripts/spec_sheet.py` holds the rules and `check_spec_sheet` forwards them.
@@ -633,6 +634,16 @@ Three things about it are load-bearing:
   flag cannot ship unrecorded. A gate that `exit 0`s on a missing import must
   have that module in `[dependency-groups] dev`, or it is green having tested
   nothing.
+- **Refer to a row by its id, never its prose.** Ids are assigned once, never
+  renumbered and never reused -- a deleted row's id is retired, so an id in an
+  old commit still means what it meant. This exists because prose keys broke
+  things twice: sabotages quoting a row reported NOT APPLICABLE the moment an
+  audit legitimately re-pointed it. Reuse is the one rule not enforced, because
+  checking it needs a ledger of retired ids that is itself a second source of
+  truth; it is written down instead. The inverse of this page -- gates
+  DECLARING what they cover rather than being cited by it -- is the phase-2
+  plan under ROADMAP's "Traceability" heading, and is what would make a
+  mis-citation structurally impossible.
 - **The rules are pure functions of text**, which is what lets
   `--sabotage` revert one in memory and insist the checker catches it —
   `shim_ownership.py`'s shape. Four of the seventeen sabotages mutate

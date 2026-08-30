@@ -2,980 +2,1128 @@
   "note": "Generated from docs/SPEC.md by scripts/spec_sheet.py. `verified` means a named CI gate exercises the capability on the stated cadence, not that it is correct.",
   "capabilities": [
     {
-      "id": "A",
+      "id": "A1",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Persistent connections (keep-alive)",
       "status": "verified",
       "evidence": "`Smoke test pipelined requests` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A2",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "The example Mojo server starts and answers `/health`",
       "status": "verified",
       "evidence": "`Smoke test the hello server` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A3",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Keep-alive request cap",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/event_loop.mojo:2707` \u2014 no flag or env var exposes it"
     },
     {
-      "id": "A",
+      "id": "A4",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Idle connection timeout",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/event_loop.mojo:3029` \u2014 no gate asserts a connection is closed for idling; `smoke-header-timeout` asserts the inverse, that a keep-alive gap is not closed"
     },
     {
-      "id": "A",
+      "id": "A5",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Header read timeout (slowloris defence)",
       "status": "verified",
       "evidence": "`Smoke test the header read timeout` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A6",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Request pipelining, answered in order (RFC 9112 \u00a79.3)",
       "status": "verified",
       "evidence": "`Smoke test pipelined requests` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A7",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Chunked request bodies, decoded incrementally across reads",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_incremental_decode_matches_a_single_pass` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A8",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Chunked decode consumes the terminator, leaving nothing buffered",
       "status": "verified",
       "evidence": "`test_chunked_encode.mojo:test_round_trip_single_chunk` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A9",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Chunked response bodies",
       "status": "verified",
       "evidence": "`Smoke test streamed WSGI bodies` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A10",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Trailer fields consumed and discarded, not surfaced to the application",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/http/chunked.mojo:157` \u2014 the round-trip tests set `consume_trailer` but their wire carries no trailer section"
     },
     {
-      "id": "A",
+      "id": "A11",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "`Expect: 100-continue`",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/server.mojo:650` and `event_loop.mojo:1800` \u2014 no test or smoke exercises it"
     },
     {
-      "id": "A",
+      "id": "A12",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Half-close answered rather than dropped",
       "status": "verified",
       "evidence": "`Smoke test a half-closed client` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A13",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Request headers larger than one socket read",
       "status": "verified",
       "evidence": "`Smoke test a request larger than one read` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A14",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "`Host` required on HTTP/1.1",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_http11_requires_a_non_empty_host` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A15",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "absolute-form request target reduced to its path",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_absolute_form_target_is_reduced_to_its_path` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A16",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Malformed field lines rejected, not treated as incomplete",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_a_field_line_without_a_colon_is_invalid_not_incomplete` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A17",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Control bytes in the request target rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_a_control_byte_in_the_request_target_is_invalid` (every PR)"
     },
     {
-      "id": "A",
+      "id": "A18",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "HTTP/2",
       "status": "out of scope",
       "evidence": "terminate at a proxy \u2014 gunicorn's answer, and the same one applies here"
     },
     {
-      "id": "A",
+      "id": "A19",
+      "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "HTTP/3 and QUIC",
       "status": "out of scope",
       "evidence": "follows HTTP/2; there is no TLS layer to build it on"
     },
     {
-      "id": "B",
+      "id": "B1",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "`Content-Length` with `Transfer-Encoding` rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_content_length_with_transfer_encoding_is_rejected` (every PR)"
     },
     {
-      "id": "B",
+      "id": "B2",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "Duplicate `Content-Length` rejected, including across letter case",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_duplicate_content_length_is_rejected_across_letter_case` (every PR)"
     },
     {
-      "id": "B",
+      "id": "B3",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "`Transfer-Encoding` whose last coding is not `chunked` rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR)"
     },
     {
-      "id": "B",
+      "id": "B4",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "Header padding does not bypass the smuggling check",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_padded_headers_do_not_bypass_the_smuggling_check` (every PR)"
     },
     {
-      "id": "B",
+      "id": "B5",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "Bare LF in a chunk extension rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_bare_lf_in_a_chunk_extension_is_rejected` (every PR)"
     },
     {
-      "id": "B",
+      "id": "B6",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "`Content-Length` integer overflow rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_overflowing_content_length_is_rejected` (every PR)"
     },
     {
-      "id": "B",
+      "id": "B7",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "Chunk size with the sign bit set rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_chunk_size_with_the_sign_bit_set_is_rejected` (every PR)"
     },
     {
-      "id": "B",
+      "id": "B8",
+      "section": "B",
       "category": "B. Request smuggling (CWE-444)",
       "capability": "External desync suite (PortSwigger, h2spec)",
       "status": "planned",
       "evidence": "ROADMAP: A conformance-suite tier"
     },
     {
-      "id": "C",
+      "id": "C1",
+      "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "Max request body size, configurable",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--max-body`"
     },
     {
-      "id": "C",
+      "id": "C2",
+      "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "Chunk size limited to 16 significant digits",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR)"
     },
     {
-      "id": "C",
+      "id": "C3",
+      "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "Raw chunked bytes bounded independently of decoded size",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/http/chunked.mojo:271` \u2014 the ratio guard is reachable, but no test drives the raw-byte ceiling"
     },
     {
-      "id": "C",
+      "id": "C4",
+      "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "Max header count",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_header_count_is_capped` (every PR)"
     },
     {
-      "id": "C",
+      "id": "C5",
+      "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "A slow handler does not stall connections behind it",
       "status": "verified",
       "evidence": "`Smoke test the blocking-threads pool` (every PR)"
     },
     {
-      "id": "C",
+      "id": "C6",
+      "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "Connection/request rate limiting",
       "status": "out of scope",
       "evidence": "a proxy's job; this server has no notion of a client identity to limit on"
     },
     {
-      "id": "C",
+      "id": "C7",
+      "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "HTTP/2 reset-flood limits",
       "status": "out of scope",
       "evidence": "follows from having no HTTP/2"
     },
     {
-      "id": "D",
+      "id": "D1",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "SIGTERM drains in-flight requests",
       "status": "verified",
       "evidence": "`Smoke test graceful shutdown` (every PR)"
     },
     {
-      "id": "D",
+      "id": "D2",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "SIGTERM to the supervisor alone reaps workers",
       "status": "verified",
       "evidence": "`Smoke test graceful shutdown` (every PR)"
     },
     {
-      "id": "D",
+      "id": "D3",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "Bounded drain, naming what it abandoned",
       "status": "verified",
       "evidence": "`Smoke test streamed WSGI bodies` (every PR)"
     },
     {
-      "id": "D",
+      "id": "D4",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "SIGTERM reaches a shutdown pipe rather than killing the process",
       "status": "verified",
       "evidence": "`test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR)"
     },
     {
-      "id": "D",
+      "id": "D5",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "Development hot reload on file change",
       "status": "verified",
       "evidence": "`Smoke test hot reload` (every PR) \u2014 `--reload`, `--reload-dir`"
     },
     {
-      "id": "D",
+      "id": "D6",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "`SO_REUSEPORT` on the listener",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/socket.mojo` \u2014 opt-in, no smoke covers the zero-downtime handover it would enable"
     },
     {
-      "id": "D",
+      "id": "D7",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "Binary/hot upgrade (USR2-style overlap)",
       "status": "out of scope",
       "evidence": "needs socket handoff this server does not have; run two behind a proxy"
     },
     {
-      "id": "D",
+      "id": "D8",
+      "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "SIGHUP reload",
       "status": "out of scope",
       "evidence": "`--reload` covers development; production reload is a new process behind a proxy"
     },
     {
-      "id": "E",
+      "id": "E1",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "Multi-process prefork with a supervising parent",
       "status": "verified",
       "evidence": "`Smoke test the Django WSGI example` (every PR)"
     },
     {
-      "id": "E",
+      "id": "E2",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "Crashed workers respawned",
       "status": "verified",
       "evidence": "`test_respawn.mojo:test_respawned_worker_returns_to_the_callers_startup_path` (every PR)"
     },
     {
-      "id": "E",
+      "id": "E3",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "A spent respawn budget exits nonzero rather than looping",
       "status": "verified",
       "evidence": "`test_respawn.mojo:test_supervisor_exits_nonzero_when_respawn_budget_is_spent` (every PR)"
     },
     {
-      "id": "E",
+      "id": "E4",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "Handler thread pool behind each event loop",
       "status": "verified",
       "evidence": "`Smoke test the Mojo handler pool` (every PR)"
     },
     {
-      "id": "E",
+      "id": "E5",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "Free-threaded CPython, N loops on N threads",
       "status": "verified",
       "evidence": "`py-canary` (weekly)"
     },
     {
-      "id": "E",
+      "id": "E6",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "A GIL-enabled interpreter is refused, never warned-and-run",
       "status": "verified",
       "evidence": "`Smoke test the threaded mode's guard` (every PR)"
     },
     {
-      "id": "E",
+      "id": "E7",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "Zero-config topology defaults",
       "status": "verified",
       "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR)"
     },
     {
-      "id": "E",
+      "id": "E8",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "Max-requests worker recycling with jitter",
       "status": "out of scope",
       "evidence": "the leak it mitigates is measured instead \u2014 `smoke-django` fails on RSS growth over 10k requests"
     },
     {
-      "id": "E",
+      "id": "E9",
+      "section": "E",
       "category": "E. Process and worker model",
       "capability": "Worker lifetime / max-RSS recycling",
       "status": "out of scope",
       "evidence": "same reason as above"
     },
     {
-      "id": "F",
+      "id": "F1",
+      "section": "F",
       "category": "F. Observability",
       "capability": "Access log records cannot be forged by a value (newline, quote, backslash escaped)",
       "status": "verified",
       "evidence": "`test_log.mojo:test_a_newline_cannot_forge_a_second_log_line` (every PR)"
     },
     {
-      "id": "F",
+      "id": "F2",
+      "section": "F",
       "category": "F. Observability",
       "capability": "`--access-log` toggle",
       "status": "implemented",
       "evidence": "`packages/m0-wsgi/src/cli.mojo` \u2014 no gate exercises the flag; only the record format is unit-tested"
     },
     {
-      "id": "F",
+      "id": "F3",
+      "section": "F",
       "category": "F. Observability",
       "capability": "`--metrics` turns `/__metrics` from the application's 404 into a 200",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`"
     },
     {
-      "id": "F",
+      "id": "F4",
+      "section": "F",
       "category": "F. Observability",
       "capability": "Prometheus exposition 0.0.4: 8 counter and gauge families",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/metrics.mojo:72` \u2014 no gate reads the body, only its status"
     },
     {
-      "id": "F",
+      "id": "F5",
+      "section": "F",
       "category": "F. Observability",
       "capability": "Latency histograms on `/__metrics`",
       "status": "planned",
       "evidence": "ROADMAP: Structured CI results"
     },
     {
-      "id": "F",
+      "id": "F12",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "Coverage declared by the gate rather than cited by this page",
+      "status": "planned",
+      "evidence": "ROADMAP: Traceability: stable ids, then declared coverage"
+    },
+    {
+      "id": "F6",
+      "section": "F",
       "category": "F. Observability",
       "capability": "`--health-path` answers 200",
       "status": "verified",
       "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 `--health-path`"
     },
     {
-      "id": "F",
+      "id": "F7",
+      "section": "F",
       "category": "F. Observability",
       "capability": "Health registry with readiness aggregation",
       "status": "verified",
       "evidence": "`test_health.mojo:test_health_register_unhealthy` (every PR)"
     },
     {
-      "id": "F",
+      "id": "F8",
+      "section": "F",
       "category": "F. Observability",
       "capability": "Configuration report that exits as the server would",
       "status": "verified",
       "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 `--doctor`"
     },
     {
-      "id": "F",
+      "id": "F9",
+      "section": "F",
       "category": "F. Observability",
       "capability": "OpenTelemetry tracing",
       "status": "out of scope",
       "evidence": "no tracing context crosses the Mojo/Python seam today; a wrapper in the application is the supported route"
     },
     {
-      "id": "F",
+      "id": "F10",
+      "section": "F",
       "category": "F. Observability",
       "capability": "CI measurements recorded, rendered per run and kept as an artifact",
       "status": "verified",
       "evidence": "`Check machine-sourced doc facts` (every PR)"
     },
     {
-      "id": "F",
+      "id": "F11",
+      "section": "F",
       "category": "F. Observability",
       "capability": "The measurement recorder itself",
       "status": "verified",
       "evidence": "`Self-test the measurement recorder` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G1",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "An injected status reason phrase is emptied, not transmitted",
       "status": "verified",
       "evidence": "`test_response.mojo:test_status_reason_with_crlf_is_emptied_not_transmitted` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G2",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "A response header carrying CR, LF or NUL is dropped",
       "status": "implemented",
       "evidence": "`packages/m0-wsgi/src/response.mojo:112` \u2014 only the `has_control_bytes` predicate is unit-tested; nothing asserts the header fails to reach the wire"
     },
     {
-      "id": "G",
+      "id": "G3",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "An application's `Set-Cookie` reaches the wire verbatim",
       "status": "verified",
       "evidence": "`test_response_cookies.mojo:test_raw_line_reaches_the_wire_verbatim` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G4",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "`Proxy` request header never becomes `HTTP_PROXY` (httpoxy)",
       "status": "verified",
       "evidence": "`test_environ.mojo:test_proxy_header_is_excluded_from_the_environ` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G5",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "Path traversal rejected (`../`)",
       "status": "verified",
       "evidence": "`test_static.mojo:test_dotdot_is_rejected` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G6",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "Percent-encoded traversal rejected (`%2e%2e`)",
       "status": "verified",
       "evidence": "`test_static.mojo:test_encoded_dotdot_is_rejected` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G7",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "Reserved `x01` channel namespace refused by `publish_to_channels`",
       "status": "verified",
       "evidence": "`test_broadcast.mojo:test_publish_rejects_reserved_channel` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G8",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "...and by `BroadcastBus.publish`",
       "status": "verified",
       "evidence": "`test_broadcast.mojo:test_bus_publish_method_rejects_reserved_channel` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G9",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "API key authentication, length-checked so a repeated key fails",
       "status": "verified",
       "evidence": "`test_auth.mojo:test_a_rotation_of_the_key_is_rejected` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G10",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "CORS, configurable",
       "status": "verified",
       "evidence": "`Smoke test the notes API` (every PR)"
     },
     {
-      "id": "G",
+      "id": "G11",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "`X-Forwarded-*` / `Forwarded` parsing with a trusted-proxy allowlist",
       "status": "out of scope",
       "evidence": "the server never consults them \u2014 `REMOTE_ADDR` is the socket peer and `wsgi.url_scheme` is configuration, so there is nothing to spoof"
     },
     {
-      "id": "G",
+      "id": "G12",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "PROXY protocol v1/v2",
       "status": "out of scope",
       "evidence": "same reason: the peer address is taken from the socket"
     },
     {
-      "id": "G",
+      "id": "G13",
+      "section": "G",
       "category": "G. Security hardening",
       "capability": "Parser fuzzing in CI",
       "status": "planned",
       "evidence": "ROADMAP: A conformance-suite tier"
     },
     {
-      "id": "H",
+      "id": "H1",
+      "section": "H",
       "category": "H. TLS",
       "capability": "TLS 1.2 / 1.3 termination",
       "status": "out of scope",
       "evidence": "terminate at a proxy \u2014 gunicorn's answer, and the same one applies here"
     },
     {
-      "id": "H",
+      "id": "H2",
+      "section": "H",
       "category": "H. TLS",
       "capability": "ALPN, SNI, mTLS, OCSP stapling, certificate hot-reload",
       "status": "out of scope",
       "evidence": "all follow from not terminating TLS"
     },
     {
-      "id": "I",
+      "id": "I1",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "WebSocket handshake (RFC 6455), `Sec-WebSocket-Accept`",
       "status": "verified",
       "evidence": "`Smoke test the WebSocket echo demo` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I2",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Fragmented messages reassembled",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_fragmented_message_assembles` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I3",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Ping/pong, and a server heartbeat on a cadence",
       "status": "verified",
       "evidence": "`Smoke test the WebSocket echo demo` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I4",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Close frame echoed with its code, connection marked for close",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_close_is_echoed_with_code_then_closes` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I5",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Invalid UTF-8 in a text frame closes 1007",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_invalid_utf8_text_closes_1007` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I6",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A fragmented control frame is a protocol error",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_fragmented_control_frame_is_protocol_error` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I7",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Wrong `Sec-WebSocket-Version` answers 426 advertising 13",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_wrong_version_is_426_advertising_13` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I8",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Cross-worker WebSocket fan-out over the broadcast bus",
       "status": "verified",
       "evidence": "`Smoke test the WebSocket chat demo` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I9",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Server-Sent Events, with heartbeats and disconnect cleanup",
       "status": "verified",
       "evidence": "`Smoke test the Datastar counter` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I10",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "`Last-Event-ID` replay from a bounded journal",
       "status": "verified",
       "evidence": "`Smoke test the Datastar todo demo` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I11",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A synchronous view gating a held SSE connection, with cross-worker publish",
       "status": "verified",
       "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 `--realtime`"
     },
     {
-      "id": "I",
+      "id": "I12",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A synchronous view gating a held WebSocket it never speaks",
       "status": "verified",
       "evidence": "`Smoke test the Django realtime example over WebSockets` (every PR)"
     },
     {
-      "id": "I",
+      "id": "I13",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Autobahn|Testsuite conformance run",
       "status": "planned",
       "evidence": "ROADMAP: A conformance-suite tier"
     },
     {
-      "id": "I",
+      "id": "I14",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "`permessage-deflate`",
       "status": "out of scope",
       "evidence": "follows from having no response compression"
     },
     {
-      "id": "I",
+      "id": "I15",
+      "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "WebSocket over HTTP/2 (RFC 8441)",
       "status": "out of scope",
       "evidence": "follows from having no HTTP/2"
     },
     {
-      "id": "J",
+      "id": "J1",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "Zero-copy `sendfile`, body never entering the process",
       "status": "verified",
       "evidence": "`Smoke test zero-copy static file serving` (every PR) \u2014 `--static`"
     },
     {
-      "id": "J",
+      "id": "J2",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "Byte range served as 206 with `Content-Range`",
       "status": "verified",
       "evidence": "`test_static.mojo:test_range_serves_206_with_content_range` (every PR)"
     },
     {
-      "id": "J",
+      "id": "J3",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "Unsatisfiable range answered 416 carrying the total",
       "status": "verified",
       "evidence": "`test_static.mojo:test_range_unsatisfiable_is_416_with_total` (every PR)"
     },
     {
-      "id": "J",
+      "id": "J4",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "`If-None-Match` takes precedence over a range",
       "status": "verified",
       "evidence": "`test_static.mojo:test_if_none_match_beats_range` (every PR)"
     },
     {
-      "id": "J",
+      "id": "J5",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "`If-Range` with a weak ETag serves the full body",
       "status": "verified",
       "evidence": "`test_static.mojo:test_if_range_with_weak_etags_serves_full` (every PR)"
     },
     {
-      "id": "J",
+      "id": "J6",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "ETag and conditional 304",
       "status": "verified",
       "evidence": "`Smoke test the notes API` (every PR)"
     },
     {
-      "id": "J",
+      "id": "J7",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "`Cache-Control`, configurable",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--static-cache-control`"
     },
     {
-      "id": "J",
+      "id": "J8",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "Response compression (gzip, brotli, zstd)",
       "status": "out of scope",
       "evidence": "recorded in ROADMAP as deliberate: no dynamic compression; a proxy compresses"
     },
     {
-      "id": "J",
+      "id": "J9",
+      "section": "J",
       "category": "J. Static file serving",
       "capability": "Precompressed sidecar files (`.br`, `.gz`)",
       "status": "out of scope",
       "evidence": "follows from the row above"
     },
     {
-      "id": "K",
+      "id": "K1",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "`application(environ, start_response)` against a bare callable",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K2",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "`wsgiref.validate` pass, with an engagement canary",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K3",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "The `write()` callable reaches the client, in production order",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K4",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "A second `start_response`, with and without `exc_info`",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K5",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "`wsgi.input` read, readline, iteration, and read past EOF",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K6",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "`QUERY_STRING` raw while `PATH_INFO` is decoded",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K7",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "`close()` called on the response iterable",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K8",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "Correct `wsgi.multithread` / `wsgi.multiprocess` for the real topology",
       "status": "verified",
       "evidence": "`Smoke test the Django WSGI example` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K9",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "Unsized iterables streamed from a pool thread, sized bodies buffered",
       "status": "verified",
       "evidence": "`Smoke test streamed WSGI bodies` (every PR)"
     },
     {
-      "id": "K",
+      "id": "K10",
+      "section": "K",
       "category": "K. WSGI (PEP 3333)",
       "capability": "Framework-neutral: one contract, two frameworks",
       "status": "verified",
       "evidence": "`Run the WSGI framework contract against Flask` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L1",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "Single `app(scope, receive, send)`, protocol detected from the object",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `--protocol`"
     },
     {
-      "id": "L",
+      "id": "L2",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "`http` scope shape, validated against the spec",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L3",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "`websocket` scope: connect, accept, receive, send, close",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L4",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "`lifespan` startup and shutdown, degrading if unsupported",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L5",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "`lifespan.state` shallow-copied into each request scope",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L6",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "Streaming responses stream, credit-gated per stream and in total",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L7",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "Slot ownership across recycled connections, sabotage-proven",
       "status": "verified",
       "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` drives the extracted shim through real socketpairs and reverts each rule"
     },
     {
-      "id": "L",
+      "id": "L8",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "The event loop running inside asyncio (`M0_INVERTED`)",
       "status": "verified",
       "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L9",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "Slot ownership under CPU contention",
       "status": "verified",
       "evidence": "`stress-asgi` (pre-release)"
     },
     {
-      "id": "L",
+      "id": "L10",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "Django's own ASGI handler through the executor",
       "status": "verified",
       "evidence": "`Serve a Django ASGI project through the executor` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L11",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "Starlette-family app (FastHTML) through the executor",
       "status": "verified",
       "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L12",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "Cross-worker pub/sub as `scope[\"state\"][\"m0\"]`",
       "status": "verified",
       "evidence": "`ASGI cross-worker fan-out over the BroadcastBus` (every PR)"
     },
     {
-      "id": "L",
+      "id": "L13",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "`http.response.pathsend`",
       "status": "out of scope",
       "evidence": "`--static` serves files in Mojo ahead of the application, which is the same saving without the extension"
     },
     {
-      "id": "L",
+      "id": "L14",
+      "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "`http.response.zerocopysend`, `early_hint`, `trailers`",
       "status": "out of scope",
       "evidence": "no application has asked; the extensions are additive and can be taken later"
     },
     {
-      "id": "M",
+      "id": "M1",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Several applications in one process, routed by prefix",
       "status": "verified",
       "evidence": "`Serve two mounted applications from one process` (every PR) \u2014 `--mount`"
     },
     {
-      "id": "M",
+      "id": "M2",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Flags over environment over defaults",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`"
     },
     {
-      "id": "M",
+      "id": "M3",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Application discovery from a bare module name",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR)"
     },
     {
-      "id": "M",
+      "id": "M4",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "`--app-dir` prepended to `sys.path`, shadowing an installed package",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--app-dir`"
     },
     {
-      "id": "M",
+      "id": "M5",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Usage errors exit 2, startup errors exit 1, refusals exit 78",
       "status": "verified",
       "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR)"
     },
     {
-      "id": "M",
+      "id": "M6",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "`--help` names every documented flag; `--version` matches the release",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--help`, `--version`"
     },
     {
-      "id": "M",
+      "id": "M7",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Installable wheel with no toolchain and no dependencies",
       "status": "verified",
       "evidence": "`Build and smoke test the installable wheel` (every PR)"
     },
     {
-      "id": "M",
+      "id": "M8",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "The aarch64 wheel built and served on arm64 hardware",
       "status": "verified",
       "evidence": "`Build and smoke test the aarch64 wheel` (every PR)"
     },
     {
-      "id": "M",
+      "id": "M9",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "C-ABI shared library loadable by `dlopen`/`ctypes`",
       "status": "verified",
       "evidence": "`Smoke test the C-ABI shared library` (every PR)"
     },
     {
-      "id": "M",
+      "id": "M10",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "The documented quickstart is executed, not asserted",
       "status": "verified",
       "evidence": "`Execute the quickstart` (every PR)"
     },
     {
-      "id": "M",
+      "id": "M11",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Correct signal handling as PID 1 in a container",
       "status": "implemented",
       "evidence": "`packages/m0-http/src/signal.mojo` \u2014 the SIGTERM rows above are the evidence that exists; nothing runs the server in a container or as PID 1"
     },
     {
-      "id": "M",
+      "id": "M12",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Configuration from a TOML file",
       "status": "out of scope",
       "evidence": "flags and `M0_*` environment variables cover it; a third source is a third precedence rule"
     },
     {
-      "id": "M",
+      "id": "M13",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "systemd socket activation (`LISTEN_FDS`)",
       "status": "out of scope",
       "evidence": "no request for it; `SO_REUSEPORT` covers the restart case it is usually wanted for"
     },
     {
-      "id": "M",
+      "id": "M14",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "An HTTP client in Mojo, for server-to-server calls",
       "status": "verified",
       "evidence": "`Smoke test the HTTP client` (every PR)"
     },
     {
-      "id": "M",
+      "id": "M15",
+      "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Windows, musl",
       "status": "out of scope",

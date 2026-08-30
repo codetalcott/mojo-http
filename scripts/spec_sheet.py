@@ -88,7 +88,7 @@ def parse(sheet):
     classifies by substring and so has an ordering dependence ("not supported"
     contains "supported"); statuses here match whole, anchored.
     """
-    rows, failures, section = [], [], None
+    rows, failures, section, ids = [], [], None, set()
     for n, line in enumerate(sheet.splitlines(), 1):
         heading = re.match(r"^## (.+?)\s*$", line)
         if heading:
@@ -106,12 +106,13 @@ def parse(sheet):
                     f"{len(cells)}"
                 )
             continue
-        if cells == ["capability", "status", "evidence"]:
+        if cells == ["id", "capability", "status", "evidence"]:
             continue
-        if len(cells) != 3:
+        if len(cells) != 4:
             failures.append(
-                f"docs/SPEC.md:{n}: a capability row must be exactly 3 cells "
-                f"(capability, status, evidence), got {len(cells)}: {line.strip()!r}"
+                f"docs/SPEC.md:{n}: a capability row must be exactly 4 cells "
+                f"(id, capability, status, evidence), got {len(cells)}: "
+                f"{line.strip()!r}"
             )
             continue
         cat = re.match(r"^([A-Z])\. (.+)$", section or "")
@@ -122,7 +123,33 @@ def parse(sheet):
                 f"'## <Letter>. <Title>' heading so none can hide from the rollup"
             )
             continue
-        capability, status, evidence = cells
+        rid, capability, status, evidence = cells
+        # Ids are the stable handle: prose is meant to be edited freely, and
+        # anything that refers to a row from outside this file -- a sabotage, a
+        # commit message, an issue -- has to survive that. Assigned once, never
+        # renumbered, and never reused: a deleted row's id is retired, so an id
+        # in an old commit still means what it meant. Reuse is the one rule not
+        # enforced here; checking it needs a ledger of retired ids, which is a
+        # second source of truth to keep in step. It is written down instead.
+        if not re.fullmatch(r"[A-Z]\d+", rid):
+            failures.append(
+                f"docs/SPEC.md:{n}: {rid!r} is not a row id — expected a "
+                "section letter followed by a number, like `A7`"
+            )
+            continue
+        if rid[0] != cat.group(1):
+            failures.append(
+                f"docs/SPEC.md:{n}: row {rid} sits in section "
+                f"{cat.group(1)}; its id must start with that letter"
+            )
+            continue
+        if rid in ids:
+            failures.append(
+                f"docs/SPEC.md:{n}: row id {rid} is used twice — ids are "
+                "permanent handles and must be unique"
+            )
+            continue
+        ids.add(rid)
         if status not in STATUSES:
             failures.append(
                 f"docs/SPEC.md:{n}: unknown status word {status!r} — must be "
@@ -132,7 +159,8 @@ def parse(sheet):
             continue
         rows.append(
             {
-                "id": cat.group(1),
+                "id": rid,
+                "section": cat.group(1),
                 "category": section,
                 "capability": capability,
                 "status": status,
@@ -240,7 +268,7 @@ def analyse(src):
     cited_steps, cited_flags = set(), set()
 
     for row in rows:
-        where = f"docs/SPEC.md row {row['capability']!r}"
+        where = f"docs/SPEC.md {row['id']} ({row['capability']!r})"
         ev, status = row["evidence"], row["status"]
         # The whole row, not just the evidence cell: a row may name its flag
         # in the capability ('`--access-log` toggle') and carry a source path
@@ -388,8 +416,8 @@ def analyse(src):
         key = row["capability"].strip().lower()
         if key in seen:
             failures.append(
-                f"docs/SPEC.md lists {row['capability']!r} twice (sections "
-                f"{seen[key]} and {row['id']}) — a duplicate inflates the rollup "
+                f"docs/SPEC.md lists {row['capability']!r} twice ({seen[key]} "
+                f"and {row['id']}) — a duplicate inflates the rollup "
                 "and reads as two separate pieces of evidence"
             )
         seen[key] = row["id"]
@@ -499,7 +527,7 @@ def read_sources(**override):
 
 
 _ROW_LINE = re.compile(
-    r"^\| .+ \| (?:" + "|".join(STATUSES) + r") \| .+ \|$", re.M)
+    r"^\| [A-Z]\d+ \| .+ \| (?:" + "|".join(STATUSES) + r") \| .+ \|$", re.M)
 
 
 def _first_row(text):
@@ -521,6 +549,32 @@ def _mangle_first_row(fn):
         row = _first_row(text)
         return text.replace(row, fn(row), 1) if row else None
     return patch
+
+
+def _delete_a_singly_cited_row(text):
+    """Remove a row whose gate no other row cites, so the reverse rule bites."""
+    rows = _ROW_LINE.findall(text)
+    gates = {}
+    for r in rows:
+        m = re.search(r"`([^`]+)`", split_cells(r)[3])
+        if m:
+            gates.setdefault(m.group(1), []).append(r)
+    for gate, rs in gates.items():
+        if len(rs) == 1 and not gate.endswith(".mojo") and ".mojo:" not in gate:
+            return text.replace(rs[0] + "\n", "", 1)
+    return None
+
+
+def _row_by_id(text, rid):
+    """One row line, addressed by its permanent id rather than its prose."""
+    m = re.search(r"^\| " + re.escape(rid) + r" \|.*$", text, re.M)
+    return m.group(0) if m else None
+
+
+def _first_status_row(text, status):
+    m = re.search(r"^\| [A-Z]\d+ \| .+ \| " + re.escape(status) + r" \| .+ \|$",
+                  text, re.M)
+    return m.group(0) if m else None
 
 
 def _first_unit_row(text):
@@ -561,11 +615,10 @@ SABOTAGES = [
     ("test package leaves the test-all sequence", "pyproject",
      ('"test-core", "test-http"', '"test-core"'), "not reachable from `poe test-all`"),
     # Deleting a row whose gate ANOTHER row also cites proves nothing -- the
-    # rule is "cited by at least one". `Smoke test the HTTP client` is cited
-    # exactly once, which is what makes it the honest sabotage here.
+    # rule is "cited by at least one" -- so this deletes a SINGLY-cited one,
+    # found by counting rather than by quoting a row that reword would break.
     ("a live CI gate is cited by no row", "sheet",
-     ("| An HTTP client in Mojo, for server-to-server calls | verified | `Smoke test the HTTP client` (every PR) |\n", ""),
-     "is cited by no row"),
+     lambda t: _delete_a_singly_cited_row(t), "is cited by no row"),
     ("a new CLI flag is named by no row", "cli",
      ('name == "--metrics"', 'name == "--metrics"\n        or name == "--nitro"'),
      "and no row in docs/SPEC.md names it"),
@@ -581,21 +634,34 @@ SABOTAGES = [
      ("ROADMAP: A conformance-suite tier", "ROADMAP: A tier that is not there"),
      "has no heading"),
     ("out-of-scope row loses its reason", "sheet",
-     ("| HTTP/2 | out of scope | terminate at a proxy — gunicorn's answer, and the same one applies here |",
-      "| HTTP/2 | out of scope | none |"), "must carry a reason"),
+     lambda t: (t.replace(_first_status_row(t, "out of scope"),
+                          " | ".join(split_cells(_first_status_row(t, "out of scope"))[:3]
+                                     ).join(["| ", " | none |"]), 1)
+                if _first_status_row(t, "out of scope") else None),
+     "must carry a reason"),
+    ("a row id is malformed", "sheet",
+     _mangle_first_row(lambda r: "| ZZ " + r[r.index("|", 1):]), "is not a row id"),
+    ("a row id contradicts its section", "sheet",
+     _mangle_first_row(lambda r: "| Z9 " + r[r.index("|", 1):]),
+     "its id must start with that letter"),
+    ("a row id is used twice", "sheet",
+     lambda t: (t.replace(_first_row(t), _first_row(t) + "\n"
+                          + _first_row(t).replace(
+                              split_cells(_first_row(t))[1], "a different capability", 1), 1)
+                if _first_row(t) else None), "is used twice"),
     ("a row loses a cell", "sheet",
      _mangle_first_row(lambda r: "| " + " | ".join(split_cells(r)[:2]) + " |"),
-     "must be exactly 3 cells"),
+     "must be exactly 4 cells"),
     ("a row gains a cell", "sheet",
      _mangle_first_row(lambda r: "| " + " | ".join(split_cells(r) + ["x"]) + " |"),
-     "must be exactly 3 cells"),
+     "must be exactly 4 cells"),
     ("a row hides under a stray heading", "sheet",
      lambda text: text.replace(_first_section(text), "## Notes", 1)
      if _first_section(text) else None,
      "outside a capability section"),
     ("a capability row is duplicated", "sheet",
      lambda t: (t.replace(_first_row(t), _first_row(t) + "\n" + _first_row(t), 1)
-                if _first_row(t) else None), "twice (sections"),
+                if _first_row(t) else None), "is used twice"),
     ("the sheet is deleted", "sheet", None, "docs/SPEC.md is missing"),
 ]
 
