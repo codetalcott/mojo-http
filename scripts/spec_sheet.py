@@ -189,10 +189,13 @@ def _steps(workflow):
     out, name, conditional, buf = {}, None, False, []
 
     def flush():
+        # Every NAMED step is citable, not only those running a poe task: a row
+        # may legitimately point at `Self-test the measurement recorder`, which
+        # runs a plain `python3`. `tasks` stays possibly-empty, which is what
+        # the smoke-specific rules below key off.
         if name and buf:
             tasks = set(re.findall(r"poe ([a-z0-9-]+)", "\n".join(buf)))
-            if tasks:
-                out[name] = (tasks, conditional)
+            out[name] = (tasks, conditional)
 
     for line in workflow.splitlines():
         m = re.match(r"^\s*- name: (.+?)\s*$", line)

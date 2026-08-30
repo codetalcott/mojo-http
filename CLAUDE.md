@@ -576,7 +576,41 @@ uv run poe check-docs         # fails naming the drifted fact
 uv run poe render-bench-docs  # after committing a new bench artifact
 uv run poe render-spec        # after editing docs/SPEC.md's capability tables
 uv run poe sabotage-spec      # revert each spec-sheet rule; all must be caught
+python3 scripts/emit.py --selftest   # the CI measurement recorder
 ```
+
+**CI measurements are recorded rather than echoed into an expiring log.**
+Several smokes compute a real quantity and print it — RSS growth over 10k
+requests, a fast request's latency behind two slow views, sendfile's RSS
+delta. A guard tells you pass or fail; it does not tell you the number has
+moved from 300 KB to 11000 KB against a 12288 KB limit and is one commit from
+red. `scripts/emit.py` appends each to `$M0_RESULTS` as one JSON line, and
+the `smoke` job renders them into the run summary (with a **headroom** column,
+which is the point) and uploads them as `ci-results-<os>`. Three properties
+are load-bearing:
+
+- **It never fails.** Exit status is 0 whatever happens — bad argument,
+  unwritable path, full disk. A recording failure must never turn a passing
+  gate red, and must never be mistaken for the thing being measured.
+  `scripts/bench_asgi.py` already applies this discipline to its artifact
+  write; this is the same rule.
+- **It is a no-op without `$M0_RESULTS`**, which is what makes a call site
+  safe inside a task body with no CI conditional around it — and is also
+  exactly how the whole thing could become decorative, since deleting the
+  workflow's `env:` block leaves every call running, exiting 0 and recording
+  nothing, with an identical job log because the `echo` beside it still
+  prints. `check_ci_measurements_are_collected` refuses that, plus a
+  collected-but-never-rendered file, a missing upload, and the recorder's own
+  selftest dropping out of CI.
+- **`--selftest` is a CI step**, beside `warning_ratchet.py --selftest` and
+  `binfmt.py --selftest`, for the reason those are: a regression in a recorder
+  drops records rather than failing. It caught two real bugs while being
+  written — an unserialisable value losing its whole record, and rows keyed
+  so that the same metric from two runners raced instead of showing as two.
+
+Adding a measurement is one line beside the `echo` that already computes it.
+Do not add one that can fail, and do not make a gate depend on a recorded
+value — the gate stays the `[ "$x" -lt "$limit" ] || fail` beside it.
 
 `docs/SPEC.md` is the public capability matrix and the same philosophy applied
 to claims rather than numbers. One row per capability, four status words

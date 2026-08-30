@@ -979,6 +979,7 @@ growth=$((rss1 - rss0))
 # guard and must not be weakened. The measured number is echoed on success so
 # a drift stays visible in CI logs and canary reports.
 echo "rss growth over 10k requests: ${growth}KB (limit ${M0_RSS_LIMIT_KB:-12288}KB)"
+python3 scripts/emit.py wsgi.rss_growth_kb "$growth" --unit KB --limit "${M0_RSS_LIMIT_KB:-12288}" --task smoke-django
 [ "$growth" -lt "${M0_RSS_LIMIT_KB:-12288}" ] || fail "bridge leaked ${growth}KB of RSS over 10k requests"
 
 kill $pid 2>/dev/null
@@ -2383,6 +2384,7 @@ wait $slow1 $slow2
 ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
 [ "$ms" -lt 250 ] || fail "a fast request waited ${ms}ms behind two slow views; the pool is not isolating them"
 echo "fast request served in ${ms}ms with two 1.5s views in flight"
+python3 scripts/emit.py pool.fast_request_s "$took" --unit s --limit 0.25 --task smoke-blocking-threads
 
 # The abandoned-slot path: a client that vanishes mid-job must not leak the
 # provision it borrowed. Every slot has to come back once the jobs finish.
@@ -2471,6 +2473,7 @@ wait $(jobs -p | grep -v "^$pid$") 2>/dev/null || true
 ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
 [ "$ms" -lt 400 ] || fail "under --threads, a fast request waited ${ms}ms behind two slow views"
 echo "threads+pool: fast request served in ${ms}ms with two 1.5s views in flight"
+python3 scripts/emit.py threads_pool.fast_request_s "$took" --unit s --limit 0.4 --task smoke-blocking-threads
 
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
@@ -3692,6 +3695,7 @@ PYEOF
 rss1=$(ps -o rss= -p $pid | tr -d ' ')
 growth=$((rss1 - rss0))
 echo "asgi rss growth over 10k requests: ${growth}KB (limit ${M0_RSS_LIMIT_KB:-12288}KB)"
+python3 scripts/emit.py asgi.rss_growth_kb "$growth" --unit KB --limit "${M0_RSS_LIMIT_KB:-12288}" --task smoke-asgi
 [ "$growth" -lt "${M0_RSS_LIMIT_KB:-12288}" ] || fail "asgi bridge leaked ${growth}KB of RSS over 10k requests"
 
 # --- the streaming surface (Phase 3a) ----------------------------------------
@@ -4350,6 +4354,7 @@ done
 rss_after=$(ps -o rss= -p $pid | tr -d ' ')
 growth=$((rss_after - rss_before))
 echo "sendfile: RSS ${rss_before}KB -> ${rss_after}KB (grew ${growth}KB) after 3x64MB"
+python3 scripts/emit.py sendfile.rss_growth_kb "$growth" --unit KB --limit 16384 --task smoke-sendfile
 
 # The actual claim. Reading each file into memory would add ~65536KB per
 # concurrent response; 16MB of headroom catches that with room to spare
