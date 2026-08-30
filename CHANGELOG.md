@@ -7,6 +7,8 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-08-30
+
 ### Fixed
 
 - **A WebSocket the server closes now ends in a FIN, not an RST.** When an
@@ -43,7 +45,7 @@ versions may break the API**.
   (150 rounds per mode across three runs, up to 40 CPU hogs on 10 cores, all
   green) but **did reproduce on CI**, where the probe's new phase stamp named
   it at once: see "A WebSocket close races the peer's close reply" under
-  ROADMAP's Known issues.
+  ROADMAP's Recently resolved — it was diagnosed and fixed in this release.
 - **`ws_probe.py` reports the phase it failed in.** The CI failure was an
   unhandled `ConnectionResetError` whose traceback named `recv_exact`, a
   helper four phases share. A reset is now a finding carrying its phase —
@@ -2675,6 +2677,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.15.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.1
 [0.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.0
 [0.14.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.1
 [0.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.0

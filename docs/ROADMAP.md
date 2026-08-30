@@ -1941,7 +1941,7 @@ otherwise be invisible to whoever picks this hypothesis up.
   green. What cracked it was the probe's new phase stamp, which named the
   phase on the first CI failure after it existed: **the app-initiated close
   handshake**, not the flood phase everyone had been looking at. See
-  "A WebSocket close races the peer's close reply" under Known issues.
+  "A WebSocket close races the peer's close reply" above, now resolved.
 
   The local negative is still worth its numbers, because it says what this
   gate can and cannot do. The gate DOES drive the failing path — every round
