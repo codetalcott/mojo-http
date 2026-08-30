@@ -677,9 +677,21 @@ therefore never reaches the auto-merge workflows either.
 
 **`main` is protected by a ruleset**: pull request required (0 approvals),
 no force push, no deletion, no bypass actor — so branch first, or the push is
-rejected with `GH013`. It declares **no required status checks, deliberately**:
-by the `paths-ignore` above a doc-only PR produces no `Tests` run at all, and
-a required check that never reports would leave every such PR unmergeable.
+rejected with `GH013`. It requires **exactly one status check, `check-docs`**,
+and requiring more would be a mistake: by the `paths-ignore` above, a doc-only
+PR produces no `Tests` run at all, so requiring `Tests` would leave every such
+PR unmergeable on a check that never reports. `Docs` is unfiltered precisely so
+it always reports, which is what makes it the one check that can be required —
+the ruleset declared none at all until that workflow existed.
+
+The required context is `check-docs`, the **job** id in `docs.yml`, not `Docs`,
+the workflow name; GitHub names a check run after its job. Three edits stop it
+reporting — renaming the job, giving it a matrix (which suffixes the context),
+or adding a path filter — and none of them fails anything. Every PR simply
+hangs on "Expected — Waiting for status to be reported", with no bypass actor
+to merge past it and the fix living in a repository setting rather than this
+tree. `check_required_context_intact` in `scripts/check_docs.py` is the guard,
+sabotaged all three ways plus deletion.
 
 **`automerge` is a standing order.** A PR carrying that label merges itself as
 soon as `Tests` passes for its current head commit. The label is the gate and
