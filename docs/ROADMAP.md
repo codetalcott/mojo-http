@@ -1685,14 +1685,23 @@ otherwise be invisible to whoever picks this hypothesis up.
   and §7.1.1 lets it close immediately only after both sending AND receiving
   one.
 
-  So there is a window — between the server's send and its `close` — in which
-  the client's Close reply arrives and is never read. Closing a socket with
-  unread data queued makes the kernel send RST rather than FIN (the same
-  mechanism as the chunked-trailer rule in CLAUDE.md), and the client sees
-  `ECONNRESET` where it expected a clean end. Harmless for a client that has
-  already read the Close frame; NOT harmless for a slower one, whose
-  application-level `close(1000)` is then destroyed by the reset and
-  surfaces as a transport error instead.
+  The reset does not come from unread data at close time — that hypothesis
+  was tested and disproved (draining the receive buffer before `close`
+  changed nothing, 98 of 100 still reset). The server closes FIRST, in the
+  same loop pass that writes the Close frame, before a reply could exist:
+  a client that sends **nothing** back gets a clean FIN 100 times out of 100.
+  What produces the RST is the peer's Close reply arriving at a socket that
+  is already fully closed, which TCP answers with a reset — and that reset
+  flushes the client's receive queue, discarding the FIN, and on a slow
+  enough client the **Close frame itself**.
+
+  So the damage scales with how far behind the client is. Measured against
+  the `websockets` library, 200 concurrent app-initiated closes: 167 saw a
+  clean `code=1000` and **33 saw `ConnectionClosedError: no close frame
+  received or sent`** — the application's own `close(1000)` destroyed in
+  transit and surfaced as an abnormal closure. At 100 concurrent and below,
+  all clean. The strict raw probe sees it much earlier, because it insists
+  on the FIN that the reset ate.
 
   Found 2026-08-30 on CI (macOS, `M0_INVERTED=1`, `smoke-asgi`), and only
   legible because `ws_probe.py` had just learned to stamp its phase: the
@@ -1704,8 +1713,10 @@ otherwise be invisible to whoever picks this hypothesis up.
   rounds per mode, clean), because the server closes before the reply lands
   every time there.
 
-  The fix is to drain the peer's Close before closing, bounded by a timeout
-  so a client that never replies cannot hold a slot. Not yet done; until it
+  The fix is the RFC's order: after sending Close, keep the connection open
+  until the peer's Close arrives, then close — bounded by a deadline so a
+  peer that never replies cannot hold a slot. Not a drain before `close`,
+  which is the thing already tried and disproved. Not yet done; until it
   is, the macOS `smoke-asgi` steps are intermittently red.
 
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
