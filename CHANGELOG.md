@@ -21,14 +21,19 @@ versions may break the API**.
   filling. A failure names its mode, round and probe, and
   `M0_STRESS_MODES=inverted` reruns just the half that failed. Reverting the
   `websocket.send` credit gate fails the new gate on round 1 — 15 of 400
-  frames — and passed the old one 30 of 30. The flake itself did not
-  reproduce: 150 rounds per mode across three runs, up to 40 CPU hogs on 10
-  cores, all green.
+  frames — and passed the old one 30 of 30. It did not reproduce locally
+  (150 rounds per mode across three runs, up to 40 CPU hogs on 10 cores, all
+  green) but **did reproduce on CI**, where the probe's new phase stamp named
+  it at once: see "A WebSocket close races the peer's close reply" under
+  ROADMAP's Known issues.
 - **`ws_probe.py` reports the phase it failed in.** The CI failure was an
   unhandled `ConnectionResetError` whose traceback named `recv_exact`, a
   helper four phases share. A reset is now a finding carrying its phase —
   and, being an `OSError` rather than an `EOFError`, it no longer bypasses
-  the flood phase's frame-count diagnosis in silence.
+  the flood phase's frame-count diagnosis in silence. It earned its keep
+  immediately: the next occurrence named **the app-initiated close
+  handshake**, which is a different phase from the one two investigations
+  had assumed, and is what identified the underlying bug.
 
 ## [0.15.0] — 2026-08-29
 

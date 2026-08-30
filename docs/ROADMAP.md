@@ -1674,6 +1674,40 @@ otherwise be invisible to whoever picks this hypothesis up.
 
 ## Known issues
 
+- **A WebSocket close races the peer's close reply, and loses as an RST.**
+  When an application sends `websocket.close(1000)`, the loop writes its Close
+  frame and closes the TCP connection as soon as those bytes drain
+  (`event_loop.mojo`, the channel-stream branch: "the loop closes after those
+  bytes land", then `_close_slot`, which deletes the registrations and
+  `close`s the fd). It does not wait to RECEIVE the peer's Close reply. RFC
+  6455 §5.5.1 is the other way round: an endpoint that sends Close first
+  should wait for the peer's Close before closing the underlying connection,
+  and §7.1.1 lets it close immediately only after both sending AND receiving
+  one.
+
+  So there is a window — between the server's send and its `close` — in which
+  the client's Close reply arrives and is never read. Closing a socket with
+  unread data queued makes the kernel send RST rather than FIN (the same
+  mechanism as the chunked-trailer rule in CLAUDE.md), and the client sees
+  `ECONNRESET` where it expected a clean end. Harmless for a client that has
+  already read the Close frame; NOT harmless for a slower one, whose
+  application-level `close(1000)` is then destroyed by the reset and
+  surfaces as a transport error instead.
+
+  Found 2026-08-30 on CI (macOS, `M0_INVERTED=1`, `smoke-asgi`), and only
+  legible because `ws_probe.py` had just learned to stamp its phase: the
+  failure names **the app-initiated close handshake**, where two earlier
+  investigations had read the bare `ConnectionResetError` as a flood-phase
+  or slot-ownership problem. It is timing-sensitive, not inversion-specific
+  — the close path is shared, and the inversion only changes who wins the
+  race. It does not reproduce on a fast development machine (150 stress
+  rounds per mode, clean), because the server closes before the reply lands
+  every time there.
+
+  The fix is to drain the peer's Close before closing, bounded by a timeout
+  so a client that never replies cannot hold a slot. Not yet done; until it
+  is, the macOS `smoke-asgi` steps are intermittently red.
+
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
   out for linking, so a minimal image (`python:*-slim` carries no compiler)
   fails with `unable to find suitable c compiler for linking`. CI never
@@ -1898,14 +1932,19 @@ otherwise be invisible to whoever picks this hypothesis up.
   gate 30 of 30 under 8 hogs**. Making `M0_INVERTED` never match is caught by
   the banner assert before a round runs.
 
-  **The flake did not reproduce**, and the numbers are the outcome rather than
-  a gap in it. Three runs on macOS arm64 (10 cores, CPython 3.13), 150 rounds
-  per mode — 300 WebSocket probe runs and 300 streamed ones — all green: 30
-  rounds/mode under 20 hogs, then 60 under 40, then 60 under 40 with the
-  heartbeat. Against the six rounds under six hogs the first investigation
-  managed, that is 25x the rounds plus the inversion, the WS path and the
-  heartbeat. The machine is the caveat and it is a real one: this is ten fast
-  cores, where CI's macOS runner is three shared virtualized ones, and
+  **The flake reproduced — on this change's own CI run — and it is a real
+  server bug.** It did NOT reproduce locally: three runs on macOS arm64 (10
+  cores, CPython 3.13), 150 rounds per mode, 300 WebSocket probe runs, all
+  green. What cracked it was the probe's new phase stamp, which named the
+  phase on the first CI failure after it existed: **the app-initiated close
+  handshake**, not the flood phase everyone had been looking at. See
+  "A WebSocket close races the peer's close reply" under Known issues.
+
+  The local negative is still worth its numbers, because it says what this
+  gate can and cannot do. The gate DOES drive the failing path — every round
+  runs the close handshake — so this is not a coverage gap a further widening
+  would close. It is the machine: ten fast cores where CI's macOS runner is
+  three shared virtualized ones, and the server wins the race every time here.
   `scripts/epoll_inverted_check.sh` picks the new coverage up for free on
   Linux the next time it runs.
 

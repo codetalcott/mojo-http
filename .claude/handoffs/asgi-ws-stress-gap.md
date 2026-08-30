@@ -2,9 +2,16 @@
 
 > **DONE — 2026-08-30.** The gate was extended and the outcome recorded in
 > `docs/ROADMAP.md` under Recently resolved, "The WebSocket path is not
-> stressed"; `SPEC.md` row L9 is widened and its caveat deleted. The flake did
-> not reproduce: 150 rounds per mode across three runs, up to 40 CPU hogs on
-> 10 cores. The brief below is kept as the record of what was known going in.
+> stressed"; `SPEC.md` row L9 is widened and its caveat deleted.
+>
+> **The flake was a real bug and is now diagnosed.** It did not reproduce
+> locally (150 rounds per mode, three runs) but reproduced on this change's
+> own CI run, where the probe's new phase stamp named it: the **app-initiated
+> close handshake**, not the flood phase. The server closes a WebSocket's TCP
+> connection without waiting for the peer's Close reply, so the reply lands
+> unread and the kernel sends RST. Recorded under ROADMAP's Known issues as
+> "A WebSocket close races the peer's close reply"; the fix is a separate
+> change. The brief below is kept as the record of what was known going in.
 
 ## Task
 
