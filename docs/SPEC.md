@@ -1,11 +1,22 @@
 # Specification coverage
 
+[![Tests](https://github.com/codetalcott/mojo-http/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/codetalcott/mojo-http/actions/workflows/test.yml)
+[![Docs](https://github.com/codetalcott/mojo-http/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/codetalcott/mojo-http/actions/workflows/docs.yml)
+
 What this server implements, and what proves it. One row per capability, and
 every row carries its evidence — a named CI gate, a source file, a roadmap
 heading, or a reason for the refusal.
 
+The badges are half of what makes a `verified` row mean anything. The claim is
+a composition: **CI is green for this commit** AND **every `verified` row names
+a gate CI actually runs**. `poe check-docs` enforces the second half and fails
+the build if a row names a gate that does not exist or does not run; the badges
+are the only visible evidence of the first. Read them together, and read them
+knowing a badge reports the newest run on `main` rather than the commit you are
+looking at.
+
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**126 capabilities: 96 verified, 3 implemented, 5 planned, 22 out of scope.** Of the 96 verified, 94 are gated on every pull request, 1 weekly, and 1 before a release.
+**130 capabilities: 97 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 97 verified, 95 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -44,14 +55,15 @@ See `scripts/spec_sheet.py`.
 | capability | status | evidence |
 |---|---|---|
 | Persistent connections (keep-alive) | verified | `Smoke test pipelined requests` (every PR) |
+| The example Mojo server starts and answers `/health` | verified | `Smoke test the hello server` (every PR) |
 | Keep-alive request cap | implemented | `packages/m0-http/lightbug_http/event_loop.mojo:2707` — no flag or env var exposes it |
-| Idle connection timeout | verified | `Smoke test graceful shutdown` (every PR) |
+| Idle connection timeout | implemented | `packages/m0-http/lightbug_http/event_loop.mojo:3029` — no gate asserts a connection is closed for idling; `smoke-header-timeout` asserts the inverse, that a keep-alive gap is not closed |
 | Header read timeout (slowloris defence) | verified | `Smoke test the header read timeout` (every PR) |
 | Request pipelining, answered in order (RFC 9112 §9.3) | verified | `Smoke test pipelined requests` (every PR) |
 | Chunked request bodies, decoded incrementally | verified | `test_parsing.mojo:test_chunked_body_decodes` (every PR) |
 | Chunked terminator consumed, so no RST on close | verified | `test_chunked_encode.mojo:test_terminator_is_zero_chunk_and_bare_crlf` (every PR) |
 | Chunked response bodies | verified | `Smoke test streamed WSGI bodies` (every PR) |
-| Trailers consumed per RFC 9112, not surfaced to the application | verified | `test_chunked_encode.mojo:test_round_trip_single_chunk` (every PR) |
+| Trailer fields consumed and discarded, not surfaced to the application | implemented | `packages/m0-http/lightbug_http/http/chunked.mojo:157` — the round-trip tests set `consume_trailer` but their wire carries no trailer section |
 | `Expect: 100-continue` | implemented | `packages/m0-http/lightbug_http/server.mojo:650` and `event_loop.mojo:1800` — no test or smoke exercises it |
 | Half-close answered rather than dropped | verified | `Smoke test a half-closed client` (every PR) |
 | Request headers larger than one socket read | verified | `Smoke test a request larger than one read` (every PR) |
@@ -80,7 +92,8 @@ See `scripts/spec_sheet.py`.
 | capability | status | evidence |
 |---|---|---|
 | Max request body size, configurable | verified | `Smoke test the serve CLI` (every PR) — `--max-body` |
-| Raw chunked bytes bounded independently of decoded size | verified | `test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR) |
+| Chunk size bounded: 16 significant digits, overflow and sign bit rejected | verified | `test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR) |
+| Raw chunked bytes bounded independently of decoded size | implemented | `packages/m0-http/lightbug_http/http/chunked.mojo:271` — the ratio guard is reachable, but no test drives the raw-byte ceiling |
 | Max header count | verified | `test_parsing.mojo:test_header_count_is_capped` (every PR) |
 | A slow handler does not stall connections behind it | verified | `Smoke test the blocking-threads pool` (every PR) |
 | Connection/request rate limiting | out of scope | a proxy's job; this server has no notion of a client identity to limit on |
@@ -93,7 +106,7 @@ See `scripts/spec_sheet.py`.
 | SIGTERM drains in-flight requests | verified | `Smoke test graceful shutdown` (every PR) |
 | SIGTERM to the supervisor alone reaps workers | verified | `Smoke test graceful shutdown` (every PR) |
 | Bounded drain, naming what it abandoned | verified | `Smoke test streamed WSGI bodies` (every PR) |
-| Signal handlers armed after the fork, not before | verified | `test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR) |
+| SIGTERM reaches a shutdown pipe rather than killing the process | verified | `test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR) |
 | Development hot reload on file change | verified | `Smoke test hot reload` (every PR) — `--reload`, `--reload-dir` |
 | `SO_REUSEPORT` on the listener | implemented | `packages/m0-http/lightbug_http/socket.mojo` — opt-in, no smoke covers the zero-downtime handover it would enable |
 | Binary/hot upgrade (USR2-style overlap) | out of scope | needs socket handoff this server does not have; run two behind a proxy |
@@ -119,7 +132,8 @@ See `scripts/spec_sheet.py`.
 | Access logging, toggleable | verified | `Smoke test the serve CLI` (every PR) — `--access-log` |
 | Prometheus `/__metrics`: 8 counter and gauge families, exposition 0.0.4 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
 | Latency histograms | planned | ROADMAP: A conformance-suite tier |
-| Health endpoint answered before Python | verified | `Smoke test the hello server` (every PR) — `--health-path` |
+| `--health-path` answers 200 | verified | `Smoke test the Django realtime example` (every PR) — `--health-path` |
+| Health registry with readiness aggregation | verified | `test_health.mojo:test_health_register_unhealthy` (every PR) |
 | Configuration report that exits as the server would | verified | `Smoke test --doctor against the server's own exit codes` (every PR) — `--doctor` |
 | OpenTelemetry tracing | out of scope | no tracing context crosses the Mojo/Python seam today; a wrapper in the application is the supported route |
 | Structured CI-facing result output | planned | ROADMAP: Structured CI results |
@@ -217,7 +231,8 @@ See `scripts/spec_sheet.py`.
 |---|---|---|
 | Several applications in one process, routed by prefix | verified | `Serve two mounted applications from one process` (every PR) — `--mount` |
 | Flags over environment over defaults | verified | `Smoke test the serve CLI` (every PR) — `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads` |
-| Application discovery from a bare module name | verified | `Conformance test the ASGI bridge` (every PR) — `--app-dir` |
+| Application discovery from a bare module name | verified | `Conformance test the ASGI bridge` (every PR) |
+| `--app-dir` prepended to `sys.path`, shadowing an installed package | verified | `Smoke test the serve CLI` (every PR) — `--app-dir` |
 | Usage errors exit 2, startup errors exit 1, refusals exit 78 | verified | `Smoke test --doctor against the server's own exit codes` (every PR) |
 | `--help` names every documented flag; `--version` matches the release | verified | `Smoke test the serve CLI` (every PR) — `--help`, `--version` |
 | Installable wheel with no toolchain and no dependencies | verified | `Build and smoke test the installable wheel` (every PR) |

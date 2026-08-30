@@ -11,6 +11,13 @@
     {
       "id": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "The example Mojo server starts and answers `/health`",
+      "status": "verified",
+      "evidence": "`Smoke test the hello server` (every PR)"
+    },
+    {
+      "id": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Keep-alive request cap",
       "status": "implemented",
       "evidence": "`packages/m0-http/lightbug_http/event_loop.mojo:2707` \u2014 no flag or env var exposes it"
@@ -19,8 +26,8 @@
       "id": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Idle connection timeout",
-      "status": "verified",
-      "evidence": "`Smoke test graceful shutdown` (every PR)"
+      "status": "implemented",
+      "evidence": "`packages/m0-http/lightbug_http/event_loop.mojo:3029` \u2014 no gate asserts a connection is closed for idling; `smoke-header-timeout` asserts the inverse, that a keep-alive gap is not closed"
     },
     {
       "id": "A",
@@ -60,9 +67,9 @@
     {
       "id": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Trailers consumed per RFC 9112, not surfaced to the application",
-      "status": "verified",
-      "evidence": "`test_chunked_encode.mojo:test_round_trip_single_chunk` (every PR)"
+      "capability": "Trailer fields consumed and discarded, not surfaced to the application",
+      "status": "implemented",
+      "evidence": "`packages/m0-http/lightbug_http/http/chunked.mojo:157` \u2014 the round-trip tests set `consume_trailer` but their wire carries no trailer section"
     },
     {
       "id": "A",
@@ -193,9 +200,16 @@
     {
       "id": "C",
       "category": "C. Connection management and denial of service",
-      "capability": "Raw chunked bytes bounded independently of decoded size",
+      "capability": "Chunk size bounded: 16 significant digits, overflow and sign bit rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR)"
+    },
+    {
+      "id": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "Raw chunked bytes bounded independently of decoded size",
+      "status": "implemented",
+      "evidence": "`packages/m0-http/lightbug_http/http/chunked.mojo:271` \u2014 the ratio guard is reachable, but no test drives the raw-byte ceiling"
     },
     {
       "id": "C",
@@ -249,7 +263,7 @@
     {
       "id": "D",
       "category": "D. Graceful shutdown and restart",
-      "capability": "Signal handlers armed after the fork, not before",
+      "capability": "SIGTERM reaches a shutdown pipe rather than killing the process",
       "status": "verified",
       "evidence": "`test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR)"
     },
@@ -361,9 +375,16 @@
     {
       "id": "F",
       "category": "F. Observability",
-      "capability": "Health endpoint answered before Python",
+      "capability": "`--health-path` answers 200",
       "status": "verified",
-      "evidence": "`Smoke test the hello server` (every PR) \u2014 `--health-path`"
+      "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 `--health-path`"
+    },
+    {
+      "id": "F",
+      "category": "F. Observability",
+      "capability": "Health registry with readiness aggregation",
+      "status": "verified",
+      "evidence": "`test_health.mojo:test_health_register_unhealthy` (every PR)"
     },
     {
       "id": "F",
@@ -804,7 +825,14 @@
       "category": "M. Deployment and operations",
       "capability": "Application discovery from a bare module name",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `--app-dir`"
+      "evidence": "`Conformance test the ASGI bridge` (every PR)"
+    },
+    {
+      "id": "M",
+      "category": "M. Deployment and operations",
+      "capability": "`--app-dir` prepended to `sys.path`, shadowing an installed package",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--app-dir`"
     },
     {
       "id": "M",

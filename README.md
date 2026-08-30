@@ -1,5 +1,8 @@
 # mojo-http
 
+[![Tests](https://github.com/codetalcott/mojo-http/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/codetalcott/mojo-http/actions/workflows/test.yml)
+[![Docs](https://github.com/codetalcott/mojo-http/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/codetalcott/mojo-http/actions/workflows/docs.yml)
+
 **Realtime from a synchronous Python app, with no added infrastructure.**
 
 A plain sync Django or Flask view can hold a Server-Sent Events stream or a

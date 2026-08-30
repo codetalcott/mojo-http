@@ -469,6 +469,36 @@ def read_sources(**override):
     return src
 
 
+_ROW_LINE = re.compile(
+    r"^\| .+ \| (?:" + "|".join(STATUSES) + r") \| .+ \|$", re.M)
+
+
+def _first_row(text):
+    """The first capability row, found structurally rather than quoted.
+
+    A sabotage that quotes a row verbatim breaks the moment that row is
+    legitimately edited, and then reports NOT APPLICABLE -- correct for a rule
+    that was removed, noise for one that merely needs "some row". The generic
+    shape sabotages below therefore locate a row by its shape. (This is not a
+    hypothetical tidy-up: a spot-audit re-pointed the row one of them quoted,
+    and CI failed on the sabotage rather than on anything real.)
+    """
+    m = _ROW_LINE.search(text)
+    return m.group(0) if m else None
+
+
+def _mangle_first_row(fn):
+    def patch(text):
+        row = _first_row(text)
+        return text.replace(row, fn(row), 1) if row else None
+    return patch
+
+
+def _first_section(text):
+    m = re.search(r"^## [A-Z]\. .+$", text, re.M)
+    return m.group(0) if m else None
+
+
 # Each sabotage reverts ONE rule. `must` is asserted against the failure text,
 # never against the exit code: check_docs.py's fourteen checks share one
 # sys.exit(1), so "it went red" is not evidence that THIS rule bit.
@@ -514,14 +544,14 @@ SABOTAGES = [
      ("| HTTP/2 | out of scope | terminate at a proxy — gunicorn's answer, and the same one applies here |",
       "| HTTP/2 | out of scope | none |"), "must carry a reason"),
     ("a row loses a cell", "sheet",
-     ("| Idle connection timeout | verified | `Smoke test graceful shutdown` (every PR) |",
-      "| Idle connection timeout | verified |"), "must be exactly 3 cells"),
+     _mangle_first_row(lambda r: "| " + " | ".join(split_cells(r)[:2]) + " |"),
+     "must be exactly 3 cells"),
     ("a row gains a cell", "sheet",
-     ("| Header read timeout (slowloris defence) | verified | `Smoke test the header read timeout` (every PR) |",
-      "| Header read timeout (slowloris defence) | verified | x | `Smoke test the header read timeout` (every PR) |"),
+     _mangle_first_row(lambda r: "| " + " | ".join(split_cells(r) + ["x"]) + " |"),
      "must be exactly 3 cells"),
     ("a row hides under a stray heading", "sheet",
-     ("## B. Request smuggling (CWE-444)", "## Notes"),
+     lambda text: text.replace(_first_section(text), "## Notes", 1)
+     if _first_section(text) else None,
      "outside a capability section"),
     ("the sheet is deleted", "sheet", None, "docs/SPEC.md is missing"),
 ]
@@ -533,6 +563,13 @@ def run_sabotages():
         src = read_sources()
         if patch is None:
             src[key] = None
+        elif callable(patch):
+            edited = patch(src[key])
+            if edited is None or edited == src[key]:
+                print(f"  NOT APPLICABLE  {label}\n     nothing in {key} matched the shape to sabotage")
+                ok = False
+                continue
+            src[key] = edited
         else:
             old, new = patch
             if old not in src[key]:
