@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**131 capabilities: 99 verified, 6 implemented, 4 planned, 22 out of scope.** Of the 99 verified, 97 are gated on every pull request, 1 weekly, and 1 before a release.
+**140 capabilities: 104 verified, 10 implemented, 4 planned, 22 out of scope.** Of the 104 verified, 102 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -50,6 +50,20 @@ This page is checked by `poe check-docs`: a `verified` row whose gate does not
 exist or does not run fails the build, as does a CI gate no row accounts for.
 See `scripts/spec_sheet.py`.
 
+**How the rows were checked, and what that leaves.** The machine proves a gate
+exists and runs; only reading proves it tests the row's claim. Every row has
+been read against its gate once, 2026-08-30, and roughly a fifth were wrong —
+claims whose cited test asserted something narrower (a predicate rather than
+the behaviour it guards), claims covering two things while citing one test,
+and four rows citing a gate that did not touch the capability at all. Those are
+now split, re-pointed, or demoted to `implemented`.
+
+The two halves of that pass were not equally thorough, and the weaker one is
+worth knowing about: every unit-test citation was checked by reading the test
+body, while single-claim smoke steps were checked by a relevance probe with
+the flagged ones read in full. A smoke step whose name matches its row but
+whose body drifted away from it is the case most likely to have survived.
+
 ## A. HTTP/1.1 framing and connection lifecycle
 
 | capability | status | evidence |
@@ -60,8 +74,8 @@ See `scripts/spec_sheet.py`.
 | Idle connection timeout | implemented | `packages/m0-http/lightbug_http/event_loop.mojo:3029` — no gate asserts a connection is closed for idling; `smoke-header-timeout` asserts the inverse, that a keep-alive gap is not closed |
 | Header read timeout (slowloris defence) | verified | `Smoke test the header read timeout` (every PR) |
 | Request pipelining, answered in order (RFC 9112 §9.3) | verified | `Smoke test pipelined requests` (every PR) |
-| Chunked request bodies, decoded incrementally | verified | `test_parsing.mojo:test_chunked_body_decodes` (every PR) |
-| Chunked terminator consumed, so no RST on close | verified | `test_chunked_encode.mojo:test_terminator_is_zero_chunk_and_bare_crlf` (every PR) |
+| Chunked request bodies, decoded incrementally across reads | verified | `test_parsing.mojo:test_incremental_decode_matches_a_single_pass` (every PR) |
+| Chunked decode consumes the terminator, leaving nothing buffered | verified | `test_chunked_encode.mojo:test_round_trip_single_chunk` (every PR) |
 | Chunked response bodies | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | Trailer fields consumed and discarded, not surfaced to the application | implemented | `packages/m0-http/lightbug_http/http/chunked.mojo:157` — the round-trip tests set `consume_trailer` but their wire carries no trailer section |
 | `Expect: 100-continue` | implemented | `packages/m0-http/lightbug_http/server.mojo:650` and `event_loop.mojo:1800` — no test or smoke exercises it |
@@ -82,9 +96,9 @@ See `scripts/spec_sheet.py`.
 | Duplicate `Content-Length` rejected, including across letter case | verified | `test_parsing.mojo:test_duplicate_content_length_is_rejected_across_letter_case` (every PR) |
 | `Transfer-Encoding` whose last coding is not `chunked` rejected | verified | `test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR) |
 | Header padding does not bypass the smuggling check | verified | `test_parsing.mojo:test_padded_headers_do_not_bypass_the_smuggling_check` (every PR) |
-| Bare LF rejected in chunk framing | verified | `test_parsing.mojo:test_bare_lf_in_a_chunk_extension_is_rejected` (every PR) |
+| Bare LF in a chunk extension rejected | verified | `test_parsing.mojo:test_bare_lf_in_a_chunk_extension_is_rejected` (every PR) |
 | `Content-Length` integer overflow rejected | verified | `test_parsing.mojo:test_overflowing_content_length_is_rejected` (every PR) |
-| Chunk size overflow and sign-bit rejected | verified | `test_parsing.mojo:test_chunk_size_with_the_sign_bit_set_is_rejected` (every PR) |
+| Chunk size with the sign bit set rejected | verified | `test_parsing.mojo:test_chunk_size_with_the_sign_bit_set_is_rejected` (every PR) |
 | External desync suite (PortSwigger, h2spec) | planned | ROADMAP: A conformance-suite tier |
 
 ## C. Connection management and denial of service
@@ -92,7 +106,7 @@ See `scripts/spec_sheet.py`.
 | capability | status | evidence |
 |---|---|---|
 | Max request body size, configurable | verified | `Smoke test the serve CLI` (every PR) — `--max-body` |
-| Chunk size bounded: 16 significant digits, overflow and sign bit rejected | verified | `test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR) |
+| Chunk size limited to 16 significant digits | verified | `test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR) |
 | Raw chunked bytes bounded independently of decoded size | implemented | `packages/m0-http/lightbug_http/http/chunked.mojo:271` — the ratio guard is reachable, but no test drives the raw-byte ceiling |
 | Max header count | verified | `test_parsing.mojo:test_header_count_is_capped` (every PR) |
 | A slow handler does not stall connections behind it | verified | `Smoke test the blocking-threads pool` (every PR) |
@@ -117,7 +131,8 @@ See `scripts/spec_sheet.py`.
 | capability | status | evidence |
 |---|---|---|
 | Multi-process prefork with a supervising parent | verified | `Smoke test the Django WSGI example` (every PR) |
-| Crashed workers respawned, with a budget | verified | `test_respawn.mojo:test_supervisor_exits_nonzero_when_respawn_budget_is_spent` (every PR) |
+| Crashed workers respawned | verified | `test_respawn.mojo:test_respawned_worker_returns_to_the_callers_startup_path` (every PR) |
+| A spent respawn budget exits nonzero rather than looping | verified | `test_respawn.mojo:test_supervisor_exits_nonzero_when_respawn_budget_is_spent` (every PR) |
 | Handler thread pool behind each event loop | verified | `Smoke test the Mojo handler pool` (every PR) |
 | Free-threaded CPython, N loops on N threads | verified | `py-canary` (weekly) |
 | A GIL-enabled interpreter is refused, never warned-and-run | verified | `Smoke test the threaded mode's guard` (every PR) |
@@ -129,8 +144,10 @@ See `scripts/spec_sheet.py`.
 
 | capability | status | evidence |
 |---|---|---|
-| Access logging, toggleable | verified | `Smoke test the serve CLI` (every PR) — `--access-log` |
-| Prometheus `/__metrics`: 8 counter and gauge families, exposition 0.0.4 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
+| Access log records cannot be forged by a value (newline, quote, backslash escaped) | verified | `test_log.mojo:test_a_newline_cannot_forge_a_second_log_line` (every PR) |
+| `--access-log` toggle | implemented | `packages/m0-wsgi/src/cli.mojo` — no gate exercises the flag; only the record format is unit-tested |
+| `--metrics` turns `/__metrics` from the application's 404 into a 200 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
+| Prometheus exposition 0.0.4: 8 counter and gauge families | implemented | `packages/m0-http/lightbug_http/metrics.mojo:72` — no gate reads the body, only its status |
 | Latency histograms on `/__metrics` | planned | ROADMAP: Structured CI results |
 | `--health-path` answers 200 | verified | `Smoke test the Django realtime example` (every PR) — `--health-path` |
 | Health registry with readiness aggregation | verified | `test_health.mojo:test_health_register_unhealthy` (every PR) |
@@ -143,12 +160,15 @@ See `scripts/spec_sheet.py`.
 
 | capability | status | evidence |
 |---|---|---|
-| CR, LF or NUL in an application response header drops the header | verified | `test_response.mojo:test_has_control_bytes_finds_the_framing_bytes` (every PR) |
+| An injected status reason phrase is emptied, not transmitted | verified | `test_response.mojo:test_status_reason_with_crlf_is_emptied_not_transmitted` (every PR) |
+| A response header carrying CR, LF or NUL is dropped | implemented | `packages/m0-wsgi/src/response.mojo:112` — only the `has_control_bytes` predicate is unit-tested; nothing asserts the header fails to reach the wire |
 | An application's `Set-Cookie` reaches the wire verbatim | verified | `test_response_cookies.mojo:test_raw_line_reaches_the_wire_verbatim` (every PR) |
 | `Proxy` request header never becomes `HTTP_PROXY` (httpoxy) | verified | `test_environ.mojo:test_proxy_header_is_excluded_from_the_environ` (every PR) |
-| Path traversal rejected, encoded and plain | verified | `test_static.mojo:test_encoded_dotdot_is_rejected` (every PR) |
-| Reserved `\x01` channel namespace refused at every publish boundary | verified | `test_broadcast.mojo:test_publish_rejects_reserved_channel` (every PR) |
-| API key authentication | verified | `test_auth.mojo:test_a_rotation_of_the_key_is_rejected` (every PR) |
+| Path traversal rejected (`../`) | verified | `test_static.mojo:test_dotdot_is_rejected` (every PR) |
+| Percent-encoded traversal rejected (`%2e%2e`) | verified | `test_static.mojo:test_encoded_dotdot_is_rejected` (every PR) |
+| Reserved `\x01` channel namespace refused by `publish_to_channels` | verified | `test_broadcast.mojo:test_publish_rejects_reserved_channel` (every PR) |
+| ...and by `BroadcastBus.publish` | verified | `test_broadcast.mojo:test_bus_publish_method_rejects_reserved_channel` (every PR) |
+| API key authentication, length-checked so a repeated key fails | verified | `test_auth.mojo:test_a_rotation_of_the_key_is_rejected` (every PR) |
 | CORS, configurable | verified | `Smoke test the notes API` (every PR) |
 | `X-Forwarded-*` / `Forwarded` parsing with a trusted-proxy allowlist | out of scope | the server never consults them — `REMOTE_ADDR` is the socket peer and `wsgi.url_scheme` is configuration, so there is nothing to spoof |
 | PROXY protocol v1/v2 | out of scope | same reason: the peer address is taken from the socket |
@@ -168,7 +188,7 @@ See `scripts/spec_sheet.py`.
 | WebSocket handshake (RFC 6455), `Sec-WebSocket-Accept` | verified | `Smoke test the WebSocket echo demo` (every PR) |
 | Fragmented messages reassembled | verified | `test_websocket.mojo:test_fragmented_message_assembles` (every PR) |
 | Ping/pong, and a server heartbeat on a cadence | verified | `Smoke test the WebSocket echo demo` (every PR) |
-| Close handshake through to TCP FIN | verified | `test_websocket.mojo:test_close_is_echoed_with_code_then_closes` (every PR) |
+| Close frame echoed with its code, connection marked for close | verified | `test_websocket.mojo:test_close_is_echoed_with_code_then_closes` (every PR) |
 | Invalid UTF-8 in a text frame closes 1007 | verified | `test_websocket.mojo:test_invalid_utf8_text_closes_1007` (every PR) |
 | A fragmented control frame is a protocol error | verified | `test_websocket.mojo:test_fragmented_control_frame_is_protocol_error` (every PR) |
 | Wrong `Sec-WebSocket-Version` answers 426 advertising 13 | verified | `test_websocket.mojo:test_wrong_version_is_426_advertising_13` (every PR) |
@@ -186,8 +206,10 @@ See `scripts/spec_sheet.py`.
 | capability | status | evidence |
 |---|---|---|
 | Zero-copy `sendfile`, body never entering the process | verified | `Smoke test zero-copy static file serving` (every PR) — `--static` |
-| Byte ranges: 206 with `Content-Range`, 416 when unsatisfiable | verified | `test_static.mojo:test_range_unsatisfiable_is_416_with_total` (every PR) |
-| `If-Range` and `If-None-Match` precedence over a range | verified | `test_static.mojo:test_if_none_match_beats_range` (every PR) |
+| Byte range served as 206 with `Content-Range` | verified | `test_static.mojo:test_range_serves_206_with_content_range` (every PR) |
+| Unsatisfiable range answered 416 carrying the total | verified | `test_static.mojo:test_range_unsatisfiable_is_416_with_total` (every PR) |
+| `If-None-Match` takes precedence over a range | verified | `test_static.mojo:test_if_none_match_beats_range` (every PR) |
+| `If-Range` with a weak ETag serves the full body | verified | `test_static.mojo:test_if_range_with_weak_etags_serves_full` (every PR) |
 | ETag and conditional 304 | verified | `Smoke test the notes API` (every PR) |
 | `Cache-Control`, configurable | verified | `Smoke test the serve CLI` (every PR) — `--static-cache-control` |
 | Response compression (gzip, brotli, zstd) | out of scope | recorded in ROADMAP as deliberate: no dynamic compression; a proxy compresses |
@@ -218,7 +240,8 @@ See `scripts/spec_sheet.py`.
 | `lifespan` startup and shutdown, degrading if unsupported | verified | `Conformance test the ASGI bridge` (every PR) |
 | `lifespan.state` shallow-copied into each request scope | verified | `Conformance test the ASGI bridge` (every PR) |
 | Streaming responses stream, credit-gated per stream and in total | verified | `Conformance test the ASGI bridge` (every PR) |
-| Slot ownership across recycled connections | verified | `Smoke test the ASGI executor under the loop inversion` (every PR) |
+| Slot ownership across recycled connections, sabotage-proven | verified | `Run unit tests` (every PR) — `poe test-shim` drives the extracted shim through real socketpairs and reverts each rule |
+| The event loop running inside asyncio (`M0_INVERTED`) | verified | `Smoke test the ASGI executor under the loop inversion` (every PR) |
 | Slot ownership under CPU contention | verified | `stress-asgi` (pre-release) |
 | Django's own ASGI handler through the executor | verified | `Serve a Django ASGI project through the executor` (every PR) |
 | Starlette-family app (FastHTML) through the executor | verified | `Serve a FastHTML app through the ASGI bridge` (every PR) |
@@ -240,7 +263,7 @@ See `scripts/spec_sheet.py`.
 | The aarch64 wheel built and served on arm64 hardware | verified | `Build and smoke test the aarch64 wheel` (every PR) |
 | C-ABI shared library loadable by `dlopen`/`ctypes` | verified | `Smoke test the C-ABI shared library` (every PR) |
 | The documented quickstart is executed, not asserted | verified | `Execute the quickstart` (every PR) |
-| Correct signal handling as PID 1 in a container | verified | `Smoke test graceful shutdown` (every PR) |
+| Correct signal handling as PID 1 in a container | implemented | `packages/m0-http/src/signal.mojo` — the SIGTERM rows above are the evidence that exists; nothing runs the server in a container or as PID 1 |
 | Configuration from a TOML file | out of scope | flags and `M0_*` environment variables cover it; a third source is a third precedence rule |
 | systemd socket activation (`LISTEN_FDS`) | out of scope | no request for it; `SO_REUSEPORT` covers the restart case it is usually wanted for |
 | An HTTP client in Mojo, for server-to-server calls | verified | `Smoke test the HTTP client` (every PR) |
