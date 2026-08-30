@@ -947,16 +947,92 @@ def check_required_context_intact():
         )
 
 
+def check_bench_kinds_do_not_shadow():
+    """No bench artifact kind may be a dash-prefix of another.
+
+    `render_bench_docs.newest(kind)` and this file's `_bench(kind)` both resolve
+    "the newest artifact of a kind" as `glob(f"{kind}-*.json")` sorted
+    LEXICOGRAPHICALLY, taking the last. That is correct only while no kind's
+    name is a prefix of another's, because the shorter kind's glob matches the
+    longer kind's files too -- and a stamp sorts below every letter, so the
+    intruder wins:
+
+        asgi-wrk-hello-20260829T120000Z.json           the real newest
+        asgi-wrk-hello-inverted-20260828T120000Z.json  sorts LAST ('i' > '2')
+
+    The result is silent and public: docs/BENCHMARKS.md would render an older
+    run of a DIFFERENT experiment as the current headline figure, and
+    `check_bench_prose` would then hold the surrounding sentences to it.
+
+    Today the rule is kept by a convention -- A/B variants live in
+    subdirectories (`inverted-ab/`, `outbox-sweep/`, `parse-lever-ab/`), which
+    the non-recursive glob correctly cannot see. A convention is exactly what
+    this file exists to turn into an invariant, and the cost of getting it
+    wrong is a wrong number on the page rather than a failure.
+
+    Deliberately NOT a generated index of artifacts, which was the first design:
+    an index is a second source of truth to keep in step, and the naming rule
+    is the thing that actually has to hold.
+
+    Registered in `main()` BEFORE `check_bench_region` and `check_bench_prose`,
+    which is load-bearing rather than tidy: both of those CONSUME the artifacts
+    this validates. Sabotaging it revealed the ordering -- a shadow file made
+    `_bench("asgi-wrk-hello")` read the intruder and die on a JSONDecodeError
+    traceback before this check ever ran. A guard on the shape of an input has
+    to run ahead of everything that reads it.
+    """
+    results = REPO / "bench" / "results"
+    if not results.is_dir():
+        return
+    stamped = re.compile(r"^(?P<kind>[a-z0-9-]+?)-\d{8}T\d{6}Z\.json$")
+    kinds = set()
+    for f in sorted(results.glob("*.json")):
+        m = stamped.match(f.name)
+        if not m:
+            fail(
+                f"bench/results/{f.name} is not named `<kind>-<YYYYmmddTHHMMSSZ>.json`. "
+                "Both readers of these artifacts derive the kind from the "
+                "filename, so an unparseable name is either invisible or "
+                "captured by another kind's glob."
+            )
+            continue
+        kinds.add(m.group("kind"))
+    for short in sorted(kinds):
+        for long in sorted(kinds):
+            if long.startswith(short + "-"):
+                fail(
+                    f"bench artifact kind {long!r} is a dash-prefix extension of "
+                    f"{short!r}, so `glob('{short}-*.json')` matches {long!r}'s "
+                    "files as well. Sorted lexicographically a stamp loses to "
+                    "any letter, so the newest "
+                    f"{short!r} silently becomes an older {long!r} run on "
+                    "docs/BENCHMARKS.md. Put the variant in a subdirectory, as "
+                    "inverted-ab/ and outbox-sweep/ already do."
+                )
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
     check_test_coverage()
     check_release_branches_cleaned()
-    check_bench_region()
+    # The artifact consumers below are SKIPPED when the naming guard has
+    # already failed. `fail()` only accumulates, so without this a malformed
+    # artifact still reaches `_bench`, which either dies on a JSONDecodeError
+    # traceback before main() can print anything, or -- worse, and the case
+    # that matters -- succeeds against the wrong file and buries the real
+    # cause under a list of prose-drift failures pointing at innocent
+    # sentences. Both were observed while sabotaging the guard.
+    _artifacts_ok = len(failures)
+    check_bench_kinds_do_not_shadow()
+    _artifacts_ok = len(failures) == _artifacts_ok
+    if _artifacts_ok:
+        check_bench_region()
     check_version_single_source()
     check_wheel_platform_claims()
     check_m0pub_twins()
-    check_bench_prose()
+    if _artifacts_ok:
+        check_bench_prose()
     check_hybrid_p99_consistent()
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
