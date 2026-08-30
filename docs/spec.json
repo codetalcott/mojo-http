@@ -46,16 +46,16 @@
     {
       "id": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Chunked request bodies, decoded incrementally",
+      "capability": "Chunked request bodies, decoded incrementally across reads",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_chunked_body_decodes` (every PR)"
+      "evidence": "`test_parsing.mojo:test_incremental_decode_matches_a_single_pass` (every PR)"
     },
     {
       "id": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Chunked terminator consumed, so no RST on close",
+      "capability": "Chunked decode consumes the terminator, leaving nothing buffered",
       "status": "verified",
-      "evidence": "`test_chunked_encode.mojo:test_terminator_is_zero_chunk_and_bare_crlf` (every PR)"
+      "evidence": "`test_chunked_encode.mojo:test_round_trip_single_chunk` (every PR)"
     },
     {
       "id": "A",
@@ -165,7 +165,7 @@
     {
       "id": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "Bare LF rejected in chunk framing",
+      "capability": "Bare LF in a chunk extension rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_bare_lf_in_a_chunk_extension_is_rejected` (every PR)"
     },
@@ -179,7 +179,7 @@
     {
       "id": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "Chunk size overflow and sign-bit rejected",
+      "capability": "Chunk size with the sign bit set rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_chunk_size_with_the_sign_bit_set_is_rejected` (every PR)"
     },
@@ -200,7 +200,7 @@
     {
       "id": "C",
       "category": "C. Connection management and denial of service",
-      "capability": "Chunk size bounded: 16 significant digits, overflow and sign bit rejected",
+      "capability": "Chunk size limited to 16 significant digits",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR)"
     },
@@ -305,7 +305,14 @@
     {
       "id": "E",
       "category": "E. Process and worker model",
-      "capability": "Crashed workers respawned, with a budget",
+      "capability": "Crashed workers respawned",
+      "status": "verified",
+      "evidence": "`test_respawn.mojo:test_respawned_worker_returns_to_the_callers_startup_path` (every PR)"
+    },
+    {
+      "id": "E",
+      "category": "E. Process and worker model",
+      "capability": "A spent respawn budget exits nonzero rather than looping",
       "status": "verified",
       "evidence": "`test_respawn.mojo:test_supervisor_exits_nonzero_when_respawn_budget_is_spent` (every PR)"
     },
@@ -354,16 +361,30 @@
     {
       "id": "F",
       "category": "F. Observability",
-      "capability": "Access logging, toggleable",
+      "capability": "Access log records cannot be forged by a value (newline, quote, backslash escaped)",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--access-log`"
+      "evidence": "`test_log.mojo:test_a_newline_cannot_forge_a_second_log_line` (every PR)"
     },
     {
       "id": "F",
       "category": "F. Observability",
-      "capability": "Prometheus `/__metrics`: 8 counter and gauge families, exposition 0.0.4",
+      "capability": "`--access-log` toggle",
+      "status": "implemented",
+      "evidence": "`packages/m0-wsgi/src/cli.mojo` \u2014 no gate exercises the flag; only the record format is unit-tested"
+    },
+    {
+      "id": "F",
+      "category": "F. Observability",
+      "capability": "`--metrics` turns `/__metrics` from the application's 404 into a 200",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`"
+    },
+    {
+      "id": "F",
+      "category": "F. Observability",
+      "capability": "Prometheus exposition 0.0.4: 8 counter and gauge families",
+      "status": "implemented",
+      "evidence": "`packages/m0-http/lightbug_http/metrics.mojo:72` \u2014 no gate reads the body, only its status"
     },
     {
       "id": "F",
@@ -417,9 +438,16 @@
     {
       "id": "G",
       "category": "G. Security hardening",
-      "capability": "CR, LF or NUL in an application response header drops the header",
+      "capability": "An injected status reason phrase is emptied, not transmitted",
       "status": "verified",
-      "evidence": "`test_response.mojo:test_has_control_bytes_finds_the_framing_bytes` (every PR)"
+      "evidence": "`test_response.mojo:test_status_reason_with_crlf_is_emptied_not_transmitted` (every PR)"
+    },
+    {
+      "id": "G",
+      "category": "G. Security hardening",
+      "capability": "A response header carrying CR, LF or NUL is dropped",
+      "status": "implemented",
+      "evidence": "`packages/m0-wsgi/src/response.mojo:112` \u2014 only the `has_control_bytes` predicate is unit-tested; nothing asserts the header fails to reach the wire"
     },
     {
       "id": "G",
@@ -438,21 +466,35 @@
     {
       "id": "G",
       "category": "G. Security hardening",
-      "capability": "Path traversal rejected, encoded and plain",
+      "capability": "Path traversal rejected (`../`)",
+      "status": "verified",
+      "evidence": "`test_static.mojo:test_dotdot_is_rejected` (every PR)"
+    },
+    {
+      "id": "G",
+      "category": "G. Security hardening",
+      "capability": "Percent-encoded traversal rejected (`%2e%2e`)",
       "status": "verified",
       "evidence": "`test_static.mojo:test_encoded_dotdot_is_rejected` (every PR)"
     },
     {
       "id": "G",
       "category": "G. Security hardening",
-      "capability": "Reserved `x01` channel namespace refused at every publish boundary",
+      "capability": "Reserved `x01` channel namespace refused by `publish_to_channels`",
       "status": "verified",
       "evidence": "`test_broadcast.mojo:test_publish_rejects_reserved_channel` (every PR)"
     },
     {
       "id": "G",
       "category": "G. Security hardening",
-      "capability": "API key authentication",
+      "capability": "...and by `BroadcastBus.publish`",
+      "status": "verified",
+      "evidence": "`test_broadcast.mojo:test_bus_publish_method_rejects_reserved_channel` (every PR)"
+    },
+    {
+      "id": "G",
+      "category": "G. Security hardening",
+      "capability": "API key authentication, length-checked so a repeated key fails",
       "status": "verified",
       "evidence": "`test_auth.mojo:test_a_rotation_of_the_key_is_rejected` (every PR)"
     },
@@ -522,7 +564,7 @@
     {
       "id": "I",
       "category": "I. WebSocket and Server-Sent Events",
-      "capability": "Close handshake through to TCP FIN",
+      "capability": "Close frame echoed with its code, connection marked for close",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_close_is_echoed_with_code_then_closes` (every PR)"
     },
@@ -613,16 +655,30 @@
     {
       "id": "J",
       "category": "J. Static file serving",
-      "capability": "Byte ranges: 206 with `Content-Range`, 416 when unsatisfiable",
+      "capability": "Byte range served as 206 with `Content-Range`",
+      "status": "verified",
+      "evidence": "`test_static.mojo:test_range_serves_206_with_content_range` (every PR)"
+    },
+    {
+      "id": "J",
+      "category": "J. Static file serving",
+      "capability": "Unsatisfiable range answered 416 carrying the total",
       "status": "verified",
       "evidence": "`test_static.mojo:test_range_unsatisfiable_is_416_with_total` (every PR)"
     },
     {
       "id": "J",
       "category": "J. Static file serving",
-      "capability": "`If-Range` and `If-None-Match` precedence over a range",
+      "capability": "`If-None-Match` takes precedence over a range",
       "status": "verified",
       "evidence": "`test_static.mojo:test_if_none_match_beats_range` (every PR)"
+    },
+    {
+      "id": "J",
+      "category": "J. Static file serving",
+      "capability": "`If-Range` with a weak ETag serves the full body",
+      "status": "verified",
+      "evidence": "`test_static.mojo:test_if_range_with_weak_etags_serves_full` (every PR)"
     },
     {
       "id": "J",
@@ -767,7 +823,14 @@
     {
       "id": "L",
       "category": "L. ASGI 3.0",
-      "capability": "Slot ownership across recycled connections",
+      "capability": "Slot ownership across recycled connections, sabotage-proven",
+      "status": "verified",
+      "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` drives the extracted shim through real socketpairs and reverts each rule"
+    },
+    {
+      "id": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "The event loop running inside asyncio (`M0_INVERTED`)",
       "status": "verified",
       "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR)"
     },
@@ -887,8 +950,8 @@
       "id": "M",
       "category": "M. Deployment and operations",
       "capability": "Correct signal handling as PID 1 in a container",
-      "status": "verified",
-      "evidence": "`Smoke test graceful shutdown` (every PR)"
+      "status": "implemented",
+      "evidence": "`packages/m0-http/src/signal.mojo` \u2014 the SIGTERM rows above are the evidence that exists; nothing runs the server in a container or as PID 1"
     },
     {
       "id": "M",

@@ -242,7 +242,11 @@ def analyse(src):
     for row in rows:
         where = f"docs/SPEC.md row {row['capability']!r}"
         ev, status = row["evidence"], row["status"]
-        cited_flags |= set(_FLAG.findall(ev))
+        # The whole row, not just the evidence cell: a row may name its flag
+        # in the capability ('`--access-log` toggle') and carry a source path
+        # as evidence. Scanning only the evidence cell made the reverse flag
+        # check fire on a correctly-written `implemented` row.
+        cited_flags |= set(_FLAG.findall(row['capability'] + ' ' + ev))
 
         if status == "verified":
             m = _EVIDENCE.match(ev)
@@ -367,11 +371,28 @@ def analyse(src):
                     )
 
         elif status == "out of scope":
-            if len(ev) < 20:
+            # A floor, not a judgement: this catches an empty or one-word cell,
+            # and cannot tell a good reason from a plausible-looking one. That
+            # is review's job and is stated on the page.
+            if len(ev) < 20 or len(ev.split()) < 4:
                 failures.append(
-                    f"{where}: `out of scope` must carry a reason, not "
+                    f"{where}: `out of scope` must carry a reason in words, not "
                     f"{ev!r} — a refusal without one reads as an omission"
                 )
+
+    # A duplicated capability inflates every count in the rollup and reads, to
+    # anyone scanning, as two independent pieces of evidence. Cheap to add and
+    # the kind of thing a 140-row hand-written table grows on its own.
+    seen = {}
+    for row in rows:
+        key = row["capability"].strip().lower()
+        if key in seen:
+            failures.append(
+                f"docs/SPEC.md lists {row['capability']!r} twice (sections "
+                f"{seen[key]} and {row['id']}) — a duplicate inflates the rollup "
+                "and reads as two separate pieces of evidence"
+            )
+        seen[key] = row["id"]
 
     # RULE 6, the reverse direction, over two closed sets. Without it a sheet
     # can be complete-looking while omitting whatever is inconvenient.
@@ -453,8 +474,13 @@ def read_sources(**override):
                     for m in re.finditer(r"^def (test_[a-z0-9_]+)\(", f.read_text(), re.M)
                 },
             }
-    for p in REPO.glob("packages/*/**/*.mojo"):
-        sources.add(str(p.relative_to(REPO)))
+    # Every tracked file, not just packages/**/*.mojo: an `implemented` row may
+    # legitimately cite a script, a workflow or a Python module, and rejecting
+    # those as "no such file" would push the row into a wrong shape.
+    for d in ("packages", "scripts", "apps", ".github"):
+        for f in (REPO / d).rglob("*"):
+            if f.is_file():
+                sources.add(str(f.relative_to(REPO)))
 
     src = {
         "sheet": SHEET.read_text() if SHEET.exists() else None,
@@ -497,6 +523,12 @@ def _mangle_first_row(fn):
     return patch
 
 
+def _first_unit_row(text):
+    """The first row whose evidence is a `test_x.mojo:test_fn` citation."""
+    m = re.search(r"`(test_[a-z0-9_]+\.mojo):(test_[a-z0-9_]+)`", text)
+    return m.group(0) if m else None
+
+
 def _first_section(text):
     m = re.search(r"^## [A-Z]\. .+$", text, re.M)
     return m.group(0) if m else None
@@ -515,12 +547,17 @@ SABOTAGES = [
     ("cited step is reworded in the workflow", "workflow",
      ("- name: Smoke test pipelined requests",
       "- name: Smoke test pipelined requests, renamed"), "is not a step in test.yml"),
+    # These two test the unit-evidence rules, which need SOME unit citation and
+    # not a particular one -- so they locate it by shape. Quoting a row broke
+    # both the first time an audit legitimately re-pointed the test they named.
     ("unit-test file does not exist", "sheet",
-     ("`test_parsing.mojo:test_chunked_body_decodes`",
-      "`test_nosuch.mojo:test_chunked_body_decodes`"), "no packages/*/test/"),
+     lambda t: (t.replace(_first_unit_row(t),
+                          "`test_nosuchfile.mojo:" + _first_unit_row(t).split(":")[1], 1)
+                if _first_unit_row(t) else None), "no packages/*/test/"),
     ("cited test function is deleted", "sheet",
-     ("`test_parsing.mojo:test_chunked_body_decodes`",
-      "`test_parsing.mojo:test_chunked_body_gone`"), "has no `def"),
+     lambda t: (t.replace(_first_unit_row(t),
+                          _first_unit_row(t).split(":")[0] + ":test_deleted_by_sabotage`", 1)
+                if _first_unit_row(t) else None), "has no `def"),
     ("test package leaves the test-all sequence", "pyproject",
      ('"test-core", "test-http"', '"test-core"'), "not reachable from `poe test-all`"),
     # Deleting a row whose gate ANOTHER row also cites proves nothing -- the
@@ -556,6 +593,9 @@ SABOTAGES = [
      lambda text: text.replace(_first_section(text), "## Notes", 1)
      if _first_section(text) else None,
      "outside a capability section"),
+    ("a capability row is duplicated", "sheet",
+     lambda t: (t.replace(_first_row(t), _first_row(t) + "\n" + _first_row(t), 1)
+                if _first_row(t) else None), "twice (sections"),
     ("the sheet is deleted", "sheet", None, "docs/SPEC.md is missing"),
 ]
 
