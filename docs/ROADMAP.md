@@ -1545,6 +1545,67 @@ is the entire reason for recording them.
 which today exposes counters and gauges only. Same shape of gap -- a number
 that exists in the process and reaches nobody.
 
+### Traceability: stable ids, then declared coverage
+
+[SPEC.md](SPEC.md) is a requirements traceability matrix -- the standard
+artifact in safety-critical software, whose defining property is that it traces
+BOTH ways: every capability to its evidence, and every piece of evidence back
+to a capability. That second direction is the half most homegrown versions omit
+and the half this one has, over two closed sets (the CI steps in `test.yml`,
+the flags `cli.mojo` accepts).
+
+It also has a structural weakness, and the 2026-08-30 audit is the evidence.
+The sheet asserts things ABOUT tests, from outside them. The established
+tools -- shtracer, TRLC, and every RTM that survives contact with a real
+codebase -- put the tag IN the test and generate the matrix. Every defect that
+audit found is a symptom of the direction:
+
+- six rows cited a gate that asserted something else, which cannot happen when
+  the assertion declares its own coverage;
+- two sabotages broke because they quoted a row that was legitimately
+  re-pointed, because rows are keyed by prose;
+- "the checker cannot read a test's meaning", stated on the page as a limit, is
+  not a law -- it is a consequence of authoring the claim away from the
+  assertion.
+
+#### Phase 1 -- stable ids (done 2026-08-30)
+
+Every row carries a permanent id, `<section letter><number>`, in its own
+column. Ids are assigned once, never renumbered, and never reused: a deleted
+row's id is retired rather than recycled, so an id in an old commit, an issue
+or a conversation still means what it meant. Prose becomes freely editable,
+which it should be -- and the sabotages key on ids, which is what stops them
+breaking every time a capability is reworded.
+
+Enforced: an id on every row, unique, and its letter matching its section. NOT
+enforced, and left as a convention with the reason written down: never reusing
+a retired id, which cannot be checked without carrying a ledger that is itself
+a second source of truth to keep in step.
+
+#### Phase 2 -- declared coverage, not asserted citation
+
+Invert the direction. A gate declares what it covers, next to the assertion,
+written by the person who knows what was asserted:
+
+- Mojo tests: a `covers: A7` line in the test's docstring, greppable.
+- Smokes: `emit.py --covers A7`, which means coverage is RECORDED BY A REAL RUN
+  rather than claimed statically. The emitter for this already exists.
+
+`check_spec_sheet` then collapses from nine rules about the shape of a citation
+to two: every `verified` row was covered by a real run, and every declared id
+exists. The class of defect the audit spent its time on stops being possible.
+
+Not taken yet, and the cost is why: it touches every test file and every smoke
+body. The migration wants to be incremental -- new and changed gates declare,
+existing ones stay cited, and the checker reports the declared-vs-cited
+fraction so the progress is visible rather than assumed.
+
+The honest argument against doing it at all: the sheet is audited now, so
+today's error rate is low. The value is not in fixing what is there. It is that
+a test added next month will not update the sheet, and nothing will notice --
+the reverse check fires when a whole CI step goes uncited, not when one
+capability quietly drifts away from the gate that used to prove it.
+
 ## Open questions
 
 ### The desktop-Mac server, and what the wheel gives up to ship
