@@ -3567,59 +3567,105 @@ python3 scripts/pool_spike_probe.py --binary "$out/pool_spike" --json "bench/res
 """
 
 [tool.poe.tasks.stress-asgi]
-help = "Pre-release: N streamed keep-alive rounds under CPU load, on recycled slots (not in CI)"
+help = "Pre-release: N streamed + WebSocket rounds under CPU load, in both loop modes (not in CI)"
 deps = ["build-serve"]
 shell = """
 iters=${M0_STRESS_ITERS:-30}
 hogs=${M0_STRESS_HOGS:-$(( $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) * 2 ))}
 port=${M0_STRESS_PORT:-8188}
+# The pump and the inversion are two different loops around the same executor,
+# and the flake that widened this gate landed in the inverted one — so both are
+# driven and each names itself when it fails. `M0_STRESS_MODES=inverted` narrows
+# a rerun to the mode a failure named, which is the cheapest reproduction.
+modes=${M0_STRESS_MODES:-"plain inverted"}
 
-# A stray server on this port would answer instead — SO_REUSEPORT means a
-# second bind SUCCEEDS and silently takes a share of the connections, so
-# "it passed" would mean nothing.
-if pgrep -f "m0serve .*--port $port" > /dev/null 2>&1; then
-  echo "stress-asgi: an m0serve is already on port $port; kill it first"
-  exit 1
-fi
+# A stray server on either port would answer instead — SO_REUSEPORT means a
+# second bind SUCCEEDS and silently takes a share of the connections, so "it
+# passed" would mean nothing. The two modes get two ports for that same
+# reason: sequential restarts on ONE port can overlap, and the inverted
+# server's drain deadline is 5 s, so the overlap is not hypothetical.
+for p in $port $(( port + 1 )); do
+  if pgrep -f "m0serve .*--port $p" > /dev/null 2>&1; then
+    echo "stress-asgi: an m0serve is already on port $p; kill it first"
+    exit 1
+  fi
+done
 
 hog_pids=""
+pid=""
 # `wait` after each kill reaps the hog then and there; without it the shell
 # announces every one of them as "Terminated" on the next command.
-cleanup() {
+stop_hogs() {
   for h in $hog_pids; do kill $h 2>/dev/null; wait $h 2>/dev/null; done
-  kill $pid 2>/dev/null
+  hog_pids=""
+}
+cleanup() {
+  stop_hogs
+  if [ -n "$pid" ]; then kill $pid 2>/dev/null; fi
 }
 trap cleanup EXIT
 
-bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port \
-  > stress.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://localhost:$port/ > /dev/null || { echo 'stress-asgi: server never became healthy'; cat stress.log; exit 1; }
+for mode in $modes; do
+  case $mode in
+    plain)    inverted=0; mport=$port ;;
+    inverted) inverted=1; mport=$(( port + 1 )) ;;
+    *) echo "stress-asgi: unknown mode '$mode' (plain|inverted)"; exit 1 ;;
+  esac
+  log=stress-$mode.log
 
-for _ in $(seq 1 $hogs); do
-  ( while :; do :; done ) &
-  hog_pids="$hog_pids $!"
-done
-echo "stress-asgi: $iters rounds under $hogs CPU hogs on port $port"
-
-i=1
-while [ $i -le $iters ]; do
-  if ! M0_PORT=$port python3 scripts/chunked_keepalive.py > /dev/null 2>&1; then
-    echo "stress-asgi: FAILED on round $i of $iters"
-    M0_PORT=$port python3 scripts/chunked_keepalive.py
-    echo '=== stress.log ==='; cat stress.log
-    exit 1
+  # The heartbeat cadence is smoke-asgi's, not the default, because the run
+  # that failed had it: a WS slot gets a protocol PING on this cadence, so
+  # the flood phase's two-second stall now has a timer-driven producer
+  # queueing frames into the same outbox the application is filling. That
+  # is a second writer on the seam under test, and it is free.
+  M0_SSE_HEARTBEAT_MS=300 M0_INVERTED=$inverted bin/m0serve bareapp.asgi:application \
+    --app-dir apps/asgi_bare --port $mport > $log 2>&1 &
+  pid=$!
+  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+    http://localhost:$mport/ > /dev/null \
+    || { echo "stress-asgi: the $mode server never became healthy"; cat $log; exit 1; }
+  # The inversion is gated on a topology (unmounted, pool-free, no --realtime)
+  # that this app happens to satisfy today. If that gate ever moves, the
+  # variable is silently ignored and this mode proves the pump a second time
+  # while reporting itself as the inverted one.
+  if [ $inverted = 1 ]; then
+    grep -q 'inverted: the event loop runs inside asyncio' $log \
+      || { echo "stress-asgi: M0_INVERTED=1 did not invert the loop; this mode would prove the pump twice"; cat $log; exit 1; }
   fi
-  i=$((i + 1))
-done
 
-for h in $hog_pids; do kill $h 2>/dev/null; wait $h 2>/dev/null; done
-hog_pids=""
-curl -s --fail --max-time 10 http://localhost:$port/ | grep -q 'hello from asgi_bare' \
-  || { echo 'stress-asgi: the server did not survive the load'; cat stress.log; exit 1; }
-rm -f stress.log
-echo "stress-asgi OK: $iters/$iters rounds under $hogs hogs"
+  for _ in $(seq 1 $hogs); do
+    ( while :; do :; done ) &
+    hog_pids="$hog_pids $!"
+  done
+  echo "stress-asgi[$mode]: $iters rounds under $hogs CPU hogs on port $mport"
+
+  i=1
+  while [ $i -le $iters ]; do
+    # Interleaved, not run as two separate phases: chunked_keepalive's
+    # HTTP/1.0 request closes after its head, so the WebSocket handshake
+    # behind it lands on the slot that connection just released. That is the
+    # recycled-slot shape the streamed half already covers, with a held 101
+    # on the successor instead of another stream.
+    for probe in scripts/chunked_keepalive.py apps/asgi_bare/ws_probe.py; do
+      if ! M0_PORT=$mport python3 $probe > /dev/null 2>&1; then
+        echo "stress-asgi: FAILED in $mode mode on round $i of $iters, in $probe"
+        echo "stress-asgi: rerun that half alone with M0_STRESS_MODES=$mode uv run poe stress-asgi"
+        M0_PORT=$mport python3 $probe
+        echo "=== $log ==="; cat $log
+        exit 1
+      fi
+    done
+    i=$((i + 1))
+  done
+
+  stop_hogs
+  curl -s --fail --max-time 10 http://localhost:$mport/ | grep -q 'hello from asgi_bare' \
+    || { echo "stress-asgi: the $mode server did not survive the load"; cat $log; exit 1; }
+  kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  pid=""
+  rm -f $log
+  echo "stress-asgi[$mode] OK: $iters/$iters rounds under $hogs hogs"
+done
 """
 
 [tool.poe.tasks.serve-asgi-bare]

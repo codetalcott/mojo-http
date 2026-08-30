@@ -65,6 +65,10 @@ rt6.log
 stream.log
 ht.log
 canary.log
+# stress-asgi keeps its per-mode server log when a round fails; the
+# failure dumps it and leaves it for the next investigator.
+stress-plain.log
+stress-inverted.log
 # Per-connection probe output from the multi-worker and realtime smokes:
 # the index is a loop variable, so these are globs rather than names.
 mw_hdr_*.txt

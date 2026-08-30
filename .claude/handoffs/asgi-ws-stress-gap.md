@@ -1,5 +1,11 @@
 # Handoff: the inverted ASGI WebSocket flake, and the stress gate that cannot see it
 
+> **DONE — 2026-08-30.** The gate was extended and the outcome recorded in
+> `docs/ROADMAP.md` under Recently resolved, "The WebSocket path is not
+> stressed"; `SPEC.md` row L9 is widened and its caveat deleted. The flake did
+> not reproduce: 150 rounds per mode across three runs, up to 40 CPU hogs on
+> 10 cores. The brief below is kept as the record of what was known going in.
+
 ## Task
 
 Two halves. The second is the deliverable; the first is what motivates it.

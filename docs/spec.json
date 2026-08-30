@@ -965,9 +965,9 @@
       "id": "L9",
       "section": "L",
       "category": "L. ASGI 3.0",
-      "capability": "Slot ownership under CPU contention, on the STREAMED path",
+      "capability": "Slot ownership under CPU contention, on the streamed AND WebSocket paths, in both loop modes",
       "status": "verified",
-      "evidence": "`stress-asgi` (pre-release) \u2014 it drives `chunked_keepalive.py` only; the WebSocket path is not stressed"
+      "evidence": "`stress-asgi` (pre-release) \u2014 each round runs `chunked_keepalive.py` then `ws_probe.py`, so the handshake lands on the slot the streamed connection just released; run under CPU hogs on the pump and again under `M0_INVERTED=1`"
     },
     {
       "id": "L10",

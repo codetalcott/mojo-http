@@ -1606,29 +1606,6 @@ a test added next month will not update the sheet, and nothing will notice --
 the reverse check fires when a whole CI step goes uncited, not when one
 capability quietly drifts away from the gate that used to prove it.
 
-### The WebSocket path is not stressed
-
-`poe stress-asgi` is the pre-release gate for the executor's timing races —
-deliberately not in CI, because shared runners cannot reproduce them, "which is
-exactly why CI passed with the bug live". It drives `chunked_keepalive.py` for
-N rounds under CPU hogs. It does not touch the WebSocket path.
-
-On 2026-08-30 a CI macOS run failed in `apps/asgi_bare/ws_probe.py` under
-`M0_INVERTED=1` with a connection reset. It was a flake by every check
-available — first in twelve runs, a rerun of the identical commit went green on
-both platforms, and six local rounds under six CPU hogs did not reproduce it —
-but it landed in the one combination nothing gates: the WebSocket path, the
-loop inversion, and sustained CPU contention together.
-
-That combination is worth closing rather than arguing about, because the
-precedent cuts the wrong way: the slot-ownership race is on record as having
-passed CI while live, and `stress-asgi` exists because of it.
-
-`SPEC.md` row L9 has been narrowed to say what its gate actually covers — the
-streamed path — and widening it back is what "done" looks like.
-`.claude/handoffs/asgi-ws-stress-gap.md` carries the evidence already gathered
-so it is not gathered twice.
-
 ## Open questions
 
 ### The desktop-Mac server, and what the wheel gives up to ship
@@ -1881,6 +1858,68 @@ otherwise be invisible to whoever picks this hypothesis up.
   everything else — but it remains in the fork for the simplest embeddings.
 
 ## Recently resolved
+
+- ~~**The WebSocket path is not stressed**~~ — **closed 2026-08-30.**
+  `poe stress-asgi` drove `chunked_keepalive.py` and nothing else, so the
+  pre-release timing gate never touched the WebSocket seam — and the CI flake
+  of 2026-08-30 (macOS, `M0_INVERTED=1`, a connection reset in
+  `apps/asgi_bare/ws_probe.py`) landed in exactly the combination that left
+  uncovered: the WS path, the loop inversion and sustained contention
+  together. A flake by every check available — first in twelve runs, a rerun
+  of the identical commit green on both platforms — but the precedent cuts the
+  wrong way, since the slot-ownership race is on record as having passed CI
+  while live and this gate exists because of it.
+
+  **The gate now covers it.** Each round runs `chunked_keepalive.py` and then
+  `ws_probe.py`, so the WebSocket handshake lands on the slot the streamed
+  connection just released — the recycled-slot shape the streamed half already
+  had, with a held 101 on the successor instead of another stream — and the
+  whole loop runs twice, on the pump and under `M0_INVERTED=1`. Three details
+  are load-bearing rather than incidental:
+
+  - **Two modes, two ports.** `SO_REUSEPORT` means a restart that overlaps its
+    predecessor binds anyway and silently splits the connections, and the
+    inverted server's drain deadline is 5 s, so the overlap is not
+    hypothetical.
+  - **The inverted mode asserts the banner**, rather than trusting that
+    exporting the variable did anything. The inversion is gated on a topology
+    (unmounted, pool-free, no `--realtime`); if that gate ever moves, the
+    variable is ignored in silence and the mode proves the pump a second time
+    while reporting itself as the inverted one.
+  - **The server runs at `smoke-asgi`'s 300 ms heartbeat**, not the default,
+    because the run that failed had it: a WS slot gets a protocol PING on that
+    cadence, so the flood phase's two-second stall has a timer-driven second
+    writer queueing into the same outbox the application is filling.
+
+  **Sabotaged both ways, and the coverage gap is measured rather than
+  argued.** Reverting the `websocket.send` credit gate (`_ws_spend` returning
+  before it waits) fails the new gate on round 1 with an exact count — 15 of
+  400 frames, 61,440 of 1,638,400 bytes — and **passed the old chunked-only
+  gate 30 of 30 under 8 hogs**. Making `M0_INVERTED` never match is caught by
+  the banner assert before a round runs.
+
+  **The flake did not reproduce**, and the numbers are the outcome rather than
+  a gap in it. Three runs on macOS arm64 (10 cores, CPython 3.13), 150 rounds
+  per mode — 300 WebSocket probe runs and 300 streamed ones — all green: 30
+  rounds/mode under 20 hogs, then 60 under 40, then 60 under 40 with the
+  heartbeat. Against the six rounds under six hogs the first investigation
+  managed, that is 25x the rounds plus the inversion, the WS path and the
+  heartbeat. The machine is the caveat and it is a real one: this is ten fast
+  cores, where CI's macOS runner is three shared virtualized ones, and
+  `scripts/epoll_inverted_check.sh` picks the new coverage up for free on
+  Linux the next time it runs.
+
+  **The probe's own diagnosis was thinner than the failure deserved**, and was
+  improved on the way past. The CI traceback named a line in `recv_exact`, a
+  helper four phases share, so the log said which call reset and not which
+  phase was being proven; and `ConnectionResetError` is not `EOFError`, so the
+  flood phase's careful "N of 400 frames arrived" diagnosis is skipped
+  entirely when the close arrives as an RST rather than a FIN — which is what
+  the kernel sends for a socket closed with bytes still queued. `ws_probe.py`
+  now stamps a phase and reports an `OSError` as a finding carrying it. This
+  changes nothing about what passes; it changes what the next failure says,
+  and `poe stress-asgi` drives this probe hundreds of times a run, where a
+  round number alone would not be enough.
 
 - ~~**`--app-dir` is appended to `sys.path`, not prepended**~~ — **fixed
   2026-08-26.** It appended where gunicorn, uvicorn and `runserver` all

@@ -7,6 +7,29 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Changed
+
+- **`poe stress-asgi` covers the WebSocket path, in both loop modes.** The
+  pre-release timing gate drove `chunked_keepalive.py` only, so the seam a
+  2026-08-30 CI flake landed in — the WS path, the loop inversion and CPU
+  contention together — was gated by nothing. Each round now runs
+  `chunked_keepalive.py` and then `apps/asgi_bare/ws_probe.py`, so the
+  handshake lands on the slot the streamed connection just released, and the
+  whole loop runs on the pump and again under `M0_INVERTED=1` (asserted from
+  the banner, not assumed from the variable), at `smoke-asgi`'s 300 ms
+  heartbeat so a timer is queueing frames into the outbox the application is
+  filling. A failure names its mode, round and probe, and
+  `M0_STRESS_MODES=inverted` reruns just the half that failed. Reverting the
+  `websocket.send` credit gate fails the new gate on round 1 — 15 of 400
+  frames — and passed the old one 30 of 30. The flake itself did not
+  reproduce: 150 rounds per mode across three runs, up to 40 CPU hogs on 10
+  cores, all green.
+- **`ws_probe.py` reports the phase it failed in.** The CI failure was an
+  unhandled `ConnectionResetError` whose traceback named `recv_exact`, a
+  helper four phases share. A reset is now a finding carrying its phase —
+  and, being an `OSError` rather than an `EOFError`, it no longer bypasses
+  the flood phase's frame-count diagnosis in silence.
+
 ## [0.15.0] — 2026-08-29
 
 The Mojo-native release: the tier for handlers written in Mojo grows the

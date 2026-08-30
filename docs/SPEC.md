@@ -249,7 +249,7 @@ whose body drifted away from it is the case most likely to have survived.
 | L6 | Streaming responses stream, credit-gated per stream and in total | verified | `Conformance test the ASGI bridge` (every PR) |
 | L7 | Slot ownership across recycled connections, sabotage-proven | verified | `Run unit tests` (every PR) — `poe test-shim` drives the extracted shim through real socketpairs and reverts each rule |
 | L8 | The event loop running inside asyncio (`M0_INVERTED`) | verified | `Smoke test the ASGI executor under the loop inversion` (every PR) |
-| L9 | Slot ownership under CPU contention, on the STREAMED path | verified | `stress-asgi` (pre-release) — it drives `chunked_keepalive.py` only; the WebSocket path is not stressed |
+| L9 | Slot ownership under CPU contention, on the streamed AND WebSocket paths, in both loop modes | verified | `stress-asgi` (pre-release) — each round runs `chunked_keepalive.py` then `ws_probe.py`, so the handshake lands on the slot the streamed connection just released; run under CPU hogs on the pump and again under `M0_INVERTED=1` |
 | L10 | Django's own ASGI handler through the executor | verified | `Serve a Django ASGI project through the executor` (every PR) |
 | L11 | Starlette-family app (FastHTML) through the executor | verified | `Serve a FastHTML app through the ASGI bridge` (every PR) |
 | L12 | Cross-worker pub/sub as `scope["state"]["m0"]` | verified | `ASGI cross-worker fan-out over the BroadcastBus` (every PR) |

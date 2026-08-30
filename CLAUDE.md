@@ -313,11 +313,17 @@ code depends on:
     `--sabotage` reverts each rule in the extracted source and insists
     the suite fails for every one, so a renamed or deleted guard line is
     itself a failure. `poe stress-asgi` is the timing half and is
-    deliberately NOT in CI (`chunked_keepalive.py` N times under CPU
-    hogs: round 5 of 15 on the broken build, 45 of 45 on this one) —
-    shared runners cannot reproduce this reliably, which is exactly why
-    CI passed with the bug live; it is a pre-release step
-    (docs/RELEASING.md). **Every frame this seam cannot place is
+    deliberately NOT in CI (round 5 of 15 on the broken build, 45 of 45
+    on this one) — shared runners cannot reproduce this reliably, which
+    is exactly why CI passed with the bug live; it is a pre-release step
+    (docs/RELEASING.md). Each of its rounds runs `chunked_keepalive.py`
+    and then `ws_probe.py`, so the WebSocket handshake lands on the slot
+    the streamed connection just released, and the whole thing runs
+    twice — on the pump and under `M0_INVERTED=1`, which the mode
+    asserts from the banner rather than trusting the variable. The
+    WebSocket half is not decorative: with the `websocket.send` credit
+    gate reverted the streamed rounds passed 30 of 30 and the WS round
+    failed on the first. **Every frame this seam cannot place is
     terminal and named** — the result of `_send_chunk_frame` is never
     discarded, and neither is `queue_frame`'s refusal in the loop
     handler's `s`/`w` branches. Each was measured both ways: a dropped
@@ -552,7 +558,7 @@ uv run poe                  # list every task
 uv run poe build-all        # each package -> .mojoc, in dependency order
 uv run poe test-all         # builds first, then runs all tests
 uv run poe test-shim        # the executor shim's ownership rules, sabotage-proven
-uv run poe stress-asgi      # PRE-RELEASE: N streamed rounds under CPU hogs (not in CI)
+uv run poe stress-asgi      # PRE-RELEASE: N streamed + WebSocket rounds, both loop modes
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers

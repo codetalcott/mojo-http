@@ -25,6 +25,20 @@ PORT = int(os.environ.get("M0_PORT", "8088"))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
+# Which phase is running, for the crash handler below. The 2026-08-30 CI
+# failure was an unhandled ConnectionResetError, and its traceback named a
+# line in `recv_exact` -- a helper four phases share -- so the log said
+# which CALL reset and not which PHASE was being proven. That is the
+# difference between "the flood connection was reset while the client
+# stalled" and "something, somewhere, reset".
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
 def fail(msg):
     print("asgi ws_probe FAIL:", msg)
     sys.exit(1)
@@ -139,6 +153,7 @@ def handshake(path, what):
 
 
 def main():
+    phase("the echo connection's handshake")
     sock = socket.create_connection((HOST, PORT), timeout=10)
     key = base64.b64encode(os.urandom(16)).decode()
     sock.sendall(
@@ -172,6 +187,7 @@ def main():
         if not accept_line or accept_line[0].split(b":", 1)[1].strip() != want.encode():
             fail("bad Sec-WebSocket-Accept")
 
+    phase("the text and binary echoes")
     send_frame(sock, 0x1, b"hello")
     op, payload = read_data_frame(sock)
     if op != 0x1 or payload != b"echo:hello":
@@ -182,6 +198,7 @@ def main():
     if op != 0x2 or payload != bytes([0, 1, 255, 128]):
         fail("binary echo wrong: op=%d payload=%r" % (op, payload))
 
+    phase("the app-initiated close handshake")
     send_frame(sock, 0x1, b"bye")
     op, payload = read_data_frame(sock)
     if op != 0x8:
@@ -212,6 +229,7 @@ def main():
     # bytes delivered under a clean close frame, a message stream with
     # holes the peer had no protocol-level way to detect. The send window
     # makes the application wait instead, so the count here is exact.
+    phase("the flood connection (a stalled client against a flooding app)")
     sock = handshake("/ws/flood", "the flood connection")
     time.sleep(2.0)          # stall: the outbox is the only place to go
     got = frames = 0
@@ -248,6 +266,7 @@ def main():
         fail("flood: the app's close(1000) never arrived")
     sock.close()
 
+    phase("the abrupt disconnect")
     # Second connection: vanish abruptly after the 101, no close
     # handshake — the disconnect tag must cancel the app task and the
     # server must stay healthy (the smoke checks health right after).
@@ -276,4 +295,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except OSError as exc:
+        # A reset rather than a clean FIN means the server closed a socket
+        # with bytes still queued on it, which the kernel turns into an RST
+        # (CLAUDE.md, the chunked-trailer rule). Reported as a finding with
+        # its phase, because a bare traceback costs the next investigator
+        # the reproduction -- and this probe is driven N times a round by
+        # `poe stress-asgi`, where the round number alone is not enough.
+        import traceback
+        traceback.print_exc()
+        fail("%s: %r" % (PHASE, exc))
