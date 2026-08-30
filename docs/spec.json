@@ -238,8 +238,8 @@
       "section": "C",
       "category": "C. Connection management and denial of service",
       "capability": "Raw chunked bytes bounded independently of decoded size",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/http/chunked.mojo:271` \u2014 the ratio guard is reachable, but no test drives the raw-byte ceiling"
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 a decoded-legal body costing 2x the cap in framing answers 413"
     },
     {
       "id": "C4",
@@ -421,9 +421,9 @@
       "id": "F2",
       "section": "F",
       "category": "F. Observability",
-      "capability": "`--access-log` toggle",
-      "status": "implemented",
-      "evidence": "`packages/m0-wsgi/src/cli.mojo` \u2014 no gate exercises the flag; only the record format is unit-tested"
+      "capability": "`--access-log` emits one JSON record per response, and nothing without it",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--access-log`"
     },
     {
       "id": "F3",
@@ -437,9 +437,9 @@
       "id": "F4",
       "section": "F",
       "category": "F. Observability",
-      "capability": "Prometheus exposition 0.0.4: 8 counter and gauge families",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/metrics.mojo:72` \u2014 no gate reads the body, only its status"
+      "capability": "Prometheus exposition 0.0.4: 8 counter and gauge families, each with HELP, TYPE and a sample",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`"
     },
     {
       "id": "F5",
@@ -517,9 +517,9 @@
       "id": "G2",
       "section": "G",
       "category": "G. Security hardening",
-      "capability": "A response header carrying CR, LF or NUL is dropped",
-      "status": "implemented",
-      "evidence": "`packages/m0-wsgi/src/response.mojo:112` \u2014 only the `has_control_bytes` predicate is unit-tested; nothing asserts the header fails to reach the wire"
+      "capability": "A response header carrying CR, LF or NUL is dropped, and a clean one beside it is not",
+      "status": "verified",
+      "evidence": "`Conformance test the WSGI bridge` (every PR)"
     },
     {
       "id": "G3",

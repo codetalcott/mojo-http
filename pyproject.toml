@@ -1993,8 +1993,30 @@ code=$(python3 -c "print('a' * 2048, end='')" | curl -s -o /dev/null -w '%{http_
 [ "$code" = "413" ] || fail "--max-body 1024: a 2 KB body expected 413, got $code"
 code=$(python3 -c "print('b' * 512, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
 [ "$code" = "200" ] || fail "--max-body 1024: a 512 B body expected 200, got $code"
+# A chunked body is bounded TWICE: decoded size, and raw bytes consumed. The
+# second bound has to exist separately because framing is dropped as it is
+# decoded, so one-byte chunks cost six wire bytes per delivered byte and the
+# decoded cap alone leaves the connection unbounded. The probe's middle case
+# is decoded-legal and raw-illegal, so only the raw bound can refuse it.
+python3 scripts/chunked_overhead_probe.py 8098 1024 || fail 'the raw chunked-byte ceiling is not enforced'
 code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/__metrics)
 [ "$code" = "200" ] || fail "--metrics: /__metrics expected 200, got $code"
+# The BODY, not just the status. A 200 carrying nothing a scraper understands
+# is a dashboard that goes blank without anything going red -- the endpoint
+# answering is the easy half. Prometheus text exposition names its own version
+# in the content type, and every family must arrive with its HELP and TYPE
+# lines or the scrape drops it.
+mbody=$(curl -s -D metrics_hdr.txt http://127.0.0.1:8098/__metrics)
+grep -iq 'version=0.0.4' metrics_hdr.txt || fail "--metrics: not Prometheus exposition 0.0.4: $(grep -i '^content-type' metrics_hdr.txt)"
+for fam in http_requests_total http_responses_total http_active_connections \
+           http_bytes_sent_total http_accepts_total http_closes_total \
+           http_pool_available http_pool_capacity; do
+  echo "$mbody" | grep -q "^# HELP $fam " || fail "--metrics: $fam has no HELP line"
+  echo "$mbody" | grep -q "^# TYPE $fam " || fail "--metrics: $fam has no TYPE line"
+  echo "$mbody" | grep -qE "^$fam[ {]" || fail "--metrics: $fam has no sample"
+done
+echo "$mbody" | grep -q 'http_responses_total{status="2xx"}' || fail '--metrics: responses are not labelled by status class'
+rm -f metrics_hdr.txt
 kill $pid
 wait $pid 2>/dev/null
 
@@ -2053,6 +2075,26 @@ pid=$!
 curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
 code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/__metrics)
 [ "$code" = "404" ] || fail "without --metrics, /__metrics expected the app's 404, got $code"
+# Same request, no --access-log: the record must NOT appear. This half is what
+# makes the pair a test -- a server that always logs would pass the other one.
+grep -q '"msg":"access"' serve.log && fail 'an access record appeared without --access-log'
+kill $pid
+wait $pid 2>/dev/null
+
+# --access-log, which until now was exercised by nothing at all: only the
+# record FORMAT was unit-tested, and no gate ever set the flag. The record is
+# one JSON object per response, which is what a log shipper parses.
+"$srv" $SPEC --port 8098 --access-log > serve.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
+curl -s -o /dev/null http://127.0.0.1:8098/method
+sleep 1
+rec=$(grep '"msg":"access"' serve.log | tail -1)
+[ -n "$rec" ] || fail '--access-log produced no access record'
+echo "$rec" | grep -q '"path":"/method"' || fail "the access record names no path: $rec"
+echo "$rec" | grep -q '"method":"GET"' || fail "the access record names no method: $rec"
+echo "$rec" | grep -q '"status":"200"' || fail "the access record carries no status: $rec"
+python3 -c "import json,sys; json.loads(sys.argv[1])" "$rec" || fail "the access record is not valid JSON: $rec"
 kill $pid
 wait $pid 2>/dev/null
 echo "smoke-serve OK"
@@ -3089,6 +3131,23 @@ echo "$env" | grep -qF "CONTENT_TYPE='text/x-test'" || fail 'CONTENT_TYPE missin
 echo "$env" | grep -qF "CONTENT_LENGTH='2'" || fail 'CONTENT_LENGTH missing or prefixed'
 echo "$env" | grep -qF "HTTP_X_CUSTOM='v'" || fail 'ordinary header lost its HTTP_ prefix'
 echo "$env" | grep -q '^HTTP_CONTENT_' && fail 'HTTP_CONTENT_* must not appear in the environ'
+
+# --- response header injection -------------------------------------------------
+# `write_latin1_to` emits `name: value CRLF` with no inspection, so a value an
+# application built out of user input could end the header block and add headers,
+# or a body, of its own. The server DROPS such a header rather than raising: by
+# then the application has run and its body is real.
+#
+# `X-Clean` is what makes this a test rather than a tautology -- without it,
+# dropping every header would pass. Asserted here in the UNVALIDATED pass
+# because wsgiref.validate rejects a control byte in a header value itself, so
+# the route is deliberately non-conforming, like /no-content-type.
+hdrs=$(curl -s -D - -o /dev/null --max-time 10 $B/inject)
+echo "$hdrs" | grep -qi '^X-Clean' || fail 'the clean header was dropped too; the guard is refusing everything'
+for bad in X-Injected X-Nul X-Evil; do
+  echo "$hdrs" | grep -qi "^$bad" && fail "response splitting: $bad reached the wire"
+done
+echo "$hdrs" | grep -qi '^HTTP/1.1 200' || fail 'the injecting route did not answer 200'
 
 # --- wsgi.input ---------------------------------------------------------------
 got=$(printf 'hello' | curl -s --data-binary @- $B/input/read)

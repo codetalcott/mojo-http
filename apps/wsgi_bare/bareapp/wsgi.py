@@ -360,6 +360,34 @@ def stream_hold(environ, start_response):
     return (piece for piece in [b": one\n\n", b": two\n\n"])
 
 
+def header_injection(environ, start_response):
+    """Application headers carrying CR/LF and NUL, beside a clean one.
+
+    Response splitting. `write_latin1_to` emits `name: value\r\n` with no
+    inspection, so an application that builds a header out of user input could
+    end the header block and append headers -- or a whole body -- of its own.
+    `has_control_bytes` in m0-wsgi's `response.mojo` DROPS such a header rather
+    than raising, because by then the application has run and its body is real.
+
+    `X-Clean` is the load-bearing half of the route: without it the smoke
+    cannot tell "dropped the dangerous header" from "dropped every header".
+
+    Deliberately non-conforming, like `/no-content-type`: `wsgiref.validate`
+    rejects a control character in a header value, so this route is exercised
+    only in the unvalidated pass.
+    """
+    start_response(
+        "200 OK",
+        list(TEXT)
+        + [
+            ("X-Injected", "safe\r\nX-Evil: yes"),
+            ("X-Nul", "safe\x00tail"),
+            ("X-Clean", "ordinary"),
+        ],
+    )
+    return [b"injected"]
+
+
 def not_found(environ, start_response):
     start_response("404 Not Found", list(TEXT))
     return [b"not found"]
@@ -393,6 +421,7 @@ ROUTES = {
     "/stream-write-inside": stream_write_inside,
     "/stream-cl": stream_cl,
     "/stream-hold": stream_hold,
+    "/inject": header_injection,
 }
 
 
