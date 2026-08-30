@@ -871,6 +871,82 @@ def check_spec_sheet():
         fail("docs/spec.json is stale — run: python3 scripts/spec_sheet.py")
 
 
+# The context the `main` ruleset requires. Ruleset 21614787 carries a
+# required_status_checks rule naming exactly this string, pinned to the GitHub
+# Actions app (integration_id 15368). GitHub matches a required check against
+# the JOB name, not the workflow name -- the workflow is called `Docs` and the
+# check run is called `check-docs`.
+REQUIRED_CONTEXT = "check-docs"
+
+
+def check_required_context_intact():
+    """docs.yml must keep reporting the status check `main` requires.
+
+    This is the one guard here whose failure mode is a HANG rather than a red
+    build, which is why it is worth its own check. A required status check that
+    stops reporting does not fail: every pull request sits forever on
+    "Expected - Waiting for status to be reported", with nothing anywhere
+    saying why, and the only fix is editing a repository setting that is not in
+    this tree. The ruleset has no bypass actors, so nobody can merge past it.
+
+    Three edits cause it, and all three look harmless in review:
+
+    - renaming the job, because the check run is named after the job;
+    - giving the job a matrix, because that suffixes the context
+      (`check-docs (ubuntu-latest)`), which is a different string;
+    - adding a `paths`/`paths-ignore` filter, because a filtered workflow does
+      not report on the pull requests it filters out -- which is the whole
+      reason docs.yml is unfiltered and eligible to be required at all, while
+      test.yml is not.
+
+    Sabotaged three ways while writing it: each edit made this fire, and the
+    message names the ruleset rather than only the file, because the person
+    reading it will be looking at a stuck pull request.
+    """
+    path = REPO / ".github" / "workflows" / "docs.yml"
+    if not path.exists():
+        fail(
+            ".github/workflows/docs.yml is gone, but the `main` ruleset still "
+            f"requires the status check {REQUIRED_CONTEXT!r} — every pull "
+            "request will wait forever for a check nothing produces"
+        )
+        return
+    text = path.read_text()
+
+    job = re.search(
+        r"^  " + re.escape(REQUIRED_CONTEXT) + r":\s*$(.*?)(?=^  \S|\Z)",
+        text,
+        re.M | re.S,
+    )
+    if not job:
+        fail(
+            f"docs.yml no longer defines a job named {REQUIRED_CONTEXT!r}. That "
+            "string is the status check the `main` ruleset requires, and a "
+            "check run is named after its JOB, not its workflow — renaming it "
+            "does not fail CI, it makes every pull request hang on a status "
+            "that will never be reported."
+        )
+    elif re.search(r"^\s+(strategy|matrix):", job.group(1), re.M):
+        fail(
+            f"docs.yml's {REQUIRED_CONTEXT!r} job has a matrix, which suffixes "
+            f"the check run name (`{REQUIRED_CONTEXT} (ubuntu-latest)`). The "
+            f"`main` ruleset requires the bare string {REQUIRED_CONTEXT!r}, so "
+            "the required check would never report again."
+        )
+
+    on = re.search(r"^on:\s*$(.*?)(?=^\S)", text, re.M | re.S)
+    if not on:
+        fail("docs.yml has no `on:` block to check for path filters")
+    elif re.search(r"^\s+paths(-ignore)?:", on.group(1), re.M):
+        fail(
+            "docs.yml has acquired a `paths`/`paths-ignore` filter. It is "
+            "deliberately unfiltered: a filtered workflow does not report on "
+            "the pull requests it skips, and this one is a REQUIRED check on "
+            "`main`, so those pull requests would hang unmergeable. That is "
+            "the defect test.yml has and the reason this workflow exists."
+        )
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
@@ -887,6 +963,7 @@ def main():
     check_pyproject_parses_for_consumers()
     check_test_counts()
     check_spec_sheet()
+    check_required_context_intact()
     if failures:
         print("check-docs: FAIL")
         for f in failures:
