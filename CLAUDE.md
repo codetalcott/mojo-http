@@ -995,6 +995,26 @@ Properties of the design, not defects to fix in passing:
   RESPONDING and exits). The blocking path has the same fix in its own
   shape — it parses preserved bytes before blocking on a socket that may
   never speak again. `poe smoke-pipelining` pins all of it.
+- **A WebSocket this side closes LINGERS for the peer's Close reply.** RFC
+  6455 §5.5.1: the endpoint that sends Close first waits to RECEIVE one
+  before closing the connection. Closing as soon as the Close frame drained
+  — which is what the loop did — closes the socket before a reply can exist,
+  so the reply reaches a socket that is gone and TCP answers with an RST;
+  that reset flushes the peer's receive queue, taking the FIN and, for a
+  client far enough behind, the Close frame itself (33 of 200 concurrent
+  closes reached the `websockets` library as `no close frame received or
+  sent` rather than the app's own 1000). `WSState.closing` marks the wait,
+  and the three stream-ended close sites plus `_after_send`'s
+  `should_close` branch set a `WS_CLOSE_LINGER_NS` deadline in
+  `slot_idle_deadline` — a WebSocket's is otherwise 0, so a non-zero one IS
+  the linger, and the existing idle sweep reaps a peer that never replies.
+  Two consequences worth keeping straight: with idle timeouts off there is
+  nothing to bound the wait, so that configuration deliberately keeps the
+  old close-at-once behaviour rather than leaking a slot; and the read path
+  drops the parser's close echo while `closing`, because this side already
+  sent one. `ws_probe.py`'s close-order phase is the guard and its
+  CONCURRENCY is load-bearing — one close at a time passes on the broken
+  server, which is how this survived two investigations.
 - **A chunked request body ends where RFC 9112 says it ends**, because the
   request decoder is built with `consume_trailer = True`. Without it the
   decode completed at `0\r\n` and the terminating `\r\n` every conforming

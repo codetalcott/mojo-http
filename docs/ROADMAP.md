@@ -1674,51 +1674,6 @@ otherwise be invisible to whoever picks this hypothesis up.
 
 ## Known issues
 
-- **A WebSocket close races the peer's close reply, and loses as an RST.**
-  When an application sends `websocket.close(1000)`, the loop writes its Close
-  frame and closes the TCP connection as soon as those bytes drain
-  (`event_loop.mojo`, the channel-stream branch: "the loop closes after those
-  bytes land", then `_close_slot`, which deletes the registrations and
-  `close`s the fd). It does not wait to RECEIVE the peer's Close reply. RFC
-  6455 §5.5.1 is the other way round: an endpoint that sends Close first
-  should wait for the peer's Close before closing the underlying connection,
-  and §7.1.1 lets it close immediately only after both sending AND receiving
-  one.
-
-  The reset does not come from unread data at close time — that hypothesis
-  was tested and disproved (draining the receive buffer before `close`
-  changed nothing, 98 of 100 still reset). The server closes FIRST, in the
-  same loop pass that writes the Close frame, before a reply could exist:
-  a client that sends **nothing** back gets a clean FIN 100 times out of 100.
-  What produces the RST is the peer's Close reply arriving at a socket that
-  is already fully closed, which TCP answers with a reset — and that reset
-  flushes the client's receive queue, discarding the FIN, and on a slow
-  enough client the **Close frame itself**.
-
-  So the damage scales with how far behind the client is. Measured against
-  the `websockets` library, 200 concurrent app-initiated closes: 167 saw a
-  clean `code=1000` and **33 saw `ConnectionClosedError: no close frame
-  received or sent`** — the application's own `close(1000)` destroyed in
-  transit and surfaced as an abnormal closure. At 100 concurrent and below,
-  all clean. The strict raw probe sees it much earlier, because it insists
-  on the FIN that the reset ate.
-
-  Found 2026-08-30 on CI (macOS, `M0_INVERTED=1`, `smoke-asgi`), and only
-  legible because `ws_probe.py` had just learned to stamp its phase: the
-  failure names **the app-initiated close handshake**, where two earlier
-  investigations had read the bare `ConnectionResetError` as a flood-phase
-  or slot-ownership problem. It is timing-sensitive, not inversion-specific
-  — the close path is shared, and the inversion only changes who wins the
-  race. It does not reproduce on a fast development machine (150 stress
-  rounds per mode, clean), because the server closes before the reply lands
-  every time there.
-
-  The fix is the RFC's order: after sending Close, keep the connection open
-  until the peer's Close arrives, then close — bounded by a deadline so a
-  peer that never replies cannot hold a slot. Not a drain before `close`,
-  which is the thing already tried and disproved. Not yet done; until it
-  is, the macOS `smoke-asgi` steps are intermittently red.
-
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
   out for linking, so a minimal image (`python:*-slim` carries no compiler)
   fails with `unable to find suitable c compiler for linking`. CI never
@@ -1903,6 +1858,43 @@ otherwise be invisible to whoever picks this hypothesis up.
   everything else — but it remains in the fork for the simplest embeddings.
 
 ## Recently resolved
+
+- ~~**A WebSocket close races the peer's close reply, and loses as an RST**~~
+  — **fixed 2026-08-30.** When an application sent `websocket.close(1000)`
+  the loop wrote its Close frame and closed the TCP connection in the same
+  pass, before a reply could exist. The peer's Close then arrived at a socket
+  that was gone, TCP answered with an RST, and that reset flushed the peer's
+  receive queue — taking our FIN with it and, for a client far enough behind,
+  the Close frame itself. Against the `websockets` library at 200 concurrent
+  closes: 167 clean `code=1000`, **33 `ConnectionClosedError: no close frame
+  received or sent`** — the application's own close destroyed in transit.
+
+  Two hypotheses were tested and one was wrong, which is why both are
+  written down. The first was that the reply was sitting unread at close
+  time and that closing with unread data queued is what turns a FIN into an
+  RST; draining the receive buffer immediately before `close` changed
+  nothing (98 of 100 still reset). What settled it was the client that sends
+  **nothing** back: 100 of 100 clean FINs. The server was never losing a
+  race to read — it was closing before there was anything to read, and the
+  reset was provoked by the reply hitting a closed socket.
+
+  The fix is RFC 6455 §5.5.1's order: having sent Close, wait to RECEIVE
+  one, then close. `WSState.closing` marks the wait; the three stream-ended
+  close sites and `_after_send`'s `should_close` branch set a 2 s deadline
+  in `slot_idle_deadline` and leave the read armed, so the peer's Close
+  closes the slot and the existing idle sweep reaps a peer that never
+  replies. It needs no new state: a WebSocket's idle deadline is otherwise
+  0, so a non-zero one IS the linger. With idle timeouts switched off there
+  is nothing to bound the wait, so that configuration keeps the old
+  behaviour rather than leaking a slot.
+
+  Measured after: 0 of 20, 50, 100 and 200 concurrent closes reset, and the
+  `websockets` library sees 200 of 200 clean `code=1000`. `ws_probe.py`
+  gained a close-order phase — 64 concurrent app-initiated closes, every one
+  required to end in a clean FIN — which is `smoke-asgi` on every PR and
+  `stress-asgi` every round; against the unfixed server it reports 2 of 64.
+  Concurrency is load-bearing in that guard: one close at a time passes on
+  the broken server, which is how this hid through two investigations.
 
 - ~~**The WebSocket path is not stressed**~~ — **closed 2026-08-30.**
   `poe stress-asgi` drove `chunked_keepalive.py` and nothing else, so the

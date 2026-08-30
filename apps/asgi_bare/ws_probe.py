@@ -14,11 +14,21 @@ import os
 import socket
 import struct
 import sys
+import threading
 import time
 
 # /ws/flood's shape, kept in step with apps/asgi_bare/bareapp/asgi.py.
 FLOOD_FRAMES = 400
 FLOOD_SIZE = 4096
+
+# How many app-initiated closes the close-order phase runs at once. The
+# server used to close its side the instant its own Close frame drained, so
+# the peer's reply reached a socket that was already gone and TCP answered
+# with an RST. Concurrency is what widens that window, because the loop's
+# pass gets longer: on the broken server 17 of 20 reset, and 100 of 100. On
+# a fixed one none do at any width, so 64 is decisive without being slow --
+# and `poe stress-asgi` drives this probe every round, so it has to be both.
+CLOSE_CONNS = 64
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8088"))
@@ -265,6 +275,64 @@ def main():
     if not closed:
         fail("flood: the app's close(1000) never arrived")
     sock.close()
+
+    # --- close order: a Close reply must not be met with an RST ---------
+    # RFC 6455 §5.5.1 has the endpoint that sends Close FIRST wait to
+    # RECEIVE one before closing the connection. Closing straight after the
+    # send instead means the peer's reply lands on a socket that is already
+    # gone, and the RST that answers it flushes the peer's receive queue --
+    # taking our FIN with it and, on a client far enough behind, the Close
+    # frame itself. Measured against the `websockets` library at this width
+    # before the fix: 33 of 200 saw `no close frame received or sent`
+    # instead of the application's own code 1000, so this is not merely a
+    # strict probe being strict.
+    #
+    # Concurrent because that is what widens the window: one connection at
+    # a time, a fast loop closes before the reply is even sent, and the bug
+    # hides. It hid for two investigations.
+    phase("the close order under %d concurrent closes" % CLOSE_CONNS)
+    outcomes = []
+    outcomes_lock = threading.Lock()
+    gate = threading.Barrier(CLOSE_CONNS)
+
+    def close_once():
+        result = "?"
+        try:
+            conn = handshake("/ws", "a close-order connection")
+            gate.wait()
+            send_frame(conn, 0x1, b"bye")
+            op, body = read_data_frame(conn)
+            if op != 0x8:
+                result = "op=0x%x, not a close frame" % op
+            else:
+                send_frame(conn, 0x8, body[:2])
+                conn.settimeout(10)
+                result = "FIN" if conn.recv(1024) == b"" else "trailing bytes"
+            conn.close()
+        except ConnectionResetError:
+            # The finding: our close reply was answered with a reset.
+            result = "RST"
+        except Exception as exc:
+            result = type(exc).__name__
+        with outcomes_lock:
+            outcomes.append(result)
+
+    workers = [threading.Thread(target=close_once) for _ in range(CLOSE_CONNS)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    clean = outcomes.count("FIN")
+    if clean != CLOSE_CONNS:
+        summary = ", ".join(
+            "%dx %s" % (outcomes.count(o), o) for o in sorted(set(outcomes))
+        )
+        fail(
+            "close order: %d of %d closes ended in a clean FIN (%s) -- the "
+            "server is closing before the peer's Close reply, and the RST "
+            "that answers the reply discards the close frame with it"
+            % (clean, CLOSE_CONNS, summary)
+        )
 
     phase("the abrupt disconnect")
     # Second connection: vanish abruptly after the 101, no close

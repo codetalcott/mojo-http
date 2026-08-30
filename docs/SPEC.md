@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**141 capabilities: 108 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 108 verified, 106 are gated on every pull request, 1 weekly, and 1 before a release.
+**142 capabilities: 109 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 109 verified, 107 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -255,6 +255,7 @@ whose body drifted away from it is the case most likely to have survived.
 | L12 | Cross-worker pub/sub as `scope["state"]["m0"]` | verified | `ASGI cross-worker fan-out over the BroadcastBus` (every PR) |
 | L13 | `http.response.pathsend` | out of scope | `--static` serves files in Mojo ahead of the application, which is the same saving without the extension |
 | L14 | `http.response.zerocopysend`, `early_hint`, `trailers` | out of scope | no application has asked; the extensions are additive and can be taken later |
+| L15 | An app-initiated close ends in a FIN, not an RST (RFC 6455 §5.5.1's order) | verified | `Conformance test the ASGI bridge` (every PR) — `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server |
 
 ## M. Deployment and operations
 

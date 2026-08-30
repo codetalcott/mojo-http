@@ -7,6 +7,24 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A WebSocket the server closes now ends in a FIN, not an RST.** When an
+  application sent `websocket.close(1000)`, the loop wrote its Close frame
+  and closed the TCP connection in the same pass — before the peer could
+  reply. The reply then reached a socket that was already gone, TCP answered
+  with an RST, and that reset flushed the peer's receive queue, taking the
+  FIN with it and, for a client far enough behind, the Close frame itself:
+  against the `websockets` library at 200 concurrent closes, 33 of 200 saw
+  `ConnectionClosedError: no close frame received or sent` instead of the
+  application's own code 1000. The loop now follows RFC 6455 §5.5.1's order
+  — having sent Close, it waits to receive one, bounded by a 2 s deadline so
+  a peer that never replies cannot hold the slot. Measured after: 0 resets
+  at 20, 50, 100 and 200 concurrent closes, and 200 of 200 clean `code=1000`
+  from the real client. `ws_probe.py` gained a close-order phase (64
+  concurrent closes, all required to end in a clean FIN) which reports 2 of
+  64 against the unfixed server.
+
 ### Changed
 
 - **`poe stress-asgi` covers the WebSocket path, in both loop modes.** The
