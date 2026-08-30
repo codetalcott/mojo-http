@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**130 capabilities: 97 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 97 verified, 95 are gated on every pull request, 1 weekly, and 1 before a release.
+**131 capabilities: 99 verified, 6 implemented, 4 planned, 22 out of scope.** Of the 99 verified, 97 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -131,12 +131,13 @@ See `scripts/spec_sheet.py`.
 |---|---|---|
 | Access logging, toggleable | verified | `Smoke test the serve CLI` (every PR) — `--access-log` |
 | Prometheus `/__metrics`: 8 counter and gauge families, exposition 0.0.4 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
-| Latency histograms | planned | ROADMAP: A conformance-suite tier |
+| Latency histograms on `/__metrics` | planned | ROADMAP: Structured CI results |
 | `--health-path` answers 200 | verified | `Smoke test the Django realtime example` (every PR) — `--health-path` |
 | Health registry with readiness aggregation | verified | `test_health.mojo:test_health_register_unhealthy` (every PR) |
 | Configuration report that exits as the server would | verified | `Smoke test --doctor against the server's own exit codes` (every PR) — `--doctor` |
 | OpenTelemetry tracing | out of scope | no tracing context crosses the Mojo/Python seam today; a wrapper in the application is the supported route |
-| Structured CI-facing result output | planned | ROADMAP: Structured CI results |
+| CI measurements recorded, rendered per run and kept as an artifact | verified | `Check machine-sourced doc facts` (every PR) |
+| The measurement recorder itself | verified | `Self-test the measurement recorder` (every PR) |
 
 ## G. Security hardening
 

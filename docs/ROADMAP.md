@@ -1525,16 +1525,25 @@ parser. The smuggling rows stay unit-tested.
 
 ### Structured CI results
 
-CI emits no machine-readable output: no `$GITHUB_STEP_SUMMARY`, no JUnit, no
-results JSON, and one failure-only log artifact. Meanwhile the smoke tasks
-measure real quantities and print them into scrollback that expires --
-`sendfile: RSS 12480KB -> 15120KB`, `rss growth over 10k requests`, `fast
-request served in NNNms`. Those are measurements being thrown away.
+**The CI half shipped 2026-08-30.** `scripts/emit.py` appends each measurement
+to `$M0_RESULTS` as one JSON line; the smoke job renders them into the run
+summary with a headroom column and uploads `ci-results-<os>`. Five sites are
+instrumented: the WSGI and ASGI RSS guards, the pool's fast-request latency in
+both modes, and sendfile's RSS delta. The recorder never fails and is a no-op
+without `$M0_RESULTS`, and `check_ci_measurements_are_collected` refuses the
+four ways the wiring can lapse silently.
 
-A small emitter the smokes append one JSON line to would give per-assertion CI
-status, which is what SPEC.md's `verified` rows currently infer from the job's
-exit code, plus RSS and latency trends that today exist nowhere. Latency
-histograms on `/__metrics` are the same shape of gap on the serving side.
+It paid for itself on the first run. `sendfile.rss_growth_kb` measures **48 KB
+against a 16384 KB limit** -- a guard roughly 340x looser than the thing it
+guards, which would pass a regression that buffered 8 MB. That is the blind
+spot SPEC.md names in the abstract ("a gate runs, not that it is correct"),
+now with a number on it. Deliberately NOT tightened yet: one sample from one
+machine is not a basis for moving a CI threshold, and gathering the runs first
+is the entire reason for recording them.
+
+**What remains** is the serving side: latency histograms on `/__metrics`,
+which today exposes counters and gauges only. Same shape of gap -- a number
+that exists in the process and reaches nobody.
 
 ## Open questions
 

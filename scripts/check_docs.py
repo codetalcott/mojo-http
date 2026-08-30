@@ -1011,6 +1011,71 @@ def check_bench_kinds_do_not_shadow():
                 )
 
 
+def check_ci_measurements_are_collected():
+    """A measurement a task records must have somewhere to go, and be kept.
+
+    `scripts/emit.py` is a no-op unless `$M0_RESULTS` names a file, which is
+    what makes it safe to call from inside a task body. The same property is
+    how the whole thing silently becomes decorative: delete the `env:` block
+    from the workflow and every call site still runs, still exits 0, and
+    records nothing anywhere. Nothing goes red. The job log looks identical,
+    because the tasks still `echo` the number beside the emit call.
+
+    That is the `smoke-sendfile` class of miss again -- a thing that exists,
+    passes locally, and is never actually run by CI -- so it is checked here
+    rather than trusted, in the same both-ways shape as check_smoke_coverage.
+
+    Three ways it can lapse, all silent:
+
+    - the tasks emit but the workflow sets no `M0_RESULTS`, so every write is
+      skipped;
+    - the workflow collects but never uploads or renders, so the file dies
+      with the runner;
+    - the recorder's own selftest stops running, so a regression that drops
+      records is invisible (the reason `warning_ratchet.py --selftest` and
+      `binfmt.py --selftest` are CI steps and not a convention).
+    """
+    emitters = sorted(set(re.findall(
+        r"^(?!#).*python3 scripts/emit\.py (?!--)([a-z0-9_.]+)",
+        (REPO / "pyproject.toml").read_text(), re.M)))
+    workflow = (REPO / ".github" / "workflows" / "test.yml").read_text()
+
+    if not emitters:
+        if "scripts/emit.py --summary" in workflow:
+            fail(
+                "test.yml renders CI measurements but no poe task records any "
+                "— the summary will always be empty"
+            )
+        return
+
+    if not re.search(r"^\s+M0_RESULTS:", workflow, re.M):
+        fail(
+            f"{len(emitters)} poe task measurement(s) call `scripts/emit.py` "
+            f"({', '.join(emitters[:3])}...), but test.yml sets no M0_RESULTS. "
+            "emit.py is a deliberate no-op without it, so every one of those "
+            "calls would run, exit 0 and record nothing — with no failure and "
+            "an identical job log, because the tasks still echo the number."
+        )
+    if "scripts/emit.py --summary" not in workflow:
+        fail(
+            "test.yml collects CI measurements but never renders them — "
+            "add the `--summary` step, or the file is written and never read"
+        )
+    if not re.search(r"name: ci-results-", workflow):
+        fail(
+            "test.yml records CI measurements but uploads no `ci-results-*` "
+            "artifact, so they die with the runner and no run can be compared "
+            "against the next"
+        )
+    if "scripts/emit.py --selftest" not in workflow:
+        fail(
+            "scripts/emit.py --selftest is not run by test.yml. A silent "
+            "regression in the recorder drops measurements rather than "
+            "failing, exactly like the warning parser and the binary parser "
+            "whose selftests are CI steps for this reason."
+        )
+
+
 def main():
     check_warning_counts()
     check_smoke_coverage()
@@ -1040,6 +1105,7 @@ def main():
     check_test_counts()
     check_spec_sheet()
     check_required_context_intact()
+    check_ci_measurements_are_collected()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

@@ -80,6 +80,10 @@ jobs:
       # the Mojo runtime through a path on one developer's machine.
       - name: Self-test the Mach-O/ELF parser
         run: python3 scripts/binfmt.py --selftest
+      # Same reason as the two above: a silent regression in the recorder would
+      # drop measurements rather than fail, and nothing else would notice.
+      - name: Self-test the measurement recorder
+        run: python3 scripts/emit.py --selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # The Mojo pool's guards, proven able to fail: each rule in
@@ -140,6 +144,13 @@ jobs:
     # smoke step starts a server and polls it, so a wedged server would
     # otherwise hang here rather than fail.
     timeout-minutes: 20
+    env:
+      # Where `scripts/emit.py` appends the measurements the smokes already
+      # compute (RSS growth, fast-request latency). Unset locally, which makes
+      # every call site a no-op there; the script also always exits 0, so a
+      # recording failure can never turn a green gate red.
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -381,6 +392,24 @@ jobs:
       # WebSockets on both workers, which is the claim worth a CI step.
       - name: Smoke test the Django realtime example over WebSockets
         run: uv run poe smoke-django-realtime-ws
+      # The measurements, rendered into the run's own summary page and kept as
+      # an artifact. Until now every one of these numbers went to a job log
+      # that expires, so "did it pass" was answerable and "is it drifting
+      # toward the limit" was not. `always()`: a measurement from a smoke that
+      # later failed is usually the interesting one.
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-${{ matrix.os }}
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7

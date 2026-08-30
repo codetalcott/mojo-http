@@ -368,9 +368,9 @@
     {
       "id": "F",
       "category": "F. Observability",
-      "capability": "Latency histograms",
+      "capability": "Latency histograms on `/__metrics`",
       "status": "planned",
-      "evidence": "ROADMAP: A conformance-suite tier"
+      "evidence": "ROADMAP: Structured CI results"
     },
     {
       "id": "F",
@@ -403,9 +403,16 @@
     {
       "id": "F",
       "category": "F. Observability",
-      "capability": "Structured CI-facing result output",
-      "status": "planned",
-      "evidence": "ROADMAP: Structured CI results"
+      "capability": "CI measurements recorded, rendered per run and kept as an artifact",
+      "status": "verified",
+      "evidence": "`Check machine-sourced doc facts` (every PR)"
+    },
+    {
+      "id": "F",
+      "category": "F. Observability",
+      "capability": "The measurement recorder itself",
+      "status": "verified",
+      "evidence": "`Self-test the measurement recorder` (every PR)"
     },
     {
       "id": "G",
