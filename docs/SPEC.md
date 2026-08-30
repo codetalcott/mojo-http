@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**141 capabilities: 104 verified, 10 implemented, 5 planned, 22 out of scope.** Of the 104 verified, 102 are gated on every pull request, 1 weekly, and 1 before a release.
+**141 capabilities: 108 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 108 verified, 106 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -113,7 +113,7 @@ whose body drifted away from it is the case most likely to have survived.
 |---|---|---|---|
 | C1 | Max request body size, configurable | verified | `Smoke test the serve CLI` (every PR) — `--max-body` |
 | C2 | Chunk size limited to 16 significant digits | verified | `test_parsing.mojo:test_chunk_size_is_limited_to_sixteen_significant_digits` (every PR) |
-| C3 | Raw chunked bytes bounded independently of decoded size | implemented | `packages/m0-http/lightbug_http/http/chunked.mojo:271` — the ratio guard is reachable, but no test drives the raw-byte ceiling |
+| C3 | Raw chunked bytes bounded independently of decoded size | verified | `Smoke test the serve CLI` (every PR) — a decoded-legal body costing 2x the cap in framing answers 413 |
 | C4 | Max header count | verified | `test_parsing.mojo:test_header_count_is_capped` (every PR) |
 | C5 | A slow handler does not stall connections behind it | verified | `Smoke test the blocking-threads pool` (every PR) |
 | C6 | Connection/request rate limiting | out of scope | a proxy's job; this server has no notion of a client identity to limit on |
@@ -151,9 +151,9 @@ whose body drifted away from it is the case most likely to have survived.
 | id | capability | status | evidence |
 |---|---|---|---|
 | F1 | Access log records cannot be forged by a value (newline, quote, backslash escaped) | verified | `test_log.mojo:test_a_newline_cannot_forge_a_second_log_line` (every PR) |
-| F2 | `--access-log` toggle | implemented | `packages/m0-wsgi/src/cli.mojo` — no gate exercises the flag; only the record format is unit-tested |
+| F2 | `--access-log` emits one JSON record per response, and nothing without it | verified | `Smoke test the serve CLI` (every PR) — `--access-log` |
 | F3 | `--metrics` turns `/__metrics` from the application's 404 into a 200 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
-| F4 | Prometheus exposition 0.0.4: 8 counter and gauge families | implemented | `packages/m0-http/lightbug_http/metrics.mojo:72` — no gate reads the body, only its status |
+| F4 | Prometheus exposition 0.0.4: 8 counter and gauge families, each with HELP, TYPE and a sample | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
 | F5 | Latency histograms on `/__metrics` | planned | ROADMAP: Structured CI results |
 | F12 | Coverage declared by the gate rather than cited by this page | planned | ROADMAP: Traceability: stable ids, then declared coverage |
 | F6 | `--health-path` answers 200 | verified | `Smoke test the Django realtime example` (every PR) — `--health-path` |
@@ -168,7 +168,7 @@ whose body drifted away from it is the case most likely to have survived.
 | id | capability | status | evidence |
 |---|---|---|---|
 | G1 | An injected status reason phrase is emptied, not transmitted | verified | `test_response.mojo:test_status_reason_with_crlf_is_emptied_not_transmitted` (every PR) |
-| G2 | A response header carrying CR, LF or NUL is dropped | implemented | `packages/m0-wsgi/src/response.mojo:112` — only the `has_control_bytes` predicate is unit-tested; nothing asserts the header fails to reach the wire |
+| G2 | A response header carrying CR, LF or NUL is dropped, and a clean one beside it is not | verified | `Conformance test the WSGI bridge` (every PR) |
 | G3 | An application's `Set-Cookie` reaches the wire verbatim | verified | `test_response_cookies.mojo:test_raw_line_reaches_the_wire_verbatim` (every PR) |
 | G4 | `Proxy` request header never becomes `HTTP_PROXY` (httpoxy) | verified | `test_environ.mojo:test_proxy_header_is_excluded_from_the_environ` (every PR) |
 | G5 | Path traversal rejected (`../`) | verified | `test_static.mojo:test_dotdot_is_rejected` (every PR) |
