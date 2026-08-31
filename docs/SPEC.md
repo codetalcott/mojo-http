@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 118 verified, 3 implemented, 4 planned, 24 out of scope.** Of the 118 verified, 116 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 119 verified, 2 implemented, 4 planned, 24 out of scope.** Of the 119 verified, 117 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -90,7 +90,7 @@ whose body drifted away from it is the case most likely to have survived.
 | A7 | Chunked request bodies, decoded incrementally across reads | verified | `test_parsing.mojo:test_incremental_decode_matches_a_single_pass` (every PR) |
 | A8 | Chunked decode consumes the terminator, leaving nothing buffered | verified | `test_chunked_encode.mojo:test_round_trip_single_chunk` (every PR) |
 | A9 | Chunked response bodies | verified | `Smoke test streamed WSGI bodies` (every PR) |
-| A10 | Trailer fields consumed and discarded, not surfaced to the application | implemented | `packages/m0-http/lightbug_http/http/chunked.mojo:157` — the round-trip tests set `consume_trailer` but their wire carries no trailer section |
+| A10 | Trailer fields consumed and discarded, not surfaced to the application | verified | `test_parsing.mojo:test_a_trailer_section_is_consumed_whole` (every PR) — with seven more beside it: the framing fields a trailer must not honour, the pipelined tail surviving it, the section bounded by the abuse ratio, and `test_without_consume_trailer_the_body_ends_at_the_zero_chunk` as the other half. `poe sabotage-trailers` reverts each of the six rules and requires a failure for every one |
 | A11 | `Expect: 100-continue`, honoured case-insensitively and withheld from HTTP/1.0 | verified | `Expect 100-continue, honoured and withheld` (every PR) — both directions: a server answering it unconditionally would pass the invitation half while discarding the refusal-before-upload the mechanism exists for |
 | A12 | Half-close answered rather than dropped | verified | `Smoke test a half-closed client` (every PR) |
 | A13 | Request headers larger than one socket read | verified | `Smoke test a request larger than one read` (every PR) |

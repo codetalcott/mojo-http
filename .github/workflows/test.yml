@@ -103,6 +103,14 @@ jobs:
       - name: Sabotage the Mojo pool's rules (Linux observes all four)
         if: matrix.os == 'ubuntu-latest'
         run: uv run poe sabotage-pool
+
+      # The chunked decoder's trailer states: reverting each rule must fail
+      # test_parsing. They were the decoder's untested region -- the
+      # round-trip tests set `consume_trailer` over a wire with no trailer
+      # section, so no test reached them (SPEC A10).
+      - name: Sabotage the chunked trailer rules
+        run: uv run poe sabotage-trailers
+
       # m0-wsgi embeds CPython, so its interpreter has to resolve on both
       # runners. Failing here rather than inside a smoke test makes a
       # libpython discovery problem legible.

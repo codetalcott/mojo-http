@@ -501,7 +501,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "test-sqlite", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "test-sqlite", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -3715,6 +3715,14 @@ python3 scripts/pool_spike_check.py --binary "$out/pool_spike"
 help = "Revert each mojo_pool rule and insist test_mojo_pool fails for every one"
 deps = ["build-core", "build-http"]
 shell = "python3 scripts/pool_sabotage.py"
+
+# The decoder's trailer states were its untested region: the round-trip tests
+# set `consume_trailer = True` but their wire carried no trailer section, so
+# every state below `IN_TRAILERS_LINE_HEAD` was reached by no test (SPEC A10).
+[tool.poe.tasks.sabotage-trailers]
+help = "Revert each chunked-trailer rule and insist test_parsing fails for it"
+deps = ["build-core", "build-http"]
+shell = "python3 scripts/trailer_sabotage.py"
 
 [tool.poe.tasks.probe-pool]
 help = "PRE-RELEASE: p99 of /fast beside blocking handlers, loop vs pool (not in CI)"

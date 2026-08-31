@@ -579,7 +579,9 @@ def main() raises:
 # --- the incremental chunked decoder ----------------------------------------
 
 
-def _feed_incrementally(raw: String, piece: Int) raises -> Tuple[Int, String]:
+def _feed_incrementally(
+    raw: String, piece: Int, consume_trailer: Bool = False
+) raises -> Tuple[Int, String]:
     """Drive one decoder the way the event loop does: a buffer holding
     `[decoded][raw tail]`, fed only the bytes that just arrived.
 
@@ -588,6 +590,7 @@ def _feed_incrementally(raw: String, piece: Int) raises -> Tuple[Int, String]:
     it can be asserted without a socket.
     """
     var dec = HTTPChunkedDecoder()
+    dec.consume_trailer = consume_trailer
     var buf = Bytes()
     var decoded = 0
     var ret = -2
@@ -683,3 +686,157 @@ def test_a_body_that_is_mostly_framing_still_trips_the_abuse_guard() raises:
     raw += "0\r\n\r\n"
     var got = _feed_incrementally(raw, 4096)
     assert_equal(got[0], -1)
+
+
+# --- Trailer fields (RFC 9112 7.1.2, RFC 9110 6.5) ---------------------------
+#
+# The servers build their decoder with `consume_trailer = True`
+# (`server.mojo`), which is what makes a chunked body end where RFC 9112 says
+# it ends rather than at the `0\r\n` line -- see the CLAUDE.md note on why
+# closing a socket with the terminating CRLF still queued sends an RST and
+# loses the response. Everything below is that setting's behaviour, which the
+# round-trip tests set but never exercised: their wire carries no trailer
+# section at all, so every trailer state in the decoder was reached by no
+# test.
+#
+# The decoder produces BYTES; it never touches a `Headers`. So "not surfaced
+# to the application" is asserted here as the observable thing at this layer:
+# no trailer byte appears in the decoded body, and no trailer field changes
+# how much body there is.
+
+
+def _decode_trailing(raw: String) raises -> Tuple[Int, String]:
+    """Single-call decode with the servers' `consume_trailer = True`.
+
+    Returns (ret, decoded body). `_decode` above is the same thing with the
+    default setting, and the pair is deliberate: several claims below are
+    only meaningful against both halves.
+    """
+    var buf = Bytes()
+    buf.extend(raw.as_bytes())
+    var dec = HTTPChunkedDecoder()
+    dec.consume_trailer = True
+    var res = dec.decode(Span(buf))
+    if res[0] < 0:
+        return (res[0], String(""))
+    return (res[0], String(unsafe_from_utf8=Span(buf)[: res[1]]))
+
+
+def test_a_trailer_section_is_consumed_whole() raises:
+    """The body ends after the trailer, not at the zero chunk.
+
+    `ret == 0` is the claim: zero bytes left over means the decoder consumed
+    the trailer AND its terminating CRLF. Anything left behind is what the
+    connection later closes on top of.
+    """
+    var got = _decode_trailing("5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n")
+    assert_equal(got[0], 0)
+    assert_equal(got[1], "hello")
+
+
+def test_several_trailer_fields_are_consumed() raises:
+    """One trailer line is the easy case; the state machine loops per line."""
+    var got = _decode_trailing(
+        "5\r\nhello\r\n0\r\nX-A: 1\r\nX-B: 2\r\nX-C: 3\r\n\r\n"
+    )
+    assert_equal(got[0], 0)
+    assert_equal(got[1], "hello")
+
+
+def test_no_trailer_byte_reaches_the_decoded_body() raises:
+    """The trailer is discarded, not appended.
+
+    A decoder that consumed the trailer as data would still report a clean
+    `ret`, so the body is asserted by VALUE. The field value here is chosen
+    to be visible if it leaks.
+    """
+    var got = _decode_trailing(
+        "5\r\nhello\r\n0\r\nX-Leak: LEAKED-TRAILER-VALUE\r\n\r\n"
+    )
+    assert_equal(got[0], 0)
+    assert_equal(got[1], "hello")
+    assert_equal(got[1].byte_length(), 5)
+
+
+def test_a_trailer_cannot_change_the_framing() raises:
+    """RFC 9110 6.5: a recipient must ignore framing fields in a trailer.
+
+    `Content-Length` and `Transfer-Encoding` arriving after the body are the
+    smuggling shape of this section -- a recipient that honoured either would
+    disagree with the sender about where the message ends. The assertion is
+    that the hostile trailer decodes to exactly what a benign one does.
+    """
+    var benign = _decode_trailing("5\r\nhello\r\n0\r\nX-Ok: 1\r\n\r\n")
+    var hostile = _decode_trailing(
+        "5\r\nhello\r\n0\r\nContent-Length: 999\r\n"
+        "Transfer-Encoding: chunked\r\nHost: evil.example\r\n\r\n"
+    )
+    assert_equal(hostile[0], benign[0])
+    assert_equal(hostile[1], benign[1])
+    assert_equal(hostile[1], "hello")
+
+
+def test_bytes_after_a_trailer_are_left_for_the_next_request() raises:
+    """The pipelined tail must survive the trailer, byte for byte.
+
+    `ret` is "bytes after the chunked data", and `_drain_pipelined` re-parses
+    exactly that many. A trailer parser that over-consumed by even the final
+    CRLF would eat the first bytes of the next request -- which is answered
+    as a malformed request, not as the request the client sent.
+    """
+    var tail = String("GET /next HTTP/1.1\r\nHost: x\r\n\r\n")
+    var got = _decode_trailing(
+        "5\r\nhello\r\n0\r\nX-Checksum: abc\r\n\r\n" + tail
+    )
+    assert_equal(got[0], tail.byte_length())
+    assert_equal(got[1], "hello")
+
+
+def test_without_consume_trailer_the_body_ends_at_the_zero_chunk() raises:
+    """The other half, so a decoder that consumed everything cannot pass.
+
+    With the default setting the trailer is NOT the decoder's business: it
+    reports the trailer bytes as left over, which is what a caller framing
+    its own trailers needs. Asserting only the consuming half would be
+    satisfied by a decoder that always swallowed to the end of the buffer.
+    """
+    var trailer = String("X-Checksum: abc123\r\n\r\n")
+    var got = _decode("5\r\nhello\r\n0\r\n" + trailer)
+    assert_equal(got[0], trailer.byte_length())
+    assert_equal(got[1], 5)
+
+
+def test_an_oversized_trailer_section_trips_the_abuse_guard() raises:
+    """A trailer section is bounded, and the ratio guard is what bounds it.
+
+    Trailer bytes advance `src` and never `dst`, so they are charged as pure
+    overhead -- which means the existing guard already covers them and no
+    second limit is needed. That is only true while the decode is INCOMPLETE
+    (the guard is inside the `ret == -2` branch), so this feeds incrementally
+    the way the loop does; a single-call decode of the same bytes completes
+    and is never measured. Without the guard this section is bounded only by
+    what the connection's receive buffer will hold.
+    """
+    var raw = String("5\r\nhello\r\n0\r\n")
+    for _ in range(40000):  # ~360 KB of trailer, 5 bytes of body
+        raw += "X-Pad: aaaa\r\n"
+    raw += "\r\n"
+    var got = _feed_incrementally(raw, 4096, consume_trailer=True)
+    assert_equal(got[0], -1)
+
+
+def test_an_ordinary_trailer_does_not_trip_the_abuse_guard() raises:
+    """The guard must not fire on a trailer any real client would send.
+
+    The control for the test above: a body with a normal trailer decodes
+    whole. A guard that refused every trailer would satisfy that test and
+    break every conforming client.
+    """
+    var chunk = String("B") * 8192
+    var raw = String()
+    for _ in range(8):
+        raw += "2000\r\n" + chunk + "\r\n"
+    raw += "0\r\nX-Checksum: abc123\r\nX-Server-Timing: dur=12\r\n\r\n"
+    var got = _feed_incrementally(raw, 1500, consume_trailer=True)
+    assert_equal(got[0], 0)
+    assert_equal(got[1].byte_length(), 8 * 8192)
