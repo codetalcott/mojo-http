@@ -213,9 +213,17 @@
       "id": "B8",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "External desync suite (PortSwigger, h2spec)",
-      "status": "planned",
-      "evidence": "ROADMAP: A conformance-suite tier"
+      "capability": "h2spec conformance run",
+      "status": "out of scope",
+      "evidence": "follows from having no HTTP/2 (A18), the same reason C7 gives"
+    },
+    {
+      "id": "B9",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "PortSwigger-style desync scanning",
+      "status": "out of scope",
+      "evidence": "the scanner probes a proxy/server PAIR for disagreement about framing; this server has no proxy in front of it in any gate, so there is no second parser to disagree with. The shapes it looks for are unit-tested directly above (B1-B7), and fuzzing the decoder itself is G13"
     },
     {
       "id": "C1",

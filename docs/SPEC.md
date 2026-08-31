@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**142 capabilities: 109 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 109 verified, 107 are gated on every pull request, 1 weekly, and 1 before a release.
+**143 capabilities: 109 verified, 6 implemented, 4 planned, 24 out of scope.** Of the 109 verified, 107 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -105,7 +105,8 @@ whose body drifted away from it is the case most likely to have survived.
 | B5 | Bare LF in a chunk extension rejected | verified | `test_parsing.mojo:test_bare_lf_in_a_chunk_extension_is_rejected` (every PR) |
 | B6 | `Content-Length` integer overflow rejected | verified | `test_parsing.mojo:test_overflowing_content_length_is_rejected` (every PR) |
 | B7 | Chunk size with the sign bit set rejected | verified | `test_parsing.mojo:test_chunk_size_with_the_sign_bit_set_is_rejected` (every PR) |
-| B8 | External desync suite (PortSwigger, h2spec) | planned | ROADMAP: A conformance-suite tier |
+| B8 | h2spec conformance run | out of scope | follows from having no HTTP/2 (A18), the same reason C7 gives |
+| B9 | PortSwigger-style desync scanning | out of scope | the scanner probes a proxy/server PAIR for disagreement about framing; this server has no proxy in front of it in any gate, so there is no second parser to disagree with. The shapes it looks for are unit-tested directly above (B1-B7), and fuzzing the decoder itself is G13 |
 
 ## C. Connection management and denial of service
 

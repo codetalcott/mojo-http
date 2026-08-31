@@ -1518,10 +1518,15 @@ the bar is unambiguous and the result is comparable. A parser fuzzer over the
 request decoder is the second, and cheaper: the decoder is already a pure
 function over bytes with its own unit suite, so the harness is small.
 
-PortSwigger's desync scanner and h2spec are named on the same page and are NOT
-this tier: h2spec needs HTTP/2, which is out of scope, and the desync tooling
-is built to probe a proxy/server PAIR for disagreement rather than to check one
-parser. The smuggling rows stay unit-tested.
+PortSwigger's desync scanner and h2spec are NOT this tier, and no longer
+promise to be: they were one `planned` row (B8) citing this heading, which
+contradicted the refusal two sections above it on the same page. They are now
+two refusals of their own -- **B8** for h2spec, which needs HTTP/2 (A18, and
+C7 refuses downstream of it), and **B9** for the desync scanner, which probes a
+proxy/server PAIR for disagreement about framing and so has nothing to compare
+against a server with no proxy in front of it. The smuggling rows stay
+unit-tested (B1-B7), and fuzzing the decoder itself is the second half of this
+tier (G13).
 
 ### Structured CI results
 
