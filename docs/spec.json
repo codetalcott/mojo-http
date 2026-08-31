@@ -1058,6 +1058,14 @@
       "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server"
     },
     {
+      "id": "L17",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "Inbound `websocket.receive` is flow-controlled: a stalled client is throttled, never silently dropped",
+      "status": "verified",
+      "evidence": "`Inbound WebSocket messages survive a stalled client` (every PR) \u2014 the loop suspends the read rather than discarding what the executor cannot take; a concurrently-reading client loses nothing even on the broken build, so the gate stalls first and only then reads"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",

@@ -823,16 +823,34 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                             slot_sse, slot_ws, slot_ws_state,
                         )
                         continue
+                # Every message of this batch is handed over — a False
+                # does not stop the delivery, because these messages were
+                # already read off the socket and the handler PARKS what
+                # it cannot forward (bounded by this one recv: suspension
+                # below is what stops a next batch from existing).
+                var ws_suspend = False
                 for m in range(len(ws_res.msg_opcodes)):
-                    handler.ws_message(
+                    if not handler.ws_message_take(
                         slot, ws_res.msg_opcodes[m], ws_res.msg_payloads[m]
-                    )
+                    ):
+                        ws_suspend = True
                 if ws_res.close_after_reply:
                     _close_slot(
                         backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
+                elif ws_suspend:
+                    # Inbound backpressure: stop READING this socket until
+                    # the handler's parked messages have gone through
+                    # (`take_ws_resumes`, at the bottom of every pass).
+                    # The socket's receive buffer then fills and TCP's
+                    # zero window stops the client — the peer's own Close
+                    # or ping simply waits in that buffer with the rest.
+                    # Writes are untouched: echoes and heartbeats still
+                    # drain, which is what lets the app's `receive` loop
+                    # keep consuming and the window reopen.
+                    backend.try_delete_read(fd_val)
                 continue
 
             if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_SSE:
@@ -1488,6 +1506,20 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
+
+    # Inbound WebSocket resume: slots whose parked messages all went
+    # through get their read re-armed. kqueue's level trigger refires for
+    # bytes already buffered; epoll's ADD (the registration was DELETED,
+    # not disarmed) reports readiness at add time — so a client that
+    # finished sending mid-suspension is not stranded. Guarded on the slot
+    # still being THIS websocket: a stale resume for a closed slot names
+    # either an UNUSED slot or a successor whose read is already armed,
+    # so the worst case is an idempotent re-add.
+    var ws_resumes = handler.take_ws_resumes()
+    for ri in range(len(ws_resumes)):
+        var rs = ws_resumes[ri]
+        if rs >= 0 and rs < max_conns and slot_fds[rs] != UNUSED and slot_ws[rs]:
+            backend.try_add_read(slot_fds[rs])
 
     return should_shutdown
 

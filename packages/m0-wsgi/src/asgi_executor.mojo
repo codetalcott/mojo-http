@@ -822,6 +822,32 @@ struct ExecutorPort(Movable, Writable):
                 st.lost[slot] = True
                 _report_lost(String("websocket end"), slot, len(f2))
                 _report_abort(pool, slot, st.gens[slot])
+        elif kind == "ws_ack":
+            # The inbound window refill: the shim's cumulative count of
+            # bytes the app's `receive()` consumed, riding the chunk
+            # channel as an 'r' frame the loop's handler credits and
+            # drains parked messages against. Gen-stamped HERE, where the
+            # slot's current generation is known, so a late ack from a
+            # finished task is dropped by the same `_gen_matches` that
+            # protects every sibling frame.
+            if st.lost[slot]:
+                return False
+            _flush_completions(pool, st.pending_done)
+            var consumed = Int(py=ev[2])
+            var body = List[UInt8](capacity=8)
+            var cbits = UInt64(consumed)
+            for shift in range(0, 64, 8):
+                body.append(UInt8((cbits >> UInt64(shift)) & 0xFF))
+            var rframe = encode_bus_frame(
+                asgi_stream_url(String("r"), slot, self.lane), st.gens[slot],
+                Span(body),
+            )
+            if not self._place_frame(pool, Span(rframe)):
+                # Droppable, uniquely on this seam: the counter is
+                # cumulative, so the NEXT consume's ack carries everything
+                # this one did. No abort, no lost-claim — the cost of a
+                # drop is latency on a suspended read, not correctness.
+                pass
         return False
 
 
