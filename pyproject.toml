@@ -1,6 +1,6 @@
 [project]
 name = "mojo-http"
-version = "0.15.1"
+version = "0.16.0"
 description = "HTTP server and web framework for Mojo — routing, content negotiation, SSE, and a maintained lightbug_http fork"
 authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.github.com" }]
 requires-python = ">=3.10"

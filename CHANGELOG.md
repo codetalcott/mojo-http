@@ -7,6 +7,92 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-31
+
+Four WebSocket correctness fixes, two of them silent — a slot leak and a
+message loss that no client could detect. Three were found by gating a
+mechanism nothing gated, which is the theme of the release rather than a
+coincidence.
+
+### Fixed
+
+- **A WebSocket peer that never answers Close no longer holds its slot for
+  ever.** v0.15.1 made the server wait for the peer's Close reply (RFC 6455
+  §5.5.1) and bounded that wait with the idle sweep. The bound did not work:
+  none of the linger's four sites is a transition, so the drain re-stamped
+  the deadline on EVERY pass while a slot lingered — about once a second,
+  two seconds into the future — and the sweep could never overtake it.
+  Measured: a peer that received Close and never replied still held its slot
+  at 40 s. Armed once now, only when the deadline is still zero. `A4` is
+  gated (`--idle-timeout`, `scripts/idle_timeout_probe.py`,
+  `poe smoke-idle-timeout`) and `L16` is a new row for the BOUND, separate
+  from L15 for the ORDER, because L15's 64-way concurrent-close phase passes
+  on both broken servers.
+- **Close frames are validated, not echoed.** RFC 6455 §7.4.1 divides close
+  codes into ones a peer may put on the wire and ones it may not; the parser
+  copied the first two payload bytes into its echo unexamined. The
+  contradiction is sharpest at 1006, "abnormal closure", which names the
+  ABSENCE of a close frame — so a close frame carrying it cannot be honest,
+  and the server answered it with its own 1006. Now 1000-1003, 1007-1014
+  (1012-1014 were registered with IANA after the RFC, hence the range ending
+  at 1014 and excluding 1015) and 3000-4999 are echoed; everything else
+  fails the connection with 1002. A one-byte body is a protocol error
+  (§5.5.1), and a reason that is not valid UTF-8 is 1007 (§8.1). Autobahn
+  section 7 goes 24 OK / 3 informational / 10 FAILED to **34 / 3 / 0**.
+- **Inbound WebSocket messages are no longer dropped when a client stalls.**
+  The outbound direction was credit-gated and the inbound direction had no
+  backpressure of any kind, so once the executor's submit channel filled,
+  each further message was discarded with a log line the client can never
+  see: **2932 of 3000 lost** at 4 KB. The two directions were coupled, which
+  is why the threshold was so low — an app that awaits `send` inside its
+  `receive` loop stops receiving when its client stops reading, which stops
+  the drain that inbound messages depend on. Inbound now has a window
+  (`WS_IN_WINDOW`, acked cumulatively as the application consumes), the loop
+  suspends the socket's READ when it cannot forward, and what it has already
+  taken off the wire is parked and delivered late. A parked message is owed,
+  never dropped.
+- **A WebSocket client sending more than one socket read's worth no longer
+  stalls on Linux.** The WebSocket read path took one `recv` per readiness
+  event and never re-armed — `A13`'s defect in the one path nothing had ever
+  sent a large inbound burst to. kqueue's level trigger hides it entirely;
+  on epoll the edge is spent, and the stall needs the client to STOP
+  SENDING, which is exactly what the inbound window above makes it do. So
+  the fix above exposed a bug that had been waiting for it. Re-armed only on
+  a full staging buffer, so an ordinary small-message socket pays no extra
+  syscall.
+
+### Added
+
+- `--idle-timeout`, exposing the connection idle deadline that was
+  previously a `ServerConfig` field with no flag or environment variable.
+- `poe smoke-idle-timeout`, `poe smoke-realtime-holds`, `poe smoke-ws-inbound`
+  and `poe check-phase-stamps` — four new gates, each sabotage-proven.
+- Every probe now stamps the PHASE it was proving, so a traceback naming a
+  shared socket helper says which phase failed rather than only which call.
+  `scripts/phase_stamp_check.py` holds it across all 16 probes and reverts
+  each rule to prove the checker bites.
+
+### Changed
+
+- **A client that sends without ever reading, against an app that echoes,
+  now BLOCKS rather than losing data.** That is the correct end of a
+  deadlock every echo server has, uvicorn included; the old behaviour only
+  avoided it by discarding the client's messages.
+- `docs/SPEC.md` grew to 149 rows. Autobahn|Testsuite was run once by hand
+  to decide whether to wire it (`I13`): it scores the build with a known
+  RFC 6455 §5.5.1 violation and the fixed build IDENTICALLY, because its
+  fuzzing client always initiates the close and the bug was on the
+  app-initiated path. The ROADMAP's claim that "the bar is unambiguous and
+  the result is comparable" is withdrawn. It still found the close-code
+  defect above, and outside its performance section now scores 240 of 247 —
+  every remaining failure being the deliberate `MAX_PENDING_BYTES` cap
+  (`I17`).
+- `B8` split into `B8` (h2spec) and `B9` (the PortSwigger desync scanner),
+  both `out of scope`: h2spec needs HTTP/2, which `A18` refuses, and a
+  pair-scanner has nothing to compare against a server with no proxy in
+  front of it.
+
+
 ## [0.15.1] — 2026-08-30
 
 ### Fixed
@@ -2677,6 +2763,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.16.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.16.0
 [0.15.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.1
 [0.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.0
 [0.14.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.14.1
