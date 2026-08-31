@@ -850,7 +850,46 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # Writes are untouched: echoes and heartbeats still
                     # drain, which is what lets the app's `receive` loop
                     # keep consuming and the window reopen.
+                    #
+                    # `slot_read_armed` is the invariant, not bookkeeping:
+                    # EVERY re-arm site in this file consults it, and on
+                    # epoll read and write share ONE registration, so the
+                    # outbox drain's `add_write_oneshot` MODs this read
+                    # interest away. Left saying "armed", nothing re-arms
+                    # and the socket stalls for ever — which is exactly
+                    # what Linux CI measured (3 of 3000 echoed, no drops)
+                    # while macOS passed, kqueue's filters being
+                    # independent.
                     backend.try_delete_read(fd_val)
+                    slot_read_armed[slot] = False
+                    slot_ws_state[slot].inbound_suspended = True
+                elif (
+                    ws_read == UInt(provision_pool.provisions[slot].recv_staging.capacity())
+                    and slot_fds[slot] != UNUSED
+                ):
+                    # ONE recv per event does not drain an edge-triggered
+                    # socket, and this path had no answer to that. The body
+                    # path already carries the fix and the reason ("a body
+                    # larger than the staging buffer leaves bytes pending
+                    # that will never raise another edge on their own"); the
+                    # WebSocket path was simply never asked, because until
+                    # there was an inbound flood gate nothing sent more than
+                    # a staging buffer at a time from the client side.
+                    #
+                    # kqueue hides it completely -- `add_read` is EV_ADD
+                    # without EV_CLEAR, so connection reads are LEVEL
+                    # triggered and the next pass simply reports the socket
+                    # readable again. On epoll the edge is spent, and once
+                    # the CLIENT stops sending (which is exactly what the
+                    # inbound window makes it do) no further edge is coming:
+                    # measured on Linux as 3 of 3000 messages echoed, with
+                    # the rest sitting unread in a socket buffer nobody
+                    # would look at again.
+                    #
+                    # Only on a FULL staging buffer, so an ordinary
+                    # small-message socket pays no extra syscall.
+                    backend.try_add_read(fd_val)
+                    slot_read_armed[slot] = True
                 continue
 
             if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_SSE:
@@ -1518,8 +1557,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     var ws_resumes = handler.take_ws_resumes()
     for ri in range(len(ws_resumes)):
         var rs = ws_resumes[ri]
-        if rs >= 0 and rs < max_conns and slot_fds[rs] != UNUSED and slot_ws[rs]:
+        if (
+            rs >= 0 and rs < max_conns and slot_fds[rs] != UNUSED
+            and slot_ws[rs] and not slot_read_armed[rs]
+        ):
+            slot_ws_state[rs].inbound_suspended = False
             backend.try_add_read(slot_fds[rs])
+            slot_read_armed[rs] = True
 
     return should_shutdown
 
@@ -3125,7 +3169,13 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         slot_send_offset[slot] = 0
         provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
         slot_idle_deadline[slot] = 0
-        if not slot_read_armed[slot]:
+        # NOT while the inbound read is deliberately suspended: this
+        # branch runs for the socket's OWN echo going out, and re-arming
+        # here is the socket undoing its own backpressure — the parked
+        # queue then grows with the client's send rate instead of being
+        # bounded by one `recv`. `take_ws_resumes` is the only thing that
+        # may re-arm a suspended slot.
+        if not slot_read_armed[slot] and not slot_ws_state[slot].inbound_suspended:
             backend.try_add_read(fd_val)
             slot_read_armed[slot] = True
         if config.sse_heartbeat_ms > 0:

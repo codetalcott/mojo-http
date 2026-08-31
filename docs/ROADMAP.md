@@ -1940,6 +1940,36 @@ naming the dropped messages. Holds at 8000 x 4 KB, 3000 x 16 KB and
 20 000 x 64 B -- the last being the parked queue's hardest case, many
 complete messages out of one read.
 
+**And it uncovered an older bug, which is the part worth reading.** The first
+Linux CI run of the new gate stalled -- 3 of 3000 echoed, and NO drops, so the
+backpressure was working and the socket simply never resumed. Two fixes were
+needed and only the first was mine:
+
+- `slot_read_armed` is an INVARIANT every re-arm site in the loop consults,
+  and suspending without updating it left the flag lying. On kqueue read and
+  write are independent filters so nothing noticed; on epoll they share ONE
+  registration, so the outbox drain's `add_write_oneshot` MODs the read
+  interest away and nothing restores it. Setting the flag is not enough
+  either: `_after_send`'s WebSocket branch re-arms on exactly `not armed`, so
+  the socket's own echo would undo the suspension it had just asked for --
+  and with it the parked queue's bound. Hence `WSState.inbound_suspended`: a
+  DELIBERATE suspension, distinguishable from an incidental one.
+- **The WebSocket read path took ONE `recv` per event and never re-armed** --
+  A13's defect, in the one path nothing had ever sent a large inbound burst
+  to. The body path has carried the fix and the reason for a long time ("a
+  body larger than the staging buffer leaves bytes pending that will never
+  raise another edge on their own"); this path was simply never asked.
+  kqueue's level trigger hides it entirely. On epoll the edge is spent, and
+  the stall needs the client to STOP SENDING -- which is precisely what
+  inbound backpressure is for, so the feature exposed the bug that had been
+  waiting for it. Re-armed only on a FULL staging buffer, so an ordinary
+  small-message socket pays no extra syscall. Row I19.
+
+Verified by building Linux/aarch64 in a container and running the gate there:
+3 of 3000 before, 3000 of 3000 after, same tree. The first hypothesis (the
+invariant alone) was wrong and the container said so -- macOS passed every
+version of this, including the two broken ones.
+
 **One consequence worth stating plainly.** A client that sends without ever
 reading, against an app that echoes, now BLOCKS instead of losing data. That
 is the correct end of a deadlock every echo server has -- uvicorn included

@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**148 capabilities: 114 verified, 6 implemented, 4 planned, 24 out of scope.** Of the 114 verified, 112 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 115 verified, 6 implemented, 4 planned, 24 out of scope.** Of the 115 verified, 113 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -213,6 +213,7 @@ whose body drifted away from it is the case most likely to have survived.
 | I11 | A synchronous view gating a held SSE connection, with cross-worker publish | verified | `Smoke test the Django realtime example` (every PR) — `--realtime` |
 | I12 | A synchronous view gating a held WebSocket it never speaks | verified | `Smoke test the Django realtime example over WebSockets` (every PR) |
 | I18 | N holds taken AT ONCE from a pool, and a publish reaching all of them | verified | `Concurrent --realtime holds from a pool` (every PR) — the other realtime rows subscribe sequentially, so this is the only one where more than one hold is in flight; the probe's own self-test gates it, because the result it reports is a negative |
+| I19 | Inbound WebSocket data larger than one socket read | verified | `Inbound WebSocket messages survive a stalled client` (every PR) — the WebSocket read path took one `recv` per event with no re-arm, A13's defect in the one path nothing had sent a large inbound burst to; invisible on kqueue's level trigger, and on epoll only once the client STOPS sending |
 | I13 | Autobahn\|Testsuite conformance run, wired to a cadence | planned | ROADMAP: A conformance-suite tier |
 | I14 | `permessage-deflate` | out of scope | follows from having no response compression |
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
