@@ -1500,6 +1500,70 @@ sites, which is the condition `auth.mojo` and `response_cache.mojo` are
 already in. Build it with the first app that asks; the spelling above is the
 part that was unknown.
 
+## Milestones: beta and 1.0
+
+**Computed, not remembered.** `poe milestones` derives these from
+[SPEC.md](SPEC.md); CI prints the report on every pull request. Before this
+existed the direction of the work lived in one person's head and each
+session reconstructed it — and the first thing computing it revealed was that
+**1.0 is nine rows away**, which nobody had noticed.
+
+Milestones derive from row STATUS rather than a per-row annotation. A
+milestone column would mean editing 149 rows and keeping them right for
+ever; these two definitions need no new data at all.
+
+### beta — nothing in the tree ships without a gate
+
+Every row is `verified`, `planned` or `out of scope`. In other words no row
+is `implemented`, which is this sheet's word for "it is in the tree and no
+gate is dedicated to it".
+
+The ordering is evidence, not taste. Gating an `implemented` row has found a
+real defect **four times out of four**: A4's close linger re-arming every
+pass (a slot held for the life of the process), I16's close codes echoed
+rather than validated, L17's inbound WebSocket messages dropped 2932 of
+3000, and A11's `Expect: 100-continue` failing on both case and HTTP/1.0. So
+the remaining `implemented` rows are simultaneously the finish line and the
+highest-yield work available.
+
+### 1.0 — beta, plus the planned rows resolved, plus a soak
+
+1. Every row `verified` or `out of scope`. A `planned` row is resolved by
+   being built OR by being moved to `out of scope` with a reason — deciding
+   not to do something is a resolution, and the sheet already records
+   refusals as first-class.
+2. **A soak against real applications.**
+   [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md) is the instrument and it
+   has earned the requirement: run once against three Django projects
+   nobody here wrote, it found **four defects, three of which no in-repo app
+   could have shown**. Every application in `apps/` was written to test this
+   server, which is the right shape for a smoke suite and the wrong shape
+   for "would this serve my application?". The soak is stale when it lags
+   the tree by more than two minor versions.
+
+   Its staleness is REPORTED and not gated, deliberately: nobody can re-run
+   somebody else's Django projects inside the pull request that trips a
+   gate, and a gate nobody can satisfy is a gate somebody disables. What is
+   gated is the record being readable at all.
+3. Known issues curated — each declaring what would retire it (below).
+
+### The rot rules, which are gated
+
+`poe check-milestones`, sabotage-proven like every other checker here.
+
+Every entry under [Known issues](#known-issues) carries a **`Closed by:`**
+line naming the SPEC rows whose `verified` would retire it, or `none` for
+one no row can reach — an upstream bug, a toolchain gap, a platform floor.
+An issue whose rows are all `verified` fails the build until it is moved to
+Recently resolved.
+
+That rule earned its place the day it was written. "Suspected race: the
+WebSocket close path can RST instead of FIN" had been diagnosed and fixed in
+v0.15.1 and gated by L15 and L16 — and was still listed as an open risk a
+release later, because nothing retired it and nothing could. Anyone reading
+the page would have believed the close path was unreliable.
+
+
 ## Planned
 
 Rows in [SPEC.md](SPEC.md) marked `planned` name a heading here, and the
@@ -1983,6 +2047,10 @@ messages.
   fails with `unable to find suitable c compiler for linking`. CI never
   noticed because GitHub runners ship gcc. `build-essential` — or any cc —
   belongs beside `libsqlite3-dev` and `patchelf`.
+
+  **Closed by:** none — no SPEC row can retire
+  this; it is outside the server's own behaviour.
+
 - **The Linux wheel misses RHEL 9 by one glibc minor.** Measured on CI, the
   binary requires glibc 2.35 and `scripts/wheel_tag.py` tags it
   `manylinux_2_35_x86_64` — which covers Ubuntu 22.04 and Debian 12 but not
@@ -2001,6 +2069,10 @@ messages.
   (`negotiate_language` — RFC 4647 matching, serve-something-over-406 per
   RFC 9110's advice). What remains deliberate: no automatic `Vary` tracking
   (the notes example sets it by hand) and no dynamic compression.
+
+  **Closed by:** none — no SPEC row can retire
+  this; it is outside the server's own behaviour.
+
 - **Mojo 1.0's `PythonObject` interop leaks a reference per call argument and
   per `__setitem__` value.** Upstream toolchain bug, measured directly (a
   dict passed to a no-op Python function 1000 times gains 1000 references).
@@ -2037,6 +2109,10 @@ messages.
   meaning, a baseline x86-64 build without SSE4.1 would have read 16-byte
   events on a 12-byte ABI. Uncaught exceptions also move to stderr; every
   smoke that greps for `Traceback` captures `2>&1` logs, so none care.
+
+  **Closed by:** none — no SPEC row can retire
+  this; it is outside the server's own behaviour.
+
 - **Suspected scheduling stickiness: two forked workers, one shared
   listener, and eighty accepts in a row to the same worker.** Seen once
   (2026-08-29, ubuntu CI runner, PR #168's first run): `smoke-reload`'s
@@ -2066,102 +2142,27 @@ messages.
   either changes the accept path of every prefork deployment and wants
   the mixed-workload and shutdown smokes re-run beside it; loosening the
   smoke to accept one worker would hide the very thing it exists to see.
-- **Suspected race: the WebSocket close path can RST instead of FIN.**
-  Seen twice, both on macOS CI runners and never locally — most recently on
-  PR #113, a change touching only `scripts/binfmt.py` and `release.yml`,
-  which cannot reach the event loop. So it is a genuine intermittent rather
-  than anything a diff introduced, and the second sighting is consistent
-  with the first in every detail below. Seen first (2026-08-25, macOS CI
-  runner, PR #107's first smoke run):
-  `ws_probe.py` failed with `ConnectionResetError` at its final
-  `sock.recv` — *after* the entire close handshake had verified (text and
-  binary echoes, server close with code 1000, client echo sent). Only the
-  FIN it was waiting for never came; a rerun of identical code passed,
-  and `main` with the same server code had passed an hour earlier, so
-  this is a timing window, not a determinism.
 
-  The suspected mechanism: the loop closes the slot while the client's
-  close-echo frame is still unread in the socket's receive buffer, and a
-  socket closed with pending unread data sends RST rather than FIN — a
-  window a slow runner widens. If it recurs, the fix direction is in the
-  WS teardown path: consume (or drain) the peer's close echo before the
-  final `close`, which pins the orderly-FIN contract the probe already
-  asserts. Deliberately recorded rather than fixed on one occurrence —
-  the repo's own rule is that a guard must be verified load-bearing, and
-  a fix for a failure that cannot yet be reproduced cannot be. Loosening
-  the probe to tolerate RST would be the wrong repair: the FIN is the
-  contract worth keeping, and the probe is doing its job by noticing.
-- ~~**A keep-alive connection whose response completes DURING the drain
-  holds it to the deadline.**~~ — **fixed.** The entry below closed the
-  connections that were already idle when SIGTERM landed; this was the
-  one that becomes idle afterwards. Found 2026-08-29 by a probe written
-  for something else (the inversion's shutdown, above): `apps/asgi_bare`,
-  `GET /slow?ms=1500` in flight at SIGTERM, the pump answering it at
-  1.50 s — and then exiting at **5.35 s with keep-alive against 1.55 s
-  with `Connection: close`**, two trials each. The mechanism was in the
-  drain loop: it dispatches `EVFILT_WRITE` only, and a response that goes
-  out in one `send` never registers a write interest, so the completion
-  took `_finish_response`'s keep-alive branch and re-armed the slot for a
-  next request the drain will never read; `active_count` then held at one
-  until the budget ran out. Every execution mode, since the completion
-  path is shared. The fix is the existing between-requests sweep
-  (`_close_between_requests`) run after every completion pass of the
-  drain, not once before it — a slot in `READING_HEADERS` with an empty
-  buffer is the same "between requests" the earlier fix keys on, whenever
-  it got there. Measured after: the process exits **1.55 s** after the
-  request was sent, 0.04 s after answering it, in both the Mojo pool and
-  the ASGI executor; with the in-drain sweep sabotaged out, 5.33 s.
-  `smoke-shutdown` gained a fourth phase pinning it
-  (`scripts/drain_inflight_probe.py`, `apps/pool_spike`'s `/slow` on the
-  Mojo pool, so no Python is involved). `docker stop` during traffic now
-  takes about the slowest in-flight request rather than 5 s.
-- ~~**Graceful shutdown always waits the full 5 s drain when idle keep-alive
-  connections are open**~~ — **fixed.** It did, in every execution mode.
-  Measured 2026-08-23 on 3.14.7t, SIGTERM to process exit, `apps/wsgi_bare`:
+  **Closed by:** none — no SPEC row can retire
+  this; it is outside the server's own behaviour.
 
-  | | idle | 8 idle keep-alive connections |
-  |---|---:|---:|
-  | `--workers 4` | 0.02 s | **5.02 s** |
-  | `--threads 4` | 0.02 s | **5.02 s** |
-  | `--threads 4 --blocking-threads 4` | 0.02 s | **5.02 s** |
-
-  This retired the suspicion that `--threads` shuts down slowly: it does not,
-  and neither does the pool. What was slow was the drain, identically
-  everywhere, because `active_count` counts a connection that is merely *open*
-  the same as one with a request in flight — so the loop waited out
-  `DRAIN_TIMEOUT_NS` for connections that were already finished. It also
-  explains the earlier observation that two `--threads 4` processes
-  "outlived a SIGTERM + 5 s wait": they exited at 5.02 s, and a 5 s wait
-  loses that race.
-
-  The shutdown path now closes slots in `READING_HEADERS` whose receive
-  buffer is empty — "between requests" — before it starts the drain clock.
-  Such a connection could never have been served by the drain loop anyway:
-  that loop dispatches `EVFILT_WRITE` only, so a request arriving during a
-  drain is not read there. Re-measured on 3.13 with the same harness, which
-  reproduces the 5.02 s before the change:
-
-  | | idle | 8 idle keep-alive connections |
-  |---|---:|---:|
-  | `--workers 4` | 0.03 s | **5.02 → 0.03 s** |
-  | `--blocking-threads 4` | 0.02 s | **5.02 → 0.03 s** |
-  | default (one loop) | 0.02 s | **5.02 → 0.03 s** |
-
-  The two halves of the contract are pinned separately, because this changes
-  *which* connections are dropped at shutdown: `smoke-blocking-threads`
-  already asserted that a request in flight at SIGTERM is answered rather
-  than dropped, and `smoke-shutdown` gained a phase asserting that idle
-  keep-alive connections no longer hold the drain open. That new phase was
-  checked against the unfixed loop and fails there at 5.01 s, so it is a
-  guard rather than a decoration. A slot mid-request, mid-response, or with a
-  job in a pool thread is deliberately left alone.
-- The blocking `listen_and_serve` loop serves one accepted keep-alive
-  connection exclusively until timeout or the `max_keepalive_requests` cap
-  (measured p99 ~140 ms under 16 persistent connections). No in-repo app
-  uses it anymore — `apps/hello` moved to the non-blocking loop like
-  everything else — but it remains in the fork for the simplest embeddings.
 
 ## Recently resolved
+
+### The WebSocket close path RSTing instead of FINning — resolved v0.15.1
+
+Listed as a suspected race for two sightings, both on macOS CI and never
+locally. It was not a flake: RFC 6455 §5.5.1 requires the endpoint that
+sends Close to WAIT to receive one, and the loop closed as soon as its own
+Close frame drained, so the peer's reply reached a socket that was already
+gone and TCP answered with an RST. Diagnosed and fixed in v0.15.1, and
+v0.16.0 fixed the BOUND on the wait that fix depends on. Gated by L15 (64
+concurrent app-initiated closes, every one a clean FIN) and L16 (the wait is
+bounded, so a peer that never replies cannot hold its slot).
+
+It stayed on this list for a release after it was fixed, because nothing
+retired it and nothing could. That is why `scripts/milestones.py` now
+requires every entry here to declare what would close it.
 
 - ~~**A WebSocket close races the peer's close reply, and loses as an RST**~~
   — **fixed 2026-08-30.** When an application sent `websocket.close(1000)`
