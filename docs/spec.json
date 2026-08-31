@@ -614,8 +614,8 @@
       "section": "G",
       "category": "G. Security hardening",
       "capability": "Parser fuzzing in CI",
-      "status": "planned",
-      "evidence": "ROADMAP: A conformance-suite tier"
+      "status": "verified",
+      "evidence": "`Fuzz the request decoder` (every PR) \u2014 20k mutations of a seed corpus against `parse_request_headers` and the chunked decoder, replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so \"no findings\" cannot mean \"checks nothing\""
     },
     {
       "id": "H1",

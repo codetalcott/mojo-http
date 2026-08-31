@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 119 verified, 2 implemented, 4 planned, 24 out of scope.** Of the 119 verified, 117 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 120 verified, 2 implemented, 3 planned, 24 out of scope.** Of the 120 verified, 118 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -187,7 +187,7 @@ whose body drifted away from it is the case most likely to have survived.
 | G10 | CORS, configurable | verified | `Smoke test the notes API` (every PR) |
 | G11 | `X-Forwarded-*` / `Forwarded` parsing with a trusted-proxy allowlist | out of scope | the server never consults them — `REMOTE_ADDR` is the socket peer and `wsgi.url_scheme` is configuration, so there is nothing to spoof |
 | G12 | PROXY protocol v1/v2 | out of scope | same reason: the peer address is taken from the socket |
-| G13 | Parser fuzzing in CI | planned | ROADMAP: A conformance-suite tier |
+| G13 | Parser fuzzing in CI | verified | `Fuzz the request decoder` (every PR) — 20k mutations of a seed corpus against `parse_request_headers` and the chunked decoder, replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so "no findings" cannot mean "checks nothing" |
 
 ## H. TLS
 

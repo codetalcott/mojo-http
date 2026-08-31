@@ -501,7 +501,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "test-sqlite", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "fuzz-request", "test-sqlite", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -3723,6 +3723,31 @@ shell = "python3 scripts/pool_sabotage.py"
 help = "Revert each chunked-trailer rule and insist test_parsing fails for it"
 deps = ["build-core", "build-http"]
 shell = "python3 scripts/trailer_sabotage.py"
+
+# SPEC G13. The request decoder is a pure function over bytes, so the harness
+# needs no socket and no server: mutate a seed corpus, assert the invariants,
+# and stay reproducible from `--seed` so a CI failure can be replayed exactly.
+# 20k iterations is a couple of seconds, which is why this runs every PR
+# rather than weekly; `fuzz-request-long` is the deeper sweep for a release.
+[tool.poe.tasks.fuzz-request]
+help = "Fuzz the request/chunked decoders against their invariants"
+shell = "mojo run -I packages/m0-http -I packages/m0-core scripts/fuzz_request.mojo --iterations 20000"
+
+[tool.poe.tasks.fuzz-request-long]
+help = "PRE-RELEASE: the deep fuzz sweep, eight seeds x 250k iterations"
+shell = """
+for s in 1 2 3 4 5 6 7 8; do
+  echo "--- seed $s ---"
+  mojo run -I packages/m0-http -I packages/m0-core scripts/fuzz_request.mojo \
+    --seed "$s" --iterations 250000 || exit 1
+done
+"""
+
+# A fuzzer that has never found anything is indistinguishable from a fuzzer
+# that cannot: this breaks each invariant in turn and insists it is reported.
+[tool.poe.tasks.sabotage-fuzz]
+help = "Break each decoder invariant and insist the fuzzer reports it"
+shell = "python3 scripts/fuzz_sabotage.py"
 
 [tool.poe.tasks.probe-pool]
 help = "PRE-RELEASE: p99 of /fast beside blocking handlers, loop vs pool (not in CI)"
