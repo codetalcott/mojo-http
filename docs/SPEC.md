@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**144 capabilities: 111 verified, 5 implemented, 4 planned, 24 out of scope.** Of the 111 verified, 109 are gated on every pull request, 1 weekly, and 1 before a release.
+**146 capabilities: 111 verified, 6 implemented, 5 planned, 24 out of scope.** Of the 111 verified, 109 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -47,10 +47,17 @@ CI pins GIL-enabled 3.13 and every `--threads` phase skips on it.
 `(pre-release)` is a gate `docs/RELEASING.md` requires and CI deliberately
 does not run, because shared runners cannot reproduce the timing.
 
-**No conformance suite runs anywhere** — no h2spec, no Autobahn, no
-PortSwigger desync harness. The WebSocket and smuggling rows below are pinned
-by hand-written probes and unit tests against the RFC text. That is real
-evidence and it is not a conformance run; the rows say which they are.
+**No conformance suite runs on a cadence** — no h2spec, no Autobahn, no
+PortSwigger desync harness is wired to any gate. The WebSocket and smuggling
+rows below are pinned by hand-written probes and unit tests against the RFC
+text. That is real evidence and it is not a conformance run; the rows say
+which they are.
+
+Autobahn\|Testsuite has now been run ONCE, by hand, on 2026-08-30, to decide
+whether wiring it is worth the cost (I13). It is not a gate and no row claims
+it as one. What it measured is in ROADMAP's conformance-suite tier, including
+the two live defects it found and the reason it could not have caught the bug
+that motivated running it.
 
 This page is checked by `poe check-docs`: a `verified` row whose gate does not
 exist or does not run fails the build, as does a CI gate no row accounts for.
@@ -205,9 +212,11 @@ whose body drifted away from it is the case most likely to have survived.
 | I10 | `Last-Event-ID` replay from a bounded journal | verified | `Smoke test the Datastar todo demo` (every PR) |
 | I11 | A synchronous view gating a held SSE connection, with cross-worker publish | verified | `Smoke test the Django realtime example` (every PR) — `--realtime` |
 | I12 | A synchronous view gating a held WebSocket it never speaks | verified | `Smoke test the Django realtime example over WebSockets` (every PR) |
-| I13 | Autobahn\|Testsuite conformance run | planned | ROADMAP: A conformance-suite tier |
+| I13 | Autobahn\|Testsuite conformance run, wired to a cadence | planned | ROADMAP: A conformance-suite tier |
 | I14 | `permessage-deflate` | out of scope | follows from having no response compression |
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
+| I16 | A Close frame's code is VALIDATED, not just echoed | planned | ROADMAP: A conformance-suite tier |
+| I17 | A message at or above the outbox cap ends the connection | implemented | `packages/m0-http/src/sse/registry.mojo:11` — `MAX_PENDING_BYTES` bounds one frame as well as the queue; deliberate, and what Autobahn scores as 7 failures plus all of its performance section |
 
 ## J. Static file serving
 

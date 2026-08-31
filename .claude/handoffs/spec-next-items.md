@@ -39,12 +39,33 @@ for case. Its fuzzing client always initiates the close itself, and the bug was
 on the APP-initiated path: no conformance client can make a server's
 application close first. `ws_probe.py`'s close-order phase tests something
 Autobahn cannot reach, which is an argument that the hand-written probe was the
-right instrument rather than a stopgap. The suite is still worth having — it
-found real failures that ship today (reserved close codes echoed rather than
-failed 1002, an invalid-UTF-8 close reason, messages ≥ 64 KB refused at
-`MAX_PENDING_BYTES`) — but not on the argument this handoff made for it, and
-the ROADMAP's "the bar is unambiguous and the result is comparable" needs
-correcting when six of those failures are a deliberate cap.
+right instrument rather than a stopgap.
+
+The suite is still worth having, for what it DID find. Outside the performance
+section it scores **230 of 247** — section 1 (framing) 10/16, sections 2-5
+48/48, section 6 (UTF-8) 145/145, section 7 (close) 27/37, section 10 0/1;
+12 and 13 excluded for `permessage-deflate` (I14), section 9 sampled at 0/12.
+All 17 failures reduce to two causes, and both now have rows: **I16**, close
+codes echoed rather than validated (0, 999, 1004, 1005, 1006, 1016, 1100,
+2000, 2999 come straight back where RFC 6455 §7.4.1 wants the connection
+failed 1002; 7.5.1 wants 1007 for a reason that is not valid UTF-8) — a real
+defect; and **I17**, the deliberate `MAX_PENDING_BYTES` cap, recorded so its
+7 failures plus all of section 9 are not re-diagnosed as a bug every time the
+suite is run. Text-frame UTF-8 validation is correct, which is what section
+6's 145 clean cases say.
+
+The ROADMAP's "the bar is unambiguous and the result is comparable" has been
+withdrawn rather than flagged: it was wrong twice over — the comparison is not
+like for like when 6 of the failures are a documented cap, and a green suite
+would not have meant what it was cited to mean. **Recommended placement:
+pre-release beside `stress-asgi`, not `Tests`** — it needs Docker and ~10
+minutes, CI is already ~25, and its unique value (close-code validation) is a
+defect to fix once, not a regression that recurs. One trap for whoever wires
+it: running every section in ONE pass wedged at case 6.21.6 and never
+recovered, while the same server ran all 145 of section 6 cleanly alone —
+section 1's ≥64 KB cases end their connections and the next case lands on the
+recycled slot, so the harness must drive the sections separately or the
+result understates the server.
 
 **A finding neither item asked for.** The Autobahn run surfaced "the
 executor's channel would not take an inbound message; it is lost", and it
