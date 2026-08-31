@@ -730,6 +730,14 @@
       "evidence": "`Smoke test the Django realtime example over WebSockets` (every PR)"
     },
     {
+      "id": "I18",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "N holds taken AT ONCE from a pool, and a publish reaching all of them",
+      "status": "verified",
+      "evidence": "`Concurrent --realtime holds from a pool` (every PR) \u2014 the other realtime rows subscribe sequentially, so this is the only one where more than one hold is in flight; the probe's own self-test gates it, because the result it reports is a negative"
+    },
+    {
       "id": "I13",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",

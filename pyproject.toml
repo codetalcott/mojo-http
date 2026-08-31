@@ -124,6 +124,57 @@ shell = "python3 scripts/shim_ownership.py --sabotage"
 # stale variable passes every text rule and prints "startup" forever.
 # `--sabotage` reverts each rule -- including that one, and including a new
 # unstamped probe appearing -- and insists the checker fails for every one.
+
+# The `--realtime` hold seam, under CONTENTION rather than once. Every other
+# realtime gate takes holds SEQUENTIALLY -- `realtime_probe.py` completes
+# each handshake before beginning the next -- so with a pool configured the
+# number of holds in flight was one, whatever the width of the probe
+# suggested. This takes N at once from a barrier, so N pool threads produce
+# hold frames into the one SOCK_DGRAM bus channel per loop within the same
+# window, and then publishes into all of them.
+#
+# The headline result is a NEGATIVE (nothing refused, nothing lost up to 512
+# holds and a 50-message burst), which is exactly the kind of result that is
+# worthless from an instrument that cannot register a positive. So
+# `--selftest` runs FIRST and is part of the gate: a bad token must read as
+# zero holds granted, and a publish to a channel nobody holds must read as
+# zero delivery. Both steer the real code path rather than a special one.
+[tool.poe.tasks.smoke-realtime-holds]
+help = "N concurrent --realtime holds from a pool, and a publish into all of them"
+shell = """
+out=$(mktemp -d)
+cleanup() { kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$out"; }
+trap cleanup EXIT
+fail() { echo "smoke-realtime-holds: $1"; [ -f "$out/srv.log" ] && tail -25 "$out/srv.log"; exit 1; }
+
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port 8216 --realtime --blocking-threads 4 --health-path /health \
+  > "$out/srv.log" 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8216/health > /dev/null || fail 'the realtime server never became healthy'
+
+# The POOL is what this row is about, and the probe alone cannot see it: 32
+# concurrent holds pass IDENTICALLY with --blocking-threads 0, because taking
+# them on the loop works too (measured). So the configuration is asserted
+# from the server's own BANNER rather than trusted from the flag --
+# stress-asgi's rule, for the same reason. Without this the row would name a
+# path the gate silently stops entering if the flag is ever dropped.
+grep -q 'blocking-threads=4' "$out/srv.log" \
+  || fail 'the banner reports no pool -- the holds would be taken on the loop, which is not what this row claims'
+grep -q 'realtime' "$out/srv.log" \
+  || fail 'the banner does not report --realtime'
+
+# The instrument, before its result is believed.
+python3 apps/django_realtime/hold_contention_probe.py 8216 --selftest \
+  || fail 'the probe cannot detect its own failure modes -- its clean run means nothing'
+
+python3 apps/django_realtime/hold_contention_probe.py 8216 \
+  || fail 'concurrent holds regressed'
+
+echo "smoke-realtime-holds OK"
+"""
+
 [tool.poe.tasks.check-phase-stamps]
 help = "Every probe stamps its phase for the crash handler, and sabotage-prove it"
 shell = "python3 scripts/phase_stamp_check.py --sabotage"

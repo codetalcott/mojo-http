@@ -1,0 +1,78 @@
+{
+  "kind": "realtime-hold-contention",
+  "recorded": "2026-08-31",
+  "note": "The measurement ROADMAP's 'proven once, unloaded' inventory asked for: how many --realtime holds can be taken AT ONCE before the one bus channel per loop starts refusing them (503) or dropping publishes (silent). Answer: not reachable within the server's serving capacity.",
+  "server": "bin/m0serve djangoproj.wsgi:application --realtime --blocking-threads N",
+  "max_connections": 1024,
+  "runs": [
+    {
+      "pool_threads": 4,
+      "width": 4,
+      "granted": 4,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 4,
+      "width": 16,
+      "granted": 16,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 4,
+      "width": 32,
+      "granted": 32,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 4,
+      "width": 64,
+      "granted": 64,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 4,
+      "width": 128,
+      "granted": 128,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 16,
+      "width": 64,
+      "granted": 64,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 16,
+      "width": 256,
+      "granted": 256,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 16,
+      "width": 512,
+      "granted": 512,
+      "delivery": 1.0
+    },
+    {
+      "pool_threads": 16,
+      "width": 512,
+      "messages": 50,
+      "publish_gap_s": 0,
+      "granted": 512,
+      "delivery": 1.0,
+      "deliveries": 25600
+    }
+  ],
+  "first_width_refusing_a_hold": null,
+  "first_width_losing_a_publish": null,
+  "instrument_selftest": {
+    "bad token": "0 of 8 granted (403) -- the hold counter registers a refusal",
+    "publish to an unheld channel": "0% delivery -- the delivery counter registers loss"
+  },
+  "gate": {
+    "task": "smoke-realtime-holds",
+    "width": 32,
+    "min_delivery": 1.0,
+    "note": "a floor well inside what was measured, so it is a regression check rather than a capacity test"
+  }
+}
