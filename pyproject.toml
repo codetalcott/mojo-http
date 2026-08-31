@@ -4136,6 +4136,34 @@ rm -f asgi.log
 echo "smoke-asgi OK"
 """
 
+# The keep-alive request cap (`max_keepalive_requests`, 100) closes a
+# connection once it has been reused that many times. A stream and a
+# WebSocket upgrade are not reuse -- each owns the connection until it ends,
+# and `_finish_response` clears `should_close` for both to say so -- but the
+# cap check below those branches was guarded by `not should_close`, which is
+# precisely what they had just established. Both shapes were caught, and
+# `_after_send` closed the slot as the HEAD drained: a 200 with
+# `Content-Length` set and zero body bytes, and a 101 that never framed.
+# Found by a real-application soak (docs/REAL_APP_VALIDATION.md), on the
+# hundredth request of a keep-alive connection, silent in the server log.
+[tool.poe.tasks.smoke-keepalive-cap]
+help = "The keep-alive cap must close the connection, not destroy the response"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+fail() {
+  echo "$1"
+  if [ -f kac.log ]; then echo '=== kac.log ==='; cat kac.log; fi
+  exit 1
+}
+"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8144 > kac.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f kac.log' EXIT
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8144/ > /dev/null \
+  || fail 'the asgi_bare app never became healthy'
+python3 scripts/keepalive_cap_probe.py 8144 || fail 'keepalive cap probe failed'
+"""
+
 # Both ends of the wire in Mojo: the client dials, sends, and parses against
 # the notes API — GET, POST with body, negotiation, problem+json, a refused
 # connection, and the https rejection. client_check.mojo raises on any miss.

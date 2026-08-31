@@ -22,8 +22,8 @@
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Keep-alive request cap",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/event_loop.mojo:2707` \u2014 no flag or env var exposes it"
+      "status": "verified",
+      "evidence": "`Smoke test the keep-alive request cap` (every PR) \u2014 closes on the cap request, and a stream or WebSocket upgrade landing there survives it; the probe's third phase refuses to pass on a build whose cap never fires. No flag or env var exposes the limit"
     },
     {
       "id": "A4",

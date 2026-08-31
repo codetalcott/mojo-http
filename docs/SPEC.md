@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 116 verified, 5 implemented, 4 planned, 24 out of scope.** Of the 116 verified, 114 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 117 verified, 4 implemented, 4 planned, 24 out of scope.** Of the 117 verified, 115 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -83,7 +83,7 @@ whose body drifted away from it is the case most likely to have survived.
 |---|---|---|---|
 | A1 | Persistent connections (keep-alive) | verified | `Smoke test pipelined requests` (every PR) |
 | A2 | The example Mojo server starts and answers `/health` | verified | `Smoke test the hello server` (every PR) |
-| A3 | Keep-alive request cap | implemented | `packages/m0-http/lightbug_http/event_loop.mojo:2707` — no flag or env var exposes it |
+| A3 | Keep-alive request cap | verified | `Smoke test the keep-alive request cap` (every PR) — closes on the cap request, and a stream or WebSocket upgrade landing there survives it; the probe's third phase refuses to pass on a build whose cap never fires. No flag or env var exposes the limit |
 | A4 | Idle connection timeout, `--idle-timeout` | verified | `Smoke test the idle connection timeout` (every PR) — an answered keep-alive connection left quiet is closed at the deadline and no earlier, and one kept busy across it is not |
 | A5 | Header read timeout (slowloris defence) | verified | `Smoke test the header read timeout` (every PR) |
 | A6 | Request pipelining, answered in order (RFC 9112 §9.3) | verified | `Smoke test pipelined requests` (every PR) |

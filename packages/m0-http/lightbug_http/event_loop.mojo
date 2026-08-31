@@ -2880,7 +2880,23 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         response.headers.pop("content-length")
         response.headers.pop("content-type")
 
-    if (not provision_pool.provisions[slot].should_close) and (config.max_keepalive_requests > 0):
+    # The cap counts keep-alive REUSE, and a stream or an upgrade is not
+    # reuse: it owns the connection until it ends. Both branches above say
+    # so by clearing `should_close` -- and `not should_close` is exactly
+    # what this guard used to read as "safe to apply the cap", so the two
+    # shapes that had just opted out were the two it caught. `_after_send`
+    # then closed the slot as soon as the HEAD drained, before the body
+    # frames arrived over the chunk channel: measured on the 100th request
+    # of a keep-alive connection as a 200 carrying `Content-Length: 124926`
+    # and zero bytes, and as a 101 that never sent a frame. The second
+    # enforcement site below (`keepalive_count >= max`) needs no such guard:
+    # this one closes at `max - 1`, so a live stream never reaches it.
+    if (
+        (not response.sse_streaming)
+        and (not upgraded_ws)
+        and (not provision_pool.provisions[slot].should_close)
+        and (config.max_keepalive_requests > 0)
+    ):
         if (provision_pool.provisions[slot].keepalive_count + 1) >= config.max_keepalive_requests:
             provision_pool.provisions[slot].should_close = True
 
