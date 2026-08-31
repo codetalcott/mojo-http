@@ -41,6 +41,14 @@ jobs:
       # smoke job because it needs nothing compiled and fails in seconds.
       - name: Check machine-sourced doc facts
         run: uv run poe check-docs
+      # Known issues must declare what retires them -- one outlived its fix
+      # by a release because nothing could notice. The milestone REPORT
+      # prints beside it, so "what is left for 1.0" is answered by CI on
+      # every pull request rather than by whoever remembers.
+      - name: Milestone rot gates, and the report
+        run: |
+          uv run poe check-milestones
+          uv run poe milestones
       # m0-sqlite links libsqlite3. macOS resolves it from the dyld shared
       # cache with no setup; Linux needs the development package present at
       # link time, or the build fails with "cannot find -lsqlite3".

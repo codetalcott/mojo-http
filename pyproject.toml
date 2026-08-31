@@ -226,6 +226,25 @@ python3 scripts/expect_continue_probe.py 8408 || fail 'Expect: 100-continue regr
 echo "smoke-expect-continue OK"
 """
 
+
+# Where the project stands against beta and 1.0, COMPUTED from the sheet
+# rather than remembered. Milestones derive from row STATUS, so no per-row
+# annotation exists to rot: beta is "no row is `implemented`" (nothing ships
+# ungated) and 1.0 adds "no row is `planned`" plus the soak.
+#
+# `--check` holds only rules that describe something which should never be
+# true AND that whoever trips it can fix in the same PR. The soak's
+# STALENESS is therefore reported, not gated -- nobody can re-run somebody
+# else's Django projects to get a patch merged, and a gate nobody can
+# satisfy is a gate somebody disables.
+[tool.poe.tasks.milestones]
+help = "What remains between here and 1.0, computed from docs/SPEC.md"
+shell = "python3 scripts/milestones.py"
+
+[tool.poe.tasks.check-milestones]
+help = "Known issues declare what retires them, and sabotage-prove the rules"
+shell = "python3 scripts/milestones.py --check && python3 scripts/milestones.py --sabotage"
+
 [tool.poe.tasks.check-phase-stamps]
 help = "Every probe stamps its phase for the crash handler, and sabotage-prove it"
 shell = "python3 scripts/phase_stamp_check.py --sabotage"
