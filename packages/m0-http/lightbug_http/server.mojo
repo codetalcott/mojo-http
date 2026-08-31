@@ -18,6 +18,7 @@ from lightbug_http.header import (
 )
 from lightbug_http.http.common_response import BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge, StreamingUnsupported
 from lightbug_http.io.bytes import Bytes, ByteView
+from lightbug_http.strings import strHttp10
 from std.memory import memcpy
 from lightbug_http.service import HTTPService
 from lightbug_http.c.sendfile import send_file
@@ -647,15 +648,20 @@ def handle_connection[
                             _send_error_response(conn, InternalError())
                             provision.state = ConnectionState.closed()
                             break
-                    # RFC 9110 §10.1.1: send 100 Continue before reading body
-                    var expect_val = provision.parsed_headers.value().headers.get(HeaderKey.EXPECT)
-                    if expect_val:
-                        if expect_val.value() == "100-continue":
-                            try:
-                                _ = conn.write("HTTP/1.1 100 Continue\r\n\r\n".as_bytes())
-                            except:
-                                provision.state = ConnectionState.closed()
-                                break
+                    # RFC 9110 §10.1.1: send 100 Continue before reading the
+                    # body. Case-INSENSITIVE on the expectation-name, and
+                    # never to an HTTP/1.0 client, which has no 1xx and would
+                    # read the interim response as the real one. The event
+                    # loop carries the same two rules; a rule in one copy and
+                    # not the other is not a rule.
+                    if provision.parsed_headers.value().headers.value_equals_ignore_case(
+                        HeaderKey.EXPECT, "100-continue"
+                    ) and provision.parsed_headers.value().protocol != strHttp10:
+                        try:
+                            _ = conn.write("HTTP/1.1 100 Continue\r\n\r\n".as_bytes())
+                        except:
+                            provision.state = ConnectionState.closed()
+                            break
 
                     var effective_length = config.max_request_body_size if is_chunked else content_length
                     # `bytes_read` counts DECODED bytes for a chunked body,

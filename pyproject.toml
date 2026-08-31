@@ -196,6 +196,36 @@ uv run poe build-serve || exit 1
 python3 scripts/ws_inbound_loss_probe.py 3000 4096 8354
 """
 
+
+# `Expect: 100-continue` (RFC 9110 §10.1.1). A11 was `implemented` with the
+# sheet's own note that nothing exercised it; gating it found two defects --
+# an exact compare on a name the RFC makes case-insensitive, and 100 Continue
+# sent to HTTP/1.0 clients, which MUST NOT receive it.
+#
+# The probe asserts BOTH directions deliberately. A server that answers 100
+# Continue unconditionally passes "was it invited?" while throwing away the
+# only thing the mechanism buys: refusing a body before it is uploaded. So
+# the no-Expect and HTTP/1.0 cases are gates in their own right, and the
+# oversized-body case pins the refusal arriving BEFORE the invitation.
+[tool.poe.tasks.smoke-expect-continue]
+help = "Expect: 100-continue is honoured case-insensitively, and withheld where it must be"
+shell = """
+out=$(mktemp -d)
+cleanup() { kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$out"; }
+trap cleanup EXIT
+fail() { echo "smoke-expect-continue: $1"; [ -f "$out/srv.log" ] && tail -20 "$out/srv.log"; exit 1; }
+
+bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8408 \
+  > "$out/srv.log" 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8408/ > /dev/null || fail 'the server never became healthy'
+
+python3 scripts/expect_continue_probe.py 8408 || fail 'Expect: 100-continue regressed'
+
+echo "smoke-expect-continue OK"
+"""
+
 [tool.poe.tasks.check-phase-stamps]
 help = "Every probe stamps its phase for the crash handler, and sabotage-prove it"
 shell = "python3 scripts/phase_stamp_check.py --sabotage"

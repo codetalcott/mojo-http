@@ -414,6 +414,12 @@ jobs:
       # broken build, so that shape would gate nothing.
       - name: Inbound WebSocket messages survive a stalled client
         run: uv run poe smoke-ws-inbound
+      # A11: the expectation-name is case-insensitive, and HTTP/1.0 clients
+      # MUST NOT be sent 100 Continue. Both halves gated, because a server
+      # that answers it unconditionally passes the first while discarding
+      # the point of the mechanism.
+      - name: Expect 100-continue, honoured and withheld
+        run: uv run poe smoke-expect-continue
       # The measurements, rendered into the run's own summary page and kept as
       # an artifact. Until now every one of these numbers went to a job log
       # that expires, so "did it pass" was answerable and "is it drifting
