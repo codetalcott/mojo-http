@@ -7,6 +7,32 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The keep-alive request cap destroyed the response it fired on**, for a
+  streamed body and for a WebSocket upgrade alike. On the hundredth request
+  of a keep-alive connection (`max_keepalive_requests`, 100) a streamed ASGI
+  response went out as a `200` carrying its `Content-Length` and **zero body
+  bytes**, and a WebSocket upgrade completed its handshake with `101` and then
+  never sent a frame. Both were silent — correct status line, nothing logged.
+
+  `_finish_response` clears `should_close` for a stream and for a 101, because
+  neither is keep-alive reuse: each owns the connection until it ends. The cap
+  check below those two branches was guarded by `not should_close`, which is
+  exactly the state they had just established, so the two shapes that had
+  opted out were the two it caught; `_after_send` then closed the slot as soon
+  as the head drained, before any body frame arrived over the executor's chunk
+  channel. The blocking loop cannot reach this — `gate_streaming_response`
+  turns both shapes into a 409 before the cap is consulted — and it is left
+  unchanged rather than given a condition that can never be false.
+
+  Found by re-soaking a real Django application against 0.16.0
+  (`docs/REAL_APP_VALIDATION.md`): 9 truncated responses in 6,000 requests,
+  all on one 124 KB static file, at intervals of exactly 700 — every hundredth
+  time that route was hit. Gated by `poe smoke-keepalive-cap` (SPEC A3), whose
+  third phase asserts the cap still fires for an ordinary response, so the
+  gate cannot pass on a build whose cap never fires.
+
 ## [0.16.0] — 2026-08-31
 
 Four WebSocket correctness fixes, two of them silent — a slot leak and a

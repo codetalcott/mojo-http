@@ -263,6 +263,17 @@ jobs:
       # first request of a burst.
       - name: Smoke test pipelined requests
         run: uv run poe smoke-pipelining
+
+      # The keep-alive request cap must close the connection, not destroy
+      # the response it fires on. A stream and a WebSocket upgrade each own
+      # their connection and clear `should_close` to say so; the cap check
+      # read that state as permission to apply itself, so `_after_send`
+      # closed the slot as the head drained -- a 200 with Content-Length and
+      # an empty body, a 101 that never framed. Found by the 0.16.0 soak
+      # against a real Django application, on every hundredth request.
+      - name: Smoke test the keep-alive request cap
+        run: uv run poe smoke-keepalive-cap
+
       # The framework showcase: routing with :id and a real 405, content
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API

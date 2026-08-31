@@ -283,6 +283,76 @@ process. What is left for `textshelf` is application work: converting the
 four endpoints, and making `ai/streaming.py`'s generator async so it
 streams at all.
 
+## Re-soak — 2026-08-31, against 0.16.0, `textshelf` only
+
+Five minor versions landed in five days after the record above — `--mount`,
+per-mount lanes, the batched pump, `ExecutorPort`, the WebSocket credit gate,
+the close linger — all on the request path, none of it seen by a real
+application. `textshelf` was re-run first because it is the app with four SSE
+endpoints, so it stresses the seam that churned most.
+
+**It found one defect, and the defect was on the ASGI path the WSGI record
+above could never have reached.** Clean clone, scratch SQLite,
+`config.settings.local`, the 0.16.0 wheel, CPython 3.13.6, macOS 26 on an M4.
+
+| phase | result |
+|---|---|
+| 0, load | `--doctor` `ok: true` on `config.wsgi` and `config.asgi`; protocol detection right, WSGI got the pool of 8, ASGI the executor |
+| 1, parity | 10 routes. Two apparent differences against `runserver` both resolved in m0serve's favour by measuring **gunicorn**: static-file headers (runserver's `StaticFilesHandler` bypasses the middleware stack; gunicorn's headers are byte-identical to m0serve's) and the debug page's env table (`wsgiref` copies `os.environ` into the environ, gunicorn and m0serve do not). Against gunicorn the only m0serve-only header is `x-thread`, and every residual environ key is a legitimate per-server one — `wsgi.multithread: True` correctly reporting the pool |
+| 3, topology | `--workers 1`, `--workers 4`, `--blocking-threads 4`, `--workers 4 --blocking-threads 4`, `--blocking-threads 0`, and ASGI. Every route correct, 192/192 burst at concurrency 16, 16/16 concurrent logins, zero 5xx. `--threads` not run: `psycopg-binary` ships no free-threaded wheel, so the 3.14t venv cannot be built |
+| 5, soak | 6,000 keep-alive requests over a mixed route set |
+
+| | RSS 1k → 6k | fds | db fds | threads | errors |
+|---|---|---|---|---|---|
+| WSGI | 167.2 → 171.5 MB | 69 → 69 | 8 | 13 | 0 |
+| ASGI | 177.5 → 216.0 MB | 58–110 | 3–56 | 7 | **9 truncated** |
+
+The WSGI row matches the 0.11.0 shape: +4.3 MB over 5,000 requests, flattening
+to +0.4 MB across the last 2,000, with descriptors, database descriptors and
+threads all flat and the thread count identical at 13. 540 rps, inside the
+record's 363–819 range. The ASGI descriptor and RSS churn is `asgiref`'s
+thread pool opening a connection per thread — application behaviour, not a
+leak.
+
+### The defect: the keep-alive cap destroyed the response it fired on
+
+Nine of the 6,000 ASGI requests came back truncated, all of them on the same
+124 KB WhiteNoise file, at intervals of exactly 700 requests — every hundredth
+time that route was hit. `max_keepalive_requests` is 100.
+
+Isolated on one connection, and the two faces are the same bug:
+
+| request 100 of a keep-alive connection | before | after |
+|---|---|---|
+| streamed body (124 KB `FileResponse`) | `200`, `Content-Length: 124926`, **0 bytes** | complete |
+| WebSocket upgrade | `101`, **no frame ever** | 101 and a live echo |
+| ordinary 45-byte response | `Connection: close` + complete body | unchanged |
+| same file under WSGI | `Connection: close` + complete body | unchanged |
+
+`_finish_response` clears `should_close` for a stream and for a 101, because
+each owns its connection until it ends. The cap check below those branches was
+guarded by `not should_close` — precisely the state they had just established
+— so the two shapes that had opted out were the two it caught, and
+`_after_send` closed the slot as soon as the head drained, before any body
+frame arrived over the chunk channel. Both faces are silent: correct status
+line, nothing in the server log.
+
+Gated by `poe smoke-keepalive-cap` (SPEC A3), whose third phase asserts the
+cap still fires for an ordinary response — without it the gate would pass on
+a build whose cap never fires. Four sabotages: reverting the fix, each guard
+alone, and raising the cap, each caught by the phase that should catch it.
+
+The `m0serve X.Y.Z` marker in this file's opening line is the ONE the
+milestone gate reads, and it deliberately stays at the version the full
+three-application pass was run against. A second marker anywhere in the page
+would become a fallback for `_real_app_version` and silently defeat the
+sabotage that proves the gate can miss an unreadable record — which is why
+this heading says "against 0.16.0" rather than naming the binary.
+
+**This pass is not the 1.0 soak.** `transcripts` and `color-separation` have
+not been run against 0.16.0, so the record above still stands at 0.11.0 for
+them and the milestone stays stale until they are.
+
 ## What would make this worth repeating
 
 It already was: four defects in one pass, three of them invisible to any
