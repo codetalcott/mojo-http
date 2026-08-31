@@ -19,6 +19,7 @@ usage: large_request_probe.py PORT
 import socket
 import sys
 import time
+import traceback
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 
@@ -26,6 +27,29 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 # the 8192 the bug stopped at.
 SIZES = (4000, 8192, 8200, 12000, 20000, 31000)
 OVERSIZED = 40000
+
+
+# Which phase is running, for the crash handler below. All three phases
+# funnel through `send`, so a traceback naming its recv or sendall says
+# which CALL raised and never which PHASE was being proven -- and the
+# phases here mean opposite things (a size that must be ANSWERED versus one
+# that must be REFUSED). Two investigations of the 2026-08-30 CI failure
+# were lost to that distinction; apps/asgi_bare/ws_probe.py carries the
+# original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("large_request_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def request_of(total):
@@ -66,6 +90,7 @@ def send(total, segment=None, timeout=8.0):
 failures = []
 
 for size in SIZES:
+    phase("a %d-byte request in ONE write" % size)
     t0 = time.time()
     got = send(size)
     dt = time.time() - t0
@@ -78,6 +103,7 @@ for size in SIZES:
 # The same bytes segmented must keep working — that path was never broken,
 # and a fix that traded one for the other would be no fix.
 for size in (20000, 31000):
+    phase("a %d-byte request in 1400-byte writes" % size)
     got = send(size, segment=1400)
     if not got.startswith("HTTP/1.1 200"):
         failures.append("a %d-byte request in 1400-byte writes: %s" % (size, got))
@@ -85,6 +111,7 @@ for size in (20000, 31000):
 # Past max_total_header_size the server must REFUSE, promptly. A stall is
 # not a refusal, and this is what stops the fix from becoming a way to feed
 # the server unbounded headers.
+phase("a %d-byte request, which must be refused 431" % OVERSIZED)
 got = send(OVERSIZED)
 if "431" not in got:
     failures.append("a %d-byte request should be refused 431, got: %s"

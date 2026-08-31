@@ -1015,6 +1015,23 @@ Properties of the design, not defects to fix in passing:
   sent one. `ws_probe.py`'s close-order phase is the guard and its
   CONCURRENCY is load-bearing — one close at a time passes on the broken
   server, which is how this survived two investigations.
+
+  **The deadline is armed ONCE, and that is the whole of the bound.** None
+  of the four sites is a transition: the drain reaches its linger branches
+  again on every pass while a slot lingers (`sse_is_streaming` stays false
+  once the app's close unsubscribed it), and `_after_send` runs again for
+  every send that completes while `should_close` and `closing` are both
+  set — a heartbeat ping's, at the top of the list. Re-stamping there
+  pushed the deadline two seconds into the future about once a second, so
+  the sweep never overtook it and a peer that received Close and never
+  answered held its slot for the life of the process — the exact leak the
+  gating on `idle_timeout > 0` says it exists to avoid. Every site now
+  writes the deadline only `if slot_idle_deadline == 0`, which is a
+  reliable test because `_finish_response`'s 101 branch zeroes it. The
+  guard is `poe smoke-idle-timeout` (SPEC L16), which asserts BOTH bounds:
+  a close inside the linger is v0.15.1's bug, and a slot never reclaimed is
+  this one. L15's 64-way concurrent close phase passes on both broken
+  servers, which is why the bound needed a gate of its own.
 - **A chunked request body ends where RFC 9112 says it ends**, because the
   request decoder is built with `consume_trailer = True`. Without it the
   decode completed at `0\r\n` and the terminating `\r\n` every conforming

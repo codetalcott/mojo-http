@@ -29,9 +29,9 @@
       "id": "A4",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Idle connection timeout",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/event_loop.mojo:3029` \u2014 no gate asserts a connection is closed for idling; `smoke-header-timeout` asserts the inverse, that a keep-alive gap is not closed"
+      "capability": "Idle connection timeout, `--idle-timeout`",
+      "status": "verified",
+      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 an answered keep-alive connection left quiet is closed at the deadline and no earlier, and one kept busy across it is not"
     },
     {
       "id": "A5",
@@ -213,9 +213,17 @@
       "id": "B8",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "External desync suite (PortSwigger, h2spec)",
-      "status": "planned",
-      "evidence": "ROADMAP: A conformance-suite tier"
+      "capability": "h2spec conformance run",
+      "status": "out of scope",
+      "evidence": "follows from having no HTTP/2 (A18), the same reason C7 gives"
+    },
+    {
+      "id": "B9",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "PortSwigger-style desync scanning",
+      "status": "out of scope",
+      "evidence": "the scanner probes a proxy/server PAIR for disagreement about framing; this server has no proxy in front of it in any gate, so there is no second parser to disagree with. The shapes it looks for are unit-tested directly above (B1-B7), and fuzzing the decoder itself is G13"
     },
     {
       "id": "C1",
@@ -725,7 +733,7 @@
       "id": "I13",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
-      "capability": "Autobahn|Testsuite conformance run",
+      "capability": "Autobahn|Testsuite conformance run, wired to a cadence",
       "status": "planned",
       "evidence": "ROADMAP: A conformance-suite tier"
     },
@@ -744,6 +752,22 @@
       "capability": "WebSocket over HTTP/2 (RFC 8441)",
       "status": "out of scope",
       "evidence": "follows from having no HTTP/2"
+    },
+    {
+      "id": "I16",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A Close frame's code is VALIDATED, not just echoed",
+      "status": "planned",
+      "evidence": "ROADMAP: A conformance-suite tier"
+    },
+    {
+      "id": "I17",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A message at or above the outbox cap ends the connection",
+      "status": "implemented",
+      "evidence": "`packages/m0-http/src/sse/registry.mojo:11` \u2014 `MAX_PENDING_BYTES` bounds one frame as well as the queue; deliberate, and what Autobahn scores as 7 failures plus all of its performance section"
     },
     {
       "id": "J1",
@@ -1016,6 +1040,14 @@
       "capability": "An app-initiated close ends in a FIN, not an RST (RFC 6455 \u00a75.5.1's order)",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server"
+    },
+    {
+      "id": "L16",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot",
+      "status": "verified",
+      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server"
     },
     {
       "id": "M1",

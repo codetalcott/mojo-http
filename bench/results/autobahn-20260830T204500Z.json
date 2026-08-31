@@ -1,0 +1,117 @@
+{
+  "kind": "autobahn-conformance",
+  "recorded": "2026-08-30",
+  "note": "Run by hand to decide whether to wire Autobahn as a gate (SPEC I13). Not a CI artifact and not rendered into any doc table; kept because the decision it informed is recorded in ROADMAP prose.",
+  "client": "crossbario/autobahn-testsuite (Testsuite 25.10.1 / Autobahn 0.10.9), docker on colima",
+  "app": "a pure-echo ASGI app; apps/asgi_bare's /ws prefixes 'echo:' and fails every echo-comparison case",
+  "decisive_experiment": {
+    "question": "does Autobahn catch the RFC 6455 5.5.1 close-ordering bug v0.15.1 fixed?",
+    "answer": "no",
+    "builds": {
+      "fe26113 (pre-fix, known violation)": {
+        "section": 7,
+        "cases": 37,
+        "OK": 24,
+        "INFORMATIONAL": 3,
+        "FAILED": 10
+      },
+      "f2d098b (post-fix)": {
+        "section": 7,
+        "cases": 37,
+        "OK": 24,
+        "INFORMATIONAL": 3,
+        "FAILED": 10
+      }
+    },
+    "failed_cases_both": [
+      "7.5.1",
+      "7.9.1",
+      "7.9.2",
+      "7.9.3",
+      "7.9.4",
+      "7.9.5",
+      "7.9.6",
+      "7.9.7",
+      "7.9.8",
+      "7.9.9"
+    ],
+    "reason": "the fuzzing client always initiates the close; the bug was on the app-initiated path"
+  },
+  "current_build_f2d098b": {
+    "sections": {
+      "1": {
+        "cases": 16,
+        "OK": 10,
+        "NON-STRICT": 0,
+        "INFORMATIONAL": 0,
+        "FAILED": 6
+      },
+      "2-5": {
+        "cases": 48,
+        "OK": 41,
+        "NON-STRICT": 7,
+        "INFORMATIONAL": 0,
+        "FAILED": 0
+      },
+      "6": {
+        "cases": 145,
+        "OK": 141,
+        "NON-STRICT": 4,
+        "INFORMATIONAL": 0,
+        "FAILED": 0
+      },
+      "7": {
+        "cases": 37,
+        "OK": 24,
+        "NON-STRICT": 0,
+        "INFORMATIONAL": 3,
+        "FAILED": 10
+      },
+      "10": {
+        "cases": 1,
+        "OK": 0,
+        "NON-STRICT": 0,
+        "INFORMATIONAL": 0,
+        "FAILED": 1
+      }
+    },
+    "total_excluding_9_12_13": {
+      "cases": 247,
+      "passing": 230
+    },
+    "section_9_sample": {
+      "cases": 12,
+      "FAILED": 12,
+      "note": "9.1.*/9.2.* only; same cause as section 1"
+    },
+    "excluded": {
+      "12.*": "no permessage-deflate (I14)",
+      "13.*": "no permessage-deflate (I14)"
+    },
+    "failure_causes": {
+      "I16 close codes echoed not validated": [
+        "7.5.1",
+        "7.9.1",
+        "7.9.2",
+        "7.9.3",
+        "7.9.4",
+        "7.9.5",
+        "7.9.6",
+        "7.9.7",
+        "7.9.8",
+        "7.9.9"
+      ],
+      "I17 MAX_PENDING_BYTES cap": [
+        "1.1.6",
+        "1.1.7",
+        "1.1.8",
+        "1.2.6",
+        "1.2.7",
+        "1.2.8",
+        "10.1.1",
+        "all of section 9"
+      ]
+    }
+  },
+  "harness_note": "running every section in one pass wedged at 6.21.6; section 6 alone ran all 145 cleanly. Section 1's >=64KB cases end their connections and the next case lands on the recycled slot, so sections must be driven separately."
+}

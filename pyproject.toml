@@ -114,6 +114,20 @@ shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-
 help = "Test the ASGI executor shim's slot-ownership rules, and sabotage-prove them"
 shell = "python3 scripts/shim_ownership.py --sabotage"
 
+# Every probe names the PHASE it was proving when it crashed. The 2026-08-30
+# CI failure was an unhandled ConnectionResetError whose traceback named
+# `recv_exact` -- a helper four phases share -- so the log said which CALL
+# reset and never which PHASE was being proven, and two investigations
+# assumed the wrong one. Ten lines fixed it in one probe; this holds it
+# across all fourteen. Structure and coverage are read from the source, but
+# the stamp block is also extracted and DRIVEN, because a stamp that reads a
+# stale variable passes every text rule and prints "startup" forever.
+# `--sabotage` reverts each rule -- including that one, and including a new
+# unstamped probe appearing -- and insists the checker fails for every one.
+[tool.poe.tasks.check-phase-stamps]
+help = "Every probe stamps its phase for the crash handler, and sabotage-prove it"
+shell = "python3 scripts/phase_stamp_check.py --sabotage"
+
 # m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
 # m0-http, not a layer on them — so it needs no -I at build time, and consumers
 # need only -I packages/m0-sqlite. It links against the system libsqlite3.
@@ -366,7 +380,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "test-sqlite", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "test-sqlite", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -556,6 +570,31 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== ht.log ==='; cat ht.log; exit 1; }
 python3 scripts/header_timeout_probe.py 8080 || { echo '=== ht.log ==='; cat ht.log; exit 1; }
 echo "smoke-header-timeout OK"
+"""
+
+# The idle timeout is what BOUNDS the WebSocket close linger v0.15.1 shipped
+# (RFC 6455 5.5.1: having sent Close, wait to receive one), and nothing
+# asserted it -- so a shipped correctness fix rested on an ungated mechanism.
+# Writing this gate found that the bound did not hold: the drain reaches its
+# linger branch on every pass, not once, so each pass pushed the deadline
+# two seconds further out and the sweep never overtook it. A peer that
+# received Close and never answered held its slot for the life of the
+# process. Four phases, each asserting BOTH directions, because "the timeout
+# fires" and "the server hangs up on everyone" look identical from one side.
+# `--idle-timeout` exists so this costs 20 seconds rather than the default's
+# 60; the linger itself is a constant and is measured at its real value.
+[tool.poe.tasks.smoke-idle-timeout]
+help = "Idle connections are closed, busy ones are not, and a WebSocket close waits for its reply"
+deps = ["build-serve"]
+shell = """
+bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8093 \
+  --idle-timeout 3 > idle.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f idle.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8093/ > /dev/null \
+  || { echo '=== idle.log ==='; cat idle.log; exit 1; }
+python3 scripts/idle_timeout_probe.py 8093 3 || { echo '=== idle.log ==='; cat idle.log; exit 1; }
+echo "smoke-idle-timeout OK"
 """
 
 [tool.poe.tasks.smoke-half-close]

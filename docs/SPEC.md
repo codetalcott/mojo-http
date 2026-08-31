@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**142 capabilities: 109 verified, 6 implemented, 5 planned, 22 out of scope.** Of the 109 verified, 107 are gated on every pull request, 1 weekly, and 1 before a release.
+**146 capabilities: 111 verified, 6 implemented, 5 planned, 24 out of scope.** Of the 111 verified, 109 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -47,10 +47,17 @@ CI pins GIL-enabled 3.13 and every `--threads` phase skips on it.
 `(pre-release)` is a gate `docs/RELEASING.md` requires and CI deliberately
 does not run, because shared runners cannot reproduce the timing.
 
-**No conformance suite runs anywhere** — no h2spec, no Autobahn, no
-PortSwigger desync harness. The WebSocket and smuggling rows below are pinned
-by hand-written probes and unit tests against the RFC text. That is real
-evidence and it is not a conformance run; the rows say which they are.
+**No conformance suite runs on a cadence** — no h2spec, no Autobahn, no
+PortSwigger desync harness is wired to any gate. The WebSocket and smuggling
+rows below are pinned by hand-written probes and unit tests against the RFC
+text. That is real evidence and it is not a conformance run; the rows say
+which they are.
+
+Autobahn\|Testsuite has now been run ONCE, by hand, on 2026-08-30, to decide
+whether wiring it is worth the cost (I13). It is not a gate and no row claims
+it as one. What it measured is in ROADMAP's conformance-suite tier, including
+the two live defects it found and the reason it could not have caught the bug
+that motivated running it.
 
 This page is checked by `poe check-docs`: a `verified` row whose gate does not
 exist or does not run fails the build, as does a CI gate no row accounts for.
@@ -77,7 +84,7 @@ whose body drifted away from it is the case most likely to have survived.
 | A1 | Persistent connections (keep-alive) | verified | `Smoke test pipelined requests` (every PR) |
 | A2 | The example Mojo server starts and answers `/health` | verified | `Smoke test the hello server` (every PR) |
 | A3 | Keep-alive request cap | implemented | `packages/m0-http/lightbug_http/event_loop.mojo:2707` — no flag or env var exposes it |
-| A4 | Idle connection timeout | implemented | `packages/m0-http/lightbug_http/event_loop.mojo:3029` — no gate asserts a connection is closed for idling; `smoke-header-timeout` asserts the inverse, that a keep-alive gap is not closed |
+| A4 | Idle connection timeout, `--idle-timeout` | verified | `Smoke test the idle connection timeout` (every PR) — an answered keep-alive connection left quiet is closed at the deadline and no earlier, and one kept busy across it is not |
 | A5 | Header read timeout (slowloris defence) | verified | `Smoke test the header read timeout` (every PR) |
 | A6 | Request pipelining, answered in order (RFC 9112 §9.3) | verified | `Smoke test pipelined requests` (every PR) |
 | A7 | Chunked request bodies, decoded incrementally across reads | verified | `test_parsing.mojo:test_incremental_decode_matches_a_single_pass` (every PR) |
@@ -105,7 +112,8 @@ whose body drifted away from it is the case most likely to have survived.
 | B5 | Bare LF in a chunk extension rejected | verified | `test_parsing.mojo:test_bare_lf_in_a_chunk_extension_is_rejected` (every PR) |
 | B6 | `Content-Length` integer overflow rejected | verified | `test_parsing.mojo:test_overflowing_content_length_is_rejected` (every PR) |
 | B7 | Chunk size with the sign bit set rejected | verified | `test_parsing.mojo:test_chunk_size_with_the_sign_bit_set_is_rejected` (every PR) |
-| B8 | External desync suite (PortSwigger, h2spec) | planned | ROADMAP: A conformance-suite tier |
+| B8 | h2spec conformance run | out of scope | follows from having no HTTP/2 (A18), the same reason C7 gives |
+| B9 | PortSwigger-style desync scanning | out of scope | the scanner probes a proxy/server PAIR for disagreement about framing; this server has no proxy in front of it in any gate, so there is no second parser to disagree with. The shapes it looks for are unit-tested directly above (B1-B7), and fuzzing the decoder itself is G13 |
 
 ## C. Connection management and denial of service
 
@@ -204,9 +212,11 @@ whose body drifted away from it is the case most likely to have survived.
 | I10 | `Last-Event-ID` replay from a bounded journal | verified | `Smoke test the Datastar todo demo` (every PR) |
 | I11 | A synchronous view gating a held SSE connection, with cross-worker publish | verified | `Smoke test the Django realtime example` (every PR) — `--realtime` |
 | I12 | A synchronous view gating a held WebSocket it never speaks | verified | `Smoke test the Django realtime example over WebSockets` (every PR) |
-| I13 | Autobahn\|Testsuite conformance run | planned | ROADMAP: A conformance-suite tier |
+| I13 | Autobahn\|Testsuite conformance run, wired to a cadence | planned | ROADMAP: A conformance-suite tier |
 | I14 | `permessage-deflate` | out of scope | follows from having no response compression |
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
+| I16 | A Close frame's code is VALIDATED, not just echoed | planned | ROADMAP: A conformance-suite tier |
+| I17 | A message at or above the outbox cap ends the connection | implemented | `packages/m0-http/src/sse/registry.mojo:11` — `MAX_PENDING_BYTES` bounds one frame as well as the queue; deliberate, and what Autobahn scores as 7 failures plus all of its performance section |
 
 ## J. Static file serving
 
@@ -256,6 +266,7 @@ whose body drifted away from it is the case most likely to have survived.
 | L13 | `http.response.pathsend` | out of scope | `--static` serves files in Mojo ahead of the application, which is the same saving without the extension |
 | L14 | `http.response.zerocopysend`, `early_hint`, `trailers` | out of scope | no application has asked; the extensions are additive and can be taken later |
 | L15 | An app-initiated close ends in a FIN, not an RST (RFC 6455 §5.5.1's order) | verified | `Conformance test the ASGI bridge` (every PR) — `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server |
+| L16 | ...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot | verified | `Smoke test the idle connection timeout` (every PR) — the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server |
 
 ## M. Deployment and operations
 

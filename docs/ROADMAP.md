@@ -1511,17 +1511,85 @@ means here first.
 
 The server is pinned by hand-written probes against the RFC text -- `smoke-ws`
 speaks RFC 6455 from stdlib sockets, `test_parsing.mojo` covers the smuggling
-shapes directly -- and by no external suite at all. Autobahn|Testsuite for
-WebSockets is the first one worth having: it is 500+ cases, it runs against a
-plain server, and the browsers and `websockets` all publish a 517/517 pass, so
-the bar is unambiguous and the result is comparable. A parser fuzzer over the
-request decoder is the second, and cheaper: the decoder is already a pure
-function over bytes with its own unit suite, so the harness is small.
+shapes directly -- and by no external suite on any cadence. A parser fuzzer
+over the request decoder is the cheap half of this tier: the decoder is
+already a pure function over bytes with its own unit suite, so the harness is
+small (G13).
 
-PortSwigger's desync scanner and h2spec are named on the same page and are NOT
-this tier: h2spec needs HTTP/2, which is out of scope, and the desync tooling
-is built to probe a proxy/server PAIR for disagreement rather than to check one
-parser. The smuggling rows stay unit-tested.
+**Autobahn|Testsuite was RUN, on 2026-08-30, before deciding to wire it.**
+The handoff asked for that deliberately: `fe26113` is the commit before
+v0.15.1's fix, a build with a known, fully characterised RFC 6455 §5.5.1
+violation, so the suite could be asked whether it catches a bug we already
+had. **It does not.** Same pure-echo ASGI app, same client, two builds:
+
+| build | section 7 (close handling), 37 cases |
+|---|---|
+| `fe26113` pre-fix, known violation | 24 OK, 3 informational, 10 FAILED |
+| `f2d098b` post-fix, the shipped fix | 24 OK, 3 informational, 10 FAILED |
+
+Identical case for case: 7.5.1, 7.9.1-7.9.9. The reason is structural, and it
+is the useful part of the result: **Autobahn's fuzzing client always
+initiates the close itself.** The bug was on the APP-initiated path -- the
+server sends Close first and must then wait to receive one -- and no
+conformance client can make a server's application close first. That is a
+region of RFC 6455 an external suite cannot reach, which is a better argument
+for `ws_probe.py`'s close-order phase (64 concurrent app-initiated closes)
+than the one written when it was built.
+
+So the earlier claim here -- that "the browsers and `websockets` all publish
+517/517, so the bar is unambiguous and the result is comparable" -- was wrong
+twice over, and is withdrawn. The comparison is not like for like (6 of the
+failures below are a documented cap, not a defect), and a green suite would
+not have meant what it was being cited to mean.
+
+It is still worth having, for what it DID find. Outside the performance
+section it scores **230 of 247**:
+
+| section | cases | OK | non-strict | informational | FAILED |
+|---|---|---|---|---|---|
+| 1, framing | 16 | 10 | 0 | 0 | 6 |
+| 2-5, pings, opcodes, fragmentation | 48 | 41 | 7 | 0 | 0 |
+| 6, UTF-8 handling | 145 | 141 | 4 | 0 | 0 |
+| 7, close handling | 37 | 24 | 0 | 3 | 10 |
+| 10, auto-fragmentation | 1 | 0 | 0 | 0 | 1 |
+
+Sections 12 and 13 are excluded (no `permessage-deflate`, I14). Section 9 is
+performance and was sampled rather than run: 9.1.\*/9.2.\* failed 12 of 12,
+for the same reason as section 1 below. All 17 failures reduce to two causes:
+
+- **Close codes are echoed, not validated** (10 cases: 7.5.1, 7.9.1-7.9.9).
+  A Close carrying 0, 999, 1004, 1005, 1006, 1016, 1100, 2000 or 2999 comes
+  back with that same code; RFC 6455 §7.4.1 wants the connection failed with
+  1002, and 7.5.1 wants 1007 for a reason that is not valid UTF-8. This is a
+  real defect and it now has its own row (I16). Note what it is NOT: text
+  frames validate UTF-8 correctly, which is what section 6's 145 clean cases
+  say and what I5 already claimed.
+- **The 64 KB outbox cap** (7 cases: 1.1.6-1.1.8, 1.2.6-1.2.8, 10.1.1, plus
+  all of section 9). `MAX_PENDING_BYTES` bounds one frame as well as the
+  queue, so a message at or above 64 KB ends the connection instead of being
+  echoed. Deliberate and documented; recorded as I17 so the failures are not
+  re-diagnosed as a bug each time the suite is run.
+
+**Where it should live, if wired: pre-release, not `Tests`.** It needs Docker
+and roughly ten minutes, CI is already ~25 minutes, and its unique value --
+close-code validation -- is a defect that will be fixed once rather than a
+regression that recurs. `docs/RELEASING.md` beside `stress-asgi` is the fit.
+One practical finding for whoever does it: running every section in ONE pass
+wedged at case 6.21.6 and never recovered, while the same server ran all 145
+of section 6 cleanly when section 6 was run alone. Section 1's >=64 KB cases
+end their connections, and the next case lands on the recycled slot; a
+single-pass run therefore understates the server, and the harness has to
+drive the sections separately.
+
+PortSwigger's desync scanner and h2spec are NOT this tier, and no longer
+promise to be: they were one `planned` row (B8) citing this heading, which
+contradicted the refusal two sections above it on the same page. They are now
+two refusals of their own -- **B8** for h2spec, which needs HTTP/2 (A18, and
+C7 refuses downstream of it), and **B9** for the desync scanner, which probes a
+proxy/server PAIR for disagreement about framing and so has nothing to compare
+against a server with no proxy in front of it. The smuggling rows stay
+unit-tested (B1-B7), and fuzzing the decoder itself is the second half of this
+tier (G13).
 
 ### Structured CI results
 
@@ -1606,6 +1674,87 @@ a test added next month will not update the sheet, and nothing will notice --
 the reverse check fires when a whole CI step goes uncited, not when one
 capability quietly drifts away from the gate that used to prove it.
 
+### Proven once, unloaded: an inventory of the gates with that shape
+
+The v0.15.1 bug came from a shape rather than an oversight: **proven once, by
+a smoke, and stressed not at all.** The measure of how little that guarantees
+is exact. Reverting the `websocket.send` credit gate was caught on round 1 by
+the extended `stress-asgi`, and passed the old chunked-only gate 30 of 30
+under 8 hogs.
+
+This is the inventory that shape asked for, taken 2026-08-30 by reading each
+gate rather than by assuming from its name. Two of the three candidates turn
+out to be better covered than the handoff that proposed them said; the third
+is a real gap, and it is not the one that looked biggest.
+
+**A verdict of "this one does not need it, because X" is a result.** It is
+recorded here so it is not re-proposed.
+
+#### `--realtime` holds on a pool thread — a real gap
+
+**No gate anywhere takes more than one hold at a time.** `smoke-django-realtime`
+opens two concurrent SSE subscribers; `smoke-django-realtime-ws` opens three
+concurrent sockets, and its pool phase runs the whole probe behind two 1.5 s
+views. But `realtime_probe.py` handshakes SEQUENTIALLY — every `handshake()`
+completes before the next begins — so with four pool threads configured, the
+number of holds in flight at once is one.
+
+What contention would exercise, and the reason it is worth doing: a hold taken
+on a pool thread travels to the loop as a reserved `h`/`H` frame on **one
+`SOCK_DGRAM` bus channel per loop**, and N pool threads are N producers on it.
+That is the same "one shared socket pair, N producers" shape whose per-stream
+windows over-committed the ASGI chunk channel — twelve concurrent Django
+`FileResponse`s were enough there — and the bus channel has no budget at all.
+Its documented policy is fire-and-forget: a publish that meets a full buffer is
+DROPPED on EAGAIN (`broadcast.mojo`), and a hold frame that meets one becomes a
+503 (`handler.mojo`, deliberately, "a client holding a dead stream").
+
+Both are documented, deliberate degradations, so the honest claim is not "there
+is a race" — it is that **the threshold is unmeasured**. Nobody knows how many
+concurrent holds, or how heavy a publish rate beside them, turns a working
+server into one issuing 503s and silently losing broadcasts. A stress phase
+that takes N holds at once from N pool threads while publishing would put a
+number on it, and the number is the deliverable whether or not it also finds a
+defect.
+
+#### Mounts — adequately covered; do not re-propose
+
+`smoke-hybrid` is not the single-shot gate its name suggests. Phase 3 streams
+**256 KB concurrently from two ASGI mounts on two executors** — four credit
+windows each, which is exactly the misrouted-ack failure the shared chunk
+channel can produce — and then disconnects a client mid-stream on one mount and
+requires the other to survive. Phase 3t repeats the whole thing under
+`--threads`. Beside it, `hybrid_isolation.py` runs **four concurrent blocking
+sync-mount views** and takes twelve samples against the async mount, reporting
+its headroom on every run.
+
+That is contention, on the seam that matters (per-lane credit, per-lane ack
+routing), at a width chosen for the failure. No gap found.
+
+#### The handler pool — adequately covered; do not re-propose
+
+`smoke-pool` runs **six concurrent blocking requests** and requires them to
+spread across threads. `smoke-blocking-threads` puts two 1.5 s views in flight
+and measures a fast request behind them, then abandons four in-flight requests
+mid-job and requires every slot back. `sabotage-pool` reverts each `mojo_pool`
+rule. `probe-pool` is the pre-release timing gate for the same path.
+
+The one shape none of them has is slot RECYCLING under contention, which is
+what produced the executor's slot-ownership bug — but that bug's home was the
+shim's per-slot state, which pool threads do not have, and `stress-asgi`
+already lands a WebSocket handshake on a slot a streamed connection just
+released. Not worth a second gate on this argument alone.
+
+#### What the inventory cost, and what it bought
+
+Item 1 of the same handoff — gating the idle timeout — found a live bug in
+under an hour: the WebSocket close linger re-armed on every loop pass, so the
+bound v0.15.1 relies on did not exist and a peer that never answered Close held
+its slot for the life of the process. That is the case FOR this kind of work.
+This inventory is the case for doing it by reading first: two of the three
+candidates named in the same handoff did not need it, and building for them
+would have produced gates that could not fail.
+
 ## Open questions
 
 ### The desktop-Mac server, and what the wheel gives up to ship
@@ -1673,6 +1822,49 @@ capability was made for a good reason, is already shipped, and would
 otherwise be invisible to whoever picks this hypothesis up.
 
 ## Known issues
+
+- **Inbound ASGI WebSocket messages are DROPPED, silently, once the
+  executor's submit channel fills.** The outbound direction is
+  credit-gated (`websocket.send` waits on its window); the inbound
+  direction has no backpressure of any kind. `WSGIHandler.ws_message`
+  sends each message to the executor as a tagged datagram, and when
+  `_send_ws_message_tag` refuses, the message is discarded with a log line
+  the client can never see -- the same "a full channel means skip this
+  frame" mistake the chunk channel's own rule forbids, in the direction
+  nobody wrote a rule for.
+
+  Reproduced on macOS against `apps/asgi_bare`'s `/ws` echo (found by
+  another session's Autobahn run, which hit it on the fragmentation cases;
+  numbers here are from `bin/m0serve` at 82627dd):
+
+  | messages sent, 4 KB each | echoed back | lost |
+  |---|---|---|
+  | 200 | 80 | 120 |
+  | 500 | 70 | 430 |
+  | 3000 | 119 | 2881 |
+
+  **The threshold is low and the mechanism couples the two directions.**
+  A client that reads CONCURRENTLY loses nothing at 1500 x 4 KB. A client
+  that sends a burst before reading loses everything past roughly the
+  first 70-120 messages. The likely path is that the two are the same
+  fact: the echo app `await send(...)`s inside its `receive` loop, so when
+  the client stops reading, the outbound credit gate correctly blocks that
+  send -- which stops the app calling `receive`, which stops the executor
+  draining the submit channel, which fills it. **The outbound
+  backpressure produces the inbound loss**, and only one of the two
+  directions is allowed to say "wait".
+
+  Not fixed here, because the fix is a design change rather than a patch:
+  the loop cannot block on the channel (it would deadlock the executor it
+  is feeding), so the frame has to stay unread on the socket and the slot
+  come off the read set until the channel drains -- real backpressure, in
+  a read path that currently has none. The cheap intermediate, if that is
+  too much, is to FAIL the connection rather than drop: a client told 1011
+  knows it lost messages, and one that is silently skipped does not. SPEC
+  L3 (`websocket` scope: connect, accept, receive, send, close) is
+  `verified` on a gate that never sends faster than it reads, and this is
+  the shape of claim the sheet's own "verified means a gate runs, not that
+  it is correct" warning is about.
 
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
   out for linking, so a minimal image (`python:*-slim` carries no compiler)

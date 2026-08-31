@@ -16,6 +16,7 @@ import struct
 import sys
 import threading
 import time
+import traceback
 
 # /ws/flood's shape, kept in step with apps/asgi_bare/bareapp/asgi.py.
 FLOOD_FRAMES = 400
@@ -47,6 +48,20 @@ PHASE = "startup"
 def phase(name):
     global PHASE
     PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    # A reset rather than a clean FIN means the server closed a socket with
+    # bytes still queued on it, which the kernel turns into an RST
+    # (CLAUDE.md, the chunked-trailer rule). Reported as a finding with its
+    # phase, because a bare traceback costs the next investigator the
+    # reproduction -- and this probe is driven N times a round by
+    # `poe stress-asgi`, where the round number alone is not enough.
+    traceback.print_exception(kind, exc, tb)
+    print("asgi ws_probe FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def fail(msg):
@@ -363,17 +378,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit:
-        raise
-    except OSError as exc:
-        # A reset rather than a clean FIN means the server closed a socket
-        # with bytes still queued on it, which the kernel turns into an RST
-        # (CLAUDE.md, the chunked-trailer rule). Reported as a finding with
-        # its phase, because a bare traceback costs the next investigator
-        # the reproduction -- and this probe is driven N times a round by
-        # `poe stress-asgi`, where the round number alone is not enough.
-        import traceback
-        traceback.print_exc()
-        fail("%s: %r" % (PHASE, exc))
+    main()

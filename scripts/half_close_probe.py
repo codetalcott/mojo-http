@@ -25,6 +25,7 @@ usage: half_close_probe.py PORT
 """
 import socket
 import sys
+import traceback
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 ROUNDS = 15
@@ -35,6 +36,29 @@ CL = (b"POST /health HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n"
       b"Connection: close\r\n\r\n" % len(BODY)) + BODY
 CHUNKED = (b"POST /health HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
            b"Connection: close\r\n\r\n%x\r\n%s\r\n0\r\n\r\n" % (len(BODY), BODY))
+
+
+# Which phase is running, for the crash handler below. A traceback names the
+# CALL that raised -- here `attempt`, which every shape below shares -- and
+# never the PHASE being proven. The 2026-08-30 CI failure cost two
+# investigations to exactly that distinction; apps/asgi_bare/ws_probe.py
+# carries the original of this comment. The distinction matters most here:
+# `attempt` runs half-closed AND as its own control, so "a reset in attempt"
+# reads identically whether the fix regressed or the server is simply down.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("half_close_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def attempt(payload, half):
@@ -65,6 +89,7 @@ def attempt(payload, half):
 failures = []
 
 for label, payload in (("GET", GET), ("Content-Length", CL), ("chunked", CHUNKED)):
+    phase("a half-closed %s request" % label)
     bad = [attempt(payload, True) for _ in range(ROUNDS)]
     bad = [r for r in bad if r != "ok"]
     if bad:
@@ -72,6 +97,7 @@ for label, payload in (("GET", GET), ("Content-Length", CL), ("chunked", CHUNKED
                         % (label, len(bad), ROUNDS, ", ".join(sorted(set(bad)))))
     # The control: the same request without the half-close must be unaffected,
     # so a total failure of the server cannot look like a pass above.
+    phase("the control: %s WITHOUT a half-close" % label)
     if attempt(payload, False) != "ok":
         failures.append("%s WITHOUT half-close did not answer — the server is "
                         "broken for ordinary requests, not just this case" % label)
@@ -87,6 +113,7 @@ for label, payload in (("GET", GET), ("Content-Length", CL), ("chunked", CHUNKED
 # the behaviour this pins out, and an earlier version of this probe had to
 # tolerate it as a platform difference.
 TRUNCATED_DEADLINE = 5
+phase("a truncated request followed by a half-close")
 s = socket.create_connection(("127.0.0.1", PORT), timeout=TRUNCATED_DEADLINE)
 try:
     s.sendall(b"GET /health HTT")           # truncated request line

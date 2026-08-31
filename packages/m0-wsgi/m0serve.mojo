@@ -660,6 +660,9 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         String("server"), String("health_path"), opts.health_path
     )
     report.add_int(String("server"), String("max_body"), opts.max_body)
+    report.add_int(
+        String("server"), String("idle_timeout"), opts.idle_timeout
+    )
     var statics = String("[")
     for i in range(len(opts.static_prefixes)):
         if i > 0:

@@ -15,6 +15,7 @@ import socket
 import struct
 import sys
 import time
+import traceback
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8080"))
@@ -24,6 +25,27 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 def fail(msg):
     print("ws_probe FAIL:", msg)
     sys.exit(1)
+
+
+# Which phase is running, for the crash handler below. Six phases share
+# `recv_exact`/`read_frame`, so a traceback out of one says which CALL
+# raised and never which PHASE was being proven -- the distinction two
+# investigations of the 2026-08-30 CI failure lost.
+# apps/asgi_bare/ws_probe.py carries the original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("ws_probe FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def recv_exact(sock, n):
@@ -79,9 +101,11 @@ def read_skipping_pings(sock):
     fail("only heartbeat pings arriving; the awaited frame never came")
 
 
-sock = socket.create_connection((HOST, PORT), timeout=10)
-
 # --- Opening handshake, accept key verified against our own computation ------
+# The connect is inside the phase: a refused connection is a finding about
+# the handshake, not about "startup".
+phase("the opening handshake")
+sock = socket.create_connection((HOST, PORT), timeout=10)
 key = base64.b64encode(os.urandom(16)).decode()
 sock.sendall(
     (
@@ -112,12 +136,14 @@ if leftover:
     fail("unexpected bytes before any frame was sent: %r" % leftover)
 
 # --- Echo round trip (masked text out, unmasked text back) -------------------
+phase("the text echo round trip")
 send_frame(sock, 0x1, b"hello mojo")
 op, payload = read_skipping_pings(sock)
 if op != 0x1 or payload != b"hello mojo":
     fail("echo mismatch: op=%d payload=%r" % (op, payload))
 
 # --- Fragmented message must come back reassembled ---------------------------
+phase("the fragmented message, which must come back reassembled")
 send_frame(sock, 0x1, b"frag", fin=False)
 send_frame(sock, 0x0, b"ment", fin=True)
 op, payload = read_skipping_pings(sock)
@@ -125,12 +151,14 @@ if payload != b"fragment":
     fail("fragmented echo mismatch: %r" % payload)
 
 # --- Client ping earns a pong with the same payload --------------------------
+phase("the client ping, which must earn a pong")
 send_frame(sock, 0x9, b"marco")
 op, payload = read_skipping_pings(sock)
 if op != 0xA or payload != b"marco":
     fail("pong mismatch: op=%d payload=%r" % (op, payload))
 
 # --- Server heartbeat pings on an idle socket --------------------------------
+phase("the server heartbeat pings on an idle socket")
 if os.environ.get("WS_EXPECT_PINGS"):
     pings = 0
     sock.settimeout(3.0)
@@ -153,6 +181,7 @@ if os.environ.get("WS_EXPECT_PINGS"):
     sock.settimeout(10)
 
 # --- Close handshake: echo with our code, then a real TCP close --------------
+phase("the close handshake, down to the TCP FIN")
 send_frame(sock, 0x8, struct.pack(">H", 1000))
 op, payload = read_skipping_pings(sock)
 if op != 0x8:

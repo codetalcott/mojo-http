@@ -31,6 +31,7 @@ import socket
 import struct
 import sys
 import time
+import traceback
 import urllib.parse
 
 HOST = "127.0.0.1"
@@ -38,6 +39,29 @@ PORT = int(os.environ.get("M0_PORT", "8080"))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 TOKEN = "letmein"
 EXPECT_WORKERS = int(os.environ.get("REALTIME_EXPECT_WORKERS", "1"))
+
+
+# Which phase is running, for the crash handler below. The phases are
+# already named in the comments; this puts the name in the FAILURE, which is
+# where it is needed. Every one of them reaches the socket through
+# `recv_exact`/`read_text`, so a traceback out of those says which CALL
+# raised and never which PHASE was being proven -- two investigations of the
+# 2026-08-30 CI failure were lost to that distinction, and
+# apps/asgi_bare/ws_probe.py carries the original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("realtime_probe FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def fail(msg):
@@ -200,6 +224,7 @@ def close_all(socks):
 # ordinary 403 reached the wire — the Mojo layer performs an upgrade only for
 # a response that asked for one.
 
+phase("phase 1: Django gating the upgrade")
 rejected = handshake("news", token=None)
 if rejected[0] is not None:
     close_all([rejected[0]])
@@ -211,6 +236,7 @@ if b"forbidden" not in rejected[2]:
 
 if EXPECT_WORKERS <= 1:
     # --- Phase 2: authorised, and a message reaches a Django view ------------
+    phase("phase 2: an authorised upgrade, and a message reaching a Django view")
     sock_a, worker_a = handshake("news")
     sock_b, _ = handshake("news")
     sock_other, _ = handshake("other")
@@ -230,6 +256,7 @@ if EXPECT_WORKERS <= 1:
     expect_silence(sock_other)
 
     # --- Phase 3: a Django publish reaches sockets too -----------------------
+    phase("phase 3: a Django publish reaching sockets")
     publish("news", "hello from publish")
     got = read_text(sock_a)
     if got != b"hello from publish":
@@ -244,6 +271,7 @@ if EXPECT_WORKERS <= 1:
 # Which worker wins an accept is the kernel's choice and it is not a fair one;
 # see chat_probe.py. Open one socket, SIGSTOP the worker that got it (X-Worker
 # is that worker's pid), open the second, resume immediately.
+phase("landing one socket on each worker (the second under SIGSTOP)")
 sock_a, w_a = handshake("news")
 os.kill(int(w_a), signal.SIGSTOP)
 try:
@@ -257,6 +285,7 @@ if w_a == w_b:
     fail("both sockets landed on worker %s even though it was SIGSTOPped" % w_a)
 
 # ONE publish, handled by sync Django on whichever worker took the POST.
+phase("one publish reaching both workers")
 body = publish("news", "cross-worker-ws")
 if '"workers": 2' not in body:
     fail("publish did not reach both worker channels: " + body)
@@ -268,6 +297,7 @@ for sock, worker in conns:
 
 # And a message SENT on one worker's socket reaches the other worker's too:
 # ws_message -> Django -> m0pub -> every channel -> every worker's registry.
+phase("a message sent on one worker reaching the other")
 send_frame(sock_a, 0x1, b"cross-worker-msg")
 for sock, worker in conns:
     got = read_text(sock)

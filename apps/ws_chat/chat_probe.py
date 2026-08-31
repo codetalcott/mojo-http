@@ -19,6 +19,7 @@ import signal
 import socket
 import struct
 import sys
+import traceback
 import base64
 import hashlib
 
@@ -26,6 +27,29 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8080"))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 EXPECT_WORKERS = int(os.environ.get("CHAT_EXPECT_WORKERS", "1"))
+
+
+# Which phase is running, for the crash handler below. Every phase here
+# reaches the socket through `recv_exact`/`read_text`, so a traceback out of
+# one says which CALL raised and never which PHASE was being proven -- and
+# this probe's phases mean different things (a handshake that never
+# completed, versus a message that never crossed the bus). Two
+# investigations of the 2026-08-30 CI failure were lost to that distinction;
+# apps/asgi_bare/ws_probe.py carries the original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("chat_probe FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def fail(msg):
@@ -132,6 +156,7 @@ def close_all(socks):
 
 
 if EXPECT_WORKERS <= 1:
+    phase("two sockets on one worker, and a message reaching both")
     a = connect_ws()
     b = connect_ws()
     send_frame(a[0], 0x1, b"hello room")
@@ -155,6 +180,7 @@ if EXPECT_WORKERS <= 1:
 # accept, so it provably lands on the other worker. Resume immediately —
 # the frozen worker's own socket is idle meanwhile, and the assertions
 # below are unchanged.
+phase("landing one socket on each worker (the second under SIGSTOP)")
 sock_a, w_a = connect_ws()
 os.kill(int(w_a), signal.SIGSTOP)
 try:
@@ -168,6 +194,7 @@ if len(workers) < 2:
     close_all([s for s, _ in conns])
     fail("both sockets landed on worker %s even though it was SIGSTOPped" % w_a)
 
+phase("one message reaching both workers over the bus")
 sender_sock, sender_worker = conns[0]
 msg = b"hello from " + sender_worker.encode()
 send_frame(sender_sock, 0x1, msg)
