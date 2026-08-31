@@ -53,6 +53,29 @@ versions may break the API**.
   supervisor's graceful drain. This is the class of error the checker cannot
   catch: it validates that a citation resolves, never that a reason is true.
 
+### Added
+
+- **The chunked decoder's trailer states are gated** (SPEC A10). The servers
+  build their decoder with `consume_trailer = True` — which is what makes a
+  body end where RFC 9112 says it ends — but the round-trip tests set that
+  flag over a wire carrying no trailer section, so every state below
+  `IN_TRAILERS_LINE_HEAD` was reached by no test at all.
+
+  Eight tests in `test_parsing.mojo` now cover the section: consumed whole
+  (including its terminating CRLF, whose absence is what makes a close send
+  an RST), several fields, no trailer byte reaching the decoded body, the
+  framing fields RFC 9110 §6.5 says a trailer must not honour
+  (`Content-Length`, `Transfer-Encoding`, `Host`), the pipelined tail
+  surviving byte for byte, and the section bounded by the existing abuse
+  ratio — trailer bytes advance `src` and never `dst`, so they are charged as
+  pure overhead and no second limit is needed. The default-setting half is
+  asserted too, so a decoder that swallowed to the end of the buffer cannot
+  pass.
+
+  `poe sabotage-trailers` reverts each of the six rules and requires a
+  failure for every one; it runs in `test-all` and in CI. Nothing was found
+  wrong with the implementation — the gap was in the evidence.
+
 ## [0.16.0] — 2026-08-31
 
 Four WebSocket correctness fixes, two of them silent — a slot leak and a

@@ -78,8 +78,8 @@
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Trailer fields consumed and discarded, not surfaced to the application",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/http/chunked.mojo:157` \u2014 the round-trip tests set `consume_trailer` but their wire carries no trailer section"
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_trailer_section_is_consumed_whole` (every PR) \u2014 with seven more beside it: the framing fields a trailer must not honour, the pipelined tail surviving it, the section bounded by the abuse ratio, and `test_without_consume_trailer_the_body_ends_at_the_zero_chunk` as the other half. `poe sabotage-trailers` reverts each of the six rules and requires a failure for every one"
     },
     {
       "id": "A11",
