@@ -144,6 +144,18 @@ struct ServeOptions(Copyable, Movable):
     var access_log: Bool
     var max_body: Int
     """Request body cap in bytes; -1 leaves `ServerConfig`'s default alone."""
+    var idle_timeout: Int
+    """Seconds a keep-alive connection may sit between requests; -1 leaves
+    `ServerConfig`'s default (60) alone.
+
+    0 is a MEANINGFUL value, not an unset one, which is why the sentinel is
+    -1: it turns the idle sweep off, and the sweep is what bounds a
+    WebSocket that this side has closed while it waits for the peer's Close
+    reply (RFC 6455 5.5.1). With no sweep there is nothing to reap a peer
+    that never replies, so that configuration deliberately keeps the older
+    close-at-once behaviour rather than leaking the slot -- see
+    `WS_CLOSE_LINGER_NS` in event_loop.mojo.
+    """
     var metrics: Bool
     var realtime: Bool
     """Hold SSE streams and WebSockets that the application approves.
@@ -204,6 +216,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_cache_control = String("")
         self.access_log = False
         self.max_body = -1
+        self.idle_timeout = -1
         self.metrics = False
         self.realtime = False
         self.reload = False
@@ -239,6 +252,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_cache_control = copy.static_cache_control
         self.access_log = copy.access_log
         self.max_body = copy.max_body
+        self.idle_timeout = copy.idle_timeout
         self.metrics = copy.metrics
         self.realtime = copy.realtime
         self.reload = copy.reload
@@ -274,6 +288,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_cache_control = move.static_cache_control^
         self.access_log = move.access_log
         self.max_body = move.max_body
+        self.idle_timeout = move.idle_timeout
         self.metrics = move.metrics
         self.realtime = move.realtime
         self.reload = move.reload
@@ -333,7 +348,7 @@ struct ServeOptions(Copyable, Movable):
         """`base.server_config()` with the flags that reach `ServerConfig` applied.
 
         `--access-log` can only turn logging on (the environment may already
-        have); `--max-body` and `--metrics` are the first two server-only
+        have); `--max-body`, `--idle-timeout` and `--metrics` are server-only
         tunings the environment cannot reach and a command line can.
         """
         var sc = base.server_config()
@@ -341,6 +356,8 @@ struct ServeOptions(Copyable, Movable):
             sc.access_log = True
         if self.max_body >= 0:
             sc.max_request_body_size = self.max_body
+        if self.idle_timeout >= 0:
+            sc.idle_timeout = self.idle_timeout
         sc.enable_metrics = self.metrics
         return sc^
 
@@ -595,6 +612,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--static"
         or name == "--static-cache-control"
         or name == "--max-body"
+        or name == "--idle-timeout"
         or name == "--health-path"
         or name == "--reload-dir"
         or name == "--protocol"
@@ -704,6 +722,13 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         opts.static_cache_control = value
     elif name == "--max-body":
         opts.max_body = parse_size(value)
+    elif name == "--idle-timeout":
+        var idle = parse_int(value, "--idle-timeout")
+        if idle < 0:
+            raise Error(
+                "--idle-timeout must be 0 or more seconds, got " + value
+            )
+        opts.idle_timeout = idle
     elif name == "--reload-dir":
         var watched = String(value.strip())
         if watched.byte_length() == 0:
@@ -839,6 +864,8 @@ def usage() -> String:
         "  --access-log                one log line per request (M0_ACCESS_LOG)\n"
         "  --max-body SIZE             request body cap: bytes, or 512k / 64m / 1g\n"
         "                              (default 4m)\n"
+        "  --idle-timeout SECONDS      close a keep-alive connection left idle\n"
+        "                              this long (default 60, 0 = never)\n"
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
         "  --realtime                  hold SSE streams and WebSockets the app\n"
         "                              approves with M0-Hold; publish with m0pub.py\n"

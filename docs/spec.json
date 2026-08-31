@@ -29,9 +29,9 @@
       "id": "A4",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Idle connection timeout",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/event_loop.mojo:3029` \u2014 no gate asserts a connection is closed for idling; `smoke-header-timeout` asserts the inverse, that a keep-alive gap is not closed"
+      "capability": "Idle connection timeout, `--idle-timeout`",
+      "status": "verified",
+      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 an answered keep-alive connection left quiet is closed at the deadline and no earlier, and one kept busy across it is not"
     },
     {
       "id": "A5",
@@ -1024,6 +1024,14 @@
       "capability": "An app-initiated close ends in a FIN, not an RST (RFC 6455 \u00a75.5.1's order)",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server"
+    },
+    {
+      "id": "L16",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot",
+      "status": "verified",
+      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server"
     },
     {
       "id": "M1",

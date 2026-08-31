@@ -572,6 +572,31 @@ python3 scripts/header_timeout_probe.py 8080 || { echo '=== ht.log ==='; cat ht.
 echo "smoke-header-timeout OK"
 """
 
+# The idle timeout is what BOUNDS the WebSocket close linger v0.15.1 shipped
+# (RFC 6455 5.5.1: having sent Close, wait to receive one), and nothing
+# asserted it -- so a shipped correctness fix rested on an ungated mechanism.
+# Writing this gate found that the bound did not hold: the drain reaches its
+# linger branch on every pass, not once, so each pass pushed the deadline
+# two seconds further out and the sweep never overtook it. A peer that
+# received Close and never answered held its slot for the life of the
+# process. Four phases, each asserting BOTH directions, because "the timeout
+# fires" and "the server hangs up on everyone" look identical from one side.
+# `--idle-timeout` exists so this costs 20 seconds rather than the default's
+# 60; the linger itself is a constant and is measured at its real value.
+[tool.poe.tasks.smoke-idle-timeout]
+help = "Idle connections are closed, busy ones are not, and a WebSocket close waits for its reply"
+deps = ["build-serve"]
+shell = """
+bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8093 \
+  --idle-timeout 3 > idle.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f idle.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8093/ > /dev/null \
+  || { echo '=== idle.log ==='; cat idle.log; exit 1; }
+python3 scripts/idle_timeout_probe.py 8093 3 || { echo '=== idle.log ==='; cat idle.log; exit 1; }
+echo "smoke-idle-timeout OK"
+"""
+
 [tool.poe.tasks.smoke-half-close]
 help = "A client that half-closes after sending must still get its response"
 shell = """

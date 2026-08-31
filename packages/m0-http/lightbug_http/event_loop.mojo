@@ -1328,9 +1328,23 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                             # than the reset. That configuration keeps the old
                             # behaviour rather than getting a silent leak.
                             slot_ws_state[s].closing = True
-                            slot_idle_deadline[s] = (
-                                perf_counter_ns() + WS_CLOSE_LINGER_NS
-                            )
+                            # ARM ONCE. This branch is not a transition: the
+                            # drain reaches it again on every pass while the
+                            # slot lingers (`sse_is_streaming` stays false
+                            # once the app's close unsubscribed it), and
+                            # re-stamping the deadline pushed it two seconds
+                            # into the future once a second, so the sweep
+                            # never overtook it. Measured: a peer that
+                            # receives Close and never replies held its slot
+                            # for as long as it was watched -- the exact leak
+                            # the linger exists to bound. Zero is the test
+                            # because a WebSocket's idle deadline is 0 from
+                            # `_finish_response`'s 101 branch onward, which is
+                            # what makes a non-zero one mean "lingering".
+                            if slot_idle_deadline[s] == 0:
+                                slot_idle_deadline[s] = (
+                                    perf_counter_ns() + WS_CLOSE_LINGER_NS
+                                )
                             if not slot_read_armed[s]:
                                 backend.try_add_read(slot_fds[s])
                                 slot_read_armed[s] = True
@@ -1385,7 +1399,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # the same reason: the peer's Close reply must not reach
                     # a socket that is already closed.
                     slot_ws_state[s].closing = True
-                    slot_idle_deadline[s] = perf_counter_ns() + WS_CLOSE_LINGER_NS
+                    # Arm once; see the landed-whole branch above. This is
+                    # the branch that was measured re-arming ~once a second
+                    # forever.
+                    if slot_idle_deadline[s] == 0:
+                        slot_idle_deadline[s] = (
+                            perf_counter_ns() + WS_CLOSE_LINGER_NS
+                        )
                     if not slot_read_armed[s]:
                         backend.try_add_read(slot_fds[s])
                         slot_read_armed[s] = True
@@ -3017,7 +3037,14 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
             provision_pool.provisions[slot].state = (
                 ConnectionState.streaming_ws()
             )
-            slot_idle_deadline[slot] = perf_counter_ns() + WS_CLOSE_LINGER_NS
+            # Arm once, for the same reason: `should_close` and `closing`
+            # both stay set while the slot lingers, so a later send that
+            # completes here -- a heartbeat ping's, at the top of the list --
+            # would push the deadline out again.
+            if slot_idle_deadline[slot] == 0:
+                slot_idle_deadline[slot] = (
+                    perf_counter_ns() + WS_CLOSE_LINGER_NS
+                )
             if not slot_read_armed[slot]:
                 backend.try_add_read(fd_val)
                 slot_read_armed[slot] = True

@@ -224,6 +224,13 @@ jobs:
       # a keep-alive gap past the header timeout must NOT be answered 408.
       - name: Smoke test the header read timeout
         run: uv run poe smoke-header-timeout
+      # The other deadline, and the one a shipped fix depends on: the idle
+      # sweep is what bounds the WebSocket close linger (RFC 6455 5.5.1).
+      # Nothing asserted it until this step, and writing it found the bound
+      # broken -- the linger re-armed on every loop pass, so a peer that
+      # never answered Close held its slot forever.
+      - name: Smoke test the idle connection timeout
+        run: uv run poe smoke-idle-timeout
       # The two backends genuinely disagree about trigger mode, and used to
       # disagree about half-close too; each disagreement hid a bug on the
       # platform that forgives it. These smokes run on both runners for
