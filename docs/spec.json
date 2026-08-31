@@ -85,9 +85,9 @@
       "id": "A11",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "`Expect: 100-continue`",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/server.mojo:650` and `event_loop.mojo:1800` \u2014 no test or smoke exercises it"
+      "capability": "`Expect: 100-continue`, honoured case-insensitively and withheld from HTTP/1.0",
+      "status": "verified",
+      "evidence": "`Expect 100-continue, honoured and withheld` (every PR) \u2014 both directions: a server answering it unconditionally would pass the invitation half while discarding the refusal-before-upload the mechanism exists for"
     },
     {
       "id": "A12",

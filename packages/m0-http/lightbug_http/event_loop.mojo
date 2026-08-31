@@ -33,7 +33,7 @@ from lightbug_http.http.chunked import (
     encode_chunk,
 )
 from lightbug_http.c.sendfile import send_file
-from lightbug_http.strings import strHttp11
+from lightbug_http.strings import strHttp11, strHttp10
 from lightbug_http.io.bytes import Bytes
 from std.memory import unsafe_memcpy
 from lightbug_http.metrics import ServerMetrics
@@ -1960,9 +1960,22 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         provision_pool.provisions[slot].parsed_headers = parsed^
 
         if content_length > 0 or is_chunked:
-            var expect_val = provision_pool.provisions[slot].parsed_headers.value().headers.get(HeaderKey.EXPECT)
-            if expect_val:
-                if expect_val.value() == "100-continue":
+            # RFC 9110 §10.1.1, and two rules an exact `== "100-continue"`
+            # got wrong. The expectation-name is CASE-INSENSITIVE, so a
+            # client sending `100-Continue` -- the capitalisation most
+            # documentation uses -- was answered with silence and waited out
+            # its own timeout before sending the body anyway. And a server
+            # MUST NOT send 100 (Continue) to an HTTP/1.0 client: 1.0 has no
+            # 1xx, so that client reads the interim response as THE response
+            # and the real one behind it as garbage.
+            #
+            # Both copies of this check must agree -- `server.mojo` has the
+            # other, for the blocking accept loop -- because a rule in one
+            # and not the other is not a rule.
+            if provision_pool.provisions[slot].parsed_headers.value().headers.value_equals_ignore_case(
+                HeaderKey.EXPECT, "100-continue"
+            ):
+                if provision_pool.provisions[slot].parsed_headers.value().protocol != strHttp10:
                     _send_raw_to_fd(fd_val, "HTTP/1.1 100 Continue\r\n\r\n".as_bytes())
 
             var effective_length = config.max_request_body_size if is_chunked else content_length

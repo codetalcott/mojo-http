@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 115 verified, 6 implemented, 4 planned, 24 out of scope.** Of the 115 verified, 113 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 116 verified, 5 implemented, 4 planned, 24 out of scope.** Of the 116 verified, 114 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -91,7 +91,7 @@ whose body drifted away from it is the case most likely to have survived.
 | A8 | Chunked decode consumes the terminator, leaving nothing buffered | verified | `test_chunked_encode.mojo:test_round_trip_single_chunk` (every PR) |
 | A9 | Chunked response bodies | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | A10 | Trailer fields consumed and discarded, not surfaced to the application | implemented | `packages/m0-http/lightbug_http/http/chunked.mojo:157` — the round-trip tests set `consume_trailer` but their wire carries no trailer section |
-| A11 | `Expect: 100-continue` | implemented | `packages/m0-http/lightbug_http/server.mojo:650` and `event_loop.mojo:1800` — no test or smoke exercises it |
+| A11 | `Expect: 100-continue`, honoured case-insensitively and withheld from HTTP/1.0 | verified | `Expect 100-continue, honoured and withheld` (every PR) — both directions: a server answering it unconditionally would pass the invitation half while discarding the refusal-before-upload the mechanism exists for |
 | A12 | Half-close answered rather than dropped | verified | `Smoke test a half-closed client` (every PR) |
 | A13 | Request headers larger than one socket read | verified | `Smoke test a request larger than one read` (every PR) |
 | A14 | `Host` required on HTTP/1.1 | verified | `test_parsing.mojo:test_http11_requires_a_non_empty_host` (every PR) |
