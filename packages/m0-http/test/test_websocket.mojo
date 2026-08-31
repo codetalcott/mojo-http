@@ -21,7 +21,9 @@ from lightbug_http.websocket import (
     encode_ws_frame,
     encode_ws_frame_masked,
     close_frame,
+    close_code_is_valid_from_peer,
     WSState,
+    WSParseResult,
     WS_OP_TEXT,
     WS_OP_BINARY,
     WS_OP_CONT,
@@ -279,7 +281,118 @@ def test_close_is_echoed_with_code_then_closes() raises:
 
 
 def _close_code(res_reply: List[UInt8]) raises -> Int:
+    """The code inside a close reply, having first checked there IS one.
+
+    Without the length assertion a regression that answers a BARE close
+    (two bytes, no code) indexes past the end and takes the whole test
+    binary down with it -- no failing test named, no output at all. That
+    is exactly what reverting the one-byte-body check did.
+    """
+    assert_true(
+        len(res_reply) >= 4,
+        String("expected a close frame carrying a 2-byte code, got ")
+        + String(len(res_reply))
+        + " byte(s)",
+    )
     return (Int(res_reply[2]) << 8) | Int(res_reply[3])
+
+
+def _feed_close(code: Int) raises -> WSParseResult:
+    """A masked Close carrying `code` and nothing else."""
+    var body = List[UInt8]()
+    body.append(UInt8((code >> 8) & 0xFF))
+    body.append(UInt8(code & 0xFF))
+    var state = WSState(1 << 20)
+    var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(body), _mask())
+    return state.feed(Span(frame))
+
+
+def test_reserved_close_codes_are_refused_1002() raises:
+    """§7.4.1: a peer may not SEND these, so receiving one is an error.
+
+    1005 and 1006 name the ABSENCE of a close frame and 1015 a TLS
+    failure, so a close frame carrying one contradicts itself; 1004 was
+    never assigned and 1016-2999 is reserved for future revisions. The
+    parser used to echo whatever arrived, which answered a 1006 with a
+    1006. These are Autobahn 7.9.1-7.9.9, which failed on every release
+    up to this change.
+    """
+    for code in [0, 999, 1004, 1005, 1006, 1015, 1016, 1100, 2000, 2999]:
+        var res = _feed_close(code)
+        assert_true(
+            res.close_after_reply,
+            String("close code ") + String(code) + " should end the connection",
+        )
+        assert_equal(
+            _close_code(res.reply),
+            1002,
+            String("close code ") + String(code) + " should be refused 1002",
+        )
+
+
+def test_legal_close_codes_are_still_echoed() raises:
+    """The other half: a refusal that refuses everything is not a fix.
+
+    1000-1003 and 1007-1011 are the protocol's own, 1012-1014 were
+    registered with IANA after the RFC, and 3000-4999 is what libraries
+    and applications pick from. Autobahn 7.7.1-7.7.13 covers these and
+    passed BEFORE this change too -- which is exactly why it is asserted
+    here.
+    """
+    for code in [
+        1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011,
+        1012, 1013, 1014, 3000, 3999, 4000, 4999,
+    ]:
+        var res = _feed_close(code)
+        assert_true(res.close_after_reply)
+        assert_equal(
+            _close_code(res.reply),
+            code,
+            String("close code ") + String(code) + " should be echoed back",
+        )
+
+
+def test_close_with_a_one_byte_body_is_protocol_error() raises:
+    """§5.5.1: "If there is a body, the first two bytes MUST be a 2-byte
+    unsigned integer." One byte is neither a code nor an empty body, and
+    it used to be treated as the latter and echoed as a bare close."""
+    var body = List[UInt8]()
+    body.append(0x03)
+    var state = WSState(1 << 20)
+    var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(body), _mask())
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), 1002)
+
+
+def test_close_reason_must_be_valid_utf8() raises:
+    """A reason is text, so invalid UTF-8 there is 1007 -- the same answer
+    a text frame gets (§8.1). Autobahn 7.5.1."""
+    var body = List[UInt8]()
+    body.append(0x03)
+    body.append(0xE8)  # 1000, a perfectly legal code ...
+    body.append(0xFF)  # ... followed by a byte no UTF-8 sequence starts with
+    var state = WSState(1 << 20)
+    var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(body), _mask())
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), 1007)
+
+
+def test_close_with_a_valid_utf8_reason_is_echoed() raises:
+    """The control for the case above: a good reason must not be refused,
+    and the echo carries the CODE back (§5.5.1 does not ask for the
+    reason)."""
+    var body = List[UInt8]()
+    body.append(0x03)
+    body.append(0xE8)  # 1000
+    for b in String("bye").as_bytes():
+        body.append(b)
+    var state = WSState(1 << 20)
+    var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(body), _mask())
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), 1000)
 
 
 def test_unmasked_client_frame_is_protocol_error() raises:

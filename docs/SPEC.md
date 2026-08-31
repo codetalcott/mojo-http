@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**146 capabilities: 111 verified, 6 implemented, 5 planned, 24 out of scope.** Of the 111 verified, 109 are gated on every pull request, 1 weekly, and 1 before a release.
+**146 capabilities: 112 verified, 6 implemented, 4 planned, 24 out of scope.** Of the 112 verified, 110 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -215,7 +215,7 @@ whose body drifted away from it is the case most likely to have survived.
 | I13 | Autobahn\|Testsuite conformance run, wired to a cadence | planned | ROADMAP: A conformance-suite tier |
 | I14 | `permessage-deflate` | out of scope | follows from having no response compression |
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
-| I16 | A Close frame's code is VALIDATED, not just echoed | planned | ROADMAP: A conformance-suite tier |
+| I16 | A Close frame's code is VALIDATED, not just echoed | verified | `test_websocket.mojo:test_reserved_close_codes_are_refused_1002` (every PR) — with `test_legal_close_codes_are_still_echoed` as the other half, so a refusal that refuses everything cannot pass |
 | I17 | A message at or above the outbox cap ends the connection | implemented | `packages/m0-http/src/sse/registry.mojo:11` — `MAX_PENDING_BYTES` bounds one frame as well as the queue; deliberate, and what Autobahn scores as 7 failures plus all of its performance section |
 
 ## J. Static file serving
