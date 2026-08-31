@@ -19,6 +19,12 @@ and it checks two different things because two different things can rot:
   one does not need it, because X" is a result and not a thing to
   re-propose.
 
+  One of the static rules is about ORDER rather than presence: a phase must
+  be set before the first socket call in an executing body. It found a real
+  one -- `apps/ws_echo/ws_probe.py` connected above its first `phase()`, so
+  a refused connection, the failure where you can least guess the phase and
+  most want to be told it, reported "startup".
+
   DYNAMIC, on one representative. Static text cannot tell a stamp that
   advances from one welded to "startup" -- drop `global PHASE` from the
   setter and every report still says startup, with all five structural
@@ -28,10 +34,23 @@ and it checks two different things because two different things can rot:
   claim, and it is asserted without naming either phase, so renaming one is
   not a failure.
 
+`--sabotage` reverts each rule and insists this catches it, INCLUDING the
+closed set itself: `sabotage_coverage` drops an unstamped probe into
+scripts/ and requires it to be refused, because every other sabotage
+speaks about a file the checker already found. A sabotage that two layers
+catch proves neither, so the harness reports MISATTRIBUTED rather than
+passing -- which is how the list got its current members.
+
+What it cannot do, and no checker of this shape could: notice that a probe
+which grew a seventh phase did not grow a seventh `phase()` call. The stamp
+is only ever as fine-grained as its call sites.
+
     python3 scripts/phase_stamp_check.py
+    python3 scripts/phase_stamp_check.py --static     # skip the subprocesses
     python3 scripts/phase_stamp_check.py --sabotage   # revert each rule
 """
 
+import ast
 import os
 import pathlib
 import re
@@ -73,6 +92,65 @@ def discover():
     return sorted(found)
 
 
+# Network calls, by attribute name. A phase must be set before the first of
+# them runs, or a failure to even CONNECT is reported as "startup".
+_NET = frozenset(("create_connection", "urlopen", "connect", "sendall",
+                  "recv", "request"))
+_NESTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _executing_calls(stmts):
+    """(line, name) for calls these statements RUN.
+
+    Nested definitions are skipped: a helper is defined here and called
+    elsewhere, so its line number says nothing about execution order. That
+    distinction is the whole rule -- every probe defines its socket helpers
+    above the phases that use them.
+    """
+    for stmt in stmts:
+        if isinstance(stmt, _NESTED):
+            continue
+        stack = [stmt]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+                if name:
+                    yield node.lineno, name
+            for child in ast.iter_child_nodes(node):
+                if not isinstance(child, _NESTED):
+                    stack.append(child)
+
+
+def _phase_precedes_network(text):
+    """No executing body may reach a socket with PHASE still "startup".
+
+    Found one: `apps/ws_echo/ws_probe.py` opened its connection ABOVE its
+    first `phase()`, so a refused connection -- the most ordinary failure a
+    probe has, and the one where the phase matters least to guess and most
+    to be told -- was reported as "startup". An AST parse is still a pure
+    function of the text, so --sabotage reverts this like any other rule.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    bodies = [tree.body]
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "main":
+            bodies.append(node.body)
+    for body in bodies:
+        calls = sorted(_executing_calls(body))
+        first_phase = next((ln for ln, n in calls if n == "phase"), None)
+        first_net = next((ln for ln, n in calls if n in _NET), None)
+        if first_net is None:
+            continue
+        if first_phase is None or first_phase > first_net:
+            return False
+    return True
+
+
 # Each rule is a pure function of the file's text, which is what lets
 # --sabotage revert one in memory and insist this catches it.
 RULES = (
@@ -97,6 +175,11 @@ RULES = (
      lambda t: "traceback.print_exc" in t,
      "the crash handler drops the traceback. Both halves are load-bearing: "
      "the phase says what was being proven, the traceback says where"),
+    ("a phase() before the first network call",
+     _phase_precedes_network,
+     "a socket is opened before any `phase()` runs, so a connection that is "
+     "refused or reset outright is reported as `startup` -- the one failure "
+     "where the stamp is the only thing that could name the phase"),
     ("at least two phase() call sites",
      lambda t: len(re.findall(r"^\s*phase\(", t, re.M)) >= 2,
      "fewer than two `phase(...)` calls -- a stamp with one phase reports "
@@ -254,7 +337,43 @@ SABOTAGES = (
      DYNAMIC_PROBE,
      lambda t: t.replace("sys.excepthook = _stamped\n", "", 1).rstrip()
      + "\n\nsys.excepthook = _stamped\n"),
+    # Restores the real defect: the connect ran above the first phase(), so
+    # a refused connection said "startup". DELETING a phase call would not
+    # prove this rule -- the next one still precedes the socket -- so the
+    # sabotage puts the ORDER back.
+    ("the connect runs before the first phase()", "static", DYNAMIC_PROBE,
+     lambda t: t.replace(
+         'phase("the opening handshake")\n'
+         "sock = socket.create_connection((HOST, PORT), timeout=10)",
+         "sock = socket.create_connection((HOST, PORT), timeout=10)\n"
+         'phase("the opening handshake")')),
 )
+
+# The closed set is its own layer, and nothing above tests it: every rule
+# so far speaks about a probe the checker already found. A probe that
+# arrives unstamped is caught only by `discover()` reaching it, so the
+# sabotage is a FILE rather than a mutation.
+NEW_PROBE = "scripts/_sabotage_unstamped_probe.py"
+NEW_PROBE_SOURCE = (
+    '"""A probe that forgot the stamp."""\n'
+    "import socket\n"
+    'socket.create_connection(("127.0.0.1", 1), timeout=1)\n'
+)
+
+
+def sabotage_coverage():
+    """A new, unstamped probe must be REFUSED rather than not noticed."""
+    path = ROOT / NEW_PROBE
+    path.write_text(NEW_PROBE_SOURCE)
+    try:
+        failures, _ = check_static()
+    finally:
+        path.unlink()
+    if any(NEW_PROBE in f for f in failures):
+        print("  caught          a new probe arrives with no stamp")
+        return 0
+    print("  NOT CAUGHT      a new probe arrives with no stamp")
+    return 1
 
 
 def sabotage():
@@ -290,10 +409,11 @@ def sabotage():
         else:
             print(f"  NOT CAUGHT      {name}")
             bad += 1
+    bad += sabotage_coverage()
     if bad:
         print(f"phase_stamp_check: {bad} sabotage(s) went unnoticed")
         return 1
-    print(f"phase_stamp_check: all {len(SABOTAGES)} sabotages caught")
+    print(f"phase_stamp_check: all {len(SABOTAGES) + 1} sabotages caught")
     return 0
 
 
