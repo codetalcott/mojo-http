@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 117 verified, 4 implemented, 4 planned, 24 out of scope.** Of the 117 verified, 115 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 118 verified, 3 implemented, 4 planned, 24 out of scope.** Of the 118 verified, 116 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -136,7 +136,7 @@ whose body drifted away from it is the case most likely to have survived.
 | D3 | Bounded drain, naming what it abandoned | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | D4 | SIGTERM reaches a shutdown pipe rather than killing the process | verified | `test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR) |
 | D5 | Development hot reload on file change | verified | `Smoke test hot reload` (every PR) — `--reload`, `--reload-dir` |
-| D6 | `SO_REUSEPORT` on the listener | implemented | `packages/m0-http/lightbug_http/socket.mojo` — opt-in, no smoke covers the zero-downtime handover it would enable |
+| D6 | `SO_REUSEPORT` off by default: a second bind fails loudly instead of silently sharing the port | verified | `Smoke test the serve CLI` (every PR) — five attempts a second apart, so a restart racing the previous process's drain still succeeds; the second server must exit 1 naming the address, print no ready banner, and leave the first answering. The opt-in `ListenConfig.reuse_port` remains for a deliberate handoff between two processes that both mean to listen; no shipped path enables it, because workers and threads all accept from ONE listener bound before the fork |
 | D7 | Binary/hot upgrade (USR2-style overlap) | out of scope | needs socket handoff this server does not have; run two behind a proxy |
 | D8 | SIGHUP reload | out of scope | `--reload` covers development; production reload is a new process behind a proxy |
 
@@ -287,6 +287,6 @@ whose body drifted away from it is the case most likely to have survived.
 | M10 | The documented quickstart is executed, not asserted | verified | `Execute the quickstart` (every PR) |
 | M11 | Correct signal handling as PID 1 in a container | implemented | `packages/m0-http/src/signal.mojo` — the SIGTERM rows above are the evidence that exists; nothing runs the server in a container or as PID 1 |
 | M12 | Configuration from a TOML file | out of scope | flags and `M0_*` environment variables cover it; a third source is a third precedence rule |
-| M13 | systemd socket activation (`LISTEN_FDS`) | out of scope | no request for it; `SO_REUSEPORT` covers the restart case it is usually wanted for |
+| M13 | systemd socket activation (`LISTEN_FDS`) | out of scope | no request for it. The old reason said `SO_REUSEPORT` covered the restart case, which is not true for anyone running `m0serve`: no flag or variable enables it (D6). What a restart here does get is the supervisor's graceful drain, so in-flight work finishes; a listener that outlives the process is a different property and nothing has asked for it |
 | M14 | An HTTP client in Mojo, for server-to-server calls | verified | `Smoke test the HTTP client` (every PR) |
 | M15 | Windows, musl | out of scope | no Mojo toolchain for either — see the platform table in README.md |

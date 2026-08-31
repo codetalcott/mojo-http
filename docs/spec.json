@@ -325,9 +325,9 @@
       "id": "D6",
       "section": "D",
       "category": "D. Graceful shutdown and restart",
-      "capability": "`SO_REUSEPORT` on the listener",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/lightbug_http/socket.mojo` \u2014 opt-in, no smoke covers the zero-downtime handover it would enable"
+      "capability": "`SO_REUSEPORT` off by default: a second bind fails loudly instead of silently sharing the port",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 five attempts a second apart, so a restart racing the previous process's drain still succeeds; the second server must exit 1 naming the address, print no ready banner, and leave the first answering. The opt-in `ListenConfig.reuse_port` remains for a deliberate handoff between two processes that both mean to listen; no shipped path enables it, because workers and threads all accept from ONE listener bound before the fork"
     },
     {
       "id": "D7",
@@ -1175,7 +1175,7 @@
       "category": "M. Deployment and operations",
       "capability": "systemd socket activation (`LISTEN_FDS`)",
       "status": "out of scope",
-      "evidence": "no request for it; `SO_REUSEPORT` covers the restart case it is usually wanted for"
+      "evidence": "no request for it. The old reason said `SO_REUSEPORT` covered the restart case, which is not true for anyone running `m0serve`: no flag or variable enables it (D6). What a restart here does get is the supervisor's graceful drain, so in-flight work finishes; a listener that outlives the process is a different property and nothing has asked for it"
     },
     {
       "id": "M14",

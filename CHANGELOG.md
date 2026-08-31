@@ -33,6 +33,26 @@ versions may break the API**.
   third phase asserts the cap still fires for an ordinary response, so the
   gate cannot pass on a build whose cap never fires.
 
+### Changed
+
+- **`SO_REUSEPORT` (SPEC D6) now records the property that is actually gated**,
+  and M13's reason is corrected. D6 claimed the option itself and sat
+  `implemented` for want of a smoke covering "the zero-downtime handover it
+  would enable" — but no shipped path can enable it: `reuse_port` is opt-in on
+  `ListenConfig`, defaults off, and has no caller, no flag and no environment
+  variable, because workers and threads all accept from ONE listener bound
+  before the fork. The property that matters and IS gated is the default:
+  `smoke-serve` proves a second server on a busy port fails to bind loudly
+  rather than silently taking a share of the connections, which is what it did
+  until 0.14.0.
+
+  M13 (systemd socket activation) was `out of scope` **because** "`SO_REUSEPORT`
+  covers the restart case it is usually wanted for". That was not true for
+  anyone running `m0serve`. The row keeps its status on the honest reason —
+  nobody has asked for it — and now says what a restart does get, which is the
+  supervisor's graceful drain. This is the class of error the checker cannot
+  catch: it validates that a citation resolves, never that a reason is true.
+
 ## [0.16.0] — 2026-08-31
 
 Four WebSocket correctness fixes, two of them silent — a slot leak and a
