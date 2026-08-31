@@ -1,0 +1,65 @@
+{
+  "kind": "autobahn-conformance",
+  "recorded": "2026-08-31",
+  "note": "After the I16 close-code validation fix. Compare with autobahn-20260830T204500Z.json, the pre-fix run.",
+  "client": "crossbario/autobahn-testsuite (Testsuite 25.10.1 / Autobahn 0.10.9)",
+  "app": "a pure-echo ASGI app",
+  "sections": {
+    "1": {
+      "cases": 16,
+      "OK": 10,
+      "NON-STRICT": 0,
+      "INFORMATIONAL": 0,
+      "FAILED": 6,
+      "note": "unchanged; 1.1.6-1.1.8 and 1.2.6-1.2.8 are I17's cap"
+    },
+    "2-5": {
+      "cases": 48,
+      "OK": 41,
+      "NON-STRICT": 7,
+      "INFORMATIONAL": 0,
+      "FAILED": 0
+    },
+    "6": {
+      "cases": 145,
+      "OK": 141,
+      "NON-STRICT": 4,
+      "INFORMATIONAL": 0,
+      "FAILED": 0
+    },
+    "7": {
+      "cases": 37,
+      "OK": 34,
+      "NON-STRICT": 0,
+      "INFORMATIONAL": 3,
+      "FAILED": 0,
+      "note": "was 24/0/3/10 before the fix; all ten close-code cases now pass"
+    },
+    "10": {
+      "cases": 1,
+      "OK": 0,
+      "NON-STRICT": 0,
+      "INFORMATIONAL": 0,
+      "FAILED": 1
+    }
+  },
+  "total_excluding_9_12_13": {
+    "cases": 247,
+    "passing": 240,
+    "was": 230
+  },
+  "remaining_failures": {
+    "cause": "I17, the deliberate MAX_PENDING_BYTES cap",
+    "cases": [
+      "1.1.6",
+      "1.1.7",
+      "1.1.8",
+      "1.2.6",
+      "1.2.7",
+      "1.2.8",
+      "10.1.1",
+      "all of section 9"
+    ],
+    "note": "every remaining failure is a >=64 KB payload, so anything else in a future run is new"
+  }
+}

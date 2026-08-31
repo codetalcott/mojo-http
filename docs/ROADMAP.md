@@ -1542,8 +1542,9 @@ twice over, and is withdrawn. The comparison is not like for like (6 of the
 failures below are a documented cap, not a defect), and a green suite would
 not have meant what it was being cited to mean.
 
-It is still worth having, for what it DID find. Outside the performance
-section it scores **230 of 247**:
+It is still worth having, for what it DID find — and one of the two causes
+below has since been fixed on the strength of it. **Measured before the fix**,
+outside the performance section, it scored **230 of 247**:
 
 | section | cases | OK | non-strict | informational | FAILED |
 |---|---|---|---|---|---|
@@ -1557,18 +1558,30 @@ Sections 12 and 13 are excluded (no `permessage-deflate`, I14). Section 9 is
 performance and was sampled rather than run: 9.1.\*/9.2.\* failed 12 of 12,
 for the same reason as section 1 below. All 17 failures reduce to two causes:
 
-- **Close codes are echoed, not validated** (10 cases: 7.5.1, 7.9.1-7.9.9).
-  A Close carrying 0, 999, 1004, 1005, 1006, 1016, 1100, 2000 or 2999 comes
-  back with that same code; RFC 6455 §7.4.1 wants the connection failed with
-  1002, and 7.5.1 wants 1007 for a reason that is not valid UTF-8. This is a
-  real defect and it now has its own row (I16). Note what it is NOT: text
-  frames validate UTF-8 correctly, which is what section 6's 145 clean cases
-  say and what I5 already claimed.
+- **Close codes were echoed, not validated** (10 cases: 7.5.1, 7.9.1-7.9.9).
+  A Close carrying 0, 999, 1004, 1005, 1006, 1016, 1100, 2000 or 2999 came
+  back with that same code, where RFC 6455 §7.4.1 wants the connection failed
+  with 1002 and 7.5.1 wants 1007 for a reason that is not valid UTF-8. The
+  contradiction is sharpest at 1006: "abnormal closure" describes the ABSENCE
+  of a close frame, so a close frame carrying it cannot be honest, and the
+  server answered it with its own 1006. **Fixed** —
+  `close_code_is_valid_from_peer` in `websocket.mojo` validates the code and
+  the reason's UTF-8 before the echo, and I16 is `verified` on unit tests
+  either side of the line (a refusal that refuses everything fails
+  `test_legal_close_codes_are_still_echoed`). **Section 7 went 24 OK / 3
+  informational / 10 FAILED to 34 / 3 / 0**, with sections 1-6 unmoved.
+  Note what this was NOT: text frames validated UTF-8 correctly all along,
+  which is what section 6's 145 clean cases say and what I5 already claimed.
 - **The 64 KB outbox cap** (7 cases: 1.1.6-1.1.8, 1.2.6-1.2.8, 10.1.1, plus
   all of section 9). `MAX_PENDING_BYTES` bounds one frame as well as the
   queue, so a message at or above 64 KB ends the connection instead of being
   echoed. Deliberate and documented; recorded as I17 so the failures are not
   re-diagnosed as a bug each time the suite is run.
+
+With I16 fixed the score outside the performance section is **240 of 247**,
+and **every remaining failure is I17's cap** — which makes the next run of
+this suite unusually cheap to read: anything that is not a >=64 KB payload is
+new.
 
 **Where it should live, if wired: pre-release, not `Tests`.** It needs Docker
 and roughly ten minutes, CI is already ~25 minutes, and its unique value --

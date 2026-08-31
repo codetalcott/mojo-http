@@ -758,8 +758,8 @@
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A Close frame's code is VALIDATED, not just echoed",
-      "status": "planned",
-      "evidence": "ROADMAP: A conformance-suite tier"
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_reserved_close_codes_are_refused_1002` (every PR) \u2014 with `test_legal_close_codes_are_still_echoed` as the other half, so a refusal that refuses everything cannot pass"
     },
     {
       "id": "I17",

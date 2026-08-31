@@ -345,6 +345,32 @@ def unmask_payload(
     return out^
 
 
+def close_code_is_valid_from_peer(code: Int) -> Bool:
+    """Close codes RFC 6455 §7.4 permits a peer to put ON THE WIRE.
+
+    The distinction the old code missed is that some codes exist only for
+    an endpoint to report to its OWN application and MUST NOT be sent:
+    1005 ("no status received") and 1006 ("abnormal closure") describe the
+    absence of a close frame, so a close frame carrying one is a
+    contradiction, and 1015 says the TLS handshake failed. 1004 was never
+    assigned. 1016-2999 is reserved for future revisions of the protocol,
+    so nothing there is legal yet.
+
+    What is legal: 1000-1003 and 1007-1011, the protocol's own; 1012-1014,
+    registered with IANA after the RFC (service restart, try again later,
+    bad gateway) -- hence the range ending at 1014 and excluding 1015; and
+    3000-4999, the registered and private-use ranges libraries and
+    applications pick from.
+    """
+    if code >= 1000 and code <= 1003:
+        return True
+    if code >= 1007 and code <= 1014:
+        return True
+    if code >= 3000 and code <= 4999:
+        return True
+    return False
+
+
 def is_valid_utf8(data: Span[Byte, _]) -> Bool:
     """Strict UTF-8 (RFC 3629): rejects bad continuations, overlong
     encodings, surrogates (U+D800–U+DFFF), and anything past U+10FFFF.
@@ -547,6 +573,34 @@ struct WSState(Movable):
                 elif opcode == WS_OP_CLOSE:
                     # Echo the close (with its code, if any) and finish. Bytes
                     # after a close frame are the client's problem.
+                    #
+                    # The body is validated FIRST (§5.5.1, §7.4.1). It used to
+                    # be copied through unexamined, which made this server a
+                    # mirror for codes the RFC says to reject -- a peer could
+                    # close with 1006 ("abnormal closure", a value that by
+                    # definition never appears in a frame) and be answered
+                    # with its own 1006. Autobahn 7.9.1-7.9.9 and 7.5.1 are
+                    # the cases; all ten failed on every release up to here.
+                    #
+                    # A one-byte body cannot be a code, so it is a protocol
+                    # error rather than a close with no code (§5.5.1: "If
+                    # there is a body, the first two bytes MUST be a 2-byte
+                    # unsigned integer").
+                    if len(payload) == 1:
+                        return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                    if len(payload) >= 2:
+                        var close_code = (
+                            (Int(payload[0]) << 8) | Int(payload[1])
+                        )
+                        if not close_code_is_valid_from_peer(close_code):
+                            return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                        # Anything after the code is a reason, and a reason
+                        # is text: invalid UTF-8 there is 1007, the same
+                        # answer a text frame gets (§8.1).
+                        if len(payload) > 2 and not is_valid_utf8(
+                            Span(payload)[2:]
+                        ):
+                            return self._fail(WS_CLOSE_INVALID_DATA)
                     var echo_body = List[UInt8]()
                     if len(payload) >= 2:
                         echo_body.append(payload[0])
