@@ -2032,6 +2032,22 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 var body_st0 = provision_pool.provisions[slot].body_state.value()
                 body_st0.bytes_read = decoded_size
                 provision_pool.provisions[slot].body_state = body_st0
+                # Both body bounds. This path had NEITHER: a chunked body
+                # that arrives with its headers is decoded and dispatched
+                # right here, so the READING_BODY branch -- which is where
+                # both limits lived -- never runs for it. Sending head and
+                # body in one write was therefore enough to escape the
+                # decoded cap and the raw ceiling together, and whether a
+                # request was bounded came down to how the client's writes
+                # happened to be coalesced.
+                if (
+                    decoded_size > config.max_request_body_size
+                    or provision_pool.provisions[slot].chunk_decoder._total_read
+                    > 2 * config.max_request_body_size
+                ):
+                    _send_error_to_fd(fd_val, PayloadTooLarge())
+                    _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
+                    return
                 if ret >= 0:
                     # `pending_bytes` bytes remain past the chunked data —
                     # the next pipelined request. The resize above already
