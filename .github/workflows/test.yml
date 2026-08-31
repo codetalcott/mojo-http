@@ -399,6 +399,13 @@ jobs:
       # WebSockets on both workers, which is the claim worth a CI step.
       - name: Smoke test the Django realtime example over WebSockets
         run: uv run poe smoke-django-realtime-ws
+      # Both rows above take their holds SEQUENTIALLY, so with a pool
+      # configured the number in flight is one. This one takes N at once off
+      # a barrier, so N pool threads produce hold frames into the single bus
+      # channel within the same window. Its own --selftest runs first,
+      # because the result it reports is a negative.
+      - name: Concurrent --realtime holds from a pool
+        run: uv run poe smoke-realtime-holds
       # The measurements, rendered into the run's own summary page and kept as
       # an artifact. Until now every one of these numbers went to a job log
       # that expires, so "did it pass" was answerable and "is it drifting

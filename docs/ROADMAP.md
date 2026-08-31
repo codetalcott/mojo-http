@@ -1703,7 +1703,7 @@ is a real gap, and it is not the one that looked biggest.
 **A verdict of "this one does not need it, because X" is a result.** It is
 recorded here so it is not re-proposed.
 
-#### `--realtime` holds on a pool thread — a real gap
+#### `--realtime` holds on a pool thread — was a real gap; now gated and MEASURED
 
 **No gate anywhere takes more than one hold at a time.** `smoke-django-realtime`
 opens two concurrent SSE subscribers; `smoke-django-realtime-ws` opens three
@@ -1722,13 +1722,50 @@ Its documented policy is fire-and-forget: a publish that meets a full buffer is
 DROPPED on EAGAIN (`broadcast.mojo`), and a hold frame that meets one becomes a
 503 (`handler.mojo`, deliberately, "a client holding a dead stream").
 
-Both are documented, deliberate degradations, so the honest claim is not "there
-is a race" — it is that **the threshold is unmeasured**. Nobody knows how many
-concurrent holds, or how heavy a publish rate beside them, turns a working
-server into one issuing 503s and silently losing broadcasts. A stress phase
-that takes N holds at once from N pool threads while publishing would put a
-number on it, and the number is the deliverable whether or not it also finds a
-defect.
+Both are documented, deliberate degradations, so the honest claim was never
+"there is a race" — it was that **the threshold was unmeasured**. Nobody knew
+how many concurrent holds, or how heavy a publish rate beside them, turns a
+working server into one issuing 503s and silently losing broadcasts.
+
+**Measured 2026-08-31, and the threshold is not reachable.**
+`apps/django_realtime/hold_contention_probe.py` releases N subscribers off a
+barrier so their hold frames reach the loop inside one window, waits for the
+subscriptions to settle, then publishes into all of them:
+
+| concurrent holds | pool threads | holds granted | publishes delivered |
+|---|---|---|---|
+| 4, 16, 32, 64, 128 | 4 | all | 100% |
+| 64, 256, 512 | 16 | all | 100% |
+| 512, fifty messages back to back | 16 | all | 100% (25 600 of 25 600) |
+
+Nothing was refused and nothing was lost at any width up to 512 — against a
+default `max_connections` of 1024, so this is half the server's whole capacity
+— nor with the publish gap removed entirely, which is what pressures each
+connection's outbox rather than the bus channel. Raising the pool from 4 to 16
+producers changed nothing either. **The feared degradation does not occur
+within the range this server can serve**, and that is the deliverable the
+inventory asked for.
+
+**The negative is only worth as much as the instrument**, so the probe's
+self-test is part of the gate rather than a convenience: a bad token must read
+as zero holds granted, and a publish to a channel nobody holds must read as
+zero delivery. Both steer the real path rather than a special one, and
+`smoke-realtime-holds` runs the self-test BEFORE the measurement — a clean
+result from a counter that cannot register a failure would be worse than no
+gate, because it would be believed. The gate itself asserts a floor (32 holds,
+100% delivery) well inside what was measured, so it is a regression check
+rather than a capacity test that reddens on a loaded runner. Row I18.
+
+**One thing the probe cannot see, so the gate asserts it separately.** 32
+concurrent holds pass IDENTICALLY with `--blocking-threads 0` — measured —
+because taking them on the loop works too. The width alone therefore says
+nothing about which path was entered, and a row claiming "from a pool" on that
+evidence would be claiming a path the gate stops entering the moment the flag
+is dropped. So `smoke-realtime-holds` greps the server's own BANNER for
+`blocking-threads=4`, which is `stress-asgi`'s rule (assert the mode from the
+banner, never from the variable) applied to a configuration instead of a loop
+mode. Sabotage-verified by removing the flag: the smoke fails naming the
+banner, not the holds.
 
 #### Mounts — adequately covered; do not re-propose
 
