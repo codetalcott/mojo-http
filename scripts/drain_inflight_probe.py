@@ -26,6 +26,7 @@ import signal
 import socket
 import sys
 import time
+import traceback
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1])
@@ -37,7 +38,30 @@ SLOW_MS = int(sys.argv[3]) if len(sys.argv) > 3 else 1500
 LIMIT = SLOW_MS / 1000.0 + 1.5
 
 
+# Which phase is running, for the crash handler below. The two assertions
+# here fail in the same recv/kill calls but mean opposite things: an
+# in-flight request DROPPED by the drain, versus one answered whose
+# keep-alive connection then held the drain to its deadline. A traceback
+# names the call and not the claim. apps/asgi_bare/ws_probe.py carries the
+# original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("drain_inflight_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
+
+
+sys.excepthook = _stamped
+
+
 def main() -> int:
+    phase("the in-flight request, which the drain must still answer")
     s = socket.create_connection((HOST, PORT), timeout=LIMIT + 5.0)
     request = (
         f"GET /slow?ms={SLOW_MS} HTTP/1.1\r\nHost: x\r\n"
@@ -66,6 +90,7 @@ def main() -> int:
         f" ({answered - signalled:.2f}s after SIGTERM)"
     )
 
+    phase("the exit, which the answered keep-alive must not hold open")
     # Wait for the process to actually go, not just for the signal to land.
     while time.time() - start < LIMIT + 4.0:
         try:

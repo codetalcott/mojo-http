@@ -114,6 +114,20 @@ shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-
 help = "Test the ASGI executor shim's slot-ownership rules, and sabotage-prove them"
 shell = "python3 scripts/shim_ownership.py --sabotage"
 
+# Every probe names the PHASE it was proving when it crashed. The 2026-08-30
+# CI failure was an unhandled ConnectionResetError whose traceback named
+# `recv_exact` -- a helper four phases share -- so the log said which CALL
+# reset and never which PHASE was being proven, and two investigations
+# assumed the wrong one. Ten lines fixed it in one probe; this holds it
+# across all fourteen. Structure and coverage are read from the source, but
+# the stamp block is also extracted and DRIVEN, because a stamp that reads a
+# stale variable passes every text rule and prints "startup" forever.
+# `--sabotage` reverts each rule -- including that one, and including a new
+# unstamped probe appearing -- and insists the checker fails for every one.
+[tool.poe.tasks.check-phase-stamps]
+help = "Every probe stamps its phase for the crash handler, and sabotage-prove it"
+shell = "python3 scripts/phase_stamp_check.py --sabotage"
+
 # m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
 # m0-http, not a layer on them — so it needs no -I at build time, and consumers
 # need only -I packages/m0-sqlite. It links against the system libsqlite3.
@@ -366,7 +380,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "test-sqlite", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "test-sqlite", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

@@ -29,11 +29,32 @@ import os
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 
 BASE = "http://127.0.0.1:" + os.environ.get("M0_PORT", "8150")
 WANT_WORKERS = int(os.environ.get("FANOUT_WORKERS", "2"))
 ATTEMPTS = int(os.environ.get("FANOUT_ATTEMPTS", "4"))
+
+
+# Which phase is running, for the crash handler below. A traceback names the
+# CALL that raised -- here `read_stream`, shared by every attempt -- and never the PHASE being proven.
+# apps/asgi_bare/ws_probe.py carries the original of this comment and the
+# 2026-08-30 failure that motivated it.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("fanout FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def read_stream(streams, i):
@@ -89,6 +110,7 @@ def attempt(count):
 def main():
     count = 6 if WANT_WORKERS > 1 else 2
     for attempt_no in range(1, ATTEMPTS + 1):
+        phase("attempt %d: %d streams, one broadcast" % (attempt_no, count))
         delivered, pids, first, second = attempt(count)
         print(
             "fanout: %d/%d streams delivered across %d worker(s); %s | %s"
@@ -121,6 +143,7 @@ def main():
         )
         sys.exit(1)
 
+    phase("the publish ids, which must be distinct")
     ids = []
     for text in (first, second):
         for part in text.split():

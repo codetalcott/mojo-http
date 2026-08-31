@@ -24,6 +24,7 @@ import signal
 import socket
 import sys
 import time
+import traceback
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1])
@@ -35,7 +36,29 @@ LIMIT = 3.0
 REQUEST = b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n"
 
 
+# Which phase is running, for the crash handler below. This probe's phases
+# have very different meanings -- failing to SET UP the idle connections is
+# a broken server, failing to WAIT OUT the drain is the regression it pins
+# -- and both live inside a recv/kill that a traceback names identically.
+# apps/asgi_bare/ws_probe.py carries the original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("drain_idle_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
+
+
+sys.excepthook = _stamped
+
+
 def main() -> int:
+    phase("opening %d idle keep-alive connections" % N)
     held = []
     for i in range(N):
         s = socket.create_connection((HOST, PORT), timeout=10)
@@ -48,6 +71,7 @@ def main() -> int:
         held.append(s)
     print(f"holding {len(held)} idle keep-alive connections")
 
+    phase("the drain after SIGTERM, which idle connections must not hold open")
     start = time.time()
     os.kill(PID, signal.SIGTERM)
     # Wait for the process to actually go, not just for the signal to land.

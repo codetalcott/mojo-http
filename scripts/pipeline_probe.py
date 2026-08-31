@@ -19,6 +19,7 @@ usage: pipeline_probe.py PORT
 """
 import socket
 import sys
+import traceback
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 ROUNDS = 10
@@ -29,6 +30,28 @@ CL = (b"POST /health HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n"
       % len(BODY)) + BODY
 CHUNKED = (b"POST /health HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
            b"\r\n%x\r\n%s\r\n0\r\n\r\n" % (len(BODY), BODY))
+
+
+# Which phase is running, for the crash handler below. A traceback names the
+# CALL that raised -- here `count_responses`, which every `check` below shares
+# -- and never the PHASE being proven. The 2026-08-30 CI failure cost two
+# investigations to exactly that distinction; apps/asgi_bare/ws_probe.py
+# carries the original of this comment. Eight shapes share one helper here,
+# so an unhandled reset in it names none of them without this.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("pipeline_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def count_responses(payload, want, half_close=False, timeout=6.0):
@@ -61,6 +84,7 @@ failures = []
 
 
 def check(label, payload, want, half_close=False):
+    phase(label)
     seen = {}
     for _ in range(ROUNDS):
         n, buf = count_responses(payload, want, half_close)
@@ -83,6 +107,7 @@ check("pipelined burst then half-close", GET * 4, 4, half_close=True)
 # sending response 1, which consumes their edge on an edge-triggered
 # backend. The re-arm after the response is what answers it.
 import time  # noqa: E402
+phase("a second request sent while the first response is in flight")
 for _ in range(ROUNDS):
     s = socket.create_connection(("127.0.0.1", PORT), timeout=6.0)
     try:
@@ -110,6 +135,7 @@ for _ in range(ROUNDS):
 # app answers every path 200 and only the bodies differ, so order is read
 # from the bodies: /health carries "status":"ok", everything else carries
 # "hello from m0".
+phase("pipelined responses coming back in request order")
 REQ_A = b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
 REQ_B = b"GET /other HTTP/1.1\r\nHost: x\r\n\r\n"
 n, buf = count_responses(REQ_A + REQ_B, 2)

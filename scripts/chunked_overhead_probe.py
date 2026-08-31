@@ -32,6 +32,27 @@ this probe see a 413 where a naive one sees only a broken pipe.
 
 import socket
 import sys
+import traceback
+
+
+# Which phase is running, for the crash handler below. A traceback names the
+# CALL that raised -- here `attempt`, which both phases share -- and never the PHASE being proven.
+# apps/asgi_bare/ws_probe.py carries the original of this comment and the
+# 2026-08-30 failure that motivated it.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("chunked overhead FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def attempt(port, chunks):
@@ -75,12 +96,14 @@ def main():
 
     # Under both caps: the control. If this is not a 200 the probe is wrong
     # about the server rather than the server being wrong.
+    phase("the control: an ordinary chunked body under both caps")
     line, raw = attempt(port, [b"x" * (cap // 2)])
     print(f"  ordinary chunk: decoded {cap // 2}, raw {raw} -> {line}")
     if "200" not in line:
         failures.append(f"an ordinary chunked body under the cap answered {line!r}")
 
     # Decoded UNDER the cap, raw OVER twice it. Only the raw bound can refuse.
+    phase("one-byte chunks: decoded under the cap, raw over twice it")
     payload = [b"x"] * (cap // 2)
     line, raw = attempt(port, payload)
     print(f"  one-byte chunks: decoded {len(payload)}, raw {raw} -> {line}")

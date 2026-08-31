@@ -12,11 +12,35 @@ from "the server hangs up on everyone".
 import socket
 import sys
 import time
+import traceback
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 # Default header_read_timeout is 10s; the sweep adds up to 1s of slack.
 LIMIT = 14.0
+
+
+# Which phase is running, for the crash handler below. This probe's two
+# halves are opposites -- a silent connection MUST be closed, a keep-alive
+# one MUST NOT be -- and both spend most of their time inside a bare `recv`.
+# A traceback naming that recv says which CALL raised and never which PHASE
+# was being proven, which is the distinction two investigations of the
+# 2026-08-30 CI failure lost; apps/asgi_bare/ws_probe.py carries the
+# original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("header_timeout_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def silent_connection_is_closed() -> None:
@@ -70,6 +94,8 @@ def normal_request_is_not_closed() -> None:
 
 
 if __name__ == "__main__":
+    phase("a silent connection, which must be answered 408 and closed")
     silent_connection_is_closed()
+    phase("a keep-alive connection, which the deadline must NOT close")
     normal_request_is_not_closed()
     print("header_timeout_probe OK")

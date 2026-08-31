@@ -20,6 +20,7 @@ import hashlib
 import os
 import socket
 import sys
+import traceback
 
 HOST = os.environ.get("M0_HOST", "127.0.0.1")
 PORT = int(os.environ.get("M0_PORT", "8088"))
@@ -32,6 +33,29 @@ EXPECT_LEN = int(os.environ.get("M0_STREAM_LEN", "1048576"))
 def fail(msg):
     print(f"chunked-keepalive: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+# Which phase is running, for the crash handler at the bottom. A traceback
+# names the CALL that raised -- here that is `Reader._fill` or `read_head`,
+# which every phase below shares -- and never the PHASE being proven. The
+# 2026-08-30 CI failure cost two investigations to exactly that distinction;
+# apps/asgi_bare/ws_probe.py carries the original of this comment. This
+# probe is driven every round by `poe stress-asgi`, where the round number
+# alone does not say which half of the round broke.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print(f"chunked-keepalive: {PHASE}: {exc!r}", file=sys.stderr)
+
+
+sys.excepthook = _stamped
 
 
 class Reader:
@@ -115,8 +139,10 @@ def check_http10_is_not_chunked():
 
 
 def main():
+    phase("the HTTP/1.0 stream, which must stay close-delimited")
     check_http10_is_not_chunked()
 
+    phase("the chunked stream request")
     with socket.create_connection((HOST, PORT), timeout=30) as s:
         s.settimeout(30)
         r = Reader(s)
@@ -137,6 +163,7 @@ def main():
             )
         if "content-length" in headers:
             fail("a chunked response must not carry Content-Length")
+        phase("decoding the chunked body")
         body = read_chunked_body(r)
         if len(body) != EXPECT_LEN:
             fail(f"stream body was {len(body)} bytes, expected {EXPECT_LEN}")
@@ -145,6 +172,7 @@ def main():
         # --- request 2: the same connection must still work ---
         # This is the whole point. Against a close-delimited stream the
         # socket is already gone and this raises.
+        phase("the second request on the reused connection")
         try:
             s.sendall(
                 f"GET {SECOND_PATH} HTTP/1.1\r\nHost: {HOST}\r\n\r\n".encode()
