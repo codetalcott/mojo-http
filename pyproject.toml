@@ -175,6 +175,27 @@ python3 apps/django_realtime/hold_contention_probe.py 8216 \
 echo "smoke-realtime-holds OK"
 """
 
+
+# Inbound WebSocket messages survive a client that stops reading. The
+# defect this replaces dropped 2932 of 3000 silently; the fix is real
+# backpressure -- the loop stops READING a socket whose messages the
+# executor cannot take, so TCP's zero window stops the client and what
+# was taken off the wire is delivered late rather than lost.
+#
+# The probe's shape is load-bearing and was chosen by measuring the wrong
+# one first: a client that reads CONCURRENTLY loses nothing on the BROKEN
+# build (3000 of 3000), so the obvious "send a lot and count" test passes
+# on the defect it was written for. Phase A stalls on both builds (socket
+# buffers fill either way); phase B is the discriminator -- 68 echoed
+# broken, 3000 fixed. Verified by running this gate against a rebuilt
+# pre-fix binary: exit 1, naming the 2887 dropped messages.
+[tool.poe.tasks.smoke-ws-inbound]
+help = "Inbound WebSocket messages are delivered, not dropped, when a client stalls"
+shell = """
+uv run poe build-serve || exit 1
+python3 scripts/ws_inbound_loss_probe.py 3000 4096 8354
+"""
+
 [tool.poe.tasks.check-phase-stamps]
 help = "Every probe stamps its phase for the crash handler, and sabotage-prove it"
 shell = "python3 scripts/phase_stamp_check.py --sabotage"

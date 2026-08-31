@@ -82,6 +82,35 @@ trait HTTPService:
         """
         pass
 
+    def ws_message_take(mut self, slot: Int, opcode: Int, payload: List[UInt8]) -> Bool:
+        """`ws_message`, with a voice: False asks the loop to STOP READING.
+
+        The loop calls THIS hook, not `ws_message` — the default forwards,
+        so a handler that wrote only `ws_message` behaves as before. A
+        handler that hands messages to another thread over a channel that
+        can fill returns False for a message it PARKED rather than
+        delivered; the loop then takes the slot off the read set, so the
+        socket's receive buffer fills, TCP advertises a zero window, and
+        the CLIENT stops sending — flow control end to end, instead of the
+        silent drop this hook replaced (2 881 of 3 000 inbound messages
+        lost, against a clean server log). False means "parked, and I will
+        name this slot in `take_ws_resumes` when it may read again" — never
+        "dropped": a parked message is still owed.
+        """
+        self.ws_message(slot, opcode, payload)
+        return True
+
+    def take_ws_resumes(mut self) -> List[Int]:
+        """Slots whose inbound flow may resume — parked messages all sent.
+
+        Called once per loop pass, at the bottom. The loop re-arms each
+        named slot's read (`try_add_read`: level-triggered on kqueue, and
+        epoll delivers an edge at ADD time for bytes already buffered, so
+        nothing is stranded). A handler that never returns False from
+        `ws_message_take` never names a slot; the default is that handler.
+        """
+        return List[Int]()
+
     def direct_job(mut self, slot: Int) -> Bool:
         """Take a parked request for an executor lane on THIS thread, or decline.
 

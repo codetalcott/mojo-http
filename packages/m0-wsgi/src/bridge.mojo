@@ -845,7 +845,9 @@ def _exec_on_disconnect(slot):
         fut.set_result(True)
     inbox = _exec_ws_inbox.get(slot)
     if inbox is not None:
-        inbox.put_nowait({'type': 'websocket.disconnect', 'code': 1006})
+        # Cost 0: a disconnect consumes no inbound window, and there is
+        # no loop-side charge to ack for it.
+        inbox.put_nowait(({'type': 'websocket.disconnect', 'code': 1006}, 0))
     evt = _exec_credit_evts.get(slot)
     if evt is not None:
         evt.set()
@@ -858,14 +860,26 @@ def _exec_on_ws_message(slot, opcode, payload):
     # An inbound frame the loop's parser assembled, forwarded by the
     # handler as a tagged datagram. Opcode 1 is text (the loop already
     # validated UTF-8), 2 is binary.
+    #
+    # Each entry carries its COST against the loop's inbound window
+    # (`WS_IN_WINDOW`): the datagram bytes -- the tag header is 10 --
+    # clamped to 64 KB exactly as the handler's `_ws_in_cost` clamps its
+    # charge. `receive()` acks the running total as it consumes, which is
+    # what refills the window and resumes a suspended read; queue entries
+    # that were never consumed are simply never acked, and the loop's
+    # per-slot state is reset at the next socket's begin.
     inbox = _exec_ws_inbox.get(slot)
     if inbox is None:
         return
+    cost = 10 + len(payload)
+    if cost > 65536:
+        cost = 65536
     if opcode == 1:
-        inbox.put_nowait({'type': 'websocket.receive',
-                          'text': payload.decode('utf-8', 'replace')})
+        inbox.put_nowait(({'type': 'websocket.receive',
+                           'text': payload.decode('utf-8', 'replace')}, cost))
     else:
-        inbox.put_nowait({'type': 'websocket.receive', 'bytes': payload})
+        inbox.put_nowait(({'type': 'websocket.receive', 'bytes': payload},
+                          cost))
 
 
 def _exec_cleanup_slot(slot):
@@ -1330,12 +1344,25 @@ async def _serve_one_ws(slot, scope):
     _exec_ws_inbox[slot] = inbox
     connected = [False]
     resolved = [False]  # accept or reject reached the pump
+    consumed = [0]      # cumulative inbound bytes acked back to the loop
 
     async def receive():
         if not connected[0]:
             connected[0] = True
             return {'type': 'websocket.connect'}
-        return await inbox.get()
+        msg, cost = await inbox.get()
+        if cost and not _task_gone(slot):
+            # The ack that reopens the loop's inbound window -- sent as
+            # `receive()` CONSUMES, not as the message arrives, because
+            # arrival is exactly what an app that stopped receiving does
+            # not do. CUMULATIVE (the running total, not the delta), so
+            # an 'r' frame the chunk channel had to drop heals at the
+            # next consume instead of leaving the window short for ever.
+            # Closure-local, so a recycled slot's new task starts at 0
+            # with the loop's own counters, which 'B' reset.
+            consumed[0] += cost
+            _exec_put(('ws_ack', slot, consumed[0]))
+        return msg
 
     async def send(message):
         t = message.get('type', '')

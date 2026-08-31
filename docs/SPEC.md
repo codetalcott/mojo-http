@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**147 capabilities: 113 verified, 6 implemented, 4 planned, 24 out of scope.** Of the 113 verified, 111 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 115 verified, 6 implemented, 4 planned, 24 out of scope.** Of the 115 verified, 113 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -213,6 +213,7 @@ whose body drifted away from it is the case most likely to have survived.
 | I11 | A synchronous view gating a held SSE connection, with cross-worker publish | verified | `Smoke test the Django realtime example` (every PR) — `--realtime` |
 | I12 | A synchronous view gating a held WebSocket it never speaks | verified | `Smoke test the Django realtime example over WebSockets` (every PR) |
 | I18 | N holds taken AT ONCE from a pool, and a publish reaching all of them | verified | `Concurrent --realtime holds from a pool` (every PR) — the other realtime rows subscribe sequentially, so this is the only one where more than one hold is in flight; the probe's own self-test gates it, because the result it reports is a negative |
+| I19 | Inbound WebSocket data larger than one socket read | verified | `Inbound WebSocket messages survive a stalled client` (every PR) — the WebSocket read path took one `recv` per event with no re-arm, A13's defect in the one path nothing had sent a large inbound burst to; invisible on kqueue's level trigger, and on epoll only once the client STOPS sending |
 | I13 | Autobahn\|Testsuite conformance run, wired to a cadence | planned | ROADMAP: A conformance-suite tier |
 | I14 | `permessage-deflate` | out of scope | follows from having no response compression |
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
@@ -268,6 +269,7 @@ whose body drifted away from it is the case most likely to have survived.
 | L14 | `http.response.zerocopysend`, `early_hint`, `trailers` | out of scope | no application has asked; the extensions are additive and can be taken later |
 | L15 | An app-initiated close ends in a FIN, not an RST (RFC 6455 §5.5.1's order) | verified | `Conformance test the ASGI bridge` (every PR) — `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server |
 | L16 | ...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot | verified | `Smoke test the idle connection timeout` (every PR) — the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server |
+| L17 | Inbound `websocket.receive` is flow-controlled: a stalled client is throttled, never silently dropped | verified | `Inbound WebSocket messages survive a stalled client` (every PR) — the loop suspends the read rather than discarding what the executor cannot take; a concurrently-reading client loses nothing even on the broken build, so the gate stalls first and only then reads |
 
 ## M. Deployment and operations
 

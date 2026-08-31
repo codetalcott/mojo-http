@@ -279,6 +279,26 @@ struct WSGIHandler(ThreadHandler):
     subscribed with, so the lookup is a parse of the slot's own filter
     url, not a table this handler could let drift."""
 
+    var ws_in_sent: List[Int]
+    """Per slot: datagram bytes charged toward `WS_IN_WINDOW` since this
+    socket's begin ('B' seeds it to zero)."""
+    var ws_in_acked: List[Int]
+    """Per slot: the shim's cumulative consumed counter, as of the last 'r'
+    frame — monotonic, clamped to `ws_in_sent` so a stale ack cannot open
+    the window wider than what was charged."""
+    var ws_parked: List[List[UInt8]]
+    """Per slot: messages taken off the wire that the channel or the window
+    refused — `[opcode u8][len u32 LE][payload]` records, FIFO. Bounded by
+    ONE `recv_staging` batch past the window, because the loop stops
+    reading the socket while this is non-empty. Parked is owed: nothing
+    here is ever dropped, only delivered late."""
+    var ws_parked_count: Int
+    """How many slots hold parked messages — the guard that keeps
+    `take_ws_resumes`'s retry scan off the per-pass hot path."""
+    var ws_resume: List[Int]
+    """Slots whose parked queue just drained; handed to the loop once via
+    `take_ws_resumes` so it re-arms their reads."""
+
     def __init__(
         out self,
         var app: WSGIApp,
@@ -324,11 +344,19 @@ struct WSGIHandler(ThreadHandler):
         self.hold_lane = List[Int](capacity=slots)
         self.stream_gen = List[Int](capacity=slots)
         self.stream_lost = List[Bool](capacity=slots)
+        self.ws_in_sent = List[Int](capacity=slots)
+        self.ws_in_acked = List[Int](capacity=slots)
+        self.ws_parked = List[List[UInt8]](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
             self.hold_lane.append(NOT_POOL_HELD)
             self.stream_gen.append(STREAM_GEN_NONE)
             self.stream_lost.append(False)
+            self.ws_in_sent.append(0)
+            self.ws_in_acked.append(0)
+            self.ws_parked.append(List[UInt8]())
+        self.ws_parked_count = 0
+        self.ws_resume = List[Int]()
         self.stream_fd = -1
         self.stream_app = -1
 
@@ -1007,6 +1035,13 @@ struct WSGIHandler(ThreadHandler):
             self.stream_gen[slot] = STREAM_GEN_NONE
         if slot < len(self.stream_lost):
             self.stream_lost[slot] = False
+        if slot < len(self.ws_in_sent):
+            self.ws_in_sent[slot] = 0
+            self.ws_in_acked[slot] = 0
+            if len(self.ws_parked[slot]) > 0:
+                # The connection is gone; what it still owed goes with it.
+                self.ws_parked[slot].clear()
+                self.ws_parked_count -= 1
         if pool_ack_fd >= 0:
             # A pool thread's stream: its disconnect is an ack of -1 on the
             # thread's own pair — the fd it is already waiting on — never
@@ -1130,6 +1165,15 @@ struct WSGIHandler(ThreadHandler):
                     self.asgi_done[slot] = False
                 self._clear_lost(slot)
                 self._set_stream_gen(slot, event_id)
+                if slot < len(self.ws_in_sent):
+                    # A NEW socket on this slot: its inbound window opens
+                    # whole, and whatever the last tenant left parked was
+                    # that connection's, not this one's.
+                    self.ws_in_sent[slot] = 0
+                    self.ws_in_acked[slot] = 0
+                    if len(self.ws_parked[slot]) > 0:
+                        self.ws_parked[slot].clear()
+                        self.ws_parked_count -= 1
             elif ub[1] == UInt8(ord("w")):
                 # An outbound WS frame, already RFC 6455-encoded by the
                 # executor. Subscribed slots only, same recycled-slot
@@ -1154,6 +1198,27 @@ struct WSGIHandler(ThreadHandler):
                         self.asgi_done[slot] = True
                 else:
                     self.sockets.unsubscribe(slot)
+            elif ub[1] == UInt8(ord("r")):
+                # Inbound consumption ack: the shim's CUMULATIVE count of
+                # datagram bytes the application's `receive()` has taken
+                # off its queue — cumulative so a frame this channel had
+                # to drop heals at the next one, where a delta would be
+                # credit lost for ever. Gen-checked like every sibling
+                # (an ack names a slot, and the slot may already belong
+                # to a successor), then clamped to what was charged, then
+                # monotonic — the same discipline as the loop's own drain
+                # acks, for the same recycled-slot reasons.
+                if not self._gen_matches(slot, event_id):
+                    return
+                if slot < len(self.ws_in_acked) and len(frame) >= 8:
+                    var consumed = 0
+                    for shift in range(8):
+                        consumed |= Int(frame[shift]) << (shift * 8)
+                    if consumed > self.ws_in_sent[slot]:
+                        consumed = self.ws_in_sent[slot]
+                    if consumed > self.ws_in_acked[slot]:
+                        self.ws_in_acked[slot] = consumed
+                    self._ws_drain_parked(slot)
             return
         # Every published GRIP frame arrives here — from peer workers or
         # threads AND from this one's own application, because `m0pub`
@@ -1229,49 +1294,86 @@ struct WSGIHandler(ThreadHandler):
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
 
-    def ws_message(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+    def ws_message_take(mut self, slot: Int, opcode: Int, payload: List[UInt8]) -> Bool:
         # Three ways a socket on this loop can be held, and the message goes
-        # wherever its own hold went. The POOL first: on a mixed mounted
-        # server `asgi_notify_fd` is set for the ASGI mount, and asking that
-        # question first would hand every socket's message to an executor
-        # that never accepted the connection.
+        # wherever its own hold went (`_ws_forward`). What is new is the
+        # answer when the hold's channel says no: PARK and return False —
+        # the loop stops reading the socket, TCP's zero window stops the
+        # client, and the message is delivered when the channel drains —
+        # instead of dropping it with a log line the client can never see
+        # (2 881 of 3 000 lost at 4 KB, found by an Autobahn run's
+        # fragmentation cases). FIFO is the reason a non-empty parked queue
+        # parks unconditionally: a message that jumped its parked
+        # predecessors would reorder the application's receive stream.
+        if slot < len(self.ws_parked) and len(self.ws_parked[slot]) > 0:
+            self._ws_park(slot, opcode, payload)
+            return False
+        if self._ws_forward(slot, opcode, payload):
+            return True
+        if slot < len(self.ws_parked):
+            self._ws_park(slot, opcode, payload)
+            return False
+        # No parking table (a plain server has capacity 0, and nothing
+        # routes through a channel there) — the legacy drop, kept only for
+        # a slot the tables cannot cover.
+        print(
+            "ws_message: no channel would take an inbound message for slot "
+            + String(slot) + "; it is lost",
+            flush=True,
+        )
+        return True
+
+    def _ws_forward(mut self, slot: Int, opcode: Int, payload: List[UInt8]) -> Bool:
+        """One delivery attempt, shared by the live path and the parked
+        drain so the two cannot route differently. True = delivered (or
+        served inline); False = the channel or the window refused."""
+        # The POOL first: on a mixed mounted server `asgi_notify_fd` is set
+        # for the ASGI mount, and asking that question first would hand
+        # every socket's message to an executor that never accepted the
+        # connection. No credit here — pool threads send no consumption
+        # acks — so the channel's own refusal is the whole gate, and the
+        # parked drain retries on every pass with something parked.
         if slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD:
             var held_lane = self.hold_lane[slot]
             var at = held_lane if held_lane > 0 else 0
             if at < len(self.ws_pool_fds) and self.ws_pool_fds[at] >= 0:
-                if not _send_ws_pool_message(
+                return _send_ws_pool_message(
                     self.ws_pool_fds[at], slot, opcode,
                     self.sockets.filter_url(slot), payload,
-                ):
-                    print(
-                        "ws_message: the pool's channel would not take an"
-                        " inbound message for slot " + String(slot)
-                        + "; it is lost",
-                        flush=True,
-                    )
-                return
+                )
+            return True
         # Executor mode: the message belongs to the app's own
         # `websocket.receive` loop — forward it to the executor thread as
         # a tagged datagram and never enter Python on the loop thread.
+        # Credit-gated on `WS_IN_WINDOW`, charged in datagram bytes and
+        # refilled by the shim's cumulative 'r' acks as `receive()`
+        # actually consumes: without the gate, the bound on unconsumed
+        # inbound bytes was the kernel's channel buffer, and past it the
+        # message was lost.
         if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
+            var cost = _ws_in_cost(len(payload))
+            if (
+                slot < len(self.ws_in_sent)
+                and self.ws_in_sent[slot] - self.ws_in_acked[slot] + cost
+                > WS_IN_WINDOW
+            ):
+                return False
             if not _send_ws_message_tag(
                 self._notify_fd_for(self.sockets.filter_url(slot)),
                 slot, opcode, payload,
             ):
-                print(
-                    "ws_message: the executor's channel would not take an"
-                    " inbound message for slot " + String(slot)
-                    + "; it is lost",
-                    flush=True,
-                )
-            return
+                return False
+            if slot < len(self.ws_in_sent):
+                self.ws_in_sent[slot] += cost
+            return True
         # GRIP mode: an inbound message, handed to a plain synchronous view
         # as a POST. This runs ON the event loop thread, so it costs
         # exactly what any other view costs — the hold pattern removes the
-        # *connection* cost from Python, not the *request* cost.
+        # *connection* cost from Python, not the *request* cost. Nothing
+        # here can refuse, so this path always reports delivered.
         var channel = self.sockets.filter_url(slot)
         if channel.byte_length() == 0:
-            return  # not a held socket of ours; nothing names its channel
+            return True  # not a held socket of ours; nothing names its channel
         # The response is discarded: what the view does — publishing, writing
         # to a database — is the point, and a hold instruction here would
         # subscribe nothing (the synthetic request carries no slot).
@@ -1289,6 +1391,67 @@ struct WSGIHandler(ThreadHandler):
             _ = self.apps[0].serve(req)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
+        return True
+
+    def _ws_park(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
+        """Append one `[opcode u8][len u32 LE][payload]` record. Parked is
+        owed, never dropped; the count is `take_ws_resumes`'s guard."""
+        if len(self.ws_parked[slot]) == 0:
+            self.ws_parked_count += 1
+        self.ws_parked[slot].append(UInt8(opcode))
+        var n = UInt32(len(payload))
+        for shift in range(0, 32, 8):
+            self.ws_parked[slot].append(UInt8((n >> UInt32(shift)) & 0xFF))
+        for b in payload:
+            self.ws_parked[slot].append(b)
+
+    def _ws_drain_parked(mut self, slot: Int):
+        """Replay parked records through `_ws_forward`, in order, stopping
+        at the first refusal. A fully drained slot is named for the loop
+        to re-arm its read."""
+        if slot >= len(self.ws_parked) or len(self.ws_parked[slot]) == 0:
+            return
+        var at = 0
+        while at + 5 <= len(self.ws_parked[slot]):
+            var opcode = Int(self.ws_parked[slot][at])
+            var n = 0
+            for shift in range(4):
+                n |= Int(self.ws_parked[slot][at + 1 + shift]) << (shift * 8)
+            if at + 5 + n > len(self.ws_parked[slot]):
+                break  # malformed tail; drop below rather than loop forever
+            var payload = List[UInt8](capacity=n)
+            for i in range(n):
+                payload.append(self.ws_parked[slot][at + 5 + i])
+            if not self._ws_forward(slot, opcode, payload):
+                break
+            at += 5 + n
+        if at >= len(self.ws_parked[slot]):
+            self.ws_parked[slot].clear()
+            self.ws_parked_count -= 1
+            self.ws_resume.append(slot)
+        elif at > 0:
+            # Shift the undelivered tail down — cheaper than it looks,
+            # because this path only runs while a slot is suspended.
+            var rest = List[UInt8](capacity=len(self.ws_parked[slot]) - at)
+            for i in range(at, len(self.ws_parked[slot])):
+                rest.append(self.ws_parked[slot][i])
+            self.ws_parked[slot] = rest^
+
+    def take_ws_resumes(mut self) -> List[Int]:
+        # The per-pass retry: acks drive the executor path's drain (the
+        # 'r' branch), but a pool-held slot has no ack, and an executor
+        # drain stopped by a TRANSIENT channel refusal would otherwise
+        # wait for an ack that need not come. One scan per pass, guarded
+        # by the count so an idle or ordinary pass pays one integer test.
+        if self.ws_parked_count > 0:
+            for s in range(len(self.ws_parked)):
+                if len(self.ws_parked[s]) > 0:
+                    self._ws_drain_parked(s)
+        if len(self.ws_resume) == 0:
+            return List[Int]()
+        var out = self.ws_resume.copy()
+        self.ws_resume.clear()
+        return out^
 
 
 def _not_found_response() -> HTTPResponse:
@@ -1421,6 +1584,17 @@ def _upgrade_required() -> HTTPResponse:
 # app that string is a request field.
 
 comptime WS_CHANNEL_DATAGRAM_MAX = 65546
+
+# The INBOUND window: unacked bytes the loop may have in flight toward one
+# executor-held socket's `receive()` queue. Charged in DATAGRAM bytes
+# (`_ws_in_cost`) and acked CUMULATIVELY by the shim as the application's
+# `receive()` actually consumes ('r' frames on the chunk channel), so a
+# lost ack heals at the next one. Must mirror the clamp in the shim's
+# `_exec_on_ws_message` (64 KB) — a drift here is a window that never
+# fills or never opens. Fits the 256 KB submit channel with 4x headroom
+# (`_OFFLOAD_SOCKET_BUF`), which is what makes a mid-window channel
+# refusal rare rather than routine.
+comptime WS_IN_WINDOW = 65536
 """The receive buffer both channel readers post for an inbound WS message.
 
 `blocking_pool.WS_JOB_BUFFER` and the executor shim's own read size are
@@ -1735,6 +1909,19 @@ def _send_ws_pool_message(
             return True
         _ = external_call["sched_yield", c_int]()
     return False
+
+
+def _ws_in_cost(payload_len: Int) -> Int:
+    """What one inbound message charges against `WS_IN_WINDOW`: the DATAGRAM
+    bytes (`_send_ws_message_tag`'s 10-byte header plus payload), clamped to
+    the window so a single maximal message can still travel. Mirrored by the
+    shim's `_exec_on_ws_message`, which acks these exact bytes back — charge
+    payload here and be acked datagrams there and the window drifts by ten
+    bytes on every message."""
+    var cost = 10 + payload_len
+    if cost > WS_IN_WINDOW:
+        return WS_IN_WINDOW
+    return cost
 
 
 def _send_ws_message_tag(

@@ -738,6 +738,14 @@
       "evidence": "`Concurrent --realtime holds from a pool` (every PR) \u2014 the other realtime rows subscribe sequentially, so this is the only one where more than one hold is in flight; the probe's own self-test gates it, because the result it reports is a negative"
     },
     {
+      "id": "I19",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "Inbound WebSocket data larger than one socket read",
+      "status": "verified",
+      "evidence": "`Inbound WebSocket messages survive a stalled client` (every PR) \u2014 the WebSocket read path took one `recv` per event with no re-arm, A13's defect in the one path nothing had sent a large inbound burst to; invisible on kqueue's level trigger, and on epoll only once the client STOPS sending"
+    },
+    {
       "id": "I13",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
@@ -1056,6 +1064,14 @@
       "capability": "...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot",
       "status": "verified",
       "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server"
+    },
+    {
+      "id": "L17",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "Inbound `websocket.receive` is flow-controlled: a stalled client is throttled, never silently dropped",
+      "status": "verified",
+      "evidence": "`Inbound WebSocket messages survive a stalled client` (every PR) \u2014 the loop suspends the read rather than discarding what the executor cannot take; a concurrently-reading client loses nothing even on the broken build, so the gate stalls first and only then reads"
     },
     {
       "id": "M1",

@@ -474,6 +474,18 @@ struct WSState(Movable):
     RECEIVE one before closing the underlying connection. The loop reads it
     to know that a Close arriving now needs no echo — the echo is what this
     side already sent — and that the slot is lingering rather than idle."""
+    var inbound_suspended: Bool
+    """True while this socket's read is DELIBERATELY off the read set —
+    the handler could not forward a message and parked it, so the loop
+    stopped reading to let TCP's zero window throttle the client.
+
+    It lives here rather than beside `slot_read_armed` because it is the
+    one thing that flag cannot express: `not armed` is also the ordinary
+    state between a write registration and its re-arm, and `_after_send`
+    re-arms on exactly that condition. Without this distinction the
+    socket's own echo re-armed the read it had just suspended, and the
+    parked queue lost its bound — it is bounded by ONE `recv` only
+    because no further read happens while it is non-empty."""
 
     def __init__(out self, max_message_size: Int):
         self.buffer = List[UInt8]()
@@ -481,6 +493,7 @@ struct WSState(Movable):
         self.frag_payload = List[UInt8]()
         self.max_message_size = max_message_size
         self.closing = False
+        self.inbound_suspended = False
 
     def reset(mut self):
         """Back to a fresh connection's state (slot reuse)."""
@@ -488,6 +501,7 @@ struct WSState(Movable):
         self.frag_opcode = -1
         self.frag_payload.clear()
         self.closing = False
+        self.inbound_suspended = False
 
     def _fail(mut self, code: Int) -> WSParseResult:
         var res = WSParseResult()
