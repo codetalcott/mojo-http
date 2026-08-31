@@ -1760,6 +1760,49 @@ otherwise be invisible to whoever picks this hypothesis up.
 
 ## Known issues
 
+- **Inbound ASGI WebSocket messages are DROPPED, silently, once the
+  executor's submit channel fills.** The outbound direction is
+  credit-gated (`websocket.send` waits on its window); the inbound
+  direction has no backpressure of any kind. `WSGIHandler.ws_message`
+  sends each message to the executor as a tagged datagram, and when
+  `_send_ws_message_tag` refuses, the message is discarded with a log line
+  the client can never see -- the same "a full channel means skip this
+  frame" mistake the chunk channel's own rule forbids, in the direction
+  nobody wrote a rule for.
+
+  Reproduced on macOS against `apps/asgi_bare`'s `/ws` echo (found by
+  another session's Autobahn run, which hit it on the fragmentation cases;
+  numbers here are from `bin/m0serve` at 82627dd):
+
+  | messages sent, 4 KB each | echoed back | lost |
+  |---|---|---|
+  | 200 | 80 | 120 |
+  | 500 | 70 | 430 |
+  | 3000 | 119 | 2881 |
+
+  **The threshold is low and the mechanism couples the two directions.**
+  A client that reads CONCURRENTLY loses nothing at 1500 x 4 KB. A client
+  that sends a burst before reading loses everything past roughly the
+  first 70-120 messages. The likely path is that the two are the same
+  fact: the echo app `await send(...)`s inside its `receive` loop, so when
+  the client stops reading, the outbound credit gate correctly blocks that
+  send -- which stops the app calling `receive`, which stops the executor
+  draining the submit channel, which fills it. **The outbound
+  backpressure produces the inbound loss**, and only one of the two
+  directions is allowed to say "wait".
+
+  Not fixed here, because the fix is a design change rather than a patch:
+  the loop cannot block on the channel (it would deadlock the executor it
+  is feeding), so the frame has to stay unread on the socket and the slot
+  come off the read set until the channel drains -- real backpressure, in
+  a read path that currently has none. The cheap intermediate, if that is
+  too much, is to FAIL the connection rather than drop: a client told 1011
+  knows it lost messages, and one that is silently skipped does not. SPEC
+  L3 (`websocket` scope: connect, accept, receive, send, close) is
+  `verified` on a gate that never sends faster than it reads, and this is
+  the shape of claim the sheet's own "verified means a gate runs, not that
+  it is correct" warning is about.
+
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
   out for linking, so a minimal image (`python:*-slim` carries no compiler)
   fails with `unable to find suitable c compiler for linking`. CI never
