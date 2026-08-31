@@ -2,6 +2,35 @@
 
 Guidance for Claude Code when working in this repository.
 
+## Where the project stands
+
+**Run `uv run poe milestones` before planning work.** It computes what
+remains between here and 1.0 from `docs/SPEC.md`, ROADMAP's Known issues and
+the soak record — so it cannot disagree with them, and it does not depend on
+what the last session happened to remember. CI prints it on every pull
+request.
+
+`docs/SPEC.md` is the capability matrix (one row per capability, each naming
+the gate that proves it) and is the right place to look for "is X covered?".
+[docs/README.md](docs/README.md) says what every other page is for.
+
+Two milestone definitions, both derived from row STATUS rather than a
+per-row annotation:
+
+- **beta** — no row is `implemented`, the sheet's word for "in the tree, no
+  gate dedicated to it". Nothing ships ungated.
+- **1.0** — beta, plus every `planned` row resolved (built, or moved to
+  `out of scope` with a reason), plus a current real-application soak, plus
+  Known issues each declaring what would retire them.
+
+**Gating an ungated row keeps finding real defects** — so far an unbounded
+WebSocket close linger (a slot held for the life of the process), close
+codes echoed rather than validated, inbound WebSocket messages dropped 2932
+of 3000, and `Expect: 100-continue` failing on both case and HTTP/1.0, with
+nothing gated yet that turned out to be already correct. So the remaining
+`implemented` rows are the highest-yield work available, not merely
+bookkeeping.
+
 ## What this is
 
 `mojo-http` — an HTTP/1.1 server and web framework for Mojo. Extracted from a

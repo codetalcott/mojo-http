@@ -5,6 +5,10 @@
 
 **Realtime from a synchronous Python app, with no added infrastructure.**
 
+*(New here? [docs/README.md](docs/README.md) says what each page is for. For
+where the project stands, run `uv run poe milestones` — it computes what is
+left for 1.0 rather than reporting what someone last wrote down.)*
+
 A plain sync Django or Flask view can hold a Server-Sent Events stream or a
 WebSocket by answering with two response headers, and reach every subscriber
 on every worker with one function call. No Channels, no Redis, no daphne, no
