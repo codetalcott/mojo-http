@@ -283,7 +283,7 @@ process. What is left for `textshelf` is application work: converting the
 four endpoints, and making `ai/streaming.py`'s generator async so it
 streams at all.
 
-## Re-soak — 2026-08-31, m0serve 0.16.0, `textshelf` only
+## Re-soak — 2026-08-31, against 0.16.0, `textshelf` only
 
 Five minor versions landed in five days after the record above — `--mount`,
 per-mount lanes, the batched pump, `ExecutorPort`, the WebSocket credit gate,
@@ -341,6 +341,13 @@ Gated by `poe smoke-keepalive-cap` (SPEC A3), whose third phase asserts the
 cap still fires for an ordinary response — without it the gate would pass on
 a build whose cap never fires. Four sabotages: reverting the fix, each guard
 alone, and raising the cap, each caught by the phase that should catch it.
+
+The `m0serve X.Y.Z` marker in this file's opening line is the ONE the
+milestone gate reads, and it deliberately stays at the version the full
+three-application pass was run against. A second marker anywhere in the page
+would become a fallback for `_real_app_version` and silently defeat the
+sabotage that proves the gate can miss an unreadable record — which is why
+this heading says "against 0.16.0" rather than naming the binary.
 
 **This pass is not the 1.0 soak.** `transcripts` and `color-separation` have
 not been run against 0.16.0, so the record above still stands at 0.11.0 for
