@@ -317,6 +317,14 @@ jobs:
       # across two workers (concurrent-burst opens beat the accept-race bias),
       # then one message reaches every socket — the other worker's over the
       # BroadcastBus.
+      # SPEC I17: a WebSocket message at or above the 64 KB outbox cap can
+      # never be queued, so the server ends the connection rather than
+      # dropping a message the peer cannot know it missed. The probe's
+      # marker separates that from a silent drop; its under-cap half stops a
+      # server that ends every large-message connection from passing.
+      - name: Smoke test the outbox cap ending a connection
+        run: uv run poe smoke-outbox-cap
+
       - name: Smoke test the WebSocket chat demo
         run: uv run poe smoke-chat
       # Proves the Datastar path end to end: a POST on one connection reaches a

@@ -782,8 +782,8 @@
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A message at or above the outbox cap ends the connection",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/src/sse/registry.mojo:11` \u2014 `MAX_PENDING_BYTES` bounds one frame as well as the queue; deliberate, and what Autobahn scores as 7 failures plus all of its performance section"
+      "status": "verified",
+      "evidence": "`Smoke test the outbox cap ending a connection` (every PR) \u2014 the marker sent after the oversized message must never arrive, which is what separates ending the connection from dropping a frame the peer cannot know it missed; the under-cap half stops a server that ended every large-message connection from passing. Deliberate, and what Autobahn scores as 7 failures plus all of its performance section. `poe sabotage-outbox-cap` (pre-release) reverts each of the four rules"
     },
     {
       "id": "J1",
