@@ -849,15 +849,25 @@ def handle_connection[
                     response.body_fd = -1
                     response.body_fd_len = 0
 
+            # No `Keep-Alive: timeout=..., max=...` header, deliberately, and
+            # the event loop -- the path every shipped binary runs -- has
+            # never sent one. It is not in RFC 9110 or 9112 (RFC 2068 §19.7.1
+            # described it and RFC 2616 dropped it), browsers ignore it, and
+            # this loop emitted it where nothing could read it: nothing in
+            # this tree calls `listen_and_serve`, and no test asserted the
+            # header. The value was also wrong -- `max` is the number of
+            # ADDITIONAL requests, and `keepalive_count` is not incremented
+            # until after the response is built, so request 99 of 100
+            # advertised `max=2` and served one more.
+            #
+            # Emitting it from the event loop instead would put a header
+            # nobody reads on every keep-alive response of the hot path. If a
+            # client pool ever needs `timeout=` to avoid racing the idle
+            # close, that is the place to add it, with a row and a gate.
             if provision.should_close:
                 response.set_connection_close()
             else:
                 response.set_connection_keep_alive()
-                var ka_val = String("timeout=") + String(config.idle_timeout)
-                if config.max_keepalive_requests > 0:
-                    var remaining = config.max_keepalive_requests - provision.keepalive_count
-                    ka_val += String(", max=") + String(remaining)
-                response.headers[HeaderKey.KEEP_ALIVE] = ka_val
 
             provision.response = response^
             provision.state = ConnectionState.responding()
