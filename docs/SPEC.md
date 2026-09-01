@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 121 verified, 1 implemented, 3 planned, 24 out of scope.** Of the 121 verified, 119 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 122 verified, 0 implemented, 3 planned, 24 out of scope.** Of the 122 verified, 120 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -285,7 +285,7 @@ whose body drifted away from it is the case most likely to have survived.
 | M8 | The aarch64 wheel built and served on arm64 hardware | verified | `Build and smoke test the aarch64 wheel` (every PR) |
 | M9 | C-ABI shared library loadable by `dlopen`/`ctypes` | verified | `Smoke test the C-ABI shared library` (every PR) |
 | M10 | The documented quickstart is executed, not asserted | verified | `Execute the quickstart` (every PR) |
-| M11 | Correct signal handling as PID 1 in a container | implemented | `packages/m0-http/src/signal.mojo` — the SIGTERM rows above are the evidence that exists; nothing runs the server in a container or as PID 1 |
+| M11 | Correct signal handling as PID 1 in a container | verified | `Smoke test SIGTERM delivered to PID 1 in a container` (every PR) — the wheel exec'd as PID 1 in `python:3.12-slim` (checked via `/proc/1/cmdline`, not trusted); `docker stop` must be the drain's exit 0 well inside the grace, never SIGKILL at the deadline, alone and as a supervisor reaping two workers whose exits must be clean rather than by the propagated signal |
 | M12 | Configuration from a TOML file | out of scope | flags and `M0_*` environment variables cover it; a third source is a third precedence rule |
 | M13 | systemd socket activation (`LISTEN_FDS`) | out of scope | no request for it. The old reason said `SO_REUSEPORT` covered the restart case, which is not true for anyone running `m0serve`: no flag or variable enables it (D6). What a restart here does get is the supervisor's graceful drain, so in-flight work finishes; a listener that outlives the process is a different property and nothing has asked for it |
 | M14 | An HTTP client in Mojo, for server-to-server calls | verified | `Smoke test the HTTP client` (every PR) |

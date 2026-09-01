@@ -161,6 +161,42 @@ jobs:
       - name: Build and smoke test the aarch64 wheel
         run: uv run poe smoke-wheel
 
+  # M11: `docker stop` is SIGTERM to PID 1 and nothing else, and PID 1 gets
+  # no default signal dispositions — a SIGTERM with no handler installed is
+  # discarded, not fatal. The smoke matrix cannot host this (macOS runners
+  # have no Docker) and the spec checker rightly rejects a cited step that
+  # carries an `if:`, so it is a separate Linux-only job, the wheel-aarch64
+  # shape: job-level runs-on, no step-level conditions on the cited step.
+  pid1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: pid1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install Linux build dependencies
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+      - run: uv run poe build-all
+      - name: Smoke test SIGTERM delivered to PID 1 in a container
+        run: uv run poe smoke-pid1
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-pid1
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
   smoke:
     strategy:
       matrix:
