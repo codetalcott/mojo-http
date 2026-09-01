@@ -1,7 +1,8 @@
 """Render the newest bench artifacts into the marked regions of the docs.
 
-    python3 scripts/render_bench_docs.py            # rewrite every region
+    python3 scripts/render_bench_docs.py            # rewrite regions + spans
     python3 scripts/render_bench_docs.py --check    # exit 1 if any is stale
+    python3 scripts/render_bench_docs.py --selftest # prove the checks can fail
 
 A region is a pair of markers naming a bench kind, and it must appear
 exactly once in the document that declares it:
@@ -28,6 +29,32 @@ A kind with no artifact yet renders a stated absence rather than nothing.
 That is deliberate — ``mixed-workload`` is the strongest claim this project
 makes and the last to get an artifact, and a page that silently omitted it
 would read as if the row did not exist.
+
+INLINE SPANS hold the sentences honest the same way the regions hold the
+tables. The headline claims live in prose — a reader meets "0.85x Granian
+per core" in a paragraph, not a table cell — and prose once carried a
+decomposition that did not reconcile with the artifact under it, copied
+into three documents before anyone divided it out. The first fix was a
+checker holding 24 hand-written regexes against 12 quantities, which meant
+every legitimate rewording broke a pattern. This is the second: the number
+itself is generated, in place, and the sentence around it stays free.
+
+    ~<!-- num:granian-per-m0@1 -->1.2<!-- /num -->x
+
+The marker names a quantity from ``QUANTITIES`` and the decimals to show;
+the renderer writes ``f"{value:.{decimals}f}"`` between the markers, and
+``--check`` fails on any span whose text is not what the newest artifact
+computes. A span naming an unknown quantity, a quantity whose artifact row
+has vanished, or an opener with no closer is an error, not a skip — and
+``--selftest`` proves each of those failures fires, because a doc checker
+that cannot fail is green having tested nothing.
+
+Two deliberate edges: spans are left untouched when the artifact FAMILY
+has never been recorded (a fresh tree without ``bench/results`` mirrors
+the regions' leniency), but a missing ROW inside a present artifact is
+red — that is a renamed participant, and silently keeping the old number
+is how the page starts lying. And the spans carry no tilde, bold or unit;
+those belong to the sentence, so the sentence keeps them.
 """
 
 import json
@@ -68,6 +95,77 @@ ROW_ORDER = {
     ],
     "mixed-workload": [],
 }
+
+
+SPAN = re.compile(
+    r"<!-- num:([a-z0-9-]+)@(\d) -->(.*?)<!-- /num -->", re.S
+)
+SPAN_OPEN = re.compile(r"<!-- num:")
+
+# Documents whose prose carries spans. BENCHMARKS and WSGI_PERFORMANCE also
+# hold generated regions; README.md holds spans only.
+SPAN_DOCS = ("README.md", "docs/BENCHMARKS.md", "docs/WSGI_PERFORMANCE.md")
+
+
+def compute_quantities(layer_medians, asgi_medians):
+    """Every quantity the prose may cite, from the two artifact families.
+
+    Pure over its arguments so --selftest can feed doctored medians. Raises
+    KeyError naming the missing row when an artifact no longer carries a
+    participant the prose quotes — a renamed row must be red, never a
+    silently stale number.
+    """
+    hello = layer_medians["hello(no python,1proc)"]["rps_per_core"]
+    m0 = layer_medians["m0serve+bare w1"]["rps_per_core"]
+    gran = layer_medians["granian+bare w1"]["rps_per_core"]
+    am0 = asgi_medians["m0serve asgi-executor"]
+    auv = asgi_medians["uvicorn asyncio"]
+    auvl = asgi_medians["uvicorn uvloop"]
+    return {
+        "hello-rps-k": hello / 1000,
+        "m0-wsgi-rps-k": m0 / 1000,
+        "granian-rps-k": gran / 1000,
+        "m0-per-granian": m0 / gran,
+        "granian-per-m0": gran / m0,
+        "bridge-tax": hello / m0,
+        "granian-w1-cores": layer_medians["granian+bare w1"]["cores"],
+        "asgi-vs-uvicorn": am0["rps"] / auv["rps"],
+        "asgi-per-core-vs-uvicorn": am0["rps_per_core"] / auv["rps_per_core"],
+        "asgi-vs-uvloop": am0["rps"] / auvl["rps"],
+        "uvloop-per-core-lead": auvl["rps_per_core"] / am0["rps_per_core"],
+    }
+
+
+def substitute_spans(text, values, where):
+    """Every span's body rewritten from `values`. Pure; raises on defects.
+
+    A mangled span cannot be allowed to skip silently: an opener whose
+    closer was deleted simply stops matching the pair regex, which without
+    the count check would demote "this number is verified" to "this number
+    is decoration" with no visible change on the rendered page.
+    """
+    openers = len(SPAN_OPEN.findall(text))
+    spans = list(SPAN.finditer(text))
+    if openers != len(spans):
+        raise ValueError(
+            f"{where}: {openers} span opener(s) but {len(spans)} well-formed"
+            " span(s) — a marker is mangled or its closer is gone"
+        )
+
+    def sub(m):
+        key, decimals, _body = m.group(1), int(m.group(2)), m.group(3)
+        if key not in values:
+            raise ValueError(
+                f"{where}: span names quantity {key!r}, which QUANTITIES"
+                " does not define"
+            )
+        return (
+            f"<!-- num:{key}@{decimals} -->"
+            f"{values[key]:.{decimals}f}"
+            f"<!-- /num -->"
+        )
+
+    return SPAN.sub(sub, text)
 
 
 def begin(kind):
@@ -295,14 +393,122 @@ def rewrite(doc, kinds):
     return text
 
 
+def span_values():
+    """The quantity map from the newest artifacts, or None while either
+    family has never been recorded (mirrors the regions' leniency for a
+    tree without bench/results)."""
+    layer, asgi = newest("layer-split"), newest("asgi-wrk-hello")
+    if layer is None or asgi is None:
+        return None
+    try:
+        return compute_quantities(
+            json.loads(layer.read_text())["medians"],
+            json.loads(asgi.read_text())["medians"],
+        )
+    except KeyError as missing:
+        sys.exit(
+            f"the newest artifact no longer has the row {missing} that the"
+            " prose spans quote — a renamed participant must be re-pointed,"
+            " not silently kept at its old number"
+        )
+
+
+def selftest():
+    """The span checks must be able to fail, one doctored input per rule."""
+    medians = {
+        "hello(no python,1proc)": {"rps_per_core": 115_900, "cores": 1.0},
+        "m0serve+bare w1": {"rps_per_core": 85_200, "cores": 1.0},
+        "granian+bare w1": {"rps_per_core": 100_000, "cores": 1.75},
+    }
+    asgi = {
+        "m0serve asgi-executor": {"rps": 60_000, "rps_per_core": 60_000},
+        "uvicorn asyncio": {"rps": 56_600, "rps_per_core": 56_600},
+        "uvicorn uvloop": {"rps": 81_000, "rps_per_core": 81_000},
+    }
+    values = compute_quantities(medians, asgi)
+
+    def expect(label, fn, needle):
+        try:
+            fn()
+        except (ValueError, KeyError) as e:
+            if needle in str(e):
+                print(f"  caught          {label}")
+                return True
+            print(f"  MISATTRIBUTED   {label}\n     got: {e}")
+            return False
+        print(f"  MISSED          {label} — no error was raised")
+        return False
+
+    good = "net ~<!-- num:granian-per-m0@2 -->1.17<!-- /num -->x per core"
+    ok = True
+
+    rendered = substitute_spans(good, values, "selftest")
+    if rendered != good:
+        print(f"  MISSED          a current span was rewritten: {rendered!r}")
+        ok = False
+    else:
+        print("  caught          (control: a current span is left byte-identical)")
+
+    stale = good.replace("1.17", "1.35")
+    if substitute_spans(stale, values, "selftest") == stale:
+        print("  MISSED          a stale span survived substitution")
+        ok = False
+    else:
+        print("  caught          a stale span is rewritten (--check goes red)")
+
+    ok &= expect(
+        "a span naming an unknown quantity",
+        lambda: substitute_spans(
+            good.replace("granian-per-m0", "no-such-quantity"), values,
+            "selftest"),
+        "QUANTITIES does not define",
+    )
+    ok &= expect(
+        "a span whose closer is deleted",
+        lambda: substitute_spans(
+            good.replace("<!-- /num -->", ""), values, "selftest"),
+        "closer is gone",
+    )
+    ok &= expect(
+        "an artifact that loses a row the prose quotes",
+        lambda: compute_quantities(
+            {k: v for k, v in medians.items() if k != "granian+bare w1"},
+            asgi),
+        "granian+bare w1",
+    )
+
+    shown = f"{values['granian-per-m0']:.1f}"
+    if shown != "1.2":
+        print(f"  MISSED          decimals formatting drifted: {shown!r}")
+        ok = False
+    else:
+        print("  caught          (control: @1 renders one decimal, rounded)")
+
+    print("render_bench_docs selftest: " + ("PASS" if ok else "FAIL"))
+    return ok
+
+
 def main():
+    if "--selftest" in sys.argv:
+        sys.exit(0 if selftest() else 1)
     check = "--check" in sys.argv
+    values = span_values()
     stale, written = [], []
-    for doc, kinds in TARGETS.items():
+    span_only = [
+        REPO / rel for rel in SPAN_DOCS if (REPO / rel) not in TARGETS
+    ]
+    for doc in list(TARGETS) + span_only:
+        kinds = TARGETS.get(doc, [])
         if not doc.exists():
             sys.exit(f"{doc.relative_to(REPO)} does not exist")
         current = doc.read_text()
         new = rewrite(doc, kinds)
+        if values is not None and str(doc.relative_to(REPO)) in SPAN_DOCS:
+            try:
+                new = substitute_spans(
+                    new, values, str(doc.relative_to(REPO)))
+            except ValueError as e:
+                sys.exit(str(e))
         if new == current:
             continue
         if check:
@@ -313,14 +519,15 @@ def main():
     if check:
         if stale:
             sys.exit(
-                "generated bench table(s) are stale for the newest artifacts"
-                f" in {', '.join(stale)} - run: uv run poe render-bench-docs"
+                "generated bench table(s) or prose span(s) are stale for the"
+                f" newest artifacts in {', '.join(stale)} - run:"
+                " uv run poe render-bench-docs"
             )
-        print("generated bench tables: current")
+        print("generated bench tables and prose spans: current")
     elif written:
         print("rendered the newest artifacts into " + ", ".join(written))
     else:
-        print("generated bench tables: already current")
+        print("generated bench tables and prose spans: already current")
 
 
 if __name__ == "__main__":

@@ -141,6 +141,30 @@ versions may break the API**.
 
 ### Changed
 
+- **Bench prose numbers are now generated in place, not pattern-matched
+  after the fact.** `check_bench_prose` held 24 hand-written regexes
+  against 12 quantities across three documents — every legitimate
+  rewording broke a pattern, only a phrase's first occurrence was
+  checked, and nothing proved the checker could still fail. It is
+  replaced by inline `num:` spans: `render_bench_docs.py` computes each
+  quantity from the newest artifacts and writes the number between
+  markers naming the quantity and its decimals
+  (`~<!-- num:granian-per-m0@1 -->1.2<!-- /num -->x`), so the sentence
+  around it stays free to be reworded and `--check` — already run by
+  `poe check-docs` — refuses any stale span. A span naming an unknown
+  quantity, a quantity whose artifact row vanished, or an opener whose
+  closer was deleted is an error, not a skip, and the renderer's new
+  selftest (run at the top of `check-docs`, so doc-only pull requests
+  prove it too) insists each of those failures fires. All 25 span sites
+  were migrated value-neutrally — every number the prose showed is
+  byte-identical to what the newest artifact computes — and the
+  migration corrected one overstated claim found along the way:
+  WSGI_PERFORMANCE.md said the old checker held the mixed-workload
+  prose to its artifact, but that artifact records throughput medians
+  only and no checker ever recomputed the p99 narrative; the page now
+  says which numbers are held to the file and which are quoted
+  measurements.
+
 - **`SO_REUSEPORT` (SPEC D6) now records the property that is actually gated**,
   and M13's reason is corrected. D6 claimed the option itself and sat
   `implemented` for want of a smoke covering "the zero-downtime handover it

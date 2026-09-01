@@ -64,9 +64,9 @@ multi-tab sync**, and CI executes every command in it on every pull request
 - **No TLS and no HTTP/2.** Terminate at a proxy — gunicorn's answer, and
   the same one applies here.
 - **Not the fastest server on raw throughput**, and
-  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says so with numbers: ~0.85x
-  Granian per measured core on bare WSGI, 1.06x uvicorn on ASGI at 16
-  connections (0.74x against uvicorn with uvloop) and 1.22x at 256.
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says so with numbers: ~<!-- num:m0-per-granian@2 -->0.85<!-- /num -->x
+  Granian per measured core on bare WSGI, <!-- num:asgi-vs-uvicorn@2 -->1.06<!-- /num -->x uvicorn on ASGI at 16
+  connections (<!-- num:asgi-vs-uvloop@2 -->0.74<!-- /num -->x against uvicorn with uvloop) and 1.22x at 256.
   What it does win is the fast-request tail under mixed load. Every figure there
   cites a dated artifact and CI recomputes the prose against it.
 - **Pre-1.0**, and the API will change ([CHANGELOG](CHANGELOG.md)).
@@ -539,10 +539,10 @@ values returns unchanged.
   comparable-or-better p99 in both keep-alive and close-per-request modes.
   Against **Granian**, whose own `--blocking-threads` is the architecture
   copied above, m0serve is **behind on raw WSGI throughput and the gap is
-  located**: normalized per measured core, 85.2k against 100.0k rps/core on
-  a bare callable — about 0.85x. The split says where it goes. `apps/hello`,
-  the same server with no Python in the path, runs at 115.9k rps/core —
-  above Granian's end-to-end rate — so m0serve's own bridge costs 1.36x, and
+  located**: normalized per measured core, <!-- num:m0-wsgi-rps-k@1 -->85.2<!-- /num -->k against <!-- num:granian-rps-k@1 -->100.0<!-- /num -->k rps/core on
+  a bare callable — about <!-- num:m0-per-granian@2 -->0.85<!-- /num -->x. The split says where it goes. `apps/hello`,
+  the same server with no Python in the path, runs at <!-- num:hello-rps-k@1 -->115.9<!-- /num -->k rps/core —
+  above Granian's end-to-end rate — so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.36<!-- /num -->x, and
   essentially all of the deficit is that crossing rather than HTTP parsing
   or the event loop. How much of Granian's rate its *own* bridge costs is
   not measurable from this run: there is no Granian-without-Python row.
