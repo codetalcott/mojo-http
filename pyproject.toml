@@ -26,7 +26,7 @@ dev = [
 # than dev so CI and the ordinary venv never pay for it:
 #     uv sync --group bench
 bench = [
-    "granian==2.8.1",
+    "granian==2.8.2",
 ]
 
 # No [build-system]: this is a virtual project. uv manages the environment but
