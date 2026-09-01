@@ -34,6 +34,66 @@ versions may break the API**.
 
   `poe fuzz-request-long` is the release sweep (8 seeds x 250k).
 
+- **The chunked decoder's trailer states are gated** (SPEC A10). The servers
+  build their decoder with `consume_trailer = True` — which is what makes a
+  body end where RFC 9112 says it ends — but the round-trip tests set that
+  flag over a wire carrying no trailer section, so every state below
+  `IN_TRAILERS_LINE_HEAD` was reached by no test at all.
+
+  Eight tests in `test_parsing.mojo` now cover the section: consumed whole
+  (including its terminating CRLF, whose absence is what makes a close send
+  an RST), several fields, no trailer byte reaching the decoded body, the
+  framing fields RFC 9110 §6.5 says a trailer must not honour
+  (`Content-Length`, `Transfer-Encoding`, `Host`), the pipelined tail
+  surviving byte for byte, and the section bounded by the existing abuse
+  ratio — trailer bytes advance `src` and never `dst`, so they are charged as
+  pure overhead and no second limit is needed. The default-setting half is
+  asserted too, so a decoder that swallowed to the end of the buffer cannot
+  pass.
+
+  `poe sabotage-trailers` reverts each of the six rules and requires a
+  failure for every one; it runs in `test-all` and in CI. Nothing was found
+  wrong with the implementation — the gap was in the evidence.
+
+### Changed
+
+- **`SO_REUSEPORT` (SPEC D6) now records the property that is actually gated**,
+  and M13's reason is corrected. D6 claimed the option itself and sat
+  `implemented` for want of a smoke covering "the zero-downtime handover it
+  would enable" — but no shipped path can enable it: `reuse_port` is opt-in on
+  `ListenConfig`, defaults off, and has no caller, no flag and no environment
+  variable, because workers and threads all accept from ONE listener bound
+  before the fork. The property that matters and IS gated is the default:
+  `smoke-serve` proves a second server on a busy port fails to bind loudly
+  rather than silently taking a share of the connections, which is what it did
+  until 0.14.0.
+
+  M13 (systemd socket activation) was `out of scope` **because** "`SO_REUSEPORT`
+  covers the restart case it is usually wanted for". That was not true for
+  anyone running `m0serve`. The row keeps its status on the honest reason —
+  nobody has asked for it — and now says what a restart does get, which is the
+  supervisor's graceful drain. This is the class of error the checker cannot
+  catch: it validates that a citation resolves, never that a reason is true.
+
+- **The blocking `listen_and_serve` loop no longer sends a `Keep-Alive`
+  header.** It was the only site that did — the event loop, which every
+  shipped binary runs, has never sent one — so the two paths disagreed on the
+  wire for a header that is not in RFC 9110 or 9112 (RFC 2068 §19.7.1
+  described it; RFC 2616 dropped it) and that browsers ignore.
+
+  It was also unreachable and wrong. Nothing in this tree calls
+  `listen_and_serve`, no test asserted the header, and the `max` value was off
+  by one: `max` counts ADDITIONAL requests, and `keepalive_count` is not
+  incremented until after the response is built, so request 99 of 100
+  advertised `max=2` and served one more.
+
+  Aligning the other way would have put a header nobody reads on every
+  keep-alive response of the hot path, plus a spec row and a permanent gate.
+  If a client pool ever needs `timeout=` to avoid racing the idle close, the
+  event loop is where to add it, with a row and a gate. `listen_and_serve` is
+  public API (README), so this is a visible change for a library caller that
+  was reading the header; `Connection: keep-alive` is unaffected.
+
 ### Fixed
 
 - **A chunked body that arrived with its headers was bounded by nothing.**
@@ -60,8 +120,6 @@ versions may break the API**.
   buffer-size test already refuses those shapes, and it was removed rather
   than shipped unpinned.
 
-### Fixed
-
 - **The keep-alive request cap destroyed the response it fired on**, for a
   streamed body and for a WebSocket upgrade alike. On the hundredth request
   of a keep-alive connection (`max_keepalive_requests`, 100) a streamed ASGI
@@ -85,49 +143,6 @@ versions may break the API**.
   time that route was hit. Gated by `poe smoke-keepalive-cap` (SPEC A3), whose
   third phase asserts the cap still fires for an ordinary response, so the
   gate cannot pass on a build whose cap never fires.
-
-### Changed
-
-- **`SO_REUSEPORT` (SPEC D6) now records the property that is actually gated**,
-  and M13's reason is corrected. D6 claimed the option itself and sat
-  `implemented` for want of a smoke covering "the zero-downtime handover it
-  would enable" — but no shipped path can enable it: `reuse_port` is opt-in on
-  `ListenConfig`, defaults off, and has no caller, no flag and no environment
-  variable, because workers and threads all accept from ONE listener bound
-  before the fork. The property that matters and IS gated is the default:
-  `smoke-serve` proves a second server on a busy port fails to bind loudly
-  rather than silently taking a share of the connections, which is what it did
-  until 0.14.0.
-
-  M13 (systemd socket activation) was `out of scope` **because** "`SO_REUSEPORT`
-  covers the restart case it is usually wanted for". That was not true for
-  anyone running `m0serve`. The row keeps its status on the honest reason —
-  nobody has asked for it — and now says what a restart does get, which is the
-  supervisor's graceful drain. This is the class of error the checker cannot
-  catch: it validates that a citation resolves, never that a reason is true.
-
-### Added
-
-- **The chunked decoder's trailer states are gated** (SPEC A10). The servers
-  build their decoder with `consume_trailer = True` — which is what makes a
-  body end where RFC 9112 says it ends — but the round-trip tests set that
-  flag over a wire carrying no trailer section, so every state below
-  `IN_TRAILERS_LINE_HEAD` was reached by no test at all.
-
-  Eight tests in `test_parsing.mojo` now cover the section: consumed whole
-  (including its terminating CRLF, whose absence is what makes a close send
-  an RST), several fields, no trailer byte reaching the decoded body, the
-  framing fields RFC 9110 §6.5 says a trailer must not honour
-  (`Content-Length`, `Transfer-Encoding`, `Host`), the pipelined tail
-  surviving byte for byte, and the section bounded by the existing abuse
-  ratio — trailer bytes advance `src` and never `dst`, so they are charged as
-  pure overhead and no second limit is needed. The default-setting half is
-  asserted too, so a decoder that swallowed to the end of the buffer cannot
-  pass.
-
-  `poe sabotage-trailers` reverts each of the six rules and requires a
-  failure for every one; it runs in `test-all` and in CI. Nothing was found
-  wrong with the implementation — the gap was in the evidence.
 
 ## [0.16.0] — 2026-08-31
 
@@ -213,7 +228,6 @@ coincidence.
   both `out of scope`: h2spec needs HTTP/2, which `A18` refuses, and a
   pair-scanner has nothing to compare against a server with no proxy in
   front of it.
-
 
 ## [0.15.1] — 2026-08-30
 
@@ -1023,7 +1037,6 @@ differently — each is a smuggling or correctness surface:
   composition; `smoke-blocking-threads` and `smoke-doctor` now assert the
   pair is accepted where they asserted the refusal.
 
-
 - **The isolation benchmark has an artifact, and the ratchet caught sixteen
   stale sentences.** Gate 3's last item. `bench/results/` now carries a
   `mixed-workload-*.json` — the pool's ~100x p99 claim, the largest effect
@@ -1138,7 +1151,6 @@ differently — each is a smuggling or correctness surface:
   --blocking-threads`, it reported zero subscribers while events were
   being delivered — a pool thread's own registries are always empty.
 
-
 - **The mounted-isolation guard had 138x headroom and now has 12x.**
   `hybrid_isolation.py`'s `ISOLATION_BUDGET_MS` was 400 ms against an
   observed p99 of 1.4–4.1 ms, so it discriminated "isolated" from "sharing
@@ -1251,7 +1263,6 @@ differently — each is a smuggling or correctness surface:
   unwind Python on another thread, so leaving is the only correct answer;
   waiting was not.
 
-
 - **`smoke-wheel` leaked a server on every run, and could pass against the
   wrong binary.** Nine orphaned `m0serve` processes accumulated over one
   day of development, all still `LISTEN`ing on port 8129, one of them still
@@ -1278,7 +1289,6 @@ differently — each is a smuggling or correctness surface:
   `ppid 1`) against the fixed one (leaks none, on both the success and the
   failure path), and by putting a decoy listener on 8129 to trip the new
   refusal.
-
 
 - **The README quoted a decomposition its own measurements had retired.**
   It said the one-worker gap to Granian "splits evenly, 1.58x HTTP layer and
@@ -1321,7 +1331,6 @@ differently — each is a smuggling or correctness surface:
   is **1.21x**, and a 1.35x bridge term requires an HTTP layer term of
   0.89x — this server's HTTP layer *slower* than the comparator's, which
   the same sentence denies.
-
 
 - **The boolean-flag dispatch had a fallthrough.** `parse_args` ended its
   chain with `else: opts.metrics = True`, so a new flag added to `_is_bool`
