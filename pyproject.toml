@@ -3842,13 +3842,37 @@ python3 scripts/pool_spike_probe.py --binary "$out/pool_spike" --json "bench/res
 # excluded, and the comparison runs BOTH directions against the pinned
 # baseline: a new failure is red, and an I17 cap case unexpectedly PASSING
 # is red too — the cap moved and the sheet is wrong. The comparator's
-# --selftest is proven before anything is believed. Needs docker; ~10 min.
+# --selftest is proven before anything is believed. Needs docker; ~5 min.
+#
+# On a Mac the task provisions docker itself: if no daemon answers and
+# colima is installed, it starts a 4 GiB VM (enough for the wstest
+# container — the echo server runs on the HOST; the toolchain-build
+# workflows that want 8 GiB carry their own `colima start` line) and stops
+# THAT VM when the run ends, pass or fail. A daemon that was already up —
+# colima someone started for other work, or native Linux docker — is used
+# as found and never stopped: only what this run started is this run's to
+# reap. The stop matters on a 16 GB machine, where a forgotten VM
+# reservation was half the RAM (measured, 2026-09-01).
 [tool.poe.tasks.autobahn]
 help = "PRE-RELEASE: Autobahn|Testsuite vs the pinned baseline — every failure I17's cap (not in CI)"
 deps = ["build-serve"]
 shell = """
-python3 scripts/autobahn_runner.py --selftest || exit 1
-python3 scripts/autobahn_runner.py
+started=""
+if ! docker info >/dev/null 2>&1; then
+  command -v colima >/dev/null 2>&1 \
+    || { echo "autobahn: no docker daemon, and colima is not installed" >&2; exit 1; }
+  echo "autobahn: no docker daemon — starting colima (4 GiB)"
+  colima start --memory 4 || exit 1
+  started=1
+fi
+rc=0
+python3 scripts/autobahn_runner.py --selftest || rc=1
+[ "$rc" = "0" ] && { python3 scripts/autobahn_runner.py || rc=1; }
+if [ -n "$started" ]; then
+  echo "autobahn: stopping the colima VM this run started"
+  colima stop
+fi
+exit $rc
 """
 
 [tool.poe.tasks.stress-asgi]
