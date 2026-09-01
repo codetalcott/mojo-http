@@ -410,6 +410,11 @@ python3 scripts/warning_ratchet.py "$log" $flag
 [tool.poe.tasks.check-docs]
 help = "Fail if a machine-sourced number in the docs drifted from its source"
 shell = """
+# The renderer's selftest first: check_docs subprocesses `render_bench_docs
+# --check` for the tables AND the prose spans, and a doc checker that cannot
+# fail is green having tested nothing. Here rather than a test.yml step so
+# doc-only pull requests (which run only docs.yml) prove it too.
+python3 scripts/render_bench_docs.py --selftest || exit 1
 python3 scripts/check_docs.py || exit 1
 python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs

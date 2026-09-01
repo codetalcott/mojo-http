@@ -32,7 +32,7 @@ Five caveats, stated before the numbers rather than under them.
 - **Cores are measured, not configured.** Each table's `cores` column is
   sampled `%cpu` of the pids on the listen socket. The column exists
   because it caught a real error: a comparator invoked as `--workers 1` was
-  running ~1.75 cores across its runtime's I/O threads, so every earlier
+  running ~<!-- num:granian-w1-cores@2 -->1.75<!-- /num --> cores across its runtime's I/O threads, so every earlier
   raw-rps ratio had been comparing 1.75 cores against one.
 - **The benchmark box has performance and efficiency cores** (Apple M4, 4P
   + 6E). An E-core serves this workload at 18.6k rps against a P-core's
@@ -62,8 +62,8 @@ says otherwise. Where a comparator wins, the row stays.
 
 | question | answer |
 |---|---|
-| Fastest per core on bare WSGI? | **No** — Granian, by ~1.2x |
-| Fastest per core on bare ASGI? | **Against `uvicorn --loop asyncio`, yes** — the executor is ahead by ~1.06x per core at 16 connections and 1.22x at 256. **Against uvloop, no** — uvicorn is ahead, and by ~1.36x with uvloop, which is what `pip install uvicorn[standard]` runs by default; 0.94x at 256 connections |
+| Fastest per core on bare WSGI? | **No** — Granian, by ~<!-- num:granian-per-m0@1 -->1.2<!-- /num -->x |
+| Fastest per core on bare ASGI? | **Against `uvicorn --loop asyncio`, yes** — the executor is ahead by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.06<!-- /num -->x per core at 16 connections and 1.22x at 256. **Against uvloop, no** — uvicorn is ahead, and by ~<!-- num:uvloop-per-core-lead@2 -->1.36<!-- /num -->x with uvloop, which is what `pip install uvicorn[standard]` runs by default; 0.94x at 256 connections |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
 | Fastest HTTP layer, Python excluded? | **Yes** — but see the note on why that is not the interesting number |
 
@@ -92,11 +92,11 @@ Cores are measured (sampled `%cpu` of the pids on the listen socket), not config
 Read down the `rps/core` column at one worker. Three numbers, and the
 arithmetic between them is the finding:
 
-- the HTTP layer with no Python at all (`apps/hello`) runs at **115.9k
-  rps/core** — above Granian's end-to-end **100.0k**
-- put the same bare WSGI application behind it and m0serve runs at **85.2k
-  rps/core**, so **its own bridge costs 1.36x**
-- net, m0serve is **0.85x Granian per core**; Granian is 1.17x ahead
+- the HTTP layer with no Python at all (`apps/hello`) runs at **<!-- num:hello-rps-k@1 -->115.9<!-- /num -->k
+  rps/core** — above Granian's end-to-end **<!-- num:granian-rps-k@1 -->100.0<!-- /num -->k**
+- put the same bare WSGI application behind it and m0serve runs at **<!-- num:m0-wsgi-rps-k@1 -->85.2<!-- /num -->k
+  rps/core**, so **its own bridge costs <!-- num:bridge-tax@2 -->1.36<!-- /num -->x**
+- net, m0serve is **<!-- num:m0-per-granian@2 -->0.85<!-- /num -->x Granian per core**; Granian is <!-- num:granian-per-m0@2 -->1.17<!-- /num -->x ahead
 
 So the deficit is the bridge — the per-request crossing into CPython — and
 not the parsing or the event loop, which is the whole reason to split the
@@ -106,7 +106,7 @@ measurement rather than report one number.
 because there is no Granian-without-Python row to divide by. A cleaner
 decomposition — "1.0x HTTP layer × 1.35x bridge" — appeared in the working
 record and does not reconcile with this artifact: the measured gap is
-1.17x, and for a 1.35x bridge term to hold, the HTTP layer would have to be
+<!-- num:granian-per-m0@2 -->1.17<!-- /num -->x, and for a 1.35x bridge term to hold, the HTTP layer would have to be
 0.89x, which contradicts the row above it. Corrected rather than repeated;
 the per-side split needs a measurement nobody has taken yet.
 
@@ -143,16 +143,16 @@ Mojo for every event through a type built in-process, and the executor
 thread never leaves `run_forever` — which is what finally let its
 opportunistic uvloop pay. This row runs on uvloop at 0.99 cores and
 reads **1.06x `uvicorn --loop asyncio`**; at 256 connections, 1.22x. Against
-uvicorn with uvloop it is still behind — 0.74x here, 0.94x at 256 — and
+uvicorn with uvloop it is still behind — <!-- num:asgi-vs-uvloop@2 -->0.74<!-- /num -->x here, 0.94x at 256 — and
 that row is on the page because it is the number a developer's own
-`uvicorn[standard]` install produces: 0.74x. The concurrency tables and
+`uvicorn[standard]` install produces: <!-- num:asgi-vs-uvloop@2 -->0.74<!-- /num -->x. The concurrency tables and
 the loop-by-loop comparison are in
 [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
 Worth recording because it inverted a conclusion: an earlier run of this
 comparison used a stdlib `http.client` harness and reported 0.88–0.94x. The
 assumption was that the stdlib client understated the Mojo layer's parsing
-edge. Under wrk the ratio is 1.06x at 16 connections (0.72x before the
+edge. Under wrk the ratio is <!-- num:asgi-vs-uvicorn@2 -->1.06<!-- /num -->x at 16 connections (0.72x before the
 pump was batched and then inverted) — the stdlib client had been
 *flattering* the executor as it stood, and the fix path derived from it
 was aimed the wrong way.

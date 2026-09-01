@@ -728,7 +728,7 @@ descriptions of the present.
 **Corrected 2026-08-26.** This paragraph used to state the result as a
 decomposition — "roughly 1.0x HTTP layer × ~1.35x bridge" — and that does
 not reconcile with the artifact below it. The measured per-core gap is
-**1.17x** (100,009 / 85,185); a 1.35x bridge term would require an HTTP
+**<!-- num:granian-per-m0@2 -->1.17<!-- /num -->x** (100,009 / 85,185); a 1.35x bridge term would require an HTTP
 layer term of 0.89x, i.e. this server's HTTP layer *slower* than Granian's,
 which the same sentence denies. The error is structural rather than
 arithmetic: **a two-sided decomposition needs both sides measured**, and
@@ -737,15 +737,18 @@ artifact does support:
 
 - `apps/hello`, no Python in the path: **115,901 rps/core**
 - m0serve + bare WSGI: **85,185 rps/core** — so *this server's* bridge
-  costs **1.36x**
-- Granian + bare WSGI: **100,009 rps/core** — so the net is **0.85x**
+  costs **<!-- num:bridge-tax@2 -->1.36<!-- /num -->x**
+- Granian + bare WSGI: **100,009 rps/core** — so the net is **<!-- num:m0-per-granian@2 -->0.85<!-- /num -->x**
 
 Granian's own bridge cost is unknown here, and a per-side split needs a
 `granian`-equivalent of the hello row. The figure had been propagated into
 README.md and docs/BENCHMARKS.md before it was checked, which is what
-motivated `check_bench_prose` in scripts/check_docs.py: the generated
-tables were never wrong, and the prose around them was answerable to
-nothing.
+motivated holding the prose to the artifacts: the generated tables were
+never wrong, and the sentences around them were answerable to nothing.
+The first mechanism was a checker holding hand-written patterns against
+the sentences (`check_bench_prose`); the current one generates the
+numbers in place — the `num:` spans `render_bench_docs.py` writes and
+`--check` refuses stale.
 
 A caveat the artifacts made visible: identical binaries move ~1.5x in
 absolute rps across sessions on this hardware (thermal and load state).
@@ -875,9 +878,11 @@ run.
 recorded before `bench_record.py` existed and are kept as the narrative of
 how the pool was justified; the current, machine-readable version is
 rendered on [BENCHMARKS.md](BENCHMARKS.md#slow-view-isolation) from
-`bench/results/mixed-workload-*.json`, and `check_bench_prose` holds the
-prose around it to the file. The shape reproduced exactly — ~1 ms → ~195 ms
-without the flag, flat with it, in both execution modes.
+`bench/results/mixed-workload-*.json`. The artifact records throughput
+medians only, so the table is held to the file and the p99 narrative here
+is not — those figures are `probe-pool`'s territory and are quoted as
+measurements, not recomputed. The shape reproduced exactly — ~1 ms →
+~195 ms without the flag, flat with it, in both execution modes.
 
 That run also retired this paragraph's note that `granian` is absent
 "because it is not in this repo's lock file". It *is* in the lock file, in
