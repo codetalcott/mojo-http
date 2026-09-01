@@ -35,6 +35,26 @@ the final column is the deliberate saturation boundary — more blockers
 than threads — where the pooled row is EXPECTED to collapse too. The
 deterministic halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
 
+**`uv run poe autobahn`** — Autobahn|Testsuite against the pinned baseline
+(SPEC I13). Pre-release because it needs Docker and ~ten minutes, and its
+unique value — close-code validation, I16 — is a defect fixed once rather
+than a regression that recurs (ROADMAP, "A conformance-suite tier"). The
+runner drives the sections separately (a single pass wedges on the slot a
+cap-killed connection just released), skips 9 (performance: every case
+exceeds the cap) and 12/13 (`permessage-deflate`, I14), and compares in
+both directions: any failure outside I17's seven cap cases
+(1.1.6–1.1.8, 1.2.6–1.2.8, 10.1.1) is new and fails the run, and one of
+those seven *passing* fails it too — the cap moved and SPEC I17 is wrong;
+do not absorb that silently. The comparator's `--selftest` runs first, so
+a green run cannot mean the parser checks nothing.
+
+**`uv run poe fuzz-request-long`** — the deep fuzz sweep, eight seeds x
+250k iterations (G13's release depth; CI runs the short form every PR).
+
+**And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
+and insists the I17 probe fails; pre-release because its harness rebuilds
+`bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
+
 The steps, in order:
 
 1. **Update [CHANGELOG.md](../CHANGELOG.md).** Add a `## [X.Y.Z] — date`

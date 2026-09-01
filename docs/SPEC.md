@@ -47,17 +47,17 @@ CI pins GIL-enabled 3.13 and every `--threads` phase skips on it.
 `(pre-release)` is a gate `docs/RELEASING.md` requires and CI deliberately
 does not run, because shared runners cannot reproduce the timing.
 
-**No conformance suite runs on a cadence** — no h2spec, no Autobahn, no
-PortSwigger desync harness is wired to any gate. The WebSocket and smuggling
-rows below are pinned by hand-written probes and unit tests against the RFC
-text. That is real evidence and it is not a conformance run; the rows say
-which they are.
-
-Autobahn\|Testsuite has now been run ONCE, by hand, on 2026-08-30, to decide
-whether wiring it is worth the cost (I13). It is not a gate and no row claims
-it as one. What it measured is in ROADMAP's conformance-suite tier, including
-the two live defects it found and the reason it could not have caught the bug
-that motivated running it.
+**One conformance suite runs on a cadence**: Autobahn\|Testsuite, at
+pre-release (`poe autobahn`, I13), compared both directions against a
+pinned baseline. No h2spec and no PortSwigger desync harness is wired to
+any gate (B8 and B9 refuse them, each with its reason). The WebSocket and
+smuggling rows below are otherwise pinned by hand-written probes and unit
+tests against the RFC text — real evidence that is not a conformance run,
+and the rows say which they are. What Autobahn measured when first run by
+hand (2026-08-30) is in ROADMAP's conformance-suite tier, including the two
+live defects it found and the reason it could not have caught the bug that
+motivated running it: its client always closes first, so the app-initiated
+close path (L15) is a region no external suite can reach.
 
 This page is checked by `poe check-docs`: a `verified` row whose gate does not
 exist or does not run fails the build, as does a CI gate no row accounts for.
@@ -214,7 +214,7 @@ whose body drifted away from it is the case most likely to have survived.
 | I12 | A synchronous view gating a held WebSocket it never speaks | verified | `Smoke test the Django realtime example over WebSockets` (every PR) |
 | I18 | N holds taken AT ONCE from a pool, and a publish reaching all of them | verified | `Concurrent --realtime holds from a pool` (every PR) — the other realtime rows subscribe sequentially, so this is the only one where more than one hold is in flight; the probe's own self-test gates it, because the result it reports is a negative |
 | I19 | Inbound WebSocket data larger than one socket read | verified | `Inbound WebSocket messages survive a stalled client` (every PR) — the WebSocket read path took one `recv` per event with no re-arm, A13's defect in the one path nothing had sent a large inbound burst to; invisible on kqueue's level trigger, and on epoll only once the client STOPS sending |
-| I13 | Autobahn\|Testsuite conformance run, wired to a cadence | planned | ROADMAP: A conformance-suite tier |
+| I13 | Autobahn\|Testsuite conformance run, wired to a cadence | verified | `autobahn` (pre-release) — sections driven separately against the runner's pure-echo ASGI app, image version-pinned so the per-section case counts are asserted exactly; compared both directions against the pinned baseline (240/247, every failure I17's cap): a new failure is red, and an I17 case unexpectedly passing is red too. The comparator's selftest runs first. What the suite cannot see stays L15's territory — its client always closes first (ROADMAP: A conformance-suite tier) |
 | I14 | `permessage-deflate` | out of scope | follows from having no response compression |
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
 | I16 | A Close frame's code is VALIDATED, not just echoed | verified | `test_websocket.mojo:test_reserved_close_codes_are_refused_1002` (every PR) — with `test_legal_close_codes_are_still_echoed` as the other half, so a refusal that refuses everything cannot pass |

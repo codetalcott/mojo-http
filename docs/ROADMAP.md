@@ -1658,6 +1658,21 @@ end their connections, and the next case lands on the recycled slot; a
 single-pass run therefore understates the server, and the harness has to
 drive the sections separately.
 
+**Wired, 2026-09-01** (SPEC I13): `poe autobahn` runs
+`scripts/autobahn_runner.py` -- sections driven separately as above, 9/12/13
+excluded, the image pinned to `25.10.1` (digest-identical to the one the
+baseline was measured with, which is what lets the per-section case counts
+be asserted exactly). The server is the runner's own pure-echo ASGI app,
+because `asgi_bare`'s `/ws` prefix-echoes text for its probe's benefit and
+Autobahn's byte-identity cases would score that as failures. The comparison
+runs both directions -- a failure outside I17's seven is new and red, and
+one of the seven *passing* is red too, the cap having moved out from under
+the sheet -- and the comparator's `--selftest` runs before anything is
+believed. The wired run reproduced the baseline exactly (226 OK, 11
+non-strict, 3 informational, I17's 7 FAILED), and reverting I16's
+close-code validation was caught as nine named new failures (7.9.1-7.9.9)
+on the first section-7 run.
+
 PortSwigger's desync scanner and h2spec are NOT this tier, and no longer
 promise to be: they were one `planned` row (B8) citing this heading, which
 contradicted the refusal two sections above it on the same page. They are now
