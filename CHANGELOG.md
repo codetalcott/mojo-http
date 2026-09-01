@@ -7,6 +7,33 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **The request decoder is fuzzed, every pull request** (SPEC G13).
+  `scripts/fuzz_request.mojo` mutates a seed corpus of real and hostile
+  requests through `parse_request_headers` and `HTTPChunkedDecoder.decode` —
+  no socket, no server, because the decoder is a pure function over bytes.
+  Deterministic from its seed, so a CI failure names the seed and iteration
+  and the same run reproduces it.
+
+  Beyond "does not crash" it asserts four properties: parsing is
+  deterministic; an **INVALID** request cannot become valid by appending bytes
+  (the smuggling-relevant one — "invalid, not incomplete" is what stops an
+  attacker's payload being read as the next request); a request that parses is
+  unchanged by bytes after it, consuming the same count; and the chunked
+  decoder's `ret`, decoded length and `pending_bytes` all index the buffer they
+  were given, since those feed copy sizes in the loop.
+
+  **480,000 mutations across eight seeds found nothing**, which is a believable
+  result for a decoder with this unit suite and worth nothing on its own — so
+  two things guard the negative. The run refuses to pass on thin coverage (it
+  counts parsed, rejected, incomplete and both chunked outcomes, and fails if
+  any bucket is empty), and `poe sabotage-fuzz` breaks each invariant in the
+  decoder and requires the fuzzer to report that invariant by name. Without
+  them "no findings" and "checks nothing" are the same output.
+
+  `poe fuzz-request-long` is the release sweep (8 seeds x 250k).
+
 ### Fixed
 
 - **A chunked body that arrived with its headers was bounded by nothing.**

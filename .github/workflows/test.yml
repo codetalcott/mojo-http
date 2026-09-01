@@ -111,6 +111,17 @@ jobs:
       - name: Sabotage the chunked trailer rules
         run: uv run poe sabotage-trailers
 
+      # SPEC G13. The request decoder is a pure function over bytes, so the
+      # fuzz harness needs no socket: mutate a seed corpus, assert the
+      # invariants, and stay replayable from --seed. `sabotage-fuzz` is the
+      # half that matters when the fuzzer finds nothing, which is the normal
+      # result -- it breaks each invariant and insists the run reports it, so
+      # "no findings" cannot mean "checks nothing".
+      - name: Fuzz the request decoder
+        run: uv run poe fuzz-request
+
+      - name: Sabotage the decoder invariants the fuzzer checks
+        run: uv run poe sabotage-fuzz
       # m0-wsgi embeds CPython, so its interpreter has to resolve on both
       # runners. Failing here rather than inside a smoke test makes a
       # libpython discovery problem legible.
