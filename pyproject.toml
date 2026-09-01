@@ -4525,6 +4525,24 @@ echo "smoke-wheel OK ($base)"
 """
 
 
+# `docker stop` is SIGTERM to PID 1 and nothing else, and PID 1 gets no
+# default signal dispositions from the kernel: with no handler installed the
+# signal is DISCARDED, not fatal. This server installs its handlers post-fork
+# by design, so every in-process SIGTERM gate (smoke-shutdown first among
+# them) proves the handler works once installed while proving nothing about
+# the one environment where the default disposition cannot paper over a
+# missing install. scripts/pid1_probe.py runs the wheel exec'd as PID 1 in
+# python:3.12-slim and `docker stop`s it, alone and as a supervisor reaping
+# two workers; the sabotaged shape is SIGKILL at the deadline, exit 137.
+# Needs docker, so CI runs it in its own Linux job (the smoke matrix's macOS
+# runners have none, and a step-level `if:` would make the citing spec row
+# unverifiable).
+[tool.poe.tasks.smoke-pid1]
+help = "docker stop on m0serve as PID 1: the drain's exit 0, never SIGKILL at the deadline"
+deps = ["build-wheel"]
+cmd = "python3 scripts/pid1_probe.py"
+
+
 # The quickstart is executable on purpose: scripts/run_quickstart.py extracts
 # QUICKSTART.md's tagged fences and runs them, so the doc a stranger follows
 # is pinned by CI rather than trusted to stay true. Runs against the TREE's

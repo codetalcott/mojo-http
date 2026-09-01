@@ -1158,8 +1158,8 @@
       "section": "M",
       "category": "M. Deployment and operations",
       "capability": "Correct signal handling as PID 1 in a container",
-      "status": "implemented",
-      "evidence": "`packages/m0-http/src/signal.mojo` \u2014 the SIGTERM rows above are the evidence that exists; nothing runs the server in a container or as PID 1"
+      "status": "verified",
+      "evidence": "`Smoke test SIGTERM delivered to PID 1 in a container` (every PR) \u2014 the wheel exec'd as PID 1 in `python:3.12-slim` (checked via `/proc/1/cmdline`, not trusted); `docker stop` must be the drain's exit 0 well inside the grace, never SIGKILL at the deadline, alone and as a supervisor reaping two workers whose exits must be clean rather than by the propagated signal"
     },
     {
       "id": "M12",

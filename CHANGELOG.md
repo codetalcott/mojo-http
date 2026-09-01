@@ -9,6 +9,28 @@ versions may break the API**.
 
 ### Added
 
+- **SIGTERM as PID 1 in a container is gated, every pull request** (SPEC
+  M11, the last beta row). `docker stop` is SIGTERM to PID 1 and nothing
+  else, and PID 1 gets no default signal dispositions from the kernel — a
+  SIGTERM arriving with no handler installed is *discarded*, not fatal.
+  This server installs its handlers post-fork by design, so every
+  in-process SIGTERM gate proved the handler works once installed while
+  proving nothing about the one environment where the default disposition
+  cannot paper over a missing install. `poe smoke-pid1`
+  (`scripts/pid1_probe.py`) runs the shipped wheel exec'd as PID 1 in
+  `python:3.12-slim` — checked via `/proc/1/cmdline`'s argv[0], not
+  trusted — and stops it in both process shapes: one process alone, and
+  the supervisor reaping two workers whose exits must be clean rather
+  than by the propagated signal. The sabotaged shapes were each measured
+  in a container before the gate counted: the worker install skipped is
+  SIGKILL at the deadline (exit 137 at 10.1s of a 10s grace) alone and
+  workers dying *by* signal 15 under a supervisor; the supervisor's arm
+  skipped silently is the deadline again with the single shape green; the
+  announced degradation is caught by its own log line. The probe's PID 1
+  premise check failed its first sabotage — `sh -c`'s cmdline *contains*
+  "m0serve", so a substring check over the whole cmdline blessed the
+  shell — and checks argv[0] alone for that reason.
+
 - **The request decoder is fuzzed, every pull request** (SPEC G13).
   `scripts/fuzz_request.mojo` mutates a seed corpus of real and hostile
   requests through `parse_request_headers` and `HTTPChunkedDecoder.decode` —
