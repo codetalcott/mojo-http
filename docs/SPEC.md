@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 123 verified, 0 implemented, 2 planned, 24 out of scope.** Of the 123 verified, 121 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 124 verified, 0 implemented, 1 planned, 24 out of scope.** Of the 124 verified, 121 are gated on every pull request, 1 weekly, and 2 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
