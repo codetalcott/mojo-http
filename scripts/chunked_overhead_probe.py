@@ -31,6 +31,7 @@ this probe see a 413 where a naive one sees only a broken pipe.
 """
 
 import socket
+import time
 import sys
 import traceback
 
@@ -55,20 +56,78 @@ def _stamped(kind, exc, tb):
 sys.excepthook = _stamped
 
 
-def attempt(port, chunks):
-    """(status line, raw bytes sent). Tolerates the server answering early."""
-    s = socket.create_connection(("127.0.0.1", port), timeout=15)
-    s.sendall(
+def attempt_split(port, chunks, first_frames):
+    """Head, then the body in TWO writes with a pause between them.
+
+    A third arrival shape, split so the first write stays just under the raw
+    ceiling and the second crosses it. It is NOT what pins either bound: the
+    pre-decode check's buffer-size half already refuses this, which was
+    established by reverting each bound in turn and watching this phase pass
+    both ways. It is here because it is a shape a real client produces and
+    the two decode sites treat differently, so a future change to either can
+    be seen to keep it working -- not because it discriminates a rule today.
+    """
+    head = (
         b"POST /input/read HTTP/1.1\r\nHost: x\r\n"
         b"Transfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n"
     )
-    raw = 0
+    frames = [b"%x\r\n" % len(c) + c + b"\r\n" for c in chunks]
+    raw = sum(len(f) for f in frames)
+    s = socket.create_connection(("127.0.0.1", port), timeout=15)
     try:
-        for c in chunks:
-            frame = b"%x\r\n" % len(c) + c + b"\r\n"
-            raw += len(frame)
-            s.sendall(frame)
-        s.sendall(b"0\r\n\r\n")
+        s.sendall(head + b"".join(frames[:first_frames]))
+        time.sleep(0.25)
+        s.sendall(b"".join(frames[first_frames:]) + b"0\r\n\r\n")
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    return _read_status(s), raw
+
+
+def _read_status(s):
+    try:
+        s.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+    data = b""
+    try:
+        while True:
+            c = s.recv(65536)
+            if not c:
+                break
+            data += c
+    except (socket.timeout, ConnectionResetError, OSError):
+        pass
+    s.close()
+    return data.split(b"\r\n")[0].decode("latin-1", "replace")
+
+
+def attempt(port, chunks, one_write=False):
+    """(status line, raw bytes sent). Tolerates the server answering early.
+
+    `one_write` puts the headers and the whole body in a SINGLE `sendall`.
+    That is not a stylistic choice: chunked bodies are decoded at two sites,
+    and which one runs depends on whether the body arrives with its headers.
+    Pacing the writes reaches the READING_BODY path; one write reaches the
+    inline path, which had no body bound at all. Whether a limit applied came
+    down to how the client's writes happened to be coalesced, and 512 separate
+    6-byte writes coalesce differently on a loaded CI runner than on a laptop
+    -- which is how this passed everywhere for as long as it did.
+    """
+    head = (
+        b"POST /input/read HTTP/1.1\r\nHost: x\r\n"
+        b"Transfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n"
+    )
+    body = b"".join(b"%x\r\n" % len(c) + c + b"\r\n" for c in chunks)
+    raw = len(body)
+    s = socket.create_connection(("127.0.0.1", port), timeout=15)
+    try:
+        if one_write:
+            s.sendall(head + body + b"0\r\n\r\n")
+        else:
+            s.sendall(head)
+            for c in chunks:
+                s.sendall(b"%x\r\n" % len(c) + c + b"\r\n")
+            s.sendall(b"0\r\n\r\n")
     except (BrokenPipeError, ConnectionResetError):
         pass  # answered and closed mid-write; the response is already queued
     try:
@@ -103,20 +162,43 @@ def main():
         failures.append(f"an ordinary chunked body under the cap answered {line!r}")
 
     # Decoded UNDER the cap, raw OVER twice it. Only the raw bound can refuse.
-    phase("one-byte chunks: decoded under the cap, raw over twice it")
     payload = [b"x"] * (cap // 2)
-    line, raw = attempt(port, payload)
-    print(f"  one-byte chunks: decoded {len(payload)}, raw {raw} -> {line}")
-    if raw <= 2 * cap:
+    for one_write, how in ((False, "paced, one write per chunk"),
+                           (True, "head and body in ONE write")):
+        phase("one-byte chunks over the raw ceiling (%s)" % how)
+        line, raw = attempt(port, payload, one_write=one_write)
+        print(f"  one-byte chunks [{how}]: decoded {len(payload)}, "
+              f"raw {raw} -> {line}")
+        if raw <= 2 * cap:
+            failures.append(
+                f"the probe never exceeded the raw ceiling (raw {raw}, ceiling "
+                f"{2 * cap}) — it is not testing what it claims"
+            )
+        elif "413" not in line:
+            failures.append(
+                f"[{how}] a body of {len(payload)} decoded bytes (legal) "
+                f"costing {raw} raw bytes (over the {2 * cap} ceiling) answered "
+                f"{line!r}, want 413 — the raw bound is not enforced, so "
+                "framing is unbounded"
+            )
+
+    # The split case: under the ceiling on the first write, over it on the
+    # second. Only a bound tested AFTER the decode can refuse this one.
+    phase("one-byte chunks over the ceiling, crossed by the second write")
+    # The first write must land JUST UNDER the ceiling: that is what makes
+    # the second read's pre-decode check pass, so only a check after the
+    # decode can refuse the body the second write completes. Each frame
+    # of a one-byte chunk is 6 bytes on the wire.
+    under_ceiling = (2 * cap) // 6 - 1
+    line, raw = attempt_split(port, payload, first_frames=under_ceiling)
+    print(f"  one-byte chunks [crossed by the 2nd write]: "
+          f"decoded {len(payload)}, raw {raw} -> {line}")
+    if "413" not in line:
         failures.append(
-            f"the probe never exceeded the raw ceiling (raw {raw}, ceiling "
-            f"{2 * cap}) — it is not testing what it claims"
-        )
-    elif "413" not in line:
-        failures.append(
-            f"a body of {len(payload)} decoded bytes (legal) costing {raw} raw "
-            f"bytes (over the {2 * cap} ceiling) answered {line!r}, want 413 — "
-            "the raw bound is not enforced, so framing is unbounded"
+            f"[crossed by the 2nd write] a body costing {raw} raw bytes (over "
+            f"the {2 * cap} ceiling) answered {line!r}, want 413 — the bound is "
+            "tested before the decode that crosses it, so the body that "
+            "crosses it is never measured"
         )
 
     for f in failures:

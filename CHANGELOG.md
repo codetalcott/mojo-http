@@ -9,6 +9,32 @@ versions may break the API**.
 
 ### Fixed
 
+- **A chunked body that arrived with its headers was bounded by nothing.**
+  Both request-body limits — the decoded cap and the raw ceiling at twice it —
+  lived in the `READING_BODY` branch, but a chunked body whose bytes arrive in
+  the same read as its headers is decoded and dispatched inline at the header
+  site, which never runs that branch. Sending head and body in one write was
+  enough to escape both: 512 one-byte chunks are 3,077 raw bytes against a
+  2,048 ceiling and answered `200`, where the same body paced across several
+  writes answered `413`.
+
+  So whether a request was bounded came down to how the client's writes
+  happened to be coalesced by the kernel — which is also why this survived:
+  `chunked_overhead_probe.py` sends 512 separate 6-byte writes, and they
+  coalesce differently on a loaded CI runner than on a laptop. It surfaced as
+  an unrelated pull request going red on macOS.
+
+  The probe now sends the over-ceiling body **three ways** — paced, head and
+  body in one write, and split across two writes at the ceiling — so the shape
+  that reaches each decode site is chosen rather than left to the kernel.
+  Reverting the fix fails the one-write phase and no other, which is how the
+  fix was scoped: a second check added in the `READING_BODY` branch turned out
+  to change no observable behaviour, because the existing pre-decode
+  buffer-size test already refuses those shapes, and it was removed rather
+  than shipped unpinned.
+
+### Fixed
+
 - **The keep-alive request cap destroyed the response it fired on**, for a
   streamed body and for a WebSocket upgrade alike. On the hundredth request
   of a keep-alive connection (`max_keepalive_requests`, 100) a streamed ASGI
