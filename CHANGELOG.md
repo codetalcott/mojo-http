@@ -31,6 +31,26 @@ versions may break the API**.
   "m0serve", so a substring check over the whole cmdline blessed the
   shell — and checks argv[0] alone for that reason.
 
+- **`/__metrics` renders a request-latency histogram** (SPEC F5). Six
+  log-spaced `le` bounds — 100µs, 1ms, 10ms, 100ms, 1s, +Inf — as a
+  standard Prometheus histogram (`_bucket`/`_sum`/`_count`), integer-only
+  and O(1) on the event loop thread: one band counter incremented per
+  response, accumulated cumulatively at render time. Sampled in
+  `_after_send` from the same clock the access log reads, and only when a
+  header stamp exists, so a pushed frame on a streaming slot cannot sample
+  the epoch as a latency. Per-loop like every other metric; the scraper
+  aggregates. The serve smoke's metrics phase now checks coherence through
+  `scripts/histogram_check.py` — the documented bounds in order, cumulative
+  counts non-decreasing, `le="+Inf"` equal to `_count`, and a `_count`
+  covering the phase's own requests, that last being the assertion that
+  fails when recording is never called. The checker's selftest runs in the
+  same phase (six doctored expositions, each flagged by the rule that names
+  it), and three sabotages were caught by name before the gate counted:
+  recording never called (`_count is 0 after at least 5 requests`), the
+  cumulative render broken (`counts decrease: [5, 1, 1, 0, 0, 0]` and
+  `+Inf is 0 but _count is 7`), and an `le` boundary off by one (two
+  `test_metrics.mojo` tests). 6 unit tests pin the boundary math.
+
 - **The request decoder is fuzzed, every pull request** (SPEC G13).
   `scripts/fuzz_request.mojo` mutates a seed corpus of real and hostile
   requests through `parse_request_headers` and `HTTPChunkedDecoder.decode` —

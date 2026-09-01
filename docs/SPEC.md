@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 122 verified, 0 implemented, 3 planned, 24 out of scope.** Of the 122 verified, 120 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 123 verified, 0 implemented, 2 planned, 24 out of scope.** Of the 123 verified, 121 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -162,7 +162,7 @@ whose body drifted away from it is the case most likely to have survived.
 | F2 | `--access-log` emits one JSON record per response, and nothing without it | verified | `Smoke test the serve CLI` (every PR) — `--access-log` |
 | F3 | `--metrics` turns `/__metrics` from the application's 404 into a 200 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
 | F4 | Prometheus exposition 0.0.4: 8 counter and gauge families, each with HELP, TYPE and a sample | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
-| F5 | Latency histograms on `/__metrics` | planned | ROADMAP: Structured CI results |
+| F5 | Latency histograms on `/__metrics` | verified | `Smoke test the serve CLI` (every PR) — six log-spaced `le` bounds (100µs–1s, +Inf), integer-only and O(1) on the loop thread; `scripts/histogram_check.py` (selftested in the same phase) asserts the documented bounds, non-decreasing cumulative counts, `le="+Inf"` equal to `_count`, and a `_count` covering the phase's own requests; boundary math pinned by `test_metrics.mojo` |
 | F12 | Coverage declared by the gate rather than cited by this page | planned | ROADMAP: Traceability: stable ids, then declared coverage |
 | F6 | `--health-path` answers 200 | verified | `Smoke test the Django realtime example` (every PR) — `--health-path` |
 | F7 | Health registry with readiness aggregation | verified | `test_health.mojo:test_health_register_unhealthy` (every PR) |

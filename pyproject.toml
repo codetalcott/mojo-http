@@ -2176,6 +2176,15 @@ for fam in http_requests_total http_responses_total http_active_connections \
   echo "$mbody" | grep -qE "^$fam[ {]" || fail "--metrics: $fam has no sample"
 done
 echo "$mbody" | grep -q 'http_responses_total{status="2xx"}' || fail '--metrics: responses are not labelled by status class'
+# The latency histogram (SPEC F5). A 200 with HELP lines cannot see a
+# histogram that records nothing -- a _count of 0 is perfectly valid
+# exposition -- so the checker asserts coherence: the documented bounds in
+# le order, cumulative counts non-decreasing, le="+Inf" equal to _count,
+# and _count covering the requests this phase has already made. Its
+# selftest runs first so "OK" cannot mean "checks nothing".
+python3 scripts/histogram_check.py --selftest || fail 'histogram_check cannot report failure'
+echo "$mbody" | python3 scripts/histogram_check.py --min-count 5 \
+  || fail '--metrics: the latency histogram is missing or incoherent'
 rm -f metrics_hdr.txt
 kill $pid
 wait $pid 2>/dev/null

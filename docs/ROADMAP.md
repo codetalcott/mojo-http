@@ -1686,9 +1686,14 @@ now with a number on it. Deliberately NOT tightened yet: one sample from one
 machine is not a basis for moving a CI threshold, and gathering the runs first
 is the entire reason for recording them.
 
-**What remains** is the serving side: latency histograms on `/__metrics`,
-which today exposes counters and gauges only. Same shape of gap -- a number
-that exists in the process and reaches nobody.
+**The serving side landed too** (SPEC F5): `/__metrics` now renders a
+request-latency histogram beside the counters — six log-spaced `le` bounds
+(100µs to 1s, then +Inf), integer-only and O(1) on the loop thread, sampled
+in `_after_send` from the same clock the access log reads. Per-loop like
+every other metric; the scraper aggregates. The serve smoke's metrics phase
+checks coherence (bounds, cumulative monotonicity, `+Inf` == `_count`, a
+count covering its own requests) through `scripts/histogram_check.py`, whose
+selftest runs in the same phase so its "OK" cannot mean "checks nothing".
 
 ### Traceability: stable ids, then declared coverage
 
