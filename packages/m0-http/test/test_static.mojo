@@ -186,7 +186,10 @@ def test_stale_etag_gets_fresh_content() raises:
 
 def test_dotdot_is_rejected() raises:
     """The classic, in several dressings. The secret file is real and one
-    level up — a lexical slip would serve actual bytes, and this fails."""
+    level up — a lexical slip would serve actual bytes, and this fails.
+
+    covers: G5
+    """
     var s = StaticFiles(_fixture_root())
     for path in [
         "/static/../secret.txt",
@@ -203,7 +206,10 @@ def test_dotdot_is_rejected() raises:
 
 def test_encoded_dotdot_is_rejected() raises:
     """URI.parse percent-decodes before the module sees the path, so %2e%2e
-    arrives as literal dots and the same lexical check must catch it."""
+    arrives as literal dots and the same lexical check must catch it.
+
+    covers: G6
+    """
     var s = StaticFiles(_fixture_root())
     var req = HTTPRequest(
         URI.parse("http://localhost:8080/static/%2e%2e/secret.txt"),
@@ -310,6 +316,10 @@ def test_parse_range_shapes() raises:
 
 
 def test_range_serves_206_with_content_range() raises:
+    """Declared coverage.
+
+    covers: J2
+    """
     var root = _fixture_root()
     var static = StaticFiles(root, "/static/")
     var req = _get("/static/style.css")
@@ -325,6 +335,10 @@ def test_range_serves_206_with_content_range() raises:
 
 
 def test_range_unsatisfiable_is_416_with_total() raises:
+    """Declared coverage.
+
+    covers: J3
+    """
     var root = _fixture_root()
     var static = StaticFiles(root, "/static/")
     var req = _get("/static/style.css")
@@ -344,6 +358,10 @@ def test_multi_range_is_ignored_and_served_full() raises:
 
 
 def test_if_range_with_weak_etags_serves_full() raises:
+    """Declared coverage.
+
+    covers: J5
+    """
     # If-Range requires strong comparison; these ETags are weak, so the
     # condition can never hold — full representation, never a stale slice.
     var root = _fixture_root()
@@ -358,6 +376,10 @@ def test_if_range_with_weak_etags_serves_full() raises:
 
 
 def test_if_none_match_beats_range() raises:
+    """Declared coverage.
+
+    covers: J4
+    """
     var root = _fixture_root()
     var static = StaticFiles(root, "/static/")
     var probe = _serve(static, _get("/static/style.css"))

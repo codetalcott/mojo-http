@@ -71,6 +71,28 @@ versions may break the API**.
   `fuzz-request-long` and `sabotage-outbox-cap`, which were pre-release
   tasks the checklist never named.
 
+- **Coverage is declared by the gate, not merely cited by the spec sheet**
+  (SPEC F12; ROADMAP "Traceability", phase 2). Every one of the 119
+  `verified (every PR)` rows now declares its coverage in its own gate: a
+  `covers: A7` line in the cited test's docstring for the 39 unit-cited
+  rows, and a `scripts/emit.py --covers A7` call in what the cited step
+  runs for the 80 step-cited ones — the latter also recorded by the real
+  run through `$M0_RESULTS`, rendered in the CI summary as a tally. Two
+  new checker rules run beside the citation rules: every declared id must
+  name a row that exists, and every gated row's declaration must AGREE
+  with its citation — a row declared only somewhere its evidence does not
+  cite is the exact mis-citation class the 2026-08-30 audit found six of,
+  now a red build instead of an audit finding. Weekly and pre-release
+  rows keep declared-static citations (their runs are absent from PR CI);
+  the citation-shape rules stay, guarding what declarations cannot (real
+  cadences, unconditional steps, the two closed sets). Four new sabotages
+  revert the rules, each caught by the failure that names it — and the
+  migration itself surfaced a masking hazard: appending a
+  recorder call after a smoke body's last command replaces the exit
+  status poe reads, so `smoke-pool` and `smoke-ws-inbound`, whose final
+  probe's status was the task's status, now carry an explicit
+  `|| exit 1` there.
+
 - **The request decoder is fuzzed, every pull request** (SPEC G13).
   `scripts/fuzz_request.mojo` mutates a seed corpus of real and hostile
   requests through `parse_request_headers` and `HTTPChunkedDecoder.decode` —

@@ -1760,16 +1760,30 @@ written by the person who knows what was asserted:
 to two: every `verified` row was covered by a real run, and every declared id
 exists. The class of defect the audit spent its time on stops being possible.
 
-Not taken yet, and the cost is why: it touches every test file and every smoke
-body. The migration wants to be incremental -- new and changed gates declare,
-existing ones stay cited, and the checker reports the declared-vs-cited
-fraction so the progress is visible rather than assumed.
+**Done, 2026-09-01** (SPEC F12), in one migration rather than incrementally
+-- it was fully scriptable, which the incremental plan had underestimated:
+every one of the 119 `verified (every PR)` rows now declares its coverage in
+its gate (a `covers:` docstring line in the cited test for the 39 unit-cited
+rows, a `scripts/emit.py --covers` call in what the cited step runs for the
+80 step-cited ones -- also recorded by the real run through `$M0_RESULTS`,
+where the summary renders them as a tally). Two new rules run in
+`check_spec_sheet`: every declared id names a row that exists, and every
+gated row's declaration AGREES with its citation -- declared only elsewhere
+is the mis-citation the audit spent its time on, now a red build. Four new
+sabotages revert them.
 
-The honest argument against doing it at all: the sheet is audited now, so
-today's error rate is low. The value is not in fixing what is there. It is that
-a test added next month will not update the sheet, and nothing will notice --
-the reverse check fires when a whole CI step goes uncited, not when one
-capability quietly drifts away from the gate that used to prove it.
+One refinement to what this section predicted, recorded rather than papered
+over: the nine citation-shape rules did NOT collapse to two. They guard
+properties a declaration cannot -- the cadence is real, the cited step
+carries no `if:`, and the two closed sets (every smoke step cited by some
+row, every CLI flag named by one) hold in both directions -- so they stay,
+with the declaration rules beside them. Weekly and pre-release rows keep
+declared-static citations, their runs being absent from PR CI; the checker
+exempts exactly those cadences and the rollup says so.
+
+The argument this section made for the change held: a test added next month
+that quietly drifts from its row is now a disagreement between a declaration
+and a citation, which is a named failure rather than nothing.
 
 ### Proven once, unloaded: an inventory of the gates with that shape
 

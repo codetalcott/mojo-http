@@ -48,6 +48,8 @@ def test_a_newline_cannot_forge_a_second_log_line() raises:
 
     That is log injection — an attacker who can put a newline plus their own
     JSON into a path can write whatever they like into the log stream.
+
+    covers: F1
     """
     var e = LogEntry("INFO", "access")
     e.add("path", '/x\n{"level":"INFO","msg":"forged"}')

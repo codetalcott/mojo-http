@@ -173,6 +173,7 @@ python3 apps/django_realtime/hold_contention_probe.py 8216 \
   || fail 'concurrent holds regressed'
 
 echo "smoke-realtime-holds OK"
+python3 scripts/emit.py --covers I18 --task smoke-realtime-holds
 """
 
 
@@ -193,7 +194,9 @@ echo "smoke-realtime-holds OK"
 help = "Inbound WebSocket messages are delivered, not dropped, when a client stalls"
 shell = """
 uv run poe build-serve || exit 1
-python3 scripts/ws_inbound_loss_probe.py 3000 4096 8354
+python3 scripts/ws_inbound_loss_probe.py 3000 4096 8354 || exit 1
+python3 scripts/emit.py --covers I19 --task smoke-ws-inbound
+python3 scripts/emit.py --covers L17 --task smoke-ws-inbound
 """
 
 
@@ -224,6 +227,7 @@ curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
 python3 scripts/expect_continue_probe.py 8408 || fail 'Expect: 100-continue regressed'
 
 echo "smoke-expect-continue OK"
+python3 scripts/emit.py --covers A11 --task smoke-expect-continue
 """
 
 
@@ -405,7 +409,11 @@ python3 scripts/warning_ratchet.py "$log" $flag
 # fact is on the list and why historical numbers deliberately are not.
 [tool.poe.tasks.check-docs]
 help = "Fail if a machine-sourced number in the docs drifted from its source"
-shell = "python3 scripts/check_docs.py"
+shell = """
+python3 scripts/check_docs.py || exit 1
+python3 scripts/emit.py --covers F10 --task check-docs
+python3 scripts/emit.py --covers F12 --task check-docs
+"""
 
 [tool.poe.tasks.render-bench-docs]
 help = "Render the newest bench/results artifact into WSGI_PERFORMANCE.md"
@@ -580,6 +588,7 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== hello.log ==='; cat hello.log; exit 1; }
 echo
 echo "smoke-hello OK"
+python3 scripts/emit.py --covers A2 --task smoke-hello
 """
 
 # Two ways a server gets asked to stop, and both used to end the same way —
@@ -666,6 +675,8 @@ trap - EXIT
 rm -rf "$out"
 rm -f shutdown1.log shutdown3.log shutdown4.log
 echo "smoke-shutdown OK"
+python3 scripts/emit.py --covers D1 --task smoke-shutdown
+python3 scripts/emit.py --covers D2 --task smoke-shutdown
 """
 
 # The probe speaks RFC 6455 by hand (stdlib sockets, no websocket library),
@@ -691,6 +702,7 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== ht.log ==='; cat ht.log; exit 1; }
 python3 scripts/header_timeout_probe.py 8080 || { echo '=== ht.log ==='; cat ht.log; exit 1; }
 echo "smoke-header-timeout OK"
+python3 scripts/emit.py --covers A5 --task smoke-header-timeout
 """
 
 # The idle timeout is what BOUNDS the WebSocket close linger v0.15.1 shipped
@@ -716,6 +728,8 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== idle.log ==='; cat idle.log; exit 1; }
 python3 scripts/idle_timeout_probe.py 8093 3 || { echo '=== idle.log ==='; cat idle.log; exit 1; }
 echo "smoke-idle-timeout OK"
+python3 scripts/emit.py --covers A4 --task smoke-idle-timeout
+python3 scripts/emit.py --covers L16 --task smoke-idle-timeout
 """
 
 [tool.poe.tasks.smoke-half-close]
@@ -728,6 +742,7 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== hc.log ==='; cat hc.log; exit 1; }
 python3 scripts/half_close_probe.py 8080 || { echo '=== hc.log ==='; cat hc.log; exit 1; }
 echo "smoke-half-close OK"
+python3 scripts/emit.py --covers A12 --task smoke-half-close
 """
 
 [tool.poe.tasks.smoke-large-request]
@@ -740,6 +755,7 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== lr.log ==='; cat lr.log; exit 1; }
 python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat lr.log; exit 1; }
 echo "smoke-large-request OK"
+python3 scripts/emit.py --covers A13 --task smoke-large-request
 """
 
 # RFC 9112 §9.3: a server MUST be able to receive pipelined requests. The
@@ -759,6 +775,8 @@ curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localh
   || { echo '=== pl.log ==='; cat pl.log; exit 1; }
 python3 scripts/pipeline_probe.py 8080 || { echo '=== pl.log ==='; cat pl.log; exit 1; }
 echo "smoke-pipelining OK"
+python3 scripts/emit.py --covers A1 --task smoke-pipelining
+python3 scripts/emit.py --covers A6 --task smoke-pipelining
 """
 
 [tool.poe.tasks.smoke-ws]
@@ -787,6 +805,8 @@ done
 [ "$conns" = "0" ] || { echo "socket closed but still registered (connections=$conns)"; exit 1; }
 rm -f ws.log
 echo "smoke-ws OK"
+python3 scripts/emit.py --covers I1 --task smoke-ws
+python3 scripts/emit.py --covers I3 --task smoke-ws
 """
 
 # Phase 1 (single worker): two sockets in one room — one speaks, both hear
@@ -830,6 +850,7 @@ CHAT_EXPECT_WORKERS=2 python3 apps/ws_chat/chat_probe.py \
 kill $pid $worker_pids 2>/dev/null
 rm -f chat.log chat2.log
 echo "smoke-chat OK"
+python3 scripts/emit.py --covers I8 --task smoke-chat
 """
 
 [tool.poe.tasks.smoke-counter]
@@ -973,6 +994,7 @@ done
 kill $pid $worker_pids 2>/dev/null
 rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt counter2.log
 echo "smoke-counter OK"
+python3 scripts/emit.py --covers I9 --task smoke-counter
 """
 
 # Each assertion below pins down one part of the WSGI bridge. They are cheap to
@@ -1280,6 +1302,8 @@ wait $pid 2>/dev/null
 
 rm -f django.log django2.log django3.log
 echo "smoke-django OK"
+python3 scripts/emit.py --covers E1 --task smoke-django
+python3 scripts/emit.py --covers K8 --task smoke-django
 """
 
 # The hybrid row: sync Django under m0-wsgi, with the server's native SSE doing
@@ -1687,6 +1711,8 @@ echo "phase 6: a held stream and an executor stream on one loop, $beats heartbea
 trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log rt6.log' EXIT
 rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log
 echo "smoke-django-realtime OK"
+python3 scripts/emit.py --covers F6 --task smoke-django-realtime
+python3 scripts/emit.py --covers I11 --task smoke-django-realtime
 """
 
 # The WebSocket half of the realtime demo. Kept a separate task from
@@ -1887,6 +1913,7 @@ wait $pid; rc=$?
 
 rm -f ws1.log ws2.log ws3.log ws4.log
 echo "smoke-django-realtime-ws OK"
+python3 scripts/emit.py --covers I12 --task smoke-django-realtime-ws
 """
 
 # The CLI itself, as a user meets it: what --help and --version say, which
@@ -2021,6 +2048,9 @@ assert t['blocking_threads'] > 0 and t['blocking_threads_source'] == 'default', 
 " || fail 'the doctor does not report the resolved spec and zero-config topology'
 
 echo 'smoke-doctor: --doctor agrees with the server on every refusal'
+python3 scripts/emit.py --covers E7 --task smoke-doctor
+python3 scripts/emit.py --covers F8 --task smoke-doctor
+python3 scripts/emit.py --covers M5 --task smoke-doctor
 """
 
 [tool.poe.tasks.smoke-serve]
@@ -2267,6 +2297,16 @@ python3 -c "import json,sys; json.loads(sys.argv[1])" "$rec" || fail "the access
 kill $pid
 wait $pid 2>/dev/null
 echo "smoke-serve OK"
+python3 scripts/emit.py --covers C1 --task smoke-serve
+python3 scripts/emit.py --covers C3 --task smoke-serve
+python3 scripts/emit.py --covers D6 --task smoke-serve
+python3 scripts/emit.py --covers F2 --task smoke-serve
+python3 scripts/emit.py --covers F3 --task smoke-serve
+python3 scripts/emit.py --covers F4 --task smoke-serve
+python3 scripts/emit.py --covers J7 --task smoke-serve
+python3 scripts/emit.py --covers M2 --task smoke-serve
+python3 scripts/emit.py --covers M4 --task smoke-serve
+python3 scripts/emit.py --covers M6 --task smoke-serve
 """
 
 # The threaded execution mode. Phase 1 runs everywhere and pins the guard:
@@ -2443,6 +2483,7 @@ fi
 
 rm -f reload.log
 echo "smoke-reload OK (1 worker, then 2, each re-forked onto the changed module)"
+python3 scripts/emit.py --covers D5 --task smoke-reload
 """
 
 [tool.poe.tasks.smoke-threads]
@@ -2529,6 +2570,7 @@ wait $pid; rc=$?
 n=$(grep -c 'exited cleanly' threads.log)
 [ "$n" = "4" ] || fail "expected 4 'exited cleanly' lines, saw $n"
 echo "smoke-threads OK (phase 2: 4 threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
+python3 scripts/emit.py --covers E6 --task smoke-threads
 """
 
 [tool.poe.tasks.serve-flask]
@@ -2692,6 +2734,7 @@ wait $pid 2>/dev/null; rc=$?
 n=$(grep -c 'exited cleanly' pool.log)
 [ "$n" = "2" ] || fail "expected 2 'exited cleanly' lines from the loops, saw $n"
 echo "smoke-blocking-threads OK (phase 2: 2 loops x 4 handler threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
+python3 scripts/emit.py --covers C5 --task smoke-blocking-threads
 """
 
 [tool.poe.tasks.smoke-flask]
@@ -2723,6 +2766,7 @@ kill $pid 2>/dev/null
 wait $pid 2>/dev/null
 rm -f flask.log
 echo "smoke-flask OK"
+python3 scripts/emit.py --covers K10 --task smoke-flask
 """
 
 # Django's OWN ASGI handler through the executor: async views, live
@@ -2818,6 +2862,7 @@ wait $pid 2>/dev/null
 
 rm -f djasgi.log dj.jar
 echo "smoke-django-asgi OK"
+python3 scripts/emit.py --covers L10 --task smoke-django-asgi
 """
 
 # Cross-worker pub/sub for ASGI applications: state["m0"] rides the
@@ -2875,6 +2920,7 @@ kill $pid 2>/dev/null; wait $pid 2>/dev/null
 
 rm -f fanout.log
 echo "smoke-asgi-fanout OK"
+python3 scripts/emit.py --covers L12 --task smoke-asgi-fanout
 """
 
 # Two applications, one process, one listener: the mounted-server row.
@@ -3139,6 +3185,7 @@ out=$("$srv" --mount /a=shop.wsgi --mount /a/=portal.wsgi:app $D --port 8101 2>&
 
 rm -f hybrid.log hybrid2.log hybrid3.log hybrid3t.log
 echo "smoke-hybrid OK"
+python3 scripts/emit.py --covers M1 --task smoke-hybrid
 """
 
 # The flagship ASGI row: FastHTML is Starlette-based, served as `main:app`.
@@ -3186,6 +3233,7 @@ wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
 rm -f fasthtml.log
 echo "smoke-fasthtml OK"
+python3 scripts/emit.py --covers L11 --task smoke-fasthtml
 """
 
 [tool.poe.tasks.serve-wsgi-bare]
@@ -3415,6 +3463,14 @@ wait $pid 2>/dev/null
 
 rm -f wsgi.log
 echo "smoke-wsgi OK"
+python3 scripts/emit.py --covers G2 --task smoke-wsgi
+python3 scripts/emit.py --covers K1 --task smoke-wsgi
+python3 scripts/emit.py --covers K2 --task smoke-wsgi
+python3 scripts/emit.py --covers K3 --task smoke-wsgi
+python3 scripts/emit.py --covers K4 --task smoke-wsgi
+python3 scripts/emit.py --covers K5 --task smoke-wsgi
+python3 scripts/emit.py --covers K6 --task smoke-wsgi
+python3 scripts/emit.py --covers K7 --task smoke-wsgi
 """
 
 # Streamed WSGI bodies. A generator the application did not size streams
@@ -3667,6 +3723,9 @@ wait $pid 2>/dev/null
 
 rm -f stream.log
 echo "smoke-wsgi-stream OK"
+python3 scripts/emit.py --covers A9 --task smoke-wsgi-stream
+python3 scripts/emit.py --covers D3 --task smoke-wsgi-stream
+python3 scripts/emit.py --covers K9 --task smoke-wsgi-stream
 """
 
 # The Phase-2 benchmark gate (docs/WSGI_VS_ASGI.md section 8): the asyncio
@@ -3717,7 +3776,8 @@ shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike" || exit 1
-python3 scripts/pool_spike_check.py --binary "$out/pool_spike"
+python3 scripts/pool_spike_check.py --binary "$out/pool_spike" || exit 1
+python3 scripts/emit.py --covers E4 --task smoke-pool
 """
 
 [tool.poe.tasks.sabotage-pool]
@@ -3740,7 +3800,10 @@ shell = "python3 scripts/trailer_sabotage.py"
 # rather than weekly; `fuzz-request-long` is the deeper sweep for a release.
 [tool.poe.tasks.fuzz-request]
 help = "Fuzz the request/chunked decoders against their invariants"
-shell = "mojo run -I packages/m0-http -I packages/m0-core scripts/fuzz_request.mojo --iterations 20000"
+shell = """
+mojo run -I packages/m0-http -I packages/m0-core scripts/fuzz_request.mojo --iterations 20000 || exit 1
+python3 scripts/emit.py --covers G13 --task fuzz-request
+"""
 
 [tool.poe.tasks.fuzz-request-long]
 help = "PRE-RELEASE: the deep fuzz sweep, eight seeds x 250k iterations"
@@ -4190,6 +4253,15 @@ kill $pid 2>/dev/null; wait $pid 2>/dev/null
 
 rm -f asgi.log
 echo "smoke-asgi OK"
+python3 scripts/emit.py --covers L1 --task smoke-asgi
+python3 scripts/emit.py --covers L2 --task smoke-asgi
+python3 scripts/emit.py --covers L3 --task smoke-asgi
+python3 scripts/emit.py --covers L4 --task smoke-asgi
+python3 scripts/emit.py --covers L5 --task smoke-asgi
+python3 scripts/emit.py --covers L6 --task smoke-asgi
+python3 scripts/emit.py --covers L8 --task smoke-asgi
+python3 scripts/emit.py --covers L15 --task smoke-asgi
+python3 scripts/emit.py --covers M3 --task smoke-asgi
 """
 
 # The keep-alive request cap (`max_keepalive_requests`, 100) closes a
@@ -4218,6 +4290,7 @@ trap 'kill $pid 2>/dev/null; rm -f kac.log' EXIT
 curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8144/ > /dev/null \
   || fail 'the asgi_bare app never became healthy'
 python3 scripts/keepalive_cap_probe.py 8144 || fail 'keepalive cap probe failed'
+python3 scripts/emit.py --covers A3 --task smoke-keepalive-cap
 """
 
 # SPEC I17: `MAX_PENDING_BYTES` bounds ONE frame as well as the whole queue,
@@ -4243,6 +4316,7 @@ trap 'kill $pid 2>/dev/null; rm -f oc.log' EXIT
 curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8156/ > /dev/null \
   || fail 'the asgi_bare app never became healthy'
 python3 scripts/outbox_cap_probe.py 8156 || fail 'outbox cap probe failed'
+python3 scripts/emit.py --covers I17 --task smoke-outbox-cap
 """
 
 # PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
@@ -4265,6 +4339,7 @@ mojo run -I packages/m0-http/ -I packages/m0-core/ packages/m0-http/client_check
   || { echo '=== notes.log ==='; cat notes.log; exit 1; }
 rm -f notes.log
 echo "smoke-client OK"
+python3 scripts/emit.py --covers M14 --task smoke-client
 """
 
 # The foreign-caller half of the C-ABI story: the emitted shared object must
@@ -4545,6 +4620,8 @@ fi
 mv "$work/_lib_moved" "$site/_lib" || fail "could not restore _lib"
 
 echo "smoke-wheel OK ($base)"
+python3 scripts/emit.py --covers M7 --task smoke-wheel
+python3 scripts/emit.py --covers M8 --task smoke-wheel
 """
 
 
@@ -4580,6 +4657,7 @@ whl=$(ls dist/wheels/*.whl | head -1)
 [ -n "$whl" ] || { echo "smoke-quickstart: no wheel built"; exit 2; }
 M0SERVE_WHEEL="$whl" python3 scripts/run_quickstart.py \
   --expect setup=2,serve=2,verify=2 || exit 1
+python3 scripts/emit.py --covers M10 --task smoke-quickstart
 """
 [tool.poe.tasks.smoke-ffi]
 help = "Load the C-ABI shared library via ctypes and assert known vectors"
@@ -4640,6 +4718,7 @@ print("ctypes round trip OK")
 PYEOF
 [ $? = 0 ] || exit 1
 echo "smoke-ffi OK"
+python3 scripts/emit.py --covers M9 --task smoke-ffi
 """
 
 # Two claims, each with its own server run off one compiled binary. First:
@@ -4712,6 +4791,7 @@ grep -q 'datastar-patch-elements' todo_fresh.txt \
 
 rm -f todo_sse.txt todo_replay.txt todo_fresh.txt todo.log
 echo "smoke-todo OK"
+python3 scripts/emit.py --covers I10 --task smoke-todo
 """
 
 # Each assertion pins one framework feature the notes API exists to showcase:
@@ -4784,6 +4864,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/asset
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
 rm -rf "$dir" part.bin head.txt sendfile.log
 echo "smoke-sendfile OK"
+python3 scripts/emit.py --covers J1 --task smoke-sendfile
 """
 
 [tool.poe.tasks.smoke-notes]
@@ -4882,6 +4963,8 @@ code=$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://localhost:8091
 
 rm -f notes.log note1.json problem.json headers.txt static.css trav.txt
 echo "smoke-notes OK"
+python3 scripts/emit.py --covers G10 --task smoke-notes
+python3 scripts/emit.py --covers J6 --task smoke-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------

@@ -161,6 +161,8 @@ def test_publish_rejects_reserved_channel() raises:
 
     Internal senders are unaffected: they build `encode_bus_frame`
     datagrams and send them directly, never through `publish_to_channels`.
+
+    covers: G7
     """
     var bus = BroadcastBus(2)
 
@@ -186,7 +188,10 @@ def test_publish_rejects_reserved_channel() raises:
 
 
 def test_bus_publish_method_rejects_reserved_channel() raises:
-    """The method form shares the guard — it delegates to the free function."""
+    """The method form shares the guard — it delegates to the free function.
+
+    covers: G8
+    """
     var bus = BroadcastBus(2)
     bus.publish(0, asgi_stream_url_like("s", 7), 1, Span(_bytes("x\n\n")))
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)

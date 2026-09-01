@@ -11,9 +11,20 @@ this file can confirm from the workflow files.
 
 The checks are pure functions of TEXT rather than readers of paths. That is not
 style: `--sabotage` follows scripts/shim_ownership.py and scripts/pool_sabotage.py
-in patching sources *in memory* and insisting the suite goes red for each. Four
-of the seventeen sabotages mutate pyproject.toml, test.yml or cli.mojo rather
-than the sheet, so every source has to arrive as an argument.
+in patching sources *in memory* and insisting the suite goes red for each. Nine
+of the twenty-five sabotages mutate pyproject.toml, test.yml, cli.mojo or the
+test index rather than the sheet, so every source has to arrive as an argument.
+
+Coverage is DECLARED by the gate, not merely cited by the sheet (SPEC F12;
+ROADMAP "Traceability", phase 2): every `verified (every PR)` row must be
+declared — a `covers: A7` line in the cited test's docstring, or a
+`scripts/emit.py --covers A7` call in what the cited step runs — and the
+declaration must AGREE with the citation. The citation-shape rules stay,
+because they guard properties a declaration cannot: the cadence is real, the
+step is unconditional, and the two closed sets (every smoke step cited, every
+CLI flag named) hold in both directions. Weekly and pre-release rows keep
+declared-static citations; their runs are absent from PR CI, so a recorder
+call there would record nothing anyone checks.
 
 What this CANNOT do, stated here because the page states it too: it proves a
 cited gate runs, never that the gate tests the capability the row claims. No
@@ -170,6 +181,46 @@ def parse(sheet):
     return rows, failures
 
 
+def _covers_by_fn(text):
+    """fn -> row ids declared by `covers:` lines inside that test function.
+
+    The F12 direction (docs/ROADMAP.md, "Traceability"): the gate declares
+    what it covers, next to the assertion, written by the person who knows
+    what was asserted. The convention is a `covers: A7` line (ids may be
+    comma-separated) in the test's docstring; the scan takes the whole
+    function slice rather than parsing docstring syntax, because greppable
+    is the property the convention promises.
+    """
+    out = {}
+    defs = list(re.finditer(r"^def (test_[a-z0-9_]+)\(", text, re.M))
+    for i, m in enumerate(defs):
+        end = defs[i + 1].start() if i + 1 < len(defs) else len(text)
+        ids = set()
+        for c in re.finditer(r"^\s*covers: ([A-Z]\d+(?:\s*,\s*[A-Z]\d+)*)\s*$",
+                             text[m.end():end], re.M):
+            ids |= {x.strip() for x in c.group(1).split(",")}
+        if ids:
+            out[m.group(1)] = ids
+    return out
+
+
+def _all_task_bodies(pyproject):
+    """EVERY poe task's raw block text, not only the smoke-* ones.
+
+    `_task_bodies` stays smoke-scoped for the rules that are about smoke
+    shape; coverage declarations may sit in any task a cited step runs
+    (`fuzz-request`, `sabotage-trailers`, `test-shim` are all cited).
+    """
+    out = {}
+    for name, body in re.findall(
+        r"^\[tool\.poe\.tasks\.([a-z0-9-]+)\]$(.*?)(?=^\[tool\.poe\.tasks\.)",
+        pyproject + "\n[tool.poe.tasks.__end__]\n",
+        re.M | re.S,
+    ):
+        out[name] = body
+    return out
+
+
 def _sequences(pyproject):
     """poe sequence tasks, as name -> [referenced task]."""
     out = {}
@@ -209,10 +260,12 @@ def _task_bodies(pyproject):
 
 
 def _steps(workflow):
-    """test.yml step name -> (poe tasks it runs, whether it carries an `if:`).
+    """test.yml step name -> (poe tasks it runs, `if:` present, body text).
 
     Steps are `- name: X` followed by `run:`; a step with no name (there is one,
-    in the aarch64 job) simply contributes nothing to cite.
+    in the aarch64 job) simply contributes nothing to cite. The body text is
+    what the coverage rules read `--covers` declarations out of, for the rows
+    whose cited step runs a bare `python3` rather than a poe task.
     """
     out, name, conditional, buf = {}, None, False, []
 
@@ -222,8 +275,9 @@ def _steps(workflow):
         # runs a plain `python3`. `tasks` stays possibly-empty, which is what
         # the smoke-specific rules below key off.
         if name and buf:
-            tasks = set(re.findall(r"poe ([a-z0-9-]+)", "\n".join(buf)))
-            out[name] = (tasks, conditional)
+            body = "\n".join(buf)
+            tasks = set(re.findall(r"poe ([a-z0-9-]+)", body))
+            out[name] = (tasks, conditional, body)
 
     for line in workflow.splitlines():
         m = re.match(r"^\s*- name: (.+?)\s*$", line)
@@ -261,11 +315,16 @@ def analyse(src):
     rows, failures = parse(sheet)
     pyproject, workflow = src["pyproject"], src["workflow"]
     steps = _steps(workflow)
-    tasks_in_ci = {t for tasks, _ in steps.values() for t in tasks}
+    tasks_in_ci = {t for tasks, _, _ in steps.values() for t in tasks}
     smoke_bodies = _task_bodies(pyproject)
     reachable = _reachable(pyproject)
     dev = [re.sub(r"[^a-z0-9]", "", d.lower()) for d in _dev_group(pyproject)]
     cited_steps, cited_flags = set(), set()
+    # (id, where, kind, key) for every `verified (every PR)` row — the rows
+    # RULE 10/11 below hold to declared coverage. Weekly and pre-release rows
+    # keep declared-static citations: their runs are absent from PR CI, so a
+    # `--covers` there would record nothing anyone checks.
+    gated = []
 
     for row in rows:
         where = f"docs/SPEC.md {row['id']} ({row['capability']!r})"
@@ -319,6 +378,8 @@ def analyse(src):
                         f"{where}: unit tests run inside `poe test-all` on every "
                         f"pull request; cadence {cadence!r} is wrong"
                     )
+                else:
+                    gated.append((row["id"], where, "unit", (fname, fn)))
                 continue
 
             # Otherwise the gate is a test.yml STEP NAME, not a task name.
@@ -326,7 +387,9 @@ def analyse(src):
             # M0_INVERTED=1), so a task name cannot say which claim is meant.
             if gate in steps:
                 cited_steps.add(gate)
-                tasks, conditional = steps[gate]
+                tasks, conditional, _body = steps[gate]
+                if cadence == "every PR":
+                    gated.append((row["id"], where, "step", gate))
                 if cadence != "every PR":
                     failures.append(
                         f"{where}: `{gate}` is a step in test.yml, which runs on "
@@ -424,7 +487,7 @@ def analyse(src):
 
     # RULE 6, the reverse direction, over two closed sets. Without it a sheet
     # can be complete-looking while omitting whatever is inconvenient.
-    for gate, (tasks, _) in steps.items():
+    for gate, (tasks, _, _) in steps.items():
         if not any(t.startswith("smoke-") for t in tasks):
             continue
         if gate not in cited_steps:
@@ -441,6 +504,76 @@ def analyse(src):
         failures.append(
             f"docs/SPEC.md names `{flag}`, which cli.mojo does not accept"
         )
+
+    # --- Declared coverage (SPEC F12; ROADMAP "Traceability", phase 2) -----
+    # The gate declares what it covers, next to the assertion: a
+    # `covers: A7` line in a Mojo test's docstring, or a
+    # `scripts/emit.py --covers A7` call in the task body (or bare `run:`
+    # block) the cited step executes. The declaration is what the person who
+    # wrote the assertion says it proves; the citation is what the sheet
+    # says. RULE 11 requires them to AGREE, which is what makes the audit's
+    # defect class — a row citing a gate that asserts something else —
+    # structurally impossible for every-PR rows.
+    declared = {}  # id -> [site, ...]
+
+    for fname, info in sorted(src["tests"].items()):
+        for fn, ids in sorted(info.get("covers", {}).items()):
+            for rid in ids:
+                declared.setdefault(rid, []).append(("unit", fname, fn))
+    for task, body in sorted(_all_task_bodies(pyproject).items()):
+        for m in re.finditer(r"emit\.py --covers ([A-Z]\d+)", body):
+            declared.setdefault(m.group(1), []).append(("task", task))
+    for step, (_tasks, _cond, body) in sorted(steps.items()):
+        for m in re.finditer(r"emit\.py --covers ([A-Z]\d+)", body):
+            declared.setdefault(m.group(1), []).append(("workflow", step))
+
+    # RULE 10: a declared id must name a row that exists. A `covers:` line
+    # left pointing at a retired or mistyped id is a claim about nothing.
+    row_ids = {r["id"] for r in rows}
+    for rid in sorted(declared):
+        if rid not in row_ids:
+            site = declared[rid][0]
+            failures.append(
+                f"{'/'.join(site[1:])} declares coverage of {rid}, and no row "
+                f"carries that id — a retired or mistyped id"
+            )
+
+    # RULE 11: every `verified (every PR)` row is declared, BY its cited
+    # gate. Declared elsewhere too is fine (extra coverage); declared ONLY
+    # elsewhere means the citation and the declaration disagree, which is
+    # the mis-citation the 2026-08-30 audit spent its time on.
+    for rid, where, kind, key in gated:
+        sites = declared.get(rid, [])
+        if not sites:
+            failures.append(
+                f"{where}: verified on every PR, but no gate declares "
+                f"`covers: {rid}` — coverage is asserted by the sheet alone"
+            )
+            continue
+        if kind == "unit":
+            if ("unit", key[0], key[1]) not in sites:
+                failures.append(
+                    f"{where}: the evidence cites {key[0]}:{key[1]}, but "
+                    f"{rid}'s coverage is declared at "
+                    f"{', '.join('/'.join(s[1:]) for s in sites)} — the "
+                    f"citation and the declaration disagree"
+                )
+        else:
+            step_tasks = steps.get(key, (set(), False, ""))[0]
+            agrees = any(
+                (s[0] == "task" and s[1] in step_tasks)
+                or (s[0] == "workflow" and s[1] == key)
+                for s in sites
+            )
+            if not agrees:
+                failures.append(
+                    f"{where}: the evidence cites the step `{key}`, but no "
+                    f"`--covers {rid}` call sits in anything that step runs "
+                    f"(declared at "
+                    f"{', '.join('/'.join(s[1:]) for s in sites)}) — the "
+                    f"citation and the declaration disagree"
+                )
+
     return rows, failures
 
 
@@ -459,7 +592,13 @@ def render_rollup(rows):
         f"{by['implemented']} implemented, {by['planned']} planned, "
         f"{by['out of scope']} out of scope.** Of the {by['verified']} "
         f"verified, {cad['every PR']} are gated on every pull request, "
-        f"{cad['weekly']} weekly, and {cad['pre-release']} before a release.\n"
+        f"{cad['weekly']} weekly, and {cad['pre-release']} before a release. "
+        f"Every pull-request-gated row's coverage is declared IN its gate "
+        f"(`covers:` in the cited test, or a recorder coverage call in "
+        f"what the cited step runs), and the checker requires the "
+        f"declaration and the citation to agree; the weekly and "
+        f"pre-release rows keep declared-static citations, their runs "
+        f"being absent from PR CI.\n"
         f"{END}"
     )
 
@@ -495,12 +634,14 @@ def read_sources(**override):
         for f in sorted((pkg / "test").glob("test_*.mojo")) if (pkg / "test").is_dir() else []:
             name = pkg.name[3:]  # m0-http -> http
             task = f"test-{name}" if name != "sqlite" else "test-sqlite-mojo"
+            text = f.read_text()
             tests[f.name] = {
                 "task": task,
                 "fns": {
                     m.group(1)
-                    for m in re.finditer(r"^def (test_[a-z0-9_]+)\(", f.read_text(), re.M)
+                    for m in re.finditer(r"^def (test_[a-z0-9_]+)\(", text, re.M)
                 },
+                "covers": _covers_by_fn(text),
             }
     # Every tracked file, not just packages/**/*.mojo: an `implemented` row may
     # legitimately cite a script, a workflow or a Python module, and rejecting
@@ -588,6 +729,23 @@ def _first_section(text):
     return m.group(0) if m else None
 
 
+def _misplace_unit_covers(idx):
+    """Move one unit declaration to a function nothing cites.
+
+    The id stays declared (so the no-gate-declares arm stays quiet) but no
+    longer at the cited site — RULE 11's disagreement arm is the only rule
+    that can notice.
+    """
+    for f, info in sorted(idx.items()):
+        cov = info.get("covers") or {}
+        if cov:
+            fn, ids = sorted(cov.items())[0]
+            moved = {k: v for k, v in cov.items() if k != fn}
+            moved[fn + "_moved_by_sabotage"] = ids
+            return {**idx, f: {**info, "covers": moved}}
+    return None
+
+
 # Each sabotage reverts ONE rule. `must` is asserted against the failure text,
 # never against the exit code: check_docs.py's fourteen checks share one
 # sys.exit(1), so "it went red" is not evidence that THIS rule bit.
@@ -671,6 +829,23 @@ SABOTAGES = [
     ("a capability row is duplicated", "sheet",
      lambda t: (t.replace(_first_row(t), _first_row(t) + "\n" + _first_row(t), 1)
                 if _first_row(t) else None), "is used twice"),
+    # The declared-coverage rules (F12). Generic over WHICH declaration, for
+    # the same reason the unit-evidence sabotages locate by shape: quoting a
+    # particular test or id breaks the day it is legitimately reworked.
+    ("a gate declares coverage of a retired id", "tests",
+     lambda idx: (lambda f=sorted(idx)[0]: {
+         **idx, f: {**idx[f], "covers": {
+             **idx[f].get("covers", {}), "test_injected_by_sabotage": {"Z9"}}}
+     })(), "no row carries that id"),
+    ("a declaration sits in a different test than the row cites", "tests",
+     _misplace_unit_covers, "the citation and the declaration disagree"),
+    ("every unit gate's declarations are deleted", "tests",
+     lambda idx: {f: {**info, "covers": {}} for f, info in idx.items()},
+     "no gate declares"),
+    ("a smoke's declaration line is deleted", "pyproject",
+     lambda t: re.sub(r"^python3 scripts/emit\.py --covers [A-Z]\d+[^\n]*\n",
+                      "", t, count=1, flags=re.M),
+     "no gate declares"),
     ("the sheet is deleted", "sheet", None, "docs/SPEC.md is missing"),
 ]
 

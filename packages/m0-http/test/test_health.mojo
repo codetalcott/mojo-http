@@ -18,7 +18,10 @@ def test_health_register_healthy() raises:
 
 
 def test_health_register_unhealthy() raises:
-    """Registered unhealthy check fails readiness."""
+    """Registered unhealthy check fails readiness.
+
+    covers: F7
+    """
     var h = HealthRegistry()
     h.register("store", False)
     assert_false(h.is_ready())
