@@ -36,7 +36,10 @@ def _count(haystack: String, needle: String) -> Int:
 
 
 def test_raw_line_reaches_the_wire_verbatim() raises:
-    """Attributes survive: expires, HttpOnly, Max-Age, Path, SameSite=Lax."""
+    """Attributes survive: expires, HttpOnly, Max-Age, Path, SameSite=Lax.
+
+    covers: G3
+    """
     var jar = ResponseCookieJar()
     jar.add_raw(DJANGO_SESSION)
     var wire = _wire(jar^)

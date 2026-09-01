@@ -133,6 +133,10 @@ def test_non_upgrade_request_returns_none() raises:
 
 
 def test_wrong_version_is_426_advertising_13() raises:
+    """Declared coverage.
+
+    covers: I7
+    """
     var resp_opt = websocket_upgrade(_ws_request(version="8"))
     assert_true(Bool(resp_opt))
     var resp = resp_opt.take()
@@ -229,6 +233,10 @@ def test_two_frames_in_one_feed() raises:
 
 
 def test_fragmented_message_assembles() raises:
+    """Declared coverage.
+
+    covers: I2
+    """
     var state = WSState(1 << 20)
     # text "frag" without FIN, then continuation "ment" with FIN.
     var f1 = encode_ws_frame_masked(WS_OP_TEXT, "frag".as_bytes(), _mask())
@@ -264,6 +272,10 @@ def test_pong_is_ignored() raises:
 
 
 def test_close_is_echoed_with_code_then_closes() raises:
+    """Declared coverage.
+
+    covers: I4
+    """
     var state = WSState(1 << 20)
     var body = List[UInt8]()
     body.append(0x03)
@@ -316,6 +328,8 @@ def test_reserved_close_codes_are_refused_1002() raises:
     parser used to echo whatever arrived, which answered a 1006 with a
     1006. These are Autobahn 7.9.1-7.9.9, which failed on every release
     up to this change.
+
+    covers: I16
     """
     for code in [0, 999, 1004, 1005, 1006, 1015, 1016, 1100, 2000, 2999]:
         var res = _feed_close(code)
@@ -433,6 +447,10 @@ def test_interleaved_data_frame_is_protocol_error() raises:
 
 
 def test_fragmented_control_frame_is_protocol_error() raises:
+    """Declared coverage.
+
+    covers: I6
+    """
     var state = WSState(1 << 20)
     var ping = encode_ws_frame_masked(WS_OP_PING, "x".as_bytes(), _mask())
     ping[0] = ping[0] & 0x7F  # control frame without FIN
@@ -503,6 +521,10 @@ def test_utf8_validator_accepts_and_rejects() raises:
 
 
 def test_invalid_utf8_text_closes_1007() raises:
+    """Declared coverage.
+
+    covers: I5
+    """
     var state = WSState(1 << 20)
     var payload = List[UInt8]()
     payload.append(0xC3)  # lone lead byte, no continuation

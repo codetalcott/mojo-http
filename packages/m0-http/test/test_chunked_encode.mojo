@@ -88,6 +88,10 @@ def test_terminator_is_zero_chunk_and_bare_crlf() raises:
 
 
 def test_round_trip_single_chunk() raises:
+    """Declared coverage.
+
+    covers: A8
+    """
     var payload = _b("hello world")
     var wire = encode_chunk(Span(payload))
     wire.extend(chunked_terminator())

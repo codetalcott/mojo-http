@@ -233,6 +233,8 @@ def test_proxy_header_is_excluded_from_the_environ() raises:
     Any application making a server-side HTTP call would then send it
     wherever the client said. No legitimate request carries this header, so
     it is dropped rather than renamed.
+
+    covers: G4
     """
     assert_true(header_is_excluded("proxy".as_bytes()))
 

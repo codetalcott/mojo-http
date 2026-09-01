@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 124 verified, 0 implemented, 1 planned, 24 out of scope.** Of the 124 verified, 121 are gated on every pull request, 1 weekly, and 2 before a release.
+**149 capabilities: 125 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 125 verified, 122 are gated on every pull request, 1 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -163,7 +163,7 @@ whose body drifted away from it is the case most likely to have survived.
 | F3 | `--metrics` turns `/__metrics` from the application's 404 into a 200 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
 | F4 | Prometheus exposition 0.0.4: 8 counter and gauge families, each with HELP, TYPE and a sample | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
 | F5 | Latency histograms on `/__metrics` | verified | `Smoke test the serve CLI` (every PR) — six log-spaced `le` bounds (100µs–1s, +Inf), integer-only and O(1) on the loop thread; `scripts/histogram_check.py` (selftested in the same phase) asserts the documented bounds, non-decreasing cumulative counts, `le="+Inf"` equal to `_count`, and a `_count` covering the phase's own requests; boundary math pinned by `test_metrics.mojo` |
-| F12 | Coverage declared by the gate rather than cited by this page | planned | ROADMAP: Traceability: stable ids, then declared coverage |
+| F12 | Coverage declared by the gate rather than cited by this page | verified | `Check machine-sourced doc facts` (every PR) — every pull-request-gated row declares its coverage in the gate itself (a `covers:` docstring line in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration to agree with the citation, which is what makes the audit's mis-citation class structurally impossible. Weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI. Four sabotages in `poe sabotage-spec` revert the rules |
 | F6 | `--health-path` answers 200 | verified | `Smoke test the Django realtime example` (every PR) — `--health-path` |
 | F7 | Health registry with readiness aggregation | verified | `test_health.mojo:test_health_register_unhealthy` (every PR) |
 | F8 | Configuration report that exits as the server would | verified | `Smoke test --doctor against the server's own exit codes` (every PR) — `--doctor` |

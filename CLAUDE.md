@@ -676,15 +676,19 @@ Three things about it are load-bearing:
   audit legitimately re-pointed it. Reuse is the one rule not enforced, because
   checking it needs a ledger of retired ids that is itself a second source of
   truth; it is written down instead. The inverse of this page -- gates
-  DECLARING what they cover rather than being cited by it -- is the phase-2
-  plan under ROADMAP's "Traceability" heading, and is what would make a
-  mis-citation structurally impossible.
+  DECLARING what they cover rather than being cited by it -- is BUILT (F12):
+  every `verified (every PR)` row must be declared by its own gate (a
+  `covers: A7` docstring line in the cited test, or a
+  `scripts/emit.py --covers A7` call in what the cited step runs), and the
+  checker requires the declaration to agree with the citation. Adding or
+  re-pointing a row means adding the declaration too; the checker's failure
+  names which side is missing.
 - **The rules are pure functions of text**, which is what lets
   `--sabotage` revert one in memory and insist the checker catches it —
-  `shim_ownership.py`'s shape. Four of the seventeen sabotages mutate
-  `pyproject.toml`, `test.yml` or `cli.mojo` rather than the sheet, so every
-  source arrives as an argument. Do not "simplify" the checker into something
-  that reads paths.
+  `shim_ownership.py`'s shape. Nine of the twenty-five sabotages mutate
+  `pyproject.toml`, `test.yml`, `cli.mojo` or the test index rather than the
+  sheet, so every source arrives as an argument. Do not "simplify" the
+  checker into something that reads paths.
 
 What it deliberately cannot do, and the page says so: prove that a cited gate
 exercises the capability its row claims.

@@ -55,7 +55,10 @@ def test_auth_case_sensitive() raises:
 def test_a_rotation_of_the_key_is_rejected() raises:
     """The comparison indexes each side modulo its own length, so a value
     that repeats the real key must not compare equal. The length check is
-    what catches it — this asserts the two work together."""
+    what catches it — this asserts the two work together.
+
+    covers: G9
+    """
     var h = Headers()
     h["X-API-Key"] = "abab"
     assert_false(check_api_key(h, String("ab")))

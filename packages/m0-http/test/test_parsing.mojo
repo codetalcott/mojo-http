@@ -68,7 +68,10 @@ def _header(raw: String, key: String) raises -> String:
 
 
 def test_content_length_with_transfer_encoding_is_rejected() raises:
-    """CL.TE: the canonical desync. Two framings, two readers, one exploit."""
+    """CL.TE: the canonical desync. Two framings, two readers, one exploit.
+
+    covers: B1
+    """
     assert_true(
         _rejected(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n"
@@ -98,7 +101,10 @@ def test_duplicate_content_length_is_rejected() raises:
 
 
 def test_duplicate_content_length_is_rejected_across_letter_case() raises:
-    """Header names are case-insensitive; the duplicate check must be too."""
+    """Header names are case-insensitive; the duplicate check must be too.
+
+    covers: B2
+    """
     assert_true(
         _rejected(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n"
@@ -112,6 +118,8 @@ def test_padded_headers_do_not_bypass_the_smuggling_check() raises:
 
     A check that ran before trimming, or a trim that ran only on some values,
     would let "Transfer-Encoding:\tchunked " slip past.
+
+    covers: B4
     """
     assert_true(
         _rejected(
@@ -161,7 +169,10 @@ def test_single_content_length_is_accepted() raises:
 
 
 def test_http11_requires_a_non_empty_host() raises:
-    """An empty Host lets a request be routed by whatever the next hop guesses."""
+    """An empty Host lets a request be routed by whatever the next hop guesses.
+
+    covers: A14
+    """
     assert_true(_rejected("GET / HTTP/1.1\r\nHost: \r\n\r\n"))
 
 
@@ -228,6 +239,8 @@ def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises
     the assertion said nothing at all about the encoding. Without it, a
     server that does not check this dispatches the request as bodyless and
     leaves the body in the buffer for the next reader to find.
+
+    covers: B3
     """
     assert_true(
         _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
@@ -288,7 +301,10 @@ def test_non_digit_content_lengths_are_rejected() raises:
 
 def test_overflowing_content_length_is_rejected() raises:
     """A 20-digit length wraps Int64 in `content_length()`, so the value
-    acted on would not be the value sent."""
+    acted on would not be the value sent.
+
+    covers: B6
+    """
     assert_true(
         _rejected(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551621\r\n\r\n"
@@ -316,7 +332,10 @@ def test_ordinary_content_lengths_are_still_accepted() raises:
 
 
 def test_header_count_is_capped() raises:
-    """An unbounded header list is free memory amplification for an attacker."""
+    """An unbounded header list is free memory amplification for an attacker.
+
+    covers: C4
+    """
     var raw = String("GET / HTTP/1.1\r\nHost: x\r\n")
     for i in range(200):
         raw += "X-Pad-" + String(i) + ": v\r\n"
@@ -348,7 +367,10 @@ def test_a_truncated_request_is_incomplete_not_invalid() raises:
 
 
 def test_absolute_form_target_is_reduced_to_its_path() raises:
-    """Handlers compare paths; a proxy-style target must not reach them whole."""
+    """Handlers compare paths; a proxy-style target must not reach them whole.
+
+    covers: A15
+    """
     assert_equal(
         _path_of("GET http://example.com/orders/7 HTTP/1.1\r\nHost: x\r\n\r\n"),
         "/orders/7",
@@ -458,6 +480,8 @@ def test_a_field_line_without_a_colon_is_invalid_not_incomplete() raises:
     Searching the whole buffer for a colon would find the NEXT line's and
     report this one as still arriving — and a request the server waits on
     is a request whose bytes stay in the buffer.
+
+    covers: A16
     """
     assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nNoColonHere\r\n\r\n"))
     assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nNoColon\r\nX-Next: 1\r\n\r\n"))
@@ -475,6 +499,10 @@ def test_a_truncated_field_name_with_a_bad_byte_is_already_invalid() raises:
 
 
 def test_a_control_byte_in_the_request_target_is_invalid() raises:
+    """Declared coverage.
+
+    covers: A17
+    """
     assert_true(_rejected("GET /a\x01b HTTP/1.1\r\nHost: x\r\n\r\n"))
     assert_true(_rejected("GET /a\tb HTTP/1.1\r\nHost: x\r\n\r\n"))
     assert_true(_rejected("GET /a\x7fb HTTP/1.1\r\nHost: x\r\n\r\n"))
@@ -537,6 +565,8 @@ def test_chunk_size_with_the_sign_bit_set_is_rejected() raises:
     With the overflow guard removed this input does not merely return a wrong
     answer — it terminates the process. That is the whole argument for the
     guard, in one test case.
+
+    covers: B7
     """
     var got = _decode("8000000000000000\r\nx\r\n")
     assert_equal(got[0], -1)
@@ -544,6 +574,10 @@ def test_chunk_size_with_the_sign_bit_set_is_rejected() raises:
 
 
 def test_chunk_size_is_limited_to_sixteen_significant_digits() raises:
+    """Declared coverage.
+
+    covers: C2
+    """
     var got = _decode("11111111111111111\r\nx\r\n")
     assert_equal(got[0], -1)
 
@@ -562,7 +596,10 @@ def test_garbage_after_the_chunk_size_is_rejected() raises:
 
 
 def test_bare_lf_in_a_chunk_extension_is_rejected() raises:
-    """A lone LF where CRLF is required is a classic framing desync."""
+    """A lone LF where CRLF is required is a classic framing desync.
+
+    covers: B5
+    """
     var got = _decode("5;ext\nhello\r\n")
     assert_equal(got[0], -1)
 
@@ -628,6 +665,8 @@ def test_incremental_decode_matches_a_single_pass() raises:
     NEW bytes is what makes a chunked body linear rather than quadratic in
     the number of reads. Every split lands somewhere different — mid size
     line, mid data, between CR and LF — and all of them must agree.
+
+    covers: A7
     """
     var raw = String("5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n")
     for piece in range(1, 12):
@@ -728,6 +767,8 @@ def test_a_trailer_section_is_consumed_whole() raises:
     `ret == 0` is the claim: zero bytes left over means the decoder consumed
     the trailer AND its terminating CRLF. Anything left behind is what the
     connection later closes on top of.
+
+    covers: A10
     """
     var got = _decode_trailing("5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n")
     assert_equal(got[0], 0)

@@ -217,6 +217,8 @@ def test_sigterm_reaches_the_shutdown_pipe() raises:
 
     Reaching the next line at all proves a handler ran — the default action for
     SIGTERM would have killed the runner.
+
+    covers: D4
     """
     var read_fd = install_shutdown_signals()
     _ = kill_process(getpid(), SIGTERM)

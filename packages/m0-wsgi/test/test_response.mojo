@@ -71,6 +71,8 @@ def test_status_reason_with_crlf_is_emptied_not_transmitted() raises:
     a header on the wire that the application never listed.
 
     The code survives — only the injected text is dropped.
+
+    covers: G1
     """
     var got = split_status("200 OK\r\nSet-Cookie: hijack=1")
     assert_equal(got[0], 200)

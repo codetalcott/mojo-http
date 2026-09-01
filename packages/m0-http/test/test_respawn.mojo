@@ -55,6 +55,10 @@ def _scenario(crash_marker: String, ok_marker: String):
 
 
 def test_respawned_worker_returns_to_the_callers_startup_path() raises:
+    """Declared coverage.
+
+    covers: E2
+    """
     var crash_marker = String("/tmp/m0_respawn_crash_", getpid())
     var ok_marker = String("/tmp/m0_respawn_ok_", getpid())
     # A stale marker from an interrupted earlier run would fake a pass.
@@ -106,6 +110,8 @@ def test_supervisor_exits_nonzero_when_respawn_budget_is_spent() raises:
     Pinned because `m0serve --workers N` with a mistyped `module:attr` is
     exactly this scenario, and a CLI that exits 0 after failing to load the
     application misreports to everything that launches it.
+
+    covers: E3
     """
     var pid = fork()
     if pid == 0:

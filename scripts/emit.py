@@ -37,6 +37,37 @@ import sys
 from datetime import datetime, timezone
 
 
+def emit_covers(rid, task=None, path=None, tag=None):
+    """Append one coverage record: this run exercised SPEC row `rid`.
+
+    The F12 half of the recorder (docs/ROADMAP.md, "Traceability"): a smoke
+    declares the capability it covers IN its own body, so coverage is
+    recorded by a real run rather than asserted by the sheet. The static
+    checker (`scripts/spec_sheet.py`) reads the same `--covers` call sites
+    out of the task bodies; this records that the declaring line actually
+    ran. Same two absolutes as `emit`: never fails, and a no-op without
+    `$M0_RESULTS`.
+    """
+    try:
+        path = path if path is not None else os.environ.get("M0_RESULTS")
+        if not path:
+            return False
+        rec = {
+            "covers": str(rid),
+            "recorded_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        if task:
+            rec["task"] = task
+        tag = tag if tag is not None else os.environ.get("M0_RESULTS_TAG")
+        if tag:
+            rec["tag"] = tag
+        with open(path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def emit(metric, value, unit=None, limit=None, task=None, path=None, tag=None):
     """Append one record. Returns True if written, False if not; never raises."""
     try:
@@ -147,6 +178,30 @@ def _selftest():
         check("headroom against a fractional limit is finite",
               "0% of limit" in summarise(p3))
 
+        # --covers (SPEC F12): same absolutes, and the summary must not
+        # bury the measurements under a hundred declaration rows.
+        p4 = os.path.join(d, "covers.jsonl")
+        check("a coverage record is written",
+              emit_covers("A7", task="smoke-pipelining", path=p4) is True)
+        r4 = json.loads(open(p4).read().strip())
+        check("the coverage record carries the id and task",
+              (r4["covers"], r4["task"]) == ("A7", "smoke-pipelining"))
+        check("no path and no M0_RESULTS writes no coverage",
+              emit_covers("A7", path=None) is False
+              or bool(os.environ.get("M0_RESULTS")))
+        check("an unwritable path is survived by --covers too",
+              emit_covers("A7", path=os.path.join(d, "no", "dir", "f")) is False)
+        emit("rss", 64, unit="KB", limit=128, path=p4)
+        emit_covers("A8", path=p4)
+        t4 = summarise(p4)
+        check("coverage renders as a tally, not table rows",
+              "2 SPEC row(s) declared covered" in t4 and "A7" not in t4)
+        check("measurements still render beside coverage", "rss" in t4)
+        check("a coverage-only file summarises to its tally",
+              "1 SPEC row(s) declared covered" in summarise(
+                  (emit_covers("B1", path=os.path.join(d, "only.jsonl")),
+                   os.path.join(d, "only.jsonl"))[1]))
+
     print("emit selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -165,6 +220,14 @@ def summarise(path):
         return ""
     if not lines:
         return ""
+    # Coverage records (`--covers`, SPEC F12) are declarations, not
+    # measurements: 100+ of them as table rows would bury the headroom
+    # column the table exists for, so they render as one tally line.
+    covered = sorted({rec["covers"] for rec in lines if "covers" in rec})
+    lines = [rec for rec in lines if "covers" not in rec]
+    if not lines:
+        return (f"{len(covered)} SPEC row(s) declared covered by this run\n"
+                if covered else "")
     rows = {}
     for rec in lines:
         rows[(rec.get("metric"), rec.get("tag"))] = rec
@@ -184,6 +247,8 @@ def summarise(path):
             f"| `{metric}` | {value}{unit} | {str(limit) + unit if limit else ''} "
             f"| {head} | {r.get('task', '')} | {tag or ''} |"
         )
+    if covered:
+        out += ["", f"{len(covered)} SPEC row(s) declared covered by this run"]
     return "\n".join(out) + "\n"
 
 
@@ -205,7 +270,9 @@ def main():
         else:
             pos.append(argv[i])
             i += 1
-    if len(pos) >= 2:
+    if "covers" in opts:
+        emit_covers(opts["covers"], task=opts.get("task"))
+    elif len(pos) >= 2:
         emit(pos[0], pos[1], unit=opts.get("unit"), limit=opts.get("limit"),
              task=opts.get("task"))
     # Always 0. See the module docstring.

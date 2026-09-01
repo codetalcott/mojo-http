@@ -72,6 +72,7 @@ jobs:
       - name: Run unit tests
         shell: bash
         run: |
+          python3 scripts/emit.py --covers L7 --task step
           set -o pipefail
           uv run poe test-all 2>&1 | tee -a compile.log
       # Holds the residual warning count at scripts/warning_baseline.json.
@@ -91,7 +92,9 @@ jobs:
       # Same reason as the two above: a silent regression in the recorder would
       # drop measurements rather than fail, and nothing else would notice.
       - name: Self-test the measurement recorder
-        run: python3 scripts/emit.py --selftest
+        run: |
+          python3 scripts/emit.py --selftest
+          python3 scripts/emit.py --covers F11 --task emit-selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # The Mojo pool's guards, proven able to fail: each rule in

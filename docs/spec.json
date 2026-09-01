@@ -462,8 +462,8 @@
       "section": "F",
       "category": "F. Observability",
       "capability": "Coverage declared by the gate rather than cited by this page",
-      "status": "planned",
-      "evidence": "ROADMAP: Traceability: stable ids, then declared coverage"
+      "status": "verified",
+      "evidence": "`Check machine-sourced doc facts` (every PR) \u2014 every pull-request-gated row declares its coverage in the gate itself (a `covers:` docstring line in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration to agree with the citation, which is what makes the audit's mis-citation class structurally impossible. Weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI. Four sabotages in `poe sabotage-spec` revert the rules"
     },
     {
       "id": "F6",
