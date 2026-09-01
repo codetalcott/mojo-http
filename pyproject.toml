@@ -3768,6 +3768,20 @@ mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -
 python3 scripts/pool_spike_probe.py --binary "$out/pool_spike" --json "bench/results/pool-probe-$(date -u +%Y%m%dT%H%M%SZ).json"
 """
 
+# SPEC I13. Sections driven separately (a single pass wedged at 6.21.6 on
+# the recycled slot after section 1's cap-killed connections), 9/12/13
+# excluded, and the comparison runs BOTH directions against the pinned
+# baseline: a new failure is red, and an I17 cap case unexpectedly PASSING
+# is red too — the cap moved and the sheet is wrong. The comparator's
+# --selftest is proven before anything is believed. Needs docker; ~10 min.
+[tool.poe.tasks.autobahn]
+help = "PRE-RELEASE: Autobahn|Testsuite vs the pinned baseline — every failure I17's cap (not in CI)"
+deps = ["build-serve"]
+shell = """
+python3 scripts/autobahn_runner.py --selftest || exit 1
+python3 scripts/autobahn_runner.py
+"""
+
 [tool.poe.tasks.stress-asgi]
 help = "Pre-release: N streamed + WebSocket rounds under CPU load, in both loop modes (not in CI)"
 deps = ["build-serve"]

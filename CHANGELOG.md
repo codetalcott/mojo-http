@@ -51,6 +51,26 @@ versions may break the API**.
   `+Inf is 0 but _count is 7`), and an `le` boundary off by one (two
   `test_metrics.mojo` tests). 6 unit tests pin the boundary math.
 
+- **Autobahn|Testsuite is wired to the pre-release cadence** (SPEC I13).
+  `poe autobahn` drives the suite's sections separately (a single pass
+  wedges on the slot a cap-killed connection just released), skips 9/12/13,
+  and compares both directions against the pinned baseline — 240 of 247,
+  every failure being I17's ≥64 KB outbox cap: a failure outside those
+  seven cases is new and fails the run, and one of the seven *passing*
+  fails it too, the cap having moved out from under the sheet. The image is
+  version-pinned (digest-identical to the 2026-08-30 baseline's), which is
+  what lets the per-section case counts be asserted exactly; the server is
+  the runner's own pure-echo ASGI app, because `asgi_bare`'s `/ws`
+  prefix-echoes text and Autobahn's byte-identity cases would score that
+  as failures. The comparator's `--selftest` (five doctored result sets,
+  each flagged by the rule that names it) runs before anything is
+  believed. The wired run reproduced the baseline exactly, and the live
+  sabotage — I16's close-code validation reverted — was caught as nine
+  named new failures (7.9.1–7.9.9) on the first section-7 run.
+  `docs/RELEASING.md` now lists it beside `stress-asgi`, along with
+  `fuzz-request-long` and `sabotage-outbox-cap`, which were pre-release
+  tasks the checklist never named.
+
 - **The request decoder is fuzzed, every pull request** (SPEC G13).
   `scripts/fuzz_request.mojo` mutates a seed corpus of real and hostile
   requests through `parse_request_headers` and `HTTPChunkedDecoder.decode` —

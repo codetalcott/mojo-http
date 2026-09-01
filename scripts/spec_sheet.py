@@ -630,8 +630,17 @@ SABOTAGES = [
      ("      - name: Smoke test pipelined requests\n",
       "      - name: Smoke test pipelined requests\n        if: runner.os == 'Linux'\n"),
      "carries an `if:`"),
+    # Inserts its own planned row rather than re-pointing an existing one:
+    # quoting a real row's heading broke when I13 was legitimately resolved
+    # (CI's own catch, 2026-09-01), and locating "the first planned row"
+    # stops working the day the last planned row is resolved — which is a
+    # milestone, not an edge case. A fresh id in the first section trips
+    # only the rule under test.
     ("planned row points at no roadmap heading", "sheet",
-     ("ROADMAP: A conformance-suite tier", "ROADMAP: A tier that is not there"),
+     lambda t: (t.replace(_first_row(t), _first_row(t) +
+                "\n| A99 | a planned capability inserted by the sabotage | "
+                "planned | ROADMAP: A tier that is not there |", 1)
+                if _first_row(t) else None),
      "has no heading"),
     ("out-of-scope row loses its reason", "sheet",
      lambda t: (t.replace(_first_status_row(t, "out of scope"),

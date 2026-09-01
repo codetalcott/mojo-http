@@ -750,8 +750,8 @@
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Autobahn|Testsuite conformance run, wired to a cadence",
-      "status": "planned",
-      "evidence": "ROADMAP: A conformance-suite tier"
+      "status": "verified",
+      "evidence": "`autobahn` (pre-release) \u2014 sections driven separately against the runner's pure-echo ASGI app, image version-pinned so the per-section case counts are asserted exactly; compared both directions against the pinned baseline (240/247, every failure I17's cap): a new failure is red, and an I17 case unexpectedly passing is red too. The comparator's selftest runs first. What the suite cannot see stays L15's territory \u2014 its client always closes first (ROADMAP: A conformance-suite tier)"
     },
     {
       "id": "I14",
