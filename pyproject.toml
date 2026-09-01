@@ -2307,6 +2307,7 @@ python3 scripts/emit.py --covers J7 --task smoke-serve
 python3 scripts/emit.py --covers M2 --task smoke-serve
 python3 scripts/emit.py --covers M4 --task smoke-serve
 python3 scripts/emit.py --covers M6 --task smoke-serve
+python3 scripts/emit.py --covers F5 --task smoke-serve
 """
 
 # The threaded execution mode. Phase 1 runs everywhere and pins the guard:
@@ -4640,7 +4641,10 @@ python3 scripts/emit.py --covers M8 --task smoke-wheel
 [tool.poe.tasks.smoke-pid1]
 help = "docker stop on m0serve as PID 1: the drain's exit 0, never SIGKILL at the deadline"
 deps = ["build-wheel"]
-cmd = "python3 scripts/pid1_probe.py"
+shell = """
+python3 scripts/pid1_probe.py || exit 1
+python3 scripts/emit.py --covers M11 --task smoke-pid1
+"""
 
 
 # The quickstart is executable on purpose: scripts/run_quickstart.py extracts

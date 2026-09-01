@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 124 verified, 0 implemented, 1 planned, 24 out of scope.** Of the 124 verified, 121 are gated on every pull request, 1 weekly, and 2 before a release.
+**149 capabilities: 125 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 125 verified, 122 are gated on every pull request, 1 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
