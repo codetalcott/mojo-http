@@ -3138,6 +3138,15 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
             provision_pool.provisions[slot].response_status,
             slot_send_offset[slot],
         )
+        # The latency sample, from the same clock the access log reads two
+        # branches below. Only when a header stamp exists: the keep-alive
+        # reset zeroes it, so a send that completed without a request behind
+        # it — a pushed frame on a streaming slot — has no duration to claim,
+        # and `now - 0` would sample the epoch as a latency.
+        if slot_header_start[slot] > 0:
+            metrics.record_duration(
+                Int((perf_counter_ns() - slot_header_start[slot]) / 1000)
+            )
         metrics.active_connections = active_count
     if provision_pool.provisions[slot].should_close:
         if config.access_log and provision_pool.provisions[slot].log_method.byte_length() > 0:

@@ -454,8 +454,8 @@
       "section": "F",
       "category": "F. Observability",
       "capability": "Latency histograms on `/__metrics`",
-      "status": "planned",
-      "evidence": "ROADMAP: Structured CI results"
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 six log-spaced `le` bounds (100\u00b5s\u20131s, +Inf), integer-only and O(1) on the loop thread; `scripts/histogram_check.py` (selftested in the same phase) asserts the documented bounds, non-decreasing cumulative counts, `le=\"+Inf\"` equal to `_count`, and a `_count` covering the phase's own requests; boundary math pinned by `test_metrics.mojo`"
     },
     {
       "id": "F12",
