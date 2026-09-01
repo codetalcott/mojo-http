@@ -41,11 +41,30 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from emit import emit  # noqa: E402
+
+# The probe phase stamp (scripts/phase_stamp_check.py): the docker helpers
+# are shared by every phase, so an unhandled error inside one would name the
+# call that failed and never the phase being proven.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("pid1_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 APP = (
     'def application(environ, start_response):\n'
@@ -77,7 +96,7 @@ COUNT_PROCS = (
 
 
 def fail(msg):
-    sys.exit(f"pid1_probe: {msg}")
+    sys.exit(f"pid1_probe: FAIL: {PHASE}: {msg}")
 
 
 def run(*argv, check=True, timeout=120):
@@ -214,6 +233,7 @@ def main():
     )
     args = ap.parse_args()
 
+    phase("preflight")
     if run("docker", "info", check=False).returncode != 0:
         fail("docker is not available (daemon not running, or not installed)")
     wheels = sorted(Path(args.wheel_dir).glob("*.whl"))
@@ -229,11 +249,13 @@ def main():
         try:
             # -- Shape 1: one process, no supervisor -------------------------
             if args.shape in ("single", "both"):
+                phase("single: start and become healthy")
                 single = f"m0pid1-single-{token}"
                 names.append(single)
                 start(single, args.image, stage, [])
                 wait_healthy(single, args.healthy_timeout)
                 assert_pid1_is_m0serve(single)
+                phase("single: docker stop")
                 code, elapsed, _ = stop_and_measure(single, args.grace)
                 assert_stopped_clean(single, code, elapsed, args.grace, "single")
                 emit("pid1_stop_ms", int(elapsed * 1000), unit="ms",
@@ -246,6 +268,7 @@ def main():
                 return
 
             # -- Shape 2: the supervisor as PID 1, reaping two workers ------
+            phase("workers: start and become healthy")
             workers = f"m0pid1-workers-{token}"
             names.append(workers)
             start(workers, args.image, stage, ["M0_WORKERS=2"])
@@ -258,6 +281,7 @@ def main():
                     f"want supervisor + 2 workers — the shape under test never"
                     f" existed"
                 )
+            phase("workers: docker stop")
             code, elapsed, logs = stop_and_measure(workers, args.grace)
             if "signal propagation unavailable" in logs:
                 fail(
