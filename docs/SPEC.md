@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 120 verified, 2 implemented, 3 planned, 24 out of scope.** Of the 120 verified, 118 are gated on every pull request, 1 weekly, and 1 before a release.
+**149 capabilities: 121 verified, 1 implemented, 3 planned, 24 out of scope.** Of the 121 verified, 119 are gated on every pull request, 1 weekly, and 1 before a release.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -218,7 +218,7 @@ whose body drifted away from it is the case most likely to have survived.
 | I14 | `permessage-deflate` | out of scope | follows from having no response compression |
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
 | I16 | A Close frame's code is VALIDATED, not just echoed | verified | `test_websocket.mojo:test_reserved_close_codes_are_refused_1002` (every PR) — with `test_legal_close_codes_are_still_echoed` as the other half, so a refusal that refuses everything cannot pass |
-| I17 | A message at or above the outbox cap ends the connection | implemented | `packages/m0-http/src/sse/registry.mojo:11` — `MAX_PENDING_BYTES` bounds one frame as well as the queue; deliberate, and what Autobahn scores as 7 failures plus all of its performance section |
+| I17 | A message at or above the outbox cap ends the connection | verified | `Smoke test the outbox cap ending a connection` (every PR) — the marker sent after the oversized message must never arrive, which is what separates ending the connection from dropping a frame the peer cannot know it missed; the under-cap half stops a server that ended every large-message connection from passing. Deliberate, and what Autobahn scores as 7 failures plus all of its performance section. `poe sabotage-outbox-cap` (pre-release) reverts each of the four rules |
 
 ## J. Static file serving
 

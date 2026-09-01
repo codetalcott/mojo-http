@@ -4197,6 +4197,36 @@ curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localh
 python3 scripts/keepalive_cap_probe.py 8144 || fail 'keepalive cap probe failed'
 """
 
+# SPEC I17: `MAX_PENDING_BYTES` bounds ONE frame as well as the whole queue,
+# so a WebSocket message at or above 64 KB can never be queued -- the credit
+# gate clamps rather than waiting for a window that can never exist. The
+# server ends the connection instead, because a dropped frame is a message
+# the peer has no protocol-level way to notice it missed. The probe's marker
+# is what separates that from the silent drop; its under-cap half is what
+# stops a server that ends every large-message connection from passing.
+[tool.poe.tasks.smoke-outbox-cap]
+help = "A message at or above the outbox cap ends the connection, not silently dropped"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+fail() {
+  echo "$1"
+  if [ -f oc.log ]; then echo '=== oc.log ==='; cat oc.log; fi
+  exit 1
+}
+"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8156 > oc.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f oc.log' EXIT
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8156/ > /dev/null \
+  || fail 'the asgi_bare app never became healthy'
+python3 scripts/outbox_cap_probe.py 8156 || fail 'outbox cap probe failed'
+"""
+
+# PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
+[tool.poe.tasks.sabotage-outbox-cap]
+help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"
+shell = "python3 scripts/outbox_cap_sabotage.py"
+
 # Both ends of the wire in Mojo: the client dials, sends, and parses against
 # the notes API — GET, POST with body, negotiation, problem+json, a refused
 # connection, and the https rejection. client_check.mojo raises on any miss.

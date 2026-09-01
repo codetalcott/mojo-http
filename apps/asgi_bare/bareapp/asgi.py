@@ -39,6 +39,22 @@ _LIFESPAN = {"started": False}
 FLOOD_FRAMES = 400
 FLOOD_SIZE = 4096
 
+# /ws/oversized's shape (SPEC I17). `MAX_PENDING_BYTES` (64 KB) bounds ONE
+# frame as well as the whole queue, so a message at or above it can never be
+# queued however patient the sender is -- the credit gate cannot help, and
+# clamps rather than waiting for a window that can never exist. The server's
+# answer is to END the connection, because a dropped frame is a message the
+# peer has no protocol-level way to notice it missed. UNDER is delivered
+# whole; OVER is never delivered and the marker after it must never arrive.
+OVERSIZED_UNDER = 32 * 1024
+# Just OVER the cap, not far over: `websocket.send` does not split (only
+# `_emit` does), so this crosses the chunk channel as one datagram, and a
+# message far above the cap would meet the channel's own limits first --
+# which ends the connection too, and would make the gate pass without the
+# outbox cap existing at all. 66 KB encodes to 67594, just past 65536.
+OVERSIZED_OVER = 66 * 1024
+OVERSIZED_MARKER = "after-the-oversized-message"
+
 
 async def application(scope, receive, send):
     if scope["type"] == "lifespan":
@@ -65,6 +81,20 @@ async def application(scope, receive, send):
     if scope["type"] == "websocket":
         # The echo server: accept, prefix-echo text, byte-echo binary,
         # close(1000) on "bye", reject any path but /ws.
+        if scope["path"] == "/ws/oversized":
+            # One message the outbox can hold, then one it cannot, then a
+            # marker. A server that dropped the oversized frame silently
+            # would deliver the marker and close(1000) — the client would
+            # see a clean, complete-looking conversation with a message
+            # missing from the middle of it.
+            await send({"type": "websocket.accept"})
+            await send({"type": "websocket.send",
+                        "bytes": b"u" * OVERSIZED_UNDER})
+            await send({"type": "websocket.send",
+                        "bytes": b"o" * OVERSIZED_OVER})
+            await send({"type": "websocket.send", "text": OVERSIZED_MARKER})
+            await send({"type": "websocket.close", "code": 1000})
+            return
         if scope["path"] == "/ws/flood":
             # The backpressure exerciser: FLOOD_FRAMES x FLOOD_SIZE with no
             # pause and no reads. A client that stalls before reading cannot
