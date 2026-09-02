@@ -852,6 +852,23 @@ def check_bench_kinds_do_not_shadow():
                 )
 
 
+def check_site_corpus():
+    """Every relative link in the pages the docs site renders resolves, every
+    fragment names a heading, and every docs/*.md is listed with a title.
+
+    scripts/docsite.py owns the rules (its `--check` is this same call, and
+    its `--selftest` proves each can fail); running them here puts them on
+    doc-only pull requests, which run this file and nothing that needs the
+    dev group. A broken link used to be found by a reader, and a new docs
+    page could ship with no way to reach it.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    import docsite
+
+    for problem in docsite.Site(REPO).check():
+        fail("docsite: " + problem)
+
+
 def check_ci_measurements_are_collected():
     """A measurement a task records must have somewhere to go, and be kept.
 
@@ -945,6 +962,7 @@ def main():
     check_spec_sheet()
     check_required_context_intact()
     check_ci_measurements_are_collected()
+    check_site_corpus()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

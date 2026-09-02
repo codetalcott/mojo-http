@@ -349,6 +349,15 @@ jobs:
       # would exercise half the branch.
       - name: Smoke test zero-copy static file serving
         run: uv run poe smoke-sendfile
+      # The documentation site: the tree's own pages rendered by
+      # scripts/docsite.py and served the way it deploys -- m0serve with
+      # `--static /=<tree>` in front of apps/site. The link check runs on
+      # doc-only PRs through check-docs; this proves the SERVED shape:
+      # llms.txt at the root as text naming the site's pages by absolute URL,
+      # every sitemap URL answering as HTML with a markdown twin, the sitemap
+      # as XML, and the slash redirect and HTML 404 from the app behind it.
+      - name: Smoke test the documentation site
+        run: uv run poe smoke-site
       # Both ends of the wire in Mojo: the client dials, sends, and parses
       # against the notes API, including the error and refusal paths.
       - name: Smoke test the HTTP client

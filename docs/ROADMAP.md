@@ -716,6 +716,21 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
      the one nothing was checking) and `llms.txt`. The gaps are on the
      first screen rather than in an issue: no TLS or HTTP/2, the platform
      floors, pre-1.0, and the benchmark losses stated with numbers.
+  6. **Discoverability.** The pages are good and GitHub is the only place
+     that indexes them; the repository and the PyPI project both point
+     nowhere but back at GitHub. **Built 2026-09-02**: a documentation
+     site rendered from the tree's own pages by `scripts/docsite.py` and
+     served by m0serve through `--static` (`apps/site` behind it for the
+     slash redirect and the 404), with `llms.txt` and `llms-full.txt` at
+     the root, a Markdown twin beside every page, a sitemap, canonical
+     links and JSON-LD, and titles written for the question a reader
+     types rather than the file's name. `poe smoke-site` proves the
+     served shape (F13); the link check runs on doc-only pull requests.
+     Not done, and each a launch task rather than a build one: a public
+     deployment (the build takes `--base-url`; the server has no TLS, so
+     it sits behind a proxy), the live two-tab demo beside the docs, and
+     the off-site half -- the homepage field on GitHub and on PyPI,
+     djangopackages, the Modular forum.
 
   **Before 0.12.0**: exercise the server against real applications rather
   than only the ones written to test it — three local Django projects,

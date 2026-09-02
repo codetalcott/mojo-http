@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "django>=5.2.17",
     "flask>=3.0",
+    "markdown-it-py>=4.2.0",
     "poethepoet>=0.30",
     "python-fasthtml>=0.12",
 ]
@@ -415,6 +416,10 @@ shell = """
 # fail is green having tested nothing. Here rather than a test.yml step so
 # doc-only pull requests (which run only docs.yml) prove it too.
 python3 scripts/render_bench_docs.py --selftest || exit 1
+# The docs site's link check runs inside check_docs (`docsite --check`,
+# standard library only); this proves those checks can fail, for the same
+# reason as the line above.
+python3 scripts/docsite.py --selftest || exit 1
 python3 scripts/check_docs.py || exit 1
 python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs
@@ -3270,6 +3275,100 @@ wait $pid 2>/dev/null; rc=$?
 rm -f fasthtml.log
 echo "smoke-fasthtml OK"
 python3 scripts/emit.py --covers L11 --task smoke-fasthtml
+"""
+
+# The documentation site: README, QUICKSTART, CHANGELOG, PROVENANCE and
+# every page under docs/, rendered by scripts/docsite.py and served by m0serve
+# itself through --static, with llms.txt at the root. The generator is the one
+# place a page gets its title and description (written for the question a
+# reader searched, not the file's name); its link check is standard-library
+# and runs inside check-docs so doc-only pull requests get it.
+[tool.poe.tasks.build-site]
+help = "Render the documentation site from the tree's own pages into dist/site"
+cmd = "python3 scripts/docsite.py --out dist/site"
+
+[tool.poe.tasks.serve-site]
+help = "Build the documentation site and serve it on :8180 with m0serve"
+deps = ["build-serve", "build-site"]
+shell = """
+M0_SITE_DIST=dist/site bin/m0serve siteapp.wsgi:application --app-dir apps/site \
+  --static /="$PWD/dist/site" --port 8180
+"""
+
+# Served the way it deploys: m0serve with `--static /=<tree>` in front of the
+# fallback in apps/site. The build alone cannot prove the served shape -- that
+# llms.txt is at the root as text and names this site's pages by ABSOLUTE
+# URL, that every sitemap URL answers as HTML with a markdown twin the page
+# advertises, that the sitemap goes out as XML rather than octet-stream (it
+# did), and that the two things the mount does not do -- the slash redirect
+# and the HTML 404 -- come from the application behind it.
+[tool.poe.tasks.smoke-site]
+help = "Build the docs site and serve it with m0serve: llms.txt at the root, every sitemap URL answering"
+deps = ["build-serve"]
+shell = """
+set -u
+srv=bin/m0serve
+P=8180
+B=http://localhost:$P
+out=$(mktemp -d)
+pid=
+fail() { echo "FAIL: $1"; echo '=== site.log ==='; cat site.log 2>/dev/null; [ -n "$pid" ] && kill $pid 2>/dev/null; rm -rf "$out"; exit 1; }
+
+python3 scripts/docsite.py --selftest || fail 'the site checks cannot fail'
+python3 scripts/docsite.py --out "$out" --base-url $B || fail 'the site did not build'
+
+M0_SITE_DIST="$out" "$srv" siteapp.wsgi:application --app-dir apps/site \
+  --port $P --static /="$out" > site.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/robots.txt > /dev/null \
+  || fail 'server never became healthy'
+
+# Status and content type of one URL, as "200 text/plain; charset=utf-8".
+probe() { curl -s -o /dev/null -w '%{http_code} %{content_type}' "$1"; }
+
+# llms.txt at the root: text, naming this site's own pages by absolute URL,
+# and none of the repository-relative links the source file carries.
+[ "$(probe $B/llms.txt)" = "200 text/plain; charset=utf-8" ] || fail "llms.txt: $(probe $B/llms.txt)"
+curl -s $B/llms.txt > llms.out
+grep -q "]($B/docs/spec.md)" llms.out || fail 'llms.txt does not index the spec page by absolute URL'
+grep -q "]($B/quickstart.md)" llms.out || fail 'llms.txt still carries the repository-relative quickstart link'
+! grep -q '](docs/' llms.out || fail 'llms.txt carries a repository-relative link'
+rm -f llms.out
+
+# llms-full.txt carries every page the sitemap lists, one source line each.
+pages=$(grep -c '<loc>' "$out/sitemap.xml")
+full=$(curl -s $B/llms-full.txt | grep -c "^<!-- $B/")
+[ "$full" = "$pages" ] || fail "llms-full.txt carries $full pages; the sitemap lists $pages"
+
+# The sitemap is XML, and every URL in it answers as HTML with a markdown
+# twin the page advertises, which answers as text.
+[ "$(probe $B/sitemap.xml)" = "200 application/xml" ] || fail "sitemap.xml: $(probe $B/sitemap.xml)"
+for loc in $(sed -n 's:.*<loc>\\(.*\\)</loc>.*:\\1:p' "$out/sitemap.xml"); do
+  [ "$(probe "$loc")" = "200 text/html; charset=utf-8" ] || fail "$loc: $(probe "$loc")"
+  twin=$(curl -s "$loc" | sed -n 's:.*<link rel="alternate" type="text/markdown" href="\\([^"]*\\)".*:\\1:p' | head -1)
+  [ -n "$twin" ] || fail "$loc advertises no markdown twin"
+  [ "$(probe "$twin")" = "200 text/plain; charset=utf-8" ] || fail "$twin: $(probe "$twin")"
+done
+echo "site: $pages pages answered, each with its markdown twin"
+
+# The front page's canonical link names the base the build was given, and
+# spec.json at the root is the tree's generated one byte for byte.
+curl -s $B/ | grep -q "<link rel=\\"canonical\\" href=\\"$B/\\">" || fail 'front page carries no canonical link to itself'
+curl -s $B/spec.json | cmp -s - docs/spec.json || fail 'spec.json at the root differs from docs/spec.json'
+
+# The two things the mount does not do come from the application behind it.
+[ "$(probe $B/docs/spec)" = "301 text/plain; charset=utf-8" ] || fail "directory without slash: $(probe $B/docs/spec)"
+loc=$(curl -s -o /dev/null -w '%{redirect_url}' $B/docs/spec)
+[ "$loc" = "$B/docs/spec/" ] || fail "redirect went to '$loc'"
+[ "$(probe $B/no/such/page)" = "404 text/html; charset=utf-8" ] || fail "404: $(probe $B/no/such/page)"
+curl -s $B/no/such/page | grep -q 'content="mojo-http scripts/docsite.py"' || fail 'the 404 is not the site page'
+code=$(curl --path-as-is -s -o /dev/null -w '%{http_code}' "$B/docs/spec/../../..")
+[ "$code" != "301" ] || fail 'a traversal was redirected as though it named a page'
+
+python3 scripts/emit.py --covers F13 --task smoke-site
+kill $pid; wait $pid 2>/dev/null
+rm -rf "$out"
+echo "smoke-site: OK"
 """
 
 [tool.poe.tasks.serve-wsgi-bare]

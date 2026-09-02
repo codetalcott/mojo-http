@@ -47,6 +47,16 @@ measured in. They are not tutorials and they age.
 | [SQLITE_PERFORMANCE.md](SQLITE_PERFORMANCE.md) | m0-sqlite findings — batch writes, `mmap_size`, `json_each`. |
 | [sqlite-vtab-feasibility.md](sqlite-vtab-feasibility.md) | Whether virtual tables are reachable from Mojo. |
 
+## The same pages, as a site
+
+Every page here renders to a site -- `poe build-site`, served by m0serve
+itself with `poe serve-site` -- with `llms.txt` and a Markdown twin of every
+page at the root for agents, and a sitemap for crawlers.
+[scripts/docsite.py](../scripts/docsite.py) is the generator and the one
+place a page gets its title and description; [apps/site](../apps/site) is
+the application behind the static mount. A new `docs/*.md` must be listed
+there, or `check-docs` fails naming it.
+
 ## Generated, not edited
 
 `spec.json` is rendered from `SPEC.md` by `scripts/spec_sheet.py` (`poe

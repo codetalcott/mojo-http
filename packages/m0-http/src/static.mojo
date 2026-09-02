@@ -26,8 +26,19 @@ ignored and served as the full `200`, which the RFC explicitly permits.
 `If-Range` is never satisfied here: it requires strong comparison and
 these ETags are weak by design, so a conditional range falls back to the
 full representation rather than risking a stale slice. No directory
-listings — a request for a directory serves its `index.html` or 404s,
-whether or not the URL ended in `/`.
+listings — a request for a directory serves its `index.html` or falls
+through, whether or not the URL ended in `/`.
+
+**A miss under the prefix is the handler's, not a 404 here.** `serve`
+answers `None` for a path that names no regular file under the root, so
+a mount at `/` can sit in front of an application's routes — the
+`try_files` / whitenoise shape, and what the documentation site
+(`apps/site`) needs to answer `/docs/spec` with a redirect and an unknown
+URL with its own page. The mount used to answer every path under its
+prefix definitively, which made a root mount swallow the application
+entirely. Refusals are different: traversal, an encoded slash that would
+open a segment, a bad segment — those stay a 404 from this module, so a
+probe is never handed to the application.
 
 **Only regular files are served.** A directory named without a trailing
 slash gets no `index.html` appended, and `stat` answers for it perfectly
@@ -80,8 +91,11 @@ struct StaticFiles(Copyable, Movable):
         if hit:
             return hit.take()
 
-    `serve` answers `None` only for paths outside the prefix; everything
-    under the prefix gets a definitive response (200, 304, 404, or 405).
+    `serve` answers `None` for paths outside the prefix AND for paths under
+    it that name no regular file — a miss falls through to the handler. It
+    answers itself for a file it can serve (200, 206, 304, 416, or 405 for
+    a method other than GET/HEAD) and for a refusal (a traversal or a
+    malformed segment: 404, never handed on).
     """
 
     var root: String
@@ -130,7 +144,8 @@ struct StaticFiles(Copyable, Movable):
         return resp^
 
     def matches(self, path: String) -> Bool:
-        """Whether `path` is under this mount (serve() would not answer None)."""
+        """Whether `path` is under this mount's prefix. `serve` may still
+        answer None for it: a miss under the prefix is the handler's."""
         return path.startswith(self.prefix) or path == String(self.prefix[byte = : self.prefix.byte_length() - 1])
 
     def serve(self, req: HTTPRequest) raises -> Optional[HTTPResponse]:
@@ -141,18 +156,6 @@ struct StaticFiles(Copyable, Movable):
             path = self.prefix
         if not path.startswith(self.prefix):
             return None
-
-        if req.method != "GET" and req.method != "HEAD":
-            var resp = HTTPResponse(
-                body_bytes=String('{"error":"method not allowed"}').as_bytes(),
-                headers=Headers(
-                    Header(HeaderKey.CONTENT_TYPE, "application/json"),
-                    Header("Allow", "GET, HEAD"),
-                ),
-                status_code=405,
-                status_text="Method Not Allowed",
-            )
-            return resp^
 
         var rel = String(path[byte = self.prefix.byte_length() :])
         if rel.byte_length() == 0 or rel.endswith("/"):
@@ -180,13 +183,15 @@ struct StaticFiles(Copyable, Movable):
             # pool thread inside `open`, which has no O_NONBLOCK here, and
             # keeps device and socket nodes out.
             #
-            # 404 rather than a redirect to `<path>/`: this module answers
+            # None rather than a redirect to `<path>/`: this module answers
             # a directory request with its `index.html` or nothing, and a
-            # redirect would be a new promise about URL shape. Symlinks are
-            # still followed (`stat`, not `lstat`) — the module docstring
-            # says so, and it stays the filesystem owner's decision.
+            # redirect would be a new promise about URL shape — one the
+            # handler behind the mount is free to make (`apps/site` does).
+            # Symlinks are still followed (`stat`, not `lstat`) — the
+            # module docstring says so, and it stays the filesystem
+            # owner's decision.
             if (Int(st.st_mode) & _S_IFMT) != _S_IFREG:
-                return _not_found()
+                return None
             total = Int(st.st_size)
             etag = stat_etag(
                 total,
@@ -194,7 +199,24 @@ struct StaticFiles(Copyable, Movable):
                 + Int(st.st_mtimespec.tv_subsec),
             )
         except:
-            return _not_found()
+            # No such file: the handler's to answer, not this module's.
+            return None
+
+        # The file is real, so a method other than GET/HEAD is refused
+        # about IT, with `Allow`. Checked after existence on purpose: a
+        # POST to a path the mount does not hold must reach the
+        # application, or a root mount would 405 every form on the site.
+        if req.method != "GET" and req.method != "HEAD":
+            var resp = HTTPResponse(
+                body_bytes=String('{"error":"method not allowed"}').as_bytes(),
+                headers=Headers(
+                    Header(HeaderKey.CONTENT_TYPE, "application/json"),
+                    Header("Allow", "GET, HEAD"),
+                ),
+                status_code=405,
+                status_text="Method Not Allowed",
+            )
+            return resp^
 
         var inm = req.headers.get(HeaderKey.IF_NONE_MATCH)
         if inm:
@@ -440,6 +462,8 @@ def content_type_for(name: String) -> String:
         return "text/javascript; charset=utf-8"
     if ext == "json":
         return "application/json"
+    if ext == "xml":
+        return "application/xml"
     if ext == "svg":
         return "image/svg+xml"
     if ext == "png":

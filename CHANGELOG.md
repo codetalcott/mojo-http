@@ -9,6 +9,26 @@ versions may break the API**.
 
 ### Added
 
+- **The documentation site** (`scripts/docsite.py`, `apps/site`, `poe
+  build-site` / `serve-site` / `smoke-site`; SPEC F13). README, QUICKSTART,
+  CHANGELOG, PROVENANCE and every page under `docs/` render to HTML and are
+  served by m0serve itself through `--static`, with `llms.txt` at the root
+  (the repository's own, its links made absolute, plus an index of every
+  page) and `llms-full.txt` beside it for agents, a Markdown twin beside
+  every page advertised by `<link rel="alternate" type="text/markdown">`,
+  `sitemap.xml`, `robots.txt` and `spec.json` at stable URLs, and canonical
+  links, Open Graph and JSON-LD on every page. Titles and descriptions live
+  in one table and are written for the question a reader searched, not the
+  file's name. Every relative link is resolved at build time and a link to
+  nothing fails the build; every `docs/*.md` must be listed, so a page
+  cannot ship without a title. The link check is standard-library and runs
+  inside `check-docs`, so doc-only pull requests get it, and `--selftest`
+  proves it can fail. The rewriter is a fence-aware regex; the build then
+  walks the parsed token stream and refuses any relative link it missed,
+  which found one on the first run (a link whose text wraps a line). `xml`
+  joined the static mount's content types as `application/xml`, because the
+  sitemap was going out as octet-stream. Deployment is the open half: the
+  build takes `--base-url`, and nothing serves it publicly yet.
 - **The scheduling-stickiness sighting reproduced, and its fix direction
   corrected** (`docs/ROADMAP.md` Known issues, `scripts/accept_placement.py`).
   The one CI failure of `smoke-reload`'s two-worker phase — eighty
@@ -220,6 +240,20 @@ versions may break the API**.
   break list in place of the one read from the release notes, which was
   three items short and one item stale.
 
+- **A static mount's miss falls through to the application.**
+  `StaticFiles.serve` (and so `--static`) used to answer every path under
+  its prefix definitively — a missing file was the mount's own JSON 404 and
+  a POST anywhere under it a 405 — which made `--static /=dir` swallow the
+  application entirely. It now answers `None` for a path that names no
+  regular file under the root, so a root mount can front an application's
+  routes (the `try_files` / whitenoise shape); a missing asset under
+  `/static/` now gets the application's 404 page rather than the mount's
+  JSON. What still never reaches the application: a traversal, an encoded
+  slash that would open a segment, a malformed segment — those stay the
+  mount's 404 (G5, G6). The 405 for a method other than GET/HEAD is now
+  about a file the mount holds, checked after existence. Found by the
+  documentation site, which needs the redirect for `/docs/spec` and its own
+  404 page from the application behind the mount.
 - **`poe autobahn` provisions its own docker on a Mac.** With no daemon
   answering it starts a 4 GiB colima VM (enough for the wstest container;
   the echo server runs on the host) and stops that VM when the run ends,

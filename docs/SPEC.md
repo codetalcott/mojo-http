@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**150 capabilities: 126 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 126 verified, 123 are gated on every pull request, 1 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**151 capabilities: 127 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 127 verified, 124 are gated on every pull request, 1 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -171,6 +171,7 @@ whose body drifted away from it is the case most likely to have survived.
 | F9 | OpenTelemetry tracing | out of scope | no tracing context crosses the Mojo/Python seam today; a wrapper in the application is the supported route |
 | F10 | CI measurements recorded, rendered per run and kept as an artifact | verified | `Check machine-sourced doc facts` (every PR) |
 | F11 | The measurement recorder itself | verified | `Self-test the measurement recorder` (every PR) |
+| F13 | The documentation site: the tree's own pages rendered and served by the server, `llms.txt` at the root, a Markdown twin beside every page | verified | `Smoke test the documentation site` (every PR) — built by `scripts/docsite.py`, served through `--static` with `apps/site` behind it; every sitemap URL answers as HTML with the twin it advertises, the root text files name the site's pages by absolute URL, the sitemap goes out as XML, and the slash redirect and HTML 404 come from the application |
 
 ## G. Security hardening
 
