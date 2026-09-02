@@ -1,0 +1,147 @@
+{
+  "name": "bakerydemo",
+  "comment": "Wagtail's official demo (github.com/wagtail/bakerydemo), the first third-party subject. Clone it, `uv pip install -r requirements/development.txt`, copy local.py.example and .env.example, migrate + load_initial_data (admin/changeme), then serve it with that venv's python on PATH: `PATH=/path/to/bakerydemo/.venv/bin:$PATH python3 scripts/soak.py --manifest scripts/soak_manifests/bakerydemo.json --serve 'bin/m0serve bakerydemo.wsgi --app-dir /path/to/bakerydemo --port 8370 --metrics' --url http://127.0.0.1:8370 --capture bakerydemo-gunicorn.json`. Record the capture from gunicorn first (`--baseline`), because self-pinning cannot see a defect that was already there on request one.",
+  "ready": "/",
+  "headers_ignore": [
+    "date",
+    "server",
+    "connection",
+    "keep-alive",
+    "x-thread",
+    "content-length",
+    "transfer-encoding"
+  ],
+  "comment_headers_ignore": "transfer-encoding is a per-server FRAMING choice (measured 2026-09-01 against uvicorn): decoded bytes are identical and the digest still compares them.",
+  "body_sub": [
+    [
+      "\"CSRF_TOKEN\": \"[^\"]*\"",
+      "\"CSRF_TOKEN\": \"X\""
+    ],
+    [
+      "name=\"csrfmiddlewaretoken\" value=\"[^\"]*\"",
+      "name=\"csrfmiddlewaretoken\" value=\"X\""
+    ],
+    [
+      "https?://127\\.0\\.0\\.1:[0-9]+",
+      "HOST"
+    ],
+    [
+      "class=\"(serious bulk-action-btn|bulk-action-btn serious) ",
+      "class=\"bulk-action-btn serious "
+    ],
+    [
+      "[0-9]+ (second|minute|hour|day|week|month|year)s?(, [0-9]+ (second|minute|hour|day|week|month|year)s?)? ago",
+      "N ago"
+    ],
+    [
+      "[0-9]+ (model|page) log entries",
+      "N log entries"
+    ]
+  ],
+  "comment_body_sub": "Measured: two fetches of every admin page differ ONLY in the wagtail-config CSRF_TOKEN line and the csrfmiddlewaretoken form inputs. Both patterns are bounded by the closing quote, which is what the blinding lint requires. The bulk-action button's class order flips between PROCESSES (Wagtail builds it from a set, so it follows the hash seed): gunicorn's own workers disagree with each other the same way. Bounded by the trailing space. Site history renders edit times as `N minutes ago`, which moves between the baseline and the run; bounded by `ago`. Site history's pagination label names whichever log model Wagtail's registry set yields first (`log_action_registry.get_log_entry_models()`), so it flips between `model log entries` and `page log entries` with the interpreter's hash seed -- measured on m0serve alone across four seeds. Same cause as the class order.",
+  "login": {
+    "form": "/admin/login/",
+    "post": "/admin/login/",
+    "csrf_pattern": "name=\"csrfmiddlewaretoken\" value=\"([^\"]+)\"",
+    "csrf_field": "csrfmiddlewaretoken",
+    "fields": {
+      "username": "admin",
+      "password": "changeme"
+    },
+    "extra": {
+      "next": "/admin/"
+    },
+    "expect_status": 302,
+    "check": "/admin/"
+  },
+  "routes": [
+    {
+      "path": "/",
+      "class": "short"
+    },
+    {
+      "path": "/blog/",
+      "class": "short"
+    },
+    {
+      "path": "/breads/",
+      "class": "short"
+    },
+    {
+      "path": "/locations/",
+      "class": "short"
+    },
+    {
+      "path": "/search/?query=bread",
+      "class": "short"
+    },
+    {
+      "path": "/admin/login/",
+      "class": "short"
+    },
+    {
+      "path": "/no-such-page/",
+      "class": "short"
+    },
+    {
+      "path": "/admin/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/admin/pages/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/admin/pages/3/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/admin/images/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/admin/documents/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/admin/account/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/admin/pages/search/?q=bread",
+      "class": "slow",
+      "auth": true
+    },
+    {
+      "path": "/admin/reports/site-history/",
+      "class": "slow",
+      "auth": true
+    },
+    {
+      "path": "/static/wagtailadmin/js/core.js",
+      "class": "stream",
+      "bytes": 670904
+    },
+    {
+      "path": "/static/wagtailadmin/js/vendor.js",
+      "class": "stream",
+      "bytes": 367508
+    },
+    {
+      "path": "/static/wagtailadmin/css/core.css",
+      "class": "stream",
+      "bytes": 283584
+    },
+    {
+      "path": "/media/images/breads1.2e16d0ba.format-avif.fill-800x650.avif",
+      "class": "stream",
+      "bytes": 81620
+    }
+  ]
+}

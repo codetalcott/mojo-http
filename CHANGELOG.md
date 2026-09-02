@@ -9,6 +9,33 @@ versions may break the API**.
 
 ### Added
 
+- **The soak driver** — `scripts/soak.py`, manifests under
+  `scripts/soak_manifests/`, `poe soak-apps` (pre-release, three legs) and
+  `poe soak-selftest`. `docs/REAL_APP_VALIDATION.md`'s phase 5 was a
+  request loop that sampled RSS; three of the six real-application defects
+  were silent (a clean status over a short or empty body) and a request
+  loop passes every one. This asserts bytes instead: every response is
+  compared — status, normalised headers, body digest — against a capture
+  recorded from a reference server (`--baseline`, gunicorn or uvicorn),
+  under five concurrent populations (keep-alive bursts that cross the cap
+  on every connection, streams, uploads and logins, WebSocket echoes, and
+  abandoners that vanish mid-body and reuse the freed slot at once), with
+  the server SIGTERM'd or `--reload`ed underneath (`--churn-every`), and
+  the server's own `/__metrics` sampled beside RSS, fds and threads. A
+  manifest's `login` block is a CSRF form round trip with a cookie jar per
+  session, so the authenticated surface of a real application is
+  reachable and the login response itself is verified — `Set-Cookie`
+  normalised to its attributes, defect 1's exact shape. The comparator is
+  a pure function with a `--selftest` that found the driver's own first
+  hole: a substitution greedy enough to absorb a truncation blinds the
+  instrument, so a capture now refuses any route its patterns blind, and
+  carries a fingerprint of the rules it was recorded under. Shaken down on
+  `apps/hybrid_mix` and `apps/asgi_bare` (3.5 M responses against a
+  uvicorn capture, zero differences), then on Wagtail's bakerydemo and
+  textshelf, each byte-identical to gunicorn/daphne with logins and churn
+  — every body difference traced, by measurement, to the application
+  rendering from Python sets under different hash seeds.
+
 - **SIGTERM as PID 1 in a container is gated, every pull request** (SPEC
   M11, the last beta row). `docker stop` is SIGTERM to PID 1 and nothing
   else, and PID 1 gets no default signal dispositions from the kernel — a

@@ -5310,3 +5310,62 @@ echo "F smoke-blocking-threads ($(grep -o 'threads+pool: .*' py-canary.log | tai
 echo ''
 echo "PY-CANARY PASSED against $(.venv/bin/python3 --version 2>&1) (free-threaded)"
 """
+
+[tool.poe.tasks.soak-selftest]
+help = "Prove the soak driver's comparator can report a difference"
+cmd = "python3 scripts/soak.py --selftest"
+
+[tool.poe.tasks.soak-apps]
+help = "PRE-RELEASE: the soak driver's shakedown against two in-tree apps (not in CI)"
+deps = ["build-serve"]
+shell = """
+# The soak's subjects are third-party applications (docs/REAL_APP_VALIDATION.md);
+# this task is not the soak. It is what keeps the DRIVER honest between passes,
+# because a harness that only ever runs against somebody else's Django project
+# rots silently. hybrid_mix produces every population but uploads and sockets
+# (four mounts, two executors, a pool); asgi_bare produces those two.
+python3 scripts/soak.py --selftest || exit 1
+
+secs=${M0_SOAK_SECONDS:-30}
+port=${M0_SOAK_PORT:-8340}
+
+# A stray server would answer instead: SO_REUSEPORT means a second bind
+# SUCCEEDS and takes a share of the connections, so "it passed" means nothing.
+for p in $port $(( port + 1 )) $(( port + 2 )); do
+  if nc -z 127.0.0.1 $p 2>/dev/null; then
+    echo "soak-apps: port $p is already in use"; exit 1
+  fi
+done
+
+# Leg 1: the mounted mix, SIGTERM'd and restarted every third of the run
+# with every population mid-flight. The drain must exit 0 inside its budget
+# and leave no worker behind; connection errors are tolerated only between
+# the signal and readiness, and a body cut short is a failure even then.
+python3 scripts/soak.py \
+  --manifest scripts/soak_manifests/hybrid_mix.json \
+  --url http://127.0.0.1:$port --seconds "$secs" --log soak-hybrid.log \
+  --churn-every $(( secs / 3 )) --churn-mode sigterm \
+  --serve "bin/m0serve --mount /=shop.wsgi --mount /portal=portal.wsgi:app \
+           --mount /app=live.asgi --mount /live=feed.asgi \
+           --app-dir apps/hybrid_mix --port $port --metrics" || exit 1
+
+# Leg 2: the same mix under --reload, re-forked by a touch every third of
+# the run. The supervisor keeps the listener, so this one should tolerate
+# nothing at all -- a connection error here is the reload dropping a request.
+python3 scripts/soak.py \
+  --manifest scripts/soak_manifests/hybrid_mix.json \
+  --url http://127.0.0.1:$(( port + 2 )) --seconds "$secs" --log soak-reload.log \
+  --churn-every $(( secs / 3 )) --churn-mode reload \
+  --serve "bin/m0serve --mount /=shop.wsgi --mount /portal=portal.wsgi:app \
+           --mount /app=live.asgi --mount /live=feed.asgi \
+           --app-dir apps/hybrid_mix --port $(( port + 2 )) --metrics --reload" || exit 1
+
+# Leg 3: uploads and WebSockets, which the mix cannot produce.
+python3 scripts/soak.py \
+  --manifest scripts/soak_manifests/asgi_bare.json \
+  --url http://127.0.0.1:$(( port + 1 )) --seconds "$secs" --log soak-bare.log \
+  --serve "bin/m0serve bareapp.asgi --app-dir apps/asgi_bare \
+           --port $(( port + 1 )) --metrics --max-body 8m" || exit 1
+
+echo "soak-apps: three in-tree legs clean over ${secs}s each"
+"""

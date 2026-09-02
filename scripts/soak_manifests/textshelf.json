@@ -1,0 +1,111 @@
+{
+  "name": "textshelf",
+  "comment": "The production-shaped subject from docs/REAL_APP_VALIDATION.md (four SSE endpoints, allauth, WhiteNoise, Postgres, daphne in production) and the dog-food candidate for Fly. Serve config.asgi on the executor -- the daphne drop-in -- with the checkout's own venv on PATH and --cwd at the checkout. Its notification stream is an async view over psycopg LISTEN/NOTIFY, so the scratch database must be Postgres. Run with --sessions 3 (the app's own login limiter, see login.comment). MEASURED 2026-09-01: under config.wsgi with the zero-config pool of 8, the abandoners alone stall the whole server -- each abandoned /notifications/stream/ is an async generator Django consumes synchronously (its own warning says so) that blocks in LISTEN/NOTIFY for its 30 s idle timeout, so the pool thread it holds cannot see the disconnect until then, and eight abandoned clients are eight held threads. Without abandoners the WSGI row is clean. This is the documented WSGI limit meeting this app's SSE views, and the reason the Fly cutover serves config.asgi: on the executor the same workload is clean with abandoners.",
+  "ready": "/health/",
+  "headers_ignore": [
+    "date",
+    "server",
+    "connection",
+    "keep-alive",
+    "x-thread",
+    "content-length",
+    "transfer-encoding"
+  ],
+  "comment_headers_ignore": "transfer-encoding is a per-server FRAMING choice (measured 2026-09-01 against uvicorn).",
+  "body_sub": [
+    [
+      "name=\"csrfmiddlewaretoken\" value=\"[^\"]*\"",
+      "name=\"csrfmiddlewaretoken\" value=\"X\""
+    ],
+    [
+      "https?://127\\.0\\.0\\.1:[0-9]+",
+      "HOST"
+    ]
+  ],
+  "login": {
+    "form": "/accounts/login/",
+    "post": "/accounts/login/",
+    "csrf_pattern": "name=\"csrfmiddlewaretoken\" value=\"([^\"]+)\"",
+    "csrf_field": "csrfmiddlewaretoken",
+    "fields": {
+      "login": "soak@example.com",
+      "password": "soak-pass-123"
+    },
+    "expect_status": 302,
+    "check": "/notifications/",
+    "min_interval_seconds": 100,
+    "comment": "ACCOUNT_LOGIN_METHODS = {\"email\"}, so `login` is the address. textshelf's AuthRateLimitMiddleware allows 10 POSTs to /accounts/login/ per IP per 15 minutes (users/middleware.py), so logins are paced to ~6 per 10 minutes on top of the sessions opened at startup; a driver that trips the limiter measures the limiter. Run with --sessions 3."
+  },
+  "routes": [
+    {
+      "path": "/",
+      "class": "short"
+    },
+    {
+      "path": "/pricing/",
+      "class": "short"
+    },
+    {
+      "path": "/accounts/login/",
+      "class": "short"
+    },
+    {
+      "path": "/contests/",
+      "class": "short"
+    },
+    {
+      "path": "/health/",
+      "class": "short"
+    },
+    {
+      "path": "/no-such-page/",
+      "class": "short"
+    },
+    {
+      "path": "/notifications/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/notifications/api/unread-count/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/notifications/api/list/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/users/~update/",
+      "class": "short",
+      "auth": true
+    },
+    {
+      "path": "/feeds/tokens/",
+      "class": "slow",
+      "auth": true
+    },
+    {
+      "path": "/static/css/components.css",
+      "class": "stream",
+      "bytes": 124926,
+      "comment": "the 124 KB WhiteNoise file the 2026-08-31 re-soak's keep-alive-cap defect truncated"
+    },
+    {
+      "path": "/static/css/bootstrap.min.css",
+      "class": "stream",
+      "bytes": 232066
+    },
+    {
+      "path": "/notifications/stream/",
+      "class": "abandon",
+      "auth": true,
+      "comment": "async SSE over psycopg LISTEN/NOTIFY with a 30 s idle timeout; never read to completion, abandoned mid-hold"
+    }
+  ],
+  "headers": {
+    "Accept-Language": "en-US,en;q=0.9"
+  },
+  "comment_headers": "textshelf scores every request for bot-ness (users/fingerprint.py): no User-Agent +50, a bot-ish one +40 (bot, crawler, spider, scraper, curl, wget, python, java, perl...), no Accept-Language +20, Accept */* or empty +15, no Accept-Encoding +10, no sec-ch-ua +5; at >= 60 BotDetectionMiddleware answers auth POSTs with a FAKE 200 JSON success. The driver's own UA and identity encoding leave it at 40; this header takes it to 20. Accept is deliberately left alone."
+}

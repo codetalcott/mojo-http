@@ -1,0 +1,72 @@
+{
+  "name": "asgi_bare",
+  "comment": "The populations hybrid_mix cannot produce: an upload that must come back byte for byte (/echo), and a WebSocket echo. Its /stream takes size= and piece= so the bulk population can ask for the many-small-datagrams shape that overflowed the chunk channel.",
+  "ready": "/",
+  "headers_ignore": [
+    "date",
+    "server",
+    "connection",
+    "keep-alive",
+    "x-thread",
+    "content-length",
+    "transfer-encoding"
+  ],
+  "body_sub": [],
+  "routes": [
+    {
+      "path": "/",
+      "class": "short"
+    },
+    {
+      "path": "/chunks",
+      "class": "short"
+    },
+    {
+      "path": "/cookies",
+      "class": "short"
+    },
+    {
+      "path": "/status/404",
+      "class": "short"
+    },
+    {
+      "path": "/stream?size=262144&piece=4096",
+      "class": "stream",
+      "bytes": 262144
+    },
+    {
+      "path": "/stream-events",
+      "class": "stream"
+    },
+    {
+      "path": "/slow?ms=150",
+      "class": "slow"
+    }
+  ],
+  "uploads": [
+    {
+      "path": "/echo",
+      "size": 1048576,
+      "echo": true
+    },
+    {
+      "path": "/echo",
+      "size": 65536,
+      "echo": true
+    }
+  ],
+  "websockets": [
+    {
+      "path": "/ws",
+      "echo": true,
+      "messages": 8
+    },
+    {
+      "path": "/ws",
+      "echo": true,
+      "messages": 4,
+      "pad": 2048
+    }
+  ],
+  "comment_headers_ignore": "transfer-encoding is a per-server FRAMING choice, not a content difference: measured 2026-09-01, uvicorn frames an app body with no declared length as chunked while m0serve buffers it and sends Content-Length. The decoded bytes are identical and the digest still compares them; framing itself is gated by smoke-wsgi-stream and smoke-asgi, not here."
+}

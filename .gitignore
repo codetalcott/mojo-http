@@ -65,6 +65,11 @@ rt6.log
 stream.log
 ht.log
 canary.log
+# soak-apps' two server logs (scripts/soak.py --log)
+soak-hybrid.log
+soak-reload.log
+soak-bare.log
+
 # stress-asgi keeps its per-mode server log when a round fails; the
 # failure dumps it and leaves it for the next investigator.
 stress-plain.log
