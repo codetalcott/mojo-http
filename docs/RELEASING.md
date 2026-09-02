@@ -56,6 +56,27 @@ a green run cannot mean the parser checks nothing.
 **`uv run poe fuzz-request-long`** — the deep fuzz sweep, eight seeds x
 250k iterations (G13's release depth; CI runs the short form every PR).
 
+**`uv run poe soak-apps`** — the soak driver's shakedown against the two
+in-tree subjects (`apps/hybrid_mix`, `apps/asgi_bare`). This is **not** the
+1.0 soak, which is third-party applications and lives in
+[REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md); it is what keeps the
+DRIVER honest between passes, because a harness exercised only against
+somebody else's Django project rots unnoticed. It runs five populations at
+once — keep-alive bursts that cross the cap on every connection, streams,
+uploads and logins, WebSocket echoes, and abandoners that vanish mid-body
+and let the freed slot be recycled at once — and asserts a digest of every
+verified body rather than its status, which is the shape three of the six
+real-app defects had. Two of its three legs **churn the server under that
+load**: one SIGTERMs and restarts it (the drain must exit 0 inside its
+budget and leave no worker behind), one re-forks it through `--reload`;
+connection errors are tolerated only between the signal and readiness, and
+a body cut short is a failure even then. Its comparator's `--selftest` (also
+`poe soak-selftest`, which is deterministic) runs first, so a green run
+cannot mean the comparator checks nothing. Against a real subject the same
+driver takes a manifest with a `login` block and a capture recorded from a
+reference server (`--baseline`, gunicorn or uvicorn) — see
+`scripts/soak_manifests/bakerydemo.json` for the worked example.
+
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.

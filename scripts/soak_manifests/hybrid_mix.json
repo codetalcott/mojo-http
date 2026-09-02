@@ -1,0 +1,79 @@
+{
+  "name": "hybrid_mix",
+  "comment": "Four mounts, three frameworks, two executors and a handler pool in one process. The driver's shakedown target: it produces every population except uploads and websockets (see asgi_bare.json for those) and it is the only in-tree app where a stream on one executor lane runs beside a blocking view on a pool lane.",
+  "ready": "/",
+  "headers_ignore": [
+    "date",
+    "server",
+    "connection",
+    "keep-alive",
+    "x-thread",
+    "content-length",
+    "transfer-encoding"
+  ],
+  "body_sub": [
+    [
+      "https?://127\\.0\\.0\\.1:[0-9]+",
+      "HOST"
+    ],
+    [
+      "https?://localhost:[0-9]+",
+      "HOST"
+    ]
+  ],
+  "routes": [
+    {
+      "path": "/",
+      "class": "short"
+    },
+    {
+      "path": "/where",
+      "class": "short"
+    },
+    {
+      "path": "/portal/",
+      "class": "short"
+    },
+    {
+      "path": "/portal/where",
+      "class": "short"
+    },
+    {
+      "path": "/app/",
+      "class": "short"
+    },
+    {
+      "path": "/app/where",
+      "class": "short"
+    },
+    {
+      "path": "/app/sse",
+      "class": "stream"
+    },
+    {
+      "path": "/app/big",
+      "class": "stream",
+      "bytes": 262144
+    },
+    {
+      "path": "/live/stream",
+      "class": "stream"
+    },
+    {
+      "path": "/live/big",
+      "class": "stream",
+      "bytes": 262144
+    },
+    {
+      "path": "/slow?ms=150",
+      "class": "slow"
+    },
+    {
+      "path": "/app/await?ms=150",
+      "class": "slow"
+    }
+  ],
+  "comment_headers_ignore": "transfer-encoding is a per-server FRAMING choice, not a content difference: measured 2026-09-01, uvicorn frames an app body with no declared length as chunked while m0serve buffers it and sends Content-Length. The decoded bytes are identical and the digest still compares them; framing itself is gated by smoke-wsgi-stream and smoke-asgi, not here.",
+  "reload_touch": "apps/hybrid_mix/shop/__init__.py",
+  "comment_reload_touch": "For --churn-mode reload: the file whose mtime the driver bumps (os.utime, content untouched, nothing for git to see). The reloader compares nanoseconds, so a touch is a change."
+}
