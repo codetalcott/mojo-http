@@ -51,6 +51,12 @@ jobs:
       # version here would be a third place the interpreter is chosen.
       - name: Check machine-sourced doc facts
         run: python3 scripts/check_docs.py
+      # The docs site's link check runs inside check_docs (scripts/docsite.py
+      # --check, standard library only), so a doc-only PR that breaks a
+      # relative link or adds a docs page without a title fails above. This
+      # proves those checks can fail, the way the recorder's selftest does.
+      - name: Self-test the site generator's checks
+        run: python3 scripts/docsite.py --selftest
       # Guard the guard. The spec sheet's rules are only worth the page they
       # back if reverting one goes red, so each is reverted in memory here and
       # the checker must catch every one -- and a sabotage whose patch no

@@ -522,6 +522,14 @@
       "evidence": "`Self-test the measurement recorder` (every PR)"
     },
     {
+      "id": "F13",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The documentation site: the tree's own pages rendered and served by the server, `llms.txt` at the root, a Markdown twin beside every page",
+      "status": "verified",
+      "evidence": "`Smoke test the documentation site` (every PR) \u2014 built by `scripts/docsite.py`, served through `--static` with `apps/site` behind it; every sitemap URL answers as HTML with the twin it advertises, the root text files name the site's pages by absolute URL, the sitemap goes out as XML, and the slash redirect and HTML 404 come from the application"
+    },
+    {
       "id": "G1",
       "section": "G",
       "category": "G. Security hardening",

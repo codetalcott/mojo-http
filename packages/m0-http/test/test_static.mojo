@@ -138,10 +138,27 @@ def test_outside_the_prefix_is_none() raises:
     assert_false(Bool(s.serve(_get("/staticfile"))))
 
 
-def test_missing_file_is_404() raises:
+def test_missing_file_falls_through() raises:
+    """A path under the prefix that names no file is the handler's to
+    answer, so a mount at `/` can front an application's own routes. It
+    used to be a definitive 404 here, which made a root mount swallow the
+    application entirely."""
     var s = StaticFiles(_fixture_root())
-    var resp = s.serve(_get("/static/nope.css"))
-    assert_equal(resp.take().status_code, 404)
+    assert_false(Bool(s.serve(_get("/static/nope.css"))))
+
+
+def test_non_get_on_a_miss_falls_through() raises:
+    """The 405 is about a file the mount holds; a POST to a path it does
+    not hold must reach the application, or a root mount would 405 every
+    form on the site."""
+    var s = StaticFiles(_fixture_root())
+    assert_false(Bool(s.serve(_get("/static/api/submit", method="POST"))))
+
+
+def _not_served(var hit: Optional[HTTPResponse]) raises:
+    """Refused (404 here) or fallen through (None) — never a 200."""
+    if hit:
+        assert_equal(hit.take().status_code, 404)
 
 
 def test_non_get_is_405_with_allow() raises:
@@ -245,6 +262,9 @@ def test_content_types_by_extension() raises:
     assert_equal(content_type_for("a.html"), "text/html; charset=utf-8")
     assert_equal(content_type_for("a.js"), "text/javascript; charset=utf-8")
     assert_equal(content_type_for("a.json"), "application/json")
+    # A sitemap served as octet-stream is one a crawler may refuse to parse;
+    # the docs site's sitemap.xml is why this row exists.
+    assert_equal(content_type_for("sitemap.xml"), "application/xml")
     assert_equal(content_type_for("a.svg"), "image/svg+xml")
     assert_equal(content_type_for("a.PNG"), "image/png")
     assert_equal(content_type_for("a.woff2"), "font/woff2")
@@ -434,18 +454,22 @@ def test_cache_control_on_206() raises:
 
 
 def test_cache_control_not_on_404() raises:
-    """An error is not the asset; it must not inherit the asset's freshness."""
+    """An error is not the asset; it must not inherit the asset's freshness.
+    A refusal is the 404 this module still answers itself (a plain miss
+    falls through and has no response here to carry the header)."""
     var static = StaticFiles(
         _fixture_root(), cache_control=String("public, max-age=3600")
     )
-    var hit = static.serve(_get("/static/missing.css"))
+    var hit = static.serve(_get("/static/../secret.txt"))
     var resp = hit.take()
     assert_equal(resp.status_code, 404)
     assert_false("cache-control" in resp.headers)
 
 
 def test_a_directory_without_a_trailing_slash_is_not_served_as_a_file() raises:
-    """`/static/sub` must 404, not 200.
+    """`/static/sub` must not be served — it falls through (None), so the
+    handler behind the mount may redirect to `/static/sub/` — and above
+    all must not be a 200.
 
     `index.html` is only appended when the path ends in `/`, so this one
     reached `stat` naming a directory — which succeeds — and went out as a
@@ -455,9 +479,7 @@ def test_a_directory_without_a_trailing_slash_is_not_served_as_a_file() raises:
     a truncated response rather than an error.
     """
     var static = StaticFiles(_fixture_root())
-    var hit = static.serve(_get("/static/sub"))
-    var resp = hit.take()
-    assert_equal(resp.status_code, 404)
+    assert_false(Bool(static.serve(_get("/static/sub"))))
 
 
 def test_a_directory_with_a_trailing_slash_still_serves_its_index() raises:
@@ -485,20 +507,16 @@ def test_an_encoded_slash_does_not_become_a_path_separator() raises:
     decoded to a real `/` would hand it segments it never inspected.
     """
     var static = StaticFiles(_fixture_root())
-    var hit = static.serve(_get("/static/sub%2F..%2F..%2Fsecret.txt"))
-    var resp = hit.take()
-    assert_equal(resp.status_code, 404)
+    _not_served(static.serve(_get("/static/sub%2F..%2F..%2Fsecret.txt")))
 
 
 def test_an_encoded_slash_does_not_silently_vanish() raises:
     """`%2F` used to be DELETED from the path, so `/static/sub%2Findex.html`
     became `/static/subindex.html` — a different file than the client asked
     for, and a target no component in front would agree on. It is now kept
-    encoded, which matches no real file here, so: 404."""
+    encoded, which matches no real file here, so it is not served."""
     var static = StaticFiles(_fixture_root())
-    var hit = static.serve(_get("/static/sub%2Findex.html"))
-    var resp = hit.take()
-    assert_equal(resp.status_code, 404)
+    _not_served(static.serve(_get("/static/sub%2Findex.html")))
 
 
 def test_ordinary_percent_escapes_still_decode() raises:
