@@ -53,16 +53,17 @@ repository names it; `fly apps list -o textshelf` is where to look. Keep DNS **u
 complicate the live demo that will sit beside it.
 
 For the workflow, create a deploy token scoped to this one app and store
-it as the secret `FLY_DEPLOY_SITE` in the GitHub environment named `fly`
-(the workflow hands it to flyctl as `FLY_API_TOKEN`). The environment keeps
-the token off every other job. The token is printed as `FlyV1 fm2_...`, and
+it as the secret `FLY_DEPLOY_SITE` (the workflow hands it to flyctl as
+`FLY_API_TOKEN`). It is a repository secret today; the job also runs in a
+GitHub environment named `fly`, and moving the secret there would keep it
+off every other job. The token is printed as `FlyV1 fm2_...`, and
 the `FlyV1 ` prefix is part of the value — paste the whole line, at the
 prompt or from the clipboard, never as a bare shell argument, which the
 space would split:
 
 ```bash
 fly tokens create deploy -a m0serve-docs --name "github-actions deploy-site"
-pbpaste | gh secret set FLY_DEPLOY_SITE --env fly
+pbpaste | gh secret set FLY_DEPLOY_SITE            # add --env fly to scope it to the environment
 ```
 
 ## Deploying by hand
