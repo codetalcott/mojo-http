@@ -19,7 +19,7 @@ from lightbug_http.header import (
 from lightbug_http.http.common_response import BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge, StreamingUnsupported
 from lightbug_http.io.bytes import Bytes, ByteView
 from lightbug_http.strings import strHttp10
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from lightbug_http.service import HTTPService
 from lightbug_http.c.sendfile import send_file
 from lightbug_http.c.socket import close as close_fd
@@ -787,7 +787,7 @@ def handle_connection[
 
                 if body_end <= len(provision.recv_buffer):
                     body = Bytes(capacity=body_st.content_length)
-                    memcpy(
+                    unsafe_memcpy(
                         dest=body.unsafe_ptr(),
                         src=provision.recv_buffer.unsafe_ptr().unsafe_offset(body_start),
                         count=body_st.content_length,
