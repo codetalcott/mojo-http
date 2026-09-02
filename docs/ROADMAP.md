@@ -2241,10 +2241,17 @@ second being the probe's own delay before sending the rest of the body.
   promptly (5.5 s for ten rounds, all of it the probe's own sleeps); SIGCONT
   it, and SIGTERM exits 0 with no `crashed` or `respawned` line — the
   supervisor reaps with `WNOHANG` alone, so a stopped worker is neither a
-  crash nor a respawn. `accept_placement.py serve --stop-winner` is that
-  measurement. If the step fails again, that is the change to make to the
-  smoke, and `SO_REUSEPORT` per worker is the change to make to the server
-  only if a deployment, not a probe, shows the imbalance mattering.
+  crash nor a respawn. `smoke-reload`'s two-worker phase now asserts it
+  that way — stop the worker that answered, the other must serve the new
+  body 8 of 8, and both pids must be the ones the supervisor logged as
+  re-forked — and was sabotaged in both layers before it counted: with
+  `kill -STOP` made a no-op it fails as "SIGSTOP did not take", and with
+  `_reload` altered to leave the old worker 1 alive while logging it as
+  re-forked (so only the stop layer can see it) it fails naming the old
+  body that worker served. `accept_placement.py serve --stop-winner` is
+  the same measurement bare. `SO_REUSEPORT` per worker stays the change to
+  make to the server only if a deployment, not a probe, shows the
+  imbalance mattering.
 
   **Closed by:** none — no SPEC row can retire
   this; it is outside the server's own behaviour.

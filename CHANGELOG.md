@@ -19,10 +19,14 @@ versions may break the API**.
   the co-located worker is last to run. `EPOLLEXCLUSIVE`, which the entry
   named as a fix direction, sends 80 of 80 to one worker in every placement;
   per-worker `SO_REUSEPORT` listeners are the only shape that balances. The
-  entry now records the numbers, why the server keeps its shared listener,
-  and the fairness-free assertion the smoke should adopt if the step fails
-  again (SIGSTOP the answering worker; the other must answer — also
-  measured).
+  entry now records the numbers and why the server keeps its shared
+  listener. **`smoke-reload`'s two-worker phase no longer asserts scheduler
+  fairness**: instead of waiting for both pids to happen to answer, it
+  stops the worker that did (SIGSTOP; the supervisor reaps with `WNOHANG`,
+  so that is neither a crash nor a respawn) and requires the other to serve
+  the new module 8 of 8, both pids tied to the supervisor's re-fork log.
+  Sabotaged in both layers; passes 4 of 4 on Linux against the 0.16.0
+  wheel, including with the whole smoke pinned to one CPU.
 
 - **The 0.16.0 real-application soak** (`docs/REAL_APP_VALIDATION.md`,
   rewritten; the milestone's soak reads current). Four applications —
