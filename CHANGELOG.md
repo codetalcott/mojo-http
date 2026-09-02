@@ -141,6 +141,17 @@ versions may break the API**.
 
 ### Changed
 
+- **`poe autobahn` provisions its own docker on a Mac.** With no daemon
+  answering it starts a 4 GiB colima VM (enough for the wstest container;
+  the echo server runs on the host) and stops that VM when the run ends,
+  pass or fail. A daemon that was already up — colima started for other
+  work, or native Linux docker — is used as found and never stopped: only
+  what the run started is the run's to reap. Both branches measured: a
+  stopped VM is started at 4 GiB (`colima start --memory 4` resizes the
+  existing profile down from 8) and reaped after the suite; a running one
+  is left running. The sizing matters on a 16 GB machine, where the
+  forgotten 8 GiB reservation was half the RAM.
+
 - **Bench prose numbers are now generated in place, not pattern-matched
   after the fact.** `check_bench_prose` held 24 hand-written regexes
   against 12 quantities across three documents — every legitimate

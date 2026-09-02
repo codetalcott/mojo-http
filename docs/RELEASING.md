@@ -38,7 +38,12 @@ deterministic halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
 **`uv run poe autobahn`** — Autobahn|Testsuite against the pinned baseline
 (SPEC I13). Pre-release because it needs Docker and ~ten minutes, and its
 unique value — close-code validation, I16 — is a defect fixed once rather
-than a regression that recurs (ROADMAP, "A conformance-suite tier"). The
+than a regression that recurs (ROADMAP, "A conformance-suite tier"). On a
+Mac with no daemon running the task provisions its own: it starts a 4 GiB
+colima VM and stops that VM when the run ends, pass or fail — a daemon
+that was already up is used as found and left running, because only what
+the run started is the run's to reap (a forgotten 8 GiB VM reservation was
+half of a 16 GB machine, measured 2026-09-01). The
 runner drives the sections separately (a single pass wedges on the slot a
 cap-killed connection just released), skips 9 (performance: every case
 exceeds the cap) and 12/13 (`permessage-deflate`, I14), and compares in
