@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 import uuid
@@ -45,6 +46,10 @@ sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
 
 WHEELHOUSE = REPO / "deploy" / "site" / "wheelhouse"
+
+# The probe phase stamp (scripts/phase_stamp_check.py): the docker and HTTP
+# helpers are shared by every phase, so an unhandled error inside one would
+# name the call that failed and never the phase being proven.
 PHASE = "startup"
 
 
@@ -52,6 +57,14 @@ def phase(name):
     global PHASE
     PHASE = name
     print(f"--- {name}")
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("site_image_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def fail(msg):
