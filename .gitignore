@@ -49,6 +49,8 @@ flask.log
 wsgi.log
 serve.log
 site.log
+# A wheel staged for the docs site's image probe (scripts/site_image_probe.py)
+deploy/site/wheelhouse/*.whl
 threads.log
 asgi.log
 fasthtml.log

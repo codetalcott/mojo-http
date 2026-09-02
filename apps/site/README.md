@@ -26,6 +26,9 @@ M0_SITE_DIST=dist/site bin/m0serve siteapp.wsgi:application \
   --app-dir apps/site --static /=$PWD/dist/site --port 8180
 ```
 
+[deploy/site](../../deploy/site/README.md) is the deployment: the image,
+the Fly.io app and the workflow that deploys after each release.
+
 `python3 scripts/docsite.py --check` is the link check on its own (standard
 library only, so `scripts/check_docs.py` runs it on doc-only pull requests):
 every relative link in the corpus resolves to a page, an asset or a file in

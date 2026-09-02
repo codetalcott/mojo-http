@@ -726,11 +726,20 @@ with evidence is [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md):
      links and JSON-LD, and titles written for the question a reader
      types rather than the file's name. `poe smoke-site` proves the
      served shape (F13); the link check runs on doc-only pull requests.
-     Not done, and each a launch task rather than a build one: a public
-     deployment (the build takes `--base-url`; the server has no TLS, so
-     it sits behind a proxy), the live two-tab demo beside the docs, and
-     the off-site half -- the homepage field on GitHub and on PyPI,
-     djangopackages, the Modular forum.
+     The deployment is built too (2026-09-02, `deploy/site/`): the domain
+     is `m0serve.dev`, registered; the host is Fly.io, one always-on
+     256 MB shared machine in `iad`, chosen over a VPS after Hetzner's
+     2026 repricing left its US plans at ten times the cost for CPU a
+     2.5 MB site cannot use; the image is the M11 container shape with
+     the site copied in, proven from the tree's wheel by `poe
+     smoke-site-image` (F14), and `deploy-site.yml` deploys after each
+     release pinning that release's wheel. The first public deploy waits
+     on the next release, because the site's redirect and 404 need the
+     static mount's fall-through that 0.16.0 lacks. Still open, and each
+     a launch task: the live two-tab demo beside the docs (a separate Fly
+     app on a subdomain), and the off-site half -- the homepage field on
+     GitHub (once the site is live; PyPI's Documentation link rides the
+     next release), djangopackages, the Modular forum.
 
   **Before 0.12.0**: exercise the server against real applications rather
   than only the ones written to test it — three local Django projects,

@@ -522,6 +522,14 @@
       "evidence": "`Self-test the measurement recorder` (every PR)"
     },
     {
+      "id": "F14",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The site's deploy image: the wheel in `python:3.12-slim` with the built site, served from a container as it deploys",
+      "status": "verified",
+      "evidence": "`Smoke test the documentation site's deploy image` (every PR) \u2014 `deploy/site/Dockerfile` built from the tree's own wheel; through a published port, `llms.txt` and the sitemap answer at the root, a page answers with the Markdown twin it advertises, the slash redirect and the HTML 404 come from the application, m0serve is PID 1 by `/proc/1/cmdline`, and `docker stop` is the drain's exit 0 inside its grace"
+    },
+    {
       "id": "F13",
       "section": "F",
       "category": "F. Observability",
