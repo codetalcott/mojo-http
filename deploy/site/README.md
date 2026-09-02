@@ -27,23 +27,38 @@ promises.
 
 ## One-time setup
 
+**Do not connect the repository to Fly's GitHub integration, and do not run
+`fly launch` in the checkout.** Both would write a second workflow and a
+root `fly.toml` that deploy on every push to main, which is exactly what
+`deploy-site.yml` avoids: the pages would describe main while the server
+behind them is the released wheel, and neither would render the site or
+pass the version pin the Dockerfile needs. Create the app empty and let the
+repository's own workflow deploy it:
+
 ```bash
-fly apps create m0serve-docs                 # the name in fly.toml
-fly certs add m0serve.dev -a m0serve-docs    # prints the DNS records to set
-fly ips list -a m0serve-docs                 # A (shared v4) and AAAA to publish
+fly apps create m0serve-docs                        # the name in fly.toml
+fly ips allocate-v4 --shared -a m0serve-docs        # a first deploy would do these, but
+fly ips allocate-v6 -a m0serve-docs                 # ...DNS and the cert cannot wait for it
+fly certs add m0serve.dev -a m0serve-docs           # prints the records to publish
 ```
 
-Publish an `A` record for `m0serve.dev` to the app's IPv4 and an `AAAA` to
-its IPv6, then `fly certs check m0serve.dev -a m0serve-docs` until it reports
-issued. Keep DNS **unproxied** if the registrar is Cloudflare: the proxy's
+Publish an `A` record for `m0serve.dev` to the shared IPv4 and an `AAAA` to
+the IPv6 (`fly ips list -a m0serve-docs` shows both), then
+`fly certs check m0serve.dev -a m0serve-docs` until it reports issued. The
+certificate issues before anything is deployed; the first request simply
+finds no machine until the workflow has run. Keep DNS **unproxied** if the registrar is Cloudflare: the proxy's
 100 s idle timeout and second TLS hop buy nothing for a static site and
 complicate the live demo that will sit beside it.
 
-For the workflow, create a deploy token and store it as the repository
-secret `FLY_API_TOKEN` in an environment named `fly`:
+For the workflow, create a deploy token scoped to this one app and store
+it as `FLY_API_TOKEN`. The job runs in a GitHub environment named `fly`
+(Settings → Environments → New environment), so put the secret there; a
+plain repository secret of the same name works too, the environment just
+keeps the token off every other job:
 
 ```bash
 fly tokens create deploy -a m0serve-docs
+gh secret set FLY_API_TOKEN --env fly       # pastes the token; create the environment first
 ```
 
 ## Deploying by hand
