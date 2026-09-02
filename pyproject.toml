@@ -2419,21 +2419,51 @@ pid=
 # Phase 2: two workers. Both indices must be re-forked, and both must serve
 # the new body -- a reload that replaced only one worker would leave the
 # other answering from the old module.
+#
+# Which worker answers a fresh connection is the scheduler's choice, not
+# the server's: both share one listen socket, and the worker that shares
+# the client's CPU loses every accept race (docs/ROADMAP.md, "Scheduling
+# stickiness": 80 of 80 to one worker under that placement, seen once on
+# CI). So the second worker is not waited for -- it is MADE to answer. The
+# worker that did answer is stopped, and the other must serve the new body
+# on its own; the supervisor reaps with WNOHANG alone, so a stopped worker
+# is neither a crash nor a respawn. Every old worker was reaped before any
+# replacement was forked (`_reload`), so the first new body proves the old
+# generation gone, and the answering pids are then tied to the ones the
+# supervisor logged as re-forked.
 write_app three
 "$srv" myapp:application --app-dir "$out" --port 8095 --reload --workers 2 > reload.log 2>&1 &
 pid=$!
 curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8095/ > /dev/null \
   || fail 'the two-worker reloading server never became healthy'
 write_app four
-ok=0
+served=
 for i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.5
-  seen=$(for n in 1 2 3 4 5 6 7 8; do curl -s --max-time 5 http://127.0.0.1:8095/; echo; done)
-  fours=$(echo "$seen" | grep -c '^four ' || true)
-  pids=$(echo "$seen" | grep '^four ' | cut -d= -f2 | sort -u | wc -l | tr -d ' ')
-  if [ "$fours" = "8" ] && [ "$pids" -ge 2 ]; then ok=1; break; fi
+  served=$(curl -s --max-time 5 http://127.0.0.1:8095/ || true)
+  reforked=$(grep -c 'starting (reload 1)' reload.log || true)
+  case "$served" in "four "*) [ "$reforked" = "2" ] && break ;; esac
 done
-[ "$ok" = "1" ] || fail "both workers did not come back on the new module (last: $seen)"
+case "$served" in
+  "four "*) ;;
+  *) fail "the edit never reached a worker within 5s (last: '$served')" ;;
+esac
+[ "$reforked" = "2" ] || fail "expected both workers re-forked for reload 1, the log shows $reforked"
+first_pid=$(echo "$served" | cut -d= -f2)
+kill -STOP "$first_pid" || fail "could not stop worker $first_pid"
+other=$(for n in 1 2 3 4 5 6 7 8; do curl -s --max-time 5 http://127.0.0.1:8095/; echo; done)
+kill -CONT "$first_pid"
+fours=$(echo "$other" | grep -c '^four ' || true)
+[ "$fours" = "8" ] \
+  || fail "with worker $first_pid stopped, the other worker did not serve the new module 8 of 8 times (got: $other)"
+second_pid=$(echo "$other" | cut -d= -f2 | sort -u)
+[ "$(echo "$second_pid" | wc -l | tr -d ' ')" = "1" ] || fail "more than one pid answered with $first_pid stopped: $second_pid"
+[ "$second_pid" != "$first_pid" ] || fail "the stopped worker $first_pid answered -- SIGSTOP did not take"
+reloaded=$(grep -o 'pid=[0-9]* starting (reload 1)' reload.log | cut -d= -f2 | cut -d' ' -f1 | sort)
+for p in $first_pid $second_pid; do
+  echo "$reloaded" | grep -qx "$p" \
+    || fail "worker $p served the new module but was not re-forked by reload 1 (re-forked: $(echo $reloaded))"
+done
 grep -q 'reload 1 complete' reload.log || fail 'the two-worker supervisor did not report the reload'
 
 kill $pid

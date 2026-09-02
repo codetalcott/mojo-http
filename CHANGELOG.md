@@ -9,6 +9,25 @@ versions may break the API**.
 
 ### Added
 
+- **The scheduling-stickiness sighting reproduced, and its fix direction
+  corrected** (`docs/ROADMAP.md` Known issues, `scripts/accept_placement.py`).
+  The one CI failure of `smoke-reload`'s two-worker phase — eighty
+  sequential connections all answered by one of two live workers — is CPU
+  placement, not load: with the client on one worker's CPU the other worker
+  wins every accept (80 of 80, measured on the 0.16.0 wheel in a Linux
+  container), because the accept-queue wakeup runs on the client's CPU and
+  the co-located worker is last to run. `EPOLLEXCLUSIVE`, which the entry
+  named as a fix direction, sends 80 of 80 to one worker in every placement;
+  per-worker `SO_REUSEPORT` listeners are the only shape that balances. The
+  entry now records the numbers and why the server keeps its shared
+  listener. **`smoke-reload`'s two-worker phase no longer asserts scheduler
+  fairness**: instead of waiting for both pids to happen to answer, it
+  stops the worker that did (SIGSTOP; the supervisor reaps with `WNOHANG`,
+  so that is neither a crash nor a respawn) and requires the other to serve
+  the new module 8 of 8, both pids tied to the supervisor's re-fork log.
+  Sabotaged in both layers; passes 4 of 4 on Linux against the 0.16.0
+  wheel, including with the whole smoke pinned to one CPU.
+
 - **The 0.16.0 real-application soak** (`docs/REAL_APP_VALIDATION.md`,
   rewritten; the milestone's soak reads current). Four applications —
   `transcripts`, `color-separation`, `textshelf` and Wagtail's
