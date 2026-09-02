@@ -36,7 +36,7 @@ pass the version pin the Dockerfile needs. Create the app empty and let the
 repository's own workflow deploy it:
 
 ```bash
-fly apps create m0serve-docs                        # the name in fly.toml
+fly apps create m0serve-docs --org textshelf        # the name in fly.toml; the TextShelf org, not personal
 fly ips allocate-v4 --shared -a m0serve-docs        # a first deploy would do these, but
 fly ips allocate-v6 -a m0serve-docs                 # ...DNS and the cert cannot wait for it
 fly certs add m0serve.dev -a m0serve-docs           # prints the records to publish
@@ -46,7 +46,9 @@ Publish an `A` record for `m0serve.dev` to the shared IPv4 and an `AAAA` to
 the IPv6 (`fly ips list -a m0serve-docs` shows both), then
 `fly certs check m0serve.dev -a m0serve-docs` until it reports issued. The
 certificate issues before anything is deployed; the first request simply
-finds no machine until the workflow has run. Keep DNS **unproxied** if the registrar is Cloudflare: the proxy's
+finds no machine until the workflow has run. The organization is a property
+of the app, not of `fly.toml` (app names are global), so nothing in the
+repository names it; `fly apps list -o textshelf` is where to look. Keep DNS **unproxied** if the registrar is Cloudflare: the proxy's
 100 s idle timeout and second TLS hop buy nothing for a static site and
 complicate the live demo that will sit beside it.
 
