@@ -542,3 +542,51 @@ machine with the WSGI diagnostic, the daphne run had it to itself.
 - Remaining before staging: the multipart upload row (submissions'
   `htmx-upload-chunk`, reachable now that login works), and a Dockerfile
   with the wheel from the GitHub release.
+
+---
+
+# transcripts and color-separation — 2026-09-02, and the first server defect
+
+Both re-run against 0.16.0 with the driver; the record is rewritten in
+`docs/REAL_APP_VALIDATION.md` with the marker moved. PR #205 (the driver)
+merged; this work is on `claude/soak-record`.
+
+**The server defect (SPEC D9, open).** A request body still arriving at
+SIGTERM holds the drain to its 5 s deadline: `_run_shutdown`'s loop
+dispatches `EVFILT_WRITE` only, so a half-received upload is neither read
+on nor closed. Found because the uploads population kept 9.7 MB POSTs in
+flight and every color-separation drain took 5.1 s; bisected (abandoners
+alone 0.05 s, streams alone 0.08 s, uploads + abandoners 5.09 s), then
+reproduced bare with `scripts/drain_upload_probe.py` against
+`apps/asgi_bare`. The fix is sized in the ROADMAP section: mid-request
+slots keep read interest through the drain; gate = the probe as a smoke
+step, two-sided; sabotage = revert the read dispatch. **Not fixed in this
+session** — it is a change to the event loop's drain, one concern, its own
+PR.
+
+**Driver additions this round**: multipart form uploads (CSRF from a form
+page, a real file, `follow` to the page the 302 lands on), `verify: false`
+status-only routes, `--supervised` for sampling a reference server's
+workers, supervisor detection from argv (an app that spawns a child per
+request — transcripts runs `typst` per PDF — had been summed as if it were
+a worker), and a manifest `headers` block.
+
+**Application issues found** are in the record's findings table and the
+manifests' comments; the ones a maintainer would want:
+
+- transcripts: README install path omits `django-watchfiles` (settings
+  lists it unconditionally); `init_data --with-samples` fails on
+  `students.owner_id NOT NULL`; `/static/` is served by runserver only
+  under the dev settings.
+- color-separation: `output/` is source AND gitignored, so a clone cannot
+  serve a request; the settings form's default `n_colors=8` fails its own
+  spot-mode validator (max 6); `/job/N/preview/` answers 500
+  (`int64 is not JSON serializable`) on a completed job.
+- textshelf: SSE views stall any WSGI server (no guard enforces
+  ASGI-only); bot detection fakes a 200 for `python`/`curl` user agents;
+  no Postgres pool, so 4 processes exceed a default `max_connections`;
+  `createsuperuser` makes no allauth `EmailAddress` row.
+
+**Results** (all vs reference captures, zero body differences): transcripts
+41,693 + 38,145 (four workers), color-separation 61,327 (WSGI, 370 uploads)
++ 18,274 (ASGI), the textshelf and bakerydemo rows already recorded.

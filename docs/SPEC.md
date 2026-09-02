@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**149 capabilities: 125 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 125 verified, 122 are gated on every pull request, 1 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**150 capabilities: 125 verified, 0 implemented, 1 planned, 24 out of scope.** Of the 125 verified, 122 are gated on every pull request, 1 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -136,6 +136,7 @@ whose body drifted away from it is the case most likely to have survived.
 | D3 | Bounded drain, naming what it abandoned | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | D4 | SIGTERM reaches a shutdown pipe rather than killing the process | verified | `test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR) |
 | D5 | Development hot reload on file change | verified | `Smoke test hot reload` (every PR) — `--reload`, `--reload-dir` |
+| D9 | A request whose body is still arriving at SIGTERM is read on and answered, not left to the deadline | planned | ROADMAP: The drain does not read a request body in flight |
 | D6 | `SO_REUSEPORT` off by default: a second bind fails loudly instead of silently sharing the port | verified | `Smoke test the serve CLI` (every PR) — five attempts a second apart, so a restart racing the previous process's drain still succeeds; the second server must exit 1 naming the address, print no ready banner, and leave the first answering. The opt-in `ListenConfig.reuse_port` remains for a deliberate handoff between two processes that both mean to listen; no shipped path enables it, because workers and threads all accept from ONE listener bound before the fork |
 | D7 | Binary/hot upgrade (USR2-style overlap) | out of scope | needs socket handoff this server does not have; run two behind a proxy |
 | D8 | SIGHUP reload | out of scope | `--reload` covers development; production reload is a new process behind a proxy |

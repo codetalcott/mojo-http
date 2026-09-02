@@ -340,6 +340,38 @@ def raw_request(host, port, path, headers=""):
     return sock
 
 
+# --- multipart: what a browser's file input actually sends ----------------
+
+def encode_multipart(fields, file_field, filename, content,
+                     content_type="application/octet-stream", boundary=None):
+    """RFC 7578 multipart/form-data, as a browser would send one file.
+
+    Pure so the self-test can pin the framing: the CRLFs and the closing
+    `--boundary--` are exactly what a server parser needs, and a body that
+    is one byte off is a 400 that looks like the server's fault."""
+    boundary = boundary or ("----m0soak%s" % os.urandom(8).hex())
+    out = []
+    for name, value in fields.items():
+        out.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n"
+                    "\r\n%s\r\n" % (boundary, name, value)).encode())
+    out.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"; "
+                "filename=\"%s\"\r\nContent-Type: %s\r\n\r\n"
+                % (boundary, file_field, filename, content_type)).encode())
+    out.append(content)
+    out.append(("\r\n--%s--\r\n" % boundary).encode())
+    return b"".join(out), "multipart/form-data; boundary=%s" % boundary
+
+
+def upload_payload(up):
+    """The bytes an `uploads` entry sends: a file from disk, or a generated
+    body of `size` bytes."""
+    if up.get("file"):
+        with open(os.path.join(REPO, up["file"]) if not os.path.isabs(up["file"])
+                  else up["file"], "rb") as fh:
+            return fh.read()
+    return (b"m0soak" * ((up["size"] // 6) + 1))[:up["size"]]
+
+
 # --- login: a CSRF form round trip, verified like any other route ---------
 
 def login(cfg, jar, stats=None, who="login"):
@@ -501,6 +533,14 @@ def children_of(pid):
         return []
 
 
+# Set by Server from its own argv: only a `--workers N>1` or `--reload`
+# server is a supervisor whose children are the thing to sample. An
+# application that spawns a subprocess per request -- transcripts runs
+# `typst` for every PDF -- has children too, and summing THOSE reported a
+# 37 MB server with seven descriptors while the real one sat at 124 MB.
+_SUPERVISED = {}
+
+
 def sample(pid):
     """RSS/fds/threads for the process under test. Never raises: a sampling
     failure must not be mistaken for the thing being measured (`emit.py`'s
@@ -510,7 +550,7 @@ def sample(pid):
     pid the driver holds is the parent, whose 12 MB says nothing about the
     workers doing the serving — so when it has children, they are what is
     sampled, summed, with the count reported as `workers`."""
-    kids = children_of(pid)
+    kids = children_of(pid) if _SUPERVISED.get("yes") else []
     if kids:
         parts = [_sample_one(k) for k in kids]
         out = {"workers": len(kids)}
@@ -616,6 +656,11 @@ class Server:
         self.argv = shlex.split(cmd)
         self.log_path = log_path
         self.cwd = cwd
+        workers = 1
+        for i, a in enumerate(self.argv):
+            if a == "--workers" and i + 1 < len(self.argv):
+                workers = int(self.argv[i + 1])
+        _SUPERVISED["yes"] = workers > 1 or "--reload" in self.argv
         self.proc = None
         self.epoch = 0
 
@@ -790,19 +835,59 @@ def pop_bulk(cfg, stop, stats):
     while not stop.is_set():
         if uploads:
             up = uploads[i % len(uploads)]
-            payload = (b"m0soak" * ((up["size"] // 6) + 1))[:up["size"]]
+            payload = upload_payload(up)
             try:
-                status, _, body = fetch(
+                jar = jar_for(cfg, up, i)
+                if up.get("multipart"):
+                    # A real form: the CSRF token from the page that hosts
+                    # it (cookie + field), the named fields, and the file.
+                    mp = up["multipart"]
+                    jar = jar.copy() if jar else Jar()
+                    fields = dict(mp.get("fields", {}))
+                    if mp.get("csrf_form"):
+                        st, _, page = fetch(cfg["host"], cfg["port"],
+                                            mp["csrf_form"], jar=jar)
+                        token = extract_csrf(page, mp.get(
+                            "csrf_pattern",
+                            r'name="csrfmiddlewaretoken" value="([^"]+)"'))
+                        if token is None:
+                            stats.fail("upload %s: no CSRF token in %s"
+                                       % (up["path"], mp["csrf_form"]))
+                            i += 1
+                            continue
+                        fields[mp.get("csrf_field", "csrfmiddlewaretoken")] = token
+                    body_bytes, ctype = encode_multipart(
+                        fields, mp.get("field", "file"),
+                        mp.get("filename", "soak.bin"), payload,
+                        mp.get("content_type", "application/octet-stream"))
+                    headers = {"Content-Type": ctype,
+                               "Referer": "http://%s:%d%s" % (
+                                   cfg["host"], cfg["port"],
+                                   mp.get("csrf_form", up["path"]))}
+                else:
+                    body_bytes = payload
+                    headers = {"Content-Type": "application/octet-stream"}
+                status, resp_headers, body = fetch(
                     cfg["host"], cfg["port"], up["path"], method="POST",
-                    body=payload,
-                    headers={"Content-Type": "application/octet-stream"},
-                    timeout=60, jar=jar_for(cfg, up, i))
+                    body=body_bytes, headers=headers, timeout=120, jar=jar)
                 stats.bump("uploads")
                 if status != up.get("status", 200):
                     stats.fail("upload %s: status %d" % (up["path"], status))
                 elif up.get("echo") and len(body) != len(payload):
                     stats.fail("upload %s echoed %d of %d bytes"
                                % (up["path"], len(body), len(payload)))
+                elif up.get("follow") and status in (301, 302, 303):
+                    # The page the upload lands on must exist: a 302 to a
+                    # job page that then 404s is an upload that was lost.
+                    loc = dict((k.lower(), v) for k, v in resp_headers).get(
+                        "location", "")
+                    loc = re.sub(r"^https?://[^/]+", "", loc)
+                    st, _, _ = fetch(cfg["host"], cfg["port"], loc, jar=jar)
+                    if st != 200:
+                        stats.fail("upload %s: landed on %s -> %d"
+                                   % (up["path"], loc, st))
+                    else:
+                        stats.bump("uploads_landed")
             except OSError as exc:
                 stats.fail("upload %s: %r" % (up["path"], exc),
                            connection=True)
@@ -958,6 +1043,16 @@ def dump_body(dirpath, path, body):
 
 def verify(cfg, stats, path, status, headers, body, who):
     capture = cfg["capture"]
+    route = cfg["by_path"].get(path, {})
+    if route.get("verify") is False:
+        # A body that is different on every request by the application's
+        # design (an XLSX with its creation second inside) is still worth
+        # fetching for its CPU and its status; it is just not comparable.
+        if status == route.get("status", 200):
+            stats.bump("status_only")
+        else:
+            stats.fail("%s %s: status %d" % (who, path, status))
+        return
     actual = observe(status, headers, body, cfg["ignore"], cfg["subs"])
     expected = capture.get(path)
     if expected is None:
@@ -1070,6 +1165,7 @@ def build_cfg(manifest, url, capture, args):
         "host": parts.hostname or "127.0.0.1",
         "port": parts.port or 80,
         "routes": manifest["routes"],
+        "by_path": {r["path"]: r for r in manifest["routes"]},
         "uploads": manifest.get("uploads", []),
         "websockets": manifest.get("websockets", []),
         "login": manifest.get("login"),
@@ -1107,6 +1203,9 @@ def cmd_baseline(manifest, url, args):
         print("  logged in; POST %s captured" % cfg["login"].get(
             "post", cfg["login"]["form"]))
     for i, route in enumerate(manifest["routes"]):
+        if route.get("verify") is False:
+            print("  skipped  %-28s (verify: false -- status only)" % route["path"])
+            continue
         if route.get("class") == "abandon":
             print("  skipped  %-28s (abandon-only: never read to completion)"
                   % route["path"])
@@ -1475,6 +1574,19 @@ def cmd_selftest():
         print("  FAIL jar after deletion: %r" % jar.header())
         bad += 1
 
+    # 7b. the multipart encoder frames exactly as RFC 7578 says.
+    mp_body, mp_ct = encode_multipart({"a": "1"}, "image", "x.png", b"PNG!",
+                                      "image/png", boundary="B")
+    want = (b"--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n"
+            b"--B\r\nContent-Disposition: form-data; name=\"image\"; "
+            b"filename=\"x.png\"\r\nContent-Type: image/png\r\n\r\nPNG!"
+            b"\r\n--B--\r\n")
+    if mp_body == want and mp_ct == "multipart/form-data; boundary=B":
+        print("  ok   multipart body framed byte for byte")
+    else:
+        print("  FAIL multipart framing: %r" % mp_body[:120])
+        bad += 1
+
     # 8. the churn window forgives connection errors only, and only while
     #    open — a truncation during a drain is still a failure.
     st = Stats()
@@ -1560,6 +1672,9 @@ def main():
                     "relative to it -- so name it, and give --serve an "
                     "absolute path to bin/m0serve")
     ap.add_argument("--pid", type=int, help="pid to sample (default: --serve's)")
+    ap.add_argument("--supervised", action="store_true",
+                    help="--pid is a supervisor (gunicorn, uvicorn --workers): "
+                         "sample its children, summed")
     ap.add_argument("--baseline", help="record a capture from --url and exit")
     ap.add_argument("--capture", help="compare against this capture file")
     ap.add_argument("--seconds", type=float, default=30.0)
@@ -1590,6 +1705,8 @@ def main():
 
     if args.selftest:
         return cmd_selftest()
+    if args.supervised:
+        _SUPERVISED["yes"] = True
     if not args.manifest:
         ap.error("--manifest is required (or --selftest)")
     with open(args.manifest) as fh:

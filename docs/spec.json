@@ -322,6 +322,14 @@
       "evidence": "`Smoke test hot reload` (every PR) \u2014 `--reload`, `--reload-dir`"
     },
     {
+      "id": "D9",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "A request whose body is still arriving at SIGTERM is read on and answered, not left to the deadline",
+      "status": "planned",
+      "evidence": "ROADMAP: The drain does not read a request body in flight"
+    },
+    {
       "id": "D6",
       "section": "D",
       "category": "D. Graceful shutdown and restart",

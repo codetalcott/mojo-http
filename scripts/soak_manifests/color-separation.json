@@ -1,0 +1,29 @@
+{
+  "name": "color-separation",
+  "comment": "The 2026-08-26 pass's CPU-and-uploads app (numpy/scipy/Pillow halftone separation, Django 6, SQLite, FileResponse downloads). Serve from the checkout with its venv on PATH: `m0serve halftone_studio.wsgi --max-body 64m` (or .asgi). A clean clone CANNOT run it: the `output/` source package is gitignored (see the design doc); copy it from a working tree. Needs one processed job (id 1): upload an image on /, then POST the settings form to /job/1/process/ with n_colors <= 6 -- the form's own default of 8 fails spot mode's validator. The uploads block posts the real multipart form (CSRF from /), and `follow` requires the job page the 302 lands on to exist.",
+  "ready": "/",
+  "headers_ignore": ["date", "server", "connection", "keep-alive", "x-thread", "content-length", "transfer-encoding"],
+  "body_sub": [
+    ["name=\"csrfmiddlewaretoken\" value=\"[^\"]*\"", "name=\"csrfmiddlewaretoken\" value=\"X\""],
+    ["https?://127\\.0\\.0\\.1:[0-9]+", "HOST"]
+  ],
+  "routes": [
+    {"path": "/", "class": "short"},
+    {"path": "/simple/", "class": "short"},
+    {"path": "/admin/login/", "class": "short"},
+    {"path": "/no-such-page/", "class": "short"},
+    {"path": "/job/1/", "class": "short"},
+    {"path": "/job/1/status/", "class": "short"},
+    {"path": "/job/1/analysis-status/", "class": "short"},
+    {"path": "/job/1/preview/", "class": "short", "comment": "answers 500 on a completed job -- an application bug (int64 is not JSON serializable), deterministic, so it is compared like any route"},
+    {"path": "/job/1/download/", "class": "stream", "bytes": 4763200, "comment": "FileResponse of the separations zip"},
+    {"path": "/media/outputs/2026/09/big_separations.zip", "class": "stream", "bytes": 4763200, "comment": "the same zip through Django's media serving"},
+    {"path": "/media/uploads/2026/09/big.png", "class": "stream", "bytes": 9735633, "comment": "the 9.7 MB original, larger than every buffer"}
+  ],
+  "uploads": [
+    {"path": "/upload/", "file": "/tmp/soak/small.png", "status": 302, "follow": true,
+     "multipart": {"csrf_form": "/", "field": "image", "filename": "small.png", "content_type": "image/png"}},
+    {"path": "/upload/", "file": "/tmp/soak/big.png", "status": 302, "follow": true,
+     "multipart": {"csrf_form": "/", "field": "image", "filename": "big.png", "content_type": "image/png"}}
+  ]
+}
