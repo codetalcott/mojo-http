@@ -183,6 +183,21 @@ versions may break the API**.
   failure for every one; it runs in `test-all` and in CI. Nothing was found
   wrong with the implementation — the gap was in the evidence.
 
+### Fixed
+
+- **A request whose body was still arriving at SIGTERM held the drain to
+  its 5 s deadline** (SPEC D9). The drain loop dispatched writes only and
+  read nothing new, so a half-received upload was neither completed nor
+  closed: the client was reset at 5.03 s and the process left at 5.09 s —
+  half of `docker stop`'s patience for a request that completes in
+  milliseconds. The same loop cut any response too large for one `send`
+  at its first write readiness. The drain now runs ordinary event-loop
+  passes for its budget, with `_close_between_requests` after each so only
+  bytes already sent are served; gated by `smoke-drain-upload` in both
+  execution shapes, two-sided (answered whole, exited inside 3 s), and
+  sabotaged by restoring the old loop. Found by the soak driver's uploads
+  population on color-separation.
+
 ### Changed
 
 - **`poe autobahn` provisions its own docker on a Mac.** With no daemon

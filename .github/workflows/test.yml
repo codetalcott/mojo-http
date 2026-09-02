@@ -285,6 +285,12 @@ jobs:
       # stop` does, and what used to leave them orphaned on the port.
       - name: Smoke test graceful shutdown
         run: uv run poe smoke-shutdown
+      # The drain's other half (SPEC D9): a request whose body is still
+      # arriving when SIGTERM lands is read on and answered, in both
+      # execution shapes, and the process leaves inside 3 s of the signal
+      # instead of resetting the client at the 5 s deadline.
+      - name: Smoke test the drain with an upload in flight
+        run: uv run poe smoke-drain-upload
       # The one deadline with no event to hang itself on: a client that
       # connects and says nothing is never readable. Also pins the inverse —
       # a keep-alive gap past the header timeout must NOT be answered 408.

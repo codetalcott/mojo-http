@@ -1695,62 +1695,55 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
         slot_sse, slot_ws, slot_ws_state, offload,
     )
 
-    # Drain in-flight: wait for active non-SSE connections (max 5s).
+    # Drain in-flight: keep serving what is already in flight, for at most
+    # DRAIN_TIMEOUT_NS, with ordinary event-loop passes.
+    #
+    # This loop used to dispatch EVFILT_WRITE only and read nothing new,
+    # which was two defects with one cause. A request whose BODY was still
+    # arriving when SIGTERM landed was neither read on nor closed: the
+    # client's remaining bytes sat unread, it was reset at the deadline,
+    # and the process exited at 5.09 s (SPEC D9 -- found by the soak's
+    # uploads population, 9.7 MB POSTs in flight at every drain; the bare
+    # reproducer is `scripts/drain_upload_probe.py`). And a response too
+    # large for one send was cut at its first write readiness, because
+    # the write branch here closed the slot instead of sending the rest.
+    # An ordinary pass does both correctly, services pool completions and
+    # bus frames on the way, and flushes buffered submits at its bottom --
+    # everything the old loop re-implemented in part. The listener is
+    # already closed, so a pass accepts nothing; what a pass CAN still do
+    # is answer a request that arrives on an open keep-alive connection,
+    # and `_close_between_requests` after every pass is what bounds that:
+    # a connection with no request in progress is closed, so only bytes
+    # already sent by the client are ever served. gunicorn's graceful
+    # timeout has the same shape.
+    #
+    # The shutdown pipe is deregistered first: its byte is never read, so
+    # a registered pipe stays readable and every pass would break at it,
+    # skipping the events behind it in that batch. A second SIGTERM
+    # during the drain is ignored, as it always was.
     #
     # `offload.inflight` is in the condition as well as `active_count`,
     # and not redundantly: a client that vanished while its request was
     # in a pool thread has already been subtracted from `active_count`,
     # but its slot stays borrowed until the completion arrives. Without
     # the second term a shutdown could leave that job unclaimed.
-    # Requests still inside a pool thread are answered here rather than
-    # dropped, on the same 5 s budget — `_service_completions` runs on
-    # every pass below, before the events are dispatched.
+    if st.shutdown_read_fd >= 0:
+        backend.try_delete_read(st.shutdown_read_fd)
     var drain_start = perf_counter_ns()
     comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
     while active_count > 0 or offload.inflight > 0:
         if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
             break
-        # Nothing new is read during the drain, so this only ever
-        # sends what the pass that saw the shutdown had buffered —
-        # but it must go before this wait, for the reason above.
-        _flush_submits(
-            backend, handler, config, server_address, tcp_keep_alive,
-            slot_fds, slot_response, slot_send_offset, slot_header_start,
-            fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse, slot_ws, slot_ws_state, slot_read_armed,
-            slot_idle_deadline, date_cache_sec, date_cache, offload,
-        )
         var drain_events = backend.wait(100)
-        _service_completions(
-            backend, handler, config, server_address, tcp_keep_alive,
-            slot_fds, slot_response, slot_send_offset, slot_header_start,
-            fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse, slot_ws, slot_ws_state,
-            slot_read_armed, slot_idle_deadline,
-            date_cache_sec, date_cache, offload, bus_read_fd,
-        )
+        _ = _run_pass(handler, backend, st, drain_events)
         # A completion that just went out whole on a keep-alive
-        # connection re-armed the slot for a request this loop will
-        # never read; close it now rather than at the deadline.
+        # connection re-armed the slot for a request the drain must not
+        # wait for; close it now rather than at the deadline.
         _close_between_requests(
             backend, handler, max_conns,
             slot_fds, fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state, offload,
         )
-        for di in range(drain_events):
-            if (backend.event_flags(di) & EV_ERROR) != 0:
-                continue
-            var drain_ident = Int(backend.event_ident(di))
-            var drain_filter = backend.event_filter(di)
-            # Handle write completions during drain
-            if drain_filter == EVFILT_WRITE:
-                var drain_slot = fd_to_slot[drain_ident] if drain_ident < len(fd_to_slot) else UNUSED
-                if drain_slot != UNUSED:
-                    _close_slot(
-                        backend, handler, drain_slot, drain_ident,
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                    )
     # A stream whose head completed DURING the drain — a pool
     # thread answering a streamed WSGI response in its last job —
     # became a streaming slot after the farewell pass above, and

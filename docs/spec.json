@@ -326,8 +326,8 @@
       "section": "D",
       "category": "D. Graceful shutdown and restart",
       "capability": "A request whose body is still arriving at SIGTERM is read on and answered, not left to the deadline",
-      "status": "planned",
-      "evidence": "ROADMAP: The drain does not read a request body in flight"
+      "status": "verified",
+      "evidence": "`Smoke test the drain with an upload in flight` (every PR) \u2014 `scripts/drain_upload_probe.py`, two-sided: answered whole AND exited inside 3 s, on the ASGI executor and on a WSGI pool thread"
     },
     {
       "id": "D6",

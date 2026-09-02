@@ -590,3 +590,27 @@ manifests' comments; the ones a maintainer would want:
 **Results** (all vs reference captures, zero body differences): transcripts
 41,693 + 38,145 (four workers), color-separation 61,327 (WSGI, 370 uploads)
 + 18,274 (ASGI), the textshelf and bakerydemo rows already recorded.
+
+---
+
+# D9 fixed — 2026-09-02
+
+**The change** (`_run_shutdown`, `event_loop.mojo`): the drain no longer
+dispatches `EVFILT_WRITE` only. It runs ordinary `_run_pass` passes for its
+5 s budget, with `_close_between_requests` after each. The listener is
+already closed, so a pass accepts nothing; the between-requests sweep is
+what bounds it to bytes the client had already sent. The shutdown pipe is
+deregistered first (its byte is never read, so it would stay readable and
+every pass would break at it, skipping the events behind it). Fifty-six
+lines became eleven, and the old loop's second, unmeasured defect — a
+response too large for one `send` cut at its first write readiness by a
+branch that closed the slot instead of sending the rest — went with it.
+
+**Evidence.** `scripts/drain_upload_probe.py`, two-sided (answered whole
+AND exited inside 3 s), on the ASGI executor's `/echo` and a WSGI pool
+thread's `/input/read`: 1.05–1.09 s to exit, the second being the probe's
+own delay. Sabotage — the old loop restored through the build chain —
+reported the reset at 5.03 s and the exit at 5.05 s, both shapes. Gate:
+`poe smoke-drain-upload`, `Smoke test the drain with an upload in flight`
+in `test.yml`, SPEC D9 `verified (every PR)` with the `--covers D9`
+declaration in the task. Known issue moved to Recently resolved.

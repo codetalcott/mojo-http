@@ -26,6 +26,26 @@ import signal
 import socket
 import sys
 import time
+import traceback
+
+# Which phase is running, for the crash handler below: a reset inside
+# `recv` names the CALL that failed, and the phase is what says whether the
+# body was still being sent, the response being read, or the exit awaited
+# (`scripts/phase_stamp_check.py` is the rule and its sabotage).
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("drain_upload_probe FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def main():
@@ -35,25 +55,34 @@ def main():
     ap.add_argument("--pid", type=int, required=True)
     ap.add_argument("--path", default="/echo")
     ap.add_argument("--size", type=int, default=10 * 1024 * 1024)
+    ap.add_argument("--answer-contains", default=None,
+                    help="the response body must contain this instead of "
+                         "echoing the whole upload (a WSGI route that reports "
+                         "the length it read, say)")
     ap.add_argument("--budget", type=float, default=3.0,
                     help="seconds after SIGTERM by which the answered "
                          "process must have exited (the drain budget is 5)")
     args = ap.parse_args()
 
     half = args.size // 2
+    phase("connect")
     sock = socket.create_connection((args.host, args.port))
     sock.settimeout(20)
     sock.sendall(("POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n"
                   "Content-Type: application/octet-stream\r\n\r\n"
                   % (args.path, args.host, args.size)).encode())
+    phase("half the body sent")
     sock.sendall(b"a" * half)
     time.sleep(0.5)
+    phase("SIGTERM with the body half delivered")
     t0 = time.time()
     os.kill(args.pid, signal.SIGTERM)
     time.sleep(1.0)
     answered = False
     try:
+        phase("the rest of the body, one second into the drain")
         sock.sendall(b"b" * (args.size - half))
+        phase("reading the response")
         head = sock.recv(4096)
         got = len(head)
         body_start = head.find(b"\r\n\r\n")
@@ -65,14 +94,19 @@ def main():
             if not chunk:
                 break
             got += len(chunk)
-        answered = head.startswith(b"HTTP/1.1 200") and \
-            got - (body_start + 4) >= args.size
+        if args.answer_contains is not None:
+            answered = head.startswith(b"HTTP/1.1 200") and \
+                args.answer_contains.encode() in head
+        else:
+            answered = head.startswith(b"HTTP/1.1 200") and \
+                got - (body_start + 4) >= args.size
         print("drain-upload: %s (%d bytes back, %.2fs after SIGTERM)"
               % ("answered" if answered else "NOT answered", got,
                  time.time() - t0))
     except OSError as exc:
         print("drain-upload: NOT answered: %r at %.2fs after SIGTERM"
               % (exc, time.time() - t0))
+    phase("waiting for the process to exit")
     while True:
         try:
             os.kill(args.pid, 0)

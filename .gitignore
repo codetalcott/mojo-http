@@ -66,6 +66,7 @@ stream.log
 ht.log
 canary.log
 # soak-apps' two server logs (scripts/soak.py --log)
+drain-upload.log
 soak-hybrid.log
 soak-reload.log
 soak-bare.log
