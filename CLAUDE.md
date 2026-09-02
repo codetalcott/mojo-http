@@ -489,10 +489,23 @@ code depends on:
         (`enable_base_stream_ack`) and `slot_is_executor` stays lane-only.
         `slot_channel_stream` is the per-slot question the loop's four
         stream decisions ask; the drain-ack gate asks `chunk_active()`.
+    - **A generator that blocks without yielding holds its pool thread
+      until it yields, and the client leaving does not wake it.** The
+      disconnect rides the thread's own ack pair and is read at the next
+      piece, so a body asleep in `LISTEN/NOTIFY` for its 30 s idle timeout
+      keeps its thread for those 30 s after the client is gone -- and
+      eight such clients are the whole zero-config pool. Measured on
+      textshelf under `config.wsgi` (docs/REAL_APP_VALIDATION.md, 2026-09
+      finding 2): an abandon population stalled every other request to its
+      timeout inside four seconds, while the same workload on the executor
+      was clean. Nothing here can interrupt a generator from outside; the
+      rule is a deployment one -- SSE views whose generators sleep run on
+      the executor or as `--realtime` holds, never on pool threads -- and
+      the bound below is about shutdown, not service.
     - **The shutdown join is bounded, and leaving is correct.** A response
-      that never ends -- a `StreamingHttpResponse` served under WSGI, which
-      buffers it -- holds its pool thread for the life of the process, and
-      `pthread_join` has no timeout. `stop_and_join(pool, JOIN_TIMEOUT_NS)`
+      that never ends -- a generator that never yields again -- holds its
+      pool thread for the life of the process, and `pthread_join` has no
+      timeout. `stop_and_join(pool, JOIN_TIMEOUT_NS)`
       waits the same 5 s the drain gets (`ThreadSet.join_within` polls each
       thread's status slot, which a body writes last), then the process
       `_exit`s naming what it abandoned. Nothing here can unwind Python on

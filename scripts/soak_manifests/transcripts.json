@@ -1,0 +1,94 @@
+{
+  "name": "transcripts",
+  "comment": "The 2026-08-26 pass's baseline app: plain WSGI, src/ layout (--app-dir src, the shadowing case), allauth, and a DevAutoLoginMiddleware that logs every request in as admin@transcripts.local under DEBUG -- so there is no login block and no `auth` routes; everything is authenticated. Serve with the checkout's venv on PATH and --cwd at the checkout: `m0serve transcript_manager.wsgi --app-dir src`. Needs one Student row (id 1); its own `init_data` seeder fails on the NOT NULL owner (see the design doc), so create one through the ORM. The PDF, CSV and XLSX exports are byte-deterministic across requests and are the CPU + generated-file rows. No static route: under this settings module /static/ is served only by runserver (no WhiteNoise, no static() urlpattern), so gunicorn and m0serve both 404 it -- an app note, not a server difference.",
+  "ready": "/healthz/",
+  "headers_ignore": [
+    "date",
+    "server",
+    "connection",
+    "keep-alive",
+    "x-thread",
+    "content-length",
+    "transfer-encoding"
+  ],
+  "body_sub": [
+    [
+      "name=\"csrfmiddlewaretoken\" value=\"[^\"]*\"",
+      "name=\"csrfmiddlewaretoken\" value=\"X\""
+    ],
+    [
+      "https?://127\\.0\\.0\\.1:[0-9]+",
+      "HOST"
+    ],
+    [
+      "\\(D:[0-9]{14}[^)]*\\)",
+      "(D:X)"
+    ],
+    [
+      "/ID \\[\\([^)]*\\) \\([^)]*\\)\\]",
+      "/ID [X]"
+    ],
+    [
+      "xmp:(Create|Modify|Metadata)Date>[^<]*<",
+      "xmp:\\1Date>X<"
+    ],
+    [
+      "uuid:[0-9a-f-]{36}",
+      "uuid:X"
+    ],
+    [
+      "xmpMM:(Document|Instance)ID>[^<]*<",
+      "xmpMM:\\1ID>X<"
+    ],
+    [
+      "/(BaseFont|FontName) /[A-Z]{6}\\+",
+      "/\\1 /X+"
+    ]
+  ],
+  "routes": [
+    {
+      "path": "/",
+      "class": "short"
+    },
+    {
+      "path": "/healthz/",
+      "class": "short"
+    },
+    {
+      "path": "/admin/",
+      "class": "short"
+    },
+    {
+      "path": "/accounts/login/",
+      "class": "short"
+    },
+    {
+      "path": "/setup/welcome/",
+      "class": "short"
+    },
+    {
+      "path": "/student/1/",
+      "class": "short"
+    },
+    {
+      "path": "/no-such-page/",
+      "class": "short"
+    },
+    {
+      "path": "/student/1/csv/",
+      "class": "short"
+    },
+    {
+      "path": "/student/1/excel/",
+      "class": "slow",
+      "verify": false,
+      "comment": "openpyxl stamps docProps/core.xml with the creation second, so the bytes differ every second (289 digests in one run); fetched for its CPU and its 200, not compared"
+    },
+    {
+      "path": "/student/1/pdf/",
+      "class": "stream",
+      "comment": "PDF rendered per request by typst: the CPU-bound generated-file row. No byte count -- the size varies by process (subset fonts), the normalised digest is the assertion"
+    }
+  ],
+  "comment_body_sub": "The PDF export (typst) stamps /CreationDate and /ModDate, the same dates in its XMP block, and a per-render /ID; each pattern is bounded by its own closer and passes the blinding lint. Measured: two renders differ in exactly those regions. typst also tags each subsetted font with a six-letter prefix that is constant within one server process and differs across processes: one worker matched gunicorn's capture 2,840 times, four workers gave four tags."
+}

@@ -9,6 +9,23 @@ versions may break the API**.
 
 ### Added
 
+- **The 0.16.0 real-application soak** (`docs/REAL_APP_VALIDATION.md`,
+  rewritten; the milestone's soak reads current). Four applications —
+  `transcripts`, `color-separation`, `textshelf` and Wagtail's
+  `bakerydemo` — driven by `scripts/soak.py` against captures from
+  gunicorn, uvicorn and daphne: 373,000 responses byte-identical across
+  the clean rows, with logins, 9.7 MB multipart uploads, abandoned holds,
+  four-worker prefork, and SIGTERM churn. **One server defect found and
+  left open as SPEC D9**: a request body still arriving at SIGTERM holds
+  the drain to its 5 s deadline, because the drain loop reads nothing new;
+  `scripts/drain_upload_probe.py` reproduces it bare and is the gate the
+  fix will land with. Everything else that differed was traced, by
+  measurement, to the application: Wagtail rendering from sets under
+  different hash seeds, typst's per-process font tags and PDF dates,
+  textshelf's SSE views stalling any WSGI pool and its unpooled Postgres
+  connections at four workers. Manifests for both apps, multipart uploads,
+  status-only routes and supervisor-aware sampling in the driver.
+
 - **The soak driver** — `scripts/soak.py`, manifests under
   `scripts/soak_manifests/`, `poe soak-apps` (pre-release, three legs) and
   `poe soak-selftest`. `docs/REAL_APP_VALIDATION.md`'s phase 5 was a
@@ -165,6 +182,21 @@ versions may break the API**.
   `poe sabotage-trailers` reverts each of the six rules and requires a
   failure for every one; it runs in `test-all` and in CI. Nothing was found
   wrong with the implementation — the gap was in the evidence.
+
+### Fixed
+
+- **A request whose body was still arriving at SIGTERM held the drain to
+  its 5 s deadline** (SPEC D9). The drain loop dispatched writes only and
+  read nothing new, so a half-received upload was neither completed nor
+  closed: the client was reset at 5.03 s and the process left at 5.09 s —
+  half of `docker stop`'s patience for a request that completes in
+  milliseconds. The same loop cut any response too large for one `send`
+  at its first write readiness. The drain now runs ordinary event-loop
+  passes for its budget, with `_close_between_requests` after each so only
+  bytes already sent are served; gated by `smoke-drain-upload` in both
+  execution shapes, two-sided (answered whole, exited inside 3 s), and
+  sabotaged by restoring the old loop. Found by the soak driver's uploads
+  population on color-separation.
 
 ### Changed
 

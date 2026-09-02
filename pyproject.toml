@@ -5311,6 +5311,42 @@ echo ''
 echo "PY-CANARY PASSED against $(.venv/bin/python3 --version 2>&1) (free-threaded)"
 """
 
+[tool.poe.tasks.smoke-drain-upload]
+help = "A request whose body is still arriving at SIGTERM is read on and answered; the drain exits promptly"
+deps = ["build-serve"]
+shell = """
+# SPEC D9. The soak driver's uploads population found this on
+# color-separation: with 9.7 MB POSTs in flight every drain took exactly
+# its 5 s budget, because the drain loop dispatched writes only and never
+# read the rest of a body. `scripts/drain_upload_probe.py` is two-sided --
+# the upload must be ANSWERED (read on during the drain), AND the process
+# must exit inside 3 s of the signal -- and runs in both shapes: the ASGI
+# executor's /echo (the whole 10 MB comes back), and a WSGI pool thread's
+# /input/read (the length it read comes back). Sabotage: restore the old
+# write-only drain loop; the probe reports the reset at ~5 s in both.
+srv=bin/m0serve
+cleanup() { kill $pid 2>/dev/null; rm -f drain-upload.log; }
+trap cleanup EXIT
+fail() { echo "$1"; [ -f drain-upload.log ] && cat drain-upload.log; exit 1; }
+
+"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8114 --max-body 64m > drain-upload.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8114/ > /dev/null \
+  || fail 'the ASGI server never became healthy'
+python3 scripts/drain_upload_probe.py --port 8114 --pid $pid \
+  || fail 'ASGI executor: the drain did not finish an upload in flight'
+
+"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8115 --max-body 64m > drain-upload.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8115/ > /dev/null \
+  || fail 'the WSGI server never became healthy'
+python3 scripts/drain_upload_probe.py --port 8115 --pid $pid --path /input/read --answer-contains len=10485760 \
+  || fail 'WSGI pool thread: the drain did not finish an upload in flight'
+
+python3 scripts/emit.py --covers D9 --task smoke-drain-upload
+echo "smoke-drain-upload: an upload in flight at SIGTERM is answered and the drain exits promptly, both shapes"
+"""
+
 [tool.poe.tasks.soak-selftest]
 help = "Prove the soak driver's comparator can report a difference"
 cmd = "python3 scripts/soak.py --selftest"

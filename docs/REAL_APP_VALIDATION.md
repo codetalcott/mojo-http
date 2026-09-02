@@ -1,6 +1,139 @@
 # Exercising the server against real applications
 
-**A record. Run 2026-08-26**, against m0serve 0.11.0 (the PyPI-shaped wheel,
+**A record. Run 2026-09-01 and 2026-09-02**, against m0serve 0.16.0
+(`bin/m0serve` from the tree at `c823198`, the 0.16.0 wheel's source),
+macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
+below and in the history of this file.
+
+Every application this server had been tested against was written to test
+it — until the 2026-08-26 pass below, which put three real Django projects
+in front of it and found five defects. This pass re-runs those three
+against a server five minor versions on, adds a fourth application nobody
+here wrote at all, and replaces the pass's phase 5 — six thousand requests
+sampling RSS — with a driver that asserts **bytes**: every response
+compared, status and headers and body digest, against a capture recorded
+from a reference server (gunicorn, uvicorn, daphne), under five concurrent
+populations, with logins, and with the server SIGTERM'd and restarted
+underneath. Three of the previous six defects were silent — a clean status
+over a short or empty body — and a request loop passes every one.
+
+## The four applications
+
+Clean clones served from their own directories, each with its own venv,
+scratch databases, their own settings unmodified except where the row says.
+
+| app | shape | what it stressed |
+|---|---|---|
+| `transcripts` | Django 5, `src/` layout (`--app-dir src`), allauth, a dev auto-login middleware, PDFs rendered per request by a `typst` subprocess | the **baseline** and the CPU + generated-file row; SQLite |
+| `color-separation` | Django 6, numpy/scipy/Pillow, `FileResponse` downloads, a synchronous separation pipeline | **9.7 MB multipart uploads** as a population, 4.7 MB zips and a 9.7 MB original as streams; SQLite; WSGI **and** ASGI |
+| `textshelf` | Django 6.1, allauth, WhiteNoise, **Postgres**, four SSE endpoints (one an async generator over psycopg `LISTEN/NOTIFY`), daphne in production; the Fly dog-food candidate | the **hard case**, run the way it will deploy: `config.asgi` on the executor with a real login, bot detection, rate limiting, and holds abandoned mid-stream |
+| Wagtail `bakerydemo` | Wagtail 8 / Django 6, the CMS's official demo | the **admin surface** behind a login: 60–130 KB pages, image renditions, a 670 KB static bundle; WSGI and ASGI |
+
+## What was found
+
+**One server defect, open, with its reproducer and its row.** And six
+things that were not the server, each measured rather than assumed.
+
+| # | finding | triage |
+|---|---|---|
+| 1 | **A request body still arriving at SIGTERM holds the drain to its deadline.** With 9.7 MB uploads in flight every color-separation drain took exactly 5.0 s; bisected to the uploads population alone, then reproduced directly: a 10 MB POST with 5 MB delivered when SIGTERM lands and the rest sent a second later is never read — the drain loop dispatches writes only — so the client is reset at 5.03 s and the process exits at 5.09 s. gunicorn's graceful timeout keeps reading. The request-side twin of the response-side defect `drain_inflight_probe.py` fixed. | **open** — SPEC D9 (`planned`), ROADMAP "The drain does not read a request body in flight", `scripts/drain_upload_probe.py` as the two-sided gate-to-be |
+| 2 | textshelf's SSE views **stall the whole server under WSGI**: the `LISTEN/NOTIFY` async generator is consumed synchronously (Django's own warning), blocks 30 s per abandoned client, and eight abandoned clients hold the whole pool — every other request then times out. Without abandoners the WSGI row is clean; on the executor the same workload is clean with them. | **the documented WSGI limit meeting an app whose generators sleep 30 s** — bounded at shutdown as CLAUDE.md says, a full stall in service, which that sentence does not say. A deployment rule, recorded: this app's SSE views run on the executor or as holds, never on pool threads |
+| 3 | textshelf at `--workers 4` fails with Postgres's `FATAL: sorry, too many clients already` | **the application**: per-thread connections, `CONN_MAX_AGE = 10`, no pool configured despite `psycopg[pool]` in its dependencies; four processes exceed a default `max_connections` of 100. daphne × 4 would do the same |
+| 4 | bakerydemo bodies differ between gunicorn and m0serve in a CSS class order and site history's "model/page log entries" label | **Wagtail renders both from Python sets**, so they follow the interpreter's hash seed: ten seeds split 4/6 on the first, four seeds on m0serve alone split 2/2 on the second. gunicorn's workers agree with each other only because they fork from one master |
+| 5 | transcripts' PDF and XLSX differ on every request at identical size | **timestamps and per-process font tags**: `/CreationDate`, `/ModDate`, XMP dates and IDs, typst's six-letter subset-font prefix (constant per process, four workers give four); openpyxl's creation second. All bounded substitutions that pass the driver's blinding lint |
+| 6 | RSS oscillates ~100 MB with a ~100 s period on textshelf, and sits at 1.2 GB on color-separation | **the applications**: daphne under the identical workload oscillates the same (174 ↔ 278 MB against m0serve's 163 ↔ 266); gunicorn's two workers on color-separation sum to 1.5–1.8 GB and rising against m0serve's 1.2–1.3 GB flat |
+| 7 | m0serve's process shows a ~490 MB spike in its first 20 s on textshelf, settling to ~170 MB | **unexplained**; daphne's warm process could not be compared. Watch the first minute after a deploy |
+
+Finding 1 could not have come from `apps/`: it needs a multi-megabyte
+upload in flight at the instant of the signal, which only a population
+that uploads continuously produces. Finding 2 could not have come from
+the previous pass either, whose textshelf row never abandoned a stream.
+
+## Phase 0 — will it even load?
+
+`m0serve --doctor` `ok: true` on every entry point: `transcript_manager.wsgi`
+(`--app-dir src`), `halftone_studio.wsgi` and `.asgi`, `config.wsgi` and
+`config.asgi`, `bakerydemo.wsgi` and an `asgi.py` added for it (the
+`startproject` file; bakerydemo ships only `wsgi.py`). Protocol detection
+right every time; WSGI apps got the zero-config pool of 8, ASGI apps the
+executor.
+
+Two applications did not load from a clean clone, and the doctor could see
+only one of them. transcripts' README installs `.[dev]`, which does not
+contain `django-watchfiles` although `settings.py` lists it
+unconditionally (it is in the uv lockfile's dev group; `uv sync` works).
+color-separation keeps real source under `output/` — `composite.py`,
+`raster.py`, `vector.py` — and `.gitignore` excludes `output/`, so a clone
+fails on its first request with `No module named 'output'`; the doctor
+passed, because Django imports its URLconf lazily. **Phase 0 answers "does
+the callable import", not "does the first request work".**
+
+## Phase 1 — parity, byte for byte
+
+Each application captured from a reference server and every response of
+the soak held to it. The only differences that survived were named
+substitutions (findings 4 and 5), a framing choice — uvicorn frames an
+undeclared-length body as chunked where m0serve buffers it and sends
+`Content-Length`; the decoded bytes are identical — and the four
+security headers `runserver`'s `StaticFilesHandler` bypasses, on which
+gunicorn agrees with m0serve byte for byte.
+
+## Phases 3 and 5 — topology, churn, and the soak
+
+Every row: five populations at once (keep-alive bursts at 120 requests per
+connection, over the cap of 100; streams read to completion; uploads, slow
+views and logins; WebSocket echoes where the app has any; abandoners that
+vanish mid-body by FIN and by RST and reuse the slot at once), sampling
+RSS, descriptors, threads and the server's own `/__metrics`. "verified"
+is responses byte-identical to the reference capture.
+
+| app | mode | seconds | verified | failures | churn | RSS |
+|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 41,693 | 0 | SIGTERM ×2, drains 0.14 s | 123.2 → 124.2 MB |
+| transcripts | WSGI, `--workers 4 --blocking-threads 4` | 90 | 38,145 | 0 | SIGTERM ×1, 0.14 s, no orphans | 4 workers, 419 → 421 MB summed |
+| color-separation | WSGI, pool 8, 370 uploads (185 of 9.7 MB) | 150 | 61,327 | 0 | SIGTERM ×2, **5.1 s each** (finding 1) | 1.24 → 1.28 GB (finding 6) |
+| color-separation | ASGI executor vs uvicorn, 250 uploads | 90 | 18,274 | 0 | — | 1.32 → 1.31 GB |
+| textshelf | ASGI executor vs daphne, 3 sessions | 90 | 32,843 | 0 | — | settles at ~170 MB (finding 7) |
+| textshelf | ASGI executor vs daphne | 240 | 81,819 | 0 | — | 163 ↔ 266 MB sawtooth (finding 6) |
+| textshelf | ASGI executor, churn | 100 | 30,933 | 0 | SIGTERM ×2, 5.0 s each: held streams never end, the drain waits its budget by design | 179 → 162 MB |
+| textshelf | WSGI, pool 8, abandoners on | 90 | 1,689 | **13 timeouts** | — | **stalled** (finding 2) |
+| textshelf | WSGI, pool 8, no abandoners | 60 | 23,883 | 0 | — | clean |
+| textshelf | ASGI, `--workers 4` | 90 | 61,108 | 28,078 | drain 5.05 s | Postgres connection limit (finding 3) |
+| bakerydemo | WSGI, pool 8, 4 sessions + 402 logins | 240 | 28,781 | 0 | — | 197 → 207 → 196 MB, flat |
+| bakerydemo | WSGI, churn | 75 | 8,730 | 0 | SIGTERM ×2, 0.13 s and 0.26 s | — |
+
+Descriptors and threads were flat in every clean row. `--threads` was
+not run: none of the four dependency trees builds on free-threaded CPython
+(psycopg-binary ships no wheel; the record above says the same).
+
+## What this changes about the guards
+
+- **The driver itself** (`scripts/soak.py`, `poe soak-apps`,
+  `poe soak-selftest`): its comparator is a pure function with a
+  self-test that found the driver's own first hole — a substitution greedy
+  enough to absorb a truncation blinds the instrument — so a capture now
+  refuses any route its patterns blind and carries a fingerprint of the
+  rules it was recorded under. Sabotaging a manifest's byte count makes the
+  task exit 1 naming the failure.
+- **`scripts/drain_upload_probe.py`**, finding 1's reproducer and the gate
+  the fix will land with, two-sided like its sibling: the upload must be
+  answered whole, and the process must exit inside 3 s of the signal.
+- Four manifests under `scripts/soak_manifests/` are the re-runnable
+  record of each application's shape, including every substitution and
+  the reason for it.
+
+## What would make this worth repeating
+
+The shapes these four still lack: a WebSocket application (NiceGUI passed
+phase 0 — its socket.io transport works in a real browser through the
+executor — and has no manifest yet), a real proxy in front
+(`X-Forwarded-Proto` → `SECURE_PROXY_SSL_HEADER`, which textshelf on Fly
+will supply), a background worker, and free-threaded `--threads`. And a
+week of real traffic, which is the plan.
+
+---
+
+**The previous record. Run 2026-08-26**, against 0.11.0 (the PyPI-shaped wheel,
 `dist/wheels/m0serve-0.11.0-py3-none-macosx_13_0_arm64.whl`), macOS 26 on an
 M4, CPython 3.13.6 — plus one row on free-threaded 3.14.7t. The plan this
 replaces is in the history of this file.
