@@ -9,6 +9,21 @@ versions may break the API**.
 
 ### Added
 
+- **The documentation site's deployment** (`deploy/site/`, `poe
+  deploy-site`, `poe smoke-site-image`; SPEC F14). A `python:3.12-slim`
+  image with the m0serve wheel, the site rendered for `https://m0serve.dev`
+  and the fallback application, on one always-on 256 MB Fly.io machine
+  (`deploy/site/fly.toml`); `.github/workflows/deploy-site.yml` deploys
+  after every successful `Release`, pinning that release's wheel, or on
+  demand with a version. `scripts/site_image_probe.py` builds the same
+  Dockerfile from the tree's own wheel in CI and asserts the served shape
+  through a published port, that m0serve is PID 1, and that `docker stop`
+  is the drain. The PyPI project now links `Documentation` to the site.
+  The first public deploy follows the next release: the XML sitemap and
+  the fallback application's redirect and 404 need the `xml` content type
+  and the static mount's fall-through above, which 0.16.0 does not have;
+  the probe passes everything else on that wheel and fails at exactly that
+  phase.
 - **The documentation site** (`scripts/docsite.py`, `apps/site`, `poe
   build-site` / `serve-site` / `smoke-site`; SPEC F13). README, QUICKSTART,
   CHANGELOG, PROVENANCE and every page under `docs/` render to HTML and are

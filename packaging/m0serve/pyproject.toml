@@ -49,6 +49,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/codetalcott/mojo-http"
+Documentation = "https://m0serve.dev"
 Source = "https://github.com/codetalcott/mojo-http"
 Changelog = "https://github.com/codetalcott/mojo-http/blob/main/CHANGELOG.md"
 

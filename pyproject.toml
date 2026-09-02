@@ -3295,6 +3295,38 @@ M0_SITE_DIST=dist/site bin/m0serve siteapp.wsgi:application --app-dir apps/site 
   --static /="$PWD/dist/site" --port 8180
 """
 
+# The deploy image (deploy/site/Dockerfile), built from the tree's own wheel
+# and served from a container: what a Fly machine runs, proven here first.
+# scripts/site_image_probe.py asserts the served shape through a published
+# port, m0serve as PID 1, and `docker stop` as the drain. In CI it runs in
+# the pid1 job (the one with docker and a Linux wheel).
+[tool.poe.tasks.smoke-site-image]
+help = "Build the docs site's deploy image from the tree's wheel and serve it from a container"
+deps = ["build-wheel"]
+shell = """
+python3 scripts/site_image_probe.py --wheel-dir dist/wheels || exit 1
+python3 scripts/emit.py --covers F14 --task smoke-site-image
+"""
+
+# Deploy the site by hand: render for the public URL, then `flyctl deploy`
+# from the repository root so the Dockerfile's context is the tree. The
+# optional positional pins the PyPI release; the default is the tree's own
+# version, which must already be on PyPI. deploy/site/README.md is the runbook.
+[tool.poe.tasks.deploy-site]
+help = "Render the docs site for https://m0serve.dev and deploy it to Fly.io (arg: PyPI version to pin)"
+shell = """
+set -u
+v="${version:-$(python3 -c 'import re;print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')}"
+python3 scripts/docsite.py --out dist/site --base-url https://m0serve.dev || exit 1
+echo "deploying m0serve-docs pinned to m0serve==$v"
+flyctl deploy --remote-only --config deploy/site/fly.toml --build-arg "M0SERVE_VERSION=$v" .
+"""
+
+[[tool.poe.tasks.deploy-site.args]]
+name = "version"
+positional = true
+default = ""
+
 # Served the way it deploys: m0serve with `--static /=<tree>` in front of the
 # fallback in apps/site. The build alone cannot prove the served shape -- that
 # llms.txt is at the root as text and names this site's pages by ABSOLUTE

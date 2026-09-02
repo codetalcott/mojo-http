@@ -1,0 +1,9 @@
+# The only image built from the repository root is the documentation site's
+# (deploy/site/Dockerfile). Everything is excluded, then the three things it
+# COPYs are let back in, so a `.venv`, a bench corpus or a stray log never
+# enters a build context or an image layer.
+*
+!deploy/site/wheelhouse/
+!apps/site/siteapp/
+!dist/site/
+**/__pycache__/

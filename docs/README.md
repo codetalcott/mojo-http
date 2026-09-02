@@ -55,7 +55,9 @@ page at the root for agents, and a sitemap for crawlers.
 [scripts/docsite.py](../scripts/docsite.py) is the generator and the one
 place a page gets its title and description; [apps/site](../apps/site) is
 the application behind the static mount. A new `docs/*.md` must be listed
-there, or `check-docs` fails naming it.
+there, or `check-docs` fails naming it. The public copy is
+`https://m0serve.dev`; [deploy/site](../deploy/site/README.md) is how it
+gets there.
 
 ## Generated, not edited
 

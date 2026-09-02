@@ -1,0 +1,42 @@
+# The documentation site on Fly.io: https://m0serve.dev
+#
+# Deploy from the repository root, so the Dockerfile's context is the tree:
+#
+#     uv run poe deploy-site          # builds dist/site for m0serve.dev, then deploys
+#
+# One small machine, always on. auto-stop is deliberately OFF: a stopped
+# machine gives the first visitor a cold start, and the live demo that will
+# sit beside this site holds SSE and WebSocket connections that a stop would
+# drop. At 22 MB RSS per worker, 256 MB is generous.
+app = "m0serve-docs"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/site/Dockerfile"
+
+[env]
+  M0_SITE_DIST = "/app/site"
+  # Fly's proxy closes idle long-lived connections; SSE comments and
+  # WebSocket pings every 25 s keep the demo's held connections alive.
+  M0_SSE_HEARTBEAT_MS = "25000"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # The server's own health path, answered before Python.
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

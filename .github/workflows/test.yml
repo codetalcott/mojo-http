@@ -187,6 +187,13 @@ jobs:
       - run: uv run poe build-all
       - name: Smoke test SIGTERM delivered to PID 1 in a container
         run: uv run poe smoke-pid1
+      # The documentation site's deploy image, built from THIS tree's wheel
+      # (deploy/site/Dockerfile is what `fly deploy` builds) and served from a
+      # container through a published port: llms.txt and the sitemap at the
+      # root, a page and its markdown twin, the redirect and 404 from the app
+      # behind the mount, m0serve as PID 1, and `docker stop` as the drain.
+      - name: Smoke test the documentation site's deploy image
+        run: uv run poe smoke-site-image
       - name: Record the measurements
         if: always()
         run: |
