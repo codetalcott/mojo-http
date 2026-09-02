@@ -7,8 +7,9 @@
 # one, and a deploy per merge would re-pin nothing while re-rendering prose
 # about capabilities the deployed server may not have yet.
 #
-# Needs one secret, FLY_API_TOKEN: a deploy token scoped to the app
-# (`fly tokens create deploy -a m0serve-docs`). deploy/site/README.md is the
+# Needs one secret, FLY_DEPLOY_SITE, in the `fly` environment: a deploy
+# token scoped to the app (`fly tokens create deploy -a m0serve-docs`),
+# handed to flyctl as FLY_API_TOKEN below. deploy/site/README.md is the
 # runbook, including the one-time app and certificate creation.
 name: Deploy site
 
@@ -70,7 +71,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Deploy
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_DEPLOY_SITE }}
         run: >-
           flyctl deploy --remote-only --config deploy/site/fly.toml
           --build-arg M0SERVE_VERSION=${{ steps.v.outputs.version }} .
