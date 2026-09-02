@@ -1659,7 +1659,6 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
     ref config = st.config
     ref server_address = st.server_address
     ref tcp_keep_alive = st.tcp_keep_alive
-    ref bus_read_fd = st.bus_read_fd
 
     # Graceful shutdown: close listener, drain in-flight, close SSE
     try:
