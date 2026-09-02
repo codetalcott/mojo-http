@@ -631,7 +631,7 @@ struct Headers(Copyable, Writable):
         (Content-Length on the request and on the response). Twenty bytes of
         stack covers Int64's digits.
         """
-        var digits = InlineArray[Byte, 20](fill=0)
+        var digits = Array[Byte, 20](fill=0)
         var n = value
         if n < 0:
             # No negative header values exist; clamp rather than emit a sign

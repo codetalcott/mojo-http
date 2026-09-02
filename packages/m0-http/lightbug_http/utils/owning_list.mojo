@@ -4,7 +4,7 @@ from std.os import abort
 from std.sys import size_of
 
 from std.collections.span import Span
-from std.memory import Pointer, memcpy
+from std.memory import Pointer, unsafe_memcpy
 
 
 # ===-----------------------------------------------------------------------===#

@@ -3,7 +3,7 @@ from std.sys import size_of
 
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.strings import BytesConstant
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 
 
 # Chunked decoder states

@@ -16,6 +16,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+# The venv's own compiler, never `uv run mojo`: a child `uv run` re-syncs the
+# venv to uv.lock even under a parent `uv run --no-sync` (measured 2026-09-02:
+# the child printed Mojo 1.0.0 and the venv stayed there), which on a nightly
+# (`poe canary`, nightly-canary.yml) swaps the toolchain back to stable
+# mid-run and reports the next step's ".mojoc is newer than the compiler" as
+# a nightly break. poe's virtualenv executor puts .venv/bin first on PATH, so
+# the sibling of this interpreter is the compiler every other task uses.
+_SIBLING = Path(sys.executable).with_name("mojo")
+MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
+
 POOL = Path("packages/m0-http/lightbug_http/mojo_pool.mojo")
 TEST = Path("packages/m0-http/test/test_mojo_pool.mojo")
 
@@ -60,7 +70,7 @@ SABOTAGES = [
 
 def run_tests() -> tuple[bool, str]:
     p = subprocess.run(
-        ["uv", "run", "mojo", "run", "-I", "packages/m0-http", "-I",
+        [MOJO, "run", "-I", "packages/m0-http", "-I",
          "packages/m0-core", str(TEST)],
         capture_output=True, text=True, timeout=300,
     )

@@ -77,8 +77,8 @@ re-encodes latin-1 and decodes UTF-8 itself. `environ.mojo` explains why
 that is spelled as a UTF-8 encode here.
 """
 
-from std.ffi import c_char, c_long, _CPointer
-from std.memory import unsafe_memcpy
+from std.ffi import c_char, c_long
+from std.memory import OptionalPointer, unsafe_memcpy
 from std.python import Python, PythonObject
 from std.python._cpython import (
     CPython,
@@ -1567,7 +1567,7 @@ def _run_wsgi(environ, body):
 comptime _PyBytes_AsString = ExternalFunction[
     "PyBytes_AsString",
     # char *PyBytes_AsString(PyObject *o)
-    def(PyObjectPtr) thin abi("C") -> _CPointer[c_char, ImmutAnyOrigin],
+    def(PyObjectPtr) thin abi("C") -> OptionalPointer[c_char, ImmutAnyOrigin],
 ]
 """The response body's exit: a direct read of the `bytes` buffer.
 Measured at **1.0 ns**, against 1,095 ns for the `ctypes` round trip through
@@ -1577,7 +1577,7 @@ comptime _PyBytes_FromStringAndSize = ExternalFunction[
     "PyBytes_FromStringAndSize",
     # PyObject *PyBytes_FromStringAndSize(const char *v, Py_ssize_t len)
     def(
-        _CPointer[c_char, ImmutAnyOrigin], Py_ssize_t
+        OptionalPointer[c_char, ImmutAnyOrigin], Py_ssize_t
     ) thin abi("C") -> PyObjectPtr,
 ]
 """The request body's entry: a real `bytes` built straight from the

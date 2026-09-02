@@ -2,7 +2,7 @@ from std.sys import size_of
 
 from lightbug_http.connection import default_buffer_size
 from lightbug_http.strings import BytesConstant
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from std.collections.span import ContiguousSlice, _SpanIter
 
 
@@ -339,7 +339,7 @@ def memmove[
 
     if not overlaps:
         # No overlap - use fast memcpy
-        memcpy(dest=dest, src=src, count=count)
+        unsafe_memcpy(dest=dest, src=src, count=count)
     elif dest_addr < src_addr:
         # Destination is before source - copy forwards (left to right)
         for i in range(count):

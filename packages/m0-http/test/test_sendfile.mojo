@@ -40,7 +40,7 @@ def _socketpair_stream() raises -> Tuple[Int, Int]:
     # reason `c/sendfile.mojo` records: `alloc` without a `Layout` is
     # deprecated with no replacement on this toolchain, and the ratchet
     # counts every site.
-    var fds = InlineArray[c_int, 2](fill=c_int(0))
+    var fds = Array[c_int, 2](fill=c_int(0))
     var rc = external_call[
         "socketpair", c_int, c_int, c_int, c_int, type_of(Pointer(to=fds[0]))
     ](

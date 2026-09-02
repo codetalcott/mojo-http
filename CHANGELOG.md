@@ -202,22 +202,23 @@ versions may break the API**.
   failure for every one; it runs in `test-all` and in CI. Nothing was found
   wrong with the implementation — the gap was in the evidence.
 
-### Fixed
-
-- **A request whose body was still arriving at SIGTERM held the drain to
-  its 5 s deadline** (SPEC D9). The drain loop dispatched writes only and
-  read nothing new, so a half-received upload was neither completed nor
-  closed: the client was reset at 5.03 s and the process left at 5.09 s —
-  half of `docker stop`'s patience for a request that completes in
-  milliseconds. The same loop cut any response too large for one `send`
-  at its first write readiness. The drain now runs ordinary event-loop
-  passes for its budget, with `_close_between_requests` after each so only
-  bytes already sent are served; gated by `smoke-drain-upload` in both
-  execution shapes, two-sided (answered whole, exited inside 3 s), and
-  sabotaged by restoring the old loop. Found by the soak driver's uploads
-  population on color-separation.
-
 ### Changed
+
+- **Three renames the next Mojo release forces, applied now because their
+  replacements already compile on 1.0.0**: `InlineArray` → `Array`
+  (`header.mojo`, `test_sendfile.mojo`), `std.ffi._CPointer` →
+  `OptionalPointer` (`bridge.mojo`'s two `PyBytes_*` signatures) and
+  `memcpy` → `unsafe_memcpy` (four fork files). Verified by building the
+  tree on `1.1.0.dev2026090205` in an isolated copy: with these plus the
+  two renames that cannot be applied ahead of time (`Atomic[DType.X]` →
+  `Atomic[X]`, `_CTimeSpec.tv_subsec` → `tv_nsec`), `build-all`, all 1011
+  Mojo tests, `build-apps`, `build-serve` and `smoke-django` are green
+  there. The `PythonObject` leak entry in `docs/ROADMAP.md` (Known
+  issues) now records the upstream issue and fix commit (#6833,
+  `c9d5048575`, authored nine hours after the 1.0.0 wheel was uploaded),
+  the leak measured per operation on both toolchains, and the verified
+  break list in place of the one read from the release notes, which was
+  three items short and one item stale.
 
 - **`poe autobahn` provisions its own docker on a Mac.** With no daemon
   answering it starts a 4 GiB colima VM (enough for the wstest container;
@@ -292,6 +293,32 @@ versions may break the API**.
   was reading the header; `Connection: keep-alive` is unaffected.
 
 ### Fixed
+
+- **The nightly canary could not alert, and would have misreported its
+  first success.** `nightly-canary.yml` failed on all three scheduled runs
+  (2026-08-18, 08-25, 09-01) and filed no issue: `gh issue create --label
+  nightly-breakage` failed because the label did not exist. It does now.
+  And `trailer_sabotage.py`, `fuzz_sabotage.py` and `pool_sabotage.py`
+  ran the compiler as `uv run mojo`, which re-syncs the venv to `uv.lock`
+  even under a parent `uv run --no-sync` (measured: the child printed Mojo
+  1.0.0 and the venv stayed there) — so the `sabotage-trailers` step of
+  `test-all` would have swapped a canary back to stable mid-run and the
+  next step's "precompiled file is newer than the compiler" would have
+  read as a nightly break. They run the venv's own `mojo` now; on the
+  nightly copy the step passes and the toolchain stays put.
+
+- **A request whose body was still arriving at SIGTERM held the drain to
+  its 5 s deadline** (SPEC D9). The drain loop dispatched writes only and
+  read nothing new, so a half-received upload was neither completed nor
+  closed: the client was reset at 5.03 s and the process left at 5.09 s —
+  half of `docker stop`'s patience for a request that completes in
+  milliseconds. The same loop cut any response too large for one `send`
+  at its first write readiness. The drain now runs ordinary event-loop
+  passes for its budget, with `_close_between_requests` after each so only
+  bytes already sent are served; gated by `smoke-drain-upload` in both
+  execution shapes, two-sided (answered whole, exited inside 3 s), and
+  sabotaged by restoring the old loop. Found by the soak driver's uploads
+  population on color-separation.
 
 - **A chunked body that arrived with its headers was bounded by nothing.**
   Both request-body limits — the decoded cap and the raw ceiling at twice it —
