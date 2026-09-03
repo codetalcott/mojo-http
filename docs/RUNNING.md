@@ -74,6 +74,12 @@ worker. Inbound WebSocket messages arrive at the application as a `POST` to
 must be CSRF-exempt. Channel names beginning with a control byte are
 reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 
+One framework-specific line: in Flask the socket route is declared
+`@app.route("/ws", websocket=True)`, because Werkzeug's router answers 400
+to a request carrying `Upgrade: websocket` on an ordinary rule before any
+view runs. Django has no such check. The Quickstart's §7 is the Flask
+version of the whole thing, and CI drives that exact file.
+
 ## In front of it
 
 - **Terminate TLS at a proxy.** There is no TLS and no HTTP/2 here, by

@@ -33,9 +33,13 @@ The name is spelled with a zero, `m0serve`, the way the packages underneath
 are named: `m0-core`, `m0-http`, `m0-wsgi`.
 
 The view runs first, with sessions and permissions in hand, which is where
-your authorization belongs. Under gunicorn the two headers are ignored and the
+your authorization belongs. Under gunicorn the two headers mean nothing (they pass through to the client) and the
 same view degrades to a short plain response, so adopting it does not fork
 your codebase.
+
+The Flask version is the same four views plus one flag on the socket route,
+`websocket=True`, which Werkzeug's router requires before it will match an
+upgrade request; the Quickstart's §7 is that file, and CI runs it.
 
 ## Where to go
 

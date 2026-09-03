@@ -39,9 +39,12 @@ m0serve myproject.wsgi --realtime
 
 The view runs *first*, with sessions and permissions in hand — which is
 where your auth belongs, and why this is a feature of your app rather than
-of a sidecar. Under gunicorn the two headers are ignored and the same view
-degrades to a short plain response, so adopting it is not a fork of your
-codebase.
+of a sidecar. Under gunicorn the two headers mean nothing (they are passed
+through to the client) and the same view degrades to a short plain
+response, so adopting it is not a fork of your codebase. The Flask version
+is the same four views with one extra flag: the socket route is declared
+`websocket=True`, because Werkzeug's router refuses an upgrade request on
+an ordinary rule before any view runs — QUICKSTART §7 has it.
 
 **[QUICKSTART.md](QUICKSTART.md) is ten minutes from `pip install` to live
 multi-tab sync**, and CI executes every command in it on every pull request

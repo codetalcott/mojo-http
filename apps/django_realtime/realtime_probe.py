@@ -8,14 +8,14 @@ connection's lifetime:
     the wire — no 101, no hold, nothing registered.
   * An authorised upgrade produces a real handshake: 101 with a correct
     `Sec-WebSocket-Accept`, which Django could not have computed.
-  * A message sent on a socket reaches a synchronous Django view, which
+  * A message sent on a socket reaches a synchronous view, which
     republishes it — so every subscriber of the channel hears it, the sender
     included.
   * Channels isolate: a socket on another channel hears nothing.
 
 `REALTIME_EXPECT_WORKERS=2` switches to the cross-worker shape: one socket on
 EACH worker (the X-Worker header on each 101 says who owns it), then ONE
-`POST /publish` handled by sync Django must reach both — the far one over the
+`POST /publish` handled by a sync view must reach both — the far one over the
 BroadcastBus.
 
 Modelled on `apps/ws_chat/chat_probe.py`, which pins the same accept-race
@@ -25,8 +25,8 @@ problem the same way; see its comments for why SIGSTOP rather than retries.
 import base64
 import hashlib
 import http.client
+import json
 import os
-import re
 import signal
 import socket
 import struct
@@ -152,7 +152,7 @@ def handshake(channel, token=TOKEN):
     """Open one socket and return (socket, worker) — or (None, status, body).
 
     Nothing here is Mojo-aware: it is the opening handshake exactly as a
-    browser sends it, which is the point. Django sees a normal GET.
+    browser sends it, which is the point. The framework sees a normal GET.
     """
     query = {"channel": channel}
     if token is not None:
@@ -212,7 +212,12 @@ def open_socket(channel):
 
 
 def publish(channel, msg):
-    """POST /publish, handled by synchronous Django. Returns the body."""
+    """POST /publish, handled by a synchronous view. Returns the parsed JSON.
+
+    Parsed rather than grepped: Django's JsonResponse spaces after the colon
+    and Flask's jsonify does not, and a byte pattern that fits one framework
+    silently fails the other.
+    """
     conn = http.client.HTTPConnection(HOST, PORT, timeout=10)
     body = urllib.parse.urlencode({"channel": channel, "msg": msg})
     conn.request(
@@ -224,7 +229,10 @@ def publish(channel, msg):
     conn.close()
     if resp.status != 200:
         fail("publish returned %d: %s" % (resp.status, text))
-    return text
+    try:
+        return json.loads(text)
+    except ValueError:
+        fail("publish did not answer JSON: %r" % text)
 
 
 def close_all(socks):
@@ -254,7 +262,7 @@ if GATED:
 
 if EXPECT_WORKERS <= 1:
     # --- Phase 2: authorised, and a message reaches a Django view ------------
-    phase("phase 2: an authorised upgrade, and a message reaching a Django view")
+    phase("phase 2: an authorised upgrade, and a message reaching a sync view")
     sock_a, worker_a = open_socket("news")
     sock_b, _ = open_socket("news")
     sock_other, _ = open_socket("other")
@@ -263,8 +271,8 @@ if EXPECT_WORKERS <= 1:
     send_frame(sock_a, 0x1, msg)
 
     # The trip: ws_message -> ws_message_request -> POST /ws/message -> a plain
-    # synchronous Django view -> m0pub.publish -> the bus -> both sockets.
-    # Nothing but Django decided what to do with the message.
+    # synchronous view -> m0pub.publish -> the bus -> both sockets. Nothing
+    # but the application decided what to do with the message.
     for name, sock in (("sender", sock_a), ("second", sock_b)):
         got = read_text(sock)
         if got != msg:
@@ -274,7 +282,7 @@ if EXPECT_WORKERS <= 1:
     expect_silence(sock_other)
 
     # --- Phase 3: a Django publish reaches sockets too -----------------------
-    phase("phase 3: a Django publish reaching sockets")
+    phase("phase 3: a publish from a view reaching sockets")
     publish("news", "hello from publish")
     got = read_text(sock_a)
     if got != b"hello from publish":
@@ -302,12 +310,11 @@ if w_a == w_b:
     close_all([s for s, _ in conns])
     fail("both sockets landed on worker %s even though it was SIGSTOPped" % w_a)
 
-# ONE publish, handled by sync Django on whichever worker took the POST.
+# ONE publish, handled by a sync view on whichever worker took the POST.
 phase("one publish reaching both workers")
 body = publish("news", "cross-worker-ws")
-# Django's JsonResponse spaces after the colon and Flask's jsonify does not.
-if not re.search(r'"workers":\s*2', body):
-    fail("publish did not reach both worker channels: " + body)
+if body.get("workers") != 2:
+    fail("publish did not reach both worker channels: %r" % (body,))
 
 for sock, worker in conns:
     got = read_text(sock)
@@ -315,7 +322,7 @@ for sock, worker in conns:
         fail("socket on worker %s heard %r" % (worker, got))
 
 # And a message SENT on one worker's socket reaches the other worker's too:
-# ws_message -> Django -> m0pub -> every channel -> every worker's registry.
+# ws_message -> the view -> m0pub -> every channel -> every worker's registry.
 phase("a message sent on one worker reaching the other")
 send_frame(sock_a, 0x1, b"cross-worker-msg")
 for sock, worker in conns:

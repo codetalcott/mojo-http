@@ -86,8 +86,11 @@ x86-64-v2 binary dies inside the build with `exit code: 136` (SIGFPE) at
 `m0serve --version`. That is the emulator, not the wheel: the same wheel
 runs natively on x86_64 in the release's consume job, and `docker run
 --platform linux/amd64 … m0serve --version` reproduces the fault on demand.
-Deploy with `--remote-only` (the default in `poe deploy-site` and the
-workflow), where Fly's builder is native. `--build-only --local-only` is
+The same fault appears without flyctl when `docker run python:3.12-slim`
+on colima picks up a cached amd64 image (the daemon warns about the
+platform mismatch); pass `--platform linux/arm64` and the aarch64 wheel
+runs natively. Deploy with `--remote-only` (the default in `poe deploy-site`
+and the workflow), where Fly's builder is native. `--build-only --local-only` is
 still useful for one thing: it proves `fly.toml`'s Dockerfile path and the
 build context resolve, which is where the first deploy failed. flyctl
 needs `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` to see colima.
