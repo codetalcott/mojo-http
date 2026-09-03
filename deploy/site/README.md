@@ -78,6 +78,20 @@ The task runs `flyctl deploy` from the repository root with
 workflow gives it. `fly releases -a m0serve-docs` lists what is live;
 `fly deploy --image <previous>` rolls back.
 
+## Building locally on a Mac
+
+`flyctl deploy --local-only` builds for the app's platform, which is x86_64,
+so on an Apple Silicon Mac the image builds under QEMU emulation and the
+x86-64-v2 binary dies inside the build with `exit code: 136` (SIGFPE) at
+`m0serve --version`. That is the emulator, not the wheel: the same wheel
+runs natively on x86_64 in the release's consume job, and `docker run
+--platform linux/amd64 … m0serve --version` reproduces the fault on demand.
+Deploy with `--remote-only` (the default in `poe deploy-site` and the
+workflow), where Fly's builder is native. `--build-only --local-only` is
+still useful for one thing: it proves `fly.toml`'s Dockerfile path and the
+build context resolve, which is where the first deploy failed. flyctl
+needs `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` to see colima.
+
 ## Verifying
 
 ```bash
