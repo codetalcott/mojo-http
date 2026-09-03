@@ -538,6 +538,22 @@
       "evidence": "`Smoke test the documentation site's deploy image` (every PR) \u2014 `deploy/site/Dockerfile` built from the tree's own wheel; through a published port, `llms.txt` and the sitemap answer at the root, a page answers with the Markdown twin it advertises, the slash redirect and the HTML 404 come from the application, m0serve is PID 1 by `/proc/1/cmdline`, and `docker stop` is the drain's exit 0 inside its grace"
     },
     {
+      "id": "F15",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "Every RFC the tree cites is a current document",
+      "status": "verified",
+      "evidence": "`Check machine-sourced doc facts` (every PR) \u2014 `scripts/check_citations.py` looks every `RFC nnnn` in a tracked text file up in `scripts/rfc_status.json`, a committed snapshot of the RFC Editor's per-document JSON; a citation with no entry fails, and a citation of an obsoleted RFC fails unless the same paragraph cites a successor. Section numbers are not checked. Selftested in `check-docs`; each rule reverted against the tree by the sabotage step in docs.yml"
+    },
+    {
+      "id": "F16",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The RFC snapshot is compared with the RFC Editor monthly",
+      "status": "verified",
+      "evidence": "`Compare the snapshot with the RFC Editor` (monthly) \u2014 `citations.yml` re-fetches every snapshot entry and fails on a changed `obsoleted_by` or status, filing an issue; a transport failure fails too, because the job exists only to ask. F15 checks that this workflow still exists, has a cron and passes the live flag"
+    },
+    {
       "id": "F13",
       "section": "F",
       "category": "F. Observability",

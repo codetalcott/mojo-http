@@ -238,7 +238,7 @@ def scan_to_eol[
     """
     var token_start = buf.read_pos
 
-    # RFC 7230 §3.2.6: the value runs to the first control character (< 0x20
+    # RFC 9110 §5.5: the value runs to the first control character (< 0x20
     # except HTAB) or DEL; SP, visible ASCII and obs-text (0x80–0xFF) are
     # content. The whole remaining buffer is searched here, so "no such
     # byte" means the line has not finished arriving.

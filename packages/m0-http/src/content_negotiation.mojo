@@ -60,7 +60,7 @@ def _parse_quality(s: String) -> Float64:
 
 
 def parse_accept(accept: String) -> AcceptResult:
-    """Parse Accept header with quality factors per RFC 7231.
+    """Parse Accept header with quality factors per RFC 9110 §12.5.1.
 
     Recognises the four standard types only. To match vendor types, pass them
     via the two-argument overload.
@@ -69,7 +69,7 @@ def parse_accept(accept: String) -> AcceptResult:
 
 
 def parse_accept(accept: String, extra: List[String]) -> AcceptResult:
-    """Parse Accept header with quality factors per RFC 7231.
+    """Parse Accept header with quality factors per RFC 9110 §12.5.1.
 
     Splits on comma, extracts media type and q= parameter.
     Quality of 0 disables a type.

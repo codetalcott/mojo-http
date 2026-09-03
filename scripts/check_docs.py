@@ -691,7 +691,7 @@ def check_spec_sheet():
 
     The sheet is a public completeness tracker, so `verified` has to mean
     something mechanical: a row may claim it only by naming a CI step, a test
-    function, or a weekly/pre-release gate that this repo can be shown to run.
+    function, or a weekly, monthly or pre-release gate that this repo can be shown to run.
     The rules, the both-ways cross-references and the seventeen sabotages that
     prove each of them live in scripts/spec_sheet.py, which is written as a
     pure function of text so `--sabotage` can revert a rule in memory. This is
@@ -869,6 +869,25 @@ def check_site_corpus():
         fail("docsite: " + problem)
 
 
+def check_rfc_citations():
+    """Every `RFC nnnn` the tree cites is a current document, by the
+    committed snapshot of the RFC Editor's answers.
+
+    scripts/check_citations.py owns the rules (`--selftest` proves each can
+    fail, `--sabotage` reverts each against the real tree); running them
+    here puts them on doc-only pull requests, and needs no network. The
+    monthly citations.yml is the half that asks the RFC Editor whether the
+    snapshot is still true. First run, the tree cited RFC 7230 and RFC 7231
+    in the parser, the chunked decoder and the date formatter, four years
+    after RFC 9110 and RFC 9112 replaced them.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    import check_citations
+
+    for problem in check_citations.check(REPO):
+        fail("citations: " + problem)
+
+
 def check_ci_measurements_are_collected():
     """A measurement a task records must have somewhere to go, and be kept.
 
@@ -963,6 +982,7 @@ def main():
     check_required_context_intact()
     check_ci_measurements_are_collected()
     check_site_corpus()
+    check_rfc_citations()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

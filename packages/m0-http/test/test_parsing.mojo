@@ -64,7 +64,7 @@ def _header(raw: String, key: String) raises -> String:
     return String(v.value())
 
 
-# --- Request smuggling: RFC 7230 3.3.3 ---------------------------------------
+# --- Request smuggling: RFC 9112 6.3 -----------------------------------------
 
 
 def test_content_length_with_transfer_encoding_is_rejected() raises:
@@ -583,7 +583,7 @@ def test_chunk_size_is_limited_to_sixteen_significant_digits() raises:
 
 
 def test_leading_zeros_do_not_count_toward_the_digit_limit() raises:
-    """RFC 7230 4.1 permits leading zeros. Counting them truncates a valid
+    """RFC 9112 7.1 permits leading zeros. Counting them truncates a valid
     chunk size, which is how the Apache truncation CVE worked."""
     var got = _decode("00000000000000000005\r\nhello\r\n0\r\n\r\n")
     assert_true(got[0] >= 0, "padded chunk size was rejected: " + String(got[0]))

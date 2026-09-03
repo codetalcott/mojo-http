@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**158 capabilities: 134 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 134 verified, 130 are gated on every pull request, 2 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**160 capabilities: 136 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 136 verified, 131 are gated on every pull request, 2 weekly, 1 monthly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -44,7 +44,9 @@ a warranty.
 `.github/workflows/test.yml`. `(weekly)` is `py-canary.yml` or
 `nightly-canary.yml` on a cron — the free-threading rows live here, because
 CI pins GIL-enabled 3.13 and every `--threads` phase skips on it.
-`(pre-release)` is a gate `docs/RELEASING.md` requires and CI deliberately
+`(monthly)` is `citations.yml`, which asks the RFC Editor whether the
+committed RFC snapshot is still true -- a document is obsoleted about once
+a decade, so monthly is plenty. `(pre-release)` is a gate `docs/RELEASING.md` requires and CI deliberately
 does not run, because shared runners cannot reproduce the timing.
 
 **One conformance suite runs on a cadence**: Autobahn\|Testsuite, at
@@ -173,6 +175,8 @@ whose body drifted away from it is the case most likely to have survived.
 | F10 | CI measurements recorded, rendered per run and kept as an artifact | verified | `Check machine-sourced doc facts` (every PR) |
 | F11 | The measurement recorder itself | verified | `Self-test the measurement recorder` (every PR) |
 | F14 | The site's deploy image: the wheel in `python:3.12-slim` with the built site, served from a container as it deploys | verified | `Smoke test the documentation site's deploy image` (every PR) — `deploy/site/Dockerfile` built from the tree's own wheel; through a published port, `llms.txt` and the sitemap answer at the root, a page answers with the Markdown twin it advertises, the slash redirect and the HTML 404 come from the application, m0serve is PID 1 by `/proc/1/cmdline`, and `docker stop` is the drain's exit 0 inside its grace |
+| F15 | Every RFC the tree cites is a current document | verified | `Check machine-sourced doc facts` (every PR) — `scripts/check_citations.py` looks every `RFC nnnn` in a tracked text file up in `scripts/rfc_status.json`, a committed snapshot of the RFC Editor's per-document JSON; a citation with no entry fails, and a citation of an obsoleted RFC fails unless the same paragraph cites a successor. Section numbers are not checked. Selftested in `check-docs`; each rule reverted against the tree by the sabotage step in docs.yml |
+| F16 | The RFC snapshot is compared with the RFC Editor monthly | verified | `Compare the snapshot with the RFC Editor` (monthly) — `citations.yml` re-fetches every snapshot entry and fails on a changed `obsoleted_by` or status, filing an issue; a transport failure fails too, because the job exists only to ask. F15 checks that this workflow still exists, has a cron and passes the live flag |
 | F13 | The documentation site: the tree's own pages rendered and served by the server, `llms.txt` at the root, a Markdown twin beside every page | verified | `Smoke test the documentation site` (every PR) — built by `scripts/docsite.py`, served through `--static` with `apps/site` behind it; every sitemap URL answers as HTML with the twin it advertises, the root text files name the site's pages by absolute URL, the sitemap goes out as XML, and the slash redirect and HTML 404 come from the application |
 
 ## G. Security hardening

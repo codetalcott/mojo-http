@@ -108,7 +108,7 @@ struct HTTPChunkedDecoder(Defaultable):
 
                     # Enforce 16-digit limit only on *significant* digits
                     # (those from the first non-zero hex digit onward).
-                    # Leading zeros are legal per RFC 7230 §4.1 and must not
+                    # Leading zeros are legal per RFC 9112 §7.1 and must not
                     # be counted toward the limit (Apache truncation CVE).
                     if self._sig_hex_count == 16:
                         return (-1, dst)

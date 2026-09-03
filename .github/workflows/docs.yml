@@ -64,3 +64,7 @@ jobs:
       # renamed out of existence quietly.
       - name: Sabotage the spec sheet's rules
         run: python3 scripts/spec_sheet.py --sabotage
+      # The citation tracker runs inside check_docs above; this proves its
+      # rules can fail on canned input, then reverts each against the tree.
+      - name: Sabotage the citation tracker's rules
+        run: python3 scripts/check_citations.py --selftest && python3 scripts/check_citations.py --sabotage

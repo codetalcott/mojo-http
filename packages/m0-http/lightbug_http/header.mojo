@@ -351,11 +351,11 @@ def write_header[T: Writer](mut writer: T, key: String, value: String):
 def encode_latin1_header_value(value: String) -> List[UInt8]:
     """Transcode a header value from UTF-8 to ISO-8859-1 bytes.
 
-    HTTP/1.1 header field values must be representable in ISO-8859-1 (RFC 7230 §3.2).
+    HTTP/1.1 header field values must be representable in ISO-8859-1 (RFC 9110 §5.5).
     - Codepoints U+0000–U+007F: single byte, passed through unchanged.
     - Codepoints U+0080–U+00FF: encoded as their single ISO-8859-1 byte.
     - Codepoints above U+00FF: cannot be represented in ISO-8859-1; the raw UTF-8
-      bytes are written as-is (best-effort fallback — use RFC 5987 encoding instead).
+      bytes are written as-is (best-effort fallback — use RFC 8187 encoding instead).
     - Invalid UTF-8 byte sequences (obs-text from parsing): passed through as-is.
     """
     var utf8 = value.as_bytes()
@@ -884,7 +884,7 @@ def parse_request_headers(
         var joined = StaticString("; ").join(cookies)
         headers.set_bytes(HeaderKey.COOKIE.as_bytes(), joined.as_bytes())
 
-    # RFC 7230 §3.3.3: reject requests with both Transfer-Encoding and Content-Length
+    # RFC 9112 §6.3: reject requests with both Transfer-Encoding and Content-Length
     if seen_transfer_encoding and seen_content_length:
         raise RequestParseError(InvalidHTTPRequestError())
 

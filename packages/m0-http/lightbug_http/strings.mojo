@@ -72,7 +72,7 @@ def is_printable_ascii(c: UInt8) -> Bool:
 
 
 # Token character map - represents which characters are valid in tokens
-# According to RFC 7230: token = 1*tchar
+# RFC 9110 §5.6.2: token = 1*tchar
 # tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
 #         "0"-"9" / "A"-"Z" / "^" / "_" / "`" / "a"-"z" / "|" / "~"
 @always_inline
