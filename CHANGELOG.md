@@ -7,6 +7,8 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-09-02
+
 ### Added
 
 - **ASGI on a free-threaded CPython build is refused, not crashed**
@@ -3184,6 +3186,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.17.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.0
 [0.16.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.16.0
 [0.15.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.1
 [0.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.0
