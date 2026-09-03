@@ -1,9 +1,12 @@
-# The only image built from the repository root is the documentation site's
-# (deploy/site/Dockerfile). Everything is excluded, then the three things it
-# COPYs are let back in, so a `.venv`, a bench corpus or a stray log never
-# enters a build context or an image layer.
+# Two images are built from the repository root: the documentation site's
+# (deploy/site/Dockerfile) and the live demo's (deploy/demo/Dockerfile).
+# Everything is excluded, then only what those COPY is let back in, so a
+# `.venv`, a bench corpus or a stray log never enters a build context or an
+# image layer.
 *
 !deploy/site/wheelhouse/
 !apps/site/siteapp/
 !dist/site/
+!deploy/demo/wheelhouse/
+!apps/demo/demoapp.py
 **/__pycache__/

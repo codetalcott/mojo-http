@@ -3495,6 +3495,61 @@ name = "version"
 positional = true
 default = ""
 
+# The live demo (apps/demo, https://demo.m0serve.dev) from the tree: the
+# quickstart's shape as a public page, two workers under --realtime. The wheel
+# is not installed here, so the wheel's m0pub.py is staged as an `m0serve`
+# package on PYTHONPATH, as smoke-flask-realtime does.
+[tool.poe.tasks.serve-demo]
+help = "Serve the live demo app from the tree on :8190, two workers under --realtime"
+deps = ["build-serve"]
+shell = """
+set -u
+out=$(mktemp -d)
+mkdir -p "$out/m0serve"
+: > "$out/m0serve/__init__.py"
+cp packaging/m0serve/src/m0serve/m0pub.py "$out/m0serve/m0pub.py"
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+core_lib="$PWD/packages/m0-core/libm0core.$ext"
+[ -f "$core_lib" ] || uv run poe build-ffi || exit 1
+PYTHONPATH="$out" M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=25000 bin/m0serve demoapp:application \
+  --app-dir apps/demo --realtime --workers 2 --port 8190 --max-body 8k --health-path /health --access-log
+"""
+
+# The live demo's deploy image (deploy/demo/Dockerfile), built from the tree's
+# own wheel and probed from outside the container: what demo.m0serve.dev runs,
+# proven here first. scripts/demo_probe.py asserts the demo's own promises --
+# a first visitor's cookie and the version line, the hold views' 403 without
+# it, one publish reaching a second stream on the visitor's channel and NOT a
+# stranger's, a WebSocket frame coming back to socket and streams, the 413
+# and the 429 -- plus m0serve as PID 1 and `docker stop` as the drain with
+# held connections open. In CI it runs in the pid1 job (the one with docker
+# and a Linux wheel); the same probe with --url verifies the live deploy.
+[tool.poe.tasks.smoke-demo]
+help = "Build the live demo's deploy image from the tree's wheel and probe it from outside the container"
+deps = ["build-wheel"]
+shell = """
+python3 scripts/demo_probe.py --image --wheel-dir dist/wheels || exit 1
+python3 scripts/emit.py --covers M17 --task smoke-demo
+"""
+
+# Deploy the demo by hand: `flyctl deploy` from the repository root so the
+# Dockerfile's context is the tree. The optional positional pins the PyPI
+# release; the default is the tree's own version, which must already be on
+# PyPI. deploy/demo/README.md is the runbook.
+[tool.poe.tasks.deploy-demo]
+help = "Deploy the live demo to Fly.io as https://demo.m0serve.dev (arg: PyPI version to pin)"
+shell = """
+set -u
+v="${version:-$(python3 -c 'import re;print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')}"
+echo "deploying m0serve-demo pinned to m0serve==$v"
+flyctl deploy --remote-only --config deploy/demo/fly.toml --build-arg "M0SERVE_VERSION=$v" .
+"""
+
+[[tool.poe.tasks.deploy-demo.args]]
+name = "version"
+positional = true
+default = ""
+
 # Served the way it deploys: m0serve with `--static /=<tree>` in front of the
 # fallback in apps/site. The build alone cannot prove the served shape -- that
 # llms.txt is at the root as text and names this site's pages by ABSOLUTE

@@ -7,10 +7,12 @@
 # one, and a deploy per merge would re-pin nothing while re-rendering prose
 # about capabilities the deployed server may not have yet.
 #
-# Needs one secret, FLY_DEPLOY_SITE, in the `fly` environment: a deploy
-# token scoped to the app (`fly tokens create deploy -a m0serve-docs`),
-# handed to flyctl as FLY_API_TOKEN below. deploy/site/README.md is the
-# runbook, including the one-time app and certificate creation.
+# Needs two secrets in the `fly` environment, each a deploy token scoped to
+# ONE app (`fly tokens create deploy -a <app>`) and handed to flyctl as
+# FLY_API_TOKEN below: FLY_DEPLOY_SITE for the docs site (m0serve-docs) and
+# FLY_DEPLOY_DEMO for the live demo (m0serve-demo), which the second job
+# deploys on the same trigger. deploy/site/README.md and deploy/demo/README.md
+# are the runbooks, including the one-time app and certificate creation.
 name: Deploy site
 
 on:
@@ -88,3 +90,50 @@ jobs:
           curl -sSf https://m0serve.dev/llms.txt | grep -q '](https://m0serve.dev/docs/spec.md)'
           curl -sSfI https://m0serve.dev/sitemap.xml | grep -qi '^content-type: application/xml'
           echo "m0serve.dev is serving the site pinned to m0serve==${{ steps.v.outputs.version }}"
+
+  # The live demo beside the docs (https://demo.m0serve.dev): its own Fly
+  # app, its own token, the same pinned wheel. Independent of the site's job
+  # on purpose -- a failure in one must not hold the other back -- so the two
+  # small version steps are repeated rather than shared through outputs.
+  deploy-demo:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (startsWith(github.event.workflow_run.head_branch, 'v') ||
+        startsWith(github.event.workflow_run.head_branch, 'release/v')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: fly
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve the version to pin
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${{ github.event.workflow_run.head_branch }}"; v="${v#release/}"; v="${v#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"; echo "pinning m0serve==$v"
+      - name: Wait for the wheel on PyPI
+        run: |
+          for i in $(seq 1 30); do
+            pip download --no-deps --quiet -d /tmp/w "m0serve==${{ steps.v.outputs.version }}" && exit 0
+            sleep 20
+          done
+          echo "::error::m0serve==${{ steps.v.outputs.version }} never appeared on PyPI"; exit 1
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_DEPLOY_DEMO }}
+        run: >-
+          flyctl deploy --remote-only --config deploy/demo/fly.toml
+          --build-arg M0SERVE_VERSION=${{ steps.v.outputs.version }} .
+      # The same probe `poe smoke-demo` runs against the image on every pull
+      # request, minus the container phases: the page and its version line,
+      # the cookie, the 403s, a held stream and socket, isolation, the limits.
+      - name: Verify the live demo
+        run: |
+          python3 scripts/demo_probe.py --url https://demo.m0serve.dev
+          curl -s https://demo.m0serve.dev/about | grep -q "\"m0serve\": \"${{ steps.v.outputs.version }}\""
+          echo "demo.m0serve.dev is serving m0serve==${{ steps.v.outputs.version }}"

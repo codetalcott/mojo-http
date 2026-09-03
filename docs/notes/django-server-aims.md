@@ -537,11 +537,18 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
      smoke-site-image` (F14), and `deploy-site.yml` deploys after each
      release pinning that release's wheel. The first public deploy waits
      on the next release, because the site's redirect and 404 need the
-     static mount's fall-through that 0.16.0 lacks. Still open, and each
-     a launch task: the live two-tab demo beside the docs (a separate Fly
-     app on a subdomain), and the off-site half -- the homepage field on
-     GitHub (once the site is live; PyPI's Documentation link rides the
-     next release), djangopackages, the Modular forum.
+     static mount's fall-through that 0.16.0 lacks. The site went live
+     2026-09-03 (m0serve 0.17.0, two machines in `iad`). **The live demo
+     is built** (2026-09-03, `apps/demo` + `deploy/demo`, SPEC M17): the
+     quickstart's shape as a public page with per-visitor channels and
+     rate and size limits, its own Fly app `m0serve-demo` on
+     `demo.m0serve.dev` -- one machine, because the bus is per process --
+     deployed by the same workflow as the site from the same pinned wheel
+     and verified after each deploy by the probe that gates its image on
+     every pull request. It waits on the one-time Fly setup in
+     `deploy/demo/README.md` (app, certificate, DNS, token). Still open:
+     the off-site half -- the homepage field on GitHub, djangopackages,
+     the Modular forum.
 
   **Before 0.12.0**: exercise the server against real applications rather
   than only the ones written to test it — three local Django projects,

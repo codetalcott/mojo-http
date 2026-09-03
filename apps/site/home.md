@@ -29,6 +29,12 @@ pip install m0serve
 m0serve myproject.wsgi --realtime
 ```
 
+**See it: [demo.m0serve.dev](https://demo.m0serve.dev).** Open it in two tabs
+and type in either; the other shows it within the second, over a held SSE
+stream and over a WebSocket, from one file of sync Django with channels
+namespaced per visitor. The line at the bottom says which m0serve version
+is serving it.
+
 The name is spelled with a zero, `m0serve`, the way the packages underneath
 are named: `m0-core`, `m0-http`, `m0-wsgi`.
 

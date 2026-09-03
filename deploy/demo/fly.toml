@@ -1,0 +1,60 @@
+# The live demo on Fly.io: https://demo.m0serve.dev
+#
+# Deploy from the repository root, so the Dockerfile's context is the tree:
+#
+#     uv run poe deploy-demo          # pins the tree's version; must be on PyPI
+#     uv run poe deploy-demo 0.17.0   # pins a release
+#
+# A separate app from the docs site (m0serve-docs), never a mount inside it:
+# untrusted realtime traffic does not share a process with the site.
+#
+# ONE machine, by design. The publish bus that carries a message from the
+# worker that received it to the worker holding the other tab is per
+# process: two machines would split a visitor's tabs across two buses and
+# the demo would look broken. After the first deploy (which creates two):
+#
+#     fly scale count 1 -a m0serve-demo
+#
+# auto-stop is OFF for the same reason the docs site's is, and more so: a
+# stopped machine would drop every held stream and socket.
+app = "m0serve-demo"
+primary_region = "iad"
+
+[build]
+  # Relative to THIS file; the build CONTEXT is the working directory given
+  # to `flyctl deploy` -- the repository root -- which the Dockerfile's COPY
+  # paths assume.
+  dockerfile = "Dockerfile"
+
+[env]
+  M0_SSE_HEARTBEAT_MS = "25000"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # Held connections are the workload, so the proxy counts CONNECTIONS, not
+  # requests: with the default `requests` type every held stream would count
+  # as one in-flight request against a limit of 250. The server itself holds
+  # 1024 per worker (max_connections); the hard limit stays under that.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 500
+    hard_limit = 900
+
+  # The server's own health path, answered before Python.
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
