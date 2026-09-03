@@ -24,6 +24,26 @@ versions may break the API**.
 
 ### Added
 
+- **The live two-tab demo beside the docs** (`apps/demo`, `deploy/demo`,
+  `poe smoke-demo`, SPEC M17; https://demo.m0serve.dev once the Fly app
+  exists). One file of sync Django in the quickstart's shape, served by
+  `m0serve --realtime --workers 2` from its own Fly app on a subdomain --
+  never a mount inside the docs app, so untrusted realtime traffic shares
+  no process with the site -- and on ONE machine, because the publish bus is
+  per process. The page holds an SSE stream and a WebSocket side by side,
+  says which m0serve version serves it and which worker published each
+  line, and carries what a public page needs that the tutorial does not:
+  channels namespaced per visitor by a random cookie token (a stranger's
+  tab hears nothing), 280 bytes a message (413), 30 a minute per visitor
+  per worker (429 with `Retry-After`), a foreign `Origin` refused on the
+  upgrade, binary frames dropped, nothing stored. `scripts/demo_probe.py`
+  proves every one of those from outside -- against the image built from
+  the tree's wheel in the `pid1` job, with m0serve as PID 1 and `docker
+  stop` draining with a stream held, and against the live URL in the deploy
+  workflow's new `deploy-demo` job (secret `FLY_DEPLOY_DEMO`). Four
+  sabotages of the application -- shared channel, no rate limit, no Origin
+  check, no size cap -- each failed the probe in the phase that names the
+  guard.
 - **The headline claim, gated clause by clause** (SPEC I20, K11, M16;
   `QUICKSTART.md` §7–8, `poe smoke-flask-realtime`). The sentence names
   Flask, and nothing held a stream or a socket from a Flask view: K10 proves

@@ -50,7 +50,7 @@ finds no machine until the workflow has run. The organization is a property
 of the app, not of `fly.toml` (app names are global), so nothing in the
 repository names it; `fly apps list -o textshelf` is where to look. Keep DNS **unproxied** if the registrar is Cloudflare: the proxy's
 100 s idle timeout and second TLS hop buy nothing for a static site and
-complicate the live demo that will sit beside it.
+complicate the live demo beside it ([deploy/demo](../demo/README.md)).
 
 For the workflow, create a deploy token scoped to this one app and store
 it as the secret `FLY_DEPLOY_SITE` (the workflow hands it to flyctl as
@@ -116,6 +116,6 @@ Measured before choosing the machine: 22 MB RSS per worker, 12 MB for the
 supervisor, 2.5 MB of files, a page served in 0.26 ms locally. A
 shared-cpu-1x with 256 MB is $2.02 a month at Fly's 2026-09 prices, always
 on; a second machine in the region doubles that and is the reliability
-knob for the static site. The live demo, when it comes, is a separate app
-on a subdomain so untrusted realtime traffic never shares a process with
-the docs.
+knob for the static site. The live demo is a separate app on a subdomain
+([deploy/demo](../demo/README.md)) so untrusted realtime traffic never shares
+a process with the docs.

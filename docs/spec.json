@@ -1256,6 +1256,14 @@
       "capability": "No second process: the running server is one process tree of m0serve binaries, and the wheel requires nothing",
       "status": "verified",
       "evidence": "`Execute the quickstart` (every PR) \u2014 under `--workers 2`, `pgrep -x m0serve` counts exactly a supervisor and two workers (the console script `execve`s, so no Python parent survives), and `pip show m0serve` lists an empty `Requires:`. The exact count is the self-test: a check that only looks for a broker it does not expect passes on an empty machine"
+    },
+    {
+      "id": "M17",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "The live demo: the quickstart's shape as a public page with per-visitor channels and rate and size limits, served from its deploy image",
+      "status": "verified",
+      "evidence": "`Smoke test the live demo's deploy image` (every PR) \u2014 `deploy/demo/Dockerfile` built from the tree's own wheel and probed through a published port by `scripts/demo_probe.py`: a first visitor is handed a token cookie and the page names the served version; without the cookie the hold views answer 403 and a foreign-`Origin` upgrade is refused; one publish reaches a second stream on the visitor's channel and a stranger's stream hears nothing for a measured silence; a WebSocket frame comes back to the socket and to the streams; a message over the cap is 413 and a burst meets 429 with `Retry-After` after the first LIMIT attempts and within workers\u00d7LIMIT+1; m0serve is PID 1 by `/proc/1/cmdline` and `docker stop` drains to exit 0 with held connections open. The same probe, pointed at a URL instead of the image, verifies the live deploy"
     }
   ]
 }

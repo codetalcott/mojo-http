@@ -10,6 +10,7 @@ issues, and CI prints it on every pull request.
 | page | what it answers |
 |---|---|
 | [QUICKSTART.md](../QUICKSTART.md) | **Show me.** Ten minutes from `pip install` to live multi-tab sync from one sync Django file. Every command is executed by CI. |
+| [demo.m0serve.dev](https://demo.m0serve.dev) | **Show me without installing anything.** The quickstart's two-tab sync, live: a held SSE stream and a WebSocket side by side from one sync Django file, with the serving version on the page. [apps/demo](../apps/demo/README.md) is the file, [deploy/demo](../deploy/demo/README.md) the deployment. |
 | [RUNNING.md](RUNNING.md) | **How do I run my app?** Flags, the execution modes and when each applies, what to put in front of it, shutdown and exit codes. |
 | [SPEC.md](SPEC.md) | **What can it do, and what proves it?** One row per capability with the CI gate that proves it. The closest thing to a contract. |
 

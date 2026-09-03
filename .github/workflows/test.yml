@@ -194,6 +194,14 @@ jobs:
       # behind the mount, m0serve as PID 1, and `docker stop` as the drain.
       - name: Smoke test the documentation site's deploy image
         run: uv run poe smoke-site-image
+      # The live demo's deploy image, built from THIS tree's wheel
+      # (deploy/demo/Dockerfile is what `fly deploy` builds for
+      # demo.m0serve.dev) and probed from outside the container: the page and
+      # its version line, per-visitor channels a stranger cannot hear, an SSE
+      # hold and a WebSocket hold, the 413 and 429 limits, m0serve as PID 1,
+      # and `docker stop` as the drain with held connections open.
+      - name: Smoke test the live demo's deploy image
+        run: uv run poe smoke-demo
       - name: Record the measurements
         if: always()
         run: |
