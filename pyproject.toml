@@ -5425,6 +5425,15 @@ set -u
 : > py-canary.log
 report=$(mktemp)
 phase=provision
+# Every phase runs under a watchdog and announces itself to the JOB LOG (the
+# smokes' own output goes to py-canary.log). Without both, a hang is a
+# 60-minute job timeout that GitHub reports as "cancelled", which runs no
+# failure step, uploads no log, and names no phase -- the shape of the
+# 2026-09-03 Linux run. perl's alarm survives the exec, so the phase's
+# process gets SIGALRM at the deadline and the `|| FAIL($phase)` after it
+# fires with the phase named. 20 minutes is several times any phase's
+# worst on either runner (the whole canary took 3m31s on Linux 2026-08-23).
+run() { echo "--- $phase $(date -u +%H:%M:%S)"; perl -e 'alarm shift; exec @ARGV' 1200 "$@" >> py-canary.log 2>&1; }
 
 restore() {
   code=$?
@@ -5451,9 +5460,9 @@ restore() {
 # Artifacts are built on the PINNED toolchain before the swap: the same
 # compiler serves both sides, and a pre-existing build failure must not be
 # misread as a 3.14t finding.
-poe build-all >> py-canary.log 2>&1 || { echo 'PY-CANARY: build-all failed on the pinned toolchain - fix that first'; exit 1; }
+run poe build-all || { echo 'PY-CANARY: build-all failed on the pinned toolchain - fix that first'; exit 1; }
 trap restore EXIT
-poe py314t-try >> py-canary.log 2>&1 || { echo 'PY-CANARY: could not provision the 3.14t venv (see py-canary.log)'; exit 1; }
+run poe py314t-try || { echo 'PY-CANARY: could not provision the 3.14t venv (see py-canary.log)'; exit 1; }
 echo "provision: OK ($(.venv/bin/python3 --version 2>&1))" >> "$report"
 
 # MOJO_PYTHON_LIBRARY is belt-and-braces: PATH resolution already finds the
@@ -5467,7 +5476,7 @@ export PYTHON_GIL=0
 export M0_RSS_LIMIT_KB=24576
 
 phase=A0-driver-and-artifacts
-poe test-wsgi >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the mojo driver or the pinned-compiler artifacts break under the 3.14t venv (see py-canary.log)"; exit 1; }
+run poe test-wsgi || { echo "PY-CANARY: FAIL($phase): the mojo driver or the pinned-compiler artifacts break under the 3.14t venv (see py-canary.log)"; exit 1; }
 echo 'A0 test-wsgi (driver + artifacts, no interpreter): OK' >> "$report"
 
 phase=A1-interpreter-probe
@@ -5484,19 +5493,19 @@ echo "A1 probe: OK ($(grep 'python_version=' probe.out), embedded GIL off)" >> "
 rm -f probe.out
 
 phase=B-smoke-wsgi
-poe smoke-wsgi >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): PEP 3333 conformance or the first fork (see py-canary.log)"; exit 1; }
+run poe smoke-wsgi || { echo "PY-CANARY: FAIL($phase): PEP 3333 conformance or the first fork (see py-canary.log)"; exit 1; }
 echo 'B smoke-wsgi (PEP 3333 + fork, M0_WORKERS=2): OK' >> "$report"
 
 phase=C-smoke-django
-poe smoke-django >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase) (see py-canary.log)"; exit 1; }
+run poe smoke-django || { echo "PY-CANARY: FAIL($phase) (see py-canary.log)"; exit 1; }
 echo "C smoke-django: OK ($(grep -o 'rss growth over 10k requests: [0-9-]*KB' py-canary.log | tail -1) vs 12288KB production limit)" >> "$report"
 
 phase=C2-smoke-flask
-poe smoke-flask >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase) (see py-canary.log)"; exit 1; }
+run poe smoke-flask || { echo "PY-CANARY: FAIL($phase) (see py-canary.log)"; exit 1; }
 echo 'C2 smoke-flask: OK' >> "$report"
 
 phase=C3-smoke-django-realtime
-poe smoke-django-realtime >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the hybrid hold/publish path (see py-canary.log)"; exit 1; }
+run poe smoke-django-realtime || { echo "PY-CANARY: FAIL($phase): the hybrid hold/publish path (see py-canary.log)"; exit 1; }
 echo "C3 smoke-django-realtime (hybrid SSE + numbered ids, phase 4: cross-THREAD fan-out over one bus; $(grep -o 'phase 6: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 # The WebSocket half, and the only phase that drives a second shared library
@@ -5504,26 +5513,26 @@ echo "C3 smoke-django-realtime (hybrid SSE + numbered ids, phase 4: cross-THREAD
 # event counter. A free-threaded build changes how that dlopen and that call
 # interact with the GIL-less runtime, which is exactly what a canary is for.
 phase=C4-smoke-django-realtime-ws
-poe smoke-django-realtime-ws >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): Django-gated WebSocket holds (see py-canary.log)"; exit 1; }
+run poe smoke-django-realtime-ws || { echo "PY-CANARY: FAIL($phase): Django-gated WebSocket holds (see py-canary.log)"; exit 1; }
 echo "C4 smoke-django-realtime-ws (WebSocket holds + ctypes atomic under free-threading; $(grep -o 'phase 4: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 # The mode free-threading exists for: N loops on N threads, one interpreter.
 # Phase 2 of smoke-threads only runs here, where the GIL is genuinely off.
 phase=D-smoke-threads
-poe smoke-threads >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the threaded execution mode (see py-canary.log)"; exit 1; }
+run poe smoke-threads || { echo "PY-CANARY: FAIL($phase): the threaded execution mode (see py-canary.log)"; exit 1; }
 echo "D smoke-threads ($(grep -o 'threads seen: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 # Phase 3 of smoke-reload -- --reload in front of --threads -- is gated the
 # same way, so this is where the two modes are proven to compose.
 phase=E-smoke-reload
-poe smoke-reload >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): hot reload (see py-canary.log)"; exit 1; }
+run poe smoke-reload || { echo "PY-CANARY: FAIL($phase): hot reload (see py-canary.log)"; exit 1; }
 echo "E smoke-reload (1 worker, 2 workers, and --reload in front of --threads): OK" >> "$report"
 
 # Stage B composed with Stage A. Phase 1 of smoke-blocking-threads runs on
 # every CI machine; phase 2 -- a pool per loop under --threads N -- only runs
 # where the loops themselves can, which is here.
 phase=F-smoke-blocking-threads
-poe smoke-blocking-threads >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the blocking-threads pool (see py-canary.log)"; exit 1; }
+run poe smoke-blocking-threads || { echo "PY-CANARY: FAIL($phase): the blocking-threads pool (see py-canary.log)"; exit 1; }
 echo "F smoke-blocking-threads ($(grep -o 'threads+pool: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 echo ''
