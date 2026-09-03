@@ -1208,7 +1208,15 @@ async def _serve_one_exec(slot, scope, body):
                         'ASGI streamed a body chunk before '
                         'http.response.start')
                 streaming[0] = True
-                task = asyncio.current_task()
+                # The slot's OWNER, never `asyncio.current_task()`: Starlette
+                # (so FastAPI and FastHTML) runs a StreamingResponse's body
+                # inside an anyio task group, so this `send` arrives from a
+                # CHILD task. Marking the child left the request task's
+                # done-callback thinking it had a buffered result to unpack
+                # -- one `TypeError` traceback in the log per streamed
+                # response -- and pointed disconnect cancellation at a task
+                # the app's task group would simply restart around.
+                task = _exec_slot_task.get(slot) or asyncio.current_task()
                 task._m0_streaming = True
                 _exec_stream_tasks[slot] = task
                 _exec_credits[slot] = _ASGI_CREDIT_WINDOW
