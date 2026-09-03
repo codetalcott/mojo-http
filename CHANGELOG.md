@@ -7,6 +7,31 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Changed
+
+- **The documentation, restructured for a first-time reader and for an
+  agent** (`scripts/docsite.py`, `docs/ROADMAP.md`, `docs/notes/`,
+  `docs/RUNNING.md`, `docs/README.md`, `llms.txt`, `apps/site/home.md`).
+  The site now opens on a short home page rather than the repository's
+  README, and its pages are grouped by intent: start here (quickstart, the
+  new **Running m0serve** guide covering flags, the execution modes and
+  when each applies, proxies, shutdown and exit codes, the capability
+  matrix, the map), understanding the design, measurements, the project
+  record, and the Mojo framework underneath. **ROADMAP.md is a state page
+  now**: milestones, known issues, planned, not planned and why, recently
+  resolved, at 380 lines where it was 2,726; its twenty-one long-form
+  narratives (the Django server aims, each shipped subsystem, the gates,
+  the open questions, the post-mortems) are **design notes** under
+  `docs/notes/`, kept as written, rendered under `/notes/` with their own
+  index and picked up by the site without a page-table entry. Every page
+  opens with a one-sentence lede, the description a search result shows;
+  pages with six or more headings get an "On this page" list. For agents,
+  `llms.txt` is curated (the operating contract, then the essential pages)
+  with the rest under the spec's `## Optional` tier, and `llms-full.txt`
+  carries only the essentials, at a fraction of its former size, naming
+  what it omits and where to find it. `poe milestones`, the spec checker
+  and the link checker read the new shape unchanged.
+
 ## [0.17.0] — 2026-09-02
 
 ### Added

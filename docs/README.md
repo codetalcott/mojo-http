@@ -1,65 +1,65 @@
-# The documentation, and what each page is for
+# Documentation
 
-**For the project's current state, run the command — not a file:**
-
-```bash
-uv run poe milestones
-```
-
-It computes what remains between here and 1.0 from `SPEC.md`, ROADMAP's
-Known issues and the soak record, so it cannot disagree with them. CI prints
-it on every pull request. Nothing here is a hand-maintained status page,
-deliberately: this repo has watched a Known issue outlive its fix by a
-release and a soak record go five minor versions stale, both unnoticed.
+Pages grouped by what you are trying to do. For the project's current state,
+run the command rather than reading a file: `uv run poe milestones` computes
+what remains before 1.0 from [SPEC.md](SPEC.md) and the roadmap's Known
+issues, and CI prints it on every pull request.
 
 ## Start here
 
 | page | what it answers |
 |---|---|
-| [SPEC.md](SPEC.md) | **What can this server do, and what proves it?** One row per capability, each naming the gate that proves it and the cadence it runs on. Its own generated rollup carries the counts. The closest thing to a contract. |
-| [ROADMAP.md](ROADMAP.md) | **Why is it like this?** The narrative record — what was built and measured, what was refused and on what grounds, what is planned, what is broken. Append-mostly; read it for reasoning, not for state. |
-| [../CHANGELOG.md](../CHANGELOG.md) | **What changed, and when?** |
+| [QUICKSTART.md](../QUICKSTART.md) | **Show me.** Ten minutes from `pip install` to live multi-tab sync from one sync Django file. Every command is executed by CI. |
+| [RUNNING.md](RUNNING.md) | **How do I run my app?** Flags, the execution modes and when each applies, what to put in front of it, shutdown and exit codes. |
+| [SPEC.md](SPEC.md) | **What can it do, and what proves it?** One row per capability with the CI gate that proves it. The closest thing to a contract. |
 
-`ROADMAP.md` is long. Its `## Milestones` section holds the beta and 1.0
-definitions; its `## Known issues` and `## Recently resolved` are the live
-and retired defect lists.
-
-## Doing the work
+## Understanding the design
 
 | page | what it answers |
 |---|---|
-| [RELEASING.md](RELEASING.md) | How a release happens — and the two pre-release gates CI structurally cannot run. |
-| [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md) | The soak: this server against Django projects nobody here wrote. A 1.0 requirement, because every app in `apps/` was written to test this server. |
+| [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) | Why there are two execution modes, what free-threading changes, and where each mode's cliffs are. |
 | [WSGI_CONFORMANCE.md](WSGI_CONFORMANCE.md) | Where the WSGI implementation stands against PEP 3333, clause by clause. |
-| [FFI_DISTRIBUTION.md](FFI_DISTRIBUTION.md) | What ships in the C-ABI bundle, and the licensing position. |
+| [ROADMAP.md](ROADMAP.md) | The project's state: milestones, known issues with what retires each, what is not planned and why. |
+| [Design notes](ROADMAP.md#design-notes) | The engineering record behind the decisions: long-form, dated, kept as written. |
 
 ## Measurements
 
-Each of these is a record of something measured, with the environment it was
-measured in. They are not tutorials and they age.
+Records of something measured, with the environment it was measured in. They
+are not tutorials, and they age.
 
 | page | what it answers |
 |---|---|
-| [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) | Which execution mode to choose, and the cliffs in each. |
-| [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) | The WSGI/ASGI numbers, rendered from `bench/results/`. |
+| [BENCHMARKS.md](BENCHMARKS.md) | Where m0serve wins and loses against gunicorn, uvicorn and Granian, and how not to be fooled by a server benchmark. |
+| [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) | The WSGI and ASGI numbers, rendered from dated artifacts. |
 | [SERVER_PERFORMANCE.md](SERVER_PERFORMANCE.md) | The Mojo server's own numbers, without Python in the path. |
-| [BENCHMARKS.md](BENCHMARKS.md) | How to run the benchmarks, and how not to be fooled by them. |
-| [SQLITE_PERFORMANCE.md](SQLITE_PERFORMANCE.md) | m0-sqlite findings — batch writes, `mmap_size`, `json_each`. |
+| [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md) | The soak: this server against Django projects nobody here wrote. |
+
+## The project
+
+| page | what it answers |
+|---|---|
+| [../CHANGELOG.md](../CHANGELOG.md) | What changed, and when. |
+| [RELEASING.md](RELEASING.md) | How a release happens, and the two gates CI cannot run. |
+| [../README.md](../README.md) | The repository as a whole, including the Mojo framework m0serve is one package of. |
+| [../PROVENANCE.md](../PROVENANCE.md) | Where the code came from, and the licensing record. |
+
+## The Mojo framework
+
+For people building on `mojo-http` directly rather than serving a Python app.
+
+| page | what it answers |
+|---|---|
+| [FFI_DISTRIBUTION.md](FFI_DISTRIBUTION.md) | What ships in the C-ABI bundle, and the licensing position. |
+| [SQLITE_PERFORMANCE.md](SQLITE_PERFORMANCE.md) | m0-sqlite findings: batch writes, `mmap_size`, `json_each`. |
 | [sqlite-vtab-feasibility.md](sqlite-vtab-feasibility.md) | Whether virtual tables are reachable from Mojo. |
 
-## The same pages, as a site
+## This site
 
-Every page here renders to a site -- `poe build-site`, served by m0serve
-itself with `poe serve-site` -- with `llms.txt` and a Markdown twin of every
-page at the root for agents, and a sitemap for crawlers.
-[scripts/docsite.py](../scripts/docsite.py) is the generator and the one
-place a page gets its title and description; [apps/site](../apps/site) is
-the application behind the static mount. A new `docs/*.md` must be listed
-there, or `check-docs` fails naming it. The public copy is
-`https://m0serve.dev`; [deploy/site](../deploy/site/README.md) is how it
-gets there.
-
-## Generated, not edited
-
-`spec.json` is rendered from `SPEC.md` by `scripts/spec_sheet.py` (`poe
-render-spec`). Edit the tables in `SPEC.md`; never this file.
+Everything here renders to [m0serve.dev](https://m0serve.dev) by
+[scripts/docsite.py](../scripts/docsite.py), served by m0serve itself, with
+`llms.txt` and a Markdown twin of every page for agents and a sitemap for
+crawlers. A new `docs/*.md` must be listed in the generator's page table, or
+`check-docs` fails naming it; notes under `docs/notes/` are picked up on
+their own. [deploy/site](../deploy/site/README.md) is the deployment.
+`spec.json` is generated from `SPEC.md` by `poe render-spec`; edit the tables,
+never the JSON.

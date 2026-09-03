@@ -16,7 +16,7 @@ of the twenty-five sabotages mutate pyproject.toml, test.yml, cli.mojo or the
 test index rather than the sheet, so every source has to arrive as an argument.
 
 Coverage is DECLARED by the gate, not merely cited by the sheet (SPEC F12;
-ROADMAP "Traceability", phase 2): every `verified (every PR)` row must be
+docs/notes/traceability.md, phase 2): every `verified (every PR)` row must be
 declared — a `covers: A7` line in the cited test's docstring, or a
 `scripts/emit.py --covers A7` call in what the cited step runs — and the
 declaration must AGREE with the citation. The citation-shape rules stay,
@@ -184,7 +184,7 @@ def parse(sheet):
 def _covers_by_fn(text):
     """fn -> row ids declared by `covers:` lines inside that test function.
 
-    The F12 direction (docs/ROADMAP.md, "Traceability"): the gate declares
+    The F12 direction (docs/notes/traceability.md): the gate declares
     what it covers, next to the assertion, written by the person who knows
     what was asserted. The convention is a `covers: A7` line (ids may be
     comma-separated) in the test's docstring; the scan takes the whole
@@ -505,7 +505,7 @@ def analyse(src):
             f"docs/SPEC.md names `{flag}`, which cli.mojo does not accept"
         )
 
-    # --- Declared coverage (SPEC F12; ROADMAP "Traceability", phase 2) -----
+    # --- Declared coverage (SPEC F12; docs/notes/traceability.md, phase 2) -----
     # The gate declares what it covers, next to the assertion: a
     # `covers: A7` line in a Mojo test's docstring, or a
     # `scripts/emit.py --covers A7` call in the task body (or bare `run:`

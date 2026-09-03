@@ -71,12 +71,18 @@ AUTHOR = {"@type": "Person", "name": "Wm Talcott", "url": "https://github.com/co
 class Page:
     """One rendered page: where it comes from, where it lives, what it is for."""
 
-    def __init__(self, source, url, title, description, group):
+    def __init__(self, source, url, title, description, group, optional=False):
         self.source = source
         self.url = url
         self.title = title
         self.description = description
         self.group = group
+        # llms.txt's `## Optional` tier: skip when context is short. These
+        # pages stay on the site and in the sitemap; they leave llms-full.txt
+        # and the primary index, so an agent's first read is the essentials.
+        self.optional = optional
+        # Set on the generated notes index; a page with no markdown source.
+        self.body_html = None
 
     @property
     def md_url(self):
@@ -94,7 +100,9 @@ class Page:
 # they search for the problem -- and descriptions are what a result page and
 # llms.txt show under them. Groups follow docs/README.md's own grouping.
 PAGES = [
-    Page("README.md", "/",
+    # Start here: the first screen, the tutorial, the operations reference,
+    # the contract, the map.
+    Page("apps/site/home.md", "/",
          "m0serve: SSE and WebSockets from plain sync Django and Flask views",
          "A WSGI/ASGI server written in Mojo. A synchronous view holds a "
          "Server-Sent Events stream or a WebSocket with two response headers "
@@ -106,10 +114,11 @@ PAGES = [
          "From pip install to live multi-tab sync from one sync Django file. "
          "Every command is executed by CI on every pull request.",
          "Start here"),
-    Page("docs/README.md", "/docs/",
-         "m0serve documentation: what each page answers",
-         "A map of the documentation: the capability matrix, the roadmap, "
-         "the release process, the measurements and what each is for.",
+    Page("docs/RUNNING.md", "/docs/running/",
+         "Running m0serve: flags, execution modes, proxies and shutdown",
+         "How to start the server for the application you have: which mode "
+         "runs by default and why, every flag and when to reach for it, what "
+         "to put in front of it, how it drains, and what each exit code means.",
          "Start here"),
     Page("docs/SPEC.md", "/docs/spec/",
          "m0serve capability matrix: what the server does and the CI gate that proves it",
@@ -117,75 +126,96 @@ PAGES = [
          "capability, each naming the test or CI step that proves it and the "
          "cadence it runs on. Also available as spec.json.",
          "Start here"),
-    Page("docs/ROADMAP.md", "/docs/roadmap/",
-         "m0serve roadmap: what was built, measured, refused and is still open",
-         "The narrative record behind the server's design: what shipped and "
-         "what it measured, what was refused and why, the milestones, the "
-         "known issues and what would retire each.",
+    Page("docs/README.md", "/docs/",
+         "m0serve documentation: every page, by what you are trying to do",
+         "The map of the documentation grouped by intent: start here, "
+         "understanding the design, measurements, the project record, and "
+         "the Mojo framework underneath.",
          "Start here"),
-    Page("CHANGELOG.md", "/changelog/",
-         "m0serve changelog",
-         "Notable changes to mojo-http and the m0serve wheel, by version, in "
-         "Keep a Changelog form.",
-         "Start here"),
-    Page("docs/RELEASING.md", "/docs/releasing/",
-         "How an m0serve release happens",
-         "The release path for the m0serve wheel: the gates CI runs, the two "
-         "pre-release gates it structurally cannot, and the order.",
-         "Doing the work"),
-    Page("docs/REAL_APP_VALIDATION.md", "/docs/real-app-validation/",
-         "m0serve against real Django applications: the soak record",
-         "The server run against Django projects nobody here wrote, with "
-         "what broke, what was measured and what changed as a result. A 1.0 "
-         "requirement.",
-         "Doing the work"),
+    # Understanding the design.
+    Page("docs/WSGI_VS_ASGI.md", "/docs/wsgi-vs-asgi/",
+         "Why m0serve has two execution modes: WSGI, ASGI, free-threading and the cliffs in each",
+         "The design behind the split: what free-threading changes and does "
+         "not, the in-process pub/sub that replaces a channel layer, the "
+         "hybrid ASGI gateway, and mounts. Measured, with the cliffs named.",
+         "Understanding the design"),
     Page("docs/WSGI_CONFORMANCE.md", "/docs/wsgi-conformance/",
          "PEP 3333 conformance of m0serve, clause by clause",
          "Where the WSGI implementation stands against PEP 3333, clause by "
          "clause, and how the conformance is checked.",
-         "Doing the work"),
-    Page("docs/FFI_DISTRIBUTION.md", "/docs/ffi-distribution/",
-         "The m0-core C-ABI bundle: what ships and the licensing position",
-         "What the shared library built from m0-core contains, how a foreign "
-         "caller loads it, and the licensing position of the bundle.",
-         "Doing the work"),
-    Page("docs/WSGI_VS_ASGI.md", "/docs/wsgi-vs-asgi/",
-         "WSGI or ASGI on m0serve: which execution mode to choose, measured",
-         "Prefork, threads, the handler pool and the asyncio executor: what "
-         "each is for, where each has a cliff, and the numbers that show it.",
-         "Measurements"),
+         "Understanding the design"),
+    Page("docs/ROADMAP.md", "/docs/roadmap/",
+         "m0serve roadmap: milestones, known issues, and what is not planned",
+         "The project's state on one page: the beta and 1.0 definitions, "
+         "every known issue with what would retire it, what is deliberately "
+         "not planned, and the index of design notes behind the decisions.",
+         "Understanding the design"),
+    # Measurements: records that age, kept with their environment.
+    Page("docs/BENCHMARKS.md", "/docs/benchmarks/",
+         "m0serve benchmarks: where it wins and loses against gunicorn, uvicorn and Granian",
+         "How the benchmarks are run, what they compare, where m0serve loses "
+         "and by how much, and the ways a benchmark of a server misleads.",
+         "Measurements", optional=True),
     Page("docs/WSGI_PERFORMANCE.md", "/docs/wsgi-performance/",
          "m0serve vs gunicorn, uvicorn and Granian: WSGI and ASGI throughput and latency",
          "Requests per second and tail latency for the WSGI and ASGI paths "
          "against gunicorn, uvicorn and Granian, rendered from dated "
          "benchmark artifacts.",
-         "Measurements"),
+         "Measurements", optional=True),
     Page("docs/SERVER_PERFORMANCE.md", "/docs/server-performance/",
          "The Mojo HTTP server's own numbers, without Python in the path",
          "Throughput and latency of the Mojo server serving Mojo handlers, "
          "with the environment each number was taken in.",
-         "Measurements"),
-    Page("docs/BENCHMARKS.md", "/docs/benchmarks/",
-         "m0serve benchmarks: how to run them and how not to be fooled",
-         "How the benchmarks are run, what they compare, where m0serve loses "
-         "and by how much, and the ways a benchmark of a server misleads.",
-         "Measurements"),
-    Page("docs/SQLITE_PERFORMANCE.md", "/docs/sqlite-performance/",
-         "m0-sqlite performance findings: batched writes, mmap_size, json_each",
-         "Measured findings for SQLite from Mojo: transactions around batch "
-         "writes, mmap_size for large random reads, json_each for IN lists.",
-         "Measurements"),
-    Page("docs/sqlite-vtab-feasibility.md", "/docs/sqlite-vtab-feasibility/",
-         "SQLite virtual tables from Mojo: a feasibility record",
-         "Whether SQLite virtual tables are reachable from Mojo through the "
-         "m0-sqlite bindings, and what was tried.",
-         "Measurements"),
+         "Measurements", optional=True),
+    Page("docs/REAL_APP_VALIDATION.md", "/docs/real-app-validation/",
+         "m0serve against real Django applications: the soak record",
+         "The server run against Django projects nobody here wrote, with "
+         "what broke, what was measured and what changed as a result. A 1.0 "
+         "requirement.",
+         "Measurements", optional=True),
+    # The project record.
+    Page("README.md", "/readme/",
+         "The mojo-http README: the whole repository, Mojo framework included",
+         "The repository's own README: the realtime server, its install "
+         "matrix and limits, and the Mojo web framework, Datastar adapter and "
+         "SQLite bindings m0serve is one package of.",
+         "The project", optional=True),
+    Page("CHANGELOG.md", "/changelog/",
+         "m0serve changelog",
+         "Notable changes to mojo-http and the m0serve wheel, by version, in "
+         "Keep a Changelog form.",
+         "The project", optional=True),
+    Page("docs/RELEASING.md", "/docs/releasing/",
+         "How an m0serve release happens",
+         "The release path for the m0serve wheel: the gates CI runs, the two "
+         "pre-release gates it structurally cannot, and the order.",
+         "The project", optional=True),
     Page("PROVENANCE.md", "/provenance/",
          "Where mojo-http came from: provenance and licensing",
          "The repository's origin as an extraction from a private monorepo, "
          "the forked HTTP server inside it, and the licensing record.",
-         "Project"),
+         "The project", optional=True),
+    # The Mojo framework, for people building on it directly.
+    Page("docs/FFI_DISTRIBUTION.md", "/docs/ffi-distribution/",
+         "The m0-core C-ABI bundle: what ships and the licensing position",
+         "What the shared library built from m0-core contains, how a foreign "
+         "caller loads it, and the licensing position of the bundle.",
+         "The Mojo framework", optional=True),
+    Page("docs/SQLITE_PERFORMANCE.md", "/docs/sqlite-performance/",
+         "m0-sqlite performance findings: batched writes, mmap_size, json_each",
+         "Measured findings for SQLite from Mojo: transactions around batch "
+         "writes, mmap_size for large random reads, json_each for IN lists.",
+         "The Mojo framework", optional=True),
+    Page("docs/sqlite-vtab-feasibility.md", "/docs/sqlite-vtab-feasibility/",
+         "SQLite virtual tables from Mojo: a feasibility record",
+         "Whether SQLite virtual tables are reachable from Mojo through the "
+         "m0-sqlite bindings, and what was tried.",
+         "The Mojo framework", optional=True),
 ]
+
+NOTES_DIR = "docs/notes"
+NOTES_GROUP = "Design notes"
+NOTES_INDEX_URL = "/notes/"
 
 # Files that are copied into the site rather than rendered, so a link to
 # them resolves to the served copy rather than to GitHub.
@@ -269,6 +299,35 @@ def headings(md):
     return out
 
 
+def _first_paragraph(md):
+    """The first prose paragraph after the H1, as one plain line: not a
+    heading, a blockquote, a list, a fence or a table."""
+    text = _HTML_COMMENT.sub("", md)
+    paras, cur, in_code = [], [], False
+    for line in text.splitlines():
+        if _FENCE.match(line):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if line.strip() == "":
+            if cur:
+                paras.append(" ".join(cur)); cur = []
+            continue
+        if line.lstrip().startswith(("#", ">", "-", "*", "|", "```")) or re.match(r"^\s*\d+\. ", line):
+            if cur:
+                paras.append(" ".join(cur)); cur = []
+            continue
+        cur.append(line.strip())
+    if cur:
+        paras.append(" ".join(cur))
+    for para in paras:
+        plain = heading_plain(re.sub(r"\s+", " ", para))
+        if len(plain) > 40:
+            return plain[:220].rsplit(" ", 1)[0] + ("…" if len(plain) > 220 else "")
+    return ""
+
+
 def strip_comments(md):
     """Drop HTML comments outside fences. The doc-fact ratchet's
     `<!-- num:... -->` spans are inline, and with raw HTML disabled in the
@@ -302,8 +361,28 @@ class Site:
         self.pages = list(PAGES if pages is None else pages)
         self.assets = dict(ASSETS if assets is None else assets)
         self.generated = dict(GENERATED if generated is None else generated)
+        self.notes = self._discover_notes()
+        self.pages += self.notes
         self.by_source = {p.source: p for p in self.pages}
         self._headings = {}
+
+    def _discover_notes(self):
+        """`docs/notes/*.md`, each a page under /notes/ with its H1 as the
+        title and its first paragraph as the description -- no PAGES entry
+        needed, because a note's title IS its heading. The index page at
+        /notes/ is generated, and is the only entry the sidebar shows."""
+        out = []
+        d = self.repo / NOTES_DIR
+        if not d.is_dir():
+            return out
+        for f in sorted(d.glob("*.md")):
+            text = f.read_text()
+            m = re.search(r"^# (.+)$", text, re.M)
+            title = heading_plain(m.group(1)) if m else f.stem
+            desc = _first_paragraph(text) or title
+            out.append(Page(f.relative_to(self.repo).as_posix(), f"/notes/{f.stem}/",
+                            title, desc, NOTES_GROUP, optional=True))
+        return out
 
     # -- resolution ---------------------------------------------------------
 
@@ -408,6 +487,9 @@ class Site:
         for rel in self.assets:
             if not (self.repo / rel).is_file():
                 problems.append(f"ASSETS names {rel}, which does not exist")
+        for p in self.notes:
+            if not re.search(r"^# .+$", (self.repo / p.source).read_text(), re.M):
+                problems.append(f"{p.source}: a design note needs an H1; it is the page's title")
         if problems:
             return problems
         for p in self.pages:
@@ -437,25 +519,51 @@ class Site:
             ["table", "strikethrough"]
         )
         entries = []
-        full = [f"# {SITE_NAME} — the whole documentation in one file\n\n"
-                f"> Every page of {self.base}/ as Markdown, in reading order. Each\n"
-                f"> page's own URL is on the comment line that opens it.\n"]
+        omitted = [p for p in self.pages if p.optional]
+        full = [f"# {SITE_NAME} — the essential documentation in one file\n\n"
+                f"> The pages an agent needs first, as Markdown, in reading order; each\n"
+                f"> page's own URL is on the comment line that opens it. The measurements,\n"
+                f"> the project record, the Mojo framework pages and the design notes are\n"
+                f"> omitted here on purpose ({len(omitted)} pages); {self.base}/llms.txt indexes\n"
+                f"> every one of them under `## Optional`, each with a Markdown URL.\n"]
         for p in self.pages:
             src = strip_comments((self.repo / p.source).read_text())
+            src = self._with_lede(p, src)
             first, last = git_dates(self.repo, p.source)
             html_md = self.rewrite(p.source, src, "html", [])
             twin_md = self.rewrite(p.source, src, "md", [])
             tokens = md_parser.parse(html_md)
             self._refuse_relative(p, tokens)
-            slugs = [slug for _, _, slug in headings(html_md)]
+            hs = headings(html_md)
+            slugs = [slug for _, _, slug in hs]
             body = self._render(md_parser, tokens, slugs, p)
+            body = self._with_toc(body, hs)
             page_html = self._template(p, body, version, first, last)
             dest = out / p.out_html
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(page_html)
             (out / p.md_url.lstrip("/")).write_text(twin_md)
             entries.append((p, last))
-            full.append(f"\n\n<!-- {self.page_url(p, 'md')} -->\n\n{twin_md.rstrip()}\n")
+            if not p.optional:
+                full.append(f"\n\n<!-- {self.page_url(p, 'md')} -->\n\n{twin_md.rstrip()}\n")
+        # The design-notes index: generated, the one notes entry the sidebar shows.
+        if self.notes:
+            idx = Page("", NOTES_INDEX_URL,
+                       "m0serve design notes: the engineering record behind the decisions",
+                       "Long-form, dated notes on what was built and measured, what was "
+                       "refused and why, and the post-mortems, kept as written.",
+                       NOTES_GROUP, optional=True)
+            items = "".join(
+                f'<li><a href="{self.page_url(n, "html")}">{html.escape(n.title)}</a>'
+                f"<p>{html.escape(n.description)}</p></li>" for n in self.notes)
+            body = (f"<h1>Design notes</h1><p class=\"lede\">{html.escape(idx.description)}</p>"
+                    f"<ul class=\"index\">{items}</ul>")
+            (out / "notes").mkdir(parents=True, exist_ok=True)
+            (out / "notes" / "index.html").write_text(self._template(idx, body, version, None, None, is_index=True))
+            (out / "notes.md").write_text(
+                f"# Design notes\n\n{idx.description}\n\n"
+                + "".join(f"- [{n.title}]({self.page_url(n, 'md')}): {n.description}\n" for n in self.notes))
+            entries.append((idx, _dt.date.today().isoformat()))
         for rel, url in self.assets.items():
             shutil.copyfile(self.repo / rel, out / url.lstrip("/"))
         (out / "llms.txt").write_text(self._llms())
@@ -469,6 +577,39 @@ class Site:
             "documentation map</a> list every page.</p>",
             version, None, None, noindex=True))
         return len(entries)
+
+    def _with_lede(self, page, md):
+        """One orienting sentence under the title, as a blockquote right after
+        the H1, in the HTML and the Markdown twin alike -- the description a
+        search result shows, so the page and its listing say the same thing.
+        Notes skip it: their provenance blockquote is already there."""
+        if page.group == NOTES_GROUP or not page.description or page.url == "/":
+            return md  # the home page's first line IS its pitch
+        m = re.search(r"^# .+\n", md, re.M)
+        if not m:
+            return md
+        return md[:m.end()] + "\n> " + page.description + "\n" + md[m.end():]
+
+    def _with_toc(self, body, hs):
+        """An "On this page" list for long pages: every h2 and h3, linked to
+        the ids `_render` assigned. Inserted after the lede so the first
+        screen is title, one sentence, then the map."""
+        entries = [(lvl, text, slug) for lvl, text, slug in hs if lvl in (2, 3)]
+        if len(entries) < 6:
+            return body
+        items = "".join(
+            f'<li class="l{lvl}"><a href="#{slug}">{html.escape(text)}</a></li>'
+            for lvl, text, slug in entries)
+        toc = f'<nav class="toc" aria-label="On this page"><p>On this page</p><ul>{items}</ul></nav>'
+        h1_end = body.find("</h1>")
+        if h1_end < 0:
+            return toc + body
+        cut = h1_end + len("</h1>")
+        nxt_h2 = body.find("<h2", cut)
+        bq = body.find("</blockquote>", cut)
+        if 0 <= bq and (nxt_h2 < 0 or bq < nxt_h2):
+            cut = bq + len("</blockquote>")
+        return body[:cut] + "\n" + toc + body[cut:]
 
     def _refuse_relative(self, page, tokens):
         """The regex rewriter must have made every link absolute; the parser
@@ -511,18 +652,29 @@ class Site:
     def _llms(self):
         src = (self.repo / "llms.txt").read_text().rstrip()
         text = self.rewrite("llms.txt", src, "md", [])
-        lines = [text, "", "## Every page, as Markdown", "",
-                 f"Each page of {self.base}/ has a Markdown twin at the URL below; the",
-                 f"same text rendered is at the URL without `.md` (and with a trailing `/`).", ""]
-        for p in self.pages:
+        essential = [p for p in self.pages if not p.optional]
+        rest = [p for p in self.pages if p.optional]
+        lines = [text, "", "## Documentation", "",
+                 f"Every page of {self.base}/ has a Markdown twin at the URL below; the",
+                 "same text rendered is at the URL without `.md` (with a trailing `/`).",
+                 f"[llms-full.txt]({self.base}/llms-full.txt) is these pages in one file.", ""]
+        for p in essential:
             lines.append(f"- [{p.title}]({self.page_url(p, 'md')}): {p.description}")
         lines += ["", "## Machine-readable", "",
-                  f"- [llms-full.txt]({self.base}/llms-full.txt): every page above, concatenated",
                   f"- [spec.json]({self.base}/spec.json): the capability matrix as JSON, "
                   "generated from SPEC.md",
                   f"- [sitemap.xml]({self.base}/sitemap.xml)",
-                  f"- [Source repository]({GITHUB}) · [PyPI]({PYPI})", ""]
-        return "\n".join(lines)
+                  f"- [Source repository]({GITHUB}) · [PyPI]({PYPI})", "",
+                  "## Optional", "",
+                  "Measurements, the project record, the Mojo framework underneath, and the",
+                  "design notes: read when the question needs them, skip when context is short.", ""]
+        group = None
+        for p in rest:
+            if p.group != group:
+                group = p.group
+                lines.append(f"- **{group}**")
+            lines.append(f"  - [{p.title}]({self.page_url(p, 'md')}): {p.description}")
+        return "\n".join(lines) + "\n"
 
     def _sitemap(self, entries):
         rows = "".join(
@@ -577,6 +729,8 @@ class Site:
     def _nav(self, current):
         groups = {}
         for p in self.pages:
+            if p.group == NOTES_GROUP:
+                continue
             groups.setdefault(p.group, []).append(p)
         parts = []
         for g, ps in groups.items():
@@ -586,20 +740,25 @@ class Site:
                 + f'>{html.escape(p.title.split(":")[0])}</a></li>'
                 for p in ps
             )
+            if g == "Understanding the design" and self.notes:
+                cur = ' aria-current="page"' if current.group == NOTES_GROUP else ""
+                items += (f'<li><a href="{self.base}{NOTES_INDEX_URL}"{cur}>Design notes'
+                          f' <span class="n">{len(self.notes)}</span></a></li>')
             parts.append(f"<section><h2>{html.escape(g)}</h2><ul>{items}</ul></section>")
         return "".join(parts)
 
-    def _template(self, page, body, version, first, last, noindex=False):
+    def _template(self, page, body, version, first, last, noindex=False, is_index=False):
         canonical = self.base + page.url
         esc = html.escape
         alternate = (f'<link rel="alternate" type="text/markdown" href="{esc(self.base + page.md_url)}" '
-                     f'title="This page as Markdown">' if page.source else "")
+                     f'title="This page as Markdown">' if (page.source or is_index) else "")
         jsonld = (f'<script type="application/ld+json">{self._jsonld(page, version, first, last)}</script>'
                   if page.source else "")
         robots = '<meta name="robots" content="noindex">' if noindex else ""
         source_link = (f'<a href="{GITHUB_BLOB}{page.source}">Source on GitHub</a> · '
                        f'<a href="{esc(self.base + page.md_url)}">This page as Markdown</a> · '
-                       if page.source else "")
+                       if page.source else
+                       (f'<a href="{esc(self.base + page.md_url)}">This page as Markdown</a> · ' if is_index else ""))
         return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -672,6 +831,13 @@ h1,h2,h3,h4{scroll-margin-top:1rem}h2 a,h3 a{color:inherit}
 pre{background:var(--code);padding:.85rem 1rem;overflow-x:auto;border-radius:6px;font-size:.86rem;line-height:1.5}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em}:not(pre)>code{background:var(--code);padding:.1em .3em;border-radius:4px}
 blockquote{margin:1rem 0;padding:.1rem 1rem;border-left:3px solid var(--accent);color:var(--muted)}
+h1+blockquote,.lede{font-size:1.08rem;color:var(--muted);border-left:0;padding:0;margin:-.4rem 0 1.2rem}
+.toc{margin:0 0 1.6rem;padding:.7rem 1rem;background:var(--nav);border:1px solid var(--line);border-radius:6px;font-size:.9rem}
+.toc p{margin:0 0 .3rem;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.toc ul{margin:0;padding:0;list-style:none;columns:2;column-gap:1.5rem}.toc li{margin:.15rem 0;break-inside:avoid}.toc li.l3{padding-left:1rem;font-size:.85rem}.toc a{text-decoration:none}.toc a:hover{text-decoration:underline}
+@media (max-width:40rem){.toc ul{columns:1}}
+ul.index{list-style:none;padding:0}ul.index li{margin:0 0 1rem}ul.index p{margin:.15rem 0 0;color:var(--muted);font-size:.9rem}
+.side .n{color:var(--muted);font-size:.75rem;margin-left:.3rem}
 .table-wrap{overflow-x:auto;margin:1rem 0}table{border-collapse:collapse;font-size:.9rem;min-width:100%}th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}th{background:var(--code)}
 img{max-width:100%}hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}

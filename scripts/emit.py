@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 def emit_covers(rid, task=None, path=None, tag=None):
     """Append one coverage record: this run exercised SPEC row `rid`.
 
-    The F12 half of the recorder (docs/ROADMAP.md, "Traceability"): a smoke
+    The F12 half of the recorder (docs/notes/traceability.md): a smoke
     declares the capability it covers IN its own body, so coverage is
     recorded by a real run rather than asserted by the sheet. The static
     checker (`scripts/spec_sheet.py`) reads the same `--covers` call sites

@@ -1,6 +1,6 @@
 """Autobahn|Testsuite against the ASGI echo, compared to the pinned baseline.
 
-The pre-release conformance run (SPEC I13). ROADMAP's "A conformance-suite
+The pre-release conformance run (SPEC I13). docs/notes/conformance-suite-tier.md ("A conformance-suite
 tier" records what the suite can and cannot see here — it found close codes
 echoed rather than validated (I16, since fixed) and it cannot reach the
 app-initiated close path at all (`ws_probe.py`'s territory) — and where it

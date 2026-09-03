@@ -2057,7 +2057,7 @@ if d['ok'] != ($doc == 0):
 # thing a person runs --doctor to find out.
 equiv 'baseline'                    $SPEC
 equiv 'prefork'                     $SPEC --workers 2
-# Composes since 2026-08-26 (docs/ROADMAP.md, "Hold on a pool thread"); it
+# Composes since 2026-08-26 (docs/notes/hold-on-a-pool-thread.md); it
 # was the first refusal row before that, and equiv() is agnostic to which
 # side of the line a configuration is on -- both must agree either way.
 equiv 'pool + realtime'             $SPEC --blocking-threads 4 --realtime
@@ -3425,10 +3425,13 @@ grep -q "]($B/quickstart.md)" llms.out || fail 'llms.txt still carries the repos
 ! grep -q '](docs/' llms.out || fail 'llms.txt carries a repository-relative link'
 rm -f llms.out
 
-# llms-full.txt carries every page the sitemap lists, one source line each.
+# llms-full.txt carries exactly the essential pages: the ones llms.txt lists
+# under "## Documentation" (the "## Optional" tier is left out on purpose).
 pages=$(grep -c '<loc>' "$out/sitemap.xml")
+essential=$(curl -s $B/llms.txt | sed -n '/^## Documentation/,/^## Machine-readable/p' | grep -c '^- ')
 full=$(curl -s $B/llms-full.txt | grep -c "^<!-- $B/")
-[ "$full" = "$pages" ] || fail "llms-full.txt carries $full pages; the sitemap lists $pages"
+[ "$essential" -ge 4 ] || fail "llms.txt lists only $essential essential pages"
+[ "$full" = "$essential" ] || fail "llms-full.txt carries $full pages; llms.txt's Documentation section lists $essential"
 
 # The sitemap is XML, and every URL in it answers as HTML with a markdown
 # twin the page advertises, which answers as text.
