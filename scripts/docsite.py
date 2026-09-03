@@ -64,6 +64,12 @@ GITHUB_BLOB = GITHUB + "/blob/main/"
 GITHUB_TREE = GITHUB + "/tree/main/"
 PYPI = "https://pypi.org/project/m0serve/"
 SITE_NAME = "m0serve"
+# The wordmark: the zero is a zero. Set in the code-font stack (every font in
+# it draws a slashed or dotted zero), with the OpenType `zero` feature asked
+# for explicitly, and the digit in the accent colour so it reads as a mark
+# rather than a typo. Titles, tabs and the domain render in fonts we do not
+# control, which is why the install blocks also say it in words.
+WORDMARK = 'm<span class="zero">0</span>serve'
 DEFAULT_BASE = "http://localhost:8180"
 AUTHOR = {"@type": "Person", "name": "Wm Talcott", "url": "https://github.com/codetalcott"}
 
@@ -135,9 +141,9 @@ PAGES = [
     # Understanding the design.
     Page("docs/WSGI_VS_ASGI.md", "/docs/wsgi-vs-asgi/",
          "Why m0serve has two execution modes: WSGI, ASGI, free-threading and the cliffs in each",
-         "The design behind the split: what free-threading changes and does "
-         "not, the in-process pub/sub that replaces a channel layer, the "
-         "hybrid ASGI gateway, and mounts. Measured, with the cliffs named.",
+         "What each mode is, why one would not do, what WSGI gets from a "
+         "handler pool and held connections, what ASGI gets from the asyncio "
+         "executor, what free-threading changes, and where each mode has a cliff.",
          "Understanding the design"),
     Page("docs/WSGI_CONFORMANCE.md", "/docs/wsgi-conformance/",
          "PEP 3333 conformance of m0serve, clause by clause",
@@ -643,6 +649,8 @@ class Site:
             elif t.type == "table_open":
                 t.attrSet("class", "tbl")
         body = parser.renderer.render(tokens, parser.options, {})
+        body = body.replace('<h1 id="m0serve">m0serve</h1>',
+                            f'<h1 id="m0serve" class="brand h1">{WORDMARK}</h1>')
         body = body.replace('<table class="tbl">', '<div class="table-wrap"><table>')
         body = body.replace("</table>", "</table></div>")
         return body
@@ -782,7 +790,7 @@ class Site:
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
-  <a class="brand" href="{self.base}/">{SITE_NAME}</a>
+  <a class="brand" href="{self.base}/">{WORDMARK}</a>
   <span class="tag">Realtime from a synchronous Python app</span>
   <nav aria-label="Site">
     <a href="{self.base}/quickstart/">Quickstart</a>
@@ -800,7 +808,7 @@ class Site:
 </article>
 <footer>
   <p>{source_link}<a href="{self.base}/llms.txt">llms.txt</a> · <a href="{self.base}/sitemap.xml">Sitemap</a></p>
-  <p>{SITE_NAME} {esc(version)} · <a href="{GITHUB}/blob/main/LICENSE">License</a> · Built from the repository's own pages by <code>scripts/docsite.py</code>; served by m0serve.</p>
+  <p><span class="brand small">{WORDMARK}</span> {esc(version)} · <a href="{GITHUB}/blob/main/LICENSE">License</a> · Built from the repository's own pages by <code>scripts/docsite.py</code>; served by m0serve.</p>
 </footer>
 </main>
 </div>
@@ -817,7 +825,9 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 -apple-system,
 a{color:var(--accent)}a:hover{text-decoration-thickness:2px}
 .skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:var(--bg);padding:.5rem;z-index:9}
 .top{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem;align-items:baseline;padding:.9rem 1.25rem;border-bottom:1px solid var(--line)}
-.brand{font-weight:700;font-size:1.15rem;text-decoration:none;color:var(--fg)}
+.brand{font-weight:700;font-size:1.15rem;text-decoration:none;color:var(--fg);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:slashed-zero;font-feature-settings:"zero"}
+.brand .zero{color:var(--accent)}.brand.small{font-size:.9rem}.brand.h1{font-size:2.2rem;font-weight:700}
+code{font-variant-numeric:slashed-zero;font-feature-settings:"zero"}
 .tag{color:var(--muted);font-size:.9rem;flex:1 1 auto}
 .top nav{display:flex;flex-wrap:wrap;gap:1rem;font-size:.95rem}.top nav a{text-decoration:none;color:var(--fg)}.top nav a:hover{color:var(--accent)}
 .layout{display:grid;grid-template-columns:minmax(0,1fr);max-width:80rem;margin:0 auto}

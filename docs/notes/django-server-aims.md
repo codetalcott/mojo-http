@@ -5,7 +5,7 @@
 > project's state; the reasoning lives here.
 
 Where the WSGI work is headed, and what gates each step — the full analysis
-with evidence is [WSGI_VS_ASGI.md](../WSGI_VS_ASGI.md):
+with evidence is [the design record](wsgi-vs-asgi-history.md):
 
 - **No ASGI host for now.** The realtime surface people adopt ASGI for is
   covered by the in-process GRIP pattern (`apps/django_realtime`, `take_hold`,
@@ -267,14 +267,14 @@ with evidence is [WSGI_VS_ASGI.md](../WSGI_VS_ASGI.md):
   re-exec'd — a changed `.mojo` still needs a rebuild.
 - **Can m0serve host FastHTML?** Asked 2026-08-24; **answered the same
   week: yes** — it was the case that justified the ASGI path
-  ([WSGI_VS_ASGI.md](../WSGI_VS_ASGI.md) §8). No adapter was needed: `m0serve`
+  ([the design record](wsgi-vs-asgi-history.md) §8). No adapter was needed: `m0serve`
   now detects ASGI applications and serves them with real
   await-concurrency, so `m0serve main:app --app-dir apps/fasthtml_demo`
   serves FastHTML pages today, its SSE `EventStream` **streams live**
   (Phase 3a), and `app.ws` **works** (Phase 3b) — the full FastHTML
   surface, zero-config, pinned by `poe smoke-fasthtml` (skipping where
   python-fasthtml is absent).
-- **The ASGI gateway's next phase** (design in WSGI_VS_ASGI.md §8):
+- **The ASGI gateway's next phase** (design in the design record §8):
   Phase 2 — the per-loop asyncio executor over the unchanged
   `OffloadPool` — **shipped**: zero-config ASGI gets real
   await-concurrency and no handler pool, `bench-asgi` is the standing
@@ -307,7 +307,7 @@ with evidence is [WSGI_VS_ASGI.md](../WSGI_VS_ASGI.md):
   job to the worker that can run it. One `ProvisionPool` per loop stays,
   since a slot indexes that loop's provisions. Measured with four blocking
   2-second Django views holding every pool thread, the FastHTML mount
-  answers at p50 1.3 ms / p99 2.8 ms (`docs/WSGI_VS_ASGI.md` §9,
+  answers at p50 1.3 ms / p99 2.8 ms (`docs/notes/wsgi-vs-asgi-history.md` §9,
   `apps/hybrid_mix`, `poe smoke-hybrid`).
 
   **Several ASGI mounts landed too**: one executor per ASGI mount, a

@@ -17,7 +17,7 @@ issues, and CI prints it on every pull request.
 
 | page | what it answers |
 |---|---|
-| [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) | Why there are two execution modes, what free-threading changes, and where each mode's cliffs are. |
+| [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) | Why there are two execution modes, in a page: what each is for, what free-threading changes, and where each has a cliff. |
 | [WSGI_CONFORMANCE.md](WSGI_CONFORMANCE.md) | Where the WSGI implementation stands against PEP 3333, clause by clause. |
 | [ROADMAP.md](ROADMAP.md) | The project's state: milestones, known issues with what retires each, what is not planned and why. |
 | [Design notes](ROADMAP.md#design-notes) | The engineering record behind the decisions: long-form, dated, kept as written. |
