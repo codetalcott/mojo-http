@@ -31,6 +31,21 @@ versions may break the API**.
   carries only the essentials, at a fraction of its former size, naming
   what it omits and where to find it. `poe milestones`, the spec checker
   and the link checker read the new shape unchanged.
+### Fixed
+
+- **A recycled slot no longer inherits the previous WebSocket's accept.**
+  The executor shim's `spawn_ws` cleared a recycled slot's stale disconnect
+  mark but not its `_exec_ws_accepted` membership, and the previous task's
+  done-callback — correctly, no longer the owner — does not clean the slot
+  up either. A new handshake landing on a slot whose previous connection
+  was an accepted socket therefore looked pre-accepted: an application
+  that returned without answering it sent `ws_close` instead of
+  `ws_reject`, so the held 101 was never released and the client hung
+  against a clean server log; a pre-accept `websocket.send` was silently
+  tolerated instead of raising. Found by auditing the bridge's slot-recycle
+  hygiene; `shim_ownership.py` gained the WS→WS recycle test
+  (`test_a_websocket_recycle_forgets_the_predecessors_accept`) and its
+  sabotage, which fails exactly that test on the pre-fix shim.
 
 ## [0.17.0] — 2026-09-02
 
