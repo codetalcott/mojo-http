@@ -26,6 +26,7 @@ import base64
 import hashlib
 import http.client
 import os
+import re
 import signal
 import socket
 import struct
@@ -39,6 +40,9 @@ PORT = int(os.environ.get("M0_PORT", "8080"))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 TOKEN = "letmein"
 EXPECT_WORKERS = int(os.environ.get("REALTIME_EXPECT_WORKERS", "1"))
+# The quickstart's views take no token, by design (its auth is the reader's
+# own); smoke-flask-realtime drives THOSE views and skips the gate phase.
+GATED = os.environ.get("REALTIME_GATED", "1") == "1"
 
 
 # Which phase is running, for the crash handler below. The phases are
@@ -194,6 +198,19 @@ def handshake(channel, token=TOKEN):
     return sock, worker
 
 
+def open_socket(channel):
+    """`handshake` for a phase that expects the 101; a refusal names itself.
+
+    Unpacking `handshake`'s three-tuple refusal into two names raised
+    `ValueError('too many values to unpack')`, which said nothing about the
+    status the server actually answered.
+    """
+    opened = handshake(channel)
+    if opened[0] is None:
+        fail("upgrade refused: %s %r" % (opened[1], opened[2][:120]))
+    return opened[0], opened[1]
+
+
 def publish(channel, msg):
     """POST /publish, handled by synchronous Django. Returns the body."""
     conn = http.client.HTTPConnection(HOST, PORT, timeout=10)
@@ -224,22 +241,23 @@ def close_all(socks):
 # ordinary 403 reached the wire — the Mojo layer performs an upgrade only for
 # a response that asked for one.
 
-phase("phase 1: Django gating the upgrade")
-rejected = handshake("news", token=None)
-if rejected[0] is not None:
-    close_all([rejected[0]])
-    fail("an unauthorised upgrade was accepted")
-if " 403 " not in rejected[1] + " ":
-    fail("expected Django's 403 for an unauthorised upgrade, got: " + rejected[1])
-if b"forbidden" not in rejected[2]:
-    fail("403 did not carry Django's body: %r" % rejected[2])
+if GATED:
+    phase("phase 1: Django gating the upgrade")
+    rejected = handshake("news", token=None)
+    if rejected[0] is not None:
+        close_all([rejected[0]])
+        fail("an unauthorised upgrade was accepted")
+    if " 403 " not in rejected[1] + " ":
+        fail("expected Django's 403 for an unauthorised upgrade, got: " + rejected[1])
+    if b"forbidden" not in rejected[2]:
+        fail("403 did not carry Django's body: %r" % rejected[2])
 
 if EXPECT_WORKERS <= 1:
     # --- Phase 2: authorised, and a message reaches a Django view ------------
     phase("phase 2: an authorised upgrade, and a message reaching a Django view")
-    sock_a, worker_a = handshake("news")
-    sock_b, _ = handshake("news")
-    sock_other, _ = handshake("other")
+    sock_a, worker_a = open_socket("news")
+    sock_b, _ = open_socket("news")
+    sock_other, _ = open_socket("other")
 
     msg = b"hello from a websocket"
     send_frame(sock_a, 0x1, msg)
@@ -272,10 +290,10 @@ if EXPECT_WORKERS <= 1:
 # see chat_probe.py. Open one socket, SIGSTOP the worker that got it (X-Worker
 # is that worker's pid), open the second, resume immediately.
 phase("landing one socket on each worker (the second under SIGSTOP)")
-sock_a, w_a = handshake("news")
+sock_a, w_a = open_socket("news")
 os.kill(int(w_a), signal.SIGSTOP)
 try:
-    sock_b, w_b = handshake("news")
+    sock_b, w_b = open_socket("news")
 finally:
     os.kill(int(w_a), signal.SIGCONT)
 
@@ -287,7 +305,8 @@ if w_a == w_b:
 # ONE publish, handled by sync Django on whichever worker took the POST.
 phase("one publish reaching both workers")
 body = publish("news", "cross-worker-ws")
-if '"workers": 2' not in body:
+# Django's JsonResponse spaces after the colon and Flask's jsonify does not.
+if not re.search(r'"workers":\s*2', body):
     fail("publish did not reach both worker channels: " + body)
 
 for sock, worker in conns:

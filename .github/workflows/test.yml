@@ -420,6 +420,11 @@ jobs:
       # happens to suit the single framework it was developed against.
       - name: Run the WSGI framework contract against Flask
         run: uv run poe smoke-flask
+      # The Flask half of the headline claim: the quickstart's Flask file,
+      # extracted from QUICKSTART.md itself, holds SSE streams and WebSockets
+      # across two workers under the same RFC 6455 probe the Django rows use.
+      - name: Smoke test the Flask realtime views
+        run: uv run poe smoke-flask-realtime
       # The ASGI row, wsgi_bare's sibling: protocol auto-detection, the
       # buffered bridge's scope/receive/send contract, lifespan startup and
       # state, the streaming watchdog's clean refusal, spec discovery, the

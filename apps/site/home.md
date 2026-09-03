@@ -52,7 +52,9 @@ your codebase.
 ## What it also does
 
 - **Serves WSGI and ASGI from one binary.** The protocol is detected from the
-  object. Django, Flask and FastHTML each have a smoke test in CI;
+  object. Django, Flask and FastHTML each have a smoke test in CI, and
+  the quickstart's Flask realtime views are driven by the same RFC 6455
+  probe as Django's;
   PEP 3333 conformance is validated by `wsgiref` and ASGI by a validator
   written from the spec.
 - **Several applications in one process**, each in its native mode:

@@ -7,6 +7,28 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **The headline claim, gated clause by clause** (SPEC I20, K11, M16;
+  `QUICKSTART.md` §7–8, `poe smoke-flask-realtime`). The sentence names
+  Flask, and nothing held a stream or a socket from a Flask view: K10 proves
+  plain WSGI. The quickstart now carries the same four views in Flask,
+  served with `--workers 2` and checked with curl, and `smoke-flask-realtime`
+  extracts that file from the page itself and drives it with the Django
+  rows' RFC 6455 probe, one stream and one socket pinned per worker. Gating
+  it found the Flask-specific line the claim was missing: Werkzeug's router
+  answers 400 to an upgrade request on an ordinary rule before any view
+  runs, so the socket route is declared `websocket=True`. "No second
+  process" and "no dependencies" are asserted rather than stated (exactly a
+  supervisor and two m0serve workers by `pgrep -x`, an empty `Requires:`
+  from `pip show`), and the README's "degrades under gunicorn" sentence is
+  executed: the Django file served by gunicorn answers the hold views as
+  short plain responses inside curl's deadline, the upgrade as 200, and
+  `publish()` reports 0 workers without raising. The published wheel was
+  run through the whole page from a scratch directory on macOS and in a
+  `python:3.12-slim` container, which is the fresh-project check the
+  sentence was owed.
+
 ### Changed
 
 - **`docs/WSGI_VS_ASGI.md` is the concise answer to why there are two
