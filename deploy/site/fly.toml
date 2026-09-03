@@ -12,7 +12,12 @@ app = "m0serve-docs"
 primary_region = "iad"
 
 [build]
-  dockerfile = "deploy/site/Dockerfile"
+  # Relative to THIS file, not to the working directory (flyctl resolved
+  # "deploy/site/Dockerfile" to deploy/site/deploy/site/Dockerfile on the
+  # first deploy). The build CONTEXT is the working directory given to
+  # `flyctl deploy` -- the repository root -- which is what the
+  # Dockerfile's COPY paths assume.
+  dockerfile = "Dockerfile"
 
 [env]
   M0_SITE_DIST = "/app/site"
