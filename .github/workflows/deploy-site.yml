@@ -30,12 +30,18 @@ concurrency:
 
 jobs:
   deploy:
-    # A failed release deploys nothing; a release run from a branch push
-    # (release/v*) has no tag and deploys nothing either.
+    # A failed release deploys nothing. A successful one arrives with the
+    # ref it ran for as `head_branch`: the tag (`v0.17.0`) for a tag push,
+    # or the branch (`release/v0.17.0`) for the branch form, which creates
+    # the tag inside the run -- and is the form the runbook recommends for
+    # automation. Both carry the version; the first release (0.17.0, via
+    # the branch form) was skipped here because only the tag form was
+    # accepted, and had to be dispatched by hand.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
+       (startsWith(github.event.workflow_run.head_branch, 'v') ||
+        startsWith(github.event.workflow_run.head_branch, 'release/v')))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: fly
@@ -51,7 +57,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             v="${{ inputs.version }}"
           else
-            v="${{ github.event.workflow_run.head_branch }}"; v="${v#v}"
+            v="${{ github.event.workflow_run.head_branch }}"; v="${v#release/}"; v="${v#v}"
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"; echo "pinning m0serve==$v"
       # PyPI can lag the release by a minute; the remote builder's pip
