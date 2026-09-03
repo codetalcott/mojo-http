@@ -9,6 +9,15 @@ versions may break the API**.
 
 ### Changed
 
+- **`docs/WSGI_VS_ASGI.md` is the concise answer to why there are two
+  execution modes**, in a page: what each mode is, why one would not do,
+  what WSGI gets from the handler pool and held connections, what ASGI
+  gets from the executor, what free-threading changes, the cliffs, and how
+  to choose. The dated essay it replaced, whose opening still made "the
+  case for not building an ASGI host", is kept as written at
+  `docs/notes/wsgi-vs-asgi-history.md` with its section numbers, and every
+  citation of §5, §8 and §9 (CLAUDE.md, the README, the conformance and
+  performance pages, the notes) now points there.
 - **The documentation, restructured for a first-time reader and for an
   agent** (`scripts/docsite.py`, `docs/ROADMAP.md`, `docs/notes/`,
   `docs/RUNNING.md`, `docs/README.md`, `llms.txt`, `apps/site/home.md`).

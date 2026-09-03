@@ -360,7 +360,7 @@ Starlette, or FastAPI app from the same binary, with real await-concurrency
 on a per-loop asyncio executor — requests overlap wherever the application
 awaits, streaming responses stream for real, and `websocket` scopes work,
 so FastHTML's whole surface runs with no configuration
-([docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md) §8).
+([the design record](docs/notes/wsgi-vs-asgi-history.md) §8).
 `--app-dir` is prepended to `sys.path` so the module imports, relative to the
 current directory and defaulting to `.`.
 
@@ -386,7 +386,7 @@ reaches the application the way its protocol expects it — `SCRIPT_NAME` with
 so `reverse()` and `url_for()` generate links that actually work. A path no
 mount claims is a 404 answered in Mojo, never entering Python. Any mix:
 every ASGI mount gets its own executor, any number of WSGI mounts share
-the pool ([§9](docs/WSGI_VS_ASGI.md)). Every `M0_*` variable keeps its
+the pool ([the design record §9](docs/notes/wsgi-vs-asgi-history.md)). Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
 matching flag winning over it, and flags are strict: `--port 80eighty` is a
 usage error, not a silent default. `--max-body` and `--metrics` reach two

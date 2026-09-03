@@ -1006,7 +1006,7 @@ worker count, not the request parser.
 
 ## The ASGI executor vs uvicorn
 
-The Phase-2 gate from [WSGI_VS_ASGI.md](WSGI_VS_ASGI.md) §8, measured
+The Phase-2 gate from [the design record](notes/wsgi-vs-asgi-history.md) §8, measured
 2026-08-24 with `poe bench-asgi` (Linux CI-shaped container, 4 logical
 cores). **Client caveat first**: the container carries neither wrk nor ab,
 so the harness is a stdlib `http.client` keep-alive loop on 8 threads —

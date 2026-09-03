@@ -70,7 +70,7 @@ shim, so the per-request Mojo path is identical for both and the leak rules
 below apply unchanged. Under the executor (the ASGI default) streaming
 responses stream for real — see the executor bullet below for the three
 load-bearing rules; only the buffered escape hatch still refuses an
-infinite stream with its 10s watchdog (docs/WSGI_VS_ASGI.md §8), and that
+infinite stream with its 10s watchdog (docs/notes/wsgi-vs-asgi-history.md §8), and that
 refusal is not to be "fixed" by lengthening the grace.
 `m0serve --mount PREFIX=SPEC` hosts **several applications in one
 process**, routed by longest prefix (on segment boundaries, so `/app` never
@@ -213,7 +213,7 @@ code depends on:
     start (exit 78) — never warns-and-runs. Per-thread, never shared across
     threads: `WSGIApp`/`PyBridge`, `SSERegistry`/`WSHub`, `ProvisionPool`,
     an m0-sqlite `Connection` (opened `NOMUTEX`). Shared mutable Python
-    objects are the measured 0.7x cliff (`docs/WSGI_VS_ASGI.md` §5); keep
+    objects are the measured 0.7x cliff (`docs/notes/wsgi-vs-asgi-history.md` §5); keep
     per-request state thread-local. `print`/`log_access` from N threads can
     interleave — `x-thread` is on every response for that reason.
   - **The asyncio executor (`m0_wsgi.asgi_executor`; the ASGI default).**
@@ -267,7 +267,7 @@ code depends on:
     — and a handshake the app never answers must resolve as a 403, never
     a leaked slot. The buffered escape hatch keeps its send()-side
     watchdog — do not "fix" it by lengthening the
-    grace (docs/WSGI_VS_ASGI.md §8). **The pump is batched in both directions**, because the
+    grace (docs/notes/wsgi-vs-asgi-history.md §8). **The pump is batched in both directions**, because the
     hello-world deficit was wakeup-bound, not CPU-bound (0.72x uvicorn at
     0.89 cores; batching is worth +5% at 16 connections, where a
     pass batches ~3 submits, and +19% at 256): the loop BUFFERS its submits to an executor lane during a

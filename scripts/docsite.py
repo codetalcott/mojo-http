@@ -135,9 +135,9 @@ PAGES = [
     # Understanding the design.
     Page("docs/WSGI_VS_ASGI.md", "/docs/wsgi-vs-asgi/",
          "Why m0serve has two execution modes: WSGI, ASGI, free-threading and the cliffs in each",
-         "The design behind the split: what free-threading changes and does "
-         "not, the in-process pub/sub that replaces a channel layer, the "
-         "hybrid ASGI gateway, and mounts. Measured, with the cliffs named.",
+         "What each mode is, why one would not do, what WSGI gets from a "
+         "handler pool and held connections, what ASGI gets from the asyncio "
+         "executor, what free-threading changes, and where each mode has a cliff.",
          "Understanding the design"),
     Page("docs/WSGI_CONFORMANCE.md", "/docs/wsgi-conformance/",
          "PEP 3333 conformance of m0serve, clause by clause",

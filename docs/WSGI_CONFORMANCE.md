@@ -190,7 +190,7 @@ The fork matters for how much of this is reusable:
   a different package, not an adapter. *(Dated record, kept as written; it
   has been superseded — the ASGI executor hosts them now, a Python event
   loop per serving loop coexisting with the Mojo one, and
-  [WSGI_VS_ASGI.md §8](WSGI_VS_ASGI.md) is the current account.)* The
+  [the design record §8](notes/wsgi-vs-asgi-history.md) is the current account.)* The
   current architecture is actively hostile to it: the handler runs
   synchronously on the event loop, the process is single-threaded, Mojo
   never acquires the GIL, and the fork must happen before the first Python
