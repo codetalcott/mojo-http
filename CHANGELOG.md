@@ -9,6 +9,25 @@ versions may break the API**.
 
 ### Fixed
 
+- **The ASGI smoke's two shutdown phases bound their wait for the server
+  to exit**, and the `Tests` job caps are raised to what green runs now
+  take. Both phases ended in a bare `wait $pid` after SIGTERM, so a
+  server that never exited was a smoke that never finished: on 2026-09-02
+  the inverted-mode run on macOS sat 7 minutes inside that wait until the
+  job's 20-minute cap cancelled it, with a stray `m0serve` for the runner
+  to reap and no log to read -- the step's last line was the WebSocket
+  probe passing. A `wait_exit` helper polls for 30 s (the drain is 5 s
+  and the thread join another 5), then kills the server and fails naming
+  the phase, with `asgi.log` printed. The hang itself has not reproduced:
+  the sequence ran 20 of 20 clean under twenty CPU hogs on this tree, in
+  both shutdown phases, and every macOS run since has passed; the two
+  slot-recycle fixes above landed after the commit that hung, and the
+  next occurrence will at least say where it stood. Separately, the
+  smoke job's green runs take 16-19 minutes across some fifty steps
+  against a 20-minute cap set when they took 3-5 -- a 19.5-minute green
+  run is on record -- so the smoke cap is 35 and unit-tests (11-15
+  minutes) 30.
+
 - **A Starlette streaming response no longer leaves a traceback per
   response in the log** (`bridge.mojo`, the executor shim). Starlette
   -- so FastAPI and FastHTML -- produces a `StreamingResponse` body inside

@@ -4408,6 +4408,23 @@ fail() {
   exit 1
 }
 
+# A server still alive long after SIGTERM is a hang, not a slow drain: the
+# drain is 5 s and the thread join another 5, so 30 s is generous. Unbounded,
+# `wait $pid` here ate the smoke job's whole 20 min cap once (macOS,
+# 2026-09-02: an inverted server that never exited) and left no log to read.
+# Bounded, the failure names its phase and prints asgi.log.
+wait_exit() {
+  waited=0
+  while kill -0 $pid 2>/dev/null && [ $waited -lt 300 ]; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  if kill -0 $pid 2>/dev/null; then
+    kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null
+    fail "$1: m0serve still alive 30 s after SIGTERM"
+  fi
+  wait $pid 2>/dev/null; rc=$?
+}
+
 # --- phase 1: zero-config against the bare app -------------------------------
 # No topology flag, no M0_* topology variable: detection must answer asgi and
 # the asyncio executor must be serving — the out-of-box ASGI shape. No pool:
@@ -4562,7 +4579,7 @@ curl -sN --max-time 10 $B/stream-forever > /dev/null &
 stream_pid=$!
 sleep 0.5
 kill -TERM $pid
-wait $pid 2>/dev/null; rc=$?
+wait_exit 'SIGTERM with a live stream'
 kill $stream_pid 2>/dev/null; wait $stream_pid 2>/dev/null
 [ "$rc" = "0" ] || fail "SIGTERM with a live stream: exit $rc, want 0"
 
@@ -4585,7 +4602,7 @@ c2=$!
 sleep 0.3
 kill -TERM $pid
 wait $c1 $c2 2>/dev/null
-wait $pid 2>/dev/null; rc=$?
+wait_exit 'SIGTERM with two requests outliving the drain'
 [ "$rc" = "0" ] || fail "SIGTERM with two requests outliving the drain: exit $rc, want 0"
 grep -q 'stopped before Future completed' asgi.log \
   && fail 'the post-pill gather was cut short by the pump stop'
