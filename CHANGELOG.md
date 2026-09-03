@@ -40,7 +40,12 @@ versions may break the API**.
   proves every one of those from outside -- against the image built from
   the tree's wheel in the `pid1` job, with m0serve as PID 1 and `docker
   stop` draining with a stream held, and against the live URL in the deploy
-  workflow's new `deploy-demo` job (secret `FLY_DEPLOY_DEMO`). Four
+  workflow's new `deploy-demo` job (secret `FLY_DEPLOY_DEMO`). Both
+  verify steps wait for the health path to answer steadily before asserting
+  anything, and the demo's retries the probe up to three times 20 s apart:
+  `flyctl deploy` returns before the edge is stable, and the first deploy's
+  verify hit a TLS EOF from the proxy while Fly was creating the second
+  machine and bouncing the first. Four
   sabotages of the application -- shared channel, no rate limit, no Origin
   check, no size cap -- each failed the probe in the phase that names the
   guard.
