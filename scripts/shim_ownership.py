@@ -29,8 +29,9 @@ Four rules, one test each:
   stops "never clean up" from passing as a fix;
 * a disconnect is stamped on the owning TASK (`_m0_disconnected`), so a
   lingering task cannot end its successor's stream;
-* spawning on a slot clears the slot's stale disconnect mark, so the
-  successor does not cancel itself;
+* spawning on a slot clears the slot's stale disconnect mark — and, for a
+  WebSocket, the previous socket's accept — so the successor neither
+  cancels itself nor answers a handshake it never accepted;
 * every "am I gone" check asks `_task_gone`, which consults both marks.
 
 Plus the ack clamp: a drain ack names a slot and no generation, so one for
@@ -143,7 +144,8 @@ class Harness:
                 return True
             behaviour = self.jobs.pop(0)
             if behaviour.startswith("ws"):
-                path = "/ws/flood" if behaviour == "wsflood" else "/ws"
+                path = {"wsflood": "/ws/flood", "wshold": "/ws/hold",
+                        "wsnoanswer": "/ws/noanswer"}.get(behaviour, "/ws")
                 self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
                 self.ns["spawn"](slot, "GET", "/",
@@ -162,7 +164,15 @@ class Harness:
 
     async def _app(self, scope, receive, send):
         if scope["type"] == "websocket":
+            if scope["path"] == "/ws/noanswer":
+                # Returns without ever answering the handshake: the shim's
+                # `finally` must resolve the held 101 as a reject.
+                return
             await send({"type": "websocket.accept"})
+            if scope["path"] == "/ws/hold":
+                # Stay inside the accepted socket until cancelled, so a
+                # recycle can land while this task is still alive.
+                await asyncio.Event().wait()
             if scope["path"] == "/ws/flood":
                 for _ in range(self.WS_FLOOD_FRAMES):
                     await send({"type": "websocket.send",
@@ -400,6 +410,35 @@ def test_a_websocket_spawn_clears_the_slots_stale_disconnect(h):
         "the handshake was rejected: %r" % (kinds,))
 
 
+def test_a_websocket_recycle_forgets_the_predecessors_accept(h):
+    """`_exec_ws_accepted` names a SLOT; the accept belongs to a task.
+
+    An accepted socket's task is still winding down when the loop recycles
+    its slot into a new handshake, and ownership (correctly) keeps its late
+    done-callback from wiping the successor's state -- so without the
+    spawn-side clear the successor inherits the accept. It then looks
+    pre-accepted: an app that returns without answering its handshake sends
+    ws_close instead of ws_reject, the held 101 is never released, and the
+    client hangs against a clean server log."""
+    h.job(0, "wshold")
+    h.settle()
+    assert "ws_accept" in h.kinds(0), (
+        "the first socket was never accepted: %r" % (h.kinds(0),))
+    mark = len(h.events)
+    # One batch again: the disconnect and the new handshake's job are read
+    # by a single `_on_submit` callback, so `spawn_ws` runs while the
+    # previous task is still alive and its accept is still on the slot.
+    h.disconnect(0)
+    h.job(0, "wsnoanswer")
+    h.settle()
+    after = [e[0] for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert "ws_reject" in after, (
+        "the unanswered handshake was not rejected -- the successor "
+        "inherited the previous socket's accept: %r" % (after,))
+    assert "ws_close" not in after, (
+        "the successor closed a socket it never accepted: %r" % (after,))
+
+
 def test_a_websocket_send_waits_for_its_window(h):
     """`websocket.send` is credit-gated, so a flooding app waits.
 
@@ -441,6 +480,7 @@ TESTS = [
     test_a_spawn_clears_the_slots_stale_disconnect,
     test_a_stale_ack_cannot_inflate_the_successors_window,
     test_a_websocket_spawn_clears_the_slots_stale_disconnect,
+    test_a_websocket_recycle_forgets_the_predecessors_accept,
     test_a_websocket_send_waits_for_its_window,
 ]
 
@@ -483,6 +523,16 @@ SABOTAGES = [
         "    _exec_disconnected.discard(slot)\n"
         "    _exec_disconnects.pop(slot, None)\n"
         "    _exec_stream_tasks[slot] = task",
+        "    _exec_disconnects.pop(slot, None)\n"
+        "    _exec_stream_tasks[slot] = task",
+    ),
+    (
+        "spawn_ws does not clear the slot's stale accept",
+        "    _exec_ws_accepted.discard(slot)\n"
+        "    _exec_disconnected.discard(slot)\n"
+        "    _exec_disconnects.pop(slot, None)\n"
+        "    _exec_stream_tasks[slot] = task",
+        "    _exec_disconnected.discard(slot)\n"
         "    _exec_disconnects.pop(slot, None)\n"
         "    _exec_stream_tasks[slot] = task",
     ),

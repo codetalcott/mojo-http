@@ -1447,6 +1447,15 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     task._m0_streaming = True
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
+    # The previous connection's ACCEPT must not survive the recycle either:
+    # an accepted socket's task can still be winding down when the loop
+    # recycles its slot into a new handshake, and ownership (correctly)
+    # keeps its late done-callback from wiping this task's state -- so the
+    # stale membership is cleared here, like the disconnect mark below.
+    # Inherited, it makes the successor look pre-accepted: an app that
+    # returns without answering its handshake sends ws_close instead of
+    # ws_reject, and the held 101 is never released.
+    _exec_ws_accepted.discard(slot)
     _exec_disconnected.discard(slot)
     _exec_disconnects.pop(slot, None)
     _exec_stream_tasks[slot] = task
@@ -1639,9 +1648,9 @@ struct PyBridge(Movable):
     var _k_remote_addr: PythonObject
     var _k_remote_port: PythonObject
     var _k_protocol: PythonObject
-    """The four per-request key strings, interned once. They never vary, so
-    building them per request would be four `PyUnicode_DecodeUTF8` calls
-    and four frees for nothing."""
+    """The six per-request key strings, interned once. They never vary, so
+    building them per request would be six `PyUnicode_DecodeUTF8` calls
+    and six frees for nothing."""
 
     var _bytes_as_string: _PyBytes_AsString.type
     var _bytes_from: _PyBytes_FromStringAndSize.type

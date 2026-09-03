@@ -61,8 +61,11 @@ call — and is the file to reach for first. The other `std.python` importers
 are the modules that run Python on a thread of their own (`app`,
 `asgi_executor`, `blocking_pool`, `response`, `threaded`, and `m0serve.mojo`),
 because attaching, building a handler and destroying it there are theirs to
-do; everything else works in Mojo types, and keeping it that way is what
-bounds how many places the leak rules below have to hold. The package
+do — plus `handler.mojo`, whose only use is
+`PyEval_SaveThread`/`PyEval_RestoreThread` around the detached waits in its
+pool-thread streaming helpers; everything else works in Mojo types, and
+keeping it that way is what bounds how many places the leak rules below
+have to hold. The package
 hosts **both protocols**: the shim detects WSGI vs ASGI at `set_app`
 (`--protocol` forces it), and an ASGI app runs buffered on a persistent
 per-bridge asyncio loop — the protocol dispatch lives entirely inside the
@@ -332,7 +335,8 @@ code depends on:
     cleanup runs only if the finishing task is the owner; a disconnect is
     stamped on the owning task (`_m0_disconnected`) and the old
     connection's in-flight bytes are refunded to the global window right
-    there; spawning a new task on the slot clears the slot's stale mark;
+    there; spawning a new task on the slot clears the slot's stale marks (the
+    disconnect, and for a WebSocket the previous socket's accept);
     every "am I gone" check asks `_task_gone`, which consults both. Found
     on CI's macOS smoke (1 in 2), reproduced 8 of 11 runs under twelve
     CPU hogs — `chunked_keepalive.py`'s HTTP/1.0 probe closes after the
