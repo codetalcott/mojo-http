@@ -25,11 +25,12 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    # Green runs finish in 4-6 min. Without an explicit cap a hung step runs
-    # to GitHub's 6-hour default while holding this ref's concurrency group,
-    # so a stall reads as "still running" for hours instead of failing. See
-    # the apt step below for the stall that motivated this.
-    timeout-minutes: 20
+    # Green runs finish in 11-15 min (2026-09-03; they were 4-6 when the cap
+    # was set). Without an explicit cap a hung step runs to GitHub's 6-hour
+    # default while holding this ref's concurrency group, so a stall reads
+    # as "still running" for hours instead of failing. See the apt step
+    # below for the stall that motivated this.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -221,10 +222,15 @@ jobs:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     needs: unit-tests
-    # Green runs finish in 3-5 min; same rationale as unit-tests above. Every
-    # smoke step starts a server and polls it, so a wedged server would
-    # otherwise hang here rather than fail.
-    timeout-minutes: 20
+    # Green runs finish in 16-19 min across some fifty steps (2026-09-03;
+    # they were 3-5 min when the cap was 20, and a 19.5 min green run had
+    # been recorded). Same rationale as unit-tests above: every smoke step
+    # starts a server and polls it, so a wedged server would otherwise hang
+    # here rather than fail -- and the cap is what turned one into a
+    # failure (a server that never exited after SIGTERM in the inverted
+    # ASGI smoke, macOS, 2026-09-02), which is why that smoke's shutdown
+    # waits are now bounded themselves and name their phase.
+    timeout-minutes: 35
     env:
       # Where `scripts/emit.py` appends the measurements the smokes already
       # compute (RSS growth, fast-request latency). Unset locally, which makes
