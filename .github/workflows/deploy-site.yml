@@ -86,7 +86,21 @@ jobs:
       - name: Verify the live site
         run: |
           set -e
-          curl -sSf -o /dev/null https://m0serve.dev/health
+          # `flyctl deploy` returns when the machines report healthy, not when
+          # the edge is stable: a first deploy creates a second machine and
+          # bounces the first, and a connection opened in that window gets a
+          # TLS EOF from the proxy (2026-09-03, the demo's first deploy). So
+          # wait for the health path to answer three times in a row first.
+          for i in $(seq 1 24); do
+            ok=0
+            for j in 1 2 3; do
+              curl -sf -o /dev/null --max-time 5 https://m0serve.dev/health && ok=$((ok+1))
+              sleep 1
+            done
+            [ "$ok" = 3 ] && break
+            sleep 5
+          done
+          [ "$ok" = 3 ] || { echo "::error::m0serve.dev/health never answered steadily"; exit 1; }
           curl -sSf https://m0serve.dev/llms.txt | grep -q '](https://m0serve.dev/docs/spec.md)'
           curl -sSfI https://m0serve.dev/sitemap.xml | grep -qi '^content-type: application/xml'
           echo "m0serve.dev is serving the site pinned to m0serve==${{ steps.v.outputs.version }}"
@@ -132,8 +146,31 @@ jobs:
       # The same probe `poe smoke-demo` runs against the image on every pull
       # request, minus the container phases: the page and its version line,
       # the cookie, the 403s, a held stream and socket, isolation, the limits.
+      # The probe itself stays strict -- in --image mode it is the CI gate --
+      # so the tolerance for a transient edge failure lives HERE: up to three
+      # runs, 20 s apart. Three in a row is a defect.
       - name: Verify the live demo
         run: |
-          python3 scripts/demo_probe.py --url https://demo.m0serve.dev
+          set -e
+          # `flyctl deploy` returns when the machines report healthy, not when
+          # the edge is stable: a first deploy creates a second machine and
+          # bounces the first, and a connection opened in that window gets a
+          # TLS EOF from the proxy (2026-09-03, the demo's first deploy). So
+          # wait for the health path to answer three times in a row first.
+          for i in $(seq 1 24); do
+            ok=0
+            for j in 1 2 3; do
+              curl -sf -o /dev/null --max-time 5 https://demo.m0serve.dev/health && ok=$((ok+1))
+              sleep 1
+            done
+            [ "$ok" = 3 ] && break
+            sleep 5
+          done
+          [ "$ok" = 3 ] || { echo "::error::demo.m0serve.dev/health never answered steadily"; exit 1; }
+          for attempt in 1 2 3; do
+            python3 scripts/demo_probe.py --url https://demo.m0serve.dev && break
+            [ "$attempt" = 3 ] && { echo "::error::the live demo failed the probe three times"; exit 1; }
+            echo "probe attempt $attempt failed; retrying in 20 s"; sleep 20
+          done
           curl -s https://demo.m0serve.dev/about | grep -q "\"m0serve\": \"${{ steps.v.outputs.version }}\""
           echo "demo.m0serve.dev is serving m0serve==${{ steps.v.outputs.version }}"
