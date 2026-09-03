@@ -24,6 +24,20 @@ versions may break the API**.
 
 ### Added
 
+- **Citation tracking** (`scripts/check_citations.py`, `poe
+  check-citations`, `.github/workflows/citations.yml`, SPEC F15 and
+  F16). Every `RFC nnnn` in a tracked text file is looked up in
+  `scripts/rfc_status.json`, a committed snapshot of the RFC Editor's
+  per-document JSON: a citation of an obsoleted RFC fails every pull
+  request unless its paragraph cites a successor, and a monthly job
+  re-fetches the snapshot and files an issue when a document moves.
+  First run it found the parser, the chunked decoder, the date
+  formatter, content negotiation and their tests citing RFC 7230 and
+  RFC 7231 (replaced by RFC 9110 and RFC 9112 in 2022) and RFC 5987
+  (replaced by RFC 8187); each is re-pointed to the successor's
+  section. The rules are pure functions of text, selftested and
+  sabotaged the way the spec sheet's are.
+
 - **The live two-tab demo beside the docs** (`apps/demo`, `deploy/demo`,
   `poe smoke-demo`, SPEC M17; https://demo.m0serve.dev once the Fly app
   exists). One file of sync Django in the quickstart's shape, served by

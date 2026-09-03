@@ -1,4 +1,4 @@
-"""HTTP date formatting utilities (RFC 7231 Section 7.1.1.1).
+"""HTTP date formatting utilities (RFC 9110 Section 5.6.7).
 
 Uses POSIX time/gmtime instead of small_time dependency.
 """

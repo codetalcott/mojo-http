@@ -1,0 +1,61 @@
+# The citation tracker's live half, monthly.
+#
+# Every RFC the tree cites is checked on every pull request against
+# scripts/rfc_status.json, a committed snapshot of the RFC Editor's
+# per-document JSON (obsoleted_by, status). That half is offline, so it can
+# run on doc-only pull requests under docs.yml with no toolchain. What it
+# cannot see is an RFC obsoleted AFTER the snapshot was taken -- RFC 7230
+# became RFC 9110 and RFC 9112 in 2022, and the tree still cited it in
+# 2026. This job re-fetches every snapshot entry and fails on any
+# difference, filing an issue, so that event is noticed the week it happens
+# rather than the year someone reads the section number and finds it gone.
+# Monthly, not weekly: the event arrives about once a decade per document
+# and a few weeks of lag on a citation costs nothing.
+#
+# Standard library only, like docs.yml: scripts/check_citations.py imports
+# json, re, subprocess, urllib and pathlib. No uv, no Mojo. A transport
+# failure is a FAILURE here, not a skip -- unlike check_docs' ls-remote
+# check, this job exists only to ask, and "could not ask" must not be
+# filed as "nothing changed".
+#
+# scripts/check_citations.py checks that this file exists, has a cron and
+# passes --live, and its --sabotage proves each of those checks fires.
+name: Citations
+
+on:
+  schedule:
+    - cron: '0 22 1 * *'  # the 1st of each month, 10pm UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  citations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # The rules are proven able to fail before their verdict is believed.
+      - name: Self-test the citation tracker
+        run: python3 scripts/check_citations.py --selftest
+
+      - name: Compare the snapshot with the RFC Editor
+        run: python3 scripts/check_citations.py --live
+
+      - name: Create issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "An RFC the tree cites has moved" \
+            --label "citations" \
+            --body "The monthly citation check failed: the RFC Editor's answer for an RFC in scripts/rfc_status.json differs from the snapshot, or it could not be asked.
+
+          [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — the job output names the RFC and what changed. Run \`uv run poe check-citations --update\` to refresh the snapshot, then re-point the citations it fails on to the successor document (the offline check names each file and line)."

@@ -638,6 +638,8 @@ uv run poe check-docs         # fails naming the drifted fact
 uv run poe render-bench-docs  # after committing a new bench artifact
 uv run poe render-spec        # after editing docs/SPEC.md's capability tables
 uv run poe sabotage-spec      # revert each spec-sheet rule; all must be caught
+uv run poe check-citations    # every RFC cited is current, by the committed snapshot
+uv run poe check-citations --update   # refetch scripts/rfc_status.json (network)
 python3 scripts/emit.py --selftest   # the CI measurement recorder
 ```
 
@@ -687,7 +689,8 @@ Three things about it are load-bearing:
   everything.** CI pins GIL-enabled 3.13, so every `--threads` phase skips and
   `smoke-threads` proves only the refusal — the step is named "the threaded
   mode's **guard**" for that reason. Free-threaded serving is `(weekly)`,
-  proven by `py-canary.yml`; `stress-asgi` and `probe-pool` are
+  proven by `py-canary.yml`; the RFC snapshot's live comparison is
+  `(monthly)`, proven by `citations.yml`; `stress-asgi` and `probe-pool` are
   `(pre-release)`. A row citing a `test.yml` step must say `(every PR)`, and
   the checker rejects one that carries an `if:`.
 - **Both directions, over two closed sets.** Every `smoke-*` step in

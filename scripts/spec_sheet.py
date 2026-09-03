@@ -47,7 +47,7 @@ REPO = Path(__file__).resolve().parent.parent
 SHEET = REPO / "docs" / "SPEC.md"
 
 STATUSES = ("verified", "implemented", "planned", "out of scope")
-CADENCES = ("every PR", "weekly", "pre-release")
+CADENCES = ("every PR", "weekly", "monthly", "pre-release")
 LEGEND = "How to read this page"
 
 BEGIN = "<!-- generated: spec-rollup -- edit the tables below, not this block -->"
@@ -419,6 +419,12 @@ def analyse(src):
                         f"{where}: cadence is `weekly` but `{gate}` appears in "
                         "neither py-canary.yml nor nightly-canary.yml"
                     )
+            elif cadence == "monthly":
+                if gate not in src["citations"]:
+                    failures.append(
+                        f"{where}: cadence is `monthly` but `{gate}` does not "
+                        "appear in citations.yml"
+                    )
             elif cadence == "pre-release":
                 if gate not in src["releasing"]:
                     failures.append(
@@ -429,7 +435,7 @@ def analyse(src):
                 failures.append(
                     f"{where}: `{gate}` is not a step in test.yml. `verified` "
                     "evidence must name a CI step, a test function, or a "
-                    "weekly/pre-release gate."
+                    "weekly, monthly or pre-release gate."
                 )
 
         elif status == "implemented":
@@ -592,11 +598,12 @@ def render_rollup(rows):
         f"{by['implemented']} implemented, {by['planned']} planned, "
         f"{by['out of scope']} out of scope.** Of the {by['verified']} "
         f"verified, {cad['every PR']} are gated on every pull request, "
-        f"{cad['weekly']} weekly, and {cad['pre-release']} before a release. "
+        f"{cad['weekly']} weekly, {cad['monthly']} monthly, and "
+        f"{cad['pre-release']} before a release. "
         f"Every pull-request-gated row's coverage is declared IN its gate "
         f"(`covers:` in the cited test, or a recorder coverage call in "
         f"what the cited step runs), and the checker requires the "
-        f"declaration and the citation to agree; the weekly and "
+        f"declaration and the citation to agree; the weekly, monthly and "
         f"pre-release rows keep declared-static citations, their runs "
         f"being absent from PR CI.\n"
         f"{END}"
@@ -659,6 +666,7 @@ def read_sources(**override):
         "releasing": txt("docs/RELEASING.md"),
         "canary": txt(".github/workflows/py-canary.yml"),
         "nightly": txt(".github/workflows/nightly-canary.yml"),
+        "citations": txt(".github/workflows/citations.yml"),
         "cli": txt("packages/m0-wsgi/src/cli.mojo"),
         "tests": tests,
         "sources": sources,
@@ -846,6 +854,14 @@ SABOTAGES = [
      lambda t: re.sub(r"^python3 scripts/emit\.py --covers [A-Z]\d+[^\n]*\n",
                       "", t, count=1, flags=re.M),
      "no gate declares"),
+    ("a weekly row names a gate no weekly workflow runs", "sheet",
+     lambda t: (lambda m: t.replace(m.group(0), "`no-such-gate` (weekly)", 1) if m else None)(
+         re.search(r"`[^`]+` \(weekly\)", t)),
+     "appears in neither"),
+    ("a monthly row names a gate citations.yml does not run", "sheet",
+     lambda t: (lambda m: t.replace(m.group(0), "`no-such-gate` (monthly)", 1) if m else None)(
+         re.search(r"`[^`]+` \(monthly\)", t)),
+     "does not appear in citations.yml"),
     ("the sheet is deleted", "sheet", None, "docs/SPEC.md is missing"),
 ]
 

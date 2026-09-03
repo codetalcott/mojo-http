@@ -420,10 +420,24 @@ python3 scripts/render_bench_docs.py --selftest || exit 1
 # standard library only); this proves those checks can fail, for the same
 # reason as the line above.
 python3 scripts/docsite.py --selftest || exit 1
+# The citation tracker runs inside check_docs (`check_citations.check`);
+# same rule: prove its rules can fail before believing they passed.
+python3 scripts/check_citations.py --selftest || exit 1
 python3 scripts/check_docs.py || exit 1
 python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs
+python3 scripts/emit.py --covers F15 --task check-docs
 """
+
+# Citation tracking: every `RFC nnnn` in the tree against
+# scripts/rfc_status.json, a committed snapshot of the RFC Editor's
+# per-document JSON. `--update` refetches it (network), `--live` compares
+# it with the RFC Editor (the monthly citations.yml), `--sabotage` reverts
+# each rule against the real tree. Offline by default, and part of
+# check-docs, so a citation of an obsoleted RFC fails every pull request.
+[tool.poe.tasks.check-citations]
+help = "Fail if the tree cites an obsoleted RFC (--update refreshes the snapshot)"
+cmd = "python3 scripts/check_citations.py"
 
 [tool.poe.tasks.render-bench-docs]
 help = "Render the newest bench/results artifact into WSGI_PERFORMANCE.md"
