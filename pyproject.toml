@@ -1685,32 +1685,26 @@ echo "phase 5: a hold taken on a pool thread, delivered in ${took}ms behind two 
 # GIL interpreter the full phase below runs, as always.
 ft=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)")
 if [ "$ft" = "1" ]; then
-  set +e
   M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
     --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
     --blocking-threads 4 > rt6.log 2>&1
   rc=$?
-  set -e
   [ "$rc" = "78" ] || { cat rt6.log; fail "an ASGI mount on a free-threaded build exited $rc, want the refusal's 78"; }
   grep -q 'modular/modular#5726' rt6.log || { cat rt6.log; fail 'the refusal does not name the upstream issue'; }
   grep -q 'free-threaded CPython build' rt6.log || { cat rt6.log; fail 'the refusal does not say what was refused'; }
-  set +e
   M0_CORE_LIB="$core_lib" "$srv" --doctor --mount /=djangoproj.wsgi --mount /live=liveasgi \
     --app-dir apps/django_realtime --port 8080 --realtime --blocking-threads 4 > rt6.doctor 2>&1
   drc=$?
-  set -e
   [ "$drc" = "78" ] || { cat rt6.doctor; fail "--doctor exited $drc for a refusal the server makes at 78"; }
   grep -q '"asgi-vs-free-threading"' rt6.doctor || { cat rt6.doctor; fail '--doctor does not name the check'; }
   rm -f rt6.doctor
   # Under prefork the refusal happens in each worker; the supervisor must
   # pass it up as 78, promptly, with no respawn.
-  set +e
   start=$(date +%s)
   M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
     --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
     --blocking-threads 4 --workers 2 > rt6.log 2>&1
   rc=$?
-  set -e
   took=$(( $(date +%s) - start ))
   [ "$rc" = "78" ] || { cat rt6.log; fail "under --workers 2 the refusal came back as $rc, want 78"; }
   grep -q 'refused its configuration (exit_code=78); not respawning' rt6.log || { cat rt6.log; fail 'the supervisor did not recognise the refusal'; }
@@ -1946,6 +1940,21 @@ wait $pid; rc=$?
 # records it per slot, and the message goes back to that lane's pool. Django
 # holds the root mount (so the probe's paths are unchanged) beside an ASGI
 # mount that streams on its own executor at the same time.
+#
+# On a FREE-THREADED build the ASGI mount is refused (its executor's Python
+# type cannot be built there; modular/modular#5726), so this phase asserts
+# the refusal -- exit 78 naming the issue -- and nothing else; the three-shape
+# proof (alone, --doctor, --workers) is `smoke-django-realtime` phase 6.
+ft=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)")
+if [ "$ft" = "1" ]; then
+  M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
+    --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
+    --blocking-threads 4 > ws4.log 2>&1
+  rc=$?
+  [ "$rc" = "78" ] || { cat ws4.log; fail "sockets beside an ASGI mount on a free-threaded build exited $rc, want the refusal's 78"; }
+  grep -q 'modular/modular#5726' ws4.log || { cat ws4.log; fail 'the refusal does not name the upstream issue'; }
+  echo "phase 4: refused on a free-threaded build, exit 78 naming modular/modular#5726 (sockets under --mount need the ASGI mount's executor)"
+else
 M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
   --mount /=djangoproj.wsgi --mount /live=liveasgi \
   --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
@@ -1968,6 +1977,7 @@ echo "phase 4: sockets and an executor stream on one loop, messages routed by la
 kill $pid 2>/dev/null
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --realtime --mount with sockets: exit $rc, want 0"
+fi
 
 rm -f ws1.log ws2.log ws3.log ws4.log
 echo "smoke-django-realtime-ws OK"
@@ -5495,7 +5505,7 @@ echo "C3 smoke-django-realtime (hybrid SSE + numbered ids, phase 4: cross-THREAD
 # interact with the GIL-less runtime, which is exactly what a canary is for.
 phase=C4-smoke-django-realtime-ws
 poe smoke-django-realtime-ws >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): Django-gated WebSocket holds (see py-canary.log)"; exit 1; }
-echo 'C4 smoke-django-realtime-ws (WebSocket holds + ctypes atomic under free-threading): OK' >> "$report"
+echo "C4 smoke-django-realtime-ws (WebSocket holds + ctypes atomic under free-threading; $(grep -o 'phase 4: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 # The mode free-threading exists for: N loops on N threads, one interpreter.
 # Phase 2 of smoke-threads only runs here, where the GIL is genuinely off.

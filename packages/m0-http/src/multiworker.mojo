@@ -203,7 +203,7 @@ comptime _EXIT_SHUTDOWN = 3
 """A reaped exit that ended supervision: a propagated SIGTERM or SIGINT."""
 
 comptime EX_CONFIG = 78
-"""sysexits' "configuration error": a worker that exits with it REFUSED its
+"""The sysexits "configuration error" code: a worker exiting with it REFUSED its
 configuration (a mode the interpreter cannot run, say) and would refuse it
 again on every respawn. The supervisor does not respawn one, and exits 78
 itself once the workers are gone, so the refusal reaches whatever launched
