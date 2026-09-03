@@ -49,6 +49,8 @@ from .threaded import (
     FreeThreadingReport,
     probe_free_threading,
     refusal_message,
+    asgi_free_threading_refusal,
+    PYOBJECT_LAYOUT_ISSUE,
     require_free_threading,
     EXIT_NOT_FREE_THREADED,
 )

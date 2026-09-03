@@ -1674,6 +1674,53 @@ echo "phase 5: a hold taken on a pool thread, delivered in ${took}ms behind two 
 # a held stream drained as if it were an executor's would be chunk-framed,
 # acked to an executor that never issued the credit, and denied the comment
 # heartbeat that keeps it alive through a proxy.
+#
+# On a FREE-THREADED build this phase proves the refusal instead: the ASGI
+# mount needs the asyncio executor, whose Python type cannot be built there
+# (Mojo 1.0 lays PyObject out for the GIL build; modular/modular#5726), so
+# the server must exit 78 naming the issue rather than segfault -- alone,
+# through --doctor (same code), and under --workers 2, where the refusal is
+# made in each worker and the supervisor must propagate it rather than
+# respawn it. The weekly py-canary runs this smoke on 3.14t; on the pinned
+# GIL interpreter the full phase below runs, as always.
+ft=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)")
+if [ "$ft" = "1" ]; then
+  set +e
+  M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
+    --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
+    --blocking-threads 4 > rt6.log 2>&1
+  rc=$?
+  set -e
+  [ "$rc" = "78" ] || { cat rt6.log; fail "an ASGI mount on a free-threaded build exited $rc, want the refusal's 78"; }
+  grep -q 'modular/modular#5726' rt6.log || { cat rt6.log; fail 'the refusal does not name the upstream issue'; }
+  grep -q 'free-threaded CPython build' rt6.log || { cat rt6.log; fail 'the refusal does not say what was refused'; }
+  set +e
+  M0_CORE_LIB="$core_lib" "$srv" --doctor --mount /=djangoproj.wsgi --mount /live=liveasgi \
+    --app-dir apps/django_realtime --port 8080 --realtime --blocking-threads 4 > rt6.doctor 2>&1
+  drc=$?
+  set -e
+  [ "$drc" = "78" ] || { cat rt6.doctor; fail "--doctor exited $drc for a refusal the server makes at 78"; }
+  grep -q '"asgi-vs-free-threading"' rt6.doctor || { cat rt6.doctor; fail '--doctor does not name the check'; }
+  rm -f rt6.doctor
+  # Under prefork the refusal happens in each worker; the supervisor must
+  # pass it up as 78, promptly, with no respawn.
+  set +e
+  start=$(date +%s)
+  M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
+    --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
+    --blocking-threads 4 --workers 2 > rt6.log 2>&1
+  rc=$?
+  set -e
+  took=$(( $(date +%s) - start ))
+  [ "$rc" = "78" ] || { cat rt6.log; fail "under --workers 2 the refusal came back as $rc, want 78"; }
+  grep -q 'refused its configuration (exit_code=78); not respawning' rt6.log || { cat rt6.log; fail 'the supervisor did not recognise the refusal'; }
+  # The supervisor's own wording for a real crash or a respawn; its refusal
+  # line says "not respawning", so a bare 'respawn' would match the good case.
+  ! grep -Eq 'crashed \\(exit_code=|respawned worker|worker respawn|max respawns|rapid crashes' rt6.log || { cat rt6.log; fail 'the supervisor treated the refusal as a crash'; }
+  [ "$took" -lt 15 ] || fail "the refusal under --workers took ${took}s; it should be immediate"
+  beats=0
+  echo "phase 6: refused on a free-threaded build, exit 78 naming modular/modular#5726 -- alone, via --doctor, and under --workers 2 without a respawn"
+else
 M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
   --mount /=djangoproj.wsgi --mount /live=liveasgi \
   --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
@@ -1717,9 +1764,10 @@ kill $pid
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --realtime --mount: exit $rc, want 0"
 echo "phase 6: a held stream and an executor stream on one loop, $beats heartbeats on the held one"
+fi
 
-trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log rt6.log' EXIT
-rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log
+trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log rt6.log rt6.doctor' EXIT
+rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log rt6.doctor
 echo "smoke-django-realtime OK"
 python3 scripts/emit.py --covers F6 --task smoke-django-realtime
 python3 scripts/emit.py --covers I11 --task smoke-django-realtime
@@ -5439,7 +5487,7 @@ echo 'C2 smoke-flask: OK' >> "$report"
 
 phase=C3-smoke-django-realtime
 poe smoke-django-realtime >> py-canary.log 2>&1 || { echo "PY-CANARY: FAIL($phase): the hybrid hold/publish path (see py-canary.log)"; exit 1; }
-echo 'C3 smoke-django-realtime (hybrid SSE + numbered ids, and phase 4: cross-THREAD fan-out over one bus): OK' >> "$report"
+echo "C3 smoke-django-realtime (hybrid SSE + numbered ids, phase 4: cross-THREAD fan-out over one bus; $(grep -o 'phase 6: .*' py-canary.log | tail -1)): OK" >> "$report"
 
 # The WebSocket half, and the only phase that drives a second shared library
 # into the embedded interpreter: m0pub ctypes-loads libm0core to fetch-add the

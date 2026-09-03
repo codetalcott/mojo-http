@@ -124,5 +124,53 @@ def test_supervisor_exits_nonzero_when_respawn_budget_is_spent() raises:
     assert_equal(exit_code(status), 1)
 
 
+def _refusing_scenario(first_marker: String, again_marker: String):
+    """Every incarnation exits 78 -- the shape of a worker refusing a mode
+    its interpreter cannot run. A second incarnation would mean a respawn
+    happened, and it leaves a marker saying so."""
+    try:
+        var supervisor = WorkerSupervisor(1)
+        supervisor.fork_all()
+        if path.exists(first_marker):
+            with open(again_marker, "w") as f:
+                f.write(String("a refusing worker was respawned"))
+            process_exit(78)
+        with open(first_marker, "w") as f:
+            f.write(String("first refusal"))
+        process_exit(78)
+    except:
+        process_exit(7)
+
+
+def test_a_worker_refusing_its_configuration_is_not_respawned() raises:
+    """Exit 78 (EX_CONFIG) from a worker is a refusal the next incarnation
+    would repeat -- an ASGI app on a free-threaded interpreter, say -- so
+    the supervisor must not respawn it, and must exit 78 itself rather
+    than reporting ten crashes and a 1. Pinned because a refusal made
+    post-fork (protocol detection can only happen in the worker) used to
+    read as a respawn loop.
+
+    covers: E10
+    """
+    var first = "/tmp/m0_refuse_first_" + String(getpid())
+    var again = "/tmp/m0_refuse_again_" + String(getpid())
+    for m in [first, again]:
+        if path.exists(m):
+            remove(m)
+    var pid = fork()
+    if pid == 0:
+        _refusing_scenario(first, again)
+        process_exit(99)  # unreachable
+    var result = waitpid_blocking(pid)
+    var status = result[1]
+    assert_false(was_signaled(status), "supervisor process died on a signal")
+    assert_equal(exit_code(status), 78)
+    assert_true(path.exists(first), "the worker never ran")
+    assert_false(path.exists(again), "the refusing worker was respawned")
+    for m in [first, again]:
+        if path.exists(m):
+            remove(m)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**152 capabilities: 128 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 128 verified, 125 are gated on every pull request, 1 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**154 capabilities: 130 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 130 verified, 126 are gated on every pull request, 2 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -153,6 +153,7 @@ whose body drifted away from it is the case most likely to have survived.
 | E6 | A GIL-enabled interpreter is refused, never warned-and-run | verified | `Smoke test the threaded mode's guard` (every PR) |
 | E7 | Zero-config topology defaults | verified | `Smoke test --doctor against the server's own exit codes` (every PR) |
 | E8 | Max-requests worker recycling with jitter | out of scope | the leak it mitigates is measured instead — `smoke-django` fails on RSS growth over 10k requests |
+| E10 | A worker's configuration refusal (exit 78) ends supervision with 78, never a respawn loop | verified | `test_respawn.mojo:test_a_worker_refusing_its_configuration_is_not_respawned` (every PR) |
 | E9 | Worker lifetime / max-RSS recycling | out of scope | same reason as above |
 
 ## F. Observability
@@ -272,6 +273,7 @@ whose body drifted away from it is the case most likely to have survived.
 | L14 | `http.response.zerocopysend`, `early_hint`, `trailers` | out of scope | no application has asked; the extensions are additive and can be taken later |
 | L15 | An app-initiated close ends in a FIN, not an RST (RFC 6455 §5.5.1's order) | verified | `Conformance test the ASGI bridge` (every PR) — `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server |
 | L16 | ...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot | verified | `Smoke test the idle connection timeout` (every PR) — the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server |
+| L18 | ASGI on a free-threaded CPython build is refused with exit 78, naming modular/modular#5726 | verified | `py-canary` (weekly) — `smoke-django-realtime` phase 6 on 3.14t: the executor's Python type cannot be built there (the stdlib lays `PyObject` out for the GIL build), so the mixed server exits 78 alone, through `--doctor`, and under `--workers 2` without a respawn; on the pinned GIL interpreter the same phase runs the full mixed server |
 | L17 | Inbound `websocket.receive` is flow-controlled: a stalled client is throttled, never silently dropped | verified | `Inbound WebSocket messages survive a stalled client` (every PR) — the loop suspends the read rather than discarding what the executor cannot take; a concurrently-reading client loses nothing even on the broken build, so the gate stalls first and only then reads |
 
 ## M. Deployment and operations

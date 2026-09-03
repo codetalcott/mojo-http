@@ -73,6 +73,7 @@ from m0_wsgi import (
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
     effective_cpus, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
+    asgi_free_threading_refusal,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
 
@@ -142,6 +143,27 @@ comptime _REALTIME_ASGI_CONFLICT = (
     " application streams through its own send() instead. Serve it without"
     " --realtime."
 )
+
+
+def _refuse_executor_on_free_threaded(executor_mode: Bool) raises:
+    """Exit 78 when the asyncio executor would run on a free-threaded build.
+
+    The executor's `ExecutorPort` is built with `PythonModuleBuilder`, and
+    the stdlib's `PyObject` is the GIL build's 16-byte header; a
+    free-threaded build's is 32, so module creation segfaults
+    (modular/modular#5726). Checked wherever `use_asgi_executor` said yes
+    -- prefork's worker, the threaded path, and the doctor -- and keyed on
+    the BUILD (`Py_GIL_DISABLED`), not on whether the GIL happens to be
+    enabled, because the layout is the build's. Under prefork this runs in
+    the worker (detection cannot precede the fork), and the supervisor
+    treats a worker's 78 as the refusal it is rather than a crash to
+    respawn (`WorkerSupervisor`, `EX_CONFIG`).
+    """
+    if not executor_mode:
+        return
+    var report = probe_free_threading()
+    if report.free_threaded_build:
+        _fail(asgi_free_threading_refusal(report), EXIT_NOT_FREE_THREADED)
 
 
 def _specs_tried(specs: List[String]) -> String:
@@ -633,6 +655,26 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
             String("default") if auto_pool else String("configured"),
         )
         report.add_bool(String("topology"), String("asgi_executor"), executor)
+        # The refusal main makes right after the same decision, at 78:
+        # the executor's Python type cannot be built on a free-threaded
+        # build (modular/modular#5726). A probe that itself fails invents
+        # no refusal; the interpreter check above already spoke.
+        if executor:
+            try:
+                var ft = probe_free_threading()
+                if ft.free_threaded_build:
+                    report.fail_check(
+                        String("asgi-vs-free-threading"),
+                        asgi_free_threading_refusal(ft),
+                        String(
+                            "run this application on a GIL-enabled CPython"
+                            " (3.10-3.14 without the t suffix), with"
+                            " --workers for concurrency"
+                        ),
+                        EXIT_NOT_FREE_THREADED,
+                    )
+            except:
+                pass
         var mode: String
         if opts.threads > 1:
             mode = String("threads")
@@ -820,6 +862,7 @@ def main() raises:
         opts, is_asgi, effective_cpus()
     )
     var executor_mode = use_asgi_executor(opts, is_asgi)
+    _refuse_executor_on_free_threaded(executor_mode)
     # In executor mode the loop's own handler is the queue-overflow
     # fallback: its bridge gets a loop but no lifespan, so the executor's
     # app owns the one lifespan this process runs. Its registries do size
@@ -1163,6 +1206,10 @@ def _serve_threaded(
         opts, is_asgi, effective_cpus()
     )
     var executor_mode = use_asgi_executor(opts, is_asgi)
+    # `--threads` REQUIRES a free-threaded build, and the executor cannot
+    # run on one: an ASGI application under --threads is refused here on
+    # this toolchain, whatever the thread count.
+    _refuse_executor_on_free_threaded(executor_mode)
     # Each serving thread's own loop handler is only the fallback in
     # executor mode; the one lifespan per loop belongs to that loop's
     # executor. Registries size up for the chunk outboxes — the executor's

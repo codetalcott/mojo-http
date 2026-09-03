@@ -418,6 +418,14 @@
       "evidence": "the leak it mitigates is measured instead \u2014 `smoke-django` fails on RSS growth over 10k requests"
     },
     {
+      "id": "E10",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "A worker's configuration refusal (exit 78) ends supervision with 78, never a respawn loop",
+      "status": "verified",
+      "evidence": "`test_respawn.mojo:test_a_worker_refusing_its_configuration_is_not_respawned` (every PR)"
+    },
+    {
       "id": "E9",
       "section": "E",
       "category": "E. Process and worker model",
@@ -1088,6 +1096,14 @@
       "capability": "...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot",
       "status": "verified",
       "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server"
+    },
+    {
+      "id": "L18",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "ASGI on a free-threaded CPython build is refused with exit 78, naming modular/modular#5726",
+      "status": "verified",
+      "evidence": "`py-canary` (weekly) \u2014 `smoke-django-realtime` phase 6 on 3.14t: the executor's Python type cannot be built there (the stdlib lays `PyObject` out for the GIL build), so the mixed server exits 78 alone, through `--doctor`, and under `--workers 2` without a respawn; on the pinned GIL interpreter the same phase runs the full mixed server"
     },
     {
       "id": "L17",

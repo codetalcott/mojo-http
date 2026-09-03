@@ -9,6 +9,23 @@ versions may break the API**.
 
 ### Added
 
+- **ASGI on a free-threaded CPython build is refused, not crashed**
+  (SPEC L18, E10; ROADMAP Known issues). The weekly py-canary found the
+  asyncio executor segfaulting on 3.14t while building its `ExecutorPort`
+  Python type: Mojo 1.0's stdlib lays `PyObject` out for the GIL build, so
+  `PyModule_Create` misreads the module definition (modular/modular#5726).
+  `m0serve` now probes the build wherever the executor would engage --
+  prefork's worker, the threaded path, `--doctor` -- and exits 78 with a
+  sentence naming the issue and the fix (a GIL-enabled interpreter with
+  `--workers`); an ASGI app under `--threads` is therefore refused on this
+  toolchain. `WorkerSupervisor` treats a worker's exit 78 as the refusal it
+  is: no respawn, and the supervisor exits 78 itself, where before ten
+  respawns and an exit 1 reported a crash. `smoke-django-realtime` phase 6
+  asserts the refusal on a free-threaded build (alone, via `--doctor`, and
+  under `--workers 2`) and the full mixed server on a GIL build.
+  `py-canary.yml` no longer fail-fasts (Linux was cancelled before reaching
+  the failure, twice) and can file its issue (the default token was
+  read-only, so it never had).
 - **The documentation site's deployment** (`deploy/site/`, `poe
   deploy-site`, `poe smoke-site-image`; SPEC F14). A `python:3.12-slim`
   image with the m0serve wheel, the site rendered for `https://m0serve.dev`
