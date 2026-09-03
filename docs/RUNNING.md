@@ -16,6 +16,9 @@ m0serve myproject.wsgi:application          # an explicit callable
 m0serve myproject                            # or let discovery find it
 ```
 
+The name is spelled with a zero, `m0serve`, like the packages underneath it
+(`m0-core`, `m0-http`, `m0-wsgi`); `moserve` with a letter is nothing.
+
 `MODULE[:ATTR]` names the callable; `ATTR` defaults to `application`. A bare
 `MODULE` tries `MODULE.asgi:application`, `MODULE.wsgi:application`,
 `MODULE:app` and `MODULE.main:app`, in that order. `--app-dir DIR` is

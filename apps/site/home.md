@@ -29,6 +29,9 @@ pip install m0serve
 m0serve myproject.wsgi --realtime
 ```
 
+The name is spelled with a zero, `m0serve`, the way the packages underneath
+are named: `m0-core`, `m0-http`, `m0-wsgi`.
+
 The view runs first, with sessions and permissions in hand, which is where
 your authorization belongs. Under gunicorn the two headers are ignored and the
 same view degrades to a short plain response, so adopting it does not fork
