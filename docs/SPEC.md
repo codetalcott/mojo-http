@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**154 capabilities: 130 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 130 verified, 126 are gated on every pull request, 2 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**157 capabilities: 133 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 133 verified, 129 are gated on every pull request, 2 weekly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -223,6 +223,7 @@ whose body drifted away from it is the case most likely to have survived.
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
 | I16 | A Close frame's code is VALIDATED, not just echoed | verified | `test_websocket.mojo:test_reserved_close_codes_are_refused_1002` (every PR) — with `test_legal_close_codes_are_still_echoed` as the other half, so a refusal that refuses everything cannot pass |
 | I17 | A message at or above the outbox cap ends the connection | verified | `Smoke test the outbox cap ending a connection` (every PR) — the marker sent after the oversized message must never arrive, which is what separates ending the connection from dropping a frame the peer cannot know it missed; the under-cap half stops a server that ended every large-message connection from passing. Deliberate, and what Autobahn scores as 7 failures plus all of its performance section. `poe sabotage-outbox-cap` (pre-release) reverts each of the four rules |
+| I20 | A synchronous Flask view gating a held SSE stream and a WebSocket, with cross-worker publish | verified | `Smoke test the Flask realtime views` (every PR) — the headline names Flask, and K10 only proves plain WSGI. The file under test is extracted from QUICKSTART.md's own fenced block, so it is the one a reader types; the Django rows' RFC 6455 probe drives it unchanged (its gate phase off: the quickstart's views take no token), one stream and one socket pinned per worker under `--workers 2`, so a message sent on one worker's socket reaches a Flask view and comes back on the other worker's. The quickstart runs the same file from the wheel with curl alone (M10) |
 
 ## J. Static file serving
 
@@ -252,6 +253,7 @@ whose body drifted away from it is the case most likely to have survived.
 | K8 | Correct `wsgi.multithread` / `wsgi.multiprocess` for the real topology | verified | `Smoke test the Django WSGI example` (every PR) |
 | K9 | Unsized iterables streamed from a pool thread, sized bodies buffered | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | K10 | Framework-neutral: one contract, two frameworks | verified | `Run the WSGI framework contract against Flask` (every PR) |
+| K11 | The hold headers degrade under another WSGI server: the same view answers a short plain response | verified | `Execute the quickstart` (every PR) — the quickstart's Django file under gunicorn: `/events` answers 200 with the view's body and closes inside curl's deadline (held, it would not), the upgrade request answers 200 rather than 101, and `publish()` reports 0 workers without raising. The README's "degrades, not breaks" sentence, executed |
 
 ## L. ASGI 3.0
 
@@ -295,3 +297,4 @@ whose body drifted away from it is the case most likely to have survived.
 | M13 | systemd socket activation (`LISTEN_FDS`) | out of scope | no request for it. The old reason said `SO_REUSEPORT` covered the restart case, which is not true for anyone running `m0serve`: no flag or variable enables it (D6). What a restart here does get is the supervisor's graceful drain, so in-flight work finishes; a listener that outlives the process is a different property and nothing has asked for it |
 | M14 | An HTTP client in Mojo, for server-to-server calls | verified | `Smoke test the HTTP client` (every PR) |
 | M15 | Windows, musl | out of scope | no Mojo toolchain for either — see the platform table in README.md |
+| M16 | No second process: the running server is one process tree of m0serve binaries, and the wheel requires nothing | verified | `Execute the quickstart` (every PR) — under `--workers 2`, `pgrep -x m0serve` counts exactly a supervisor and two workers (the console script `execve`s, so no Python parent survives), and `pip show m0serve` lists an empty `Requires:`. The exact count is the self-test: a check that only looks for a broker it does not expect passes on an empty machine |

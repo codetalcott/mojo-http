@@ -818,6 +818,14 @@
       "evidence": "`Smoke test the outbox cap ending a connection` (every PR) \u2014 the marker sent after the oversized message must never arrive, which is what separates ending the connection from dropping a frame the peer cannot know it missed; the under-cap half stops a server that ended every large-message connection from passing. Deliberate, and what Autobahn scores as 7 failures plus all of its performance section. `poe sabotage-outbox-cap` (pre-release) reverts each of the four rules"
     },
     {
+      "id": "I20",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A synchronous Flask view gating a held SSE stream and a WebSocket, with cross-worker publish",
+      "status": "verified",
+      "evidence": "`Smoke test the Flask realtime views` (every PR) \u2014 the headline names Flask, and K10 only proves plain WSGI. The file under test is extracted from QUICKSTART.md's own fenced block, so it is the one a reader types; the Django rows' RFC 6455 probe drives it unchanged (its gate phase off: the quickstart's views take no token), one stream and one socket pinned per worker under `--workers 2`, so a message sent on one worker's socket reaches a Flask view and comes back on the other worker's. The quickstart runs the same file from the wheel with curl alone (M10)"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",
@@ -968,6 +976,14 @@
       "capability": "Framework-neutral: one contract, two frameworks",
       "status": "verified",
       "evidence": "`Run the WSGI framework contract against Flask` (every PR)"
+    },
+    {
+      "id": "K11",
+      "section": "K",
+      "category": "K. WSGI (PEP 3333)",
+      "capability": "The hold headers degrade under another WSGI server: the same view answers a short plain response",
+      "status": "verified",
+      "evidence": "`Execute the quickstart` (every PR) \u2014 the quickstart's Django file under gunicorn: `/events` answers 200 with the view's body and closes inside curl's deadline (held, it would not), the upgrade request answers 200 rather than 101, and `publish()` reports 0 workers without raising. The README's \"degrades, not breaks\" sentence, executed"
     },
     {
       "id": "L1",
@@ -1232,6 +1248,14 @@
       "capability": "Windows, musl",
       "status": "out of scope",
       "evidence": "no Mojo toolchain for either \u2014 see the platform table in README.md"
+    },
+    {
+      "id": "M16",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "No second process: the running server is one process tree of m0serve binaries, and the wheel requires nothing",
+      "status": "verified",
+      "evidence": "`Execute the quickstart` (every PR) \u2014 under `--workers 2`, `pgrep -x m0serve` counts exactly a supervisor and two workers (the console script `execve`s, so no Python parent survives), and `pip show m0serve` lists an empty `Requires:`. The exact count is the self-test: a check that only looks for a broker it does not expect passes on an empty machine"
     }
   ]
 }

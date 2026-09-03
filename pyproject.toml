@@ -2868,6 +2868,111 @@ echo "smoke-flask OK"
 python3 scripts/emit.py --covers K10 --task smoke-flask
 """
 
+# The Flask half of the headline claim ("a plain sync Django or Flask view
+# can hold..."). The app under test is EXTRACTED from QUICKSTART.md's own
+# fenced block rather than kept as a second copy, so the file this drives is
+# the one a reader types, and `from m0serve import m0pub` resolves to the
+# wheel package's real m0pub.py staged beside it. The Django rows' RFC 6455
+# probe drives it unchanged but for the gate phase (REALTIME_GATED=0: the
+# quickstart's views take no token, by design), one socket pinned per worker
+# under --workers 2; the SSE half is pinned the same way smoke-django-realtime
+# phase 2 pins it. The quickstart runs the same file from the wheel with curl
+# alone (M10); this is where a message crosses a socket, a Flask view and the
+# bus and comes back on the other worker's socket.
+[tool.poe.tasks.smoke-flask-realtime]
+help = "The quickstart's Flask views held by m0serve: SSE and WebSockets across two workers, driven by the realtime probe"
+deps = ["build-serve"]
+shell = """
+python3 -c 'import flask' 2>/dev/null || { echo "flask not installed - skipping smoke-flask-realtime"; exit 0; }
+
+out=$(mktemp -d)
+srv=bin/m0serve
+port=8091
+
+# The app: QUICKSTART.md's heredoc, verbatim. An empty extraction is a doc
+# edit that moved the block, and must fail here rather than serve nothing.
+sed -n "/^cat > realtime_flask.py <<'PY'$/,/^PY$/p" QUICKSTART.md | sed '1d;$d' > "$out/realtime_flask.py"
+grep -q 'M0-Hold' "$out/realtime_flask.py" || { echo "could not extract realtime_flask.py from QUICKSTART.md"; exit 1; }
+mkdir -p "$out/m0serve"
+: > "$out/m0serve/__init__.py"
+cp packaging/m0serve/src/m0serve/m0pub.py "$out/m0serve/m0pub.py"
+
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+core_lib="$PWD/packages/m0-core/libm0core.$ext"
+[ -f "$core_lib" ] || uv run poe build-ffi || exit 1
+
+SPEC="realtime_flask:app --app-dir $out --port $port --realtime --health-path /health"
+
+cleanup() {
+  kill -CONT $w_a 2>/dev/null
+  kill $pid $worker_pids 2>/dev/null
+  rm -rf "$out" fr1.log fr2.log
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  for log in fr1.log fr2.log; do
+    if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
+  done
+  exit 1
+}
+
+# Phase 1: one worker. A message sent on a socket reaches the Flask view as
+# a POST and comes back to every socket on the channel, another channel
+# hears none of it, and a Flask publish reaches sockets.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC > fr1.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:$port/health \
+  || fail 'server never became healthy'
+REALTIME_GATED=0 M0_PORT=$port python3 apps/django_realtime/realtime_probe.py \
+  || fail 'realtime_probe failed against Flask (single worker)'
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "single-worker server exited $rc on SIGTERM"
+
+# Phase 2: two workers. One SSE stream pinned on EACH worker (the first
+# worker paused while the second connects; accept is not fair), then ONE
+# Flask-handled publish must reach both -- the far one over the bus. Then
+# the probe's cross-worker socket shape on the same server.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --workers 2 > fr2.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:$port/health \
+  || fail 'two-worker server never became healthy'
+worker_pids=$(grep -oE 'pid=[0-9]+' fr2.log | cut -d= -f2 | sort -u)
+
+curl -sN --max-time 60 -D "$out/hdr_1" "http://localhost:$port/events?channel=news" > "$out/sse_1" &
+sse_1=$!
+sleep 2
+w_a=$(grep -i '^x-worker' "$out/hdr_1" | tr -dc '0-9')
+[ -n "$w_a" ] || fail 'first stream never opened (no x-worker header)'
+kill -STOP "$w_a" 2>/dev/null
+curl -sN --max-time 60 -D "$out/hdr_2" "http://localhost:$port/events?channel=news" > "$out/sse_2" &
+sse_2=$!
+sleep 3
+w_b=$(grep -i '^x-worker' "$out/hdr_2" | tr -dc '0-9')
+kill -CONT "$w_a" 2>/dev/null
+[ -n "$w_b" ] || fail 'second stream never opened (no x-worker header)'
+[ "$w_a" != "$w_b" ] || fail "both streams landed on worker $w_a even though it was paused"
+
+resp=$(curl -s -X POST -d channel=news -d msg=hello-flask-workers http://localhost:$port/publish)
+echo "$resp" | grep -Eq '"workers": ?2' || fail "publish did not reach both worker channels: $resp"
+sleep 2
+kill $sse_1 $sse_2 2>/dev/null
+wait $sse_1 $sse_2 2>/dev/null
+grep -q '^: connected' "$out/sse_1" || fail 'the Flask body did not lead the stream'
+grep -q '^data: hello-flask-workers' "$out/sse_1" || fail "the stream on worker $w_a never heard the publish"
+grep -q '^data: hello-flask-workers' "$out/sse_2" || fail "the stream on worker $w_b never heard the publish"
+
+REALTIME_GATED=0 REALTIME_EXPECT_WORKERS=2 M0_PORT=$port python3 apps/django_realtime/realtime_probe.py \
+  || fail 'realtime_probe failed against Flask (two workers)'
+
+kill $pid
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "two-worker server exited $rc on SIGTERM"
+echo "smoke-flask-realtime OK (streams and sockets across workers $w_a and $w_b)"
+python3 scripts/emit.py --covers I20 --task smoke-flask-realtime
+"""
+
 # Django's OWN ASGI handler through the executor: async views, live
 # StreamingHttpResponse, sessions -- and scope["client"], the reason the
 # row exists. Django populates REMOTE_ADDR only `if scope.get("client")`;
@@ -4911,8 +5016,10 @@ shell = """
 whl=$(ls dist/wheels/*.whl | head -1)
 [ -n "$whl" ] || { echo "smoke-quickstart: no wheel built"; exit 2; }
 M0SERVE_WHEEL="$whl" python3 scripts/run_quickstart.py \
-  --expect setup=2,serve=2,verify=2 || exit 1
+  --expect setup=4,serve=4,verify=4 || exit 1
 python3 scripts/emit.py --covers M10 --task smoke-quickstart
+python3 scripts/emit.py --covers K11 --task smoke-quickstart
+python3 scripts/emit.py --covers M16 --task smoke-quickstart
 """
 [tool.poe.tasks.smoke-ffi]
 help = "Load the C-ABI shared library via ctypes and assert known vectors"
