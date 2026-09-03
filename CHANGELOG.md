@@ -7,6 +7,21 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Starlette streaming response no longer leaves a traceback per
+  response in the log** (`bridge.mojo`, the executor shim). Starlette
+  -- so FastAPI and FastHTML -- produces a `StreamingResponse` body inside
+  an anyio task group, and the shim stamped its streaming mark on
+  `asyncio.current_task()`, the CHILD. The request task's done-callback
+  then took the stream for a buffered result and raised `TypeError`
+  unpacking `None` (the body had already been delivered, so nothing
+  failed but the log), and a client disconnect cancelled the child rather
+  than the request. The mark and the cancellable task are now the slot's
+  OWNER. Found by running FastAPI against the published wheel;
+  `test-shim` gains the child-task shape plus its sabotage, and
+  `smoke-fasthtml` refuses the traceback in its log.
+
 ### Added
 
 - **The headline claim, gated clause by clause** (SPEC I20, K11, M16;

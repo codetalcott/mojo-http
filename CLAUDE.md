@@ -337,7 +337,13 @@ code depends on:
     connection's in-flight bytes are refunded to the global window right
     there; spawning a new task on the slot clears the slot's stale marks (the
     disconnect, and for a WebSocket the previous socket's accept);
-    every "am I gone" check asks `_task_gone`, which consults both. Found
+    every "am I gone" check asks `_task_gone`, which consults both; and
+    the STREAMING mark and the cancellable stream task go on the slot's
+    owner (`_exec_slot_task[slot]`), never `asyncio.current_task()` —
+    Starlette (so FastAPI and FastHTML) produces a `StreamingResponse`
+    body inside an anyio task group, so `send` arrives from a child task,
+    and marking the child left one `TypeError` traceback in the log per
+    streamed response while the body itself arrived intact. Found
     on CI's macOS smoke (1 in 2), reproduced 8 of 11 runs under twelve
     CPU hogs — `chunked_keepalive.py`'s HTTP/1.0 probe closes after the
     head and the keep-alive stream that follows lands on the same slot —

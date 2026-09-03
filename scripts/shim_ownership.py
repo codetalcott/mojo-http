@@ -184,6 +184,20 @@ class Harness:
         behaviour = q.get("b", "hold")
         await send({"type": "http.response.start", "status": 200,
                     "headers": []})
+        if behaviour.startswith("child"):
+            # Starlette's shape: the body is produced by a task that is
+            # not the request task (anyio task group there, a bare
+            # create_task here -- what matters is current_task() differs).
+            async def body():
+                await send({"type": "http.response.body", "body": b"x" * 64,
+                            "more_body": True})
+                if behaviour == "childfinish":
+                    await send({"type": "http.response.body", "body": b"",
+                                "more_body": False})
+                else:
+                    await asyncio.Event().wait()
+            await asyncio.create_task(body())
+            return
         size = 1024
         if behaviour.startswith("bytes"):
             size = int(behaviour[len("bytes"):])
@@ -439,6 +453,48 @@ def test_a_websocket_recycle_forgets_the_predecessors_accept(h):
         "the successor closed a socket it never accepted: %r" % (after,))
 
 
+def test_a_stream_sent_from_a_child_task_marks_the_owner(h):
+    """Starlette (FastAPI, FastHTML) produces a StreamingResponse's body
+    inside an anyio task group, so `send` arrives from a CHILD task. The
+    streaming mark and the cancellable stream task belong to the slot's
+    OWNER regardless: marked on the child, the owner's done-callback took
+    the stream for a buffered result and raised `TypeError` unpacking
+    None -- one traceback per streamed response, in production logs --
+    and a disconnect cancelled a task the app's group would restart
+    around rather than the request."""
+    caught = []
+    h.loop.set_exception_handler(lambda loop, ctx: caught.append(ctx))
+    # The FastAPI shape: a stream that finishes on its own.
+    h.job(0, "childfinish")
+    h.settle()
+    assert "stream_end" in h.kinds(0), (
+        "the child-produced stream did not end: %r" % (h.kinds(0),))
+    assert not caught, (
+        "a done-callback raised after a finished child-produced stream: %r"
+        % (caught[0].get("exception"),))
+    # The disconnect shape: the owner must be the task that is marked,
+    # recorded for cancellation, and cancelled.
+    h.job(1, "childhold")
+    h.settle()
+    assert h.kinds(1)[:1] == ["stream_start"], (
+        "the held child-produced stream did not start: %r" % (h.kinds(1),))
+    owner = h.ns["_exec_slot_task"].get(1)
+    assert owner is not None, "slot 1 has no owning task"
+    assert getattr(owner, "_m0_streaming", False), (
+        "the streaming mark landed on the child task, not the owner")
+    assert h.ns["_exec_stream_tasks"].get(1) is owner, (
+        "the stream task recorded for cancellation is not the owner")
+    h.disconnect(1)
+    h.settle()
+    assert owner.done(), "the owner was not cancelled by the disconnect"
+    assert 1 not in h.ns["_exec_slot_task"], (
+        "the disconnected owner did not release its slot")
+    assert not caught, (
+        "a done-callback raised after a disconnected child-produced "
+        "stream: %r" % (caught[0].get("exception"),))
+    _assert_global_window_whole(h)
+
+
 def test_a_websocket_send_waits_for_its_window(h):
     """`websocket.send` is credit-gated, so a flooding app waits.
 
@@ -482,6 +538,7 @@ TESTS = [
     test_a_websocket_spawn_clears_the_slots_stale_disconnect,
     test_a_websocket_recycle_forgets_the_predecessors_accept,
     test_a_websocket_send_waits_for_its_window,
+    test_a_stream_sent_from_a_child_task_marks_the_owner,
 ]
 
 
@@ -492,6 +549,11 @@ TESTS = [
 # so nothing on disk is touched and CI can run this unattended.
 
 SABOTAGES = [
+    (
+        "the streaming mark goes on the current task, not the slot's owner",
+        "                task = _exec_slot_task.get(slot) or asyncio.current_task()",
+        "                task = asyncio.current_task()",
+    ),
     (
         "_task_gone consults only the slot",
         "    return (slot in _exec_disconnected\n"

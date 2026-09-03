@@ -3426,6 +3426,11 @@ curl -s $B/plain | grep -q 'plain text from fasthtml' || fail '/plain did not an
 # client walks away, the server shrugs.
 n=$(curl -sN --max-time 3 $B/sse | grep -c 'tick')
 [ "$n" -ge 2 ] || fail "expected >=2 live EventStream ticks from /sse, got $n"
+# Starlette produces that stream from a child task; the shim must mark the
+# request task, or its done-callback unpacks None and leaves one traceback
+# per streamed response in the log. The ticks above arrive either way,
+# which is why this line exists.
+grep -q 'Exception in callback' fasthtml.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
 curl -s --fail $B/ > /dev/null || fail 'server died after the EventStream client vanished'
 
 # And app.ws: FastHTML's WebSocket handler echoes through the executor.
