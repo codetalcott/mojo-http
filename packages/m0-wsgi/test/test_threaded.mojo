@@ -14,6 +14,8 @@ does for `test_hold`; nothing in these tests initializes an interpreter.
 from std.testing import assert_equal, assert_true, TestSuite
 
 from src.threaded import (
+    asgi_free_threading_refusal,
+    PYOBJECT_LAYOUT_ISSUE,
     FreeThreadingReport,
     ThreadContext,
     refusal_message,
@@ -38,6 +40,20 @@ def test_refusal_distinguishes_a_free_threaded_build_with_the_gil_on() raises:
     var msg = refusal_message(2, report)
     assert_true(msg.find("GIL is enabled") >= 0, msg)
     assert_true(msg.find("PYTHON_GIL") >= 0, msg)
+
+
+def test_asgi_refusal_names_the_build_the_issue_and_the_fix() raises:
+    """A free-threaded build cannot host the executor's Python type
+    (PyObject layout, upstream); the refusal says so, names the upstream
+    issue so the reader can check whether it moved, and names the fix."""
+    var report = FreeThreadingReport(String("3.14.7"), True, False)
+    var msg = asgi_free_threading_refusal(report)
+    assert_true(msg.find("free-threaded CPython build") >= 0, msg)
+    assert_true(msg.find("3.14.7t") >= 0, msg)
+    assert_true(msg.find(PYOBJECT_LAYOUT_ISSUE) >= 0, msg)
+    assert_true(msg.find("modular/modular#5726") >= 0, msg)
+    assert_true(msg.find("GIL-enabled CPython") >= 0, msg)
+    assert_true(msg.find("--workers") >= 0, msg)
 
 
 def test_exit_code_is_sysexits_ex_config() raises:

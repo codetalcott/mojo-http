@@ -2133,6 +2133,32 @@ second being the probe's own delay before sending the rest of the body.
 
 ## Known issues
 
+- **The asyncio executor cannot run on free-threaded CPython.** The
+  executor's `ExecutorPort` is a Python type built in-process with
+  `PythonModuleBuilder`, and Mojo 1.0's stdlib lays `PyObject` out for the
+  GIL build (a 16-byte header; a free-threaded build's is 32, `ob_tid` and
+  the biased refcount ahead of `ob_type`), so `PyModule_Create` reads the
+  module definition at the wrong offsets and segfaults in
+  `PyUnicode_FromString` -- the 2026-09-02 py-canary failure, identical to
+  the trace in modular/modular#5726 (open since January, still present in
+  26.1). It is the build's layout, not the GIL's state: `PYTHON_GIL=1`
+  does not help. Every WSGI path is fine there, because it only calls C
+  functions on opaque pointers. Since 2026-09-02 the server REFUSES rather
+  than crashes: an ASGI application on a free-threaded build exits 78
+  naming the issue (`asgi_free_threading_refusal`), `--doctor` reports the
+  same check, and under `--workers` the supervisor passes a worker's 78 up
+  as the refusal it is instead of respawning it (E10). Consequence worth
+  stating: an ASGI application cannot run under `--threads` on this
+  toolchain at all, since that mode requires the build the executor
+  cannot use. The pre-port pump (a `run_until_complete` per pass) would
+  work there and could be restored behind the probe if anyone needs ASGI
+  on 3.14t before upstream moves.
+
+  **Closed by:** none — an upstream fix to the stdlib's `PyObject` layout
+  (modular/modular#5726) retires it; the re-test is `smoke-django-realtime`
+  phase 6 on 3.14t, which must then run the full mixed server (L18 keeps
+  the refusal honest until then).
+
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It shells
   out for linking, so a minimal image (`python:*-slim` carries no compiler)
   fails with `unable to find suitable c compiler for linking`. CI never

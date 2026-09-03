@@ -202,6 +202,13 @@ comptime _RESPAWN_CHILD = 2
 comptime _EXIT_SHUTDOWN = 3
 """A reaped exit that ended supervision: a propagated SIGTERM or SIGINT."""
 
+comptime EX_CONFIG = 78
+"""The sysexits "configuration error" code: a worker exiting with it REFUSED its
+configuration (a mode the interpreter cannot run, say) and would refuse it
+again on every respawn. The supervisor does not respawn one, and exits 78
+itself once the workers are gone, so the refusal reaches whatever launched
+the server as the refusal it is rather than as ten crashes and an exit 1."""
+
 comptime _RELOAD_DRAIN_NS = 5_000_000_000
 """How long a reload waits for workers to drain before it uses SIGKILL."""
 
@@ -239,6 +246,8 @@ struct WorkerSupervisor:
     var reload_interval_ms: Int
     var reloads: Int
     """How many reloads have happened; reported, and read by the smoke."""
+    var _config_refused: Bool
+    """Whether a worker exited `EX_CONFIG`. Never respawned; propagated."""
     var _gave_up: Bool
     """Whether the respawn budget ran out with a worker still dead.
 
@@ -262,6 +271,7 @@ struct WorkerSupervisor:
         self.reload_interval_ms = 300
         self.reloads = 0
         self._gave_up = False
+        self._config_refused = False
 
     def enable_reload(mut self, var dirs: List[String], var suffix: String):
         """Watch `dirs` for changed `suffix` files and restart workers on one.
@@ -321,6 +331,8 @@ struct WorkerSupervisor:
             # Respawned child: unwind to the caller's server startup path,
             # exactly as an initially-forked child does above.
             return
+        if self._config_refused:
+            process_exit(EX_CONFIG)
         process_exit(1 if self._gave_up else 0)
 
     def _supervise(mut self) raises -> Bool:
@@ -361,7 +373,13 @@ struct WorkerSupervisor:
                 remaining -= 1
             else:
                 var code = exit_code(status)
-                if code != 0:
+                if code == EX_CONFIG:
+                    # A refusal, not a crash: the same configuration would be
+                    # refused by every respawn. Let the others finish and
+                    # exit 78 ourselves (fork_all).
+                    print("[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid))
+                    self._config_refused = True
+                elif code != 0:
                     print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
                     var outcome = self._try_respawn()
                     if outcome == _RESPAWN_CHILD:
@@ -431,6 +449,10 @@ struct WorkerSupervisor:
                 return _EXIT_SHUTDOWN
             return self._try_respawn()
         var code = exit_code(status)
+        if code == EX_CONFIG:
+            print("[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid))
+            self._config_refused = True
+            return _RESPAWN_FAILED
         if code != 0:
             print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
             return self._try_respawn()

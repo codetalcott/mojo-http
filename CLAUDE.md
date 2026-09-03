@@ -223,7 +223,12 @@ code depends on:
     tasks, completions answer via `put_response`/`complete`. Rules:
     attach once for the thread's life like a pool thread, but park
     ATTACHED inside `run_until_complete` (CPython's selector releases the
-    GIL there — that is the executor's detach); the Mojo loop still needs
+    GIL there — that is the executor's detach); **the executor cannot run
+    on a free-threaded build** — `PythonModuleBuilder` writes `PyObject`
+    with the GIL build's 16-byte header and 3.14t's is 32
+    (modular/modular#5726), so `m0serve` refuses an ASGI app there with
+    exit 78 (`asgi_free_threading_refusal`; ROADMAP Known issues) and an
+    ASGI app under `--threads` is impossible on this toolchain; the Mojo loop still needs
     `DetachingBackend`; every Python object stays owned by the executor
     thread; the loop's fallback handler is built with `lifespan=False` so
     exactly one lifespan runs per loop; `spawn_asgi` crosses the scope

@@ -16,9 +16,19 @@ concurrency:
 
 jobs:
   py-canary:
+    # The 2026-09-02 failure was diagnosed from macOS alone: fail-fast
+    # cancelled the Linux job before it reached the failing phase, twice.
+    # Each platform is its own answer here.
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
+    # The repository's default token is read-only, so "Create issue on
+    # failure" below had never been able to file anything (the 2026-08-26
+    # cancellation and the 2026-09-02 failure both went unreported).
+    permissions:
+      contents: read
+      issues: write
     runs-on: ${{ matrix.os }}
     # The canary runs the full WSGI suite twice-ish (pinned build, then the
     # 3.14t smokes, including smoke-django's 10k-request RSS loop).

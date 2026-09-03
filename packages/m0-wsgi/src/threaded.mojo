@@ -148,6 +148,34 @@ def refusal_message(threads: Int, report: FreeThreadingReport) -> String:
     )
 
 
+comptime PYOBJECT_LAYOUT_ISSUE = "modular/modular#5726"
+"""The upstream bug that keeps the ASGI executor off free-threaded builds."""
+
+
+def asgi_free_threading_refusal(report: FreeThreadingReport) -> String:
+    """The sentence a free-threaded interpreter gets for an ASGI app.
+
+    The asyncio executor is a Python type built in-process with
+    `PythonModuleBuilder` (`ExecutorPort`), and the stdlib lays `PyObject`
+    out for the GIL build -- a 16-byte header where a free-threaded build
+    has 32 -- so creating the module segfaults inside CPython
+    (`PyUnicode_FromString` on a misread `PyModuleDef`). That is the
+    BUILD's layout, not the GIL's state: `PYTHON_GIL=1` on a 3.14t does not
+    help. Named after the upstream issue so the reader can check whether
+    it has moved.
+    """
+    return String(
+        "an ASGI application runs on the asyncio executor, and the"
+        " executor cannot run on a free-threaded CPython build (running "
+        + report.version + "t): Mojo 1.0's Python bindings lay out PyObject"
+        " for the GIL build, so building the executor's Python type"
+        " segfaults (" + PYOBJECT_LAYOUT_ISSUE + "). Run this application"
+        " on a GIL-enabled CPython (3.10-3.14 without the t suffix), with"
+        " --workers for concurrency; there is no free-threaded ASGI mode on"
+        " this toolchain."
+    )
+
+
 def require_free_threading(threads: Int) raises:
     """Refuse to start a threaded mode the interpreter cannot run.
 
