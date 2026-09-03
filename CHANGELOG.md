@@ -7,39 +7,7 @@ versions may break the API**.
 
 ## [Unreleased]
 
-### Fixed
-
-- **The ASGI smoke's two shutdown phases bound their wait for the server
-  to exit**, and the `Tests` job caps are raised to what green runs now
-  take. Both phases ended in a bare `wait $pid` after SIGTERM, so a
-  server that never exited was a smoke that never finished: on 2026-09-02
-  the inverted-mode run on macOS sat 7 minutes inside that wait until the
-  job's 20-minute cap cancelled it, with a stray `m0serve` for the runner
-  to reap and no log to read -- the step's last line was the WebSocket
-  probe passing. A `wait_exit` helper polls for 30 s (the drain is 5 s
-  and the thread join another 5), then kills the server and fails naming
-  the phase, with `asgi.log` printed. The hang itself has not reproduced:
-  the sequence ran 20 of 20 clean under twenty CPU hogs on this tree, in
-  both shutdown phases, and every macOS run since has passed; the two
-  slot-recycle fixes above landed after the commit that hung, and the
-  next occurrence will at least say where it stood. Separately, the
-  smoke job's green runs take 16-19 minutes across some fifty steps
-  against a 20-minute cap set when they took 3-5 -- a 19.5-minute green
-  run is on record -- so the smoke cap is 35 and unit-tests (11-15
-  minutes) 30.
-
-- **A Starlette streaming response no longer leaves a traceback per
-  response in the log** (`bridge.mojo`, the executor shim). Starlette
-  -- so FastAPI and FastHTML -- produces a `StreamingResponse` body inside
-  an anyio task group, and the shim stamped its streaming mark on
-  `asyncio.current_task()`, the CHILD. The request task's done-callback
-  then took the stream for a buffered result and raised `TypeError`
-  unpacking `None` (the body had already been delivered, so nothing
-  failed but the log), and a client disconnect cancelled the child rather
-  than the request. The mark and the cancellable task are now the slot's
-  OWNER. Found by running FastAPI against the published wheel;
-  `test-shim` gains the child-task shape plus its sabotage, and
-  `smoke-fasthtml` refuses the traceback in its log.
+## [0.17.1] — 2026-09-03
 
 ### Added
 
@@ -135,8 +103,40 @@ versions may break the API**.
   carries only the essentials, at a fraction of its former size, naming
   what it omits and where to find it. `poe milestones`, the spec checker
   and the link checker read the new shape unchanged.
+
 ### Fixed
 
+- **The ASGI smoke's two shutdown phases bound their wait for the server
+  to exit**, and the `Tests` job caps are raised to what green runs now
+  take. Both phases ended in a bare `wait $pid` after SIGTERM, so a
+  server that never exited was a smoke that never finished: on 2026-09-02
+  the inverted-mode run on macOS sat 7 minutes inside that wait until the
+  job's 20-minute cap cancelled it, with a stray `m0serve` for the runner
+  to reap and no log to read -- the step's last line was the WebSocket
+  probe passing. A `wait_exit` helper polls for 30 s (the drain is 5 s
+  and the thread join another 5), then kills the server and fails naming
+  the phase, with `asgi.log` printed. The hang itself has not reproduced:
+  the sequence ran 20 of 20 clean under twenty CPU hogs on this tree, in
+  both shutdown phases, and every macOS run since has passed; the two
+  slot-recycle fixes above landed after the commit that hung, and the
+  next occurrence will at least say where it stood. Separately, the
+  smoke job's green runs take 16-19 minutes across some fifty steps
+  against a 20-minute cap set when they took 3-5 -- a 19.5-minute green
+  run is on record -- so the smoke cap is 35 and unit-tests (11-15
+  minutes) 30.
+
+- **A Starlette streaming response no longer leaves a traceback per
+  response in the log** (`bridge.mojo`, the executor shim). Starlette
+  -- so FastAPI and FastHTML -- produces a `StreamingResponse` body inside
+  an anyio task group, and the shim stamped its streaming mark on
+  `asyncio.current_task()`, the CHILD. The request task's done-callback
+  then took the stream for a buffered result and raised `TypeError`
+  unpacking `None` (the body had already been delivered, so nothing
+  failed but the log), and a client disconnect cancelled the child rather
+  than the request. The mark and the cancellable task are now the slot's
+  OWNER. Found by running FastAPI against the published wheel;
+  `test-shim` gains the child-task shape plus its sabotage, and
+  `smoke-fasthtml` refuses the traceback in its log.
 - **A recycled slot no longer inherits the previous WebSocket's accept.**
   The executor shim's `spawn_ws` cleared a recycled slot's stale disconnect
   mark but not its `_exec_ws_accepted` membership, and the previous task's
@@ -3330,6 +3330,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.17.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.1
 [0.17.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.0
 [0.16.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.16.0
 [0.15.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.15.1

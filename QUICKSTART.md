@@ -30,7 +30,7 @@ m0serve --version
 ```
 
 ```text
-m0serve 0.17.0
+m0serve 0.17.1
 ```
 
 ## 2. The app — one file
