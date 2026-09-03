@@ -58,10 +58,15 @@ jobs:
       # Exit 1 is the signal (3.14t broke something); exit 2 means the
       # runner's environment could not be put back, which is disposable here.
       - name: Run the free-threaded canary
+        # Shorter than the job's 60 so a hang is a FAILED step (the failure
+        # steps below then run) rather than a cancelled job that uploads
+        # nothing and files nothing. The task's own per-phase watchdog
+        # should fire first and name the phase.
+        timeout-minutes: 45
         run: uv run poe py-canary
 
-      - name: Upload canary log on failure
-        if: failure()
+      - name: Upload the canary log
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: py-canary-log-${{ matrix.os }}
