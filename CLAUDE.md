@@ -446,8 +446,7 @@ code depends on:
       registries are empty. `ws_message` asks the pool question FIRST: on a
       mixed mounted server `asgi_notify_fd` is set for the ASGI mount, and
       asking that one first hands every socket's message to an executor
-      that never accepted the connection (docs/ROADMAP.md, "Hold on a pool
-      thread").
+      that never accepted the connection (docs/notes/hold-on-a-pool-thread.md).
     - **A pool thread streams an unsized WSGI iterable, as a second
       producer on the executor's chunk channel.** The shim decides
       (`_stream_this` in `bridge.mojo`): an app-supplied `Content-Length`,

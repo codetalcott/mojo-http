@@ -5,9 +5,11 @@
 
 **Realtime from a synchronous Python app, with no added infrastructure.**
 
-*(New here? [docs/README.md](docs/README.md) says what each page is for. For
-where the project stands, run `uv run poe milestones` — it computes what is
-left for 1.0 rather than reporting what someone last wrote down.)*
+*(New here? The documentation site is [m0serve.dev](https://m0serve.dev):
+the quickstart, the operations guide and the capability matrix, with
+[docs/README.md](docs/README.md) as the map. For where the project stands,
+run `uv run poe milestones` — it computes what is left for 1.0 rather than
+reporting what someone last wrote down.)*
 
 A plain sync Django or Flask view can hold a Server-Sent Events stream or a
 WebSocket by answering with two response headers, and reach every subscriber

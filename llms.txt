@@ -1,67 +1,63 @@
 # m0serve
 
 > Realtime from a synchronous Python app, with no added infrastructure.
-> A WSGI/ASGI server written in Mojo: `pip install m0serve` — no Mojo
+> A WSGI/ASGI server written in Mojo: `pip install m0serve`, no Mojo
 > toolchain, no dependencies, nothing fetched at install. Its distinguishing
 > capability: held SSE and WebSocket connections gated by plain synchronous
-> views (Django, Flask, ...), with cross-worker publish — no Channels, no
+> views (Django, Flask, ...), with cross-worker publish. No Channels, no
 > Redis, no daphne, no second process. It is NOT the fastest server on raw
-> throughput and docs/BENCHMARKS.md says so with numbers.
+> throughput; the benchmarks page says so with numbers.
 
 Platforms: macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact
-floor is in the wheel filename — pip refuses rather than crashes on older
-systems). CPython 3.10–3.14, free-threaded builds included; one wheel per
-platform because the binary dlopens libpython rather than linking it.
-No Windows, no musl, no TLS/HTTP2 (terminate at a proxy).
+floor is in the wheel filename, and pip refuses rather than crashes on older
+systems). CPython 3.10-3.14; free-threaded builds run WSGI only. No Windows,
+no musl, no TLS/HTTP2 (terminate at a proxy).
 
 ## Operating contract
 
 - `m0serve MODULE[:ATTR]` serves WSGI or ASGI, detected from the object.
   Bare `MODULE` tries `MODULE.asgi:application`, `MODULE.wsgi:application`,
   `MODULE:app`, `MODULE.main:app`.
+- Zero-config topology follows the protocol: WSGI gets one loop with a pool
+  of `min(cores, 8)` handler threads; ASGI gets an asyncio executor.
+  `--workers N` preforks; `--mount PREFIX=SPEC` hosts several applications
+  in one process, each in its own mode; `--threads N` is free-threaded
+  CPython only and WSGI only (an ASGI app there is refused with exit 78).
 - Flags are strict and named in `m0serve --help`; flags override `M0_*`
   environment variables, which override defaults.
-- Refusals explain themselves on stderr and name the fix; a configuration
-  the server will not run exits 78. `--version` prints `m0serve X.Y.Z`.
+- Refusals explain themselves on stderr and name the fix. Exit 2 is usage,
+  1 is a startup failure, 78 is a configuration the interpreter cannot run.
+  `--version` prints `m0serve X.Y.Z`.
 - `m0serve --doctor [OPTIONS] [MODULE]` prints one JSON object and starts
-  nothing — platform and wheel arch, the interpreter it resolved and where
-  it lives, the application spec discovery chose and the protocol it
-  classified as, the resolved topology (including whether the handler pool
-  is a default or configured), and a `checks` array in which every failure
-  carries `detail`, `fix` and `exit`. **It exits with the code `m0serve`
-  itself would exit with for the same arguments** (0 serve, 2 usage,
-  1 startup, 78 EX_CONFIG), so it answers "will this run?" without binding
-  a port, forking, or importing the app twice. `poe smoke-doctor` runs both
-  over every refusal and compares. Bare `--doctor` with no MODULE is the
-  environment check and exits 0.
+  nothing: platform, interpreter, the application spec discovery chose and
+  its protocol, the resolved topology, and a `checks` array where every
+  failure carries `detail`, `fix` and `exit`. It exits with the code
+  `m0serve` itself would exit with for the same arguments.
 - `--health-path /health` answers 200 in the server, before Python.
-- Realtime: a view's response with `M0-Hold: stream|websocket` +
+- Realtime: a view's response with `M0-Hold: stream|websocket` and
   `M0-Channel: NAME` converts the connection to a held subscription;
   `from m0serve import m0pub; m0pub.publish(channel, data)` reaches every
-  subscriber on every worker. Inbound WebSocket messages arrive as POSTs
-  to `/ws/message` with `M0-Channel`/`M0-Slot`/opcode headers. `--realtime`
-  composes with `--blocking-threads` and `--mount`, so held connections,
-  an ASGI mount and a handler pool can share one process; it is refused
-  only where nothing could take a hold (an ASGI-only server).
+  subscriber on every worker. Inbound WebSocket messages arrive as POSTs to
+  `/ws/message` with `M0-Channel`/`M0-Slot`/`M0-Opcode` headers. `--realtime`
+  composes with `--blocking-threads` and `--mount`; it is refused only where
+  nothing could take a hold (an ASGI-only server).
+- `--static PREFIX=DIR` serves files from the server with sendfile, ETags
+  and byte ranges; a miss falls through to the application.
+- SIGTERM drains in-flight work and exits 0; the server runs as PID 1
+  correctly.
 
 ## Start here
 
-- [QUICKSTART.md](QUICKSTART.md): ten minutes to live multi-tab sync from
-  one sync-Django file. Every fenced block is executed by CI on every pull
-  request (`poe smoke-quickstart`), so the steps are pinned, not aspirational.
-- [README.md](README.md): install matrix, framework docs, limits.
-- [docs/SPEC.md](docs/SPEC.md): the capability matrix — what this
-  server implements and what proves it, one row per capability with a
-  named CI gate, a source file, a roadmap heading or a reason for the
-  refusal. `docs/spec.json` is the same data, generated from it.
-  `verified` there means a gate runs on the stated cadence, not that
-  the capability is correct; the page says so itself.
-- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): every performance number, each
-  rendered from a dated artifact in `bench/results/` and CI-checked against
-  it. States where m0serve loses (raw throughput, against both Granian and
-  uvicorn) as plainly as where it wins (fast-request tail under mixed
-  load), and names the one claim that has no artifact yet.
-- [CHANGELOG.md](CHANGELOG.md): honest release notes, including what each
-  release's failures taught.
-- [apps/django_realtime/](apps/django_realtime/): the fuller demo — token
-  auth, channel isolation, static files served without entering Python.
+- [Quickstart](QUICKSTART.md): ten minutes to live multi-tab sync from one
+  sync-Django file. Every fenced block is executed by CI.
+- [Running m0serve](docs/RUNNING.md): flags, modes, what to put in front of
+  it, shutdown and exit codes.
+- [Capabilities](docs/SPEC.md): the capability matrix, one row per
+  capability with the CI gate that proves it; `docs/spec.json` is the same
+  data. `verified` means a gate runs on the stated cadence, not that the
+  capability is correct; the page says so itself.
+- [Benchmarks](docs/BENCHMARKS.md): every performance number, each rendered
+  from a dated artifact and CI-checked against it, including where this
+  server loses.
+- The realtime example the quickstart builds on, as a project:
+  [apps/django_realtime](apps/django_realtime/).
