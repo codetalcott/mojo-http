@@ -1128,40 +1128,63 @@ def set_scope_base(server_name, server_port, root_path=''):
     }
 
 
-async def _serve_one_exec(slot, scope, body):
-    # The executor's request coroutine: buffered until the application
-    # proves it is streaming (its first more_body=True chunk), then a
-    # credit-gated chunk producer. A buffered request returns a
-    # (status, headers, body) triple and the done-callback answers
-    # through the completion channel; a streaming one returns None and its
-    # bytes travel as events instead -- ('stream_start', slot, status,
-    # headers, b''), ('stream_chunk', slot, bytes), ('stream_end', slot).
-    # The head crosses UNTOUCHED, both ways: the int status and the
-    # (bytes, bytes) list exactly as the application sent them. Mojo reads
-    # both through the C API (`build_asgi_response`), so no reason phrase
-    # is formatted and no name or value is decoded to str here -- a
-    # measured share of the executor thread's per-request work.
-    # After stream_start the completion channel must never be used for
-    # this slot again: the head already answered it, and the slot may be
-    # recycled the instant the loop closes it.
-    import asyncio
+class _Cycle:
+    # One request on the executor. What used to be `_serve_one_exec`'s
+    # three closures (receive, _emit, send) over seven per-request cells,
+    # plus the done-callback closure `_task_done` built per request, is one
+    # object with __slots__ and bound methods: fewer allocations on the
+    # executor thread's per-request path, which is the bound at low
+    # concurrency. THE OWNERSHIP RULES DO NOT MOVE with the shape: the
+    # streaming mark and the cancellable stream task go on the slot's
+    # OWNER task (`_exec_slot_task[slot]`), never asyncio.current_task();
+    # cleanup runs only if the finishing task is the owner; every "am I
+    # gone" check asks `_task_gone`, which consults both marks; the credit
+    # windows are per slot. `poe test-shim` sabotages each of them.
+    #
+    # Buffered until the application proves it is streaming (its first
+    # more_body=True chunk), then a credit-gated chunk producer. A
+    # buffered request returns a (status, headers, body) triple and the
+    # done-callback answers through the completion channel; a streaming
+    # one returns None and its bytes travel as events instead --
+    # ('stream_start', slot, status, headers, b''), ('stream_chunk',
+    # slot, bytes), ('stream_end', slot). After stream_start the
+    # completion channel must never be used for this slot again: the head
+    # already answered it, and the slot may be recycled the instant the
+    # loop closes it. The head crosses UNTOUCHED, both ways: the int
+    # status and the (bytes, bytes) list exactly as the application sent
+    # them. Mojo reads both through the C API (`build_asgi_response`), so
+    # no reason phrase is formatted and no name or value is decoded to
+    # str here -- a measured share of the executor thread's per-request
+    # work.
+    #
+    # `asyncio` is imported on the rare branches that need it (a
+    # disconnect wait, the switch to streaming, a cancelled credit wait)
+    # rather than per call: the buffered request path touches it nowhere.
+    __slots__ = ('slot', 'body', 'delivered', 'status', 'headers',
+                 'chunks', 'total', 'streaming', 'aborted')
 
-    delivered = []
-    captured = {'status': None, 'headers': []}
-    chunks = []
-    total = [0]
-    stream_deadline = [None]
-    streaming = [False]
+    def __init__(self, slot, body):
+        self.slot = slot
+        self.body = body
+        self.delivered = False
+        self.status = None
+        self.headers = None
+        self.chunks = []
+        self.total = 0
+        self.streaming = False
+        self.aborted = False
 
-    async def receive():
-        if not delivered:
-            delivered.append(True)
-            return {'type': 'http.request', 'body': body,
+    async def receive(self):
+        if not self.delivered:
+            self.delivered = True
+            return {'type': 'http.request', 'body': self.body,
                     'more_body': False}
         # Unlike the buffered bridge, the executor CAN observe a
         # disconnect: the loop's close sends a tag that resolves this
         # future. Shielded so a task cancellation cancels the await, not
         # the shared future.
+        import asyncio
+        slot = self.slot
         fut = _exec_disconnects.get(slot)
         if fut is None:
             fut = _loop.create_future()
@@ -1169,7 +1192,7 @@ async def _serve_one_exec(slot, scope, body):
         await asyncio.shield(fut)
         return {'type': 'http.disconnect'}
 
-    async def _emit(data):
+    async def _emit(self, data):
         # Split under the bus frame cap, and never outrun the loop: each
         # piece waits for the drain acks to leave room in BOTH windows --
         # this stream's, and every stream's together. The global one is what
@@ -1178,17 +1201,20 @@ async def _serve_one_exec(slot, scope, body):
         # await, so the loop's GIL and this executor's other tasks both keep
         # running -- which is why the wait belongs here and not in the Mojo
         # send.
+        slot = self.slot
         view = memoryview(data)
         for start in range(0, len(view), _ASGI_CHUNK_SPLIT):
             piece = bytes(view[start:start + _ASGI_CHUNK_SPLIT])
             evt = _exec_credit_evts[slot]
             while _exec_credits.get(slot, 0) < len(piece):
                 if _task_gone(slot):
+                    import asyncio
                     raise asyncio.CancelledError()
                 evt.clear()
                 await evt.wait()
             while _exec_global_credit[0] < len(piece):
                 if _task_gone(slot):
+                    import asyncio
                     raise asyncio.CancelledError()
                 _exec_global_evt.clear()
                 await _exec_global_evt.wait()
@@ -1197,28 +1223,30 @@ async def _serve_one_exec(slot, scope, body):
             _exec_inflight[slot] = _exec_inflight.get(slot, 0) + len(piece)
             _exec_put(('stream_chunk', slot, piece))
 
-    async def send(message):
+    async def send(self, message):
         t = message.get('type', '')
         if t == 'http.response.start':
-            captured['status'] = int(message.get('status', 500))
-            captured['headers'] = list(message.get('headers', []))
+            self.status = int(message.get('status', 500))
+            self.headers = list(message.get('headers', []))
         elif t == 'http.response.body':
             chunk = bytes(message.get('body', b'') or b'')
             more = bool(message.get('more_body', False))
-            if streaming[0]:
+            if self.streaming:
                 if chunk:
-                    await _emit(chunk)
+                    await self._emit(chunk)
                 return
             if more:
                 # The switch: this response is a stream. Send the head
                 # through the completion channel (the pump turns it into
                 # the sse_streaming response), flush what was buffered,
                 # and stream from here on.
-                if captured['status'] is None:
+                if self.status is None:
                     raise RuntimeError(
                         'ASGI streamed a body chunk before '
                         'http.response.start')
-                streaming[0] = True
+                import asyncio
+                slot = self.slot
+                self.streaming = True
                 # The slot's OWNER, never `asyncio.current_task()`: Starlette
                 # (so FastAPI and FastHTML) runs a StreamingResponse's body
                 # inside an anyio task group, so this `send` arrives from a
@@ -1233,49 +1261,54 @@ async def _serve_one_exec(slot, scope, body):
                 _exec_credits[slot] = _ASGI_CREDIT_WINDOW
                 _exec_credit_evts[slot] = asyncio.Event()
                 _exec_put((
-                    'stream_start', slot, captured['status'],
-                    captured['headers'], b'',
+                    'stream_start', slot, self.status, self.headers, b'',
                 ))
-                buffered = chunks[:]
-                chunks.clear()
-                total[0] = 0
+                buffered = self.chunks
+                self.chunks = []
+                self.total = 0
                 for piece in buffered:
-                    await _emit(piece)
+                    await self._emit(piece)
                 if chunk:
-                    await _emit(chunk)
+                    await self._emit(chunk)
                 return
             if chunk:
-                chunks.append(chunk)
-                total[0] += len(chunk)
-                if total[0] > _ASGI_BUFFER_CAP:
+                self.chunks.append(chunk)
+                self.total += len(chunk)
+                if self.total > _ASGI_BUFFER_CAP:
                     raise RuntimeError(
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP)
 
-    aborted = [False]
-    try:
-        await _app(scope, receive, send)
-    except BaseException:
-        aborted[0] = True
-        raise
-    finally:
-        if streaming[0] and not _task_gone(slot):
-            # End of stream. A normal completion ends with the chunked
-            # terminator and the connection returns to keep-alive; an
-            # application error after the head -- or a cancellation that
-            # was not a disconnect -- aborts instead, and the loop closes
-            # WITHOUT the terminator, so the client sees a truncated body
-            # rather than a short one under a clean ending.
-            _exec_put(
-                ('stream_abort' if aborted[0] else 'stream_end', slot))
+    async def run(self, scope):
+        slot = self.slot
+        try:
+            await _app(scope, self.receive, self.send)
+        except BaseException:
+            self.aborted = True
+            raise
+        finally:
+            if self.streaming and not _task_gone(slot):
+                # End of stream. A normal completion ends with the chunked
+                # terminator and the connection returns to keep-alive; an
+                # application error after the head -- or a cancellation that
+                # was not a disconnect -- aborts instead, and the loop closes
+                # WITHOUT the terminator, so the client sees a truncated body
+                # rather than a short one under a clean ending.
+                _exec_put(
+                    ('stream_abort' if self.aborted else 'stream_end', slot))
 
-    if streaming[0]:
-        return None
-    if captured['status'] is None:
-        raise RuntimeError(
-            'ASGI application completed without sending '
-            'http.response.start')
-    return (captured['status'], captured['headers'], b''.join(chunks))
+        if self.streaming:
+            return None
+        if self.status is None:
+            raise RuntimeError(
+                'ASGI application completed without sending '
+                'http.response.start')
+        return (self.status, self.headers, b''.join(self.chunks))
+
+    def done(self, t):
+        # The done-callback: a bound method, where `_task_done` built a
+        # closure per request. The rule is `_on_task_done`'s.
+        _on_task_done(self.slot, t)
 
 
 def spawn(slot, scope, body):
@@ -1291,49 +1324,56 @@ def spawn(slot, scope, body):
     # Mojo (there is no such thing): ('done', slot, status, headers,
     # body_bytes) or ('err', slot, message) for buffered responses;
     # stream_* events for streaming ones.
-    task = _loop.create_task(_serve_one_exec(slot, scope, body))
+    cycle = _Cycle(slot, body)
+    task = _loop.create_task(cycle.run(scope))
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
     # A disconnect that reached the slot before this task existed was the
     # previous connection's (the tag precedes this job on the FIFO).
     _exec_disconnected.discard(slot)
     _exec_disconnects.pop(slot, None)
-    task.add_done_callback(_task_done(slot))
+    task.add_done_callback(cycle.done)
+
+
+def _on_task_done(slot, t):
+    _exec_tasks.discard(t)
+    was_streaming = getattr(t, '_m0_streaming', False)
+    if _exec_slot_task.get(slot) is t:
+        # Still the slot's owner: the per-slot state is this task's.
+        _exec_slot_task.pop(slot, None)
+        _exec_cleanup_slot(slot)
+    # Otherwise a newer task owns the slot (the loop recycled it while
+    # this one was still winding down); its state is not ours to wipe.
+    if was_streaming:
+        # The stream's own finally already signalled the loop; the
+        # completion channel is off limits (the slot may be recycled).
+        # Surface an application error to the log only.
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                _exec_put((
+                    'stream_note', slot,
+                    '%s: %s' % (type(exc).__name__, exc)))
+        return
+    if t.cancelled():
+        _exec_put(('err', slot, 'cancelled'))
+        return
+    exc = t.exception()
+    if exc is not None:
+        _exec_put(
+            ('err', slot, '%s: %s' % (type(exc).__name__, exc)))
+        return
+    status, headers, body_bytes = t.result()
+    _exec_put(('done', slot, status, headers, body_bytes))
 
 
 def _task_done(slot):
+    # The WebSocket path's done-callback: a closure per CONNECTION, which
+    # is what a handshake is; the HTTP path binds `_Cycle.done` per
+    # request instead. Both apply `_on_task_done`'s rule.
     def _done(t):
-        _exec_tasks.discard(t)
-        was_streaming = getattr(t, '_m0_streaming', False)
-        if _exec_slot_task.get(slot) is t:
-            # Still the slot's owner: the per-slot state is this task's.
-            _exec_slot_task.pop(slot, None)
-            _exec_cleanup_slot(slot)
-        # Otherwise a newer task owns the slot (the loop recycled it while
-        # this one was still winding down); its state is not ours to wipe.
-        if was_streaming:
-            # The stream's own finally already signalled the loop; the
-            # completion channel is off limits (the slot may be recycled).
-            # Surface an application error to the log only.
-            if not t.cancelled():
-                exc = t.exception()
-                if exc is not None:
-                    _exec_put((
-                        'stream_note', slot,
-                        '%s: %s' % (type(exc).__name__, exc)))
-            return
-        if t.cancelled():
-            _exec_put(('err', slot, 'cancelled'))
-            return
-        exc = t.exception()
-        if exc is not None:
-            _exec_put(
-                ('err', slot, '%s: %s' % (type(exc).__name__, exc)))
-            return
-        status, headers, body_bytes = t.result()
-        _exec_put(('done', slot, status, headers, body_bytes))
+        _on_task_done(slot, t)
     return _done
-
 
 async def _serve_one_ws(slot, scope):
     # One WebSocket connection: the loop already validated the handshake
