@@ -2257,7 +2257,7 @@ struct PyBridge(Movable):
         # (Django's ASGIHandler strips it itself) -- the one place the two
         # protocols disagree about the prefix, see `build_environ`.
         _base_set(sd, "root_path", _py_str(script_name))
-        var port = 0
+        var port: Int
         try:
             port = Int(server_port)
         except:
@@ -2265,7 +2265,7 @@ struct PyBridge(Movable):
         var server = cpy.PyTuple_New(2)
         if not server:
             raise cpy.get_error()
-        _ = cpy.PyTuple_SetItem(server, 0, _py_str(server_name)^.steal_data())
+        _ = cpy.PyTuple_SetItem(server, 0, _py_str(server_name).steal_data())
         _ = cpy.PyTuple_SetItem(server, 1, cpy.PyLong_FromSsize_t(port))
         _base_set(sd, "server", PythonObject(from_owned=server))
         # None until a request with a peer overwrites it: ASGI makes
