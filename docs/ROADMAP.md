@@ -359,6 +359,7 @@ of this page until 2026-09-03, when the page became state-only.
 - [Pacing the pump's loop thread](notes/pump-pacing.md)
 - [The Mojo handler pool — shipped 2026-08-28](notes/mojo-handler-pool.md)
 - [The detached loop — shipped 2026-09-03](notes/detached-loop.md)
+- [The executor's per-request Python work, and the C-API head read — shipped 2026-09-04](notes/executor-python-objects.md)
 - [Mojo language capabilities, surveyed 2026-08-28](notes/mojo-language-capabilities.md)
 - [Considered, not built: routes that carry a function](notes/routes-that-carry-a-function.md)
 
