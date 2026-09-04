@@ -21,9 +21,10 @@ silent default.
 """
 
 from std.ffi import external_call
-from std.sys.info import CompilationTarget
+from std.sys.info import CompilationTarget, num_performance_cores
 
 from lightbug_http.offload import match_path_prefix
+from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
 from lightbug_http.server_config import ServerConfig
 from m0_http.config import AppConfig
 
@@ -142,6 +143,10 @@ struct ServeOptions(Copyable, Movable):
     var static_dirs: List[String]
     var static_cache_control: String
     var access_log: Bool
+    var qos: Bool
+    """`--qos` / `M0_QOS`: on macOS, the loop at user-interactive QoS and its
+    worker threads at user-initiated (`m0_http.threads.request_qos_class`);
+    accepted and ignored elsewhere."""
     var max_body: Int
     """Request body cap in bytes; -1 leaves `ServerConfig`'s default alone."""
     var idle_timeout: Int
@@ -215,6 +220,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_dirs = List[String]()
         self.static_cache_control = String("")
         self.access_log = False
+        self.qos = False
         self.max_body = -1
         self.idle_timeout = -1
         self.metrics = False
@@ -251,6 +257,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_dirs = copy.static_dirs.copy()
         self.static_cache_control = copy.static_cache_control
         self.access_log = copy.access_log
+        self.qos = copy.qos
         self.max_body = copy.max_body
         self.idle_timeout = copy.idle_timeout
         self.metrics = copy.metrics
@@ -287,6 +294,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_dirs = move.static_dirs^
         self.static_cache_control = move.static_cache_control^
         self.access_log = move.access_log
+        self.qos = move.qos
         self.max_body = move.max_body
         self.idle_timeout = move.idle_timeout
         self.metrics = move.metrics
@@ -316,6 +324,7 @@ struct ServeOptions(Copyable, Movable):
         opts.threads_set = config.threads_set
         opts.blocking_threads_set = config.blocking_threads_set
         opts.access_log = config.access_log
+        opts.qos = config.qos
         return opts^
 
     def address(self) -> String:
@@ -561,9 +570,73 @@ def effective_cpus() -> Int:
     needed before the fork, and the fork must precede the first Python
     call. The constant differs per platform (glibc 84, macOS 58).
     """
-    comptime _SC_NPROCESSORS_ONLN = 58 if CompilationTarget.is_macos() else 84
-    var count = external_call["sysconf", Int](Int(_SC_NPROCESSORS_ONLN))
+    var count = external_call["sysconf", Int](Int(SC_NPROCESSORS_ONLN))
     return count if count > 0 else 1
+
+
+def performance_cpus() -> Int:
+    """Cores worth sizing CPU-bound work to: the performance cores on Apple
+    Silicon, every logical CPU elsewhere.
+
+    `sysconf` counts the efficiency cores too, and on an M4 that is 10 for
+    a machine with 4 cores that serve at full speed (docs/BENCHMARKS.md
+    measured an E-core at about a quarter of a P-core on this workload).
+    The stdlib's `num_performance_cores` reads `hw.perflevel0.logicalcpu`;
+    a Linux box has one performance level, so this is `effective_cpus`
+    there and the two counts agree. A runtime probe, not a compile-time
+    one: the wheel is built for the oldest Apple Silicon and runs on all
+    of them, and the P-core count is a property of the machine it lands
+    on, not of the build.
+    """
+    comptime if CompilationTarget.is_macos():
+        var n = num_performance_cores()
+        return n if n > 0 else effective_cpus()
+    else:
+        return effective_cpus()
+
+
+def pool_cpus() -> Int:
+    """The core count the zero-config handler pool is sized from.
+
+    Every logical CPU, on every platform -- NOT the performance-core count,
+    although the M4 that raised the question has 4 of those and 10 logical
+    CPUs. Measured 2026-09-04 on that machine, pools of 4 and 8 threads tie:
+    a CPU-bound view holding the GIL for 1 ms served about 970 requests per
+    second with either, which is the GIL's ceiling and not the pool's, and
+    hello-world differed only inside the run-to-run noise. A pool thread's
+    parallelism is WAITING -- a thread parked in a view holds no core -- so
+    the count that matters is how many views may wait at once, and the
+    efficiency cores are as good as any for that. What the P-core count
+    does steer is PLACEMENT, through `--qos`; `--doctor` reports it beside
+    this count so the two questions stay distinct. One function, so the
+    policy has one home to change if a measurement ever says otherwise.
+    """
+    return effective_cpus()
+
+
+def apple_target() -> String:
+    """The Apple Silicon generation this binary was COMPILED for; "" off macOS.
+
+    A compile-time fact, deliberately: the portable wheel answers `m1` on
+    every Mac it runs on, because `build-serve` pins `--target-cpu` to the
+    oldest Apple Silicon so one artifact runs on all of them, while
+    `build-serve-native` answers the build host's generation. Comparing
+    this line to `sysctl machdep.cpu.brand_string` says which of the two
+    a binary is, which nothing else about it reveals.
+    """
+    comptime if CompilationTarget.is_macos():
+        comptime if CompilationTarget.is_apple_m1():
+            return String("m1")
+        elif CompilationTarget.is_apple_m2():
+            return String("m2")
+        elif CompilationTarget.is_apple_m3():
+            return String("m3")
+        elif CompilationTarget.is_apple_m4():
+            return String("m4")
+        else:
+            return String("other")
+    else:
+        return String("")
 
 
 def discovery_specs(module: String) -> List[String]:
@@ -623,6 +696,7 @@ def _takes_value(name: String) -> Bool:
 def _is_bool(name: String) -> Bool:
     return (
         name == "--access-log"
+        or name == "--qos"
         or name == "--metrics"
         or name == "--realtime"
         or name == "--reload"
@@ -780,6 +854,8 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
                     opts.show_version = True
                 elif name == "--access-log":
                     opts.access_log = True
+                elif name == "--qos":
+                    opts.qos = True
                 elif name == "--realtime":
                     opts.realtime = True
                 elif name == "--reload":
@@ -862,6 +938,8 @@ def usage() -> String:
         "                              Python; repeatable\n"
         "  --static-cache-control V    Cache-Control for static responses\n"
         "  --access-log                one log line per request (M0_ACCESS_LOG)\n"
+        "  --qos                       macOS: keep the loop and its worker threads\n"
+        "                              on performance cores under contention (M0_QOS)\n"
         "  --max-body SIZE             request body cap: bytes, or 512k / 64m / 1g\n"
         "                              (default 4m)\n"
         "  --idle-timeout SECONDS      close a keep-alive connection left idle\n"

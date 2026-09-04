@@ -102,3 +102,25 @@ trait EventLoopBackend:
         epoll:  close timerfd and EPOLL_CTL_DEL
         """
         ...
+
+
+trait ConstructibleBackend(EventLoopBackend):
+    """An `EventLoopBackend` a caller can build with no arguments.
+
+    The two OS backends conform; the wrapping `DetachingBackend` does not,
+    because it is built around one of them. The trait exists so that
+    `PlatformBackend()` in `c/platform.mojo` has an initializer to resolve
+    to -- a conditional type alias only sees what a shared trait declares.
+    """
+
+    def __init__(out self) raises:
+        """Open the OS multiplexer (`kqueue()` / `epoll_create1`)."""
+        ...
+
+    def multiplexer_fd(self) -> Int:
+        """The multiplexer's own fd, for a selector that wants to watch it.
+
+        The inverted executor hands it to asyncio (`add_reader`) so the
+        server loop runs inside the Python loop's iteration.
+        """
+        ...

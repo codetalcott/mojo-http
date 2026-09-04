@@ -442,6 +442,30 @@
       "evidence": "same reason as above"
     },
     {
+      "id": "E12",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "The OS multiplexer is chosen in one place: `lightbug_http/c/platform.mojo` names `PlatformBackend` (kqueue on macOS, epoll on Linux) and the two libc constants whose values differ between them, and no other file imports or constructs a backend",
+      "status": "verified",
+      "evidence": "`test_platform.mojo:test_platform_backend_is_a_constructible_multiplexer` (every PR) \u2014 the alias constructs through the trait-declared initializer and owns a multiplexer fd on the running OS. The other half, that nothing else chooses a backend, is `check_backend_seam` in `scripts/check_docs.py`, a rule over the tree's text that `check-docs` runs on every pull request"
+    },
+    {
+      "id": "E13",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "`--doctor` reports the performance-core count beside the logical count (`topology.performance_cpus`: `hw.perflevel0.logicalcpu` on Apple Silicon, equal to `cpus` on a machine with one performance level) and `build.apple_target`, the generation the binary was compiled for",
+      "status": "verified",
+      "evidence": "`Smoke test Apple Silicon topology, QoS and the native build flavor` (every PR) \u2014 the count is checked against `sysctl`, a second source that mirrors the stdlib's fallback, and the wheel flavor must answer m1 on whatever Mac runs it, because `build-serve` pins its target to the oldest Apple Silicon"
+    },
+    {
+      "id": "E14",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "`--qos` / `M0_QOS`: on macOS the event loop runs at user-interactive QoS and pool and executor threads at user-initiated, the one placement lever Darwin offers over performance and efficiency cores; accepted and ignored elsewhere",
+      "status": "verified",
+      "evidence": "`Smoke test Apple Silicon topology, QoS and the native build flavor` (every PR) \u2014 the doctor reports the knob from both spellings, and a server under it answers a loop-answered route and a pool-thread view. The effect is measured rather than smoked: docs/notes/desktop-mac-server.md"
+    },
+    {
       "id": "F1",
       "section": "F",
       "category": "F. Observability",
@@ -1288,6 +1312,14 @@
       "capability": "The live demo: the quickstart's shape as a public page with per-visitor channels and rate and size limits, served from its deploy image",
       "status": "verified",
       "evidence": "`Smoke test the live demo's deploy image` (every PR) \u2014 `deploy/demo/Dockerfile` built from the tree's own wheel and probed through a published port by `scripts/demo_probe.py`: a first visitor is handed a token cookie and the page names the served version; without the cookie the hold views answer 403 and a foreign-`Origin` upgrade is refused; one publish reaches a second stream on the visitor's channel and a stranger's stream hears nothing for a measured silence; a WebSocket frame comes back to the socket and to the streams; a message over the cap is 413 and a burst meets 429 with `Retry-After` after the first LIMIT attempts and within workers\u00d7LIMIT+1; m0serve is PID 1 by `/proc/1/cmdline` and `docker stop` drains to exit 0 with held connections open. The same probe, pointed at a URL instead of the image, verifies the live deploy"
+    },
+    {
+      "id": "M18",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "A native build flavor, `poe build-serve-native`: the build host's CPU and OS floor, for a server on a desktop Mac, beside the portable wheel. A local build or a release tarball, never a second wheel, because pip cannot select a microarchitecture",
+      "status": "verified",
+      "evidence": "`Smoke test Apple Silicon topology, QoS and the native build flavor` (every PR) \u2014 the native binary launches, and its `build.apple_target` names the host's generation where the wheel flavor on the same machine said m1"
     }
   ]
 }

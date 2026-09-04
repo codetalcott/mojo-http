@@ -39,10 +39,10 @@ from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame, WS_OP_TEXT,
 )
+from lightbug_http.c.platform import MSG_DONTWAIT
 
 from std.ffi import c_int, external_call, get_errno
 from std.python import Python
-from std.sys.info import CompilationTarget
 from std.time import sleep
 
 from m0_http import SSERegistry, StaticFiles, sse_data_payload
@@ -87,15 +87,6 @@ comptime STREAM_GEN_HELD = -2
 """`stream_gen` of a slot subscribed by an `M0-Hold` (`h`/`H`): no chunk
 frame carries this generation, so a stale `s`/`e` for a stream that used
 to have this slot number is dropped rather than queued into the hold."""
-
-comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(0x40)
-"""Where an inbound WebSocket message is delivered inside the application.
-
-A constant rather than a flag: it is one half of a contract with the
-application's own urlconf, and the application half is not configurable
-from here either.
-"""
-
 
 def _decline_direct(
     pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int, slot: Int,
@@ -1782,7 +1773,7 @@ def _poll_acks(fd: Int, slot: Int, credit: Int) -> Int:
     var got_slot = -1
     var amount = 0
     while True:
-        var rc = _read_ack(fd, _MSG_DONTWAIT, got_slot, amount)
+        var rc = _read_ack(fd, MSG_DONTWAIT, got_slot, amount)
         if rc <= 0:
             return total
         if got_slot != slot:
@@ -1840,7 +1831,7 @@ def _place_stream_frame(fd: Int, frame: List[UInt8], ack_fd: Int, slot: Int) -> 
     var credit = 0
     for _ in range(25000):
         sleep(0.0002)
-        var rc = _read_ack(ack_fd, _MSG_DONTWAIT, got_slot, credit)
+        var rc = _read_ack(ack_fd, MSG_DONTWAIT, got_slot, credit)
         if rc == 1 and got_slot == slot and credit < 0:
             result = 0
             break

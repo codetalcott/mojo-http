@@ -70,7 +70,7 @@ from .cli import (
     use_asgi_executor,
     wsgi_lanes,
     asgi_mount_names,
-    effective_cpus,
+    effective_cpus, performance_cpus, pool_cpus, apple_target,
     discovery_specs,
     M0SERVE_VERSION,
     DEFAULT_PORT,

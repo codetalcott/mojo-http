@@ -54,13 +54,14 @@ from lightbug_http.event_loop import (
 )
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.event_loop_backend import EventLoopBackend
-from std.sys.info import CompilationTarget
 from std.io import FileDescriptor
 from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame,
     WS_OP_TEXT, WS_OP_BINARY, WS_OP_CLOSE,
 )
+from lightbug_http.c.platform import PlatformBackend
+from m0_http import BLK_QOS, request_qos_class, QOS_CLASS_USER_INITIATED
 
 from m0_http.sse.format import NO_EVENT_ID
 
@@ -115,7 +116,8 @@ struct AsgiExecutor(Movable):
         self.stragglers = move.stragglers
 
     def start(
-        mut self, pool_addr: Int, user: Int, var lanes: List[Int]
+        mut self, pool_addr: Int, user: Int, var lanes: List[Int],
+        qos: Bool = False,
     ) raises:
         """Spawn one executor thread per lane in `lanes`.
 
@@ -138,6 +140,7 @@ struct AsgiExecutor(Movable):
             block.set(BLK_USER, user)
             block.set(BLK_POOL, pool_addr)
             block.set(BLK_LANE, self._lanes[i])
+            block.set(BLK_QOS, 1 if qos else 0)
             self._set.spawn(i, body_addr)
         self._started = True
 
@@ -192,6 +195,8 @@ def _executor_serve(block: ThreadBlock) raises:
         unsafe_from_address=block.get(BLK_USER)
     )
     var lane = block.get(BLK_LANE)
+    if block.get(BLK_QOS) == 1:
+        _ = request_qos_class(QOS_CLASS_USER_INITIATED)
 
     # This thread's own app, and THE lifespan for this loop: the module was
     # imported before this thread existed, so this is a sys.modules hit
@@ -422,12 +427,7 @@ struct ExecutorPort(Movable, Writable):
         return PythonObject(port[]._pass())
 
     def _pass(mut self) raises -> Bool:
-        comptime if CompilationTarget.is_macos():
-            from lightbug_http.c.kqueue_backend import KqueueBackend
-            return self._pass_with[KqueueBackend]()
-        else:
-            from lightbug_http.c.epoll_backend import EpollBackend
-            return self._pass_with[EpollBackend]()
+        return self._pass_with[PlatformBackend]()
 
     def _pass_with[B: EventLoopBackend](mut self) raises -> Bool:
         ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
@@ -472,12 +472,7 @@ struct ExecutorPort(Movable, Writable):
         """
         if self.inverted == 0:
             return _send_chunk_frame(pool, frame)
-        comptime if CompilationTarget.is_macos():
-            from lightbug_http.c.kqueue_backend import KqueueBackend
-            return self._place_frame_with[KqueueBackend](pool, frame)
-        else:
-            from lightbug_http.c.epoll_backend import EpollBackend
-            return self._place_frame_with[EpollBackend](pool, frame)
+        return self._place_frame_with[PlatformBackend](pool, frame)
 
     def _place_frame_with[B: EventLoopBackend](
         mut self, mut pool: OffloadPool, frame: Span[Byte, _]
@@ -542,18 +537,10 @@ struct ExecutorPort(Movable, Writable):
             _flush_completions(pool, st.pending_done)
             return
         # Inverted: no datagram; see `_flush_inverted` for the ordering.
-        comptime if CompilationTarget.is_macos():
-            from lightbug_http.c.kqueue_backend import KqueueBackend
-            try:
-                self._flush_inverted[KqueueBackend](st)
-            except e:
-                print("inverted executor: flush raised: " + String(e), flush=True)
-        else:
-            from lightbug_http.c.epoll_backend import EpollBackend
-            try:
-                self._flush_inverted[EpollBackend](st)
-            except e:
-                print("inverted executor: flush raised: " + String(e), flush=True)
+        try:
+            self._flush_inverted[PlatformBackend](st)
+        except e:
+            print("inverted executor: flush raised: " + String(e), flush=True)
 
     def _dispatch(mut self, ev: PythonObject) raises -> Bool:
         """One event of the shim's, in the order the pass used to see it.
@@ -995,60 +982,31 @@ def serve_inverted(
 
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
 
-    comptime if CompilationTarget.is_macos():
-        from lightbug_http.c.kqueue_backend import KqueueBackend
-        var backend = KqueueBackend()
-        var st = prepare_loop(
-            listen_fd, backend, config, address, True, shutdown_fd,
-            stream_bus_fd, pool.addr(), peer_bus_fd,
+    var backend = PlatformBackend()
+    var st = prepare_loop(
+        listen_fd, backend, config, address, True, shutdown_fd,
+        stream_bus_fd, pool.addr(), peer_bus_fd,
+    )
+    var st_ptr = Pointer(to=st)
+    var backend_ptr = Pointer(to=backend)
+    var port_obj = PythonObject(
+        alloc=ExecutorPort(
+            pool.addr(), handler_addr, state_addr, lane,
+            Pointer(to=st_ptr).unsafe_bitcast[Int]()[],
+            Pointer(to=backend_ptr).unsafe_bitcast[Int]()[],
+            1,
         )
-        var st_ptr = Pointer(to=st)
-        var backend_ptr = Pointer(to=backend)
-        var port_obj = PythonObject(
-            alloc=ExecutorPort(
-                pool.addr(), handler_addr, state_addr, lane,
-                Pointer(to=st_ptr).unsafe_bitcast[Int]()[],
-                Pointer(to=backend_ptr).unsafe_bitcast[Int]()[],
-                1,
-            )
-        )
-        handler.apps[0]._bridge.set_port(port_obj)
-        set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
-        set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
-        handler.apps[0]._bridge.executor_init(
-            pool.submit_read_fd(lane), pool.ack_read_fd(lane)
-        )
-        print("inverted: the event loop runs inside asyncio (kqueue fd " + String(backend.kq.value) + ")", flush=True)
-        handler.apps[0]._bridge.run_forever_inverted(backend.kq.value)
-        _ = st
-        _ = port_obj
-    else:
-        from lightbug_http.c.epoll_backend import EpollBackend
-        var backend = EpollBackend()
-        var st = prepare_loop(
-            listen_fd, backend, config, address, True, shutdown_fd,
-            stream_bus_fd, pool.addr(), peer_bus_fd,
-        )
-        var st_ptr = Pointer(to=st)
-        var backend_ptr = Pointer(to=backend)
-        var port_obj = PythonObject(
-            alloc=ExecutorPort(
-                pool.addr(), handler_addr, state_addr, lane,
-                Pointer(to=st_ptr).unsafe_bitcast[Int]()[],
-                Pointer(to=backend_ptr).unsafe_bitcast[Int]()[],
-                1,
-            )
-        )
-        handler.apps[0]._bridge.set_port(port_obj)
-        set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
-        set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
-        handler.apps[0]._bridge.executor_init(
-            pool.submit_read_fd(lane), pool.ack_read_fd(lane)
-        )
-        print("inverted: the event loop runs inside asyncio (epoll fd " + String(backend.epfd.value) + ")", flush=True)
-        handler.apps[0]._bridge.run_forever_inverted(backend.epfd.value)
-        _ = st
-        _ = port_obj
+    )
+    handler.apps[0]._bridge.set_port(port_obj)
+    set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
+    set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
+    handler.apps[0]._bridge.executor_init(
+        pool.submit_read_fd(lane), pool.ack_read_fd(lane)
+    )
+    print("inverted: the event loop runs inside asyncio (multiplexer fd " + String(backend.multiplexer_fd()) + ")", flush=True)
+    handler.apps[0]._bridge.run_forever_inverted(backend.multiplexer_fd())
+    _ = st
+    _ = port_obj
     handler.shutdown()
     _ = native
     _ = state

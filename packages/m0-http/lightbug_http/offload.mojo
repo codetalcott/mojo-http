@@ -62,7 +62,6 @@ is sized for that many.
 
 from std.collections import Optional
 from std.ffi import c_int, external_call
-from std.sys.info import CompilationTarget
 
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import (
@@ -72,6 +71,7 @@ from lightbug_http.c.socket_error import RecvEINTRError
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.utils.owning_list import OwningList
+from lightbug_http.c.platform import MSG_DONTWAIT
 
 
 comptime OFFLOAD_MAX_INFLIGHT = 256
@@ -116,7 +116,6 @@ comptime STREAM_GEN_NONE = 0
 Real generations are never 0: `stream_gen_seed` starts every producer
 above it."""
 
-comptime _MSG_DONTWAIT = c_int(0x80) if CompilationTarget.is_macos() else c_int(0x40)
 comptime COMPLETE_BATCH_MAX = 64
 """Most slots one completion datagram carries.
 
@@ -1163,7 +1162,7 @@ def drain_ack_fd(fd: Int):
         buf.append(0)
     for _ in range(4096):
         try:
-            var n = recv(FileDescriptor(fd), Span(buf), UInt(8), _MSG_DONTWAIT)
+            var n = recv(FileDescriptor(fd), Span(buf), UInt(8), MSG_DONTWAIT)
             if n == 0:
                 return
         except:

@@ -216,6 +216,39 @@ jobs:
           path: ci-results.jsonl
           if-no-files-found: ignore
 
+  # E13/E14/M18: what only an Apple Silicon runner can check -- the
+  # performance-core count against sysctl, the --qos knob, and the native
+  # build flavor naming its host. The smoke matrix's macOS leg could host
+  # it, but the spec checker rightly rejects a cited step carrying an
+  # `if:`, so it is the pid1 shape with the OS swapped: job-level runs-on,
+  # no step-level conditions on the cited step.
+  apple-silicon:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: apple-silicon
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv run poe build-all
+      - name: Smoke test Apple Silicon topology, QoS and the native build flavor
+        run: uv run poe smoke-apple-silicon
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-apple-silicon
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
   smoke:
     strategy:
       matrix:
