@@ -70,9 +70,9 @@ multi-tab sync**, and CI executes every command in it on every pull request
   the same one applies here.
 - **Not the fastest server on raw throughput**, and
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md) says so with numbers: ~<!-- num:m0-per-granian@2 -->0.92<!-- /num -->x
-  Granian per measured core on bare WSGI, <!-- num:asgi-vs-uvicorn@2 -->1.90<!-- /num -->x uvicorn on ASGI at 16
-  connections (<!-- num:asgi-vs-uvloop@2 -->1.35<!-- /num -->x against uvicorn with uvloop) and 2.81x at 256, on
-  1.7–1.9 measured cores where uvicorn has one.
+  Granian per measured core on bare WSGI, <!-- num:asgi-vs-uvicorn@2 -->2.02<!-- /num -->x uvicorn on ASGI at 16
+  connections (<!-- num:asgi-vs-uvloop@2 -->1.41<!-- /num -->x against uvicorn with uvloop) and 2.94x at 256, on
+  1.6–1.8 measured cores where uvicorn has one.
   What it does win is the fast-request tail under mixed load. Every figure there
   cites a dated artifact and CI recomputes the prose against it.
 - **Pre-1.0**, and the API will change ([CHANGELOG](CHANGELOG.md)).
@@ -180,9 +180,9 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 82 |
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, HTTP client, request-parsing hardening | 588 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
-| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 156 |
+| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 159 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| **Total** | | **1014** |
+| **Total** | | **1017** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -724,7 +724,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1014 unit tests, then compiles every example
+uv run poe test-all         # 1017 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

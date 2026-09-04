@@ -10,7 +10,7 @@ server, and the response-splitting half of it is pinned there too.
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from src.response import has_control_bytes, split_status
+from src.response import has_control_bytes, reason_for, split_status
 
 
 # --- split_status ------------------------------------------------------------
@@ -39,6 +39,33 @@ def test_split_status_multiword_reason_survives() raises:
     var got = split_status("418 I'm a teapot")
     assert_equal(got[0], 418)
     assert_equal(got[1], "I'm a teapot")
+
+
+# --- reason_for --------------------------------------------------------------
+
+
+def test_reason_for_matches_http_client_responses() raises:
+    """The executor's status crosses as an `int`; the phrase is this table's,
+    and the table is CPython 3.13's `http.client.responses` — including the
+    two it renamed (413, 422) and the one everybody checks (418)."""
+    assert_equal(reason_for(200), "OK")
+    assert_equal(reason_for(101), "Switching Protocols")
+    assert_equal(reason_for(304), "Not Modified")
+    assert_equal(reason_for(404), "Not Found")
+    assert_equal(reason_for(413), "Content Too Large")
+    assert_equal(reason_for(418), "I'm a Teapot")
+    assert_equal(reason_for(422), "Unprocessable Content")
+    assert_equal(reason_for(500), "Internal Server Error")
+    assert_equal(reason_for(511), "Network Authentication Required")
+
+
+def test_reason_for_unknown_code_is_empty() raises:
+    """`responses.get(status, '')`, which the shim used, gave an unknown code
+    an empty phrase; the status line then carries the code alone."""
+    assert_equal(reason_for(299), "")
+    assert_equal(reason_for(599), "")
+    assert_equal(reason_for(0), "")
+    assert_equal(reason_for(1000), "")
 
 
 # --- control bytes -----------------------------------------------------------

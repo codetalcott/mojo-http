@@ -25,7 +25,7 @@ was missing.
 Four rules, one test each:
 
 * cleanup runs only if the finishing task still owns the slot
-  (`_task_done`), and it *does* run when it does — the second half is what
+  (`_on_task_done`), and it *does* run when it does — the second half is what
   stops "never clean up" from passing as a fix;
 * a disconnect is stamped on the owning TASK (`_m0_disconnected`), so a
   lingering task cannot end its successor's stream;
@@ -148,9 +148,17 @@ class Harness:
                         "wsnoanswer": "/ws/noanswer"}.get(behaviour, "/ws")
                 self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
-                self.ns["spawn"](slot, "GET", "/",
-                                 ("b=%s" % behaviour).encode(),
-                                 "HTTP/1.1", [], b"")
+                # The finished scope, as the bridge's `_build_scope` hands
+                # it over: the template's invariant half plus the eight
+                # per-request keys.
+                scope = dict(self.ns["_scope_base"])
+                scope.update({
+                    "method": "GET", "path": "/", "raw_path": b"/",
+                    "query_string": ("b=%s" % behaviour).encode(),
+                    "http_version": "1.1", "headers": [], "client": None,
+                    "state": dict(self.ns["_lifespan_state"]),
+                })
+                self.ns["spawn"](slot, scope, b"")
             self.spawned += 1
         return False
 
@@ -569,16 +577,16 @@ SABOTAGES = [
     ),
     (
         "_task_done cleans up whoever finishes",
-        "        if _exec_slot_task.get(slot) is t:",
-        "        if t is not None:",
+        "    if _exec_slot_task.get(slot) is t:",
+        "    if t is not None:",
     ),
     (
         "spawn does not clear the slot's stale disconnect",
         "    _exec_disconnected.discard(slot)\n"
         "    _exec_disconnects.pop(slot, None)\n"
-        "    task.add_done_callback(_task_done(slot))",
+        "    task.add_done_callback(cycle.done)",
         "    _exec_disconnects.pop(slot, None)\n"
-        "    task.add_done_callback(_task_done(slot))",
+        "    task.add_done_callback(cycle.done)",
     ),
     (
         "spawn_ws does not clear the slot's stale disconnect",

@@ -87,13 +87,16 @@ from std.python._cpython import (
     Py_ssize_t,
 )
 
-from lightbug_http import HTTPRequest
+from lightbug_http import HTTPRequest, Headers, HeaderKey
+from lightbug_http.cookie import ResponseCookieJar
+from lightbug_http.header import name_is
 
 from .environ import (
     all_ascii,
     append_cgi_name_as_utf8,
     append_latin1_as_utf8,
     header_is_excluded,
+    span_has_control_bytes,
 )
 
 
@@ -1104,6 +1107,11 @@ _root_path = ''
 
 
 def set_scope_base(server_name, server_port, root_path=''):
+    # The WebSocket scope's invariant half. The HTTP scope no longer starts
+    # here: the bridge holds its own template and builds each request's
+    # scope through the C API (`_build_scope`), handing `spawn` the
+    # finished dict; `spawn_ws` still assembles its scope in Python from
+    # these, a handshake being per connection rather than per request.
     global _scope_base, _root_path
     try:
         port = int(server_port)
@@ -1120,37 +1128,63 @@ def set_scope_base(server_name, server_port, root_path=''):
     }
 
 
-async def _serve_one_exec(slot, scope, body):
-    # The executor's request coroutine: buffered until the application
-    # proves it is streaming (its first more_body=True chunk), then a
-    # credit-gated chunk producer. A buffered request returns the same
-    # (status, headers, body) triple as ever and the done-callback answers
-    # through the completion channel; a streaming one returns None and its
-    # bytes travel as events instead -- ('stream_start', slot, status,
-    # headers, b''), ('stream_chunk', slot, bytes), ('stream_end', slot).
-    # After stream_start the completion channel must never be used for
-    # this slot again: the head already answered it, and the slot may be
-    # recycled the instant the loop closes it.
-    import asyncio
-    from http.client import responses as _reasons
-    from time import monotonic as _now
+class _Cycle:
+    # One request on the executor. What used to be `_serve_one_exec`'s
+    # three closures (receive, _emit, send) over seven per-request cells,
+    # plus the done-callback closure `_task_done` built per request, is one
+    # object with __slots__ and bound methods: fewer allocations on the
+    # executor thread's per-request path, which is the bound at low
+    # concurrency. THE OWNERSHIP RULES DO NOT MOVE with the shape: the
+    # streaming mark and the cancellable stream task go on the slot's
+    # OWNER task (`_exec_slot_task[slot]`), never asyncio.current_task();
+    # cleanup runs only if the finishing task is the owner; every "am I
+    # gone" check asks `_task_gone`, which consults both marks; the credit
+    # windows are per slot. `poe test-shim` sabotages each of them.
+    #
+    # Buffered until the application proves it is streaming (its first
+    # more_body=True chunk), then a credit-gated chunk producer. A
+    # buffered request returns a (status, headers, body) triple and the
+    # done-callback answers through the completion channel; a streaming
+    # one returns None and its bytes travel as events instead --
+    # ('stream_start', slot, status, headers, b''), ('stream_chunk',
+    # slot, bytes), ('stream_end', slot). After stream_start the
+    # completion channel must never be used for this slot again: the head
+    # already answered it, and the slot may be recycled the instant the
+    # loop closes it. The head crosses UNTOUCHED, both ways: the int
+    # status and the (bytes, bytes) list exactly as the application sent
+    # them. Mojo reads both through the C API (`build_asgi_response`), so
+    # no reason phrase is formatted and no name or value is decoded to
+    # str here -- a measured share of the executor thread's per-request
+    # work.
+    #
+    # `asyncio` is imported on the rare branches that need it (a
+    # disconnect wait, the switch to streaming, a cancelled credit wait)
+    # rather than per call: the buffered request path touches it nowhere.
+    __slots__ = ('slot', 'body', 'delivered', 'status', 'headers',
+                 'chunks', 'total', 'streaming', 'aborted')
 
-    delivered = []
-    captured = {'status': None, 'headers': []}
-    chunks = []
-    total = [0]
-    stream_deadline = [None]
-    streaming = [False]
+    def __init__(self, slot, body):
+        self.slot = slot
+        self.body = body
+        self.delivered = False
+        self.status = None
+        self.headers = None
+        self.chunks = []
+        self.total = 0
+        self.streaming = False
+        self.aborted = False
 
-    async def receive():
-        if not delivered:
-            delivered.append(True)
-            return {'type': 'http.request', 'body': body,
+    async def receive(self):
+        if not self.delivered:
+            self.delivered = True
+            return {'type': 'http.request', 'body': self.body,
                     'more_body': False}
         # Unlike the buffered bridge, the executor CAN observe a
         # disconnect: the loop's close sends a tag that resolves this
         # future. Shielded so a task cancellation cancels the await, not
         # the shared future.
+        import asyncio
+        slot = self.slot
         fut = _exec_disconnects.get(slot)
         if fut is None:
             fut = _loop.create_future()
@@ -1158,7 +1192,7 @@ async def _serve_one_exec(slot, scope, body):
         await asyncio.shield(fut)
         return {'type': 'http.disconnect'}
 
-    async def _emit(data):
+    async def _emit(self, data):
         # Split under the bus frame cap, and never outrun the loop: each
         # piece waits for the drain acks to leave room in BOTH windows --
         # this stream's, and every stream's together. The global one is what
@@ -1167,17 +1201,20 @@ async def _serve_one_exec(slot, scope, body):
         # await, so the loop's GIL and this executor's other tasks both keep
         # running -- which is why the wait belongs here and not in the Mojo
         # send.
+        slot = self.slot
         view = memoryview(data)
         for start in range(0, len(view), _ASGI_CHUNK_SPLIT):
             piece = bytes(view[start:start + _ASGI_CHUNK_SPLIT])
             evt = _exec_credit_evts[slot]
             while _exec_credits.get(slot, 0) < len(piece):
                 if _task_gone(slot):
+                    import asyncio
                     raise asyncio.CancelledError()
                 evt.clear()
                 await evt.wait()
             while _exec_global_credit[0] < len(piece):
                 if _task_gone(slot):
+                    import asyncio
                     raise asyncio.CancelledError()
                 _exec_global_evt.clear()
                 await _exec_global_evt.wait()
@@ -1186,28 +1223,30 @@ async def _serve_one_exec(slot, scope, body):
             _exec_inflight[slot] = _exec_inflight.get(slot, 0) + len(piece)
             _exec_put(('stream_chunk', slot, piece))
 
-    async def send(message):
+    async def send(self, message):
         t = message.get('type', '')
         if t == 'http.response.start':
-            captured['status'] = int(message.get('status', 500))
-            captured['headers'] = list(message.get('headers', []))
+            self.status = int(message.get('status', 500))
+            self.headers = list(message.get('headers', []))
         elif t == 'http.response.body':
             chunk = bytes(message.get('body', b'') or b'')
             more = bool(message.get('more_body', False))
-            if streaming[0]:
+            if self.streaming:
                 if chunk:
-                    await _emit(chunk)
+                    await self._emit(chunk)
                 return
             if more:
                 # The switch: this response is a stream. Send the head
                 # through the completion channel (the pump turns it into
                 # the sse_streaming response), flush what was buffered,
                 # and stream from here on.
-                if captured['status'] is None:
+                if self.status is None:
                     raise RuntimeError(
                         'ASGI streamed a body chunk before '
                         'http.response.start')
-                streaming[0] = True
+                import asyncio
+                slot = self.slot
+                self.streaming = True
                 # The slot's OWNER, never `asyncio.current_task()`: Starlette
                 # (so FastAPI and FastHTML) runs a StreamingResponse's body
                 # inside an anyio task group, so this `send` arrives from a
@@ -1221,125 +1260,120 @@ async def _serve_one_exec(slot, scope, body):
                 _exec_stream_tasks[slot] = task
                 _exec_credits[slot] = _ASGI_CREDIT_WINDOW
                 _exec_credit_evts[slot] = asyncio.Event()
-                status = captured['status']
-                head_headers = [
-                    (n.decode('latin-1'), v.decode('latin-1'))
-                    for n, v in captured['headers']
-                ]
                 _exec_put((
-                    'stream_start', slot,
-                    '%d %s' % (status, _reasons.get(status, '')),
-                    head_headers, b'',
+                    'stream_start', slot, self.status, self.headers, b'',
                 ))
-                buffered = chunks[:]
-                chunks.clear()
-                total[0] = 0
+                buffered = self.chunks
+                self.chunks = []
+                self.total = 0
                 for piece in buffered:
-                    await _emit(piece)
+                    await self._emit(piece)
                 if chunk:
-                    await _emit(chunk)
+                    await self._emit(chunk)
                 return
             if chunk:
-                chunks.append(chunk)
-                total[0] += len(chunk)
-                if total[0] > _ASGI_BUFFER_CAP:
+                self.chunks.append(chunk)
+                self.total += len(chunk)
+                if self.total > _ASGI_BUFFER_CAP:
                     raise RuntimeError(
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP)
 
-    aborted = [False]
-    try:
-        await _app(scope, receive, send)
-    except BaseException:
-        aborted[0] = True
-        raise
-    finally:
-        if streaming[0] and not _task_gone(slot):
-            # End of stream. A normal completion ends with the chunked
-            # terminator and the connection returns to keep-alive; an
-            # application error after the head -- or a cancellation that
-            # was not a disconnect -- aborts instead, and the loop closes
-            # WITHOUT the terminator, so the client sees a truncated body
-            # rather than a short one under a clean ending.
-            _exec_put(
-                ('stream_abort' if aborted[0] else 'stream_end', slot))
+    async def run(self, scope):
+        slot = self.slot
+        try:
+            await _app(scope, self.receive, self.send)
+        except BaseException:
+            self.aborted = True
+            raise
+        finally:
+            if self.streaming and not _task_gone(slot):
+                # End of stream. A normal completion ends with the chunked
+                # terminator and the connection returns to keep-alive; an
+                # application error after the head -- or a cancellation that
+                # was not a disconnect -- aborts instead, and the loop closes
+                # WITHOUT the terminator, so the client sees a truncated body
+                # rather than a short one under a clean ending.
+                _exec_put(
+                    ('stream_abort' if self.aborted else 'stream_end', slot))
 
-    if streaming[0]:
-        return None
-    if captured['status'] is None:
-        raise RuntimeError(
-            'ASGI application completed without sending '
-            'http.response.start')
-    status = captured['status']
-    headers = [(n.decode('latin-1'), v.decode('latin-1'))
-               for n, v in captured['headers']]
-    return ('%d %s' % (status, _reasons.get(status, '')), headers,
-            b''.join(chunks))
+        if self.streaming:
+            return None
+        if self.status is None:
+            raise RuntimeError(
+                'ASGI application completed without sending '
+                'http.response.start')
+        return (self.status, self.headers, b''.join(self.chunks))
+
+    def done(self, t):
+        # The done-callback: a bound method, where `_task_done` built a
+        # closure per request. The rule is `_on_task_done`'s.
+        _on_task_done(self.slot, t)
 
 
-def spawn(slot, method, path, query, protocol, headers, body,
-          host='', port=0):
-    # Called from the pump; every argument arrived as a stolen tuple slot
-    # through one PyObject_CallObject -- the same crossing discipline as
-    # the per-request path. Completion is an event, never a callback into
+def spawn(slot, scope, body):
+    # Called from the pump. The scope arrives FINISHED: Mojo copies the
+    # bridge's template (PyDict_Copy) and stores the eight per-request
+    # keys through PyDict_SetItem -- method, path, raw_path, query_string,
+    # http_version, headers, client (None when the loop had no peer to
+    # give, which Django and Starlette branch on) and a fresh copy of the
+    # lifespan state -- so the dict(_scope_base) and eight Python-level
+    # stores this used to do per request are gone from the request path.
+    # Every argument arrived as a stolen tuple slot through one
+    # PyObject_CallObject. Completion is an event, never a callback into
     # Mojo (there is no such thing): ('done', slot, status, headers,
     # body_bytes) or ('err', slot, message) for buffered responses;
     # stream_* events for streaming ones.
-    scope = dict(_scope_base)
-    scope['method'] = method
-    scope['path'] = path
-    scope['raw_path'] = path.encode('utf-8', 'replace')
-    scope['query_string'] = query
-    scope['http_version'] = protocol.split('/')[-1]
-    scope['headers'] = headers
-    # None rather than ('', 0) when the loop had no peer to give (the
-    # blocking accept path): ASGI's spec makes `client` optional, and
-    # Django/Starlette both branch on its truthiness.
-    scope['client'] = (host, port) if host else None
-    scope['state'] = dict(_lifespan_state)
-    task = _loop.create_task(_serve_one_exec(slot, scope, body))
+    cycle = _Cycle(slot, body)
+    task = _loop.create_task(cycle.run(scope))
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
     # A disconnect that reached the slot before this task existed was the
     # previous connection's (the tag precedes this job on the FIFO).
     _exec_disconnected.discard(slot)
     _exec_disconnects.pop(slot, None)
-    task.add_done_callback(_task_done(slot))
+    task.add_done_callback(cycle.done)
+
+
+def _on_task_done(slot, t):
+    _exec_tasks.discard(t)
+    was_streaming = getattr(t, '_m0_streaming', False)
+    if _exec_slot_task.get(slot) is t:
+        # Still the slot's owner: the per-slot state is this task's.
+        _exec_slot_task.pop(slot, None)
+        _exec_cleanup_slot(slot)
+    # Otherwise a newer task owns the slot (the loop recycled it while
+    # this one was still winding down); its state is not ours to wipe.
+    if was_streaming:
+        # The stream's own finally already signalled the loop; the
+        # completion channel is off limits (the slot may be recycled).
+        # Surface an application error to the log only.
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                _exec_put((
+                    'stream_note', slot,
+                    '%s: %s' % (type(exc).__name__, exc)))
+        return
+    if t.cancelled():
+        _exec_put(('err', slot, 'cancelled'))
+        return
+    exc = t.exception()
+    if exc is not None:
+        _exec_put(
+            ('err', slot, '%s: %s' % (type(exc).__name__, exc)))
+        return
+    status, headers, body_bytes = t.result()
+    _exec_put(('done', slot, status, headers, body_bytes))
 
 
 def _task_done(slot):
+    # The WebSocket path's done-callback: a closure per CONNECTION, which
+    # is what a handshake is; the HTTP path binds `_Cycle.done` per
+    # request instead. Both apply `_on_task_done`'s rule.
     def _done(t):
-        _exec_tasks.discard(t)
-        was_streaming = getattr(t, '_m0_streaming', False)
-        if _exec_slot_task.get(slot) is t:
-            # Still the slot's owner: the per-slot state is this task's.
-            _exec_slot_task.pop(slot, None)
-            _exec_cleanup_slot(slot)
-        # Otherwise a newer task owns the slot (the loop recycled it while
-        # this one was still winding down); its state is not ours to wipe.
-        if was_streaming:
-            # The stream's own finally already signalled the loop; the
-            # completion channel is off limits (the slot may be recycled).
-            # Surface an application error to the log only.
-            if not t.cancelled():
-                exc = t.exception()
-                if exc is not None:
-                    _exec_put((
-                        'stream_note', slot,
-                        '%s: %s' % (type(exc).__name__, exc)))
-            return
-        if t.cancelled():
-            _exec_put(('err', slot, 'cancelled'))
-            return
-        exc = t.exception()
-        if exc is not None:
-            _exec_put(
-                ('err', slot, '%s: %s' % (type(exc).__name__, exc)))
-            return
-        status, headers, body_bytes = t.result()
-        _exec_put(('done', slot, status, headers, body_bytes))
+        _on_task_done(slot, t)
     return _done
-
 
 async def _serve_one_ws(slot, scope):
     # One WebSocket connection: the loop already validated the handshake
@@ -1512,7 +1546,10 @@ def _run_wsgi(environ, body):
         if captured and exc_info is None:
             raise AssertionError('start_response() called twice without exc_info')
         captured['status'] = status
-        captured['headers'] = headers
+        # A list, so Mojo walks it with PyList_GetItem: PEP 3333 says list
+        # and every framework sends one, so the type test is the whole
+        # cost here; a tuple of pairs is copied once.
+        captured['headers'] = headers if type(headers) is list else list(headers)
         return written.append
 
     result = _app(environ, start_response)
@@ -1660,6 +1697,33 @@ struct PyBridge(Movable):
     building them per request would be six `PyUnicode_DecodeUTF8` calls
     and six frees for nothing."""
 
+    var _scope: PythonObject
+    """The executor's request-invariant scope entries, as one finished
+    Python dict: `type`, `asgi`, `scheme`, `root_path`, `server` and
+    `client: None`. Built in `set_base` beside the environ template, for
+    the same reason: every request starts from `PyDict_Copy(_scope)` and
+    stores its eight variable keys through `PyDict_SetItem`, so the
+    `dict(_scope_base)` plus eight Python-level stores (an `encode` and a
+    `split` among them) that the shim's `spawn` used to do per request are
+    one C copy and eight C stores. Rebuilt whenever `set_base` runs, so a
+    mount's `root_path` and `server` are in it."""
+    var _lifespan_state: PythonObject
+    """The shim's lifespan `state` dict, read once at construction. Its
+    identity never changes (the shim mutates it and never rebinds it), and
+    each request's `scope["state"]` is a `PyDict_Copy` of it: uvicorn's
+    shallow copy, so an application's request-scoped keys never leak into
+    the lifespan state."""
+
+    var _k_s_method: PythonObject
+    var _k_s_path: PythonObject
+    var _k_s_raw_path: PythonObject
+    var _k_s_query: PythonObject
+    var _k_s_http_version: PythonObject
+    var _k_s_headers: PythonObject
+    var _k_s_client: PythonObject
+    var _k_s_state: PythonObject
+    """The eight per-request scope keys, interned once like the environ's."""
+
     var _bytes_as_string: _PyBytes_AsString.type
     var _bytes_from: _PyBytes_FromStringAndSize.type
     var _dict_copy: _PyDict_Copy.type
@@ -1712,6 +1776,16 @@ struct PyBridge(Movable):
         self._k_remote_port = _py_str("REMOTE_PORT")
         self._k_protocol = _py_str("SERVER_PROTOCOL")
 
+        self._k_s_method = _py_str("method")
+        self._k_s_path = _py_str("path")
+        self._k_s_raw_path = _py_str("raw_path")
+        self._k_s_query = _py_str("query_string")
+        self._k_s_http_version = _py_str("http_version")
+        self._k_s_headers = _py_str("headers")
+        self._k_s_client = _py_str("client")
+        self._k_s_state = _py_str("state")
+        self._lifespan_state = self._ns["_lifespan_state"]
+
         ref cpy = Python().cpython()
         self._bytes_as_string = _PyBytes_AsString.load(cpy.lib.borrow())
         self._bytes_from = _PyBytes_FromStringAndSize.load(cpy.lib.borrow())
@@ -1723,6 +1797,10 @@ struct PyBridge(Movable):
         if not empty:
             raise cpy.get_error()
         self._base = PythonObject(from_owned=empty)
+        var empty_scope = cpy.PyDict_New()
+        if not empty_scope:
+            raise cpy.get_error()
+        self._scope = PythonObject(from_owned=empty_scope)
 
         self._scratch_name = List[UInt8](capacity=64)
         self._scratch_value = List[UInt8](capacity=256)
@@ -1742,6 +1820,16 @@ struct PyBridge(Movable):
         self._k_remote_addr = move._k_remote_addr^
         self._k_remote_port = move._k_remote_port^
         self._k_protocol = move._k_protocol^
+        self._scope = move._scope^
+        self._lifespan_state = move._lifespan_state^
+        self._k_s_method = move._k_s_method^
+        self._k_s_path = move._k_s_path^
+        self._k_s_raw_path = move._k_s_raw_path^
+        self._k_s_query = move._k_s_query^
+        self._k_s_http_version = move._k_s_http_version^
+        self._k_s_headers = move._k_s_headers^
+        self._k_s_client = move._k_s_client^
+        self._k_s_state = move._k_s_state^
         self._bytes_as_string = move._bytes_as_string
         self._bytes_from = move._bytes_from
         self._dict_copy = move._dict_copy
@@ -1974,63 +2062,118 @@ struct PyBridge(Movable):
             raise cpy.get_error()
         cpy.Py_DecRef(result)
 
+    def _build_scope(mut self, req: HTTPRequest) raises -> PythonObject:
+        """One request's HTTP scope, entirely through the C API.
+
+        `PyDict_Copy` of the template `set_base` built, then the eight
+        variable keys through `PyDict_SetItem` -- which does NOT steal, so
+        `_scope_set` releases each value once the dict holds its own
+        reference (the environ's rule, `_set_latin1`). `method`, `path`
+        and `http_version` are `str`; `raw_path` and `query_string` are
+        `bytes` of the request's own bytes; `headers` is the ready list of
+        lowercase `(bytes, bytes)` pairs; `client` is `(host, port)` only
+        when the loop captured a peer (the template says None); `state` is
+        a fresh copy of the lifespan state. Returned owned, so a raise
+        anywhere below frees the half-built dict; `spawn_asgi` steals it
+        into the args tuple.
+
+        This is what the shim's `spawn` used to do in Python per request:
+        `dict(_scope_base)`, eight stores, an `encode` for `raw_path`, a
+        `split` for `http_version` and a `dict(_lifespan_state)`.
+        """
+        ref cpy = Python().cpython()
+        var d = self._dict_copy(self._scope._obj_ptr)
+        if not d:
+            raise cpy.get_error()
+        var scope = PythonObject(from_owned=d)
+
+        # Each key pointer is copied out of `self` first, as build_environ
+        # does: `self._k_*._obj_ptr` straight in would alias `self` mutably
+        # (the scratch buffers) and immutably in one call.
+        var k_method = self._k_s_method._obj_ptr
+        _scope_set(cpy, d, k_method, self._py_text(cpy, req.method.as_bytes()))
+        var path_bytes = req.uri.path.as_bytes()
+        var k_path = self._k_s_path._obj_ptr
+        _scope_set(cpy, d, k_path, self._py_text(cpy, path_bytes))
+        var k_raw_path = self._k_s_raw_path._obj_ptr
+        _scope_set(cpy, d, k_raw_path, self._py_bytes_span(cpy, path_bytes))
+        var k_query = self._k_s_query._obj_ptr
+        _scope_set(
+            cpy, d, k_query,
+            self._py_bytes_span(cpy, req.uri.query_string.as_bytes()),
+        )
+        # "HTTP/1.1" -> "1.1": the text after the last slash, or the whole
+        # protocol when there is none -- what `protocol.split('/')[-1]` gave.
+        var protocol = req.protocol.as_bytes()
+        var slash = -1
+        for i in range(len(protocol)):
+            if protocol[i] == 0x2F:
+                slash = i
+        var k_version = self._k_s_http_version._obj_ptr
+        _scope_set(cpy, d, k_version, self._py_text(cpy, protocol[slash + 1 :]))
+        var k_headers = self._k_s_headers._obj_ptr
+        _scope_set(cpy, d, k_headers, self._py_headers(cpy, req))
+
+        # The peer, for scope["client"]: Django's ASGIRequest reads it into
+        # REMOTE_ADDR/REMOTE_PORT `if scope.get("client")`, so an absent one
+        # does not error -- it silently logs every visitor as address-less,
+        # which is the worse failure. The template's None stands when the
+        # loop captured no peer.
+        if req.remote_addr.byte_length() > 0:
+            var client = cpy.PyTuple_New(2)
+            if not client:
+                raise cpy.get_error()
+            try:
+                _ = cpy.PyTuple_SetItem(
+                    client, 0, self._py_text(cpy, req.remote_addr.as_bytes())
+                )
+            except e:
+                cpy.Py_DecRef(client)
+                raise e
+            _ = cpy.PyTuple_SetItem(
+                client, 1, cpy.PyLong_FromSsize_t(req.remote_port)
+            )
+            var k_client = self._k_s_client._obj_ptr
+            _scope_set(cpy, d, k_client, client)
+
+        # uvicorn's shallow copy per request: the app may add request-scoped
+        # keys without polluting the lifespan state.
+        var state = self._dict_copy(self._lifespan_state._obj_ptr)
+        if not state:
+            raise cpy.get_error()
+        var k_state = self._k_s_state._obj_ptr
+        _scope_set(cpy, d, k_state, state)
+        return scope^
+
     def spawn_asgi(mut self, slot: Int, req: HTTPRequest) raises:
         """Hand one parked request to the shim's loop as a task.
 
-        No environ: the scope's variable half crosses directly — method,
-        path and protocol as `str`, the query as `bytes`, the headers as a
-        ready list of lowercase `(bytes, bytes)` pairs (the header map
-        already normalized names on insert), the body as `bytes`. Every
-        object rides as a stolen slot of one args tuple through one
+        The scope arrives FINISHED (`_build_scope`), and the body as
+        `bytes` built straight from the request's buffer; both ride as
+        stolen slots of one three-slot args tuple through one
         `PyObject_CallObject`, so a single `Py_DecRef` of the tuple frees
         the lot on every path and nothing leaks per request. A half-filled
         tuple is safe to release: tuple dealloc skips NULL slots.
 
-        This replaced spawning through `build_environ` + a Python-side
-        environ→scope transform, which did the header work twice (CGI
-        names built here, unbuilt there) and was the measured gap to
-        uvicorn's parser-to-scope path."""
+        Two designs preceded this. The first spawned through
+        `build_environ` plus a Python-side environ→scope transform, doing
+        the header work twice; the second crossed nine loose arguments and
+        let the shim assemble the scope in Python -- `dict(_scope_base)`,
+        eight stores, an `encode` and a `split` per request, which is what
+        the template copy replaces."""
         ref cpy = Python().cpython()
+        var scope = self._build_scope(req)
+        # An empty body is fine down this path: CPython documents a NULL
+        # pointer with size 0 as valid (see `run`).
+        var body = self._py_bytes_span(cpy, Span(req.body_raw))
 
-        var args = cpy.PyTuple_New(9)
+        var args = cpy.PyTuple_New(3)
         if not args:
+            cpy.Py_DecRef(body)
             raise cpy.get_error()
         _ = cpy.PyTuple_SetItem(args, 0, cpy.PyLong_FromSsize_t(slot))
-
-        try:
-            _ = cpy.PyTuple_SetItem(
-                args, 1, self._py_text(cpy, req.method.as_bytes())
-            )
-            _ = cpy.PyTuple_SetItem(
-                args, 2, self._py_text(cpy, req.uri.path.as_bytes())
-            )
-            _ = cpy.PyTuple_SetItem(
-                args, 3,
-                self._py_bytes_span(cpy, req.uri.query_string.as_bytes()),
-            )
-            _ = cpy.PyTuple_SetItem(
-                args, 4, self._py_text(cpy, req.protocol.as_bytes())
-            )
-
-            _ = cpy.PyTuple_SetItem(args, 5, self._py_headers(cpy, req))
-
-            # The peer, for scope["client"]: Django's ASGIRequest reads it
-            # into REMOTE_ADDR/REMOTE_PORT `if scope.get("client")`, so an
-            # absent one does not error -- it silently logs every visitor
-            # as address-less, which is the worse failure.
-            _ = cpy.PyTuple_SetItem(
-                args, 7, self._py_text(cpy, req.remote_addr.as_bytes())
-            )
-            _ = cpy.PyTuple_SetItem(
-                args, 8, cpy.PyLong_FromSsize_t(req.remote_port)
-            )
-
-            _ = cpy.PyTuple_SetItem(
-                args, 6, self._py_bytes_span(cpy, Span(req.body_raw))
-            )
-        except e:
-            cpy.Py_DecRef(args)
-            raise e
+        _ = cpy.PyTuple_SetItem(args, 1, scope^.steal_data())
+        _ = cpy.PyTuple_SetItem(args, 2, body)
 
         var result = cpy.PyObject_CallObject(self._spawn._obj_ptr, args)
         cpy.Py_DecRef(args)
@@ -2095,8 +2238,45 @@ struct PyBridge(Movable):
 
         self._base = base^
 
-        # The executor's scope template, same request-invariant idea as the
-        # environ base. Startup-only PythonObject call.
+        # The executor's HTTP scope template, the same request-invariant
+        # idea as the environ base: what `_build_scope` copies per request.
+        var sd = cpy.PyDict_New()
+        if not sd:
+            raise cpy.get_error()
+        var scope = PythonObject(from_owned=sd)
+        _base_set(sd, "type", _py_str("http"))
+        var ad = cpy.PyDict_New()
+        if not ad:
+            raise cpy.get_error()
+        var asgi = PythonObject(from_owned=ad)
+        _base_set(ad, "version", _py_str("3.0"))
+        _base_set(ad, "spec_version", _py_str("2.3"))
+        _base_set(sd, "asgi", asgi^)
+        _base_set(sd, "scheme", _py_str("http"))
+        # ASGI's `root_path` is the mount prefix, and `path` stays whole
+        # (Django's ASGIHandler strips it itself) -- the one place the two
+        # protocols disagree about the prefix, see `build_environ`.
+        _base_set(sd, "root_path", _py_str(script_name))
+        var port: Int
+        try:
+            port = Int(server_port)
+        except:
+            port = 0
+        var server = cpy.PyTuple_New(2)
+        if not server:
+            raise cpy.get_error()
+        _ = cpy.PyTuple_SetItem(server, 0, _py_str(server_name).steal_data())
+        _ = cpy.PyTuple_SetItem(server, 1, cpy.PyLong_FromSsize_t(port))
+        _base_set(sd, "server", PythonObject(from_owned=server))
+        # None until a request with a peer overwrites it: ASGI makes
+        # `client` optional and Django/Starlette branch on its truthiness,
+        # so the blocking accept path (no peer captured) must read None.
+        _base_set(sd, "client", PythonObject(None))
+        self._scope = scope^
+
+        # The shim keeps its own copy of the invariant half for the
+        # WebSocket scope, which `spawn_ws` still builds in Python.
+        # Startup-only PythonObject call.
         _ = self._ns["set_scope_base"](
             _py_str(server_name), _py_str(server_port), _py_str(script_name)
         )
@@ -2293,6 +2473,116 @@ struct PyBridge(Movable):
         _ = body
         return out^
 
+    # --- the response head -------------------------------------------------
+
+    def read_head(
+        self,
+        headers: PythonObject,
+        bytes_pairs: Bool,
+        mut out: Headers,
+        mut cookies: ResponseCookieJar,
+    ) raises:
+        """Fill `out` and `cookies` from the application's response headers,
+        reading them through the C API.
+
+        `headers` is the list the application handed over — `(str, str)`
+        pairs from a WSGI `start_response`, `(bytes, bytes)` pairs from an
+        ASGI `http.response.start`; `bytes_pairs` says which. Every
+        reference taken here is BORROWED: `PyList_GetItem`,
+        `PyTuple_GetItem` and `PyUnicode_AsUTF8AndSize` return pointers
+        into objects the list keeps alive, and `PyBytes_AsString` reads the
+        object's own buffer, so nothing is `Py_DecRef`'d. A DecRef on a
+        borrowed reference is a double free that surfaces later and
+        elsewhere; the RSS guards in `smoke-django` and `smoke-asgi` are the
+        instruments.
+
+        This replaced iterating the list as `PythonObject`s with two
+        `String(py=...)` per pair — priced at 1.27 µs of a six-header
+        response's 3.30 (docs/WSGI_PERFORMANCE.md), with `Headers()` plus
+        six stores another 1.39 — which is what the reserve from the
+        counted bytes is for. The two passes over borrowed pointers cost
+        nanoseconds; the reallocations they avoid cost more.
+
+        A `str` crosses as the UTF-8 CPython caches on the object, the
+        same text `String(py=...)` produced, so the wire bytes are
+        unchanged. A `bytes` value is latin-1 on the wire and is re-encoded
+        to UTF-8 only when a byte above 0x7F makes that necessary, so
+        `write_latin1_to` puts the application's own bytes back. Set-Cookie
+        takes the verbatim jar path, and a name or value carrying CR, LF
+        or NUL is refused before anything is copied — the rules
+        `build_response` applied, on the same bytes.
+        """
+        ref cpy = Python().cpython()
+        var list_ptr = headers._obj_ptr
+        var count = Int(cpy.PyObject_Length(list_ptr))
+        if count < 0:
+            raise cpy.get_error()
+        # Pass one sizes the blob; pass two fills it.
+        var total = 0
+        for i in range(count):
+            var pair = cpy.PyList_GetItem(list_ptr, i)
+            if not pair:
+                raise cpy.get_error()
+            total += len(
+                self._head_span(cpy, _pair_item(cpy, pair, 0), bytes_pairs)
+            )
+            total += len(
+                self._head_span(cpy, _pair_item(cpy, pair, 1), bytes_pairs)
+            )
+        out.reserve(total, count)
+        for i in range(count):
+            var pair = cpy.PyList_GetItem(list_ptr, i)
+            if not pair:
+                raise cpy.get_error()
+            var name = self._head_span(
+                cpy, _pair_item(cpy, pair, 0), bytes_pairs
+            )
+            var value = self._head_span(
+                cpy, _pair_item(cpy, pair, 1), bytes_pairs
+            )
+            # Response splitting: refused here, on the application's own
+            # bytes, and dropped rather than raised — the application has
+            # already run and its body is real. Applies to Set-Cookie too.
+            if span_has_control_bytes(name) or span_has_control_bytes(value):
+                continue
+            if bytes_pairs and not (all_ascii(name) and all_ascii(value)):
+                # The rare latin-1 byte above 0x7F: the blob holds UTF-8,
+                # and `write_latin1_to` transcodes it back on the wire.
+                var name8 = List[UInt8](capacity=2 * len(name))
+                append_latin1_as_utf8(name8, name)
+                var value8 = List[UInt8](capacity=2 * len(value))
+                append_latin1_as_utf8(value8, value)
+                _store_header(out, cookies, Span(name8), Span(value8))
+            else:
+                _store_header(out, cookies, name, value)
+
+    def _head_span(
+        self, ref cpy: CPython, obj: PyObjectPtr, is_bytes: Bool
+    ) raises -> Span[Byte, ImmutAnyOrigin]:
+        """The bytes of one header name or value, borrowed from `obj`.
+
+        A `str` answers through `PyUnicode_AsUTF8AndSize` (the object's
+        cached UTF-8, built once per string), a `bytes` through
+        `PyBytes_AsString` plus `PyObject_Length`. Both are checked calls:
+        an object of the wrong type answers NULL with a TypeError, which is
+        raised here and becomes the request's 500.
+        """
+        if is_bytes:
+            var n = Int(cpy.PyObject_Length(obj))
+            if n < 0:
+                raise cpy.get_error()
+            var maybe = self._bytes_as_string(obj)
+            if not maybe:
+                raise cpy.get_error()
+            return Span[Byte, ImmutAnyOrigin](
+                unsafe_ptr=maybe.unsafe_value().unsafe_bitcast[UInt8](),
+                length=n,
+            )
+        var text = cpy.PyUnicode_AsUTF8AndSize(obj)
+        if not text:
+            raise cpy.get_error()
+        return text.value().as_bytes()
+
     # --- diagnostic probes -------------------------------------------------
     #
     # `scripts/bench_bridge_parts.mojo` uses these to split the per-request
@@ -2303,6 +2593,64 @@ struct PyBridge(Movable):
         """The C-API environ build alone, without running the application."""
         var d = self.build_environ(req)
         _ = d
+
+    def probe_build_scope(mut self, req: HTTPRequest) raises:
+        """The C-API scope build alone, without spawning a task."""
+        var d = self._build_scope(req)
+        _ = d
+
+
+def _scope_set(
+    ref cpy: CPython, d: PyObjectPtr, key: PyObjectPtr, value: PyObjectPtr
+) raises:
+    """Store `value` under `key` and release it: `PyDict_SetItem` does not
+    steal, and forgetting the DecRef is the unbounded per-request leak the
+    RSS guards exist to catch. The value is released on the failing path
+    too, so a refused store is not a leaked object."""
+    var rc = cpy.PyDict_SetItem(d, key, value)
+    cpy.Py_DecRef(value)
+    if rc != 0:
+        raise cpy.get_error()
+
+
+def _pair_item(
+    ref cpy: CPython, pair: PyObjectPtr, index: Int
+) raises -> PyObjectPtr:
+    """Item `index` of one header pair, borrowed.
+
+    PEP 3333 and the ASGI spec both say tuples and every framework sends
+    them, so the tuple read is the path; an application that sends
+    two-element lists is not wrong, so the tuple read's refusal (a
+    `SystemError`, cleared here) falls through to the list read, and only
+    a pair that is neither raises.
+    """
+    var item = cpy.PyTuple_GetItem(pair, index)
+    if not item:
+        _ = cpy.get_error()
+        item = cpy.PyList_GetItem(pair, index)
+        if not item:
+            raise cpy.get_error()
+    return item
+
+
+def _store_header(
+    mut out: Headers,
+    mut cookies: ResponseCookieJar,
+    name: Span[Byte, _],
+    value: Span[Byte, _],
+):
+    """One header into the map, or a Set-Cookie into the jar, verbatim.
+
+    `name_is`, not a lowercased copy: the copy this used to allocate per
+    header, purely to test one constant, was 3.2 µs per header (see
+    `response.mojo`'s history). The jar path is verbatim because the
+    application's line IS the header — the `Cookie` round trip dropped
+    `expires` and `SameSite` from every Django cookie.
+    """
+    if name_is(name, HeaderKey.SET_COOKIE):
+        cookies.add_raw(String(unsafe_from_utf8=value))
+    else:
+        out.set_bytes(name, value)
 
 
 def _base_set(d: PyObjectPtr, key: StringSlice, var value: PythonObject) raises:

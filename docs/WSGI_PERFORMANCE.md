@@ -696,13 +696,26 @@ response saves 19.7 µs rather than 2.5.
 case folding in *both* directions. The boundary test was checked by widening
 the `A`–`Z` range by one byte, which makes it fail.
 
-**What is left of `build_response`**, measured and not yet acted on: the
-`PythonObject` read is 1.27 µs (38% of the remaining 3.30) and would be
-~0.32 µs through `PyList_GetItem`/`PyTuple_GetItem`/`PyUnicode_AsUTF8AndSize`
-— all already bound, no `dlsym` needed. `Headers()` plus six stores is
-1.39 µs. Neither is done here: the first belongs in `bridge.mojo` rather
-than `response.mojo` if CLAUDE.md's "everything touching the interpreter
-lives in one file" is to hold, and that is a design decision, not a tweak.
+**What was left of `build_response`, and what taking it bought
+(2026-09-04).** The `PythonObject` read was 1.27 µs (38% of the remaining
+3.30) and `Headers()` plus six stores another 1.39; the first belonged in
+`bridge.mojo` rather than `response.mojo` if CLAUDE.md's "everything
+touching the interpreter lives in one file" was to hold, so it waited for
+a design decision. The decision is `PyBridge.read_head`: the list walked
+through `PyObject_Length`, `PyList_GetItem` and `PyTuple_GetItem`
+(borrowed references, never DecRef'd), each `str` read through
+`PyUnicode_AsUTF8AndSize` — CPython's cached UTF-8 on the object, the same
+text `String(py=…)` produced, so the wire is unchanged — and the `Headers`
+blob sized once from a first pass over the same pointers. Re-measured on
+the same instrument before and after, on a newer box than the table above
+(Apple M4, CPython 3.13.6), the six-header response went **2.08 → 0.96 µs**
+and `serve()` **3.86 → 2.61 µs**; per header 0.23 → 0.08. The same read
+serves the ASGI executor's head, which now crosses as the application
+sent it — an `int` status and `(bytes, bytes)` pairs — and the rest of
+that branch (the scope built in Mojo, one request object instead of three
+closures) is [its design note](notes/executor-python-objects.md): the
+executor's Python-side cost per request 5.74 → 3.82 µs, +7–10 % rps at 16
+connections and +6–7 % at 256 on fewer cores.
 
 ### Re-measured 2026-08-26: CPU-normalized, and the conclusion inverts twice
 
