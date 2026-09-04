@@ -48,7 +48,8 @@ from .multiworker import WorkerSupervisor, exit_worker, shared_fetch_add, shared
 from .threads import (
     ThreadSet, ThreadBlock, ShutdownFanout, dup_fd, read_one_byte_blocking,
     BLK_INDEX, BLK_LISTEN_FD, BLK_SHUTDOWN_FD, BLK_BUS_FD, BLK_USER, BLK_STATUS,
-    BLK_LANE, BLK_TURN_ADDR,
+    BLK_LANE, BLK_TURN_ADDR, BLK_QOS,
+    request_qos_class, QOS_CLASS_USER_INTERACTIVE, QOS_CLASS_USER_INITIATED,
     STATUS_OK, STATUS_RAISED, STATUS_NEVER_RAN,
 )
 from .ws import WSHub

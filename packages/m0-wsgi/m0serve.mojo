@@ -53,6 +53,7 @@ from std.sys.arg import argv
 from std.sys.info import CompilationTarget
 
 from lightbug_http import Server
+from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
@@ -60,6 +61,7 @@ from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType
 from lightbug_http.c.process import process_exit
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.c.platform import PlatformBackend
 
 from m0_http import (
     StaticFiles, WorkerSupervisor, install_shutdown_signals, exit_worker,
@@ -72,7 +74,7 @@ from m0_wsgi import (
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
-    effective_cpus, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
+    effective_cpus, performance_cpus, pool_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     asgi_free_threading_refusal,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
@@ -447,6 +449,10 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     else:
         arch = String("aarch64")
     report.add_fact(String("build"), String("arch"), arch)
+    # The generation the binary was compiled for (`apple_target`): the
+    # wheel says m1 on every Mac, a native build names its host.
+    comptime if CompilationTarget.is_macos():
+        report.add_fact(String("build"), String("apple_target"), apple_target())
 
     # The interpreter, probed here for its FACTS but checked further down.
     # `probe_free_threading` is the process's first Python call, so this is
@@ -640,11 +646,15 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     # requested values are reported and `resolved` says so.
     var cpus = effective_cpus()
     report.add_int(String("topology"), String("cpus"), cpus)
+    report.add_int(
+        String("topology"), String("performance_cpus"), performance_cpus()
+    )
+    report.add_bool(String("topology"), String("qos"), opts.qos)
     report.add_int(String("topology"), String("workers"), opts.workers)
     report.add_int(String("topology"), String("threads"), opts.threads)
     if resolved:
         var auto_pool = zero_config_topology(opts)
-        var blocking = resolve_blocking_threads(opts, is_asgi, cpus)
+        var blocking = resolve_blocking_threads(opts, is_asgi, pool_cpus())
         var executor = use_asgi_executor(opts, is_asgi)
         report.add_int(
             String("topology"), String("blocking_threads"), blocking
@@ -859,7 +869,7 @@ def main() raises:
     # every worker resolves the same app to the same answer).
     var auto_pool = zero_config_topology(opts)
     opts.blocking_threads = resolve_blocking_threads(
-        opts, is_asgi, effective_cpus()
+        opts, is_asgi, pool_cpus()
     )
     var executor_mode = use_asgi_executor(opts, is_asgi)
     _refuse_executor_on_free_threaded(executor_mode)
@@ -950,6 +960,8 @@ def main() raises:
     # included: draining our own channel IS local delivery, because `m0pub`
     # writes every channel including the publisher's. There is no second
     # delivery path to keep in sync with this one.
+    if opts.qos:
+        _ = request_qos_class(QOS_CLASS_USER_INTERACTIVE)
     server.serve_nonblocking(
         listener, handler,
         shutdown_read_fd=shutdown_fd,
@@ -1076,7 +1088,7 @@ def _serve_offloaded(
             var lane = asgi_lanes[k]
             pool.enable_stream_ack(lane)
             handler.set_lane_notify(lane, pool.submit_write_fd(lane))
-        exec_thread.start(pool.addr(), opts_addr, asgi_lanes.copy())
+        exec_thread.start(pool.addr(), opts_addr, asgi_lanes.copy(), qos=opts.qos)
     if pool_threads.count > 0 and not pool.chunk_active():
         # Pool threads stream WSGI iterables through the same chunk channel
         # the executor uses — a second producer on one FIFO — so a
@@ -1097,7 +1109,9 @@ def _serve_offloaded(
                 handler.set_ws_pool_notify(
                     wsgi_lanes[wl], pool.submit_write_fd(wsgi_lanes[wl])
                 )
-        pool_threads.start[WSGIHandler](pool.addr(), opts_addr, wsgi_lanes^)
+        pool_threads.start[WSGIHandler](
+            pool.addr(), opts_addr, wsgi_lanes^, qos=opts.qos
+        )
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
 
     # The loop releases its thread state here and takes it back only after
@@ -1113,26 +1127,16 @@ def _serve_offloaded(
     if loop_attached:
         cpy0.PyEval_RestoreThread(loop_ts)
 
-    comptime if CompilationTarget.is_macos():
-        from lightbug_http.c.kqueue_backend import KqueueBackend
-        var backend = DetachingBackend[KqueueBackend](KqueueBackend())
-        if not loop_attached:
-            backend.set_loop_detached()
-        run_event_loop(
-            listener.socket.fd, handler, backend, config, opts.address(), True,
-            shutdown_fd, stream_bus_fd, pool.addr(),
-            peer_bus_fd=peer_bus_fd,
-        )
-    else:
-        from lightbug_http.c.epoll_backend import EpollBackend
-        var backend = DetachingBackend[EpollBackend](EpollBackend())
-        if not loop_attached:
-            backend.set_loop_detached()
-        run_event_loop(
-            listener.socket.fd, handler, backend, config, opts.address(), True,
-            shutdown_fd, stream_bus_fd, pool.addr(),
-            peer_bus_fd=peer_bus_fd,
-        )
+    if opts.qos:
+        _ = request_qos_class(QOS_CLASS_USER_INTERACTIVE)
+    var backend = DetachingBackend[PlatformBackend](PlatformBackend())
+    if not loop_attached:
+        backend.set_loop_detached()
+    run_event_loop(
+        listener.socket.fd, handler, backend, config, opts.address(), True,
+        shutdown_fd, stream_bus_fd, pool.addr(),
+        peer_bus_fd=peer_bus_fd,
+    )
     if not loop_attached:
         cpy0.PyEval_RestoreThread(loop_ts)
 
@@ -1224,7 +1228,7 @@ def _serve_threaded(
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
     var auto_pool = zero_config_topology(opts)
     opts.blocking_threads = resolve_blocking_threads(
-        opts, is_asgi, effective_cpus()
+        opts, is_asgi, pool_cpus()
     )
     var executor_mode = use_asgi_executor(opts, is_asgi)
     # `--threads` REQUIRES a free-threaded build, and the executor cannot

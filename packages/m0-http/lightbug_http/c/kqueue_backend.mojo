@@ -10,13 +10,13 @@ from lightbug_http.c.kqueue import (
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT, EV_EOF, EV_ERROR,
 )
-from lightbug_http.event_loop_backend import EventLoopBackend
+from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
 
 
 comptime _MAX_EVENTS = 64
 
 
-struct KqueueBackend(EventLoopBackend):
+struct KqueueBackend(ConstructibleBackend):
     """kqueue-based IO backend for macOS."""
 
     var kq: FileDescriptor
@@ -33,6 +33,9 @@ struct KqueueBackend(EventLoopBackend):
     # No __del__ needed; OS reclaims the allocation on process exit.
 
     # --- EventLoopBackend methods ---
+
+    def multiplexer_fd(self) -> Int:
+        return self.kq.value
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
         self._n_ready = kevent_poll(self.kq, self._events, _MAX_EVENTS, timeout_ms)

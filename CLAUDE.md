@@ -1155,7 +1155,9 @@ Properties of the design, not defects to fix in passing:
   exclusive with `M0_WORKERS>1`; free-threaded CPython only),
   `M0_BLOCKING_THREADS` (handler threads per loop; composes with either of
   those and with `--realtime`), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
-  `M0_APP_TICK_MS`. `m0serve` layers flags on top (flag > env > default) and
+  `M0_APP_TICK_MS`, `M0_QOS` (macOS: the loop at user-interactive and its
+  worker threads at user-initiated QoS, so they stay on performance cores
+  under contention; accepted and ignored elsewhere). `m0serve` layers flags on top (flag > env > default) and
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that
   it **exits with the code `m0serve` would exit with for the same

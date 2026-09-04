@@ -65,3 +65,89 @@ the whole hypothesis rests on it:
 Recorded now because the packaging decision that forfeits M-series
 capability was made for a good reason, is already shipped, and would
 otherwise be invisible to whoever picks this hypothesis up.
+
+## 2026-09-04: the split, resolved deliberately
+
+The tension above was resolved the day after it was recorded, by the design
+page the ideas folder holds as `m0serve-apple-silicon.md` and by this
+change. The resolution is **not a fork and not a second wheel**: one tree,
+two build flavors, one backend seam, and runtime detection for what varies
+within the M family. What landed:
+
+- **`poe build-serve-native`** builds `bin/m0serve-native` for the build
+  host's CPU and OS floor -- the M-series-specific codegen the wheel forfeits
+  -- as a local build or a release tarball, never a wheel, because pip
+  cannot select a microarchitecture. `--doctor` tells the two apart:
+  `build.apple_target` is `m1` for the wheel on every Mac (the pin above)
+  and the host's generation for the native build. On the M4 that raised the
+  question the two binaries answer `m1` and `m4`.
+- **One backend seam.** `lightbug_http/c/platform.mojo` names
+  `PlatformBackend` (kqueue on macOS, epoll on Linux) and the two libc
+  constants that differ between them. The choice used to be spelled out at
+  five sites, each a `comptime if CompilationTarget.is_macos()` with the
+  import inside the branch, plus three private copies of `MSG_DONTWAIT`.
+  Mojo 1.0 accepts a conditional type alias as a type parameter and a
+  variable type but can only construct it through an initializer a shared
+  trait declares, which is why `ConstructibleBackend` exists; a factory
+  returning the alias does not compile (no implicit conversion, and
+  `rebind` needs a copyable value). `check_backend_seam` in
+  `scripts/check_docs.py` refuses a backend chosen anywhere else.
+- **Performance cores are a runtime fact, reported, not a compile-time
+  one.** `--doctor` now prints `topology.performance_cpus` (4 on this M4,
+  beside `cpus: 10`) from the stdlib's `num_performance_cores`, checked in
+  CI against `sysctl` as a second source. The compile-time predicates
+  (`is_apple_m4()` and friends) answer what the BUILD targeted, which under
+  the `apple-m1` pin is m1 on every Mac.
+- **`--qos` / `M0_QOS`**: the event loop at user-interactive QoS and pool
+  and executor threads at user-initiated, the one placement lever Darwin
+  offers (there is no affinity API). Behind a knob, default off, because
+  the effect is a measurement, below.
+
+### The pool-size question, measured and closed
+
+The page's strongest-evidence item was that zero-config sizes the handler
+pool from `sysconf`, which counts efficiency cores: `min(10, 8) = 8`
+threads on a machine with 4 performance cores. Measured on that machine
+(2026-09-04, `bin/m0serve` at fb33593, `wrk -t4 -c64 -d8s`, two rounds,
+the bare WSGI app):
+
+| pool threads | `/` (loop only) rps | `/busy?ms=1` (1 ms of CPU under the GIL) rps |
+|---|---|---|
+| 4 | 141k, 99k | 956, 982 |
+| 8 | 117k, 130k | 979, 982 |
+
+The CPU-bound view is pinned at the GIL's ceiling (1 ms per request, one
+thread at a time, so about 1000 rps) whichever the count, and hello-world
+differs only inside the run-to-run noise. A pool thread's parallelism is
+WAITING -- a thread parked in a view holds no core -- so the count that
+matters is how many views may wait at once, and an efficiency core is as
+good as any for that. The zero-config rule stays at logical CPUs
+(`pool_cpus` in `cli.mojo` is the one home of that policy, and its
+docstring carries these numbers); the P-core count steers PLACEMENT
+through `--qos`, not size.
+
+### The QoS knob, measured: no effect on this box, so it stays off
+
+Same machine, same harness, `--blocking-threads 4`, the knob the only
+variable; then again with six `yes > /dev/null` hogs at default QoS
+competing for every core:
+
+| scenario | `/` rps, qos off | `/` rps, qos on | `/busy?ms=1` rps, off / on |
+|---|---|---|---|
+| idle machine | 145k, 147k | 148k, 148k | 985, 985 / 985, 986 |
+| six CPU hogs | 66k, 65k | 66k, 65k | 977, 974 / 978, 977 |
+
+The hogs halve hello-world in both arms and the knob moves nothing,
+tails included. Two readings, neither flattering to the knob: the
+scheduler already places a busy default-QoS thread on a performance core
+when one is free, so there is nothing to win idle; and under contention
+the load generator is starved as much as the server, so the harness
+cannot see a placement win even if there is one. What docs/BENCHMARKS.md
+measured was the reverse experiment -- a worker pinned to BACKGROUND QoS
+serving at a quarter of the rate -- which shows the E-cores are slow, not
+that asking for a P-core gets one you would not have had. The knob is
+kept, default off, because it is harmless, `--doctor` reports it, and
+the measurement that would justify a default is one on a Mac serving
+alongside real desktop applications, not one under `yes`. The sequencing
+the page proposed stands: the §4.2 in-memory handoff with a Darwin wake
+primitive is the next lever, and microarchitecture flavors last.

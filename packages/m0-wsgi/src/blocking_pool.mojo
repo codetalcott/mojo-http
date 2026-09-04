@@ -51,7 +51,8 @@ from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
 from lightbug_http.http.common_response import InternalError
 
 from m0_http import (
-    ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS, BLK_LANE,
+    ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS, BLK_LANE, BLK_QOS,
+    request_qos_class, QOS_CLASS_USER_INITIATED,
     BLK_TURN_ADDR, shared_fetch_add, shared_load,
     STATUS_OK, STATUS_RAISED,
 )
@@ -149,7 +150,8 @@ struct BlockingPool(Movable):
         self.turn_addr = move.turn_addr
 
     def start[T: ThreadHandler](
-        mut self, pool_addr: Int, user: Int, var lanes: List[Int] = List[Int]()
+        mut self, pool_addr: Int, user: Int, var lanes: List[Int] = List[Int](),
+        qos: Bool = False,
     ) raises:
         """Spawn the threads. `user` is what `T.make` receives as `ctx.user`.
 
@@ -187,6 +189,7 @@ struct BlockingPool(Movable):
             block.set(BLK_POOL, pool_addr)
             block.set(BLK_LANE, lane)
             block.set(BLK_TURN_ADDR, self.turn_addr)
+            block.set(BLK_QOS, 1 if qos else 0)
         for i in range(self.count):
             self._set.spawn(i, body_addr)
         self._started = True
@@ -260,6 +263,8 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     var lane = block.get(BLK_LANE)
     var index = block.get(BLK_INDEX)
     var turn_addr = block.get(BLK_TURN_ADDR)
+    if block.get(BLK_QOS) == 1:
+        _ = request_qos_class(QOS_CLASS_USER_INITIATED)
 
     # This thread's own drain-ack pair, for the WSGI iterables it streams
     # through the loop's chunk channel: the loop acks each drained buffer

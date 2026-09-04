@@ -26,6 +26,10 @@ Env vars:
     M0_APP_TICK_MS — Milliseconds between application `tick` hook calls;
                     "0" disables the tick entirely (default: 0 — the hook
                     is opt-in, ticking costs wakeups)
+    M0_QOS        — "true" or "1": on macOS, run the event loop at
+                    user-interactive QoS and its worker threads at
+                    user-initiated, which keeps them on performance cores
+                    under contention. Ignored elsewhere (default: off)
 """
 
 from std.os import getenv
@@ -48,6 +52,7 @@ struct AppConfig(Copyable, Movable):
     var access_log: Bool
     var sse_heartbeat_ms: Int
     var app_tick_ms: Int
+    var qos: Bool
 
     def __init__(out self, default_port: Int = 8080):
         """Load configuration from M0_-prefixed env vars with defaults."""
@@ -67,6 +72,8 @@ struct AppConfig(Copyable, Movable):
         self.access_log = access_log_str == "true" or access_log_str == "1"
         self.sse_heartbeat_ms = _parse_int_env("M0_SSE_HEARTBEAT_MS", 15000)
         self.app_tick_ms = _parse_int_env("M0_APP_TICK_MS", 0)
+        var qos_str = getenv("M0_QOS", "")
+        self.qos = qos_str == "true" or qos_str == "1"
 
         var base_url_env = getenv("M0_BASE_URL", "")
         if base_url_env.byte_length() > 0:
@@ -88,6 +95,7 @@ struct AppConfig(Copyable, Movable):
         self.access_log = copy.access_log
         self.sse_heartbeat_ms = copy.sse_heartbeat_ms
         self.app_tick_ms = copy.app_tick_ms
+        self.qos = copy.qos
 
     def __init__(out self, *, deinit move: Self):
         self.host = move.host^
@@ -103,6 +111,7 @@ struct AppConfig(Copyable, Movable):
         self.access_log = move.access_log
         self.sse_heartbeat_ms = move.sse_heartbeat_ms
         self.app_tick_ms = move.app_tick_ms
+        self.qos = move.qos
 
     def address(self) -> String:
         """Return listen address string (e.g. '0.0.0.0:8080')."""

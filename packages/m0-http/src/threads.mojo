@@ -24,6 +24,7 @@ set is created once at startup and its blocks must outlive every thread.
 """
 
 from std.ffi import c_int, external_call, get_errno
+from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 
 from lightbug_http.c.pipe import create_shutdown_pipe, ShutdownHandle
@@ -47,6 +48,13 @@ comptime BLK_TURN_ADDR = 8
 """Address of a pool's turn counters -- the hand-off barrier around its
 threads' re-attach (`m0_wsgi.blocking_pool`) -- or 0. Slot 7 is `BLK_POOL`,
 private to that module."""
+comptime BLK_QOS = 9
+"""1 if the thread should request its role's Darwin QoS class at start.
+
+Set by whoever spawns the thread (`BlockingPool.start`, `AsgiExecutor.start`)
+from `--qos`; read once by the body before it serves. A slot rather than a
+field on the options struct so `m0-http`'s pools need not know the type
+that carries the flag."""
 
 comptime BLK_INTS = 16
 """Slots per block; 128 bytes, two cache lines."""
@@ -259,3 +267,38 @@ struct ShutdownFanout(Movable):
         """Write one byte to every pipe — repeat-safe, async-signal-safe."""
         for i in range(len(self._write_fds)):
             ShutdownHandle(self._write_fds[i]).notify()
+
+
+# --- Darwin QoS ---------------------------------------------------------------
+#
+# Apple Silicon has performance and efficiency cores, and which one a thread
+# lands on is the scheduler's choice, steered by the thread's QoS class: an
+# E-core serves this server's hello-world at roughly a quarter of a P-core's
+# rate (docs/BENCHMARKS.md), so under contention the placement IS the
+# throughput. Darwin has no affinity API; `pthread_set_qos_class_self_np` is
+# the whole lever. Values from <sys/qos.h>, confirmed by a C probe on macOS
+# 26: USER_INTERACTIVE 0x21, USER_INITIATED 0x19, DEFAULT 0x15, UTILITY
+# 0x11, BACKGROUND 0x09.
+
+comptime QOS_CLASS_USER_INTERACTIVE = 33
+"""For a thread whose latency is the product: the event loop."""
+
+comptime QOS_CLASS_USER_INITIATED = 25
+"""For a thread doing work the loop is waiting on: pool and executor threads."""
+
+
+def request_qos_class(qos_class: Int) -> Bool:
+    """Ask Darwin to schedule the CALLING thread at `qos_class`.
+
+    Returns whether the request was accepted. Always False off macOS, where
+    it is a no-op rather than an error: the flag that reaches here is
+    accepted on every platform and ignored where it means nothing, like
+    `--reload` on a read-only filesystem.
+    """
+    comptime if CompilationTarget.is_macos():
+        var rc = external_call[
+            "pthread_set_qos_class_self_np", c_int, c_int, c_int
+        ](c_int(qos_class), c_int(0))
+        return rc == c_int(0)
+    else:
+        return False

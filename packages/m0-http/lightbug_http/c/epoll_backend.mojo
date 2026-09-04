@@ -27,7 +27,7 @@ from lightbug_http.c.epoll import (
     epoll_create1, epoll_ctl_add, epoll_ctl_mod, epoll_ctl_del, epoll_wait,
     timerfd_create, set_timerfd_ms,
 )
-from lightbug_http.event_loop_backend import EventLoopBackend
+from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
 from std.ffi import c_int, external_call
 
 
@@ -72,7 +72,7 @@ def _timer_slot(ident: UInt) -> Int:
 
 
 
-struct EpollBackend(EventLoopBackend):
+struct EpollBackend(ConstructibleBackend):
     """epoll-based IO backend for Linux."""
 
     var epfd: FileDescriptor
@@ -99,6 +99,9 @@ struct EpollBackend(EventLoopBackend):
     # No __del__ needed; the OS reclaims them on process exit.
 
     # --- EventLoopBackend methods ---
+
+    def multiplexer_fd(self) -> Int:
+        return self.epfd.value
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
         self._n_ready = epoll_wait(self.epfd, self._events, _MAX_EVENTS, timeout_ms)

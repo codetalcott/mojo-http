@@ -61,7 +61,6 @@ state.
 """
 
 from std.python import Python, PythonObject
-from std.sys.info import CompilationTarget
 
 from lightbug_http import HTTPService
 from lightbug_http.c.process import process_exit
@@ -69,6 +68,8 @@ from lightbug_http.event_loop import run_event_loop
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.c.platform import PlatformBackend
+from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 
 from .asgi_executor import AsgiExecutor
 from .blocking_pool import BlockingPool, JOIN_TIMEOUT_NS
@@ -418,6 +419,8 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var opts = Pointer[ServeOptions, MutUntrackedOrigin](
         unsafe_from_address=ctx.user
     )
+    if opts[].qos:
+        _ = request_qos_class(QOS_CLASS_USER_INTERACTIVE)
     var mounted = len(opts[].mount_prefixes) > 0
     var asgi_lanes = opts[].asgi_mounts.copy()
     var pool_lanes = wsgi_lanes(opts[])
@@ -474,7 +477,7 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         var exec_lanes = asgi_lanes.copy()
         if len(exec_lanes) == 0:
             exec_lanes.append(-1)
-        exec_thread.start(pool_addr, ctx.user, exec_lanes^)
+        exec_thread.start(pool_addr, ctx.user, exec_lanes^, qos=opts[].qos)
     if pool_threads.count > 0 and not pool.chunk_active():
         # Pool threads stream WSGI iterables through the same channel the
         # executor uses; a pure-WSGI pool server needs it created too.
@@ -488,7 +491,7 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
                 handler.set_ws_pool_notify(
                     pool_lanes[wl], pool.submit_write_fd(pool_lanes[wl])
                 )
-        pool_threads.start[T](pool_addr, ctx.user, pool_lanes^)
+        pool_threads.start[T](pool_addr, ctx.user, pool_lanes^, qos=opts[].qos)
     # The chunk channel consumes `bus_read_fd`, so this thread's own
     # BroadcastBus channel rides the loop's second registered fd. Both are
     # drained identically (same codec, same `sse_peer_frame`), which is
@@ -496,22 +499,12 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
     var peer_fd = block.get(BLK_BUS_FD)
 
-    comptime if CompilationTarget.is_macos():
-        from lightbug_http.c.kqueue_backend import KqueueBackend
-        var backend = DetachingBackend[KqueueBackend](KqueueBackend())
-        run_event_loop(
-            listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), stream_bus_fd, pool_addr,
-            peer_bus_fd=peer_fd,
-        )
-    else:
-        from lightbug_http.c.epoll_backend import EpollBackend
-        var backend = DetachingBackend[EpollBackend](EpollBackend())
-        run_event_loop(
-            listen, handler, backend, server[].config, server[].address, True,
-            block.get(BLK_SHUTDOWN_FD), stream_bus_fd, pool_addr,
-            peer_bus_fd=peer_fd,
-        )
+    var backend = DetachingBackend[PlatformBackend](PlatformBackend())
+    run_event_loop(
+        listen, handler, backend, server[].config, server[].address, True,
+        block.get(BLK_SHUTDOWN_FD), stream_bus_fd, pool_addr,
+        peer_bus_fd=peer_fd,
+    )
 
     if use_offload:
         # Detached across it: a receiver finishing its last job (or the

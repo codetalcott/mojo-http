@@ -1,4 +1,3 @@
-from std.sys.info import CompilationTarget
 from lightbug_http.address import NetworkType
 from lightbug_http.connection import (
     ConnectionState,
@@ -32,6 +31,7 @@ from std.utils import Variant
 from lightbug_http.http import HTTPRequest, HTTPResponse, encode
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.c.platform import PlatformBackend
 
 
 @fieldwise_init
@@ -1148,40 +1148,21 @@ struct Server(Movable):
         """
         from lightbug_http.event_loop import run_event_loop
 
-        comptime if CompilationTarget.is_macos():
-            from lightbug_http.c.kqueue_backend import KqueueBackend
-            try:
-                var backend = KqueueBackend()
-                run_event_loop(
-                    ln.socket.fd,
-                    handler,
-                    backend,
-                    self.config,
-                    self.address(),
-                    self.tcp_keep_alive,
-                    shutdown_read_fd,
-                    bus_read_fd,
-                    offload_addr,
-                )
-            except e:
-                raise e^
-        else:
-            from lightbug_http.c.epoll_backend import EpollBackend
-            try:
-                var backend = EpollBackend()
-                run_event_loop(
-                    ln.socket.fd,
-                    handler,
-                    backend,
-                    self.config,
-                    self.address(),
-                    self.tcp_keep_alive,
-                    shutdown_read_fd,
-                    bus_read_fd,
-                    offload_addr,
-                )
-            except e:
-                raise e^
+        try:
+            var backend = PlatformBackend()
+            run_event_loop(
+                ln.socket.fd,
+                handler,
+                backend,
+                self.config,
+                self.address(),
+                self.tcp_keep_alive,
+                shutdown_read_fd,
+                bus_read_fd,
+                offload_addr,
+            )
+        except e:
+            raise e^
 
 
 def _send_error_response(mut conn: TCPConnection[NetworkType.tcp4], var response: HTTPResponse):

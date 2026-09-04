@@ -686,6 +686,41 @@ def check_test_counts():
              f" tree has {total}")
 
 
+def check_backend_seam():
+    """`lightbug_http/c/platform.mojo` is the ONE place an OS backend is chosen.
+
+    `PlatformBackend` (kqueue on macOS, epoll on Linux) used to be selected
+    at five sites, each a `comptime if CompilationTarget.is_macos()` with
+    the import inside the branch, plus three private copies of
+    `MSG_DONTWAIT`. A Darwin-specific variant of one backend would have had
+    to be threaded through every site. The seam holds only while nothing
+    else imports or constructs a backend by name; this is that rule, over
+    the tree's text. The backend modules themselves and the tests (which
+    may drive one backend on purpose) are the only exemptions.
+    """
+    allowed = {
+        "packages/m0-http/lightbug_http/c/platform.mojo",
+        "packages/m0-http/lightbug_http/c/kqueue_backend.mojo",
+        "packages/m0-http/lightbug_http/c/epoll_backend.mojo",
+    }
+    chooses = re.compile(
+        r"^\s*from lightbug_http\.c\.(?:kqueue|epoll)_backend import"
+        r"|\b(?:KqueueBackend|EpollBackend)\(",  # a call, not prose like `KqueueBackend (macOS)`
+        re.M,
+    )
+    for root in ("packages", "apps"):
+        for f in sorted((REPO / root).rglob("*.mojo")):
+            rel = f.relative_to(REPO).as_posix()
+            if rel in allowed or "/test/" in rel:
+                continue
+            if chooses.search(f.read_text()):
+                fail(
+                    f"{rel}: chooses an OS backend itself (imports or"
+                    " constructs KqueueBackend/EpollBackend); go through"
+                    " lightbug_http/c/platform.mojo's PlatformBackend"
+                )
+
+
 def check_spec_sheet():
     """docs/SPEC.md's capability claims vs the gates they name.
 
@@ -978,6 +1013,7 @@ def main():
     check_consumer_jobs_stay_clean()
     check_pyproject_parses_for_consumers()
     check_test_counts()
+    check_backend_seam()
     check_spec_sheet()
     check_required_context_intact()
     check_ci_measurements_are_collected()
