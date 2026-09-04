@@ -148,9 +148,17 @@ class Harness:
                         "wsnoanswer": "/ws/noanswer"}.get(behaviour, "/ws")
                 self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
-                self.ns["spawn"](slot, "GET", "/",
-                                 ("b=%s" % behaviour).encode(),
-                                 "HTTP/1.1", [], b"")
+                # The finished scope, as the bridge's `_build_scope` hands
+                # it over: the template's invariant half plus the eight
+                # per-request keys.
+                scope = dict(self.ns["_scope_base"])
+                scope.update({
+                    "method": "GET", "path": "/", "raw_path": b"/",
+                    "query_string": ("b=%s" % behaviour).encode(),
+                    "http_version": "1.1", "headers": [], "client": None,
+                    "state": dict(self.ns["_lifespan_state"]),
+                })
+                self.ns["spawn"](slot, scope, b"")
             self.spawned += 1
         return False
 

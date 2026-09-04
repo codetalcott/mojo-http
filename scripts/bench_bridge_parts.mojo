@@ -300,6 +300,11 @@ def main() raises:
         Int(py=abridge._ns["ack_r"].fileno()),
     )
 
+    t0 = perf_counter_ns()
+    for _ in range(N):
+        abridge.probe_build_scope(get_req)
+    var us_scope = _report("ASGI build_scope (C API)  ", perf_counter_ns() - t0)
+
     var ns_spawn = 0
     var ns_drain = 0
     for _ in range(N // ASGI_BATCH):
@@ -342,6 +347,7 @@ def main() raises:
     print("RESPONSE side (6 headers) :", us_r6, "us")
     print("serve() total             :", us_serve, "us")
     print("")
+    print("ASGI scope build (C API)  :", us_scope, "us")
     print("ASGI executor, Python side:", us_spawn + us_drain, "us (spawn + task)")
     print("ASGI head decode, retired :", us_decode, "us (no longer paid)")
     print("ASGI head read, Mojo side :", us_ahead, "us")
