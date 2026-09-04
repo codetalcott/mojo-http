@@ -74,7 +74,7 @@ from .blocking_pool import BLK_POOL
 from m0_http import BLK_LANE
 from .cli import ServeOptions
 from .handler import WSGIHandler, asgi_stream_url, _send_disconnect_tag
-from .response import build_response
+from .response import build_asgi_response
 from .thread_handler import ThreadContext
 
 
@@ -583,11 +583,15 @@ struct ExecutorPort(Movable, Writable):
         if kind == "job":
             return dispatch_job(pool, handler, st, self.lane, slot)
         elif kind == "done":
+            # The head as the application sent it -- an int status and its
+            # own (bytes, bytes) list -- read through the C API. `ev[2]` is
+            # a call result's item, one of the crossings the bridge
+            # documents as leak-free.
             var response: HTTPResponse
             var raised = False
             try:
-                response = build_response(
-                    handler.apps[0]._bridge, String(py=ev[2]), ev[3], ev[4]
+                response = build_asgi_response(
+                    handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4]
                 )
             except:
                 response = InternalError()
@@ -651,8 +655,8 @@ struct ExecutorPort(Movable, Writable):
             var response: HTTPResponse
             var raised = False
             try:
-                response = build_response(
-                    handler.apps[0]._bridge, String(py=ev[2]), ev[3], ev[4],
+                response = build_asgi_response(
+                    handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4],
                     streaming=True,
                 )
             except:

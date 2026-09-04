@@ -1126,17 +1126,20 @@ def set_scope_base(server_name, server_port, root_path=''):
 async def _serve_one_exec(slot, scope, body):
     # The executor's request coroutine: buffered until the application
     # proves it is streaming (its first more_body=True chunk), then a
-    # credit-gated chunk producer. A buffered request returns the same
-    # (status, headers, body) triple as ever and the done-callback answers
+    # credit-gated chunk producer. A buffered request returns a
+    # (status, headers, body) triple and the done-callback answers
     # through the completion channel; a streaming one returns None and its
     # bytes travel as events instead -- ('stream_start', slot, status,
     # headers, b''), ('stream_chunk', slot, bytes), ('stream_end', slot).
+    # The head crosses UNTOUCHED, both ways: the int status and the
+    # (bytes, bytes) list exactly as the application sent them. Mojo reads
+    # both through the C API (`build_asgi_response`), so no reason phrase
+    # is formatted and no name or value is decoded to str here -- a
+    # measured share of the executor thread's per-request work.
     # After stream_start the completion channel must never be used for
     # this slot again: the head already answered it, and the slot may be
     # recycled the instant the loop closes it.
     import asyncio
-    from http.client import responses as _reasons
-    from time import monotonic as _now
 
     delivered = []
     captured = {'status': None, 'headers': []}
@@ -1224,15 +1227,9 @@ async def _serve_one_exec(slot, scope, body):
                 _exec_stream_tasks[slot] = task
                 _exec_credits[slot] = _ASGI_CREDIT_WINDOW
                 _exec_credit_evts[slot] = asyncio.Event()
-                status = captured['status']
-                head_headers = [
-                    (n.decode('latin-1'), v.decode('latin-1'))
-                    for n, v in captured['headers']
-                ]
                 _exec_put((
-                    'stream_start', slot,
-                    '%d %s' % (status, _reasons.get(status, '')),
-                    head_headers, b'',
+                    'stream_start', slot, captured['status'],
+                    captured['headers'], b'',
                 ))
                 buffered = chunks[:]
                 chunks.clear()
@@ -1273,11 +1270,7 @@ async def _serve_one_exec(slot, scope, body):
         raise RuntimeError(
             'ASGI application completed without sending '
             'http.response.start')
-    status = captured['status']
-    headers = [(n.decode('latin-1'), v.decode('latin-1'))
-               for n, v in captured['headers']]
-    return ('%d %s' % (status, _reasons.get(status, '')), headers,
-            b''.join(chunks))
+    return (captured['status'], captured['headers'], b''.join(chunks))
 
 
 def spawn(slot, method, path, query, protocol, headers, body,

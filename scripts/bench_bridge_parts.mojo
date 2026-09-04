@@ -22,7 +22,7 @@ from lightbug_http.header import Headers, Header
 from lightbug_http.uri import URI
 
 from src.bridge import PyBridge
-from src.response import build_response
+from src.response import build_asgi_response, build_response
 
 
 comptime N = 20000
@@ -310,8 +310,11 @@ def main() raises:
         ns_drain += Int(py=abridge._ns["drain"]())
     var us_spawn = _report("ASGI spawn (scope + task) ", ns_spawn)
     var us_drain = _report("ASGI task run -> dispatch ", ns_drain)
+    # What the shim used to do to a head before handing it over, kept as
+    # the row it was retired from: it no longer runs per request.
     var us_decode = _report(
-        "ASGI head decode (Python) ", Int(py=abridge._ns["head_decode_ns"](PythonObject(N)))
+        "ASGI head decode, retired ",
+        Int(py=abridge._ns["head_decode_ns"](PythonObject(N))),
     )
 
     var events = abridge._ns["port"].events
@@ -320,8 +323,8 @@ def main() raises:
         raise Error("the last executor event is not a completion: " + String(py=last[0]))
     t0 = perf_counter_ns()
     for _ in range(N):
-        var resp = build_response(
-            abridge, String(py=last[2]), last[3], last[4]
+        var resp = build_asgi_response(
+            abridge, Int(py=last[2]), last[3], last[4]
         )
         _ = resp.status_code
     var us_ahead = _report("ASGI head -> HTTPResponse ", perf_counter_ns() - t0)
@@ -340,5 +343,5 @@ def main() raises:
     print("serve() total             :", us_serve, "us")
     print("")
     print("ASGI executor, Python side:", us_spawn + us_drain, "us (spawn + task)")
-    print("ASGI of which head decode :", us_decode, "us")
+    print("ASGI head decode, retired :", us_decode, "us (no longer paid)")
     print("ASGI head read, Mojo side :", us_ahead, "us")
