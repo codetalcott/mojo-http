@@ -494,13 +494,29 @@ shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages
 # than crashing. verify_layout.c re-derives all of them from the installed
 # sqlite3.h with _Static_assert. Frontend only: no linker, no runner, ~0.1s.
 #
+# The numbers it asserts come from vtab.mojo: scripts/vtab_layout.py extracts
+# every `comptime NAME: Int` there and compiles the C file with each as
+# -DM0_NAME=N, and holds the two files to one closed set of names. It used to
+# carry its own literals, which checked the header against a copy -- a wrong
+# slot index in the Mojo source passed it (2026-09, found by asking what the
+# gate compared before sabotaging it).
+#
 # Native rather than cross-compiled on purpose. Cross-checking the other
 # triples needs a sysroot carrying sqlite3.h for each, which CI does not have;
 # what a native run does check is the header actually installed here, and
 # across the two CI runners that is both headers the repo is built against.
 [tool.poe.tasks.verify-vtab-layout]
-help = "Assert m0-sqlite's hardcoded SQLite struct offsets against sqlite3.h"
-shell = "${CC:-cc} -fsyntax-only packages/m0-sqlite/test/verify_layout.c"
+help = "Assert vtab.mojo's SQLite struct offsets against sqlite3.h, by extraction"
+shell = "python3 scripts/vtab_layout.py"
+
+# Guard the guard: move every one of vtab.mojo's layout constants in turn (the
+# two allocation sizes to one word, since a larger buffer is legal) and insist
+# verify_layout.c rejects each; break each of the closed-set rules and insist
+# the checker names it. Deterministic and ~3 s, so it sits in test-all beside
+# sabotage-trailers. All in memory: the tree is never written.
+[tool.poe.tasks.sabotage-vtab]
+help = "Move each vtab.mojo layout constant and insist verify_layout.c rejects it"
+shell = "python3 scripts/vtab_layout.py --sabotage"
 
 # Built and run, not `mojo run`. The JIT resolves symbols only from libraries
 # already loaded into its process: on macOS libsqlite3 is in the dyld shared
@@ -533,7 +549,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "fuzz-request", "test-sqlite", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

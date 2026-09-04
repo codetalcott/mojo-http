@@ -12,7 +12,9 @@ autotuned per-op figure would hide how much of it is SQLite's own floor.
 Usage:  uv run poe bench-sqlite
 """
 
+from std.collections.span import Span
 from std.ffi import external_call, c_int
+from std.memory import Pointer
 from std.time import perf_counter_ns
 
 from src import Connection, Statement, open_memory, stats_ints
@@ -39,6 +41,37 @@ def _column_blob_byteloop(stmt: Statement, index: Int) -> List[UInt8]:
     for i in range(n):
         out.append(p[unsafe_offset=i])
     return out^
+
+
+# --- A borrowed read, kept bench-local: the design is recorded, not shipped ---
+
+
+def _column_bytes_span(
+    stmt: Statement, index: Int
+) raises -> Span[Byte, origin_of(stmt)]:
+    """The bytes where SQLite holds them, borrowed from `stmt`; no copy.
+
+    `column_blob_into` minus its memcpy. Pointer before length, as everywhere
+    in stmt.mojo. The span's origin is the statement's, so a `step`, `reset`
+    or `finalize` (all `mut self`) while it is alive is a compile error --
+    which is the property that would make this an API, and what
+    `docs/SQLITE_PERFORMANCE.md` records instead of shipping it.
+    """
+    stmt._check_column(index)
+    var p = external_call["sqlite3_column_blob", CharPtr](
+        stmt._handle, c_int(index)
+    )
+    var n = Int(
+        external_call["sqlite3_column_bytes", c_int](
+            stmt._handle, c_int(index)
+        )
+    )
+    if n <= 0:
+        return Span[Byte, origin_of(stmt)]()
+    return Span[Byte, origin_of(stmt)](
+        unsafe_ptr=Pointer[UInt8, origin_of(stmt)](unsafe_from_address=Int(p)),
+        length=n,
+    )
 
 
 # --- Fixtures -----------------------------------------------------------------
@@ -178,6 +211,19 @@ def bench_blob_scan(mut db: Connection, size: Int) raises:
             best_into = dt
     _report("column_blob_into (reused)  ", best_into)
 
+    var best_span = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT v FROM t")
+        var t0 = perf_counter_ns()
+        var acc = 0
+        while q.step():
+            var s = _column_bytes_span(q, 0)
+            acc += len(s)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_span:
+            best_span = dt
+    _report("borrowed span (no copy)    ", best_span)
+
 
 def bench_text_scan(mut db: Connection, size: Int) raises:
     """What the per-row String allocation in a text scan costs.
@@ -226,6 +272,19 @@ def bench_text_scan(mut db: Connection, size: Int) raises:
         if r == 0 or dt < best_into:
             best_into = dt
     _report("column_blob_into on TEXT   ", best_into)
+
+    var best_span = 0
+    for r in range(REPS):
+        var q = db.prepare("SELECT s FROM t")
+        var t0 = perf_counter_ns()
+        var acc = 0
+        while q.step():
+            var s = _column_bytes_span(q, 0)
+            acc += len(s)
+        var dt = perf_counter_ns() - t0
+        if r == 0 or dt < best_span:
+            best_span = dt
+    _report("borrowed span on TEXT      ", best_span)
 
 
 def bench_ingest(n: Int) raises:
