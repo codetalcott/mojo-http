@@ -143,6 +143,9 @@ PARSERS = {
     # Same row shape as the layer split (bench_asgi_wrk.sh prints it);
     # the artifact name is what docs/BENCHMARKS.md's generated region keys on.
     "asgi_wrk_hello": _parse_layer_split,
+    # The same script at 256 connections (BENCH_CONNS=256 BENCH_NAME=asgi_wrk_conns):
+    # the saturation row, where per-core and per-process rankings differ.
+    "asgi_wrk_conns": _parse_layer_split,
     # Framework apps through the same script (BENCH_NAME=...): the rows the
     # WSGI_PERFORMANCE.md framework table quotes; not on the benchmark page,
     # whose rows are bare handlers on purpose.
