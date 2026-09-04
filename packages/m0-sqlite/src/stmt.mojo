@@ -317,6 +317,14 @@ struct Statement(Movable):
         over `column_text` at 64 B and at 4 KB — the whole difference is the
         per-row String. The bytes arrive without a terminating NUL, exactly
         as `column_text` would have seen them.
+
+        This is the floor on purpose. A copy-free variant handing back a
+        `Span` over SQLite's own cell was measured (`bench_sqlite.mojo`,
+        `_column_bytes_span`) at 4–6% under this at 4 KB and 2–3 ns at 64 B, and
+        not added: the origin that would make the compiler refuse a `step`
+        across a live span does not do that on Mojo 1.0, so the span would
+        be a use-after-step nothing can see. docs/SQLITE_PERFORMANCE.md, "A
+        borrowed read, measured and not shipped".
         """
         self._check_column(index)
         # Pointer before length, as in `column_blob` — SQLite documents that

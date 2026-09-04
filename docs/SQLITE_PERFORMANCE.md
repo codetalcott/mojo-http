@@ -249,6 +249,8 @@ deliberately, item by item:
 | eliminate copies on the hot path | **already applied** — `column_blob` memcpy (13–20x), `column_blob_into` reuse, `m0_array` borrow-by-shape (3.4x) |
 | measure a cache's hit path first | **already practiced** — the statement cache was rejected twice by measurement |
 | hoist hidden per-call work | **checked, nothing there** — the `StringLiteral` → `String` conversion every binder pays on its happy path (`_check(rc, "bind_int")`) measures at **0.0 ns** in an optimized build; the compiler hoists it |
+| read a value where its owner holds it, through a borrowed pointer (`PyBridge.read_head`) | **measured, not shipped** — a borrowed `Span` over SQLite's cell saves 2–3 ns/row at 64 B and 12–24 ns (4–6%) at 4 KB against `column_blob_into`, and the compile-time borrow that would make it safe does not exist on Mojo 1.0; see below |
+| sabotage-prove every guard (`shim_ownership.py --sabotage`) | **was missing for `verify_layout.c`**, and the guard turned out to check the header against its own literals rather than against vtab.mojo; it now reads the Mojo constants and `poe sabotage-vtab` moves each of the 28 in turn — see "The layout guard" below |
 
 Two things did come out of the check.
 
@@ -273,6 +275,72 @@ something needs it, not speculatively.
 remaining per-row cost of a scan is SQLite's own VM (`sqlite3_step`), which
 is the same kind of floor the WSGI bridge just reached — the boundary code
 is direct calls and single copies, and what is left is the engine itself.
+
+### A borrowed read, measured and not shipped
+
+The one bridge technique the table above had not tried here was
+`PyBridge.read_head`'s shape: hand back the bytes where their owner holds
+them, and copy nothing. `column_blob_into` is one `memcpy` away from that;
+a `Span[Byte, origin_of(stmt)]` over `sqlite3_column_blob`'s pointer would
+be zero copies. `bench_sqlite.mojo` carries it as `_column_bytes_span`,
+beside the per-byte loop it keeps for the same reason — an A/B, not an
+API. 100k rows, best of 5, 2026-09-04, same run for every row:
+
+| read | 64 B | 4096 B |
+|------|-----:|-------:|
+| `column_blob_into` (reused), BLOB | 32.7 ns/row | 348.4 ns/row |
+| borrowed span, BLOB | 29.8 ns/row | 336.0 ns/row |
+| `column_blob_into` on TEXT | 33.0 ns/row | 370.9 ns/row |
+| borrowed span on TEXT | 30.8 ns/row | 347.0 ns/row |
+
+So the copy is 2–3 ns of a 64-byte row and 12–24 ns (4–6%) of a 4 KB one;
+the rest is `sqlite3_step` moving the record out of its page, which no
+read-side change touches. (This run's absolute numbers sit below the
+table above, which was recorded on a different day; compare within a run.)
+
+What would have justified the API was not the nanoseconds but the borrow.
+SQLite says the pointer is valid until the next `sqlite3_step`,
+`sqlite3_reset`, `sqlite3_finalize`, or a type-converting `column_*` on
+the same cell; the first three take `mut self`, and the premise was that a
+span carrying `origin_of(stmt)` would make the compiler refuse
+`stmt.step()` while the span is alive — the borrow the Python side could
+only document, enforced here for free. **It is not.** On Mojo 1.0.0 a
+program that takes the span, steps, and then reads the span builds and
+runs (printing the stale length), and so do the `reset` and `finalize`
+shapes — and so does the stdlib's own `Span(list)` followed by
+`list.append`, and a `ref`-returning method followed by a `mut` one.
+Origins do the two jobs the manual gives them, extending the referent's
+lifetime and enforcing argument exclusivity within one call; they do not
+refuse a sequential mutation. A borrowed span here would therefore be
+`column_blob_into` minus 4% plus a use-after-step the compiler cannot see,
+which is exactly the class of bug `m0_array`'s borrow is enforced by
+*shape* to prevent (`stmt.mojo`, "Array parameters"). Add to that the
+package's rule — the variant is added the day something needs it, and
+nothing in this repo or in the sibling SQLite projects scans large
+TEXT/BLOB columns through m0-sqlite — and the answer is no API. The day
+one of the four probes under "Reproducing" stops compiling, the API is
+shippable, with that probe as its negative compile gate.
+
+### The layout guard checked C against C
+
+`test/verify_layout.c` asserts every offset `vtab.mojo` hardcodes against
+the installed `sqlite3.h` — and until 2026-09 it did so with its own copy
+of each number (`offsetof(sqlite3_module, xBestIndex) == 3 * 8`), so a
+wrong `M_BESTINDEX` in the Mojo source compiled, passed the gate, and would
+have corrupted rows in silence. The question that found it was the one the
+handoff asked first: *what does the guard compare?* — not a sabotage, which
+would have reported the right answer for the wrong reason. Now
+`scripts/vtab_layout.py` extracts every `comptime NAME: Int` from
+`vtab.mojo`, compiles the C file with each as `-DM0_NAME=N`, and holds the
+two files to one closed set of names in both directions (a constant the C
+file asserts must exist in Mojo; a constant Mojo defines must be asserted
+or declared Mojo-own). Four offsets that were literals inside
+`_x_best_index` (`base + 4`, `base + 5`, `u + 4`, the 32-byte `sqlite3_vtab`
+allocation) became constants so the guard could see them, and
+`SQLITE_INDEX_CONSTRAINT_EQ`, the one header constant copied by value, is
+checked too. `poe sabotage-vtab` moves each of the 28 in turn (the two
+allocation sizes to one word, because a larger buffer is legal) and breaks
+each closed-set rule, and insists on a failure for every one.
 
 ## Recommendations
 
@@ -302,3 +370,24 @@ They are not checked in; the measurements above are the deliverable. To redo
 them, the four workloads are: N-row fetch by the four strategies above; 20k
 random point reads under each pragma set; 10k inserts under each transaction
 mode; and prepare-versus-reset for one trivial query.
+
+The read-out rows (blob, text, borrowed span, ingest, reduce) are the
+exception: `uv run poe bench-sqlite` is checked in and prints them. The
+layout guard is `uv run poe verify-vtab-layout`, and `uv run poe
+sabotage-vtab` proves it can fail.
+
+The origin finding is four programs of a dozen lines, built with
+`mojo build -I packages/m0-sqlite -Xlinker -lsqlite3`. The shape that must
+NOT build for a borrowed span to be safe, and does:
+
+```mojo
+var q = db.prepare("SELECT v FROM t")
+_ = q.step()
+var s = _column_bytes_span(q, 0)   # Span[Byte, origin_of(q)]
+_ = q.step()                        # mut self, while s is alive
+print(len(s))                       # builds; prints the stale length
+```
+
+Swap the second `step` for `q.reset()` or `q.finalize()`, or reduce it to
+`var s = Span(xs); xs.append(4); print(len(s))` over a plain `List`, and
+each builds the same way. When one of them is refused, re-open the API.

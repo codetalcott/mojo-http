@@ -29,7 +29,13 @@ Three things about the implementation are deliberate:
     and a struct whose size is wrong by four bytes corrupts everything after the
     first row in silence. Every offset used here is asserted against the real
     headers by `test/verify_layout.c`, which `poe test-sqlite` runs — for the
-    host triple — before any Mojo test. Four 64-bit triples were swept by hand
+    host triple — before any Mojo test, and which reads the numbers from THIS
+    file: `scripts/vtab_layout.py` extracts every `comptime NAME: Int` here
+    and compiles the C file with each as `-DM0_NAME`, so the assertion is
+    header-against-Mojo rather than header-against-a-copy. (Until 2026-09 the
+    C file carried its own literals and a wrong slot index here was invisible
+    to it.) `poe sabotage-vtab` moves each constant in turn and insists the
+    guard fails. Four 64-bit triples were swept by hand
     during the spike, with i386 as a negative control; see
     `docs/sqlite-vtab-feasibility.md`. Sweep a new target the same way before
     trusting it, because the gate only ever sees the machine it runs on.
@@ -94,6 +100,9 @@ comptime M_COLUMN: Int = 11
 comptime M_ROWID: Int = 12
 comptime M_SLOTS: Int = 25
 
+# --- sqlite3_vtab: {pModule, nRef, zErrMsg}; xConnect allocates this many --
+comptime V_WORDS: Int = 4
+
 # --- The spec header, allocated per bind and freed by SQLite ----------------
 # Passing {data, count, kind} through one pointer keeps the SQL down to a
 # single `?`, and letting sqlite3_free be the bind destructor means the header
@@ -112,12 +121,20 @@ comptime C_INDEX: Int = 4
 comptime C_WORDS: Int = 5
 
 # --- sqlite3_index_info, word-indexed (see verify_layout.c) -----------------
+comptime II_NCONSTRAINT: Int = 0
 comptime II_ACONSTRAINT: Int = 1
 comptime II_AUSAGE: Int = 4
 comptime II_IDXNUM: Int = 5
 comptime II_COST: Int = 8
+# The two inner arrays, in BYTES: their fields are int and unsigned char, so
+# these are byte offsets into a 12- and an 8-byte element, not word indices.
 comptime CONSTRAINT_STRIDE: Int = 12
+comptime CONSTRAINT_ICOLUMN: Int = 0
+comptime CONSTRAINT_OP: Int = 4
+comptime CONSTRAINT_USABLE: Int = 5
 comptime USAGE_STRIDE: Int = 8
+comptime USAGE_ARGVINDEX: Int = 0
+comptime USAGE_OMIT: Int = 4
 
 comptime XConnectFn = def (
     Int, Int, c_int, Int, Int, Int
@@ -146,12 +163,12 @@ def _x_connect(
     )
     if rc != SQLITE_OK:
         return c_int(rc)
-    # sqlite3_vtab is {pModule, nRef, zErrMsg}; 4 zeroed words covers it.
-    var p = Int(external_call["sqlite3_malloc64", Int](Int64(32)))
+    # sqlite3_vtab is {pModule, nRef, zErrMsg}; V_WORDS zeroed words cover it.
+    var p = Int(external_call["sqlite3_malloc64", Int](Int64(V_WORDS * 8)))
     if p == 0:
         return c_int(SQLITE_NOMEM)
     var w = _words(p)
-    for i in range(4):
+    for i in range(V_WORDS):
         w[unsafe_offset=i] = 0
     _words(pp_vtab)[unsafe_offset=0] = p
     return c_int(SQLITE_OK)
@@ -165,16 +182,24 @@ def _x_disconnect(p_vtab: Int) abi("C") -> c_int:
 def _x_best_index(p_vtab: Int, p_info: Int) abi("C") -> c_int:
     """Claim the hidden `spec` column as xFilter's argument."""
     var info = _words(p_info)
-    var n = Int(I32Ptr(unsafe_from_address=p_info)[unsafe_offset=0])
+    var n = Int(
+        I32Ptr(unsafe_from_address=p_info + II_NCONSTRAINT * 8)[unsafe_offset=0]
+    )
     var a_constraint = info[unsafe_offset=II_ACONSTRAINT]
     var a_usage = info[unsafe_offset=II_AUSAGE]
 
     var spec_slot = -1
     for i in range(n):
         var base = a_constraint + i * CONSTRAINT_STRIDE
-        var i_column = Int(I32Ptr(unsafe_from_address=base)[unsafe_offset=0])
-        var op = Int(U8Ptr(unsafe_from_address=base + 4)[unsafe_offset=0])
-        var usable = Int(U8Ptr(unsafe_from_address=base + 5)[unsafe_offset=0])
+        var i_column = Int(
+            I32Ptr(unsafe_from_address=base + CONSTRAINT_ICOLUMN)[unsafe_offset=0]
+        )
+        var op = Int(
+            U8Ptr(unsafe_from_address=base + CONSTRAINT_OP)[unsafe_offset=0]
+        )
+        var usable = Int(
+            U8Ptr(unsafe_from_address=base + CONSTRAINT_USABLE)[unsafe_offset=0]
+        )
         if usable != 0 and op == SQLITE_INDEX_CONSTRAINT_EQ and i_column == 1:
             spec_slot = i
             break  # one hidden column, so the first usable match is the one
@@ -192,8 +217,8 @@ def _x_best_index(p_vtab: Int, p_info: Int) abi("C") -> c_int:
         return c_int(SQLITE_CONSTRAINT)
 
     var u = a_usage + spec_slot * USAGE_STRIDE
-    I32Ptr(unsafe_from_address=u)[unsafe_offset=0] = Int32(1)
-    U8Ptr(unsafe_from_address=u + 4)[unsafe_offset=0] = UInt8(1)
+    I32Ptr(unsafe_from_address=u + USAGE_ARGVINDEX)[unsafe_offset=0] = Int32(1)
+    U8Ptr(unsafe_from_address=u + USAGE_OMIT)[unsafe_offset=0] = UInt8(1)
     idx_num[unsafe_offset=0] = Int32(1)
     # A flat estimate, and deliberately so: the array length lives behind the
     # bound pointer, which xBestIndex cannot read — planning happens before
