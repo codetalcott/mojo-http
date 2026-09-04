@@ -198,17 +198,33 @@ struct DetachingBackend[B: EventLoopBackend & Movable & Deinitable](EventLoopBac
     Everything forwards to the wrapped backend; only `wait` differs, and it
     is the only place the loop blocks. Detaching around it is what keeps a
     parked thread from stalling the others' stop-the-world pauses.
+
+    Told `set_loop_detached`, it does not touch a thread state at all: the
+    loop thread that owns it has released its state for the whole of
+    serving (`m0serve._serve_offloaded`, docs/notes/detached-loop.md), and a
+    `PyEval_RestoreThread` here would be the per-pass GIL acquisition that
+    kept the loop's parsing and writing from ever overlapping the Python
+    threads' work.
     """
 
     var inner: Self.B
+    var loop_detached: Bool
 
     def __init__(out self, var inner: Self.B):
         self.inner = inner^
+        self.loop_detached = False
 
     def __init__(out self, *, deinit move: Self):
         self.inner = move.inner^
+        self.loop_detached = move.loop_detached
+
+    def set_loop_detached(mut self):
+        """The owning thread holds no thread state; `wait` must not restore one."""
+        self.loop_detached = True
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
+        if self.loop_detached:
+            return self.inner.wait(timeout_ms)
         ref cpy = Python().cpython()
         var ts = cpy.PyEval_SaveThread()
         var n: Int

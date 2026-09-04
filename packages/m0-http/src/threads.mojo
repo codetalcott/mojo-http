@@ -43,9 +43,13 @@ comptime BLK_STATUS = 5
 """Written by the thread: `STATUS_NEVER_RAN` until it starts, then its result."""
 comptime BLK_LANE = 6
 """Which submit lane a pool thread serves (`--mount`); 0 when there is one."""
+comptime BLK_TURN_ADDR = 8
+"""Address of a pool's turn counters -- the hand-off barrier around its
+threads' re-attach (`m0_wsgi.blocking_pool`) -- or 0. Slot 7 is `BLK_POOL`,
+private to that module."""
 
-comptime BLK_INTS = 8
-"""Slots per block; 64 bytes, one cache line."""
+comptime BLK_INTS = 16
+"""Slots per block; 128 bytes, two cache lines."""
 
 comptime STATUS_NEVER_RAN = -3
 comptime STATUS_RAISED = -1

@@ -4228,6 +4228,27 @@ done
 help = "Break each decoder invariant and insist the fuzzer reports it"
 shell = "python3 scripts/fuzz_sabotage.py"
 
+[tool.poe.tasks.probe-pool-fairness]
+help = "PRE-RELEASE: pool threads take the GIL in job order under a CPU-bound view; the turn disabled must convoy (not in CI)"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare"
+port=${M0_FAIRNESS_PORT:-8197}
+cleanup() { kill $pid 2>/dev/null; rm -f fairness.log; }
+trap cleanup EXIT
+fail() { echo "$1"; if [ -f fairness.log ]; then echo '=== fairness.log ==='; cat fairness.log; fi; exit 1; }
+# The loop holds no thread state (docs/notes/detached-loop.md), so the pool's
+# hand-off barrier is what keeps four threads from convoying on the GIL. Both
+# arms, because a probe that cannot see the failure proves nothing.
+"$srv" $SPEC --port $port --blocking-threads 4 > fairness.log 2>&1 & pid=$!
+python3 scripts/pool_fairness_probe.py $port || fail 'with the turn: the fast-route tail convoyed'
+kill $pid; wait $pid 2>/dev/null
+M0_POOL_TURN=0 "$srv" $SPEC --port $port --blocking-threads 4 > fairness.log 2>&1 & pid=$!
+python3 scripts/pool_fairness_probe.py $port --expect-convoy \
+  || fail 'without the turn the tail did NOT convoy: the probe cannot see the failure it guards'
+"""
+
 [tool.poe.tasks.probe-pool]
 help = "PRE-RELEASE: p99 of /fast beside blocking handlers, loop vs pool (not in CI)"
 deps = ["build-core", "build-http"]

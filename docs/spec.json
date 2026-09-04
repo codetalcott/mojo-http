@@ -426,6 +426,14 @@
       "evidence": "`test_respawn.mojo:test_a_worker_refusing_its_configuration_is_not_respawned` (every PR)"
     },
     {
+      "id": "E11",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "The event loop holds no thread state while it serves; a pool thread that drops the GIL hands it to the thread parked waiting for it",
+      "status": "verified",
+      "evidence": "`probe-pool-fairness` (pre-release) \u2014 four pool threads under a CPU-bound view at sixteen connections must hold a single-digit-millisecond fast-route p99 and a max under a quarter second, and the same run with the barrier disabled must show the convoy (a max of seconds), which is what proves the probe can see the failure it guards. The throughput half of the change is the detached-loop A/B in docs/notes/detached-loop.md"
+    },
+    {
       "id": "E9",
       "section": "E",
       "category": "E. Process and worker model",

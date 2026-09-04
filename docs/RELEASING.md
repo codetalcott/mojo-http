@@ -35,6 +35,16 @@ the final column is the deliberate saturation boundary — more blockers
 than threads — where the pooled row is EXPECTED to collapse too. The
 deterministic halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
 
+**And `uv run poe probe-pool-fairness`** (SPEC E11): the loop thread holds
+no thread state while it serves (docs/notes/detached-loop.md), so the
+pool's hand-off barrier is the only thing keeping four handler threads
+from convoying on the GIL under a CPU-bound view. Sixteen connections
+against `/busy` must hold a single-digit-millisecond p99 and a max under a
+quarter second, and the same run with the barrier disabled
+(`M0_POOL_TURN=0`) must show the convoy — a max of seconds — because the
+negative arm is what proves the probe can see the failure. Pre-release for
+the reason above: a p99 from a shared runner is the runner's.
+
 **`uv run poe autobahn`** — Autobahn|Testsuite against the pinned baseline
 (SPEC I13). Pre-release because it needs Docker and ~ten minutes, and its
 unique value — close-code validation, I16 — is a defect fixed once rather

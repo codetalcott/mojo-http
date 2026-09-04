@@ -237,6 +237,25 @@ def slow(environ, start_response):
     return [b"slow done"]
 
 
+def busy(environ, start_response):
+    """Spin for `ms` milliseconds of CPU with the GIL held.
+
+    The shape that convoys a pool of threads on a GIL build -- a view that
+    never releases the GIL until it returns -- which `probe-pool-fairness`
+    drives at sixteen connections against four pool threads. `/slow` cannot
+    stand in for it: `time.sleep` releases the GIL, and a sleeping thread
+    contends with nobody.
+    """
+    qs = parse_qs(environ.get("QUERY_STRING", ""))
+    ms = float(qs.get("ms", ["0.3"])[0])
+    end = time.perf_counter() + ms / 1000.0
+    n = 0
+    while time.perf_counter() < end:
+        n += 1
+    start_response("200 OK", list(TEXT))
+    return [b"busy %d" % n]
+
+
 def stuck(environ, start_response):
     """A view that never comes back, to prove shutdown does not wait for it.
 
@@ -413,6 +432,7 @@ ROUTES = {
     "/subview": subview,
     "/reentrant": reentrant,
     "/slow": slow,
+    "/busy": busy,
     "/stuck": stuck,
     "/stream": stream,
     "/stream-forever": stream_forever,
