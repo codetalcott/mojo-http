@@ -2074,18 +2074,30 @@ kill -TERM "$spid"; wait "$spid"; spid=""
 echo "smoke-apple-silicon: --qos serves"
 
 # 3. The native flavor launches and names ITS HOST's generation, where the
-# wheel flavor just said m1. A generation the toolchain has no predicate
-# for reads `other`, which is still not m1 on anything newer than an M1.
+# wheel flavor just said m1 -- or `other`, where the toolchain has no
+# predicate for what `mojo build` targeted: a generation newer than M4, or
+# a virtualized CPU. GitHub's macOS runners are the second case: the brand
+# string says "Apple M1 (Virtual)" and the default target matches none of
+# is_apple_m1..m4, so the honest answer there is `other`, and the first
+# CI run of this smoke failed by insisting on m1. What the assertion CAN
+# always catch is the wheel binary standing in for the native one: that
+# reads m1 on a host that is not an M1 (sabotaged that way on the M4:
+# caught). On an M1 host, real or virtual, the two flavors are not
+# distinguishable by this line, and the smoke says so.
 "$srv-native" --doctor $SPEC > as-native.json 2>/dev/null || fail "the native build's doctor refused"
 host=$(sysctl -n machdep.cpu.brand_string | sed -nE 's/.*Apple M([0-9]+).*/m\\1/p')
 python3 - "$host" <<'PY' || fail "the native build does not name its host"
 import json, sys
 d = json.load(open("as-native.json")); got = d["build"]["apple_target"]; host = sys.argv[1]
 assert host, "could not read the host generation from machdep.cpu.brand_string"
-assert got == host or (got == "other" and host not in ("m1", "m2", "m3", "m4")), (got, host)
+assert got in (host, "other"), (got, host)
+if host != "m1":
+    assert got != "m1", ("the native flavor reads m1 on a host that is not an M1: is it the wheel binary?", got, host)
+else:
+    print("smoke-apple-silicon: host is an M1 (real or virtual); wheel and native flavors are not distinguishable here")
 PY
 file bin/m0serve-native | grep -q arm64 || fail "the native build is not an arm64 binary"
-echo "smoke-apple-silicon: the native flavor names $host (the wheel said m1)"
+echo "smoke-apple-silicon: the native flavor reports $(python3 -c "import json; print(json.load(open('as-native.json'))['build']['apple_target'])") on an $host host (the wheel said m1)"
 python3 scripts/emit.py --covers E13 --task smoke-apple-silicon
 python3 scripts/emit.py --covers E14 --task smoke-apple-silicon
 python3 scripts/emit.py --covers M18 --task smoke-apple-silicon

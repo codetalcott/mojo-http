@@ -1319,7 +1319,7 @@
       "category": "M. Deployment and operations",
       "capability": "A native build flavor, `poe build-serve-native`: the build host's CPU and OS floor, for a server on a desktop Mac, beside the portable wheel. A local build or a release tarball, never a second wheel, because pip cannot select a microarchitecture",
       "status": "verified",
-      "evidence": "`Smoke test Apple Silicon topology, QoS and the native build flavor` (every PR) \u2014 the native binary launches, and its `build.apple_target` names the host's generation where the wheel flavor on the same machine said m1"
+      "evidence": "`Smoke test Apple Silicon topology, QoS and the native build flavor` (every PR) \u2014 the native binary launches, and its `build.apple_target` names the host's generation where the wheel flavor on the same machine said m1 \u2014 or `other` where the toolchain has no predicate for what the build targeted, which is what a virtualized CPU (GitHub's macOS runners) reads; what the line always catches is the wheel binary standing in for the native one on a host that is not an M1"
     }
   ]
 }
