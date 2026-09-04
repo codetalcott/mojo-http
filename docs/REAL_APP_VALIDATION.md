@@ -1,9 +1,11 @@
 # Exercising the server against real applications
 
-**A record. Run 2026-09-01 and 2026-09-02**, against m0serve 0.16.0
-(`bin/m0serve` from the tree at `c823198`, the 0.16.0 wheel's source),
-macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
-below and in the history of this file.
+**A record. Last run 2026-09-04**, against m0serve 0.17.1 as merged at
+`0766272` — the tree with the detached event loop (PR #229) — all four
+applications, seven rows, in the newest section below. The full pass it
+re-runs was **2026-09-01 and 2026-09-02**, against 0.16.0 (`bin/m0serve`
+from the tree at `c823198`), macOS 26 on an M4, CPython 3.13.6. The plan
+and the previous records are below and in the history of this file.
 
 Every application this server had been tested against was written to test
 it — until the 2026-08-26 pass below, which put three real Django projects
@@ -121,6 +123,66 @@ not run: none of the four dependency trees builds on free-threaded CPython
 - Four manifests under `scripts/soak_manifests/` are the re-runnable
   record of each application's shape, including every substitution and
   the reason for it.
+
+## Re-soak — 2026-09-04, against 0.17.1 as merged at `0766272`, all four applications
+
+The event loop stopped holding a thread state while it serves (PR #229,
+`docs/notes/detached-loop.md`): the default runtime shape of every pooled
+and executor deployment changed, and the smokes that gated it were all
+written here. So the corpus was run again the same night — the four
+checkouts of 2026-09-01 under `/tmp/soak/`, each with its own venv on PATH,
+`bin/m0serve` built from main at `0766272`, CPython 3.13.6 (the GIL build a
+`pip install` gets), macOS 26 on an M4. Same driver, same five populations,
+same reference captures except where noted. Raw driver outputs are in
+`.claude/handoffs/soak-2026-09-04/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 41,749 | 0 | SIGTERM ×2, drains 0.14 s | 120.2 → 124.4 MB | 69 → 72 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions + 300 logins | 180 | 21,980 | 0 | SIGTERM ×2, 0.14 s | 186.8 → 198.1 MB | 69 → 69 / 13 → 13 |
+| color-separation | WSGI, pool 8, 361 uploads | 120 | 53,394 | 0 | SIGTERM ×1, 0.08 s | 0.95 → 1.30 GB | 136 → 142 / 17 → 17 |
+| color-separation | ASGI executor vs uvicorn, 302 uploads | 90 | 20,980 | 0 | — | 1.11 → 1.60 GB | 132 → 128 / 20 → 20 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 71,669 | 0 | SIGTERM ×1, **0.19 s** | 176.1 → 158.7 MB | 96 → 92 / 17 → 16 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,588 | 0 | — | 497.3 → 195.2 MB (a startup transient) | 83 → 83 / 13 → 13 |
+
+Every row: descriptors and threads flat, the server's free-slot count back
+at its starting 1,015 at every sample (every slot returned), zero 5xx, and
+800–1,850 abandoners per run (half FIN, half RST) absorbed. The
+color-separation gigabytes are the application's image renditions, as in
+the 0.16.0 record; textshelf's executor RSS fell over the run, the
+sawtooth the record describes. **No server defect.**
+
+**Two rows failed first, and neither was the server.** Recorded because
+each cost an hour and the next pass should not pay it again:
+
+- **transcripts, 2,798 "failed" stream reads** — every read of the typst
+  PDF. Its normalised digest no longer matched the 2026-09-01 capture; a
+  fresh gunicorn from the same checkout produced the *same* digest as
+  m0serve, four fetches out of four, so the capture was stale: the soak's
+  own traffic had changed the database it renders from (`db/transcript.db`
+  modified that evening). Re-captured from gunicorn, re-run: the row above.
+  The rule this adds to the driver's page: **re-baseline before every
+  pass**, not only after a normalisation change — and before blaming the
+  server, fetch the route from the reference server and compare.
+- **textshelf, 3 of 3 logins answered 200** in both modes. The runs had
+  been pointed at the database the checkout's `.envs/.local/.django` names
+  — the *development* database — where no soak account exists; daphne
+  answered the same 200. The soak's database is the scratch `textshelf_soak`
+  (the 0.16.0 record's setup), and the rows above are against it. A soak
+  account created in the development database while diagnosing this was
+  removed the same minute.
+
+**One observation, not investigated.** textshelf's churn drain took 0.19 s
+with two stream clients and an abandoner in flight, where the 0.16.0
+record measured 5.0 s ("held streams never end, the drain waits its budget
+by design"). What changed between is D9 (2026-09-02): the drain now runs
+ordinary loop passes, so a stream whose client has gone is closed rather
+than waited for. Consistent, and not a defect either way; a pass that wants
+the claim can open a stream, hold it, and time the drain.
+
+**What this pass did not do**, unchanged from the record above:
+`--threads` (none of the four dependency trees builds on free-threaded
+CPython), NiceGUI (phase 0 only, no manifest), the proxy and worker shapes.
 
 ## What would make this worth repeating
 
