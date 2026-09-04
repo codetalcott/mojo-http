@@ -27,6 +27,60 @@ from src.response import build_response
 
 comptime N = 20000
 
+comptime ASGI_BATCH = 1000
+"""Requests spawned before the loop is run: 20k parked tasks at once is
+memory, not measurement, and a batch of a thousand is what the pump's own
+job batches look like at saturation."""
+
+comptime ASGI_SETUP = (
+    "import asyncio, socket, time\n"
+    "from http.client import responses as _reasons\n"
+    "DJANGO_ISH_B = [(b'content-type', b'text/html; charset=utf-8'),\n"
+    "  (b'x-frame-options', b'DENY'), (b'vary', b'Cookie'),\n"
+    "  (b'x-content-type-options', b'nosniff'),\n"
+    "  (b'referrer-policy', b'same-origin'),\n"
+    "  (b'cross-origin-opener-policy', b'same-origin')]\n"
+    "async def asgi_app(scope, receive, send):\n"
+    "    await send({'type': 'http.response.start', 'status': 200,\n"
+    "                'headers': DJANGO_ISH_B})\n"
+    "    await send({'type': 'http.response.body', 'body': b'bare asgi app'})\n"
+    "class Port:\n"
+    "    # The stand-in for ExecutorPort: records what the executor would\n"
+    "    # dispatch into Mojo, so the row measures the shim's work alone.\n"
+    "    def __init__(self):\n"
+    "        self.events = []\n"
+    "    def dispatch(self, ev):\n"
+    "        self.events.append(ev)\n"
+    "        return False\n"
+    "    def flush(self):\n"
+    "        pass\n"
+    "port = Port()\n"
+    "sub_r, sub_w = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+    "ack_r, ack_w = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+    "for s in (sub_r, sub_w, ack_r, ack_w):\n"
+    "    s.setblocking(False)\n"
+    "def drain():\n"
+    "    # Run every spawned task to its done-callback, timed from inside\n"
+    "    # Python so the loop's own overhead is in the row, as it is in the\n"
+    "    # executor thread's.\n"
+    "    t0 = time.perf_counter_ns()\n"
+    "    _loop.run_until_complete(asyncio.gather(*list(_exec_tasks)))\n"
+    "    return time.perf_counter_ns() - t0\n"
+    "def head_decode_ns(n):\n"
+    "    # What the shim did to a head before handing it over: the reason\n"
+    "    # lookup, the '%d %s', a latin-1 decode of every name and value.\n"
+    "    hs = DJANGO_ISH_B\n"
+    "    status = 200\n"
+    "    t0 = time.perf_counter_ns()\n"
+    "    for _ in range(n):\n"
+    "        headers = [(a.decode('latin-1'), b.decode('latin-1')) for a, b in hs]\n"
+    "        s = '%d %s' % (status, _reasons.get(status, ''))\n"
+    "    return time.perf_counter_ns() - t0\n"
+)
+"""The ASGI half of the bench: a six-header app, a recording port, the
+two socket pairs `asgi_executor_init` registers readers on (never
+written to here), and two Python-timed helpers."""
+
 
 def _browser_headers() raises -> Headers:
     """The twelve-header browser shape every bridge benchmark drives."""
@@ -221,6 +275,59 @@ def main() raises:
     var us_serve = _report("serve() = run + response  ", perf_counter_ns() - t0)
     bridge.set_app(ns["app"])
 
+    # 7. The ASGI executor's per-request Python work, by part -- the layer
+    #    the 2026-09-04 executor handoff prices (docs/notes/ names it). A
+    #    stand-in port records the events the executor's ExecutorPort
+    #    would dispatch, and the loop is driven from here in batches, so
+    #    the rows split as: `spawn` (the crossing, the scope build and
+    #    create_task), the task's run to its done-callback (the app, both
+    #    sends, the completion's dispatch into the stub), and the head read
+    #    on the Mojo side -- plus, timed in Python alone, the decode the
+    #    shim applies to a head before it crosses.
+    print("")
+    var abridge = PyBridge()
+    # Into the SHIM's namespace, not the bench's: `drain` reads the shim's
+    # `_loop` and `_exec_tasks` as globals, exactly as the shim's own
+    # functions do.
+    builtins.exec(PythonObject(ASGI_SETUP), abridge._ns)
+    abridge.set_base("0.0.0.0", "8080", False, False)
+    # No lifespan: the app above does not speak it, and the executor's own
+    # fallback bridge is built the same way.
+    _ = abridge.set_app(abridge._ns["asgi_app"], "auto", False)
+    abridge.set_port(abridge._ns["port"])
+    abridge.executor_init(
+        Int(py=abridge._ns["sub_r"].fileno()),
+        Int(py=abridge._ns["ack_r"].fileno()),
+    )
+
+    var ns_spawn = 0
+    var ns_drain = 0
+    for _ in range(N // ASGI_BATCH):
+        t0 = perf_counter_ns()
+        for _ in range(ASGI_BATCH):
+            abridge.spawn_asgi(0, get_req)
+        ns_spawn += perf_counter_ns() - t0
+        ns_drain += Int(py=abridge._ns["drain"]())
+    var us_spawn = _report("ASGI spawn (scope + task) ", ns_spawn)
+    var us_drain = _report("ASGI task run -> dispatch ", ns_drain)
+    var us_decode = _report(
+        "ASGI head decode (Python) ", Int(py=abridge._ns["head_decode_ns"](PythonObject(N)))
+    )
+
+    var events = abridge._ns["port"].events
+    var last = events[len(events) - 1]
+    if String(py=last[0]) != "done":
+        raise Error("the last executor event is not a completion: " + String(py=last[0]))
+    t0 = perf_counter_ns()
+    for _ in range(N):
+        var resp = build_response(
+            abridge, String(py=last[2]), last[3], last[4]
+        )
+        _ = resp.status_code
+    var us_ahead = _report("ASGI head -> HTTPResponse ", perf_counter_ns() - t0)
+    _ = last
+    _ = events
+
     print("")
     print("derived: shim + call      :", us_get - us_env, "us")
     print("derived: 1 KB body staging:", us_post - us_get, "us")
@@ -231,3 +338,7 @@ def main() raises:
     print("REQUEST  side (run, GET)  :", us_get, "us")
     print("RESPONSE side (6 headers) :", us_r6, "us")
     print("serve() total             :", us_serve, "us")
+    print("")
+    print("ASGI executor, Python side:", us_spawn + us_drain, "us (spawn + task)")
+    print("ASGI of which head decode :", us_decode, "us")
+    print("ASGI head read, Mojo side :", us_ahead, "us")

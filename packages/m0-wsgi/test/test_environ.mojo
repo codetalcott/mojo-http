@@ -16,6 +16,7 @@ from src.environ import (
     cgi_name_utf8,
     header_is_excluded,
 )
+from src.environ import span_has_control_bytes
 from src.response import split_status
 
 
@@ -185,6 +186,25 @@ def test_cgi_name_appends_without_clearing() raises:
     var out = _bytes(String("KEEP:"))
     append_cgi_name_as_utf8(out, "host".as_bytes())
     assert_equal(_text(out), "KEEP:HTTP_HOST")
+
+
+# --- span_has_control_bytes --------------------------------------------------
+
+
+def test_span_has_control_bytes_refuses_framing_bytes() raises:
+    """The byte-span form the bridge runs on every header it reads straight
+    out of the application's objects: CR, LF and NUL are refused, anything
+    else — a tab, a byte above 0x7F — is not."""
+    assert_true(span_has_control_bytes(String("a\r\nb").as_bytes()))
+    assert_true(span_has_control_bytes(String("a\rb").as_bytes()))
+    assert_true(span_has_control_bytes(String("a\nb").as_bytes()))
+    assert_true(span_has_control_bytes(String("a\0b").as_bytes()))
+    assert_false(span_has_control_bytes(String("").as_bytes()))
+    assert_false(span_has_control_bytes(String("a\tb").as_bytes()))
+    assert_false(span_has_control_bytes(String("café").as_bytes()))
+    assert_false(
+        span_has_control_bytes(String("text/html; charset=utf-8").as_bytes())
+    )
 
 
 # --- split_status ------------------------------------------------------------

@@ -87,13 +87,16 @@ from std.python._cpython import (
     Py_ssize_t,
 )
 
-from lightbug_http import HTTPRequest
+from lightbug_http import HTTPRequest, Headers, HeaderKey
+from lightbug_http.cookie import ResponseCookieJar
+from lightbug_http.header import name_is
 
 from .environ import (
     all_ascii,
     append_cgi_name_as_utf8,
     append_latin1_as_utf8,
     header_is_excluded,
+    span_has_control_bytes,
 )
 
 
@@ -1512,7 +1515,10 @@ def _run_wsgi(environ, body):
         if captured and exc_info is None:
             raise AssertionError('start_response() called twice without exc_info')
         captured['status'] = status
-        captured['headers'] = headers
+        # A list, so Mojo walks it with PyList_GetItem: PEP 3333 says list
+        # and every framework sends one, so the type test is the whole
+        # cost here; a tuple of pairs is copied once.
+        captured['headers'] = headers if type(headers) is list else list(headers)
         return written.append
 
     result = _app(environ, start_response)
@@ -2293,6 +2299,116 @@ struct PyBridge(Movable):
         _ = body
         return out^
 
+    # --- the response head -------------------------------------------------
+
+    def read_head(
+        self,
+        headers: PythonObject,
+        bytes_pairs: Bool,
+        mut out: Headers,
+        mut cookies: ResponseCookieJar,
+    ) raises:
+        """Fill `out` and `cookies` from the application's response headers,
+        reading them through the C API.
+
+        `headers` is the list the application handed over — `(str, str)`
+        pairs from a WSGI `start_response`, `(bytes, bytes)` pairs from an
+        ASGI `http.response.start`; `bytes_pairs` says which. Every
+        reference taken here is BORROWED: `PyList_GetItem`,
+        `PyTuple_GetItem` and `PyUnicode_AsUTF8AndSize` return pointers
+        into objects the list keeps alive, and `PyBytes_AsString` reads the
+        object's own buffer, so nothing is `Py_DecRef`'d. A DecRef on a
+        borrowed reference is a double free that surfaces later and
+        elsewhere; the RSS guards in `smoke-django` and `smoke-asgi` are the
+        instruments.
+
+        This replaced iterating the list as `PythonObject`s with two
+        `String(py=...)` per pair — priced at 1.27 µs of a six-header
+        response's 3.30 (docs/WSGI_PERFORMANCE.md), with `Headers()` plus
+        six stores another 1.39 — which is what the reserve from the
+        counted bytes is for. The two passes over borrowed pointers cost
+        nanoseconds; the reallocations they avoid cost more.
+
+        A `str` crosses as the UTF-8 CPython caches on the object, the
+        same text `String(py=...)` produced, so the wire bytes are
+        unchanged. A `bytes` value is latin-1 on the wire and is re-encoded
+        to UTF-8 only when a byte above 0x7F makes that necessary, so
+        `write_latin1_to` puts the application's own bytes back. Set-Cookie
+        takes the verbatim jar path, and a name or value carrying CR, LF
+        or NUL is refused before anything is copied — the rules
+        `build_response` applied, on the same bytes.
+        """
+        ref cpy = Python().cpython()
+        var list_ptr = headers._obj_ptr
+        var count = Int(cpy.PyObject_Length(list_ptr))
+        if count < 0:
+            raise cpy.get_error()
+        # Pass one sizes the blob; pass two fills it.
+        var total = 0
+        for i in range(count):
+            var pair = cpy.PyList_GetItem(list_ptr, i)
+            if not pair:
+                raise cpy.get_error()
+            total += len(
+                self._head_span(cpy, _pair_item(cpy, pair, 0), bytes_pairs)
+            )
+            total += len(
+                self._head_span(cpy, _pair_item(cpy, pair, 1), bytes_pairs)
+            )
+        out.reserve(total, count)
+        for i in range(count):
+            var pair = cpy.PyList_GetItem(list_ptr, i)
+            if not pair:
+                raise cpy.get_error()
+            var name = self._head_span(
+                cpy, _pair_item(cpy, pair, 0), bytes_pairs
+            )
+            var value = self._head_span(
+                cpy, _pair_item(cpy, pair, 1), bytes_pairs
+            )
+            # Response splitting: refused here, on the application's own
+            # bytes, and dropped rather than raised — the application has
+            # already run and its body is real. Applies to Set-Cookie too.
+            if span_has_control_bytes(name) or span_has_control_bytes(value):
+                continue
+            if bytes_pairs and not (all_ascii(name) and all_ascii(value)):
+                # The rare latin-1 byte above 0x7F: the blob holds UTF-8,
+                # and `write_latin1_to` transcodes it back on the wire.
+                var name8 = List[UInt8](capacity=2 * len(name))
+                append_latin1_as_utf8(name8, name)
+                var value8 = List[UInt8](capacity=2 * len(value))
+                append_latin1_as_utf8(value8, value)
+                _store_header(out, cookies, Span(name8), Span(value8))
+            else:
+                _store_header(out, cookies, name, value)
+
+    def _head_span(
+        self, ref cpy: CPython, obj: PyObjectPtr, is_bytes: Bool
+    ) raises -> Span[Byte, ImmutAnyOrigin]:
+        """The bytes of one header name or value, borrowed from `obj`.
+
+        A `str` answers through `PyUnicode_AsUTF8AndSize` (the object's
+        cached UTF-8, built once per string), a `bytes` through
+        `PyBytes_AsString` plus `PyObject_Length`. Both are checked calls:
+        an object of the wrong type answers NULL with a TypeError, which is
+        raised here and becomes the request's 500.
+        """
+        if is_bytes:
+            var n = Int(cpy.PyObject_Length(obj))
+            if n < 0:
+                raise cpy.get_error()
+            var maybe = self._bytes_as_string(obj)
+            if not maybe:
+                raise cpy.get_error()
+            return Span[Byte, ImmutAnyOrigin](
+                unsafe_ptr=maybe.unsafe_value().unsafe_bitcast[UInt8](),
+                length=n,
+            )
+        var text = cpy.PyUnicode_AsUTF8AndSize(obj)
+        if not text:
+            raise cpy.get_error()
+        return text.value().as_bytes()
+
     # --- diagnostic probes -------------------------------------------------
     #
     # `scripts/bench_bridge_parts.mojo` uses these to split the per-request
@@ -2303,6 +2419,46 @@ struct PyBridge(Movable):
         """The C-API environ build alone, without running the application."""
         var d = self.build_environ(req)
         _ = d
+
+
+def _pair_item(
+    ref cpy: CPython, pair: PyObjectPtr, index: Int
+) raises -> PyObjectPtr:
+    """Item `index` of one header pair, borrowed.
+
+    PEP 3333 and the ASGI spec both say tuples and every framework sends
+    them, so the tuple read is the path; an application that sends
+    two-element lists is not wrong, so the tuple read's refusal (a
+    `SystemError`, cleared here) falls through to the list read, and only
+    a pair that is neither raises.
+    """
+    var item = cpy.PyTuple_GetItem(pair, index)
+    if not item:
+        _ = cpy.get_error()
+        item = cpy.PyList_GetItem(pair, index)
+        if not item:
+            raise cpy.get_error()
+    return item
+
+
+def _store_header(
+    mut out: Headers,
+    mut cookies: ResponseCookieJar,
+    name: Span[Byte, _],
+    value: Span[Byte, _],
+):
+    """One header into the map, or a Set-Cookie into the jar, verbatim.
+
+    `name_is`, not a lowercased copy: the copy this used to allocate per
+    header, purely to test one constant, was 3.2 µs per header (see
+    `response.mojo`'s history). The jar path is verbatim because the
+    application's line IS the header — the `Cookie` round trip dropped
+    `expires` and `SameSite` from every Django cookie.
+    """
+    if name_is(name, HeaderKey.SET_COOKIE):
+        cookies.add_raw(String(unsafe_from_utf8=value))
+    else:
+        out.set_bytes(name, value)
 
 
 def _base_set(d: PyObjectPtr, key: StringSlice, var value: PythonObject) raises:

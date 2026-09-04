@@ -98,6 +98,27 @@ def all_ascii(b: Span[Byte, _]) -> Bool:
     return True
 
 
+def span_has_control_bytes(b: Span[Byte, _]) -> Bool:
+    """Whether `b` carries a byte that would break header framing.
+
+    CR and LF end a header line, so either one inside a name or a value
+    lets the rest of that string be read as further headers — and, after
+    a blank line, as a body the application never wrote. NUL is included
+    because it terminates a C string and this repo hands header bytes to
+    `sendfile`/`send` paths and to Python.
+
+    The byte-span form of `response.has_control_bytes`, and the one the
+    bridge runs: it reads a response head straight out of the
+    application's own objects, and the refusal has to happen on those
+    bytes, before any of them is copied into a header blob.
+    """
+    for i in range(len(b)):
+        var c = b[i]
+        if c == 0x0D or c == 0x0A or c == 0x00:
+            return True
+    return False
+
+
 def _append_byte_as_utf8(mut out: List[UInt8], c: UInt8):
     """Append the UTF-8 encoding of the codepoint numbered `c`.
 
