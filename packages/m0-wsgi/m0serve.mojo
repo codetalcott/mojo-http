@@ -979,12 +979,14 @@ def _serve_offloaded(
     thread there instead — both speak the same `OffloadPool`, so the loop
     is identical either way.
 
-    `Server.serve_nonblocking` is bypassed for one reason — the backend has to
-    be a `DetachingBackend`. A loop that sits in `kevent`/`epoll_wait` while
-    attached to the interpreter holds a thread state the receiving threads
-    need, and under a GIL-enabled CPython that is not a slowdown but a
-    deadlock: nothing behind the queue would ever run. The wrapper is two
-    calls per loop *pass*.
+    `Server.serve_nonblocking` is bypassed for one reason — the loop thread
+    serves with NO thread state (docs/notes/detached-loop.md). It runs no
+    Python except the inline fallback, which `WSGIHandler.func` attaches
+    around for itself. Attached, it re-acquired the GIL after every wait
+    and was blocked in that acquire 36–45 % of wall time under load, so the
+    executor's and the pool's Python never overlapped its own parsing and
+    writing; detached, the executor and pool rows ran +50–100 %.
+    `M0_LOOP_ATTACHED=1` restores the old shape for an A/B.
 
     With `--mount`, both run AT ONCE: `asgi_lanes` names the mounts that
     get an executor each and `wsgi_lanes` the mounts the pool threads
@@ -1098,9 +1100,24 @@ def _serve_offloaded(
         pool_threads.start[WSGIHandler](pool.addr(), opts_addr, wsgi_lanes^)
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
 
+    # The loop releases its thread state here and takes it back only after
+    # `run_event_loop` returns. Everything the loop does in between is Mojo;
+    # `WSGIHandler.func` attaches for itself on the inline fallback. The
+    # detached wait below is then a plain wait. Attached (M0_LOOP_ATTACHED=1,
+    # the A/B knob) is the pre-0.18 shape: re-attach after every wait.
+    var loop_attached = getenv("M0_LOOP_ATTACHED", "") == "1"
+    ref cpy0 = Python().cpython()
+    if not loop_attached:
+        handler.set_attach_in_func()
+    var loop_ts = cpy0.PyEval_SaveThread()
+    if loop_attached:
+        cpy0.PyEval_RestoreThread(loop_ts)
+
     comptime if CompilationTarget.is_macos():
         from lightbug_http.c.kqueue_backend import KqueueBackend
         var backend = DetachingBackend[KqueueBackend](KqueueBackend())
+        if not loop_attached:
+            backend.set_loop_detached()
         run_event_loop(
             listener.socket.fd, handler, backend, config, opts.address(), True,
             shutdown_fd, stream_bus_fd, pool.addr(),
@@ -1109,11 +1126,15 @@ def _serve_offloaded(
     else:
         from lightbug_http.c.epoll_backend import EpollBackend
         var backend = DetachingBackend[EpollBackend](EpollBackend())
+        if not loop_attached:
+            backend.set_loop_detached()
         run_event_loop(
             listener.socket.fd, handler, backend, config, opts.address(), True,
             shutdown_fd, stream_bus_fd, pool.addr(),
             peer_bus_fd=peer_bus_fd,
         )
+    if not loop_attached:
+        cpy0.PyEval_RestoreThread(loop_ts)
 
     # Detached across it, for the reason the pool body details: a thread
     # finishing its last job (or the executor draining its tasks) has to

@@ -7,6 +7,34 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Changed
+
+- **The event loop holds no thread state while it serves** (`_serve_offloaded`,
+  `DetachingBackend.set_loop_detached`, SPEC E11; docs/notes/detached-loop.md).
+  Under `--blocking-threads` and under the ASGI executor the loop used to
+  re-acquire the GIL after every wait and parse, encode and send while
+  holding it — measured blocked in that acquire 36–45 % of wall time under
+  load, so its work never overlapped the Python threads'. Detached, one
+  binary and one env var, arms alternated: the ASGI executor 67.5k → 101–109k
+  rps at 16 connections and 84k → 158k at 256 (1.8 cores where it had one);
+  bare WSGI with one pool thread 71k → 140k. The one place the loop runs
+  Python, the inline fallback, attaches for itself (`WSGIHandler.func`).
+  `M0_LOOP_ATTACHED=1` restores the old shape for an A/B.
+
+- **Pool threads hand the GIL to the thread that waited for it**
+  (`_yield_turn` in `blocking_pool.mojo`; `poe probe-pool-fairness`,
+  pre-release; SPEC E11). The attached loop had been an accidental
+  fairness pump: as a GIL waiter on every pass it forced CPython's 5 ms
+  switch between pool threads, and without it a thread that finishes a
+  job re-takes the GIL before the thread it signalled runs — a fast-route
+  max of seconds under a CPU-bound view with four threads (the same tail
+  Granian's WSGI pool shows on a GIL build). Two atomic counters: a thread
+  that has held its run for a millisecond and drops the GIL while another
+  is parked on it yields until that one has attached. Nothing is held
+  across a job, so slow-view isolation is untouched, and no waiter's extra
+  wait exceeds the millisecond. `apps/wsgi_bare` gains `/busy`, the CPU-bound view the probe
+  drives.
+
 ## [0.17.1] — 2026-09-03
 
 ### Added

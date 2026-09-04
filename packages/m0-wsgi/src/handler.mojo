@@ -114,6 +114,11 @@ struct WSGIHandler(ThreadHandler):
     — on that thread, from the `ServeOptions` whose address is `ctx.user`.
     """
 
+    var attach_in_func: Bool
+    """This handler serves on a thread that holds NO thread state (the loop
+    of `_serve_offloaded`, docs/notes/detached-loop.md), so `func` and the
+    inline WebSocket serve attach for their own duration. False on pool
+    threads and the executor, whose threads are attached for life."""
     var apps: OwningList[WSGIApp]
     """The mounted applications, parallel to `mount_prefixes`.
 
@@ -313,6 +318,7 @@ struct WSGIHandler(ThreadHandler):
         # slot is exactly the unmounted case; `mount` grows it.
         self.apps = OwningList[WSGIApp](capacity=1)
         self.apps.append(app^)
+        self.attach_in_func = False
         self.mount_prefixes = List[String]()
         self.mount_prefixes.append(root_prefix^)
         self.mounts = mounts^
@@ -728,7 +734,45 @@ struct WSGIHandler(ThreadHandler):
                     return True
         return False
 
+    def set_attach_in_func(mut self):
+        """This handler's thread holds no thread state: `func` attaches itself."""
+        self.attach_in_func = True
+
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        if not self.attach_in_func:
+            return self._func_attached(req)
+        # The detached loop's inline fallback (a full submit queue, or a pool
+        # that is not accepting): the one place the loop thread runs Python.
+        # `PyGILState_Ensure` re-attaches the thread's own saved state and
+        # `Release` puts it back, so the loop leaves as it came.
+        ref cpy = Python().cpython()
+        var gs = cpy.PyGILState_Ensure()
+        var resp: HTTPResponse
+        try:
+            resp = self._func_attached(req)
+        except e:
+            cpy.PyGILState_Release(gs)
+            raise e^
+        cpy.PyGILState_Release(gs)
+        return resp^
+
+    def _serve_synthetic(mut self, req: HTTPRequest) raises:
+        """Run a synthetic `/ws/message` POST through the root app, attaching
+        first when this handler's thread holds no thread state; the response
+        is discarded (what the view does is the point)."""
+        if not self.attach_in_func:
+            _ = self.apps[0].serve(req)
+            return
+        ref cpy = Python().cpython()
+        var gs = cpy.PyGILState_Ensure()
+        try:
+            _ = self.apps[0].serve(req)
+        except e:
+            cpy.PyGILState_Release(gs)
+            raise e^
+        cpy.PyGILState_Release(gs)
+
+    def _func_attached(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var local = self.serve_local(req)
         if local:
             return local.take()
@@ -1290,7 +1334,7 @@ struct WSGIHandler(ThreadHandler):
                 self.mount_prefixes[0] + WS_MESSAGE_PATH,
                 channel, slot, opcode, payload,
             )
-            _ = self.apps[0].serve(req)
+            self._serve_synthetic(req)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
 
@@ -1388,7 +1432,7 @@ struct WSGIHandler(ThreadHandler):
                 self.mount_prefixes[0] + WS_MESSAGE_PATH,
                 channel, slot, opcode, Span(payload),
             )
-            _ = self.apps[0].serve(req)
+            self._serve_synthetic(req)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
         return True

@@ -16,7 +16,7 @@ knowing a badge reports the newest run on `main` rather than the commit you are
 looking at.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**160 capabilities: 136 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 136 verified, 131 are gated on every pull request, 2 weekly, 1 monthly, and 2 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**161 capabilities: 137 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 137 verified, 131 are gated on every pull request, 2 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -156,6 +156,7 @@ whose body drifted away from it is the case most likely to have survived.
 | E7 | Zero-config topology defaults | verified | `Smoke test --doctor against the server's own exit codes` (every PR) |
 | E8 | Max-requests worker recycling with jitter | out of scope | the leak it mitigates is measured instead — `smoke-django` fails on RSS growth over 10k requests |
 | E10 | A worker's configuration refusal (exit 78) ends supervision with 78, never a respawn loop | verified | `test_respawn.mojo:test_a_worker_refusing_its_configuration_is_not_respawned` (every PR) |
+| E11 | The event loop holds no thread state while it serves; a pool thread that drops the GIL hands it to the thread parked waiting for it | verified | `probe-pool-fairness` (pre-release) — four pool threads under a CPU-bound view at sixteen connections must hold a single-digit-millisecond fast-route p99 and a max under a quarter second, and the same run with the barrier disabled must show the convoy (a max of seconds), which is what proves the probe can see the failure it guards. The throughput half of the change is the detached-loop A/B in docs/notes/detached-loop.md |
 | E9 | Worker lifetime / max-RSS recycling | out of scope | same reason as above |
 
 ## F. Observability

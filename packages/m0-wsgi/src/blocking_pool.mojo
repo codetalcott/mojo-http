@@ -38,7 +38,10 @@ releases the GIL and the isolation is real. That is the workload the mode
 exists for.
 """
 
+from std.ffi import c_int, external_call
+from std.os import getenv
 from std.python import Python
+from std.time import perf_counter_ns
 
 from lightbug_http.offload import (
     OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP,
@@ -49,6 +52,7 @@ from lightbug_http.http.common_response import InternalError
 
 from m0_http import (
     ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS, BLK_LANE,
+    BLK_TURN_ADDR, shared_fetch_add, shared_load,
     STATUS_OK, STATUS_RAISED,
 )
 
@@ -120,6 +124,13 @@ struct BlockingPool(Movable):
     var stragglers: Int
     """Threads `stop_and_join` gave up waiting for: still inside the
     application when its budget ran out, left running and unjoined."""
+    var turn_addr: Int
+    """The pool's turn counters (docs/notes/detached-loop.md): two atomics,
+    threads parked in `PyEval_RestoreThread` and attaches completed. A
+    thread that drops the GIL while another is parked on it yields until
+    that one has acquired (`_yield_turn`), so the hand-off goes to the
+    thread that waited rather than back to the one that just ran. 0 for a
+    pool of one, and under `M0_POOL_TURN=0` (the probe's negative arm)."""
 
     def __init__(out self, count: Int):
         self.count = count
@@ -127,6 +138,7 @@ struct BlockingPool(Movable):
         self._started = False
         self._lanes = List[Int]()
         self.stragglers = 0
+        self.turn_addr = 0
 
     def __init__(out self, *, deinit move: Self):
         self.count = move.count
@@ -134,6 +146,7 @@ struct BlockingPool(Movable):
         self._started = move._started
         self._lanes = move._lanes^
         self.stragglers = move.stragglers
+        self.turn_addr = move.turn_addr
 
     def start[T: ThreadHandler](
         mut self, pool_addr: Int, user: Int, var lanes: List[Int] = List[Int]()
@@ -150,6 +163,22 @@ struct BlockingPool(Movable):
         var body = _pool_body[T]
         var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
         self._lanes = List[Int]()
+        # The hand-off barrier. With the loop thread holding no thread state
+        # (docs/notes/detached-loop.md) nothing forces CPython's GIL hand-off
+        # between pool threads: a thread that finishes a job re-takes the GIL
+        # before the thread it just signalled is scheduled, and a job THAT
+        # thread already dequeued waits out the convoy -- measured as a
+        # fast-route max of seconds under a CPU-bound view with four threads.
+        # Two counters, no fds: a thread parks itself as a waiter around its
+        # re-attach, and a thread that drops the GIL while waiters exist
+        # yields until an attach completes (`_yield_turn`). A token queue was
+        # tried first and was either a gap (one token: the GIL idle while the
+        # next taker woke from the kernel) or no order at all (N-1 tokens,
+        # once some threads were asleep inside views). One thread needs none.
+        if self.count > 1 and getenv("M0_POOL_TURN", "") != "0":
+            self.turn_addr = external_call["malloc", Int, Int](16)
+            Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=self.turn_addr)[] = 0
+            Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=self.turn_addr + 8)[] = 0
         for i in range(self.count):
             var lane = -1 if len(lanes) == 0 else lanes[i % len(lanes)]
             self._lanes.append(lane)
@@ -157,6 +186,7 @@ struct BlockingPool(Movable):
             block.set(BLK_USER, user)
             block.set(BLK_POOL, pool_addr)
             block.set(BLK_LANE, lane)
+            block.set(BLK_TURN_ADDR, self.turn_addr)
         for i in range(self.count):
             self._set.spawn(i, body_addr)
         self._started = True
@@ -229,6 +259,7 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     )[]
     var lane = block.get(BLK_LANE)
     var index = block.get(BLK_INDEX)
+    var turn_addr = block.get(BLK_TURN_ADDR)
 
     # This thread's own drain-ack pair, for the WSGI iterables it streams
     # through the loop's chunk channel: the loop acks each drained buffer
@@ -266,13 +297,41 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     for _ in range(WS_JOB_BUFFER):
         buf.append(0)
 
+    # When this thread's current run of the GIL began (the hand-off slice).
+    var streak_start = perf_counter_ns()
+
     while True:
         # Detached across the block. This is where the thread spends its life,
         # and holding a thread state through it would stall every other
         # thread's stop-the-world.
+        # The snapshot before the drop, the yield after it: once this thread
+        # has held its run for a slice, and another pool thread is parked
+        # waiting for the GIL this drop releases, stay off it until that
+        # thread has acquired. Then park as a waiter around the re-attach so
+        # the next thread to drop sees us. A slice rather than every job:
+        # a hand-off is a thread switch plus a condvar wake, which on a
+        # 200 us view was 15 % of throughput when paid per job and is
+        # ~3 % per millisecond; no waiter waits more than the slice.
+        var now = perf_counter_ns()
+        var attaches_before = shared_load(turn_addr + 8) if turn_addr != 0 else 0
         var ts = cpy.PyEval_SaveThread()
+        var yielded = False
+        if turn_addr != 0 and now - streak_start >= TURN_SLICE_NS:
+            yielded = _yield_turn(turn_addr, attaches_before)
         var job = pool.next_job(lane if lane > 0 else 0, buf)
+        if turn_addr != 0:
+            _ = shared_fetch_add(turn_addr, 1)
+        var t_attach = perf_counter_ns()
         cpy.PyEval_RestoreThread(ts)
+        if turn_addr != 0:
+            _ = shared_fetch_add(turn_addr, -1)
+            _ = shared_fetch_add(turn_addr + 8, 1)
+            var t_held = perf_counter_ns()
+            # A new run starts when this thread gave the GIL away, or had to
+            # wait for it: a thread that queued a millisecond for its turn
+            # must not be over its slice the moment it gets one.
+            if yielded or t_held - t_attach >= TURN_WAITED_NS:
+                streak_start = t_held
         if job.kind == JOB_STOP:
             break
 
@@ -370,6 +429,44 @@ def _stream_unavailable() -> HTTPResponse:
         status_code=503,
         status_text="Service Unavailable",
     )
+
+
+comptime TURN_SLICE_NS = 1_000_000
+"""How long a pool thread may keep re-taking the GIL past parked waiters
+before it must hand off: the bound on any waiter's extra wait, and the
+period of the thread switch a hand-off costs. CPython's own switch
+interval is 5 ms; this is fairer by five and, on views of a few hundred
+microseconds, hands off every few jobs rather than every job."""
+
+comptime TURN_WAITED_NS = 50_000
+"""A `PyEval_RestoreThread` longer than this waited for another thread,
+and the run it begins is a new one for the slice."""
+
+comptime TURN_YIELD_NS = 1_000_000
+"""How long a dropping thread yields for a parked waiter to acquire. A
+waiter that never does -- the GIL taken meanwhile by a view re-acquiring it
+inside CPython, where these counters cannot see -- costs a bounded spin,
+not a stall."""
+
+
+def _yield_turn(addr: Int, attaches_before: Int) -> Bool:
+    """The hand-off barrier: after dropping the GIL, if another pool thread
+    is parked waiting for it, yield until an attach completes. Returns
+    whether there was a waiter to yield to.
+
+    `addr` holds the waiter count, `addr + 8` the attach count. A parked
+    waiter is already inside `PyEval_RestoreThread`, so the GIL never sits
+    free while it wakes; the yield only keeps THIS thread from winning the
+    race back. No syscall on the common path (no waiter: return at once).
+    """
+    if shared_load(addr) <= 0:
+        return False
+    var deadline = perf_counter_ns() + TURN_YIELD_NS
+    while shared_load(addr + 8) == attaches_before:
+        _ = external_call["sched_yield", c_int]()
+        if perf_counter_ns() > deadline:
+            return True
+    return True
 
 
 def _pool_body[T: ThreadHandler](arg: Int) -> Int:

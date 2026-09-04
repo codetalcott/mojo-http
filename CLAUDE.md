@@ -231,8 +231,7 @@ code depends on:
     with the GIL build's 16-byte header and 3.14t's is 32
     (modular/modular#5726), so `m0serve` refuses an ASGI app there with
     exit 78 (`asgi_free_threading_refusal`; ROADMAP Known issues) and an
-    ASGI app under `--threads` is impossible on this toolchain; the Mojo loop still needs
-    `DetachingBackend`; every Python object stays owned by the executor
+    ASGI app under `--threads` is impossible on this toolchain; the Mojo loop holds no thread state (the pool bullet's rule); every Python object stays owned by the executor
     thread; the loop's fallback handler is built with `lifespan=False` so
     exactly one lifespan runs per loop; `spawn_asgi` crosses the scope
     C-API-only (PyList/PyTuple steal discipline — same rules as the
@@ -421,13 +420,35 @@ code depends on:
     - **One pool per loop.** A job names a slot, and a slot indexes one loop's
       `ProvisionPool`. A pool shared between loops would answer the wrong
       connection.
-    - **The loop must detach while it waits.** `DetachingBackend` is not
-      optional here even under prefork: a loop attached inside
-      `kevent`/`epoll_wait` keeps every pool thread out, which under a
-      GIL-enabled interpreter is a deadlock rather than a slowdown.
+    - **The loop holds NO thread state while it serves** (`_serve_offloaded`
+      releases it once before `run_event_loop` and restores it once after;
+      `DetachingBackend` told `set_loop_detached` is a plain wait). It used
+      to re-attach after every wait, and was measured blocked in that
+      `PyEval_RestoreThread` 36–45 % of wall time under load — GIL-bound,
+      not I/O-bound, so its parsing and writing never overlapped the
+      Python threads' work; detached, the executor and pool rows ran
+      +50–100 % (docs/notes/detached-loop.md). The one place the loop runs
+      Python is the inline fallback, and `WSGIHandler.func` attaches for
+      itself there (`attach_in_func`); nothing else on the loop's handler
+      may touch a `PythonObject`. `M0_LOOP_ATTACHED=1` is the A/B knob.
     - **Pool threads detach around the blocking `recv` and attach per job**,
       and build and destroy their handler inside an outer attached region.
-      Same discipline as a serving thread, same reason.
+      Same discipline as a serving thread, same reason. **A thread that has
+      held its run for a millisecond and drops the GIL while another pool
+      thread is parked waiting for it yields until that thread has
+      attached** (`_yield_turn`, `TURN_SLICE_NS`, two atomic counters at
+      `BLK_TURN_ADDR`): with the loop no longer a GIL waiter on every pass,
+      nothing else forces CPython's 5 ms switch, and a thread that finishes
+      a job otherwise re-takes the GIL before the thread it signalled runs —
+      a fast-route max of seconds under a CPU-bound view with four threads.
+      Counters, not a token queue: one token left the GIL idle while the
+      next taker woke from the kernel, and N−1 tokens gave no order once
+      some threads were asleep inside views. A slice, not every job: a
+      hand-off is a thread switch, 15 % of a 200 µs view's throughput when
+      paid per job. A view that blocks holds nothing; a pool of one has no
+      barrier. `poe probe-pool-fairness`
+      (pre-release, SPEC E11) is the gate, and `M0_POOL_TURN=0` is its
+      negative arm.
     - **A slot with a job in flight is untouchable and unrecyclable.** The
       idle and header sweeps skip it, the read path refuses it (clearing
       `slot_read_armed` so a pipelined request is not stranded by the edge it
