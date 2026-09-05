@@ -26,15 +26,19 @@ libpython off the link line of everything else.
 ## Ownership, which is the whole safety argument
 
 A job slot's entry is owned by exactly ONE thread at any moment, and the
-ownership handoff IS the socketpair syscall:
+ownership handoff is a sequentially consistent publish in memory:
 
-    loop: park_request(slot)  ->  submit(slot)  ~~>  next_job() -> take_request(slot)
+    loop: park_request(slot)  ->  submit(slot)   ~~>  next_job() -> take_request(slot)
     pool: put_response(slot)  ->  complete(slot) ~~>  drain_completions() -> take_response(slot)
 
-`send`/`recv` on a socket cross a kernel lock in both directions, so the
-writes before a `submit` are visible to the thread that `recv`s it. Nothing
-else is shared: the loop never touches a slot between `submit` and its
-completion, and a pool thread never touches one it did not receive.
+`submit` pushes the slot onto its lane's ring and `complete` onto the
+completion ring (`ring.mojo`); a push is an atomic store that the pop's
+atomic load synchronises with, so the writes before a `submit` are
+visible to the thread that pops it. Nothing else is shared: the loop never
+touches a slot between `submit` and its completion, and a pool thread
+never touches one it did not receive. With `M0_POOL_RING=0` there are no
+rings and the same two crossings are the socketpair syscalls they were
+before 2026-09-05, whose kernel lock is the same fence.
 
 The slot is also never *recycled* mid-flight. A client that disconnects while
 its request is in a pool thread detaches the fd but leaves the provision
@@ -42,22 +46,54 @@ borrowed; the completion arrives, finds `slot_fds[slot] == UNUSED`, drops the
 response and releases the slot then. A generation counter would detect that
 race instead; holding the slot removes it.
 
-## Why SOCK_DGRAM, and why two of them
+## The socketpairs: the wake, and everything that carries a payload
 
-Datagrams preserve message boundaries, so N pool threads reading one channel
-each dequeue exactly one whole job — the kernel is the queue, and there is no
-mutex to write. The same reason `broadcast.mojo` chose them, and they now share
-`c/socketpair.mojo`. Two channels rather than one bidirectional pair because the loop must be able to register
-its receiving end with kqueue/epoll and be woken by it, exactly as it is woken
-by a `BroadcastBus` channel; a channel it also *sends* on would wake it with
-its own submissions.
+Two `SOCK_DGRAM` pairs per lane, as before, and they still carry
+everything that is not a bare slot: an inbound WebSocket message
+(`TAG_WS_MESSAGE`), the poison pill, a stream abort, and an executor's job
+batch and completion batch — the executor is the shim's asyncio loop,
+which reads its lane with `add_reader`, and its datagram protocol is
+untouched. Datagrams preserve message boundaries, so N pool threads
+reading one channel each dequeue exactly one whole one: a pill retires one
+thread, a message reaches one thread. And the completion end is something
+kqueue/epoll can wake the loop on, exactly as a `BroadcastBus` channel is.
 
-Submit is non-blocking on the loop side: a full queue means "the pool is
-saturated", and the loop's answer is to run that one request inline rather
-than drop it. Completion is best-effort-with-retry on the pool side, because a
-dropped completion is a connection that never answers — but it cannot actually
-fill, since at most `OFFLOAD_MAX_INFLIGHT` jobs exist at once and the channel
-is sized for that many.
+What a plain job or completion sends on them is a WAKE (`_POKE`, an 8-byte
+datagram no reader mistakes for a slot), and only when the other side has
+announced that it is parked:
+
+- a pool thread that finds its ring empty spins for `POOL_SPIN_NS`
+  (yielding after `POOL_YIELD_AFTER_NS`), then counts itself parked,
+  re-checks the ring, and blocks in `recv`; `submit` pushes, then reads
+  that count, and pokes the lane only if it is non-zero;
+- the loop raises its own flag before `backend.wait` and re-checks the
+  completion ring after raising it (`event_loop._wait_for_events`);
+  `complete` pushes, then reads the flag, and pokes the completion
+  channel only if it is set.
+
+Announce, then re-check, then block — and push, then read the
+announcement, then poke. Every one of those is sequentially consistent
+(the stdlib's default), so one side always sees the other and a wake is
+never lost. Reordering either sequence is a lost wakeup: a request
+answered a second late, or at shutdown a thread that never reads its pill.
+
+The spin is what makes a pool thread's park rare rather than free. At
+130–180k rps the gap between jobs on one thread is a microsecond or two,
+inside the spin, so most jobs are taken without a park and most submits
+without a poke — the shape crossbeam's backoff gives Granian's blocking
+thread. The spin runs DETACHED (the pool body saves its thread state
+before `next_job`), so it holds no GIL. While spinning or working, the
+thread polls its socket non-blocking once per `POOL_DGRAM_POLL_NS`, which
+is how a pill or a WebSocket message reaches a thread that never runs dry.
+The loop's flag starts SET and the inversion's driver never clears it: it
+waits inside asyncio rather than in `_wait_for_events`, so every
+completion pokes it — the datagram shape that path always had.
+
+Submit is non-blocking on the loop side: a full ring (or, without rings, a
+full queue) means "the pool is saturated", and the loop's answer is to run
+that one request inline rather than drop it. Completion cannot fill: at
+most `OFFLOAD_MAX_INFLIGHT` jobs exist at once and both the ring and the
+channel are sized for that many.
 """
 
 from std.collections import Optional
@@ -67,10 +103,14 @@ from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, close, setsockopt, SocketOption, SOL_SOCKET,
 )
-from lightbug_http.c.socket_error import RecvEINTRError
+from lightbug_http.c.socket_error import RecvEAGAINError, RecvEINTRError
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.c.platform import MSG_DONTWAIT
+from lightbug_http.ring import Ring, atomic_at
+from std.atomic import Atomic
+from std.os import getenv
+from std.time import perf_counter_ns
 
 
 comptime OFFLOAD_MAX_INFLIGHT = 256
@@ -89,6 +129,37 @@ comptime _JOB_BYTES = 8
 """One job is one little-endian Int64 slot index. `_POISON` ends a thread."""
 
 comptime _POISON = -1
+
+comptime _POKE = -2
+"""An 8-byte datagram carrying this value is a WAKE, not a job and not a
+completion: the ring holds the work, the datagram only ends a `recv` or a
+`kevent` that the other side announced it was parked in. Every reader of
+a submit lane or the completion channel skips it."""
+
+comptime POOL_SPIN_NS = 30_000
+"""How long a pool thread whose ring is empty keeps looking before it
+parks. Longer than the gap between jobs at the rates the pool serves
+(1–2 µs at 130–180k rps), shorter than a human notices as CPU."""
+
+comptime POOL_YIELD_AFTER_NS = 5_000
+"""Into the spin, the point after which each look is followed by
+`sched_yield`, so a thread waiting past the common gap gives its core up
+to whatever else wants it."""
+
+comptime POOL_DGRAM_POLL_NS = 100_000
+"""How often a pool thread that is not parked polls its socket
+non-blocking. Only pills and payload datagrams (an inbound WebSocket
+message) ride the socket now, so this bounds how late one is noticed by a
+thread that never runs out of ring work: one recv per 100 µs is a few
+tenths of a percent of the thread."""
+
+comptime _WAKE_BYTES = 8192
+"""The wake words: the loop's parked flag at +0, then per lane at
+`_WAKE_LANE_BASE + lane * _WAKE_LANE_STRIDE` a parked-thread count (+0)
+and the last datagram-poll time (+8), each lane on its own cache line."""
+comptime _WAKE_LANE_BASE = 128
+comptime _WAKE_LANE_STRIDE = 64
+comptime _WAKE_MAX_LANES = (_WAKE_BYTES - _WAKE_LANE_BASE) // _WAKE_LANE_STRIDE
 
 comptime TAG_STREAM_ABORT = UInt8(5)
 """First byte of a stream-abort datagram on the COMPLETION channel.
@@ -173,6 +244,10 @@ comptime JOB_WS_MESSAGE = 1
 """`PoolJob.kind`: an inbound WebSocket message, in the caller's buffer."""
 comptime JOB_STOP = 2
 """`PoolJob.kind`: the poison pill; this thread is done."""
+comptime JOB_NONE = 3
+"""`PoolJob.kind`: nothing to serve — a wake datagram, an empty
+non-blocking read, or a shape this version does not serve. Internal to
+`next_job`, which never returns it."""
 
 
 @fieldwise_init
@@ -421,6 +496,22 @@ struct OffloadPool(Movable):
 
     var capacity: Int
 
+    var ring_enabled: Bool
+    """The in-memory handoff (module docstring). Off under `M0_POOL_RING=0`,
+    and always off for a disabled pool."""
+
+    var job_rings: List[Ring]
+    """Per lane, the ring `submit` pushes onto and `next_job` pops from. An
+    executor lane gets one too and never uses it (its jobs are batched
+    datagrams); a lane past `_WAKE_MAX_LANES` gets a disabled ring, which
+    both sides read as "this lane is datagrams"."""
+
+    var done_ring: Ring
+    """The one completion ring: every pool thread pushes, the loop pops."""
+
+    var wake_base: Int
+    """The `_WAKE_BYTES` block of parked flags, or 0 without rings."""
+
     def __init__(out self, capacity: Int) raises:
         """`capacity == 0` builds a disabled pool: no descriptors, no storage.
 
@@ -460,6 +551,20 @@ struct OffloadPool(Movable):
         self.stream_ack_write = -1
         self.hold_notify_fd = -1
         self.sweep_every_pass = False
+        self.ring_enabled = capacity > 0 and getenv("M0_POOL_RING", "") != "0"
+        self.job_rings = List[Ring]()
+        self.done_ring = Ring()
+        self.wake_base = 0
+        if self.ring_enabled:
+            self.job_rings.append(Ring(OFFLOAD_MAX_INFLIGHT))
+            self.done_ring = Ring(OFFLOAD_MAX_INFLIGHT * 2)
+            self.wake_base = external_call["malloc", Int, Int](_WAKE_BYTES)
+            for w in range(_WAKE_BYTES // 8):
+                atomic_at(self.wake_base + w * 8)[] = Atomic[DType.int64](0)
+            # The loop's flag starts SET: a loop that never announces its
+            # parks (the inversion's driver waits inside asyncio) is poked on
+            # every completion, the datagram shape it always had.
+            atomic_at(self.wake_base)[].store(1)
 
         if capacity <= 0:
             self.submit_read = -1
@@ -508,6 +613,10 @@ struct OffloadPool(Movable):
         self.errored = move.errored^
         self.capacity = move.capacity
         self.sweep_every_pass = move.sweep_every_pass
+        self.ring_enabled = move.ring_enabled
+        self.job_rings = move.job_rings^
+        self.done_ring = move.done_ring.copy()
+        self.wake_base = move.wake_base
 
     def set_hold_notify(mut self, fd: Int):
         """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
@@ -805,6 +914,136 @@ struct OffloadPool(Movable):
         var p = Pointer(to=self)
         return Pointer(to=p).unsafe_bitcast[Int]()[]
 
+    # --- the ring handoff ---------------------------------------------------
+
+    def _new_lane_ring(self) -> Ring:
+        """A ring for the lane about to be appended, or a disabled one when
+        rings are off or the wake block has no line left for it."""
+        if self.ring_enabled and len(self.job_rings) < _WAKE_MAX_LANES:
+            return Ring(OFFLOAD_MAX_INFLIGHT)
+        return Ring()
+
+    def _ring_for(self, lane: Int) -> Ring:
+        """`lane`'s job ring; disabled when the lane has none."""
+        var at = lane if lane > 0 else 0
+        if at < len(self.job_rings):
+            return self.job_rings[at].copy()
+        return Ring()
+
+    def _parked_addr(self, lane: Int) -> Int:
+        var at = lane if lane > 0 else 0
+        return self.wake_base + _WAKE_LANE_BASE + at * _WAKE_LANE_STRIDE
+
+    def _poll_addr(self, lane: Int) -> Int:
+        return self._parked_addr(lane) + 8
+
+    def ring_active(self) -> Bool:
+        """Whether jobs and completions ride the rings (else datagrams)."""
+        return self.ring_enabled
+
+    def parked_count(self, lane: Int) -> Int:
+        """Threads of `lane` blocked in `recv` right now. Test surface."""
+        if not self.ring_enabled:
+            return 0
+        return Int(atomic_at(self._parked_addr(lane))[].load())
+
+    def note_parked(self, lane: Int, delta: Int):
+        """Adjust `lane`'s parked count. `next_job` does this itself; a test
+        does it to stand in for a thread it did not spawn."""
+        if self.ring_enabled:
+            _ = atomic_at(self._parked_addr(lane))[].fetch_add(Int64(delta))
+
+    def set_loop_parked(self, flag: Bool):
+        """The loop's announcement: it is about to wait (True) or is back
+        (False). Raise it BEFORE re-checking `done_pending`."""
+        if self.ring_enabled:
+            atomic_at(self.wake_base)[].store(Int64(1) if flag else Int64(0))
+
+    def loop_parked(self) -> Bool:
+        if not self.ring_enabled:
+            return False
+        return atomic_at(self.wake_base)[].load() != 0
+
+    def done_pending(self) -> Bool:
+        """Whether the completion ring holds something for the loop."""
+        if not self.ring_enabled:
+            return False
+        return not self.done_ring.is_empty()
+
+    def _poke(self, fd: Int):
+        """One wake datagram on `fd`. Retried like `complete`: a wake that
+        never lands is a parked thread that stays parked."""
+        var msg = _encode_job(_POKE)
+        for _ in range(64):
+            try:
+                _ = send(FileDescriptor(fd), Span(msg), UInt(len(msg)), 0)
+                return
+            except:
+                _sched_yield()
+
+    def _recv_datagram(
+        self, fd: FileDescriptor, cap: Int, mut buf: List[UInt8], flags: c_int
+    ) -> PoolJob:
+        """One datagram off a submit lane, decoded.
+
+        `JOB_NONE` when there was nothing to read (non-blocking), the
+        datagram was a wake, or its shape is not served here. Blocking when
+        `flags` is 0, and EINTR is retried inside — a signal the process
+        handled elsewhere (the shutdown pipe) is not a reason to wake.
+        """
+        while True:
+            var n: UInt
+            try:
+                n = recv(fd, Span(buf), UInt(cap), flags)
+            except recv_err:
+                if recv_err.isa[RecvEINTRError]():
+                    if flags != 0:
+                        return _none_job()
+                    continue
+                if recv_err.isa[RecvEAGAINError]():
+                    return _none_job()
+                # The channel is unusable, and a thread that cannot receive
+                # has nothing left to do.
+                return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+            if n == UInt(_JOB_BYTES):
+                var slot = _decode_job(Span(buf))
+                if slot == _POISON:
+                    return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+                if slot == _POKE:
+                    return _none_job()
+                return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+            if n >= UInt(_WS_HEADER) and buf[0] == TAG_WS_MESSAGE:
+                var bits = UInt64(0)
+                for i in range(8):
+                    bits |= UInt64(buf[1 + i]) << UInt64(i * 8)
+                var chan_len = Int(buf[10]) | (Int(buf[11]) << 8)
+                var chan_start = _WS_HEADER
+                var payload_start = chan_start + chan_len
+                if payload_start > Int(n):
+                    # A truncated datagram is a bug in the sender, not
+                    # something to serve half of.
+                    return _none_job()
+                return PoolJob(
+                    JOB_WS_MESSAGE, Int(Int64(bits)), Int(buf[9]),
+                    chan_start, chan_len,
+                    payload_start, Int(n) - payload_start,
+                )
+            if n >= 9 and buf[0] == TAG_JOB_BATCH and (Int(n) - 1) % _JOB_BYTES == 0:
+                # A job batch belongs on an executor lane and nowhere else;
+                # one here is a sender bug, and skipping it silently would
+                # strand every slot it names.
+                print(
+                    "offload: a job batch reached a pool lane ("
+                    + String((Int(n) - 1) // _JOB_BYTES)
+                    + " slots) — sender bug; those requests will not be answered",
+                    flush=True,
+                )
+                return _none_job()
+            # EOF (0 bytes), or a shape this version does not know.
+            if n == 0:
+                return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+            return _none_job()
+
     # --- loop side -------------------------------------------------------
 
     def park_request(mut self, slot: Int, var request: HTTPRequest):
@@ -834,6 +1073,7 @@ struct OffloadPool(Movable):
         self.lane_prefixes.append(prefix^)
         self.lane_ack_read.append(-1)
         self.lane_ack_write.append(-1)
+        self.job_rings.append(self._new_lane_ring())
 
     def submit_read_fd(self, lane: Int) -> Int:
         """The read end a worker for `lane` blocks on."""
@@ -890,10 +1130,21 @@ struct OffloadPool(Movable):
         False is not an error and not a dropped request: the caller runs that
         one request inline instead, which is precisely the behaviour every
         request had before this module existed.
+
+        With rings: push, THEN read the lane's parked count, and poke only
+        if it is non-zero — the producer's half of the protocol in the
+        module docstring. A thread that is spinning sees the push itself.
         """
-        var job = _encode_job(slot)
         var lane = self.lane_for(path)
         self.stamp_lane(slot, lane)
+        var ring = self._ring_for(lane)
+        if ring.enabled():
+            if not ring.push(slot):
+                return False
+            if atomic_at(self._parked_addr(lane))[].load() > 0:
+                self._poke(self.submit_write_fd(lane))
+            return True
+        var job = _encode_job(slot)
         try:
             _ = send(
                 FileDescriptor(self.submit_write_fd(lane)),
@@ -909,13 +1160,32 @@ struct OffloadPool(Movable):
         """Take a request back after a failed `submit`, to run it inline."""
         return self.requests[slot].take()
 
-    def drain_completions(mut self) raises -> List[Int]:
-        """Every finished slot waiting on the channel; empty when none are.
+    def drain_completions(mut self, read_fd: Bool = True) raises -> List[Int]:
+        """Every finished slot waiting for the loop; empty when none are.
 
-        Registration is edge-triggered, so this reads until EAGAIN — the same
-        contract, and the same reason, as `drain_bus_channel`.
+        The completion ring first — every pool thread's completions, in
+        publish order — then, with `read_fd`, the channel: executor batches,
+        stream aborts, and wake datagrams (skipped). The channel's
+        registration is edge-triggered, so it is read until EAGAIN — the
+        same contract, and the same reason, as `drain_bus_channel`. A
+        caller that only wants what is in memory (the loop, at the top and
+        bottom of a pass) passes `read_fd=False` and pays no syscall.
+
+        An abort sent after a completion on the ring is handled after it:
+        the loop takes the ring's list first, and the datagram was sent
+        after the push.
         """
         var done = List[Int]()
+        if self.ring_enabled:
+            var slot = 0
+            # Bounded by the ring's capacity so producers pushing at full
+            # tilt cannot keep the loop here forever.
+            var budget = self.done_ring.capacity()
+            while budget > 0 and self.done_ring.pop(slot):
+                done.append(slot)
+                budget -= 1
+        if not read_fd:
+            return done^
         # Sized for the largest datagram the channel carries — a full
         # completion batch — and not for one completion: a SOCK_DGRAM
         # `recv` into a short buffer silently discards the excess, on both
@@ -946,7 +1216,10 @@ struct OffloadPool(Movable):
                 continue  # not a completion; not ours to decode
             var count = Int(n) // _JOB_BYTES
             for i in range(count):
-                done.append(_decode_job(Span(buf)[i * _JOB_BYTES : (i + 1) * _JOB_BYTES]))
+                var got = _decode_job(Span(buf)[i * _JOB_BYTES : (i + 1) * _JOB_BYTES])
+                if got == _POKE:
+                    continue
+                done.append(got)
         return done^
 
     def take_response(mut self, slot: Int) -> HTTPResponse:
@@ -1008,14 +1281,22 @@ struct OffloadPool(Movable):
     # --- pool side -------------------------------------------------------
 
     def next_job(mut self, lane: Int, mut buf: List[UInt8]) -> PoolJob:
-        """Block until something arrives on `lane`; decode it into `buf`.
+        """Block until there is something for `lane`; decode it into `buf`.
 
-        BLOCKS, and there is no timeout: the only thing that ever wakes it is
-        a datagram. A pool thread must therefore detach from the interpreter
-        around this call — an attached thread asleep in a syscall stalls every
-        other thread's stop-the-world pause — and `stop` must send it a pill,
-        because closing the queue will not (see `stop`). `m0_wsgi`'s pool body
-        is the only caller and does both.
+        With rings, the consumer's half of the protocol in the module
+        docstring: pop; if nothing, spin for `POOL_SPIN_NS` (yielding past
+        `POOL_YIELD_AFTER_NS`), polling the socket non-blocking once per
+        `POOL_DGRAM_POLL_NS` for pills and payload datagrams; then count
+        this thread parked, pop ONCE MORE, and only then block in `recv`.
+        A wake that arrives there sends the thread back to the ring with a
+        fresh spin. Without rings this is the blocking `recv` it always was.
+
+        BLOCKS, and there is no timeout: the only thing that ever ends the
+        park is a datagram. A pool thread must therefore detach from the
+        interpreter around this call — an attached thread asleep in a
+        syscall stalls every other thread's stop-the-world pause — and
+        `stop` must send it a pill, because closing the queue will not (see
+        `stop`). `m0_wsgi`'s pool body is the only caller and does both.
 
         `buf` belongs to the caller and is reused for the life of the thread:
         an inbound WebSocket message rides IN the datagram and can be large,
@@ -1024,53 +1305,46 @@ struct OffloadPool(Movable):
         """
         var fd = FileDescriptor(self.submit_read_fd(lane))
         var cap = len(buf)
+        var ring = self._ring_for(lane)
+        if not ring.enabled():
+            while True:
+                var job = self._recv_datagram(fd, cap, buf, 0)
+                if job.kind != JOB_NONE:
+                    return job^
+        var parked = atomic_at(self._parked_addr(lane))
+        var poll = atomic_at(self._poll_addr(lane))
+        var spin_start = 0
         while True:
-            var n: UInt
-            try:
-                n = recv(fd, Span(buf), UInt(cap), 0)
-            except recv_err:
-                # EINTR is a signal the process handled elsewhere (the
-                # shutdown pipe); go back to sleep. Anything else means the
-                # channel is unusable, and a thread that cannot receive has
-                # nothing left to do.
-                if recv_err.isa[RecvEINTRError]():
-                    continue
-                return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
-            if n == UInt(_JOB_BYTES):
-                var slot = _decode_job(Span(buf))
-                if slot == _POISON:
-                    return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+            var slot = 0
+            if ring.pop(slot):
                 return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
-            if n >= UInt(_WS_HEADER) and buf[0] == TAG_WS_MESSAGE:
-                var bits = UInt64(0)
-                for i in range(8):
-                    bits |= UInt64(buf[1 + i]) << UInt64(i * 8)
-                var chan_len = Int(buf[10]) | (Int(buf[11]) << 8)
-                var chan_start = _WS_HEADER
-                var payload_start = chan_start + chan_len
-                if payload_start > Int(n):
-                    # A truncated datagram is a bug in the sender, not
-                    # something to serve half of.
-                    continue
-                return PoolJob(
-                    JOB_WS_MESSAGE, Int(Int64(bits)), Int(buf[9]),
-                    chan_start, chan_len,
-                    payload_start, Int(n) - payload_start,
-                )
-            if n >= 9 and buf[0] == TAG_JOB_BATCH and (Int(n) - 1) % _JOB_BYTES == 0:
-                # A job batch belongs on an executor lane and nowhere else;
-                # one here is a sender bug, and skipping it silently would
-                # strand every slot it names.
-                print(
-                    "offload: a job batch reached a pool lane ("
-                    + String((Int(n) - 1) // _JOB_BYTES)
-                    + " slots) — sender bug; those requests will not be answered",
-                    flush=True,
-                )
+            var now = perf_counter_ns()
+            if now - Int(poll[].load()) >= POOL_DGRAM_POLL_NS:
+                poll[].store(Int64(now))
+                var polled = self._recv_datagram(fd, cap, buf, MSG_DONTWAIT)
+                if polled.kind != JOB_NONE:
+                    return polled^
+            if spin_start == 0:
+                spin_start = now
                 continue
-            # EOF (0 bytes), or a shape this version does not know.
-            if n == 0:
-                return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+            if now - spin_start >= POOL_SPIN_NS:
+                # Announce, re-check, block — in that order, or a push that
+                # lands between the last pop and the recv is a job nobody
+                # is woken for.
+                _ = parked[].fetch_add(1)
+                if ring.pop(slot):
+                    _ = parked[].fetch_add(-1)
+                    return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+                var woke = self._recv_datagram(fd, cap, buf, 0)
+                _ = parked[].fetch_add(-1)
+                if woke.kind != JOB_NONE:
+                    return woke^
+                # A wake: the job is on the ring (or was taken by a sibling
+                # meanwhile); look again with a fresh spin.
+                spin_start = 0
+                continue
+            if now - spin_start >= POOL_YIELD_AFTER_NS:
+                _sched_yield()
 
     def take_request(mut self, slot: Int) -> HTTPRequest:
         """Take the parked request. Only for a slot this thread received."""
@@ -1084,12 +1358,25 @@ struct OffloadPool(Movable):
     def complete(self, slot: Int):
         """Tell the loop that `slot` is finished.
 
-        Retried rather than dropped: a lost completion is a connection that
-        never answers and a slot that is never released, which is a hang
-        rather than a slow request. It cannot actually fill — at most
-        `OFFLOAD_MAX_INFLIGHT` completions exist at once and the channel is
-        sized for them — so the retry is a backstop, not a spin.
+        With rings: push onto the completion ring, THEN read the loop's
+        parked flag, and poke the channel only if it is set — the
+        producer's half of the protocol in the module docstring. A loop in
+        the middle of a pass finds the completion at the pass's bottom.
+
+        Retried rather than dropped, either way: a lost completion is a
+        connection that never answers and a slot that is never released,
+        which is a hang rather than a slow request. Neither can actually
+        fill — at most `OFFLOAD_MAX_INFLIGHT` completions exist at once and
+        both are sized for them — so the retry is a backstop, not a spin.
         """
+        if self.ring_enabled:
+            for _ in range(64):
+                if self.done_ring.push(slot):
+                    break
+                _sched_yield()
+            if atomic_at(self.wake_base)[].load() != 0:
+                self._poke(self.complete_write)
+            return
         var msg = _encode_job(slot)
         for _ in range(64):
             try:
@@ -1161,6 +1448,10 @@ def drain_ack_fd(fd: Int):
                 return
         except:
             return
+
+
+def _none_job() -> PoolJob:
+    return PoolJob(JOB_NONE, -1, 0, 0, 0, 0, 0)
 
 
 def _sched_yield():
@@ -1392,3 +1683,20 @@ struct OffloadLoopState(Movable):
     def pool(self) -> Pointer[OffloadPool, MutUntrackedOrigin]:
         """The caller-owned pool. Only valid when `enabled()`."""
         return Pointer[OffloadPool, MutUntrackedOrigin](unsafe_from_address=self.addr)
+
+    def ring_active(self) -> Bool:
+        """`OffloadPool.ring_active`, False when the pool is disabled."""
+        if not self.enabled():
+            return False
+        return self.pool()[].ring_active()
+
+    def done_pending(self) -> Bool:
+        """`OffloadPool.done_pending`, False when the pool is disabled."""
+        if not self.enabled():
+            return False
+        return self.pool()[].done_pending()
+
+    def set_loop_parked(self, flag: Bool):
+        """`OffloadPool.set_loop_parked`, inert when the pool is disabled."""
+        if self.enabled():
+            self.pool()[].set_loop_parked(flag)

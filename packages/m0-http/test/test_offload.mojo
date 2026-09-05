@@ -8,10 +8,13 @@ What is NOT covered here is the concurrency itself; that is what
 `poe smoke-blocking-threads` measures against a live server.
 """
 
+from std.os import setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
+from std.time import perf_counter_ns, sleep
 
 from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
+from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv
 from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST,
@@ -20,6 +23,8 @@ from lightbug_http.offload import (
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH,
 )
 from lightbug_http.uri import URI
+
+from src.threads import ThreadSet, ThreadBlock, BLK_USER, BLK_STATUS, STATUS_OK
 
 
 def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
@@ -383,19 +388,27 @@ def test_complete_many_delivers_every_slot_in_one_datagram() raises:
     assert_equal(len(pool.drain_completions()), 0)
 
 
-def test_single_and_batched_completions_decode_in_order() raises:
-    """The blocking pool's one-slot `complete` and the executor's batch share
-    the channel; the drain keeps their order."""
+def test_single_and_batched_completions_both_reach_the_drain() raises:
+    """The blocking pool's one-slot `complete` (the ring) and the executor's
+    batch (the channel) are two producers with no order between them — they
+    name different slots — and one drain delivers every slot of both, the
+    ring's in push order and the channel's in datagram order."""
     var pool = OffloadPool(16)
     pool.complete(2)
     assert_true(pool.complete_many([3, 4]))
     pool.complete(9)
     var done = pool.drain_completions()
     assert_equal(len(done), 4)
-    assert_equal(done[0], 2)
-    assert_equal(done[1], 3)
-    assert_equal(done[2], 4)
-    assert_equal(done[3], 9)
+    if pool.ring_active():
+        assert_equal(done[0], 2)
+        assert_equal(done[1], 9)
+        assert_equal(done[2], 3)
+        assert_equal(done[3], 4)
+    else:
+        assert_equal(done[0], 2)
+        assert_equal(done[1], 3)
+        assert_equal(done[2], 4)
+        assert_equal(done[3], 9)
 
 
 def test_a_full_completion_batch_decodes_whole() raises:
@@ -490,6 +503,170 @@ def test_flush_submits_sends_every_lane_and_returns_nothing_when_all_went() rais
     assert_equal(len(batch), 17)
     # Nothing buffered: a flush sends nothing and reads back nothing.
     assert_equal(len(state.flush_submits()), 0)
+
+
+def _try_read(fd: Int) -> Int:
+    """Bytes of one datagram off `fd`, or -1 when none is waiting."""
+    var buf = List[UInt8](capacity=64)
+    for _ in range(64):
+        buf.append(0)
+    try:
+        var n = recv(FileDescriptor(fd), Span(buf), UInt(64), MSG_DONTWAIT)
+        return Int(n)
+    except:
+        return -1
+
+
+def test_submit_wakes_only_a_parked_thread() raises:
+    """The producer's half of the wake protocol: push, then read the parked
+    count, then poke — so a thread that is spinning costs the loop no
+    syscall, and a thread that is blocked gets exactly one datagram."""
+    var pool = OffloadPool(8)
+    if not pool.ring_active():
+        return
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    # Nobody parked: the job is on the ring and the socket stays quiet.
+    assert_equal(_try_read(pool.submit_read), -1)
+    assert_equal(_next_slot(pool), 1)
+    # A parked thread: the push is followed by one wake datagram.
+    pool.note_parked(0, 1)
+    pool.park_request(2, _request("/b"))
+    assert_true(pool.submit(2))
+    assert_equal(_try_read(pool.submit_read), 8)
+    pool.note_parked(0, -1)
+    assert_equal(_next_slot(pool), 2)
+    assert_equal(pool.parked_count(0), 0)
+
+
+def test_complete_wakes_only_a_parked_loop() raises:
+    """The pool thread's half: push, then read the loop's flag, then poke.
+    The flag starts SET (the inversion's driver never clears it), so a
+    fresh pool pokes on every completion; a loop inside a pass clears it
+    and the completion waits in memory, syscall-free."""
+    var pool = OffloadPool(8)
+    if not pool.ring_active():
+        return
+    assert_true(pool.loop_parked())
+    pool.complete(3)
+    assert_equal(_try_read(pool.complete_read), 8)
+    var done = pool.drain_completions(read_fd=False)
+    assert_equal(len(done), 1)
+    assert_equal(done[0], 3)
+
+    pool.set_loop_parked(False)
+    pool.complete(4)
+    assert_equal(_try_read(pool.complete_read), -1)
+    assert_true(pool.done_pending())
+    done = pool.drain_completions()
+    assert_equal(len(done), 1)
+    assert_equal(done[0], 4)
+    assert_false(pool.done_pending())
+
+    # A wake read by the drain itself is skipped, not served as slot -2.
+    pool.set_loop_parked(True)
+    pool.complete(5)
+    done = pool.drain_completions()
+    assert_equal(len(done), 1)
+    assert_equal(done[0], 5)
+
+
+def test_a_wake_datagram_is_not_a_job() raises:
+    """A pool thread that reads a wake goes back to its ring; it never
+    serves slot -2, and a pill queued behind a stale wake still ends it."""
+    var pool = OffloadPool(8)
+    if not pool.ring_active():
+        return
+    pool.note_parked(0, 1)
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    pool.note_parked(0, -1)
+    # The ring is popped before the socket is looked at: the wake stays
+    # queued behind this job.
+    assert_equal(_next_slot(pool), 1)
+    pool.stop(1)
+    assert_equal(_next_slot(pool), -1)
+
+
+def test_ring_off_is_the_datagram_handoff() raises:
+    """`M0_POOL_RING=0`: no rings, no flags, and the two crossings are the
+    socketpair syscalls they were — the A/B arm."""
+    _ = setenv("M0_POOL_RING", "0", True)
+    var pool = OffloadPool(8)
+    _ = setenv("M0_POOL_RING", "", True)
+    assert_false(pool.ring_active())
+    assert_false(pool.loop_parked())
+    assert_false(pool.done_pending())
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    assert_equal(_next_slot(pool), 1)
+    _ = pool.take_request(1)
+    pool.put_response(1, OK(String("x")))
+    pool.complete(1)
+    var done = pool.drain_completions()
+    assert_equal(len(done), 1)
+    assert_equal(done[0], 1)
+    pool.stop(1)
+    assert_equal(_next_slot(pool), -1)
+
+
+comptime _PARK_ROUNDS = 200
+
+
+def _echo_thread(arg: Int) -> Int:
+    """A pool thread that answers every job with a 200, until its pill."""
+    var block = ThreadBlock(arg)
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_USER)
+    )[]
+    var buf = _job_buffer()
+    while True:
+        var job = pool.next_job(0, buf)
+        if job.kind == JOB_STOP:
+            break
+        if job.kind != JOB_REQUEST:
+            continue
+        _ = pool.take_request(job.slot)
+        pool.put_response(job.slot, OK(String("x")))
+        pool.complete(job.slot)
+    block.set(BLK_STATUS, STATUS_OK)
+    return 0
+
+
+def test_a_parked_thread_is_woken_for_every_job() raises:
+    """The lost-wakeup test. Two hundred jobs, each submitted only after the
+    previous one completed and after a pause longer than the spin, so the
+    thread has parked before every submit and every submit must wake it.
+    A wake lost to a reordered announce/re-check/block is a job that never
+    completes, which is what the two-second bound catches. The loop's flag
+    is never cleared here, so every completion pokes the channel."""
+    var pool = OffloadPool(8)
+    if not pool.ring_active():
+        return
+    var threads = ThreadSet(1)
+    threads.block(0).set(BLK_USER, pool.addr())
+    var body = _echo_thread
+    var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
+    threads.spawn(0, body_addr)
+    for round in range(_PARK_ROUNDS):
+        sleep(0.0002)
+        var slot = round % 8
+        pool.park_request(slot, _request("/p"))
+        assert_true(pool.submit(slot))
+        var deadline = perf_counter_ns() + 2_000_000_000
+        var got = False
+        while perf_counter_ns() < deadline:
+            var done = pool.drain_completions()
+            if len(done) == 1:
+                assert_equal(done[0], slot)
+                got = True
+                break
+            sleep(0.0001)
+        assert_true(got)
+        _ = pool.take_response(slot)
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
 
 
 def main() raises:
