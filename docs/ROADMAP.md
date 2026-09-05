@@ -297,10 +297,10 @@ checker fails if one does not resolve. So this section is the whole list of
 things that page promises: adding a `planned` row means writing down what it
 means here first.
 
-Nothing is `planned` today; everything the sheet promises is `verified` or
-`out of scope`. The design notes for the last four things this section held,
-all built since:
+Nothing is planned at the moment. The design notes for the last five
+things this section held, all built since:
 
+- [Accept sharing: workers sharing a listener share its connections](notes/accept-sharing.md)
 - [A conformance-suite tier](notes/conformance-suite-tier.md)
 - [Structured CI results](notes/structured-ci-results.md)
 - [Traceability: stable ids, then declared coverage](notes/traceability.md)
@@ -331,8 +331,9 @@ loop↔executor handoff — so optimising the 116k layer buys nothing here.
 
 ## Recently resolved
 
-The two longest write-ups are design notes:
+The three longest write-ups are design notes:
 
+- **Prefork workers did not share a listener's connections** (the same worker won 32 of 32 on macOS and 23–31 of 32 on Linux, so `--workers 2` served a keep-alive load at one worker's throughput) — resolved by E16, the accept-sharing hand-off; the write-up is [Accept sharing — shipped 2026-09-05](notes/accept-sharing.md).
 - **A request body still arriving at SIGTERM held the drain to its deadline** — resolved; the write-up is [A request body still arriving at SIGTERM held the drain to its deadline — resolved](notes/request-body-at-sigterm.md).
 - **The WebSocket close path RSTing instead of FINning** — resolved v0.15.1; the write-up is [The WebSocket close path RSTing instead of FINning — resolved v0.15.1](notes/websocket-close-rst.md).
 
@@ -360,6 +361,7 @@ of this page until 2026-09-03, when the page became state-only.
 - [The Mojo handler pool — shipped 2026-08-28](notes/mojo-handler-pool.md)
 - [The detached loop — shipped 2026-09-03](notes/detached-loop.md)
 - [The executor's per-request Python work, and the C-API head read — shipped 2026-09-04](notes/executor-python-objects.md)
+- [Accept sharing: workers sharing a listener share its connections — shipped 2026-09-05](notes/accept-sharing.md)
 - [Mojo language capabilities, surveyed 2026-08-28](notes/mojo-language-capabilities.md)
 - [Considered, not built: routes that carry a function](notes/routes-that-carry-a-function.md)
 
@@ -373,6 +375,7 @@ of this page until 2026-09-03, when the page became state-only.
 **Open questions, and questions since answered**
 
 - [The desktop-Mac server, and what the wheel gives up to ship](notes/desktop-mac-server.md)
+- [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)
 

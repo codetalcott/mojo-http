@@ -121,6 +121,16 @@ struct BroadcastBus(Copyable, Movable):
             self.read_fds.append(pair[0])
             self.write_fds.append(pair[1])
 
+    def __init__(out self, *, read_fds: List[Int], write_fds: List[Int]):
+        """Adopt channels created by another process image.
+
+        A spawned worker (`--spawn-workers`) inherits the parent's socketpairs
+        by fd number across its `exec` and rebuilds the bus from them; the
+        pairs are neither created nor closed here.
+        """
+        self.read_fds = read_fds.copy()
+        self.write_fds = write_fds.copy()
+
     def __init__(out self, *, copy: Self):
         self.read_fds = copy.read_fds.copy()
         self.write_fds = copy.write_fds.copy()

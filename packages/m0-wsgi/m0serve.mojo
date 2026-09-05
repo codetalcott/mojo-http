@@ -19,9 +19,13 @@ rather than through `src.*` — an entry file outside any package resolves
 glob never sees it either, which is why `poe build-serve` is its own task.
 
 **The order of `main()` is the load-bearing part.** Bind the listener first,
-so every worker inherits one shared socket and connections land on workers
-that are free to take them (gunicorn's model; per-worker `SO_REUSEPORT` binds
-do not distribute on macOS and hash blind on Linux). Fork second, BEFORE any
+so every worker inherits one shared socket (gunicorn's model; per-worker
+`SO_REUSEPORT` binds would not do — they do not distribute on macOS and hash
+blind on Linux). Which worker WINS an accept on it is the scheduler's, and
+it is the same worker nearly every time on both platforms, so under
+`--workers N` the winner passes each connection to the least-loaded sibling
+over a channel created here before the fork (`lightbug_http/accept_share.mojo`,
+SPEC E16; `M0_ACCEPT_SHARE=0` is the A/B knob). Fork second, BEFORE any
 Python: Mojo initializes the interpreter lazily on first use, forking a live
 CPython is unsafe, and so each worker's own `WSGIApp` construction after
 `fork_all()` returns must stay the process's first Python call. Everything
@@ -57,9 +61,11 @@ from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
+from lightbug_http.accept_share import AcceptShare, accept_share_slots
 from lightbug_http.connection import ListenConfig, NoTLSListener
-from lightbug_http.address import NetworkType
-from lightbug_http.c.process import process_exit
+from lightbug_http.address import NetworkType, TCPAddr, parse_address
+from lightbug_http.socket import Socket
+from lightbug_http.c.process import process_exit, executable_path, keep_across_exec
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.c.platform import PlatformBackend
 
@@ -178,6 +184,58 @@ def _specs_tried(specs: List[String]) -> String:
     return joined^
 
 
+def spawned_worker_index() -> Int:
+    """This process's worker index when it was `exec`'d by the supervisor
+    under `--spawn-workers`, else -1.
+
+    `M0_WORKER_SPAWNED=1` and `M0_WORKER_INDEX` are set by the supervisor in
+    the forked child just before its `execv` (`WorkerSupervisor.enable_spawn`),
+    so they are only ever seen by a fresh image whose parent is supervising
+    it. Such a process binds nothing: it inherits the listener, the bus
+    channels and the shared page by fd number and rebuilds each from the
+    environment, then serves exactly as a forked worker of the same index.
+    """
+    if getenv("M0_WORKER_SPAWNED", "") != "1":
+        return -1
+    var raw = getenv("M0_WORKER_INDEX", "")
+    if raw.byte_length() == 0:
+        return -1
+    try:
+        return Int(raw)
+    except:
+        return -1
+
+
+def _int_list_env(name: String) -> List[Int]:
+    var out = List[Int]()
+    var raw = getenv(name, "")
+    if raw.byte_length() == 0:
+        return out^
+    for part in raw.split(","):
+        try:
+            out.append(Int(String(part)))
+        except:
+            pass
+    return out^
+
+
+def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
+    """The listener a spawned worker inherited, by fd number (`M0_LISTEN_FD`)."""
+    var raw = getenv("M0_LISTEN_FD", "")
+    var fd: Int
+    try:
+        fd = Int(raw)
+    except:
+        _fail("spawned worker: M0_LISTEN_FD is not set", EXIT_STARTUP)
+        raise Error("unreachable")
+    var local = parse_address[NetworkType.tcp4](opts.address())
+    var sock = Socket[TCPAddr[NetworkType.tcp4]](
+        fd=FileDescriptor(fd),
+        local_address=TCPAddr[NetworkType.tcp4](ip=local.host, port=local.port),
+    )
+    return NoTLSListener[NetworkType.tcp4](sock^)
+
+
 def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
     """Bind, or say why not and exit `EXIT_STARTUP`.
 
@@ -192,10 +250,18 @@ def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4
     banner used to print before the load, and a failed import read as
     "Ready" followed by exit 1. `smoke-serve` pins both.
     """
+    if spawned_worker_index() >= 0:
+        return _adopt_listener(opts)
     try:
-        return ListenConfig(max_bind_retries=5, quiet=True).listen(
+        var listener = ListenConfig(max_bind_retries=5, quiet=True).listen(
             opts.address()
         )
+        # Where a spawned worker finds it. Set unconditionally: it is one
+        # variable, and the fd number is the same whether or not anyone
+        # execs — a forked worker simply keeps using the listener itself.
+        _ = setenv("M0_LISTEN_FD", String(listener.socket.fd.value), True)
+        _ = keep_across_exec(Int(listener.socket.fd.value))
+        return listener^
     except:
         _fail(
             "address already in use: " + opts.address()
@@ -332,18 +398,50 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
     # own loop's channel (there is no separate local-delivery path to keep
     # in sync, by design). The cost when nothing uses it is one socketpair
     # per worker plus three env vars.
+    if spawned_worker_index() >= 0:
+        # A spawned worker: the parent created all of this before the fork
+        # and the fd numbers came through the exec. The shared page's
+        # ADDRESS did not — mappings die at exec — so it is mapped again
+        # here and the exported address replaced before Python starts.
+        var inherited = BroadcastBus(
+            read_fds=_int_list_env("M0_BUS_READ_FDS"),
+            write_fds=_int_list_env("M0_BUS_WRITE_FDS"),
+        )
+        var shared_fd = _int_list_env("M0_SHARED_ID_FD")
+        if len(shared_fd) == 1:
+            var mapped = SharedAtomics(
+                from_fd=shared_fd[0], count=accept_share_slots(opts.workers)
+            )
+            _ = setenv("M0_SHARED_ID_ADDR", String(mapped.addr(0)), True)
+        return inherited^
+
     var bus = BroadcastBus(channels if channels > 0 else 1)
     var fds_csv = String("")
+    var read_csv = String("")
     for i in range(len(bus.write_fds)):
         if i > 0:
             fds_csv += ","
+            read_csv += ","
         fds_csv += String(bus.write_fds[i])
+        read_csv += String(bus.read_fds[i])
+        _ = keep_across_exec(bus.write_fds[i])
+        _ = keep_across_exec(bus.read_fds[i])
     _ = setenv("M0_BUS_WRITE_FDS", fds_csv, True)
+    _ = setenv("M0_BUS_READ_FDS", read_csv, True)
 
-    # One MAP_SHARED slot: the event id every publish takes a number from.
-    # Shared memory across processes, and plain memory across threads.
-    var shared = SharedAtomics(1)
+    # One MAP_SHARED page: slot 0 is the event id every publish takes a
+    # number from, and the rest is accept sharing's per-worker load words
+    # (`accept_share_slots`; one cache line each, so the per-pass stores
+    # contend with nothing). Shared memory across processes, and plain
+    # memory across threads. Under `--spawn-workers` the page is
+    # file-backed, because an anonymous mapping does not survive the
+    # worker's exec; its fd is exported and the worker maps it (above).
+    var shared = SharedAtomics(
+        accept_share_slots(opts.workers), file_backed=opts.spawn_workers
+    )
     _ = setenv("M0_SHARED_ID_ADDR", String(shared.addr(0)), True)
+    if shared.fd >= 0:
+        _ = setenv("M0_SHARED_ID_FD", String(shared.fd), True)
 
     if getenv("M0_CORE_LIB", "").byte_length() == 0:
         var lib = _discover_core_lib()
@@ -351,6 +449,56 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
             _ = setenv("M0_CORE_LIB", lib, True)
 
     return bus^
+
+
+def accept_sharing_wanted(opts: ServeOptions) -> Bool:
+    """Whether this configuration shares accepts: two or more workers,
+    unless `M0_ACCEPT_SHARE=0` asks for the bare race (the A/B knob)."""
+    return opts.workers > 1 and getenv("M0_ACCEPT_SHARE", "") != "0"
+
+
+def _prepare_accept_share(opts: ServeOptions) raises -> AcceptShare:
+    """The channels accept sharing passes connections over (SPEC E16).
+
+    Created pre-fork like the bus, one datagram pair per worker, every
+    worker holding every send end; exported by fd number for a spawned
+    worker, which adopts rather than creates. Inactive — a value with no
+    channels — with one worker, under `--threads`, and under the knob.
+    """
+    if not accept_sharing_wanted(opts):
+        return AcceptShare()
+    if spawned_worker_index() >= 0:
+        return AcceptShare(
+            read_fds=_int_list_env("M0_ACCEPT_READ_FDS"),
+            write_fds=_int_list_env("M0_ACCEPT_WRITE_FDS"),
+        )
+    var share = AcceptShare(opts.workers)
+    var read_csv = String("")
+    var write_csv = String("")
+    for i in range(share.workers()):
+        if i > 0:
+            read_csv += ","
+            write_csv += ","
+        read_csv += String(share.read_fds[i])
+        write_csv += String(share.write_fds[i])
+        _ = keep_across_exec(share.read_fds[i])
+        _ = keep_across_exec(share.write_fds[i])
+    _ = setenv("M0_ACCEPT_READ_FDS", read_csv, True)
+    _ = setenv("M0_ACCEPT_WRITE_FDS", write_csv, True)
+    return share^
+
+
+def _bind_accept_share(mut share: AcceptShare, worker: Int):
+    """After the fork: this worker's index and the shared page's address,
+    which `_prepare_realtime` exported (and a spawned worker re-derived)."""
+    if share.workers() <= 1:
+        return
+    var page: Int
+    try:
+        page = Int(getenv("M0_SHARED_ID_ADDR", "0"))
+    except:
+        page = 0
+    share.bind(worker, page)
 
 
 comptime _DOCTOR_PROBE = """
@@ -651,6 +799,13 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     )
     report.add_bool(String("topology"), String("qos"), opts.qos)
     report.add_int(String("topology"), String("workers"), opts.workers)
+    report.add_fact(
+        String("topology"), String("worker_mode"),
+        String("spawn") if opts.spawn_workers else String("fork"),
+    )
+    report.add_bool(
+        String("topology"), String("accept_sharing"), accept_sharing_wanted(opts)
+    )
     report.add_int(String("topology"), String("threads"), opts.threads)
     if resolved:
         var auto_pool = zero_config_topology(opts)
@@ -789,6 +944,7 @@ def main() raises:
     # before the first Python call. Inert without the flag.
     var channels = opts.threads if opts.threads > 1 else opts.workers
     var bus = _prepare_realtime(opts, channels)
+    var share = _prepare_accept_share(opts)
 
     # Fork before touching Python — see the module docstring. The parent
     # stays inside fork_all() supervising; only workers return here.
@@ -804,6 +960,12 @@ def main() raises:
     var multiprocess = opts.workers > 1
     var supervised = multiprocess or opts.reload
     var worker = 0
+    # A spawned worker is a supervised process that must NOT supervise: its
+    # parent already does, and it serves the index it was exec'd with.
+    var spawned = spawned_worker_index()
+    if spawned >= 0:
+        supervised = False
+        worker = spawned
     if opts.reload:
         # Set before the fork and before the first Python call, because the
         # interpreter reads it once at startup.
@@ -823,8 +985,20 @@ def main() raises:
         var supervisor = WorkerSupervisor(opts.workers)
         if opts.reload:
             supervisor.enable_reload(_reload_dirs(opts), String(".py"))
+        if opts.spawn_workers:
+            # The worker re-runs THIS argv in a fresh image; the listener,
+            # the bus and the shared page reach it by fd through the env
+            # exports above. `executable_path` rather than argv[0], which
+            # may be a bare name or relative to a cwd the worker keeps.
+            var full_argv = List[String]()
+            for i in range(len(raw)):
+                full_argv.append(String(raw[i]))
+            supervisor.enable_spawn(executable_path(), full_argv^)
         supervisor.fork_all()
         worker = supervisor.worker_index
+    # Accept sharing binds to this worker's index; inert with one worker
+    # (`--threads` included), so a single-worker server pays nothing.
+    _bind_accept_share(share, worker)
 
     if opts.threads > 1:
         # The listener is borrowed, not reduced to its fd: its last use would
@@ -914,7 +1088,9 @@ def main() raises:
             if opts.blocking_threads > 0 else ""
         )
         + (" realtime" if opts.realtime else "")
-        + (" reload" if opts.reload else ""),
+        + (" reload" if opts.reload else "")
+        + (" spawn" if opts.spawn_workers and opts.workers > 1 else "")
+        + (" shared-accepts" if share.active() else ""),
         flush=True,
     )
     var server_config = opts.server_config(AppConfig(default_port=DEFAULT_PORT))
@@ -946,6 +1122,7 @@ def main() raises:
                 if (opts.realtime and worker >= 0 and worker < len(bus.write_fds))
                 else -1
             ),
+            accept_share=share,
         )
         # The loop's own handler serves the inline fallback; in executor
         # mode its lifespan never ran, and shutdown just closes its loop.
@@ -966,6 +1143,7 @@ def main() raises:
         listener, handler,
         shutdown_read_fd=shutdown_fd,
         bus_read_fd=bus.read_fd(worker),
+        accept_share=share,
     )
     handler.shutdown()
     if supervised:
@@ -983,6 +1161,7 @@ def _serve_offloaded(
     var wsgi_lanes: List[Int] = List[Int](),
     peer_bus_fd: Int = -1,
     hold_notify_fd: Int = -1,
+    accept_share: AcceptShare = AcceptShare(),
 ) raises:
     """One acceptor loop feeding either a handler pool or the executor.
 
@@ -1059,7 +1238,7 @@ def _serve_offloaded(
         pool.enable_base_stream_ack()
         serve_inverted(
             opts, listener.socket.fd, config, opts.address(), shutdown_fd,
-            pool, peer_bus_fd,
+            pool, peer_bus_fd, accept_share,
         )
         return
     var pool_threads = BlockingPool(0 if (executor and not mounted) else pool_count)
@@ -1136,6 +1315,7 @@ def _serve_offloaded(
         listener.socket.fd, handler, backend, config, opts.address(), True,
         shutdown_fd, stream_bus_fd, pool.addr(),
         peer_bus_fd=peer_bus_fd,
+        accept_share=accept_share,
     )
     if not loop_attached:
         cpy0.PyEval_RestoreThread(loop_ts)

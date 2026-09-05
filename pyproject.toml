@@ -2103,6 +2103,131 @@ python3 scripts/emit.py --covers E14 --task smoke-apple-silicon
 python3 scripts/emit.py --covers M18 --task smoke-apple-silicon
 """
 
+[tool.poe.tasks.smoke-spawn-workers]
+help = "--spawn-workers: exec'd workers serve, a killed one is re-exec'd, SIGTERM reaps them, and on macOS the view a forked worker dies in answers"
+deps = ["build-serve"]
+shell = """
+srv=bin/m0serve
+SPEC="bareapp.wsgi --app-dir apps/wsgi_bare"
+spid=""
+cleanup() { rm -f sw-doctor.json sw-spawn.log sw-fork.log; [ -n "$spid" ] && kill -TERM "$spid" 2>/dev/null; }
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  for f in sw-doctor.json sw-spawn.log sw-fork.log; do
+    [ -f "$f" ] && { echo "=== $f ==="; cat "$f"; echo; }
+  done
+  exit 1
+}
+distinct_pids() {  # $1 = port: pids answering /pid under 16 concurrent clients
+  python3 - "$1" <<'PY'
+import sys, urllib.request
+from concurrent.futures import ThreadPoolExecutor
+port = sys.argv[1]
+def one(_):
+    return urllib.request.urlopen(f"http://127.0.0.1:{port}/pid", timeout=5).read().decode()
+with ThreadPoolExecutor(16) as ex:
+    print(len(set(ex.map(one, range(64)))))
+PY
+}
+
+# 1. The doctor reports the mode from both spellings.
+"$srv" --doctor $SPEC --workers 2 --spawn-workers > sw-doctor.json 2>/dev/null || fail "the doctor refused --spawn-workers"
+python3 -c "import json; d=json.load(open('sw-doctor.json')); assert d['topology']['worker_mode']=='spawn', d['topology']" || fail "--spawn-workers is not reported as worker_mode=spawn"
+M0_SPAWN_WORKERS=1 "$srv" --doctor $SPEC --workers 2 > sw-doctor.json 2>/dev/null
+python3 -c "import json; d=json.load(open('sw-doctor.json')); assert d['topology']['worker_mode']=='spawn', d['topology']" || fail "M0_SPAWN_WORKERS=1 is not reported as worker_mode=spawn"
+"$srv" --doctor $SPEC --workers 2 > sw-doctor.json 2>/dev/null
+python3 -c "import json; d=json.load(open('sw-doctor.json')); assert d['topology']['worker_mode']=='fork', d['topology']" || fail "the default is not reported as worker_mode=fork"
+
+# 2. Two exec'd workers serve one listener. Concurrency, because sequential
+# connections on an idle server can all land on the worker that accepted
+# first (macOS in particular), which says nothing about the second.
+"$srv" $SPEC --workers 2 --spawn-workers --port 8481 > sw-spawn.log 2>&1 &
+spid=$!
+for i in $(seq 1 100); do curl -sf -o /dev/null http://127.0.0.1:8481/ && break; sleep 0.1; done
+curl -sf http://127.0.0.1:8481/ | grep -q "bare wsgi app" || fail "a spawned server did not answer /"
+grep -q "workers=2) spawn" sw-spawn.log || fail "the banner does not say spawn"
+n=$(distinct_pids 8481)
+[ "$n" -eq 2 ] || fail "expected 2 worker pids answering /pid, saw $n"
+echo "smoke-spawn-workers: two exec'd workers serve"
+
+# 3. A killed worker is replaced by a fresh exec image that serves. The
+# banner counts how many images started: two, then three.
+victim=$(curl -sf http://127.0.0.1:8481/pid)
+kill -KILL "$victim"
+for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 3 ] && break; sleep 0.1; done
+grep -q "respawned worker" sw-spawn.log || fail "the killed worker was not respawned"
+[ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 3 ] || fail "the respawned worker never printed a banner: not a fresh image?"
+sleep 0.3
+n=$(distinct_pids 8481)
+[ "$n" -eq 2 ] || fail "after a respawn expected 2 worker pids, saw $n"
+echo "smoke-spawn-workers: a killed worker is re-exec'd"
+
+# 4. The platform-runtime view. On macOS urllib's proxy lookup enters
+# CoreFoundation, which kills a FORKED worker (the fork rule in CLAUDE.md);
+# a spawned worker answers it. On Linux both answer, and only the positive
+# half is asserted.
+curl -sf http://127.0.0.1:8481/proxies > /dev/null || fail "a spawned worker did not answer /proxies"
+echo "smoke-spawn-workers: the proxies view answers under spawn"
+
+# 5. SIGTERM to the supervisor alone reaps every exec'd worker.
+workers=$(grep -oE 'pid=[0-9]+ starting' sw-spawn.log | grep -oE '[0-9]+' | sort -u)
+kill -TERM "$spid"; wait "$spid"; rc=$?; spid=""
+[ "$rc" -eq 0 ] || fail "the spawn supervisor exited $rc on SIGTERM"
+for w in $workers; do kill -0 "$w" 2>/dev/null && fail "worker $w outlived its supervisor"; done
+grep -q "exited cleanly" sw-spawn.log || fail "no spawned worker reported a clean exit"
+echo "smoke-spawn-workers: SIGTERM reaps exec'd workers"
+
+if [ "$(uname)" = Darwin ]; then
+  # The negative arm: the same view under fork. The worker dies (SIGKILL
+  # from the Objective-C runtime), the client sees a dropped connection,
+  # and the supervisor respawns. Three attempts, because a view that
+  # sometimes survives would make "answers under spawn" prove nothing.
+  "$srv" $SPEC --workers 2 --port 8482 > sw-fork.log 2>&1 &
+  spid=$!
+  for i in $(seq 1 100); do curl -sf -o /dev/null http://127.0.0.1:8482/ && break; sleep 0.1; done
+  died=0
+  for i in 1 2 3; do curl -sf http://127.0.0.1:8482/proxies > /dev/null 2>&1 || died=$((died+1)); sleep 0.5; done
+  kill -TERM "$spid"; wait "$spid" 2>/dev/null; spid=""
+  [ "$died" -eq 3 ] || fail "under fork the proxies view answered $((3-died)) of 3 times; the negative arm no longer discriminates"
+  grep -q "killed by signal" sw-fork.log || fail "no forked worker was reported killed"
+  echo "smoke-spawn-workers: the same view kills a forked worker 3 of 3 (macOS)"
+fi
+python3 scripts/emit.py --covers E15 --task smoke-spawn-workers
+"""
+
+[tool.poe.tasks.smoke-accept-spread]
+help = "--workers 2 share a burst of keep-alive connections within 2:1, forked and spawned (SPEC E16)"
+deps = ["build-serve"]
+shell = """
+# The probe is the measurement that found the defect (docs/notes/accept-sharing.md):
+# 32 keep-alive connections opened in a burst, /pid asked on each while all
+# are open. Two rounds per mode, so a single lucky split cannot pass it, and
+# both worker modes, because a spawned worker adopts the channels by fd.
+python3 scripts/accept_spread.py --assert --expect-handoffs --rounds 2 --port 8631 || exit 1
+echo "smoke-accept-spread: bursts spread within 2:1 across two workers, fork and spawn"
+# The negative arm on macOS, where the bare race is deterministic: with the
+# knob off the same probe must see the skew, or the gate is not testing the
+# mechanism. Linux's race sometimes lands within 2:1 on its own, so there
+# it is measured (the note) rather than asserted.
+if [ "$(uname)" = Darwin ]; then
+  if M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --assert --rounds 1 --modes fork --port 8635 > as-neg.log 2>&1; then
+    cat as-neg.log; rm -f as-neg.log
+    echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 spread within 2:1 -- the negative arm no longer discriminates"; exit 1
+  fi
+  rm -f as-neg.log
+  echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 skews as before (macOS negative arm)"
+fi
+# The doctor reports the decision from both worker counts.
+bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare --workers 2 > as-doctor.json 2>/dev/null
+python3 -c "import json; d=json.load(open('as-doctor.json')); assert d['topology']['accept_sharing'] is True, d['topology']" || { echo "the doctor does not report accept_sharing for --workers 2"; rm -f as-doctor.json; exit 1; }
+bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare > as-doctor.json 2>/dev/null
+python3 -c "import json; d=json.load(open('as-doctor.json')); assert d['topology']['accept_sharing'] is False, d['topology']" || { echo "the doctor reports accept_sharing for one worker"; rm -f as-doctor.json; exit 1; }
+rm -f as-doctor.json
+echo "smoke-accept-spread: the doctor reports accept_sharing"
+python3 scripts/emit.py --covers E16 --task smoke-accept-spread
+"""
+
 [tool.poe.tasks.smoke-doctor]
 help = "--doctor reports valid JSON and exits with the code the server itself would use"
 deps = ["build-serve"]

@@ -143,6 +143,13 @@ struct ServeOptions(Copyable, Movable):
     var static_dirs: List[String]
     var static_cache_control: String
     var access_log: Bool
+    var spawn_workers: Bool
+    """`--spawn-workers` / `M0_SPAWN_WORKERS`: each worker is forked and then
+    execs this binary afresh, so it starts with no inherited runtime state.
+    For applications that use what a forked child cannot — Core ML,
+    Objective-C, CoreFoundation, libdispatch — at the cost of a second
+    process start per worker. Ignored without `--workers` > 1 (or
+    `--reload`, which supervises one worker)."""
     var qos: Bool
     """`--qos` / `M0_QOS`: on macOS, the loop at user-interactive QoS and its
     worker threads at user-initiated (`m0_http.threads.request_qos_class`);
@@ -221,6 +228,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_cache_control = String("")
         self.access_log = False
         self.qos = False
+        self.spawn_workers = False
         self.max_body = -1
         self.idle_timeout = -1
         self.metrics = False
@@ -258,6 +266,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_cache_control = copy.static_cache_control
         self.access_log = copy.access_log
         self.qos = copy.qos
+        self.spawn_workers = copy.spawn_workers
         self.max_body = copy.max_body
         self.idle_timeout = copy.idle_timeout
         self.metrics = copy.metrics
@@ -295,6 +304,7 @@ struct ServeOptions(Copyable, Movable):
         self.static_cache_control = move.static_cache_control^
         self.access_log = move.access_log
         self.qos = move.qos
+        self.spawn_workers = move.spawn_workers
         self.max_body = move.max_body
         self.idle_timeout = move.idle_timeout
         self.metrics = move.metrics
@@ -325,6 +335,7 @@ struct ServeOptions(Copyable, Movable):
         opts.blocking_threads_set = config.blocking_threads_set
         opts.access_log = config.access_log
         opts.qos = config.qos
+        opts.spawn_workers = config.spawn_workers
         return opts^
 
     def address(self) -> String:
@@ -697,6 +708,7 @@ def _is_bool(name: String) -> Bool:
     return (
         name == "--access-log"
         or name == "--qos"
+        or name == "--spawn-workers"
         or name == "--metrics"
         or name == "--realtime"
         or name == "--reload"
@@ -856,6 +868,8 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
                     opts.access_log = True
                 elif name == "--qos":
                     opts.qos = True
+                elif name == "--spawn-workers":
+                    opts.spawn_workers = True
                 elif name == "--realtime":
                     opts.realtime = True
                 elif name == "--reload":
@@ -938,6 +952,10 @@ def usage() -> String:
         "                              Python; repeatable\n"
         "  --static-cache-control V    Cache-Control for static responses\n"
         "  --access-log                one log line per request (M0_ACCESS_LOG)\n"
+        "  --spawn-workers             workers exec a fresh image after the fork:\n"
+        "                              for apps using Core ML, Objective-C or\n"
+        "                              libdispatch, which a forked child cannot\n"
+        "                              (M0_SPAWN_WORKERS)\n"
         "  --qos                       macOS: keep the loop and its worker threads\n"
         "                              on performance cores under contention (M0_QOS)\n"
         "  --max-body SIZE             request body cap: bytes, or 512k / 64m / 1g\n"

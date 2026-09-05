@@ -339,6 +339,14 @@ jobs:
       # stop` does, and what used to leave them orphaned on the port.
       - name: Smoke test graceful shutdown
         run: uv run poe smoke-shutdown
+      - name: Smoke test spawned workers
+        run: uv run poe smoke-spawn-workers
+      # SPEC E16: the worker that wins an accept passes the connection to
+      # the least-loaded sibling, so a burst of keep-alive connections
+      # spreads across --workers instead of landing on one (32 of 32 on
+      # macOS, 23-31 of 32 on Linux, before). Both legs, both worker modes.
+      - name: Smoke test accept sharing
+        run: uv run poe smoke-accept-spread
       # The drain's other half (SPEC D9): a request whose body is still
       # arriving when SIGTERM lands is read on and answered, in both
       # execution shapes, and the process leaves inside 3 s of the signal

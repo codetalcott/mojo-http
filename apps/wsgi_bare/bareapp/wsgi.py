@@ -197,6 +197,31 @@ def subview(environ, start_response):
     return [b"subview"]
 
 
+def pid(environ, start_response):
+    """This process's pid, so a smoke can tell workers apart."""
+    body = str(os.getpid()).encode()
+    start_response("200 OK", [("Content-Type", "text/plain"), ("Content-Length", str(len(body)))])
+    return [body]
+
+
+def proxies(environ, start_response):
+    """`urllib.request.getproxies()`: the platform-runtime call a forked worker cannot make.
+
+    On macOS this consults the system proxy configuration through
+    `_scproxy`, which calls into CoreFoundation, and Objective-C aborts a
+    process that forked without exec'ing (`M0_WORKERS>1`): the worker is
+    killed and the supervisor respawns it, so the client sees a dropped
+    connection. Under `--spawn-workers` the same view answers, because the
+    worker is a fresh image. On Linux it reads environment variables and
+    answers everywhere. `smoke-spawn-workers` is the gate, both arms.
+    """
+    import urllib.request
+
+    body = repr(sorted(urllib.request.getproxies())).encode()
+    start_response("200 OK", [("Content-Type", "text/plain"), ("Content-Length", str(len(body)))])
+    return [body]
+
+
 def reentrant(environ, start_response):
     """A request made from inside a request, back to this same server.
 
@@ -414,6 +439,8 @@ def not_found(environ, start_response):
 
 ROUTES = {
     "/": root,
+    "/pid": pid,
+    "/proxies": proxies,
     "/method": method,
     "/environ": environ_dump,
     "/write": write_only,
