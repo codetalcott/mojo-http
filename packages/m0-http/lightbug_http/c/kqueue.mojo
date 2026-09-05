@@ -6,6 +6,7 @@ single-threaded, non-blocking HTTP server.
 """
 
 from std.memory import stack_allocation
+from std.memory.alloc import unsafe_alloc
 from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget, size_of
 
@@ -142,7 +143,7 @@ def kevent_poll(
     timeout_ms: Int,
 ) raises -> Int:
     """Poll kqueue for events with a timeout."""
-    var ts = alloc[timespec_t](count=1)
+    var ts = unsafe_alloc[timespec_t](count=1)
     ts[] = timespec_t(
         Int64(timeout_ms // 1000),
         Int64((timeout_ms % 1000) * 1_000_000),

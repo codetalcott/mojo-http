@@ -1,8 +1,4 @@
 {
-  "total": 68,
-  "categories": {
-    "ABI=X is deprecated; use abi(X) instead": 4,
-    "X without a X is deprecated, use the X-based X instead; as a temporary migration step, use X": 12,
-    "doc string summary should begin with a capital letter or non-alpha character, but this begins with X": 52
-  }
+  "total": 0,
+  "categories": {}
 }

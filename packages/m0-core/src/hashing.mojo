@@ -37,12 +37,14 @@ def _format_hex(val: UInt64, nibbles: Int) -> String:
     tolerate it). Avoiding the unsafe-pointer-from-comptime-string pattern
     entirely is the robust fix.
     """
-    var out = List[UInt8](capacity=nibbles + 1)
+    var out = List[UInt8](capacity=nibbles)
     for i in range(nibbles):
         var shift = UInt64((nibbles - 1 - i) * 4)
         out.append(hex_nibble(Int((val >> shift) & 0xF)))
-    out.append(0)
-    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=nibbles))
+    # `Span(out)`, not `Span(unsafe_ptr=...)`: the pointer form carries no
+    # origin, so `out` is destroyed after its last use -- the pointer
+    # extraction -- and the String copies from freed memory.
+    return String(unsafe_from_utf8=Span(out))
 
 
 def format_hash32(hash: UInt32) -> String:

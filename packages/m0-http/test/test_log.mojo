@@ -89,7 +89,7 @@ def test_level_and_message_are_escaped() raises:
 
 
 def test_a_long_value_crossing_the_simd_boundary_is_escaped_correctly() raises:
-    """format_json now escapes into one shared buffer, so the escaper's SIMD
+    """`format_json` now escapes into one shared buffer, so the escaper's SIMD
     chunking runs at a non-zero starting offset. A value long enough to reach
     that path, with an escape past the first chunk, pins it."""
     var value = String("")

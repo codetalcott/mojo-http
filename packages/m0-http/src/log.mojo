@@ -70,7 +70,7 @@ def format_json(entry: LogEntry, ts_ms: Int) -> String:
         out.append(UInt8(ord(':')))
         escape_json_string_into(out, entry.kv_values[i])
     out.append(UInt8(ord('}')))
-    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=len(out)))
+    return String(unsafe_from_utf8=Span(out))
 
 
 def log_json(entry: LogEntry):

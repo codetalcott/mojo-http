@@ -43,7 +43,6 @@ because nothing retired it and nothing could.
 """
 
 import json
-import os
 import pathlib
 import re
 import sys

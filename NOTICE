@@ -409,6 +409,12 @@ lightbug_http
         listening banner and the "Ready" line for a caller whose own
         startup line is the ready signal); the first bind failure names
         the address.
+      - The twelve `alloc`-without-a-`Layout` sites moved to `unsafe_alloc`
+        (`std.memory.alloc`), the non-Layout allocator the compiler's own
+        fix-it names. Two earlier entries here record that symbol as absent
+        from Mojo 1.0.0; it is importable, and with the doc-string and
+        `@export` fixes outside the fork the ratchet's baseline went from 68
+        to 0. Behaviour-preserving: same pointer type, same frees.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

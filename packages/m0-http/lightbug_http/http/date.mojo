@@ -4,6 +4,7 @@ Uses POSIX time/gmtime instead of small_time dependency.
 """
 
 from std.ffi import external_call
+from std.memory.alloc import unsafe_alloc
 
 
 def unix_now() -> Int64:
@@ -29,10 +30,8 @@ def http_date_from_unix(t: Int64) -> String:
     allocations plus gmtime, which is measurable at request rate.
     """
     # Allocate space for the time value
-    # NOTE: `alloc` without a Layout is deprecated, but the Layout form returns
-    # an owning Allocation[T] (not subscriptable, no unsafe_free) and
-    # `unsafe_alloc` does not exist in Mojo 1.0. Revisit when either lands.
-    var t_ptr = alloc[Int64](count=1)
+    # Freed below; `unsafe_alloc` is the non-Layout allocator (std.memory.alloc).
+    var t_ptr = unsafe_alloc[Int64](count=1)
     t_ptr[] = t
 
     # gmtime returns a pointer to struct tm

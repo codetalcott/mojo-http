@@ -76,7 +76,7 @@ jobs:
         # --no-project: the repository's own environment pins a Mojo
         # toolchain this job has no use for.
         run: uv run --no-project --with markdown-it-py python scripts/docsite.py --out dist/site --base-url https://m0serve.dev
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
       - name: Deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_DEPLOY_SITE }}
@@ -136,7 +136,7 @@ jobs:
             sleep 20
           done
           echo "::error::m0serve==${{ steps.v.outputs.version }} never appeared on PyPI"; exit 1
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
       - name: Deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_DEPLOY_DEMO }}

@@ -336,7 +336,7 @@ def test_registry_unsubscribe() raises:
 
 
 def test_registry_active_count() raises:
-    """active_count should track subscribed slots."""
+    """`active_count` should track subscribed slots."""
     var reg = SSERegistry(4)
     assert_equal(reg.active_count(), 0)
     reg.subscribe(0, "/a", 0)
@@ -527,7 +527,7 @@ def test_journal_no_events() raises:
 
 
 def test_journal_filters_by_url() raises:
-    """since() should only return events for the requested URL."""
+    """`since()` should only return events for the requested URL."""
     var j = PatchJournal()
     _ = j.append("/orders/1", "e0", "e1", _byte(1), _byte(10))
     _ = j.append("/orders/2", "e0", "e1", _byte(2), _byte(20))
@@ -537,7 +537,7 @@ def test_journal_filters_by_url() raises:
 
 
 def test_journal_latest_id() raises:
-    """latest_id should return the most recent event ID."""
+    """`latest_id` should return the most recent event ID."""
     var j = PatchJournal()
     assert_equal(j.latest_id(), 0)
     _ = j.append("/a", "", "", List[UInt8](), List[UInt8]())
@@ -547,7 +547,7 @@ def test_journal_latest_id() raises:
 
 
 def test_journal_has_etag() raises:
-    """has_etag should find matching entries."""
+    """`has_etag` should find matching entries."""
     var j = PatchJournal()
     _ = j.append("/orders/1", "e0", "e1", List[UInt8](), List[UInt8]())
     assert_equal(j.has_etag("/orders/1", "e1"), 1)
@@ -555,7 +555,7 @@ def test_journal_has_etag() raises:
 
 
 def test_journal_compact() raises:
-    """compact should remove all entries for a URL."""
+    """`compact` should remove all entries for a URL."""
     var j = PatchJournal()
     _ = j.append("/a", "", "", List[UInt8](), List[UInt8]())
     _ = j.append("/a", "", "", List[UInt8](), List[UInt8]())

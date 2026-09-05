@@ -71,7 +71,7 @@ def split_data_lines(data: String) -> List[String]:
 
 def _buf_to_string(var buf: List[UInt8]) -> String:
     """Convert a byte buffer to a String (takes ownership)."""
-    return String(unsafe_from_utf8=Span(unsafe_ptr=buf.unsafe_ptr(), length=len(buf)))
+    return String(unsafe_from_utf8=Span(buf))
 
 
 def _build_sse(

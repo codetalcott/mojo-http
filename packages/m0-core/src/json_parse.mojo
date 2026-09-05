@@ -208,7 +208,7 @@ def parse_json_field(body: String, field: String) -> String:
     while i < blen:
         var b = bytes[i]
         if b == 0x22:  # closing quote
-            return String(unsafe_from_utf8=Span(unsafe_ptr=result.unsafe_ptr(), length=len(result)))
+            return String(unsafe_from_utf8=Span(result))
         if b == 0x5C:
             if i + 1 >= blen:
                 return String("")

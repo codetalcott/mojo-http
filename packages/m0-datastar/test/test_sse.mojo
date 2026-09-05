@@ -19,13 +19,13 @@ def test_patch_elements_basic() raises:
 
 
 def test_patch_elements_with_selector() raises:
-    """patch_elements with selector should include selector dataline."""
+    """`patch_elements` with selector should include selector dataline."""
     var s = patch_elements("<p>Hi</p>", selector="#content")
     assert_true(s.find("data: selector #content") >= 0)
 
 
 def test_patch_elements_inner_mode() raises:
-    """patch_elements with inner mode should include mode dataline."""
+    """`patch_elements` with inner mode should include mode dataline."""
     var s = patch_elements("<span>X</span>", mode="inner")
     assert_true(s.find("data: mode inner") >= 0)
 
@@ -58,13 +58,13 @@ def test_view_transition_selector_requires_view_transition() raises:
 
 
 def test_patch_elements_with_namespace() raises:
-    """patch_elements with SVG namespace should include namespace dataline."""
+    """`patch_elements` with SVG namespace should include namespace dataline."""
     var s = patch_elements("<circle/>", namespace="svg")
     assert_true(s.find("data: namespace svg") >= 0)
 
 
 def test_patch_elements_with_view_transition() raises:
-    """patch_elements with view transition should include the flag."""
+    """`patch_elements` with view transition should include the flag."""
     var s = patch_elements("<div/>", use_view_transition=True)
     assert_true(s.find("data: useViewTransition true") >= 0)
 
@@ -98,7 +98,7 @@ def test_patch_signals_basic() raises:
 
 
 def test_patch_signals_only_if_missing() raises:
-    """patch_signals with only_if_missing should include the flag."""
+    """`patch_signals` with only_if_missing should include the flag."""
     var s = patch_signals('{"x": 1}', only_if_missing=True)
     assert_true(s.find("data: onlyIfMissing true") >= 0)
 
@@ -116,7 +116,7 @@ def test_patch_signals_with_event_id() raises:
 
 
 def test_execute_script_basic() raises:
-    """execute_script should wrap in script element with auto-remove."""
+    """`execute_script` should wrap in script element with auto-remove."""
     var s = execute_script("console.log('hi')")
     assert_true(s.find("event: datastar-patch-elements") >= 0)
     assert_true(s.find('data-effect="el.remove()"') >= 0)
@@ -125,14 +125,14 @@ def test_execute_script_basic() raises:
 
 
 def test_execute_script_targets_body() raises:
-    """execute_script should target body with append mode."""
+    """`execute_script` should target body with append mode."""
     var s = execute_script("alert(1)")
     assert_true(s.find("data: selector body") >= 0)
     assert_true(s.find("data: mode append") >= 0)
 
 
 def test_redirect() raises:
-    """redirect should generate a script with window.location."""
+    """`redirect` should generate a script with window.location."""
     var s = redirect("/new-page")
     assert_true(s.find("window.location = '/new-page'") >= 0)
     assert_true(s.find("setTimeout") >= 0)

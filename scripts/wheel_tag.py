@@ -32,7 +32,7 @@ import re
 import struct
 import sys
 
-from binfmt import InspectError, classify, inspect_elf, min_os
+from binfmt import InspectError, classify, min_os
 
 # The toolchain's own floor. A binary can require MORE than this (measured
 # below); it cannot meaningfully promise less, because the toolchain that

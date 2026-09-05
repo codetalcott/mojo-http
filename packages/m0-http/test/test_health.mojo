@@ -28,7 +28,7 @@ def test_health_register_unhealthy() raises:
 
 
 def test_health_set_update() raises:
-    """set() updates an existing check."""
+    """`set()` updates an existing check."""
     var h = HealthRegistry()
     h.register("db", True)
     assert_true(h.is_ready())
@@ -58,7 +58,7 @@ def test_health_ready_status_code_503() raises:
 
 
 def test_health_to_json_ok() raises:
-    """to_json with all healthy shows ok."""
+    """`to_json` with all healthy shows ok."""
     var h = HealthRegistry()
     h.register("store", True)
     var json = h.to_json()
@@ -67,7 +67,7 @@ def test_health_to_json_ok() raises:
 
 
 def test_health_to_json_degraded() raises:
-    """to_json with unhealthy check shows degraded."""
+    """`to_json` with unhealthy check shows degraded."""
     var h = HealthRegistry()
     h.register("store", True)
     h.register("cache", False)
@@ -77,7 +77,7 @@ def test_health_to_json_degraded() raises:
 
 
 def test_health_to_json_shutting_down() raises:
-    """to_json during shutdown shows shutting_down."""
+    """`to_json` during shutdown shows shutting_down."""
     var h = HealthRegistry()
     h.shutting_down = True
     var json = h.to_json()

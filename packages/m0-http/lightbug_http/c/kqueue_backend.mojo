@@ -11,6 +11,7 @@ from lightbug_http.c.kqueue import (
     EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT, EV_EOF, EV_ERROR,
 )
 from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
+from std.memory.alloc import unsafe_alloc
 
 
 comptime _MAX_EVENTS = 64
@@ -25,7 +26,7 @@ struct KqueueBackend(ConstructibleBackend):
 
     def __init__(out self) raises:
         self.kq = kqueue()
-        self._events = alloc[kevent_t](count=_MAX_EVENTS)
+        self._events = unsafe_alloc[kevent_t](count=_MAX_EVENTS)
         for i in range(_MAX_EVENTS):
             self._events[unsafe_offset=i] = kevent_t(0, 0, 0, 0, 0, 0)
         self._n_ready = 0

@@ -142,7 +142,7 @@ struct SharedAtomics(Copyable, Movable):
 
 
 def shared_fetch_add(addr: Int, delta: Int) -> Int:
-    """fetch_add on a shared atomic slot named by its raw address.
+    """`fetch_add` on a shared atomic slot named by its raw address.
 
     The address form is how a `SharedAtomics` slot travels through structs
     that must not depend on this module's types (an `Int` field instead of a
@@ -158,7 +158,7 @@ def shared_fetch_add(addr: Int, delta: Int) -> Int:
 
 
 def shared_load(addr: Int) -> Int:
-    """load on a shared atomic slot named by its raw address (0 → 0)."""
+    """`load` on a shared atomic slot named by its raw address (0 → 0)."""
     if addr == 0:
         return 0
     var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
@@ -168,7 +168,7 @@ def shared_load(addr: Int) -> Int:
 
 
 def shared_store(addr: Int, value: Int):
-    """store on a shared atomic slot named by its raw address (0 → no-op)."""
+    """`store` on a shared atomic slot named by its raw address (0 → no-op)."""
     if addr == 0:
         return
     var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
@@ -253,7 +253,7 @@ comptime _RELOAD_DRAIN_NS = 5_000_000_000
 struct WorkerSupervisor:
     """Supervises forked worker processes with crash respawn."""
     var child_pids: List[Int]
-    """pid of the worker holding each index, -1 while an index is vacant.
+    """PID of the worker holding each index, -1 while an index is vacant.
 
     Position IS the worker index: it names per-worker resources created
     before the fork (a `BroadcastBus` channel, most importantly), so a pid

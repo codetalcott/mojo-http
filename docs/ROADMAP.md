@@ -187,8 +187,10 @@ the page would have believed the close path was unreliable.
   remaining renames applied, `build-all`, all 1011 Mojo tests, every
   Python-side check, `build-apps` and `build-serve` are green on that
   nightly, and unique warnings move from 68 to 84 — the new ones are
-  `unsafe_ptr` → `ptr` deprecations, and the 16 the baseline calls
-  unfixable on 1.0.0 (`alloc` without a `Layout`, `ABI="C"`) persist.
+  `unsafe_ptr` → `ptr` deprecations, and the 16 the baseline then called
+  unfixable on 1.0.0 (`alloc` without a `Layout`, `ABI="C"`) persisted —
+  both were probed on 2026-09-05, both spellings work, and the baseline
+  is now 0.
   `CompilationTarget.is_x86()` also changes meaning from "has SSE4" to "is
   the x86 architecture" — which is the semantics `EPOLL_EVENT_WORDS` in
   `c/epoll.mojo` always wanted, since epoll's packed event layout is a

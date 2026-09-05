@@ -10,6 +10,7 @@ Usage:
     var (child_pid, status) = waitpid_blocking(pid)
 """
 
+from std.memory.alloc import unsafe_alloc
 from std.ffi import c_int, c_ssize_t, external_call, get_errno
 
 from lightbug_http.c.aliases import ExternalMutPointer
@@ -67,10 +68,8 @@ def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
     Raises:
         Error: If waitpid() fails.
     """
-    # NOTE: `alloc` without a Layout is deprecated, but the Layout form returns
-    # an owning Allocation[T] (not subscriptable, no unsafe_free) and
-    # `unsafe_alloc` does not exist in Mojo 1.0. Revisit when either lands.
-    var status = alloc[c_int](count=1)
+    # Freed below; `unsafe_alloc` is the non-Layout allocator (std.memory.alloc).
+    var status = unsafe_alloc[c_int](count=1)
     var result = _waitpid(c_int(pid), status, c_int(0))
     # EINTR is not a failure: a caught signal interrupted the wait and there is
     # still a child to reap. Only reachable since the supervisor started
@@ -117,12 +116,9 @@ def waitpid_nonblocking() raises -> Tuple[Int, Int]:
     rather than an error for the same reason: to a poller it means "nothing
     left to supervise", which is an ordinary end of the loop.
     """
-    # A stack local rather than `alloc`, unlike the blocking twin: a poller
-    # calls this several times a second for the life of the process, and a
-    # heap allocation freed on every return is the wrong shape for that. It
-    # also keeps the deprecated `alloc`-without-a-Layout out of a new call
-    # site — see the note in `waitpid_blocking` for why that spelling is
-    # still there at all.
+    # A stack local rather than a heap allocation, unlike the blocking twin:
+    # a poller calls this several times a second for the life of the process,
+    # and an allocation freed on every return is the wrong shape for that.
     var status = c_int(0)
     # The origin has to be erased for the FFI signature; the round trip
     # through the address is the idiom this repo already uses for that.
@@ -233,9 +229,9 @@ def install_signal_handler(sig: Int, handler_address: Int) -> Bool:
 # atomics page must be FILE-backed to survive, where fork alone was happy
 # with MAP_ANONYMOUS.
 #
-# Buffers here are `List`s, not `alloc`: `alloc` without a `Layout` is one
-# of the ratchet's counted warnings, and a list's `unsafe_ptr()` is the same
-# pointer for the duration of the call.
+# Buffers here are `List`s rather than raw allocations: a list frees itself
+# on every return path, and its `unsafe_ptr()` is the same pointer for the
+# duration of the call.
 
 from std.sys.info import CompilationTarget
 from lightbug_http.c.kqueue import _fcntl

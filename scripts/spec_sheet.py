@@ -315,7 +315,6 @@ def analyse(src):
     rows, failures = parse(sheet)
     pyproject, workflow = src["pyproject"], src["workflow"]
     steps = _steps(workflow)
-    tasks_in_ci = {t for tasks, _, _ in steps.values() for t in tasks}
     smoke_bodies = _task_bodies(pyproject)
     reachable = _reachable(pyproject)
     dev = [re.sub(r"[^a-z0-9]", "", d.lower()) for d in _dev_group(pyproject)]

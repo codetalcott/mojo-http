@@ -47,8 +47,8 @@ m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 
 **Zero upward imports.** `m0-core` depends on nothing. `m0-http` uses exactly
 four functions from `m0-core`: `wyhash64` and `format_hash64` in `etag.mojo`,
-`escape_json_string` in `health.mojo`, `escape_json_string_into` in
-`log.mojo`. `m0-datastar` splits deliberately: `consts.mojo` and
+`escape_json_string` in `health.mojo` and `reply.mojo`,
+`escape_json_string_into` in `log.mojo`. `m0-datastar` splits deliberately: `consts.mojo` and
 `sse.mojo` import nothing outside themselves so the wire format is usable
 without the framework — do not add an `m0_http` import to either — while
 `stream.mojo` and `signals.mojo` are the server glue and may.
@@ -782,14 +782,16 @@ Tests are `std.testing`: `test_*` functions in a `test_*.mojo`, dispatched by
 `TestSuite.discover_tests[__functions_in_module()]().run()` in `main()`. Adding
 a test means adding a function — there is no registration list to update.
 
-The 68 warnings the baseline records are not a backlog. 52 are doc-string
-capitalisation lint on summaries that open with a real identifier (`fetch_add
-on...`, `wants_html`, `q=0`, `text/*`) — capitalising them would corrupt the
-name each documents. The other 16 warn about APIs Mojo 1.0.0 does not ship:
-`alloc` without a `Layout` suggests an `unsafe_alloc` that does not exist, and
-`ABI="C"` suggests an `abi("C")` that is not a declaration in any position.
-Both are recorded in NOTICE and in `m0-core/ffi_exports.mojo`'s docstring. Do
-not spend time on them; do keep the count from growing.
+The 0 warnings the baseline records are a floor, not a target: the ratchet
+now fails on the first warning anyone adds. It stood at 68 until 2026-09-05,
+described here as unfixable on the pinned toolchain, and every one of those
+claims failed to reproduce when probed against that toolchain: `abi("C")` is
+a function *effect* that goes before the return arrow (`m0-core/
+ffi_exports.mojo`), `unsafe_alloc` is importable from `std.memory.alloc`, and
+the doc-string lint accepts a summary that opens with a backticked
+identifier (`` `wants_html` convenience... ``), which the style guide asks
+for anyway. Before believing a warning cannot be fixed, write the ten-line
+probe and run it under `uv run mojo run`.
 
 A `.mojoc` is locked to the exact compiler version that produced it. After any
 toolchain change run `build-all`, or you get:
@@ -1215,10 +1217,14 @@ This project targets **Mojo 1.0** (pinned in `uv.lock`).
 5. **`String.as_bytes()`** — `s[i]` indexing removed; use `s.as_bytes()[i]` or `s[byte=i]`
 6. **`Writable` over `Stringable`** — always add `write_to` when migrating
 7. **`Variant` for tagged unions** — `from std.utils.variant import Variant`
-8. **`Optional[T]`** — requires `ImplicitlyCopyable`
-9. **Parallel arrays (SoA)** — used to work around `ImplicitlyCopyable` constraints
-   on `List[Struct]`. Prefer parallel `List` fields over `List[Struct]`; this is
-   why `SSERegistry` and `PatchJournal` look the way they do.
+8. **`Optional[T]` and `List[T]` take Movable-only elements** — a struct
+   that is not `Copyable` can be appended, popped and wrapped (verified on
+   1.0.0); do not add `Copyable` to a handle type just to store it
+9. **Parallel arrays (SoA)** — `SSERegistry` and `PatchJournal` keep parallel
+   `List` fields for cheap per-field scans, not because `List[Struct]` is
+   refused: the `ImplicitlyCopyable` constraint that first motivated them is
+   gone. `OwningList` in the fork predates the same change and is a retirement
+   candidate once the swap is measured
 
 ## Design principles
 

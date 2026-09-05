@@ -153,7 +153,7 @@ def substitute_spans(text, values, where):
         )
 
     def sub(m):
-        key, decimals, _body = m.group(1), int(m.group(2)), m.group(3)
+        key, decimals = m.group(1), int(m.group(2))
         if key not in values:
             raise ValueError(
                 f"{where}: span names quantity {key!r}, which QUANTITIES"
