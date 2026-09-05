@@ -44,7 +44,7 @@ through to the client) and the same view degrades to a short plain
 response, so adopting it is not a fork of your codebase. The Flask version
 is the same four views with one extra flag: the socket route is declared
 `websocket=True`, because Werkzeug's router refuses an upgrade request on
-an ordinary rule before any view runs — QUICKSTART §7 has it.
+an ordinary rule before any view runs; [After the quickstart](docs/QUICKSTART_NEXT.md) has it.
 
 **[QUICKSTART.md](QUICKSTART.md) is ten minutes from `pip install` to live
 multi-tab sync**, and CI executes every command in it on every pull request

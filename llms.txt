@@ -1,12 +1,11 @@
 # m0serve
 
-> Realtime from a synchronous Python app, with no added infrastructure.
-> A WSGI/ASGI server written in Mojo: `pip install m0serve`, no Mojo
+> A WSGI and ASGI server written in Mojo: `pip install m0serve`, no Mojo
 > toolchain, no dependencies, nothing fetched at install. Its distinguishing
 > capability: held SSE and WebSocket connections gated by plain synchronous
-> views (Django, Flask, ...), with cross-worker publish. No Channels, no
-> Redis, no daphne, no second process. It is NOT the fastest server on raw
-> throughput; the benchmarks page says so with numbers.
+> views (Django, Flask, ...), with cross-worker publish, needing neither
+> Channels nor Redis nor a second process. It is not the fastest server on
+> raw throughput; the benchmarks page has the numbers.
 
 Platforms: macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact
 floor is in the wheel filename, and pip refuses rather than crashes on older
@@ -48,16 +47,17 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
 
 ## Start here
 
-- [Quickstart](QUICKSTART.md): ten minutes to live multi-tab sync from one
-  sync-Django file. Every fenced block is executed by CI.
+- [Quickstart](QUICKSTART.md): live multi-tab sync from one file of sync
+  Django, in five steps. CI runs every fenced block.
+- [After the quickstart](docs/QUICKSTART_NEXT.md): the same application
+  under two workers, in Flask, and under gunicorn.
 - [Running m0serve](docs/RUNNING.md): flags, modes, what to put in front of
   it, shutdown and exit codes.
-- [Capabilities](docs/SPEC.md): the capability matrix, one row per
-  capability with the CI gate that proves it; `docs/spec.json` is the same
-  data. `verified` means a gate runs on the stated cadence, not that the
-  capability is correct; the page says so itself.
-- [Benchmarks](docs/BENCHMARKS.md): every performance number, each rendered
-  from a dated artifact and CI-checked against it, including where this
+- [Capabilities](docs/SPEC.md): one row per capability with the CI gate
+  that proves it; `docs/spec.json` is the same data. `verified` means a
+  gate runs on the stated cadence, not that the capability is correct.
+- [Benchmarks](docs/BENCHMARKS.md): throughput and tail latency against
+  gunicorn, uvicorn and Granian, from dated artifacts, including where this
   server loses.
 - The realtime example the quickstart builds on, as a project:
   [apps/django_realtime](apps/django_realtime/).

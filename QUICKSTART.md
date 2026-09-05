@@ -1,23 +1,17 @@
-# Quickstart: live updates from plain sync Django or Flask
+# Quickstart
 
-Ten minutes, one file, one process: a synchronous Django app whose browser
-tabs stay in sync — Server-Sent Events and WebSockets held by the server,
-no Channels, no Redis, no daphne, no second process.
+One file of synchronous Django whose browser tabs stay in sync. The server
+holds the Server-Sent Events streams and the WebSockets; the views only
+approve them. It needs neither Channels nor Redis, and runs as one process.
 
-The trick is that your views never stream anything. A plain sync view
-*approves* a connection by answering with two response headers, and m0serve
-holds it from there; `m0pub.publish()` from any view reaches every
-subscriber on every worker. Django keeps what it is good at — auth,
-sessions, the decision — and hands the connection to the server.
+A sync view approves a connection by setting two response headers, and
+m0serve holds it from there. `m0pub.publish()` from any view reaches every
+subscriber on every worker. Django keeps auth, sessions and the decision;
+the server keeps the connection.
 
-Works on macOS arm64 and Linux x86_64/aarch64, CPython 3.10–3.14. No Mojo
-toolchain involved. Sections 1–6 are Django; section 7 is the same four
-views in Flask, and section 8 runs the Django file under gunicorn to show
-what "degrades" means.
-
-> Every command below is copy-paste runnable, and this file is executable:
-> CI extracts the fenced blocks and runs them against every pull request
-> (`poe smoke-quickstart`), so if you can read it, it works.
+macOS arm64 and Linux x86_64/aarch64, CPython 3.10 to 3.14. No Mojo
+toolchain. CI extracts the fenced commands below and runs them on every
+pull request (`poe smoke-quickstart`).
 
 ## 1. Install
 
@@ -33,11 +27,11 @@ m0serve --version
 m0serve 0.17.1
 ```
 
-## 2. The app — one file
+## 2. The app
 
-Everything lives in `realtime.py`: settings, four views, a page. The two
-views that matter are `events` and `ws` — each is an ordinary sync view
-that returns an ordinary buffered response, plus the two `M0-` headers.
+Everything is in `realtime.py`: settings, four views, a page. `events` and
+`ws` are the two that matter. Each is an ordinary sync view returning an
+ordinary buffered response with two `M0-` headers added.
 
 ```bash setup
 cat > realtime.py <<'PY'
@@ -150,11 +144,11 @@ PY
 m0serve realtime:application --realtime --health-path /health --port 8000
 ```
 
-`--realtime` is the whole feature: it turns the `M0-` headers into held
-connections and wires the publish bus. Leave it off and the same app still
-serves — the holds just degrade to short responses.
+`--realtime` turns the `M0-` headers into held connections and wires the
+publish bus. Without it the same app still serves, and the hold views return
+short responses.
 
-## 4. Verify — the same checks CI runs
+## 4. Verify
 
 Wait for the server, subscribe a client, publish, and watch the event
 arrive on the held connection:
@@ -185,243 +179,53 @@ data: hello from curl
 SSE delivery verified (event id 1)
 ```
 
-The `id:` line is not decoration: every publish takes a globally unique
-number from a shared atomic, so a client that reconnects with
-`Last-Event-ID` is never re-sent what it already has.
+Every publish takes a unique id from a counter shared across workers, so a
+client that reconnects with `Last-Event-ID` is not re-sent what it already
+has.
 
-## 5. The part you came for
+## 5. Two tabs
 
-Open <http://127.0.0.1:8000/> in **two browser tabs** and type in either.
-Both update instantly. The page is a WebSocket client; the `curl` above was
-SSE; a `publish` from any view reaches both transports at once — and all of
-it gated by synchronous Django views.
+Open <http://127.0.0.1:8000/> in two browser tabs and type in either. Both
+update. The page is a WebSocket client and the `curl` above was SSE; one
+publish reaches both, and every connection was approved by a synchronous
+Django view.
 
-## 6. Scale out — one publish, every worker
-
-Stop the server (Ctrl-C) and restart with workers. Publishing from a view
-on any worker reaches subscribers on every worker: the bus and the shared
-id counter are created *before* the fork, so ids stay unique across all of
-a server's workers with no coordination in your code. (They belong to the
-server's lifetime — a fresh server numbers from 1 again, which is why
-`Last-Event-ID` replay is scoped to a running server, not to history.)
-
-```bash serve
-m0serve realtime:application --realtime --workers 2 --health-path /health --port 8000
-```
-
-```bash verify
-curl -sf --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:8000/health > /dev/null
-
-curl -sN --max-time 6 "http://127.0.0.1:8000/events?channel=news" > stream2.txt &
-sleep 1
-
-RESPONSE=$(curl -s -X POST -d channel=news -d msg="hello every worker" http://127.0.0.1:8000/publish)
-echo "$RESPONSE"
-echo "$RESPONSE" | grep -q '"workers": 2'
-
-for i in $(seq 1 25); do
-  grep -q "data: hello every worker" stream2.txt 2>/dev/null && break
-  sleep 0.2
-done
-grep "data: hello every worker" stream2.txt
-
-SECOND_ID=$(grep -oE "^id: [0-9]+" stream2.txt | head -1 | cut -d' ' -f2)
-test -n "$SECOND_ID"
-echo "publish reached 2 workers; delivered (event id $SECOND_ID)"
-
-# "No second process" is a checkable claim, so check it: the whole server is
-# a supervisor and its two workers, every one of them the m0serve binary.
-# And the wheel required nothing else to be installed beside it.
-test "$(pgrep -x m0serve | wc -l | tr -d ' ')" -eq 3
-pip show m0serve | grep -E '^Requires:\s*$'
-echo "one process tree, no dependencies"
-```
-
-What this block proves and what it does not: the publish's own response
-says the frame reached both workers' buses, and a subscriber received it.
-Which worker that subscriber landed on is the kernel's choice. The
-repository's `smoke-django-realtime` pins one subscriber on *each* worker
-(by pausing the first worker while the second connects) and asserts the far
-one hears it; the Flask gate in the next section does the same.
-
-## 7. The same four views in Flask
-
-Nothing above was Django's doing: the server reads two response headers and
-a `publish()` call, and any WSGI framework can produce those. Here is the
-same application in Flask — the routes, the headers and the call are
-identical; only the framework's spelling changes, plus one flag on the
-WebSocket route that Werkzeug's router requires.
-
-```bash setup
-pip install --quiet flask
-cat > realtime_flask.py <<'PY'
-"""The quickstart's four views, in Flask, served by m0serve."""
-from flask import Flask, Response, jsonify, request
-
-from m0serve import m0pub
-
-app = Flask(__name__)
-
-
-@app.get("/events")
-def events():
-    # Same two headers, same meaning: m0serve holds the connection and
-    # subscribes it; Flask's part ends when the view returns.
-    response = Response(": connected\n\n", mimetype="text/event-stream")
-    response.headers["M0-Hold"] = "stream"
-    response.headers["M0-Channel"] = request.args.get("channel", "news")
-    return response
-
-
-@app.route("/ws", websocket=True)
-def ws():
-    # The one Flask-specific line. Werkzeug's router refuses to match an
-    # upgrade request (`Connection: Upgrade`, `Upgrade: websocket`) to an
-    # ordinary HTTP rule -- it answers 400 before any view runs -- so the
-    # rule that approves a socket must say so. Django has no such check.
-    response = Response("")
-    response.headers["M0-Hold"] = "websocket"
-    response.headers["M0-Channel"] = request.args.get("channel", "news")
-    return response
-
-
-@app.post("/ws/message")
-def ws_message():
-    # Flask has no CSRF middleware to exempt; the path is reserved by the
-    # server either way, so only the synthesised POST reaches this view.
-    channel = request.headers.get("M0-Channel", "news")
-    m0pub.publish(channel, request.get_data(as_text=True))
-    return jsonify(ok=True)
-
-
-@app.post("/publish")
-def publish():
-    workers, event_id = m0pub.publish_with_id(
-        request.form.get("channel", "news"), request.form.get("msg", "")
-    )
-    return jsonify(workers=workers, id=event_id)
-PY
-```
-
-Serve it with workers, exactly as the Django file was served:
-
-```bash serve
-m0serve realtime_flask:app --realtime --workers 2 --health-path /health --port 8000
-```
-
-The checks are the ones section 6 ran, plus the WebSocket handshake: a view
-that answered `M0-Hold: websocket` gets the RFC 6455 upgrade it could not
-perform itself, and `curl` can show the 101.
-
-```bash verify
-curl -sf --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:8000/health > /dev/null
-
-curl -sN --max-time 6 "http://127.0.0.1:8000/events?channel=news" > flask.txt &
-sleep 1
-
-RESPONSE=$(curl -s -X POST -d channel=news -d msg="hello from flask" http://127.0.0.1:8000/publish)
-echo "$RESPONSE"
-echo "$RESPONSE" | grep -Eq '"workers": ?2'
-
-for i in $(seq 1 25); do
-  grep -q "data: hello from flask" flask.txt 2>/dev/null && break
-  sleep 0.2
-done
-grep "data: hello from flask" flask.txt
-
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
-  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
-  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-  "http://127.0.0.1:8000/ws?channel=news" || true)
-test "$code" = "101"
-echo "Flask: SSE delivered across 2 workers, WebSocket upgraded ($code)"
-```
-
-```text
-{"id":1,"workers":2}
-data: hello from flask
-Flask: SSE delivered across 2 workers, WebSocket upgraded (101)
-```
-
-The repository drives this exact file — extracted from this page, not
-copied — with the Django rows' raw RFC 6455 probe, one socket pinned on
-each worker (`poe smoke-flask-realtime`), so a message sent on one
-worker's socket reaching a Flask view and coming back on the other
-worker's socket is asserted on every pull request.
-
-## 8. Under gunicorn, the same views degrade
-
-"Degrade, not break" is also a checkable claim. Stop m0serve and serve the
-Django file with gunicorn: the `M0-` headers mean nothing to it, so the
-hold views answer as the short plain responses they are, the upgrade is an
-ordinary 200, and `publish()` reports that it reached no worker — and
-raises nothing.
-
-```bash setup
-pip install --quiet gunicorn
-```
-
-```bash serve
-gunicorn --bind 127.0.0.1:8000 realtime:application
-```
-
-```bash verify
-curl -sf --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:8000/ > /dev/null
-
-# Under m0serve this connection is held open; here it must finish inside
-# the deadline with the body the view wrote, or curl exits 28 and so does
-# this block.
-curl -si --max-time 5 "http://127.0.0.1:8000/events?channel=news" > degraded.txt
-grep -q '^HTTP/1.1 200' degraded.txt
-grep -q '^: connected' degraded.txt
-
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
-  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-  "http://127.0.0.1:8000/ws?channel=news")
-test "$code" = "200"
-
-curl -s -X POST -d channel=news -d msg="nobody is held" http://127.0.0.1:8000/publish | grep -q '"workers": 0'
-echo "under gunicorn: /events answered $(grep -c '' degraded.txt) lines and closed, /ws answered $code, publish reached 0 workers"
-```
 
 ## In your real project
 
-The whole integration is what you just read: two headers on a view that
-approves a subscription, `m0pub.publish()` wherever something happens, and
+The integration is two headers on the view that approves a subscription,
+`m0pub.publish()` wherever something happens, and
 `m0serve myproject.wsgi:application --realtime`. No settings changes, no
-INSTALLED_APPS, no middleware, and the views degrade — not break — under
-any other WSGI server, which section 8 just showed.
+`INSTALLED_APPS` entry, no middleware. Under any other WSGI server the same
+views return short plain responses.
 
-The fuller demo, with token auth, channel isolation, and static files
-served without entering Python, is
-[`apps/django_realtime`](apps/django_realtime/) in the repository; its
-behaviour is pinned by `smoke-django-realtime` and a raw RFC 6455 probe.
+A fuller example, with token auth, channel isolation and static files served
+by the server, is [`apps/django_realtime`](apps/django_realtime/); CI drives
+it with a raw RFC 6455 probe.
 
-### Three things the server does not decide for you
+### What the server leaves to you
 
-The hold pattern moves the *connection* out of Python, not the
-*authorisation*. What that leaves you:
+The hold moves the connection out of Python. Authorization stays in the view.
 
-- **A view that approves a hold is the access check.** Nothing downstream
-  re-asks. The demo above gates on a query token because it is a demo; use
-  whatever your project already uses, and remember the view runs before the
-  connection becomes a stream, which is exactly where you want the decision.
-- **`publish()` reaches every subscriber of a channel, on every worker.**
-  If the channel name comes from a request, so does the blast radius — an
-  endpoint that publishes what it is told, to the channel it is told, is a
-  fan-out primitive for whoever can reach it. The server refuses only its
-  own reserved namespace (channels opening with a `\x01` byte, which
-  address connection slots internally); everything else is your namespace
-  to police.
-- **A WebSocket handshake carries no `Origin` check.** The server does not
-  make one, because it cannot know your policy. If you authenticate sockets
-  with cookies, a page on any origin can open one and the browser will
-  attach them — check `Origin` in the view that approves the upgrade, or
+- **The view that approves a hold is the access check.** Nothing downstream
+  asks again. The view runs before the connection becomes a stream, with
+  sessions and permissions in hand, so use whatever your project already
+  uses.
+- **`publish()` reaches every subscriber of a channel, on every worker.** If
+  the channel name comes from a request, so does the blast radius. The
+  server refuses only its own reserved namespace (channel names opening
+  with a `\x01` byte); every other name is yours to police.
+- **The WebSocket handshake carries no `Origin` check.** If you authenticate
+  sockets with cookies, a page on any origin can open one and the browser
+  will attach them. Check `Origin` in the view that approves the upgrade, or
   authenticate with something a cross-site page cannot supply.
 
-Inbound WebSocket messages arrive as a `POST` to `/ws/message`, and the
-server reserves that path: a request for it from the network is answered
-404 before Django sees it, so the view can treat what it receives as
-genuinely server-synthesised. That reservation is why the view may be
-`csrf_exempt` without it becoming an open endpoint.
+Inbound WebSocket messages arrive as a `POST` to `/ws/message`. The server
+reserves that path: a request for it from the network is answered 404
+before Django sees it, which is why the view can be `csrf_exempt`.
+
+## Next
+
+[After the quickstart](docs/QUICKSTART_NEXT.md) runs this application under
+two workers, then the same four views in Flask, then the Django file under
+gunicorn to show what the views do there.

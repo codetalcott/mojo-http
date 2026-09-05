@@ -327,7 +327,7 @@ jobs:
       # the clean consumer jobs in release.yml are for.
       - name: Build and smoke test the installable wheel
         run: uv run poe smoke-wheel
-      # The doc a stranger follows, executed: QUICKSTART.md's fenced blocks
+      # The doc a stranger follows, executed: QUICKSTART.md's and docs/QUICKSTART_NEXT.md's fenced blocks
       # run against the tree's own wheel. A code change that breaks the
       # quickstart, or a quickstart edit that breaks the path, fails here.
       - name: Execute the quickstart
@@ -476,7 +476,7 @@ jobs:
       - name: Run the WSGI framework contract against Flask
         run: uv run poe smoke-flask
       # The Flask half of the headline claim: the quickstart's Flask file,
-      # extracted from QUICKSTART.md itself, holds SSE streams and WebSockets
+      # extracted from docs/QUICKSTART_NEXT.md itself, holds SSE streams and WebSockets
       # across two workers under the same RFC 6455 probe the Django rows use.
       - name: Smoke test the Flask realtime views
         run: uv run poe smoke-flask-realtime

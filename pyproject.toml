@@ -3124,7 +3124,7 @@ python3 scripts/emit.py --covers K10 --task smoke-flask
 """
 
 # The Flask half of the headline claim ("a plain sync Django or Flask view
-# can hold..."). The app under test is EXTRACTED from QUICKSTART.md's own
+# can hold..."). The app under test is EXTRACTED from docs/QUICKSTART_NEXT.md's own
 # fenced block rather than kept as a second copy, so the file this drives is
 # the one a reader types, and `from m0serve import m0pub` resolves to the
 # wheel package's real m0pub.py staged beside it. The Django rows' RFC 6455
@@ -3144,10 +3144,10 @@ out=$(mktemp -d)
 srv=bin/m0serve
 port=8091
 
-# The app: QUICKSTART.md's heredoc, verbatim. An empty extraction is a doc
+# The app: docs/QUICKSTART_NEXT.md's heredoc, verbatim. An empty extraction is a doc
 # edit that moved the block, and must fail here rather than serve nothing.
-sed -n "/^cat > realtime_flask.py <<'PY'$/,/^PY$/p" QUICKSTART.md | sed '1d;$d' > "$out/realtime_flask.py"
-grep -q 'M0-Hold' "$out/realtime_flask.py" || { echo "could not extract realtime_flask.py from QUICKSTART.md"; exit 1; }
+sed -n "/^cat > realtime_flask.py <<'PY'$/,/^PY$/p" docs/QUICKSTART_NEXT.md | sed '1d;$d' > "$out/realtime_flask.py"
+grep -q 'M0-Hold' "$out/realtime_flask.py" || { echo "could not extract realtime_flask.py from docs/QUICKSTART_NEXT.md"; exit 1; }
 mkdir -p "$out/m0serve"
 : > "$out/m0serve/__init__.py"
 cp packaging/m0serve/src/m0serve/m0pub.py "$out/m0serve/m0pub.py"
@@ -3846,7 +3846,7 @@ grep -q "]($B/quickstart.md)" llms.out || fail 'llms.txt still carries the repos
 rm -f llms.out
 
 # llms-full.txt carries exactly the essential pages: the ones llms.txt lists
-# under "## Documentation" (the "## Optional" tier is left out on purpose).
+# under "## Documentation" (the "## More" tier is left out on purpose).
 pages=$(grep -c '<loc>' "$out/sitemap.xml")
 essential=$(curl -s $B/llms.txt | sed -n '/^## Documentation/,/^## Machine-readable/p' | grep -c '^- ')
 full=$(curl -s $B/llms-full.txt | grep -c "^<!-- $B/")
@@ -5386,12 +5386,13 @@ python3 scripts/emit.py --covers M11 --task smoke-pid1
 # not depend on what is currently published. --expect pins the doc's shape:
 # editing the quickstart's structure means updating it here, loudly.
 [tool.poe.tasks.smoke-quickstart]
-help = "Execute QUICKSTART.md end to end against the tree's own wheel"
+help = "Execute QUICKSTART.md, then docs/QUICKSTART_NEXT.md, against the tree's own wheel"
 deps = ["build-wheel"]
 shell = """
 whl=$(ls dist/wheels/*.whl | head -1)
 [ -n "$whl" ] || { echo "smoke-quickstart: no wheel built"; exit 2; }
 M0SERVE_WHEEL="$whl" python3 scripts/run_quickstart.py \
+  --doc QUICKSTART.md --doc docs/QUICKSTART_NEXT.md \
   --expect setup=4,serve=4,verify=4 || exit 1
 python3 scripts/emit.py --covers M10 --task smoke-quickstart
 python3 scripts/emit.py --covers K11 --task smoke-quickstart
