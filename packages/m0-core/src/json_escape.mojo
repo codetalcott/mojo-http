@@ -46,7 +46,8 @@ def escape_json_string(s: String) -> String:
     """
     var out = List[UInt8](capacity=s.byte_length() + 18)
     escape_json_string_into(out, s)
-    return String(unsafe_from_utf8=Span(unsafe_ptr=out.unsafe_ptr(), length=len(out)))
+    # `Span(out)` keeps `out` alive through the copy; see `escape_html`.
+    return String(unsafe_from_utf8=Span(out))
 
 
 def escape_json_string_into(mut out: List[UInt8], s: String):

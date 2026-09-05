@@ -53,6 +53,33 @@ versions may break the API**.
   wait exceeds the millisecond. `apps/wsgi_bare` gains `/busy`, the CPU-bound view the probe
   drives.
 
+- **Repo hygiene from the 2026-09-05 audit.** `.gitignore` covers
+  `.claude/worktrees/` (a 652 MB checkout of this repo was sitting
+  untracked) and `.claude/handoffs/`; the deploy workflow pins
+  `setup-flyctl` to the 1.5 release commit instead of `@master`; nine
+  pyflakes items (unused imports, a placeholder-free f-string) cleared.
+
+### Fixed
+
+- **Five `String` builders read a local buffer after Mojo had freed it.**
+  `Span(unsafe_ptr=out.unsafe_ptr(), length=...)` carries no origin, so
+  under the manual's after-every-sub-expression destruction the `List`
+  behind it is gone before `String(unsafe_from_utf8=...)` copies — a probe
+  on the pinned compiler printed the buffer's free before the copy. The
+  output was right only because the freed block still held its bytes.
+  `Span(out)` at `_format_hex`, `escape_json_string`, `parse_json_field`,
+  the access-log line and the Datastar SSE builder; `compute_etag` takes
+  the same spelling.
+- **The warning ratchet's baseline is 0, from 68.** All three "unfixable on
+  Mojo 1.0.0" claims failed to reproduce when probed against the pinned
+  compiler: `abi("C")` is a function effect placed before the return arrow
+  (the four `@export`s in `ffi_exports.mojo`), `unsafe_alloc` is importable
+  from `std.memory.alloc` (the twelve fork allocation sites), and a
+  doc-string summary may open with a backticked identifier (the 52 test and
+  `multiworker.mojo` summaries). CLAUDE.md's Mojo 1.0 patterns 8 and 9 are
+  corrected in the same pass: `List` and `Optional` take Movable-only
+  elements on this toolchain, so `OwningList` is a retirement candidate.
+
 ## [0.17.1] — 2026-09-03
 
 ### Added

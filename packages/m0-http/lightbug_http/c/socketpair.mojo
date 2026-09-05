@@ -16,7 +16,7 @@ descriptors and sets no options.
 """
 
 from std.ffi import c_int, external_call, get_errno
-from std.memory import alloc
+from std.memory.alloc import unsafe_alloc
 
 
 comptime AF_UNIX = 1
@@ -29,13 +29,11 @@ def socketpair_dgram() raises -> Tuple[Int, Int]:
     The pair is symmetric — either end can send — so the naming is a
     convention the callers keep, not something the kernel enforces.
 
-    NOTE: `alloc` without a `Layout` is deprecated, and the replacement does
-    not exist on this toolchain: the `Layout` form returns a non-subscriptable
-    `Allocation` and `unsafe_alloc` is not a symbol in Mojo 1.0. Same dead end
-    `c/pipe.mojo` records. This is one of the counted warning sites in the
-    ratchet's baseline.
+    The two-slot buffer is `unsafe_alloc`'d and freed on every path: the
+    `Layout` allocator's owning `Allocation` would be the safer shape, but
+    `socketpair(2)` wants a bare `int[2]`, and this is what the C call reads.
     """
-    var fds = alloc[c_int](count=2)
+    var fds = unsafe_alloc[c_int](count=2)
     var rc = external_call[
         "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
     ](c_int(AF_UNIX), c_int(SOCK_DGRAM), c_int(0), fds)

@@ -79,7 +79,7 @@ def test_namespaces() raises:
 
 
 def test_js_bool() raises:
-    """js_bool should convert Bool to JavaScript string."""
+    """`js_bool` should convert Bool to JavaScript string."""
     assert_equal(js_bool(True), "true")
     assert_equal(js_bool(False), "false")
 

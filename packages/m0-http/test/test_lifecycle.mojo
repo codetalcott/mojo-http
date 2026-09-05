@@ -101,7 +101,7 @@ def test_each_shutdown_pipe_is_distinct() raises:
 
 
 def test_signalling_a_shutdown_handle_succeeds() raises:
-    """signal() closes the write end; the loop sees EOF on the read end."""
+    """`signal()` closes the write end; the loop sees EOF on the read end."""
     var pair = create_shutdown_pipe()
     pair[1].signal()
 

@@ -247,7 +247,7 @@ def ws_open(t, cookie, origin=None):
     """Handshake; returns (sock, worker) on 101 or (None, status_line, body)."""
     sock = t.raw_socket()
     key = base64.b64encode(os.urandom(16)).decode()
-    lines = [f"GET /ws HTTP/1.1", f"Host: {t.hostport}", "Upgrade: websocket", "Connection: Upgrade",
+    lines = ["GET /ws HTTP/1.1", f"Host: {t.hostport}", "Upgrade: websocket", "Connection: Upgrade",
              f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13"]
     if cookie:
         lines.append(f"Cookie: {COOKIE}={cookie}")

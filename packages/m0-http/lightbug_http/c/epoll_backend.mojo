@@ -29,6 +29,7 @@ from lightbug_http.c.epoll import (
 )
 from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
 from std.ffi import c_int, external_call
+from std.memory.alloc import unsafe_alloc
 
 
 comptime _MAX_EVENTS = 64
@@ -88,10 +89,10 @@ struct EpollBackend(ConstructibleBackend):
         if epfd_raw == -1:
             raise Error("epoll_create1 failed")
         self.epfd = FileDescriptor(Int(epfd_raw))
-        self._events = alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
+        self._events = unsafe_alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
         for i in range(_MAX_EVENTS * EPOLL_EVENT_WORDS):
             self._events[unsafe_offset=i] = 0
-        self._timer_fds = alloc[Int32](count=_TIMER_FD_MAP_SIZE)
+        self._timer_fds = unsafe_alloc[Int32](count=_TIMER_FD_MAP_SIZE)
         for i in range(_TIMER_FD_MAP_SIZE):
             self._timer_fds[unsafe_offset=i] = -1
         self._n_ready = 0

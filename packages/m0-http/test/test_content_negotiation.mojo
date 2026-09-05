@@ -21,7 +21,7 @@ def _vendor_types() -> List[String]:
 
 
 def test_json_only() raises:
-    """application/json should set wants_json."""
+    """`application/json` should set wants_json."""
     var r = parse_accept("application/json", _vendor_types())
     assert_true(r.wants_json)
     assert_false(r.wants_html)
@@ -44,7 +44,7 @@ def test_unregistered_vendor_type_ignored() raises:
 
 
 def test_vendor_type_quality_zero() raises:
-    """q=0 should disable a registered vendor type."""
+    """`q=0` should disable a registered vendor type."""
     var r = parse_accept(String(VENDOR_BIN) + ";q=0", _vendor_types())
     assert_false(r.accepts(VENDOR_BIN))
 
@@ -65,14 +65,14 @@ def test_vendor_type_not_duplicated() raises:
 
 
 def test_html() raises:
-    """text/html should set wants_html."""
+    """`text/html` should set wants_html."""
     var r = parse_accept("text/html")
     assert_true(r.wants_html)
     assert_false(r.wants_json)
 
 
 def test_event_stream() raises:
-    """text/event-stream should set wants_event_stream."""
+    """`text/event-stream` should set wants_event_stream."""
     var r = parse_accept("text/event-stream")
     assert_true(r.wants_event_stream)
 
@@ -88,13 +88,13 @@ def test_multiple_types() raises:
 
 
 def test_quality_zero_disables() raises:
-    """q=0 should disable a type."""
+    """`q=0` should disable a type."""
     var r = parse_accept("application/json;q=0")
     assert_false(r.wants_json)
 
 
 def test_quality_nonzero_enables() raises:
-    """q=0.5 should enable a type."""
+    """`q=0.5` should enable a type."""
     var r = parse_accept("application/json;q=0.5")
     assert_true(r.wants_json)
 
@@ -138,7 +138,7 @@ def test_subtype_wildcard_does_not_select_vendor_type() raises:
 
 
 def test_subtype_wildcard() raises:
-    """text/* should match text/html and text/event-stream, not JSON."""
+    """`text/*` should match text/html and text/event-stream, not JSON."""
     var r = parse_accept("text/*")
     assert_true(r.wants_html)
     assert_true(r.wants_event_stream)
@@ -173,19 +173,19 @@ def test_empty_accept() raises:
 
 
 def test_convenience_wants_html() raises:
-    """wants_html convenience should work."""
+    """`wants_html` convenience should work."""
     assert_true(wants_html("text/html"))
     assert_false(wants_html("application/json"))
 
 
 def test_convenience_wants_event_stream() raises:
-    """wants_event_stream convenience should work."""
+    """`wants_event_stream` convenience should work."""
     assert_true(wants_event_stream("text/event-stream"))
     assert_false(wants_event_stream("text/html"))
 
 
 def test_problem_json() raises:
-    """application/problem+json should set wants_problem_json."""
+    """`application/problem+json` should set wants_problem_json."""
     var r = parse_accept("application/problem+json")
     assert_true(r.wants_problem_json)
     assert_false(r.wants_json)
@@ -235,7 +235,7 @@ def test_encoding_wildcard_matches_unnamed_codings() raises:
 
 
 def test_encoding_wildcard_does_not_revive_a_refused_coding() raises:
-    """gzip;q=0, * refuses gzip explicitly; the wildcard covers the rest."""
+    """`gzip;q=0`, * refuses gzip explicitly; the wildcard covers the rest."""
     assert_equal(negotiate_encoding("gzip;q=0, *", _gzip_br()), "br")
 
 
@@ -247,7 +247,7 @@ def test_encoding_unknown_available_falls_back_to_identity() raises:
 
 
 def test_encoding_identity_refused_yields_the_406_signal() raises:
-    """identity;q=0 with nothing acceptable available returns empty."""
+    """`identity;q=0` with nothing acceptable available returns empty."""
     var gz = List[String]()
     gz.append("gzip")
     assert_equal(negotiate_encoding("identity;q=0, br", gz), "")
@@ -348,7 +348,7 @@ def test_language_quality_ties_keep_server_order() raises:
 
 
 def test_language_specific_range_beats_a_broader_one() raises:
-    """en-GB;q=0.9 with en;q=0.1: the exact range settles available en-GB."""
+    """`en-GB;q=0.9` with en;q=0.1: the exact range settles available en-GB."""
     var a = List[String]()
     a.append("en")
     a.append("en-GB")
@@ -361,7 +361,7 @@ def test_language_unmatched_request_still_gets_the_default() raises:
 
 
 def test_language_refusing_the_default_falls_to_the_next_tag() raises:
-    """en;q=0 refuses en only; unmatched de-CH is acceptance by silence."""
+    """`en;q=0` refuses en only; unmatched de-CH is acceptance by silence."""
     assert_equal(negotiate_language("en;q=0", _en_de()), "de-CH")
 
 

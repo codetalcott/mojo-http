@@ -82,7 +82,7 @@ def _m0serve_version():
     the version line is asserted.
     """
     try:
-        from importlib.metadata import PackageNotFoundError, version
+        from importlib.metadata import version
 
         return version("m0serve")
     except Exception:  # noqa: BLE001 -- PackageNotFoundError, or no metadata module

@@ -8,6 +8,7 @@ Usage:
 """
 
 from std.ffi import c_int, external_call, get_errno
+from std.memory.alloc import unsafe_alloc
 
 from lightbug_http.c.aliases import ExternalMutPointer
 
@@ -118,10 +119,8 @@ def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
     Raises:
         Error: If the pipe() syscall fails (e.g. file-descriptor limit reached).
     """
-    # NOTE: `alloc` without a Layout is deprecated, but the Layout form returns
-    # an owning Allocation[T] (not subscriptable, no unsafe_free) and
-    # `unsafe_alloc` does not exist in Mojo 1.0. Revisit when either lands.
-    var fds = alloc[c_int](count=2)
+    # Freed below; `unsafe_alloc` is the non-Layout allocator (std.memory.alloc).
+    var fds = unsafe_alloc[c_int](count=2)
     var ret = _pipe(fds)
     if ret == -1:
         var errno = get_errno()

@@ -272,8 +272,6 @@ async def _text(send, status, body):
     await send({"type": "http.response.body", "body": body})
 
 
-import os
-
 if os.environ.get("M0_ASGI_VALIDATE"):
     from .validate import validator
 

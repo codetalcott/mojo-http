@@ -51,7 +51,7 @@ def test_frames_are_not_double_framed() raises:
 
 
 def test_datastar_field_order_survives() raises:
-    """event: must precede id:, per the Datastar SDK spec.
+    """`event:` must precede `id:`, per the Datastar SDK spec.
 
     m0_http's own framer emits id: first, so this is the check that the frame
     was queued verbatim rather than reframed.
@@ -69,7 +69,7 @@ def test_datastar_field_order_survives() raises:
 # --- Lifecycle ---------------------------------------------------------------
 
 def test_open_returns_a_streaming_response() raises:
-    """open() marks the response sse_streaming with the right headers."""
+    """`open()` marks the response sse_streaming with the right headers."""
     var s = DatastarStream(4)
     var resp = s.open(_get("/e"), "/e")
     assert_equal(resp.status_code, 200)
@@ -151,7 +151,7 @@ def test_broadcast_is_url_scoped() raises:
 
 
 def test_redirect_carries_an_event_id() raises:
-    """redirect() forwards its id like every other builder."""
+    """`redirect()` forwards its id like every other builder."""
     var s = DatastarStream(4)
     _ = s.open(_get("/e"), "/e")
     _ = s.redirect_to("/e", "/next")
@@ -169,7 +169,7 @@ def test_send_frame_is_verbatim() raises:
 
 
 def test_subscriber_introspection() raises:
-    """has_subscribers lets a handler skip an expensive render."""
+    """`has_subscribers` lets a handler skip an expensive render."""
     var s = DatastarStream(4)
     assert_false(s.has_subscribers("/e"))
     _ = s.open(_get("/e"), "/e")
@@ -301,7 +301,7 @@ def test_journal_evicts_beyond_cap() raises:
 
 
 def test_zero_journal_disables_replay() raises:
-    """journal_entries=0 records nothing; reconnections just resume live."""
+    """`journal_entries=0` records nothing; reconnections just resume live."""
     var s = DatastarStream(4, journal_entries=0)
     _ = s.open(_get("/e"), "/e")
     _ = s.patch_signals("/e", '{"a":1}')
@@ -312,7 +312,7 @@ def test_zero_journal_disables_replay() raises:
 
 
 def test_frame_for_returns_journaled_bytes() raises:
-    """frame_for hands back exactly what went out — the persistence hook."""
+    """`frame_for` hands back exactly what went out — the persistence hook."""
     var s = DatastarStream(4)
     _ = s.open(_get("/e"), "/e")
     var eid = s.send_frame("/e", "event: custom\ndata: hi\n\n")

@@ -5,6 +5,7 @@ from lightbug_http.c.address import AddressFamily, AddressLength
 from lightbug_http.c.aliases import ExternalImmutPointer, ExternalMutPointer, c_void
 from lightbug_http.utils.error import CustomError
 from std.memory import stack_allocation
+from std.memory.alloc import unsafe_alloc
 from std.utils import StaticTuple, Variant
 
 
@@ -262,7 +263,7 @@ struct SocketAddress(Movable):
     """Pointer to the underlying sockaddr struct."""
 
     def __init__(out self):
-        self.addr = alloc[sockaddr](count=1)
+        self.addr = unsafe_alloc[sockaddr](count=1)
 
     def __init__(out self, address_family: AddressFamily, port: UInt16, binary_ip: UInt32):
         """Construct a SocketAddress from address family, port and binary IP.
@@ -275,7 +276,7 @@ struct SocketAddress(Movable):
             port: A 16-bit integer port in host byte order, gets converted to network byte order via `htons`.
             binary_ip: The binary representation of the IP address.
         """
-        var sockaddr_in_ptr = alloc[sockaddr_in](count=1)
+        var sockaddr_in_ptr = unsafe_alloc[sockaddr_in](count=1)
         sockaddr_in_ptr.unsafe_write(
             sockaddr_in(
                 address_family=Int(address_family.value),

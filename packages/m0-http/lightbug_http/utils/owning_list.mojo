@@ -5,6 +5,7 @@ from std.sys import size_of
 
 from std.collections.span import Span
 from std.memory import Pointer, unsafe_memcpy
+from std.memory.alloc import unsafe_alloc
 
 
 # ===-----------------------------------------------------------------------===#
@@ -110,7 +111,7 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
         Args:
             capacity: The requested capacity of the list.
         """
-        self.data = alloc[Self.T](count=capacity)
+        self.data = unsafe_alloc[Self.T](count=capacity)
         self.size = 0
         self.capacity = capacity
 
@@ -177,7 +178,7 @@ struct OwningList[T: Movable & Deinitable](Boolable, Movable, Sized):
 
     @no_inline
     def _realloc(mut self, new_capacity: Int):
-        var new_data = alloc[Self.T](new_capacity)
+        var new_data = unsafe_alloc[Self.T](new_capacity)
 
         for i in range(len(self)):
             new_data.unsafe_offset(i).unsafe_write_move_from(self.data.unsafe_offset(i))

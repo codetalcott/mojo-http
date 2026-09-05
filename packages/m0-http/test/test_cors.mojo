@@ -17,7 +17,7 @@ def test_cors_default_config() raises:
 
 
 def test_cors_apply_headers() raises:
-    """apply_cors_headers sets all headers."""
+    """`apply_cors_headers` sets all headers."""
     var config = CorsConfig()
     var resp = HTTPResponse(body_bytes=Bytes(), status_code=200, status_text="OK")
     apply_cors_headers(resp, config)

@@ -64,12 +64,12 @@ def test_format_hash32_length() raises:
 
 
 def test_xxhash32_empty() raises:
-    """xxHash32 of empty string with seed 0 is a known constant."""
+    """`xxHash32` of empty string with seed 0 is a known constant."""
     assert_equal(xxhash32(""), UInt32(0x02CC5D05))
 
 
 def test_xxhash32_consistency() raises:
-    """xxHash32 should produce consistent results."""
+    """`xxHash32` should produce consistent results."""
     var hash1 = xxhash32("test input")
     var hash2 = xxhash32("test input")
     assert_equal(hash1, hash2)
@@ -90,7 +90,7 @@ def test_xxhash32_seed() raises:
 
 
 def test_xxhash32_long_string() raises:
-    """xxHash32 should handle strings >= 16 chars (activates block processing)."""
+    """`xxHash32` should handle strings >= 16 chars (activates block processing)."""
     var long_input = "this is a longer string that exceeds sixteen characters"
     var hash = xxhash32(long_input)
     assert_true(hash > 0)
@@ -98,7 +98,7 @@ def test_xxhash32_long_string() raises:
 
 
 def test_xxhash32_effect_like() raises:
-    """xxHash32 on effect-like canonical strings (the real use case)."""
+    """`xxHash32` on effect-like canonical strings (the real use case)."""
     var effect1 = "o:{key:s:user-1,store:s:memory,type:s:storage.get}"
     var effect2 = "o:{key:s:user-2,store:s:memory,type:s:storage.get}"
     var hash1 = xxhash32(effect1)
@@ -107,7 +107,7 @@ def test_xxhash32_effect_like() raises:
 
 
 def test_format_hash64() raises:
-    """format_hash64 should produce 16-char hex strings."""
+    """`format_hash64` should produce 16-char hex strings."""
     var formatted = format_hash64(UInt64(0))
     assert_equal(formatted.byte_length(), 16)
     assert_equal(formatted, "0000000000000000")
@@ -118,7 +118,7 @@ def test_format_hash64() raises:
 
 
 def test_wyhash64_consistency() raises:
-    """wyhash64 should produce consistent results."""
+    """`wyhash64` should produce consistent results."""
     var hash1 = wyhash64_string("hello world")
     var hash2 = wyhash64_string("hello world")
     assert_equal(hash1, hash2)
@@ -132,7 +132,7 @@ def test_wyhash64_different_inputs() raises:
 
 
 def test_wyhash64_long_string() raises:
-    """wyhash64 should handle strings >= 32 chars (activates block processing)."""
+    """`wyhash64` should handle strings >= 32 chars (activates block processing)."""
     var long_input = "this is a longer string that exceeds thirty-two characters easily"
     var hash = wyhash64_string(long_input)
     assert_true(hash > 0)

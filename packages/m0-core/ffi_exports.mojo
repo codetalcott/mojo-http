@@ -30,17 +30,15 @@ name a concrete pointer origin (`MutAnyOrigin`) rather than inferring one —
 which is exactly right for their real callers, who hand over a bare address.
 Mojo-side callers must erase the origin explicitly; the test shows how.
 
-`ABI="C"` warns that it is deprecated in favour of `abi("C")`, and that
-suggestion is not actionable on Mojo 1.0.0 (ed45d567): `abi` is not a
-declaration the toolchain ships. Every position was tried — as a second
-`@export` argument (`@export("m0_fnv1a", abi("C"))` and the `abi=` keyword
-forms), as a decorator (`@abi("C")`), and as a function effect after the
-return type — and each is either "use of unknown declaration 'abi'" or a
-parse error; the compiled stdlib contains no `abi` symbol at all. Dropping
-the argument is not a fix either: a bare `@export("name")` then warns that
-it "requires an explicit 'abi()' effect on the function". There is no
-warning-free spelling on this toolchain, so `ABI="C"` stays until one
-ships. It is the same situation as `alloc` without a `Layout`.
+The calling convention is the `abi("C")` *effect* on each function, which
+sits after the argument list and BEFORE the return arrow, beside where
+`raises` would go — not a decorator, not an `@export` argument, and not
+anything after the return type (every one of those was tried first and
+each is a parse error or "use of unknown declaration 'abi'", which is how
+`ABI="C"` on `@export` survived here for a while, deprecated). With the
+effect in place a bare `@export("name")` is warning-free on Mojo 1.0.0
+(ed45d567), the symbol is emitted with C linkage, and `smoke-ffi` calls it
+through `ctypes`. `abi("C")` cannot be combined with `raises`.
 """
 
 from std.atomic import Atomic
@@ -48,24 +46,26 @@ from std.atomic import Atomic
 from src.hashing import _fnv1a_ptr, _xxhash32_ptr
 
 
-@export("m0_fnv1a", ABI="C")
-def m0_fnv1a(data: Pointer[UInt8, MutAnyOrigin], length: UInt32) -> UInt32:
+@export("m0_fnv1a")
+def m0_fnv1a(
+    data: Pointer[UInt8, MutAnyOrigin], length: UInt32
+) abi("C") -> UInt32:
     """Compute FNV-1a 32-bit hash over a byte buffer."""
     return _fnv1a_ptr(data, Int(length))
 
 
-@export("m0_xxhash32", ABI="C")
+@export("m0_xxhash32")
 def m0_xxhash32(
     data: Pointer[UInt8, MutAnyOrigin], length: UInt32, seed: UInt32
-) -> UInt32:
+) abi("C") -> UInt32:
     """Compute xxHash32 over a byte buffer."""
     return _xxhash32_ptr(data, Int(length), seed)
 
 
-@export("m0_format_hash", ABI="C")
+@export("m0_format_hash")
 def m0_format_hash(
     hash: UInt32, out_buf: Pointer[UInt8, MutAnyOrigin], buf_len: UInt32
-) -> UInt32:
+) abi("C") -> UInt32:
     """Format a 32-bit hash as 8 hex chars into a caller-provided buffer.
 
     Returns the number of bytes written: 8 on success, 0 if the buffer is
@@ -85,8 +85,8 @@ def m0_format_hash(
     return 8
 
 
-@export("m0_shared_fetch_add", ABI="C")
-def m0_shared_fetch_add(addr: UInt64, delta: Int64) -> Int64:
+@export("m0_shared_fetch_add")
+def m0_shared_fetch_add(addr: UInt64, delta: Int64) abi("C") -> Int64:
     """Atomically add `delta` to the Int64 at `addr`; returns the PREVIOUS value.
 
     The one export that is not a pure function: it exists so a foreign
