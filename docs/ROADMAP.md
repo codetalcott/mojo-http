@@ -76,16 +76,6 @@ the page would have believed the close path was unreliable.
 
 ## Known issues
 
-- **Prefork workers on macOS do not share a listener's connections.** The
-  same worker wins nearly every accept (32 of 32 in a burst, 26–29 of 32
-  on a slow ramp, two workers, forked or spawned), so `--workers 2` serves
-  a keep-alive load at one worker's throughput; the measurement and the two
-  mechanisms that did not fix it are under [Planned](#workers-sharing-a-listener-share-its-connections).
-  Linux is unmeasured. `--spawn-workers` (E15) makes a second Core ML
-  worker *possible*; this is what keeps it from paying.
-
-  **Closed by:** E16.
-
 - **The asyncio executor cannot run on free-threaded CPython.** The
   executor's `ExecutorPort` is a Python type built in-process with
   `PythonModuleBuilder`, and Mojo 1.0's stdlib lays `PyObject` out for the
@@ -307,34 +297,10 @@ checker fails if one does not resolve. So this section is the whole list of
 things that page promises: adding a `planned` row means writing down what it
 means here first.
 
-### Workers sharing a listener share its connections
+Nothing is planned at the moment. The design notes for the last five
+things this section held, all built since:
 
-`--workers N` has every worker wait on the one listener the supervisor
-bound, and on macOS the same worker wins nearly every accept: measured
-2026-09-04 with two workers (forked or spawned alike), 32 of 32
-keep-alive connections opened in a burst went to one process, and 26–29
-of 32 opened 50 ms apart. A second worker therefore adds nothing to a
-keep-alive load — the Core ML embedding app served 1675 req/s on one
-worker and 1675 on two, where uvicorn's two spawned workers reached 2586.
-Two mechanisms were tried behind a knob and did not move a burst: a
-level-triggered listen with one accept per wakeup (32 of 32 still), and
-the same plus `sched_yield` after the accept (28 to 4). The loop re-enters
-its wait in microseconds and wins the next race before a sibling is
-scheduled; kqueue's wakeup order is not a balancing mechanism.
-
-What would retire this (SPEC E16): a mechanism that shares the accepts —
-per-worker listeners under `SO_REUSEPORT` where the kernel distributes
-(Linux; macOS unmeasured), an accept token between workers in the
-`SharedAtomics` page (nginx's `accept_mutex` shape), or the supervisor
-accepting and passing descriptors over the bus (`SCM_RIGHTS`) — measured
-on both platforms with a burst of keep-alive connections spreading to
-within 2:1, and no loss on a single worker. Linux has not been measured
-at all yet; epoll's wakeup order may differ, and `EPOLLEXCLUSIVE` was
-already found worse for a related flake.
-
-The design notes for the last four things this section held, all built
-since:
-
+- [Accept sharing: workers sharing a listener share its connections](notes/accept-sharing.md)
 - [A conformance-suite tier](notes/conformance-suite-tier.md)
 - [Structured CI results](notes/structured-ci-results.md)
 - [Traceability: stable ids, then declared coverage](notes/traceability.md)
@@ -365,8 +331,9 @@ loop↔executor handoff — so optimising the 116k layer buys nothing here.
 
 ## Recently resolved
 
-The two longest write-ups are design notes:
+The three longest write-ups are design notes:
 
+- **Prefork workers did not share a listener's connections** (the same worker won 32 of 32 on macOS and 23–31 of 32 on Linux, so `--workers 2` served a keep-alive load at one worker's throughput) — resolved by E16, the accept-sharing hand-off; the write-up is [Accept sharing — shipped 2026-09-05](notes/accept-sharing.md).
 - **A request body still arriving at SIGTERM held the drain to its deadline** — resolved; the write-up is [A request body still arriving at SIGTERM held the drain to its deadline — resolved](notes/request-body-at-sigterm.md).
 - **The WebSocket close path RSTing instead of FINning** — resolved v0.15.1; the write-up is [The WebSocket close path RSTing instead of FINning — resolved v0.15.1](notes/websocket-close-rst.md).
 
@@ -394,6 +361,7 @@ of this page until 2026-09-03, when the page became state-only.
 - [The Mojo handler pool — shipped 2026-08-28](notes/mojo-handler-pool.md)
 - [The detached loop — shipped 2026-09-03](notes/detached-loop.md)
 - [The executor's per-request Python work, and the C-API head read — shipped 2026-09-04](notes/executor-python-objects.md)
+- [Accept sharing: workers sharing a listener share its connections — shipped 2026-09-05](notes/accept-sharing.md)
 - [Mojo language capabilities, surveyed 2026-08-28](notes/mojo-language-capabilities.md)
 - [Considered, not built: routes that carry a function](notes/routes-that-carry-a-function.md)
 

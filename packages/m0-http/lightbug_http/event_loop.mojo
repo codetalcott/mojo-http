@@ -11,6 +11,7 @@ from lightbug_http.c.kqueue import (
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_EOF, EV_ERROR,
 )
+from lightbug_http.accept_share import AcceptShare
 from lightbug_http.broadcast import drain_bus_channel
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import accept_with_peer, recv, send, close
@@ -80,6 +81,7 @@ def prepare_loop[B: EventLoopBackend](
     bus_read_fd: Int = -1,
     offload_addr: Int = 0,
     peer_bus_fd: Int = -1,
+    accept_share: AcceptShare = AcceptShare(),
 ) raises -> LoopState:
     """The setup half of `run_event_loop`: register the listener, the
     shutdown pipe, the bus channels, the completion channel and the app
@@ -111,6 +113,14 @@ def prepare_loop[B: EventLoopBackend](
     # frames themselves are distinguished by their channel names.
     if peer_bus_fd >= 0:
         backend.try_add_read(peer_bus_fd)
+
+    # Accept sharing (`--workers N`, SPEC E16): the channel a sibling passes
+    # accepted connections down, registered like a bus channel and drained
+    # like one. `start` publishes this worker as parked and empty; a
+    # respawned worker inherits its predecessor's words otherwise.
+    if accept_share.active():
+        backend.try_add_read(accept_share.read_fd())
+        accept_share.start()
 
     # `--blocking-threads`: the pool's completion channel, registered exactly
     # as a bus channel is — a readable fd that means "somebody else finished
@@ -178,6 +188,13 @@ def prepare_loop[B: EventLoopBackend](
         print("Event loop started (kqueue, max_connections=" + String(max_conns) + ")")
     else:
         print("Event loop started (epoll, max_connections=" + String(max_conns) + ")")
+    if accept_share.active():
+        print(
+            "Accept sharing: worker " + String(accept_share.worker) + " of "
+            + String(accept_share.workers()) + " passes connections it"
+            + " accepts to the least-loaded sibling",
+            flush=True,
+        )
 
     var last_idle_sweep = perf_counter_ns()
     # Date-header cache: IMF-fixdate has one-second granularity, so format
@@ -192,7 +209,7 @@ def prepare_loop[B: EventLoopBackend](
         slot_ws_state^, fd_map_size, fd_to_slot^, active_count,
         metrics^, last_idle_sweep, date_cache_sec, date_cache^,
         listen_fd, config.copy(), server_address, tcp_keep_alive,
-        shutdown_read_fd, bus_read_fd, peer_bus_fd,
+        shutdown_read_fd, bus_read_fd, peer_bus_fd, accept_share.copy(),
     )
 
 
@@ -207,6 +224,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     bus_read_fd: Int = -1,
     offload_addr: Int = 0,
     peer_bus_fd: Int = -1,
+    accept_share: AcceptShare = AcceptShare(),
 ) raises:
     """Run the IO-multiplexed event loop.
 
@@ -233,7 +251,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     var st = prepare_loop(
         listen_fd, backend, config, server_address,
         tcp_keep_alive, shutdown_read_fd, bus_read_fd, offload_addr,
-        peer_bus_fd,
+        peer_bus_fd, accept_share,
     )
     while True:
         var n_events = backend.wait(1000)
@@ -287,6 +305,8 @@ struct LoopState(Movable):
     var shutdown_read_fd: Int
     var bus_read_fd: Int
     var peer_bus_fd: Int
+    var accept_share: AcceptShare
+    """This worker's view of accept sharing; inactive with one worker."""
 
     def __init__(
         out self,
@@ -317,6 +337,7 @@ struct LoopState(Movable):
         shutdown_read_fd: Int,
         bus_read_fd: Int,
         peer_bus_fd: Int,
+        var accept_share: AcceptShare,
     ):
         self.offload = offload^
         self.offload_complete_fd = offload_complete_fd
@@ -345,6 +366,7 @@ struct LoopState(Movable):
         self.shutdown_read_fd = shutdown_read_fd
         self.bus_read_fd = bus_read_fd
         self.peer_bus_fd = peer_bus_fd
+        self.accept_share = accept_share^
 
 
 def _run_pass[T: HTTPService, B: EventLoopBackend](
@@ -385,7 +407,14 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     ref shutdown_read_fd = st.shutdown_read_fd
     ref bus_read_fd = st.bus_read_fd
     ref peer_bus_fd = st.peer_bus_fd
+    ref accept_share = st.accept_share
     var should_shutdown = False
+
+    # Accept sharing: siblings read this worker's state off the shared
+    # page to decide whether to hand it a connection. Inside a pass it is
+    # "busy since now"; `pass_end` parks it again and publishes the count.
+    if accept_share.active():
+        accept_share.pass_begin(perf_counter_ns())
 
     for i in range(n_events):
         if (backend.event_flags(i) & EV_ERROR) != 0:
@@ -414,6 +443,19 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     peer_frames[f].event_id,
                     peer_frames[f].frame,
                 )
+            continue
+
+        # --- Accept sharing: connections a sibling accepted for us ---
+        # Each datagram carries an open descriptor and its peer address;
+        # admitting one is exactly the accept path minus the accept.
+        if accept_share.active() and _ident == accept_share.read_fd():
+            _admit_handoffs(
+                backend, accept_share, handler, config, server_address,
+                tcp_keep_alive, slot_fds, slot_response, slot_send_offset,
+                slot_header_start, fd_to_slot, provision_pool, active_count,
+                metrics, slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+                slot_idle_deadline, date_cache_sec, date_cache, offload,
+            )
             continue
 
         # --- `--blocking-threads` completion channel ---
@@ -472,98 +514,26 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # by accepting harder; stop and let the loop breathe.
                     break
 
-                var slot: Int
-                try:
-                    slot = provision_pool.borrow()
-                except:
-                    try:
-                        close(new_fd)
-                    except:
-                        pass
-                    continue
+                # Accept sharing: a sibling with fewer connections takes
+                # this one. `pick` answers this worker when no sibling is
+                # lighter (or all are busy or gone), and a send that fails
+                # keeps the connection here -- nothing is ever dropped.
+                if accept_share.active():
+                    var target = accept_share.pick(active_count, perf_counter_ns())
+                    if (
+                        target != accept_share.worker
+                        and accept_share.send(target, new_fd.value, peer_host, peer_port)
+                    ):
+                        # The receiver holds its own reference now.
+                        try:
+                            close(new_fd)
+                        except:
+                            pass
+                        continue
 
-                var fd_val = new_fd.value
-
-                if fd_val >= len(fd_to_slot):
-                    var new_len = fd_val + 1024
-                    for _ in range(len(fd_to_slot), new_len):
-                        fd_to_slot.append(UNUSED)
-
-                try:
-                    set_nonblocking(new_fd)
-                except:
-                    provision_pool.release(slot)
-                    try:
-                        close(new_fd)
-                    except:
-                        pass
-                    continue
-
-                # Nagle off: single-send responses have nothing to
-                # coalesce, and leaving it on stalls a response behind
-                # the previous response's ACK. Best-effort.
-                set_tcp_nodelay(new_fd)
-
-                slot_fds[slot] = fd_val
-                # One capture per connection covers every request the
-                # keep-alive carries; overwritten at the slot's next
-                # accept, so no clearing on close.
-                provision_pool.provisions[slot].peer_host = peer_host^
-                provision_pool.provisions[slot].peer_port = peer_port
-                slot_send_offset[slot] = 0
-                slot_header_start[slot] = perf_counter_ns()
-                slot_read_armed[slot] = False
-                slot_idle_deadline[slot] = 0
-                # A recycled slot must not inherit the previous
-                # connection's channel-stream state: a pool thread's
-                # ack fd left here would make the next M0-Hold on this
-                # slot look like a chunk-framed stream.
-                offload.clear_stream(slot)
-                fd_to_slot[fd_val] = slot
-                active_count += 1
-                if config.enable_metrics:
-                    metrics.accepts_total += 1
-
-                provision_pool.provisions[slot].prepare_for_new_request()
-                provision_pool.provisions[slot].keepalive_count = 0
-
-                # No header timerfd: the once-a-second sweep owns this
-                # deadline now. `slot_header_start` stamped just above is
-                # the whole mechanism, and it costs no fd and no syscall.
-
-                # Eager read: try to process data already buffered.
-                # EVFILT_READ is NOT registered yet — we register it only
-                # if the eager read gets EAGAIN (no data).  This avoids
-                # kqueue state confusion when recv() consumes data that
-                # kqueue hasn't delivered yet.
-                _handle_read_headers(
-                    backend, slot, fd_val, handler, config,
-                    server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset,
-                    slot_header_start, fd_to_slot, provision_pool,
-                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload,
-                )
-
-                # If the slot is still active and in reading_headers state,
-                # the eager read got EAGAIN — register EVFILT_READ now.
-                # (_after_send may already have armed it if the eager read
-                # carried a complete request; skip the redundant syscall.)
-                if slot_fds[slot] != UNUSED and (not slot_read_armed[slot]) and provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
-                    try:
-                        backend.add_read(fd_val)
-                        slot_read_armed[slot] = True
-                    except:
-                        _close_slot(
-                            backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                            slot_sse, slot_ws, slot_ws_state,
-                        )
-                # The eager read may have taken MORE than one request.
-                _drain_pipelined(
-                    backend, slot, fd_val, handler, config,
-                    server_address, tcp_keep_alive,
+                _admit_connection(
+                    backend, new_fd.value, peer_host^, peer_port, handler,
+                    config, server_address, tcp_keep_alive,
                     slot_fds, slot_response, slot_send_offset,
                     slot_header_start, fd_to_slot, provision_pool,
                     active_count, metrics, slot_sse, slot_ws, slot_ws_state,
@@ -1565,6 +1535,11 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             backend.try_add_read(slot_fds[rs])
             slot_read_armed[rs] = True
 
+    # Accept sharing: park, publish the count, retire what the channel
+    # delivered during this pass from the in-flight word.
+    if accept_share.active():
+        accept_share.pass_end(active_count)
+
     return should_shutdown
 
 
@@ -1629,6 +1604,186 @@ def _close_between_requests[T: HTTPService, B: EventLoopBackend](
             )
 
 
+def _admit_connection[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    fd_val: Int,
+    var peer_host: String,
+    peer_port: Int,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+) raises:
+    """Take a connection into a slot and run its eager read.
+
+    The tail of the accept path, factored out so a connection a SIBLING
+    accepted and passed here (`_admit_handoffs`) enters by the same door:
+    borrow a slot, non-blocking and Nagle off, the per-slot state reset,
+    the eager read, the read registration if that read got EAGAIN, and
+    the pipelined tail. `fd_val` is already this process's own
+    descriptor; a failure to place it closes it here.
+    """
+    var new_fd = FileDescriptor(fd_val)
+
+    var slot: Int
+    try:
+        slot = provision_pool.borrow()
+    except:
+        try:
+            close(new_fd)
+        except:
+            pass
+        return
+
+    if fd_val >= len(fd_to_slot):
+        var new_len = fd_val + 1024
+        for _ in range(len(fd_to_slot), new_len):
+            fd_to_slot.append(UNUSED)
+
+    try:
+        set_nonblocking(new_fd)
+    except:
+        provision_pool.release(slot)
+        try:
+            close(new_fd)
+        except:
+            pass
+        return
+
+    # Nagle off: single-send responses have nothing to
+    # coalesce, and leaving it on stalls a response behind
+    # the previous response's ACK. Best-effort.
+    set_tcp_nodelay(new_fd)
+
+    slot_fds[slot] = fd_val
+    # One capture per connection covers every request the
+    # keep-alive carries; overwritten at the slot's next
+    # accept, so no clearing on close.
+    provision_pool.provisions[slot].peer_host = peer_host^
+    provision_pool.provisions[slot].peer_port = peer_port
+    slot_send_offset[slot] = 0
+    slot_header_start[slot] = perf_counter_ns()
+    slot_read_armed[slot] = False
+    slot_idle_deadline[slot] = 0
+    # A recycled slot must not inherit the previous
+    # connection's channel-stream state: a pool thread's
+    # ack fd left here would make the next M0-Hold on this
+    # slot look like a chunk-framed stream.
+    offload.clear_stream(slot)
+    fd_to_slot[fd_val] = slot
+    active_count += 1
+    if config.enable_metrics:
+        metrics.accepts_total += 1
+
+    provision_pool.provisions[slot].prepare_for_new_request()
+    provision_pool.provisions[slot].keepalive_count = 0
+
+    # No header timerfd: the once-a-second sweep owns this
+    # deadline now. `slot_header_start` stamped just above is
+    # the whole mechanism, and it costs no fd and no syscall.
+
+    # Eager read: try to process data already buffered.
+    # EVFILT_READ is NOT registered yet — we register it only
+    # if the eager read gets EAGAIN (no data).  This avoids
+    # kqueue state confusion when recv() consumes data that
+    # kqueue hasn't delivered yet.
+    _handle_read_headers(
+        backend, slot, fd_val, handler, config,
+        server_address, tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset,
+        slot_header_start, fd_to_slot, provision_pool,
+        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+        slot_read_armed, slot_idle_deadline,
+        date_cache_sec, date_cache, offload,
+    )
+
+    # If the slot is still active and in reading_headers state,
+    # the eager read got EAGAIN — register EVFILT_READ now.
+    # (_after_send may already have armed it if the eager read
+    # carried a complete request; skip the redundant syscall.)
+    if slot_fds[slot] != UNUSED and (not slot_read_armed[slot]) and provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS:
+        try:
+            backend.add_read(fd_val)
+            slot_read_armed[slot] = True
+        except:
+            _close_slot(
+                backend, handler, slot, fd_val,
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+    # The eager read may have taken MORE than one request.
+    _drain_pipelined(
+        backend, slot, fd_val, handler, config,
+        server_address, tcp_keep_alive,
+        slot_fds, slot_response, slot_send_offset,
+        slot_header_start, fd_to_slot, provision_pool,
+        active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+        slot_read_armed, slot_idle_deadline,
+        date_cache_sec, date_cache, offload,
+    )
+
+
+def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut accept_share: AcceptShare,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: OwningList[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: OwningList[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+) raises:
+    """Admit every connection waiting on this worker's accept-share channel.
+
+    Edge-triggered like the bus, so the channel is drained to EAGAIN.
+    """
+    while True:
+        var host = String("")
+        var port = 0
+        var fd = accept_share.receive(host, port)
+        if fd < 0:
+            break
+        _admit_connection(
+            backend, fd, host^, port, handler,
+            config, server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset,
+            slot_header_start, fd_to_slot, provision_pool,
+            active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload,
+        )
+
+
 def _run_shutdown[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ) raises:
@@ -1659,6 +1814,20 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
     ref config = st.config
     ref server_address = st.server_address
     ref tcp_keep_alive = st.tcp_keep_alive
+    ref accept_share = st.accept_share
+
+    # Accept sharing: siblings stop sending here the moment they read the
+    # word; what they sent before that is admitted now, so the drain
+    # answers it rather than the kernel closing it unread at exit.
+    if accept_share.active():
+        accept_share.leave()
+        _admit_handoffs(
+            backend, accept_share, handler, config, server_address,
+            tcp_keep_alive, slot_fds, slot_response, slot_send_offset,
+            slot_header_start, fd_to_slot, provision_pool, active_count,
+            metrics, slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+            slot_idle_deadline, date_cache_sec, date_cache, offload,
+        )
 
     # Graceful shutdown: close listener, drain in-flight, close SSE
     try:
@@ -1777,6 +1946,17 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
         slot_sse, slot_ws, slot_ws_state, slot_read_armed,
         slot_idle_deadline, date_cache_sec, date_cache, offload,
     )
+    # The record of what accept sharing did in this worker's life, in the
+    # shape `scripts/accept_spread.py` reads: a balanced split with zero
+    # passed would be luck, not the mechanism.
+    if accept_share.active():
+        print(
+            "Accept sharing: worker " + String(accept_share.worker)
+            + " passed " + String(accept_share.handoffs_out)
+            + " connections to siblings, received "
+            + String(accept_share.handoffs_in),
+            flush=True,
+        )
 
 
 def _handle_read_headers[T: HTTPService, B: EventLoopBackend](

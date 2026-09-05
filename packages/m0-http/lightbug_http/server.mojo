@@ -32,6 +32,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse, encode
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.c.platform import PlatformBackend
+from lightbug_http.accept_share import AcceptShare
 
 
 @fieldwise_init
@@ -1128,6 +1129,7 @@ struct Server(Movable):
         shutdown_read_fd: Int = -1,
         bus_read_fd: Int = -1,
         offload_addr: Int = 0,
+        accept_share: AcceptShare = AcceptShare(),
     ) raises ServerError:
         """Serve HTTP requests using the non-blocking kqueue event loop.
 
@@ -1142,6 +1144,8 @@ struct Server(Movable):
             bus_read_fd: This worker's `BroadcastBus` channel, or -1.
             offload_addr: A caller-owned `OffloadPool`'s address, or 0. See
                 `listen_and_serve_nonblocking`.
+            accept_share: This worker's `AcceptShare` under `--workers N`;
+                the inactive default otherwise.
 
         Raises:
             ServerError: If an unrecoverable error occurs.
@@ -1160,6 +1164,7 @@ struct Server(Movable):
                 shutdown_read_fd,
                 bus_read_fd,
                 offload_addr,
+                accept_share=accept_share,
             )
         except e:
             raise e^

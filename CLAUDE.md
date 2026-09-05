@@ -977,6 +977,29 @@ Properties of the design, not defects to fix in passing:
   firing handler re-arms FIRST — on epoll the re-arm is also what clears
   the fired timerfd's readability, and skipping it is a level-triggered
   event storm.
+- **Under `--workers N` the worker that wins an accept gives the
+  connection away** (`lightbug_http/accept_share.mojo`, SPEC E16). Every
+  worker waits on the one listener and the first to wake drains the
+  backlog — the same one nearly every time: 32 of 32 on macOS, 23–31 of
+  32 on Linux, so a keep-alive load ran at one worker's throughput. The
+  kernel offers nothing portable (`SO_REUSEPORT` hashes on Linux and sends
+  everything to the last-bound socket on macOS, measured 64 of 64), so the
+  acceptor asks `pick` — least `active + pending` off the pre-fork shared
+  page, ties to itself, a sibling inside a pass for over 2 ms or one that
+  has left skipped — and passes the socket over the sibling's `AF_UNIX`
+  channel with `SCM_RIGHTS` (`c/fdpass.mojo`). The receiver admits it by
+  the accept path's own tail (`_admit_connection`). Rules: a send that
+  fails for any reason keeps the connection where it is, never drops it;
+  `pending` is incremented by the sender and retired by the receiver at
+  the END of the pass that admitted it (retiring on receipt let the
+  acceptor underestimate a sibling for a pass); `leave` wins over the
+  per-pass stores, or the shutdown drain's passes would un-announce the
+  departure; the page's per-worker words sit one cache line apart; the
+  channels ride the exec under `--spawn-workers` by fd like the bus. One
+  worker pays nothing — `active()` is false and every entry is a Bool
+  check. `M0_ACCEPT_SHARE=0` is the A/B knob; the gate is
+  `smoke-accept-spread` on both CI legs, with the knob-off negative arm on
+  macOS only, because Linux's bare race sometimes lands within 2:1.
 - **Graceful shutdown is opt-in, and armed after the fork.**
   `install_shutdown_signals()` returns the fd to pass as `shutdown_read_fd`;
   its handler writes one byte to that pipe and nothing else. Dispositions and
@@ -1170,7 +1193,9 @@ Properties of the design, not defects to fix in passing:
   those and with `--realtime`), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
   `M0_APP_TICK_MS`, `M0_QOS` (macOS: the loop at user-interactive and its
   worker threads at user-initiated QoS, so they stay on performance cores
-  under contention; accepted and ignored elsewhere). `m0serve` layers flags on top (flag > env > default) and
+  under contention; accepted and ignored elsewhere), `M0_ACCEPT_SHARE`
+  (`0` turns accept sharing off under `--workers N`; an A/B knob, not a
+  flag). `m0serve` layers flags on top (flag > env > default) and
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that
   it **exits with the code `m0serve` would exit with for the same

@@ -39,6 +39,7 @@ from std.time import sleep
 
 from std.collections import Optional
 
+from lightbug_http.accept_share import AcceptShare
 from lightbug_http.broadcast import encode_bus_frame
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.header import Headers, Header, HeaderKey
@@ -938,6 +939,7 @@ def serve_inverted(
     shutdown_fd: Int,
     mut pool: OffloadPool,
     peer_bus_fd: Int = -1,
+    accept_share: AcceptShare = AcceptShare(),
 ) raises:
     """`M0_INVERTED`: serve an unmounted ASGI application on ONE thread.
 
@@ -985,7 +987,7 @@ def serve_inverted(
     var backend = PlatformBackend()
     var st = prepare_loop(
         listen_fd, backend, config, address, True, shutdown_fd,
-        stream_bus_fd, pool.addr(), peer_bus_fd,
+        stream_bus_fd, pool.addr(), peer_bus_fd, accept_share,
     )
     var st_ptr = Pointer(to=st)
     var backend_ptr = Pointer(to=backend)

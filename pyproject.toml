@@ -2196,6 +2196,38 @@ fi
 python3 scripts/emit.py --covers E15 --task smoke-spawn-workers
 """
 
+[tool.poe.tasks.smoke-accept-spread]
+help = "--workers 2 share a burst of keep-alive connections within 2:1, forked and spawned (SPEC E16)"
+deps = ["build-serve"]
+shell = """
+# The probe is the measurement that found the defect (docs/notes/accept-sharing.md):
+# 32 keep-alive connections opened in a burst, /pid asked on each while all
+# are open. Two rounds per mode, so a single lucky split cannot pass it, and
+# both worker modes, because a spawned worker adopts the channels by fd.
+python3 scripts/accept_spread.py --assert --expect-handoffs --rounds 2 --port 8631 || exit 1
+echo "smoke-accept-spread: bursts spread within 2:1 across two workers, fork and spawn"
+# The negative arm on macOS, where the bare race is deterministic: with the
+# knob off the same probe must see the skew, or the gate is not testing the
+# mechanism. Linux's race sometimes lands within 2:1 on its own, so there
+# it is measured (the note) rather than asserted.
+if [ "$(uname)" = Darwin ]; then
+  if M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --assert --rounds 1 --modes fork --port 8635 > as-neg.log 2>&1; then
+    cat as-neg.log; rm -f as-neg.log
+    echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 spread within 2:1 -- the negative arm no longer discriminates"; exit 1
+  fi
+  rm -f as-neg.log
+  echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 skews as before (macOS negative arm)"
+fi
+# The doctor reports the decision from both worker counts.
+bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare --workers 2 > as-doctor.json 2>/dev/null
+python3 -c "import json; d=json.load(open('as-doctor.json')); assert d['topology']['accept_sharing'] is True, d['topology']" || { echo "the doctor does not report accept_sharing for --workers 2"; rm -f as-doctor.json; exit 1; }
+bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare > as-doctor.json 2>/dev/null
+python3 -c "import json; d=json.load(open('as-doctor.json')); assert d['topology']['accept_sharing'] is False, d['topology']" || { echo "the doctor reports accept_sharing for one worker"; rm -f as-doctor.json; exit 1; }
+rm -f as-doctor.json
+echo "smoke-accept-spread: the doctor reports accept_sharing"
+python3 scripts/emit.py --covers E16 --task smoke-accept-spread
+"""
+
 [tool.poe.tasks.smoke-doctor]
 help = "--doctor reports valid JSON and exits with the code the server itself would use"
 deps = ["build-serve"]

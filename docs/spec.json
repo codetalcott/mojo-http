@@ -477,9 +477,9 @@
       "id": "E16",
       "section": "E",
       "category": "E. Process and worker model",
-      "capability": "Workers sharing one listener share its connections: a burst of keep-alive connections spreads across `--workers N` to within 2:1 on both platforms, at no cost to a single worker",
-      "status": "planned",
-      "evidence": "ROADMAP: Workers sharing a listener share its connections"
+      "capability": "Workers sharing one listener share its connections: the worker that wins an accept passes the connection to the least-loaded sibling over a pre-fork `SCM_RIGHTS` channel, so a burst of keep-alive connections spreads across `--workers N` to within 2:1 on both platforms, forked or spawned, at no cost to a single worker (`M0_ACCEPT_SHARE=0` restores the bare race)",
+      "status": "verified",
+      "evidence": "`Smoke test accept sharing` (every PR) \u2014 two rounds of a 32-connection burst per worker mode must land within 2:1, the doctor must report `accept_sharing` for two workers and not for one, and on macOS the knob-off arm must skew; the descriptor passing and the load policy: `test_accept_share.mojo:test_a_connection_passes_between_two_workers_with_its_peer`. The measurement, both platforms before and after: docs/notes/accept-sharing.md"
     },
     {
       "id": "F1",

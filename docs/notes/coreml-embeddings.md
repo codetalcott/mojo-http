@@ -137,6 +137,9 @@ still 31 of 32; the ramp balanced once, 17 to 15, and not again), and the
 same plus `sched_yield` after the accept (28 to 4). The loop re-enters
 `kevent` in microseconds and wins the next race before its sibling is
 scheduled. uvicorn's workers spread (123 to 77 warm, and 2586 req/s)
-because a Python loop iteration is slow enough to lose races. The item is
-now ROADMAP's E16, with the mechanisms that could retire it; Linux is
-unmeasured.
+because a Python loop iteration is slow enough to lose races. The item
+became SPEC E16 and was built the next day: the worker that wins the accept
+passes the connection to the least-loaded sibling over a pre-fork
+`SCM_RIGHTS` channel, on both platforms (Linux measured first: 23–31 of
+32 to one worker there too). The mechanism, the measurements and the
+payoff on this app are in [Accept sharing](accept-sharing.md).
