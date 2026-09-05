@@ -31,7 +31,7 @@ def test_sse_response_becomes_409() raises:
     var out = gate_streaming_response(sse_response())
     assert_equal(out.status_code, 409)
     # The refusal must name the fix, or it is a dead end for the reader.
-    var body = String(StringSlice(unsafe_from_utf8=Span(out.body_raw)))
+    var body = String(StringSpan(unsafe_from_utf8=Span(out.body_raw)))
     assert_true("listen_and_serve_nonblocking" in body)
 
 

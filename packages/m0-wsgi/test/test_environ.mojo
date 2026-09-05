@@ -22,7 +22,7 @@ from src.response import split_status
 
 def _text(b: List[UInt8]) -> String:
     """The bytes as a Mojo String — valid because everything here is UTF-8."""
-    return String(StringSlice(unsafe_from_utf8=Span(b)))
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
 
 
 def _bytes(var s: String) -> List[UInt8]:

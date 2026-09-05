@@ -118,7 +118,7 @@ struct QueryDelimiters:
     comptime PLUS_ESCAPED_SPACE = "+"
 
 
-def scheme_separator(uri: StringSlice) -> Int:
+def scheme_separator(uri: StringSpan) -> Int:
     """Index of the `://` that introduces a scheme, or -1 if there is none.
 
     A request target may carry a URL of its own inside a query parameter, and

@@ -131,7 +131,7 @@ def test_every_thread_gets_its_own_handler() raises:
         for i in range(len(done)):
             var resp = pool.take_response(done[i])
             var body = String(
-                StringSlice(unsafe_from_utf8=Span(resp.body_raw))
+                StringSpan(unsafe_from_utf8=Span(resp.body_raw))
             )
             indices.append(_thread_of(body))
             seen += 1

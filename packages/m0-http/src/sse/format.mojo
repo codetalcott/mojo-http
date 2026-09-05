@@ -28,13 +28,13 @@ def split_sse_lines(data: String) -> List[String]:
     while i < n:
         var c = bytes[i]
         if c == UInt8(ord("\r")) or c == UInt8(ord("\n")):
-            lines.append(String(StringSlice(data)[byte=start:i]))
+            lines.append(String(StringSpan(data)[byte=start:i]))
             if c == UInt8(ord("\r")):
                 if i + 1 < n and bytes[i + 1] == UInt8(ord("\n")):
                     i += 1
             start = i + 1
         i += 1
-    lines.append(String(StringSlice(data)[byte=start:n]))
+    lines.append(String(StringSpan(data)[byte=start:n]))
     return lines^
 
 
@@ -100,7 +100,7 @@ def sse_data_payload(frame: Span[Byte, _]) -> List[UInt8]:
     with no colon is a field with an empty value. Line terminators are
     CRLF, CR, or LF, as in `split_sse_lines`.
     """
-    var text = String(StringSlice(unsafe_from_utf8=frame))
+    var text = String(StringSpan(unsafe_from_utf8=frame))
     var lines = split_sse_lines(text)
     var out = List[UInt8]()
     var first = True
@@ -113,7 +113,7 @@ def sse_data_payload(frame: Span[Byte, _]) -> List[UInt8]:
         if line.as_bytes()[0] == UInt8(ord(":")):
             continue  # comment
         var colon = line.find(":")
-        var name = line if colon < 0 else String(StringSlice(line)[byte=0:colon])
+        var name = line if colon < 0 else String(StringSpan(line)[byte=0:colon])
         if name != "data":
             continue
         var value = String("")
@@ -122,7 +122,7 @@ def sse_data_payload(frame: Span[Byte, _]) -> List[UInt8]:
             # Exactly one space after the colon is part of the framing.
             if start < line.byte_length() and line.as_bytes()[start] == UInt8(ord(" ")):
                 start += 1
-            value = String(StringSlice(line)[byte=start:line.byte_length()])
+            value = String(StringSpan(line)[byte=start:line.byte_length()])
         if not first:
             out.append(UInt8(ord("\n")))
         out.extend(value.as_bytes())

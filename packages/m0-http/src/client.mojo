@@ -455,7 +455,7 @@ def _strip_brackets(host: String) -> String:
     """`[::1]` → `::1`, for the resolver. No-op for ordinary hosts."""
     if host.byte_length() >= 2:
         if host.as_bytes()[0] == UInt8(ord("[")):
-            return String(StringSlice(host)[byte=1 : host.byte_length() - 1])
+            return String(StringSpan(host)[byte=1 : host.byte_length() - 1])
     return host
 
 
@@ -510,7 +510,7 @@ def _raw_header_value(
             raw[eol] == 0x0D and raw[eol + 1] == 0x0A
         ):
             eol += 1
-        var line = String(StringSlice(unsafe_from_utf8=raw[i:eol])).lower()
+        var line = String(StringSpan(unsafe_from_utf8=raw[i:eol])).lower()
         if line.startswith(name_with_colon):
             return _trim_ascii(String(line[byte = name_with_colon.byte_length() :]))
         i = eol + 2
@@ -536,7 +536,7 @@ def _trim_ascii(s: String) -> String:
         start += 1
     while end > start and (bytes[end - 1] == 0x20 or bytes[end - 1] == 0x09):
         end -= 1
-    return String(StringSlice(s)[byte=start:end])
+    return String(StringSpan(s)[byte=start:end])
 
 
 def _parse_response(raw: Span[UInt8, _], method: String = "GET") raises -> HTTPResponse:

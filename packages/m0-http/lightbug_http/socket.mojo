@@ -31,7 +31,6 @@ from lightbug_http.c.socket import (
     recv,
     recvfrom,
     send,
-    sendto,
     setsockopt,
     shutdown,
     socket,
@@ -52,7 +51,6 @@ from lightbug_http.c.socket_error import (
     RecvError,
     RecvfromError,
     SendError,
-    SendtoError,
     SetsockoptEBADFError,
     SetsockoptEINVALError,
     SetsockoptENOPROTOOPTError,
@@ -631,25 +629,6 @@ struct Socket[
 
     def send(self, buffer: Span[Byte, _]) raises SendError -> UInt:
         return send(self.fd, buffer, UInt(len(buffer)), 0)
-
-    def send_to(self, src: Span[Byte, _], mut host: String, port: UInt16) raises -> UInt:
-        """Send data to the a remote address by connecting to the remote socket before sending.
-        The socket must be not already be connected to a remote socket.
-
-        Args:
-            src: The data to send.
-            host: The host to connect to.
-            port: The port number to connect to.
-
-        Returns:
-            The number of bytes sent.
-
-        Raises:
-            Error: If sending the data fails.
-        """
-        var ip = get_ip_address(host, Self.address_family, Self.sock_type)
-        var remote_address = SocketAddress(address_family=Self.address_family, port=port, binary_ip=ip)
-        return sendto(self.fd, src, UInt(len(src)), 0, remote_address)
 
     def _receive(self, mut buffer: Bytes) raises SocketRecvError -> UInt:
         """Receive data from the socket into the buffer.

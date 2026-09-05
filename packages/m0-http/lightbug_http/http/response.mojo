@@ -415,8 +415,8 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     def __len__(self) -> Int:
         return len(self.body_raw)
 
-    def get_body(self) -> StringSlice[origin_of(self.body_raw)]:
-        return StringSlice(unsafe_from_utf8=Span(self.body_raw))
+    def get_body(self) -> StringSpan[origin_of(self.body_raw)]:
+        return StringSpan(unsafe_from_utf8=Span(self.body_raw))
 
     @always_inline
     def set_connection_close(mut self):
@@ -496,7 +496,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             self.headers,
             self.cookies,
             lineBreak,
-            StringSlice(unsafe_from_utf8=Span(self.body_raw)),
+            StringSpan(unsafe_from_utf8=Span(self.body_raw)),
         )
 
     def encode(deinit self) -> Bytes:

@@ -997,7 +997,7 @@ struct Server(Movable):
     def set_max_request_uri_length(mut self, length: Int):
         self.config.max_request_uri_length = length
 
-    def listen_and_serve[T: HTTPService](mut self, address: StringSlice, mut handler: T) raises ServerError:
+    def listen_and_serve[T: HTTPService](mut self, address: StringSpan, mut handler: T) raises ServerError:
         """Listen for incoming connections and serve HTTP requests.
 
         Parameters:
@@ -1079,7 +1079,7 @@ struct Server(Movable):
 
 
     def listen_and_serve_nonblocking[T: HTTPService](
-        mut self, address: StringSlice, mut handler: T,
+        mut self, address: StringSpan, mut handler: T,
         shutdown_read_fd: Int = -1,
         bus_read_fd: Int = -1,
         offload_addr: Int = 0,

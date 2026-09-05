@@ -20,7 +20,7 @@ from lightbug_http.io.bytes import Bytes
 
 def _s(b: Bytes) -> String:
     """Bytes as a String, for readable assertions on ASCII framing."""
-    return String(StringSlice(unsafe_from_utf8=Span(b)))
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
 
 
 def _b(s: String) -> Bytes:

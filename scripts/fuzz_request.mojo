@@ -191,8 +191,8 @@ def _hex(buf: Span[Byte, _], limit: Int) -> String:
     var n = len(buf) if len(buf) < limit else limit
     for i in range(n):
         var b = Int(buf[i])
-        out += String(StringSlice(digits)[byte = b >> 4])
-        out += String(StringSlice(digits)[byte = b & 15])
+        out += String(StringSpan(digits)[byte = b >> 4])
+        out += String(StringSpan(digits)[byte = b & 15])
     if len(buf) > limit:
         out += "..."
     return out^

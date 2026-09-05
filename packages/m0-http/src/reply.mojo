@@ -118,7 +118,7 @@ def body_string(req: HTTPRequest) -> String:
     """The request body as a String, empty when there is none."""
     if len(req.body_raw) == 0:
         return String("")
-    return String(StringSlice(unsafe_from_utf8=Span(req.body_raw)))
+    return String(StringSpan(unsafe_from_utf8=Span(req.body_raw)))
 
 
 def param_int(s: String) -> Int:

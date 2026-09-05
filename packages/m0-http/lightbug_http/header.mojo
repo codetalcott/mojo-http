@@ -686,16 +686,16 @@ struct Headers(Copyable, Writable):
     def write_to[T: Writer, //](self, mut writer: T):
         for i in range(self.count()):
             writer.write(
-                StringSlice(unsafe_from_utf8=self.name_span(i)),
+                StringSpan(unsafe_from_utf8=self.name_span(i)),
                 ": ",
-                StringSlice(unsafe_from_utf8=self.value_span(i)),
+                StringSpan(unsafe_from_utf8=self.value_span(i)),
                 lineBreak,
             )
 
     def write_latin1_to(self, mut writer: ByteWriter):
         """Write headers with values transcoded to ISO-8859-1 for the wire."""
         for i in range(self.count()):
-            writer.write(StringSlice(unsafe_from_utf8=self.name_span(i)), ": ")
+            writer.write(StringSpan(unsafe_from_utf8=self.name_span(i)), ": ")
             var value = self.value_span(i)
             var all_ascii = True
             for j in range(len(value)):
@@ -703,7 +703,7 @@ struct Headers(Copyable, Writable):
                     all_ascii = False
                     break
             if all_ascii:
-                writer.write(StringSlice(unsafe_from_utf8=value))
+                writer.write(StringSpan(unsafe_from_utf8=value))
             else:
                 writer.consuming_write(
                     encode_latin1_header_value(String(unsafe_from_utf8=value))

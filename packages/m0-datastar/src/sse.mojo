@@ -59,13 +59,13 @@ def split_data_lines(data: String) -> List[String]:
     while i < n:
         var c = bytes[i]
         if c == UInt8(ord("\r")) or c == UInt8(ord("\n")):
-            lines.append(String(StringSlice(data)[byte=start:i]))
+            lines.append(String(StringSpan(data)[byte=start:i]))
             if c == UInt8(ord("\r")):
                 if i + 1 < n and bytes[i + 1] == UInt8(ord("\n")):
                     i += 1
             start = i + 1
         i += 1
-    lines.append(String(StringSlice(data)[byte=start:n]))
+    lines.append(String(StringSpan(data)[byte=start:n]))
     return lines^
 
 

@@ -40,11 +40,11 @@ def asgi_stream_url_like(kind: String, slot: Int) -> String:
     b.append(UInt8(ord("/")))
     for ch in String(slot).as_bytes():
         b.append(ch)
-    return String(StringSlice(unsafe_from_utf8=Span(b)))
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
 
 
 def _text(buf: List[UInt8]) -> String:
-    return String(StringSlice(unsafe_from_utf8=Span(buf)))
+    return String(StringSpan(unsafe_from_utf8=Span(buf)))
 
 
 # --- Codec -------------------------------------------------------------------

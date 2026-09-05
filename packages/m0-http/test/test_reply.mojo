@@ -30,7 +30,7 @@ from src.reply import (
 
 
 def _body(resp: HTTPResponse) -> String:
-    return String(StringSlice(unsafe_from_utf8=Span(resp.body_raw)))
+    return String(StringSpan(unsafe_from_utf8=Span(resp.body_raw)))
 
 
 def test_json_sets_content_type_status_and_body() raises:
