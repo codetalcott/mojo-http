@@ -137,12 +137,14 @@ completion: the ring holds the work, the datagram only ends a `recv` or a
 `kevent` that the other side announced it was parked in. Every reader of
 a submit lane or the completion channel skips it."""
 
-comptime POOL_SPIN_NS = 30_000
+comptime POOL_SPIN_NS = 10_000
 """How long a pool thread whose ring is empty keeps looking before it
 parks. Longer than the gap between jobs at the rates the pool serves
-(1–2 µs at 130–180k rps), shorter than a human notices as CPU."""
+(1–2 µs at 130–180k rps). Measured against 30 µs on the same day: the
+same throughput at 16 and 256 connections, and ten points less CPU on
+the pool thread at 16 (docs/notes/pool-ring-handoff.md)."""
 
-comptime POOL_YIELD_AFTER_NS = 5_000
+comptime POOL_YIELD_AFTER_NS = 2_000
 """Into the spin, the point after which each look is followed by
 `sched_yield`, so a thread waiting past the common gap gives its core up
 to whatever else wants it."""

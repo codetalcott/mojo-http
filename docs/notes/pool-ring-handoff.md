@@ -47,11 +47,14 @@ stream abort, and every datagram of the asyncio executor, whose lane and
 completion protocol are untouched. And they are the WAKE, used only when
 the receiving side has said it is parked:
 
-- A pool thread whose ring is empty spins for `POOL_SPIN_NS` (30 µs,
-  yielding after 5), then counts itself parked in a per-lane word,
+- A pool thread whose ring is empty spins for `POOL_SPIN_NS` (10 µs,
+  yielding after 2), then counts itself parked in a per-lane word,
   re-checks the ring, and only then blocks in `recv`. `submit` pushes,
   then reads that count, and pokes the lane with an 8-byte `_POKE`
-  datagram only if it is non-zero.
+  datagram only if it exceeds the wakes already in flight to the lane —
+  one wake per parked thread, never one per push, so a burst into N
+  parked threads sends N and leaves no stale wake for a thread to spin
+  on later.
 - The loop raises its own flag before `backend.wait` and re-checks the
   completion ring after raising it (`_wait_for_events`); a non-empty ring
   skips the wait and runs a pass with no events, whose first act is to
@@ -65,8 +68,9 @@ lost. The lost-wakeup test in `test_offload.mojo` submits two hundred
 jobs to a thread that has parked before every one of them, with a
 two-second bound on each completion; reordering either sequence is what
 it exists to catch. A thread that never runs dry still sees a pill or a
-WebSocket message, through a non-blocking poll of its socket once per
-`POOL_DGRAM_POLL_NS` (100 µs). The loop's flag starts SET and the
+WebSocket message: `next_job` polls its socket non-blocking once per
+`POOL_DGRAM_POLL_NS` (100 µs) before it looks at the ring, whatever the
+ring holds. The loop's flag starts SET and the
 inversion's driver never clears it — it waits inside asyncio rather than
 in `_wait_for_events` — so that path keeps the datagram per completion
 it always had. `M0_POOL_RING=0` builds a pool with no rings, and both
@@ -103,8 +107,20 @@ while its work per job fell: the spin is on the clock. At 256 connections
 the ring is rarely empty and the thread runs at 73 % for 19 % more
 requests, 4.0 µs per job against 5.1 before — the 1.4 µs the handoff
 cost it, gone. What a spin costs at low load is bounded by `POOL_SPIN_NS`
-per job, thirty microseconds; a server taking a thousand requests a
-second spends three percent of one core on it.
+per job; at ten microseconds, a server taking a thousand requests a
+second spends one percent of one core on it.
+
+The spin length was chosen by measurement, same binary but for the two
+constants, arms alternated, later the same day on a faster-running box
+(absolute rates are not comparable to the table above; the pairs are):
+
+| connections | spin 30 µs, yield after 5 | spin 10 µs, yield after 2 |
+|---|---:|---:|
+| 16 | 168.9k / 173.6k rps, pool thread 88 % | 169.7k / 168.6k, pool thread 75–77 % |
+| 256 | 185.1k, pool 67 % | 185.4k, pool 62 % |
+
+The shorter spin gives the same throughput and a tenth of a core back,
+so it is the one shipped.
 
 ## What did not change, and what is next
 
