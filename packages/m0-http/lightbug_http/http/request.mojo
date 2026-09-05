@@ -225,9 +225,9 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             else:
                 self.headers[HeaderKey.HOST] = self.uri.host
 
-    def get_body(self) -> StringSlice[origin_of(self.body_raw)]:
+    def get_body(self) -> StringSpan[origin_of(self.body_raw)]:
         """Get the request body as a string slice."""
-        return StringSlice(unsafe_from_utf8=Span(self.body_raw))
+        return StringSpan(unsafe_from_utf8=Span(self.body_raw))
 
     def set_connection_close(mut self):
         """Set the Connection header to 'close'."""
@@ -270,7 +270,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             writer.write(self.cookies)
         writer.write(
             lineBreak,
-            StringSlice(unsafe_from_utf8=Span(self.body_raw)),
+            StringSpan(unsafe_from_utf8=Span(self.body_raw)),
         )
 
     def encode(deinit self) -> Bytes:

@@ -396,8 +396,8 @@ def parse_app_spec(spec: String) raises -> Tuple[String, String]:
         if text.byte_length() == 0:
             raise Error("missing MODULE[:ATTR]")
         return (text^, String(DEFAULT_ATTRIBUTE))
-    var module = String(StringSlice(text)[byte = :colon])
-    var attribute = String(StringSlice(text)[byte = colon + 1 :])
+    var module = String(StringSpan(text)[byte = :colon])
+    var attribute = String(StringSpan(text)[byte = colon + 1 :])
     if module.byte_length() == 0:
         raise Error("missing module before ':' in '" + text + "'")
     if attribute.byte_length() == 0:
@@ -441,7 +441,7 @@ def parse_size(text: String) raises -> Int:
     elif last == UInt8(ord("g")) or last == UInt8(ord("G")):
         multiplier = 1024 * 1024 * 1024
     if multiplier != 1:
-        digits = String(StringSlice(trimmed)[byte = : n - 1])
+        digits = String(StringSpan(trimmed)[byte = : n - 1])
     try:
         return parse_int(digits, "--max-body") * multiplier
     except:
@@ -768,8 +768,8 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         var eq = value.find("=")
         if eq < 0:
             raise Error("--static expects PREFIX=DIR, got '" + value + "'")
-        var prefix = String(StringSlice(value)[byte = :eq])
-        var directory = String(StringSlice(value)[byte = eq + 1 :])
+        var prefix = String(StringSpan(value)[byte = :eq])
+        var directory = String(StringSpan(value)[byte = eq + 1 :])
         if not prefix.startswith("/"):
             raise Error("--static prefix must start with '/', got '" + prefix + "'")
         if directory.byte_length() == 0:
@@ -782,8 +782,8 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         var meq = value.find("=")
         if meq < 0:
             raise Error("--mount expects PREFIX=MODULE[:ATTR], got '" + value + "'")
-        var raw = String(StringSlice(value)[byte = :meq])
-        var spec = String(StringSlice(value)[byte = meq + 1 :])
+        var raw = String(StringSpan(value)[byte = :meq])
+        var spec = String(StringSpan(value)[byte = meq + 1 :])
         if not raw.startswith("/"):
             raise Error("--mount prefix must start with '/', got '" + raw + "'")
         # Stored without the trailing slash, so '/' becomes '' -- PEP 3333's
@@ -792,7 +792,7 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         var prefix = raw
         while prefix.endswith("/"):
             prefix = String(
-                StringSlice(prefix)[byte = : prefix.byte_length() - 1]
+                StringSpan(prefix)[byte = : prefix.byte_length() - 1]
             )
         for m in range(len(opts.mount_prefixes)):
             if opts.mount_prefixes[m] == prefix:
@@ -854,8 +854,8 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
             var has_inline = False
             var eq = arg.find("=")
             if eq >= 0:
-                name = String(StringSlice(arg)[byte = :eq])
-                inline = String(StringSlice(arg)[byte = eq + 1 :])
+                name = String(StringSpan(arg)[byte = :eq])
+                inline = String(StringSpan(arg)[byte = eq + 1 :])
                 has_inline = True
             if _is_bool(name):
                 if has_inline:

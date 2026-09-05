@@ -41,7 +41,7 @@ def test_content_length_body() raises:
     var resp = _parse_response(Span(raw))
     assert_equal(resp.status_code, 200)
     assert_equal(len(resp.body_raw), 5)
-    assert_equal(String(StringSlice(unsafe_from_utf8=Span(resp.body_raw))), "hello")
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(resp.body_raw))), "hello")
 
 
 def test_truncated_content_length_is_loud() raises:
@@ -64,7 +64,7 @@ def test_chunked_body_is_decoded() raises:
     )
     var resp = _parse_response(Span(raw))
     assert_equal(
-        String(StringSlice(unsafe_from_utf8=Span(resp.body_raw))), "hello world"
+        String(StringSpan(unsafe_from_utf8=Span(resp.body_raw))), "hello world"
     )
     # The body is decoded, so the header describing the encoding must go.
     assert_true(resp.headers.get("transfer-encoding") is None)
@@ -78,7 +78,7 @@ def test_close_delimited_body() raises:
     )
     var resp = _parse_response(Span(raw))
     assert_equal(
-        String(StringSlice(unsafe_from_utf8=Span(resp.body_raw))),
+        String(StringSpan(unsafe_from_utf8=Span(resp.body_raw))),
         "until the close",
     )
 

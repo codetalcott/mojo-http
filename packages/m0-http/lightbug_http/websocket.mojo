@@ -160,7 +160,7 @@ def base64_encode(data: Span[Byte, _]) -> String:
         out.append(alphabet[Int((n >> 12) & 0x3F)])
         out.append(alphabet[Int((n >> 6) & 0x3F)])
         out.append(UInt8(ord("=")))
-    return String(StringSlice(unsafe_from_utf8=Span(out)))
+    return String(StringSpan(unsafe_from_utf8=Span(out)))
 
 
 # --- Opening handshake (RFC 6455 §4) ------------------------------------------

@@ -1172,7 +1172,7 @@ struct WSGIHandler(ThreadHandler):
                 # rewritten the response into the stream's head.
                 self.streams.subscribe(
                     slot,
-                    String(StringSlice(unsafe_from_utf8=Span(frame))),
+                    String(StringSpan(unsafe_from_utf8=Span(frame))),
                     event_id,
                 )
                 self._clear_lost(slot)
@@ -1182,7 +1182,7 @@ struct WSGIHandler(ThreadHandler):
                 # where the registries are drained, and remember the lane:
                 # an inbound frame has exactly one mount it may be delivered
                 # to, and this is the record of which.
-                var chan = String(StringSlice(unsafe_from_utf8=Span(frame)))
+                var chan = String(StringSpan(unsafe_from_utf8=Span(frame)))
                 self.sockets.subscribe(slot, chan, event_id)
                 if slot < len(self.hold_lane):
                     self.hold_lane[slot] = _parse_stream_lane(ub)
@@ -1668,7 +1668,7 @@ def asgi_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
         b.append(UInt8(ord("/")))
         for ch in String(lane).as_bytes():
             b.append(ch)
-    return String(StringSlice(unsafe_from_utf8=Span(b)))
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
 
 
 def pool_stream_url(slot: Int, lane: Int, ack_fd: Int) -> String:
@@ -1691,7 +1691,7 @@ def pool_stream_url(slot: Int, lane: Int, ack_fd: Int) -> String:
     b.append(UInt8(ord("/")))
     for ch in String(ack_fd).as_bytes():
         b.append(ch)
-    return String(StringSlice(unsafe_from_utf8=Span(b)))
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
 
 
 def pool_stream_ack_fd(url: String) -> Int:

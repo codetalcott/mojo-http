@@ -38,7 +38,7 @@ def _list_contains(list: String, item: String) -> Bool:
         var s = start
         while s < end and b[s] == UInt8(32):  # ' '
             s += 1
-        if StringSlice(unsafe_from_utf8=b[s:end]) == item:
+        if StringSpan(unsafe_from_utf8=b[s:end]) == item:
             return True
         start = end + 1
     return False

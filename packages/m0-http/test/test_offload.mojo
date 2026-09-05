@@ -108,7 +108,7 @@ def test_slots_do_not_bleed_into_each_other() raises:
         assert_equal(done[i], i)
         var resp = pool.take_response(i)
         assert_equal(
-            String(StringSlice(unsafe_from_utf8=Span(resp.body_raw))),
+            String(StringSpan(unsafe_from_utf8=Span(resp.body_raw))),
             "body" + String(i),
         )
 

@@ -681,7 +681,7 @@ struct ParseError(Movable, Writable):
 
 def parse_ipv6_bracketed_address[
     origin: ImmOrigin
-](address: StringSlice[origin]) raises ParseError -> Tuple[StringSlice[origin], UInt16]:
+](address: StringSpan[origin]) raises ParseError -> Tuple[StringSpan[origin], UInt16]:
     """Parse an IPv6 address enclosed in brackets.
 
     Returns:
@@ -706,9 +706,9 @@ def parse_ipv6_bracketed_address[
 
 def validate_no_brackets[
     origin: ImmOrigin
-](address: StringSlice[origin], start_idx: UInt16, end_idx: Optional[UInt16] = None,) raises ParseError:
+](address: StringSpan[origin], start_idx: UInt16, end_idx: Optional[UInt16] = None,) raises ParseError:
     """Validate that the address segment contains no brackets."""
-    var segment: StringSlice[origin]
+    var segment: StringSpan[origin]
 
     if end_idx is None:
         segment = address[byte=Int(start_idx) :]
@@ -721,7 +721,7 @@ def validate_no_brackets[
         raise ParseUnexpectedBracketError()
 
 
-def parse_port[origin: ImmOrigin](port_str: StringSlice[origin]) raises ParseError -> UInt16:
+def parse_port[origin: ImmOrigin](port_str: StringSpan[origin]) raises ParseError -> UInt16:
     """Parse and validate port number."""
     if port_str == AddressConstants.EMPTY:
         raise ParseEmptyPortError()
@@ -748,7 +748,7 @@ def parse_address[
     origin: ImmOrigin,
     //,
     network: NetworkType,
-](address: StringSlice[origin]) raises ParseError -> HostPort:
+](address: StringSpan[origin]) raises ParseError -> HostPort:
     """Parse an address string into a host and port.
 
     Parameters:
@@ -784,10 +784,10 @@ def parse_address[
     if colon_index == -1:
         raise ParseMissingSeparatorError()
 
-    var host: StringSlice[origin]
+    var host: StringSpan[origin]
     var port: UInt16
 
-    # TODO (Mikhail): StringSlice does byte level slicing, so this can be
+    # TODO (Mikhail): StringSpan does byte level slicing, so this can be
     # invalid for multi-byte UTF-8 characters. Perhaps we instead assert that it's
     # an ascii string instead.
     if address.byte_length() > 0 and address.as_bytes()[0] == UInt8(ord("[")):

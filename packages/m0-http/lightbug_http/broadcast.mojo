@@ -243,7 +243,7 @@ def decode_bus_frame(datagram: Span[Byte, _]) -> Optional[BusFrame]:
     var url_bytes = List[UInt8](capacity=url_len)
     for i in range(url_len):
         url_bytes.append(datagram[_BUS_HEADER + i])
-    var url = String(StringSlice(unsafe_from_utf8=Span(url_bytes)))
+    var url = String(StringSpan(unsafe_from_utf8=Span(url_bytes)))
     var frame = List[UInt8](capacity=len(datagram) - _BUS_HEADER - url_len)
     for i in range(_BUS_HEADER + url_len, len(datagram)):
         frame.append(datagram[i])

@@ -18,7 +18,7 @@ def _frame(text: String) raises -> List[UInt8]:
 
 
 def _text(bytes: List[UInt8]) raises -> String:
-    return String(StringSlice(unsafe_from_utf8=Span(bytes)))
+    return String(StringSpan(unsafe_from_utf8=Span(bytes)))
 
 
 # --- Local registry -----------------------------------------------------------

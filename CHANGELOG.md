@@ -89,6 +89,21 @@ versions may break the API**.
   `setup-flyctl` to the 1.5 release commit instead of `@master`; nine
   pyflakes items (unused imports, a placeholder-free f-string) cleared.
 
+### Removed
+
+- **`StringSlice` → `StringSpan`**, 98 sites across `packages/`, `apps/`
+  and `scripts/`: the 1.0 name, from the prelude, ahead of the alias
+  starting to warn on a later pin. A pure identifier substitution; the
+  ratchet stays at 0.
+- **Two uninstantiated bodies in the fork**, and the UDP send path one
+  anchored: `memmove` in `io/bytes.mojo`, and `Socket.send_to` with
+  `UDPConnection.write_to`, the `sendto` binding and its twenty-one error
+  structs plus the `SendtoError` variant (NOTICE has the list). Each held
+  a deprecated spelling the compiler never flagged because nothing
+  elaborated the body; a bare `undefined_name` in each survived
+  build-all, test-all, build-apps and build-serve, which is the proof.
+  743 lines gone.
+
 ### Fixed
 
 - **Five `String` builders read a local buffer after Mojo had freed it.**

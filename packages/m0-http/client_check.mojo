@@ -17,7 +17,7 @@ from src.client import Client
 
 
 def _body_string(body: List[UInt8]) -> String:
-    return String(StringSlice(unsafe_from_utf8=Span(body)))
+    return String(StringSpan(unsafe_from_utf8=Span(body)))
 
 
 def main() raises:

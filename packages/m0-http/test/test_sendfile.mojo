@@ -113,7 +113,7 @@ def test_sends_whole_small_file() raises:
         got.append(0)
     var n = _recv_into(recv_fd, got, body.byte_length())
     assert_equal(n, body.byte_length())
-    var text = String(StringSlice(unsafe_from_utf8=Span(got)))
+    var text = String(StringSpan(unsafe_from_utf8=Span(got)))
     assert_equal(text, body)
 
     _close_fd(recv_fd)
@@ -143,7 +143,7 @@ def test_offset_skips_the_prefix() raises:
         got.append(0)
     var n = _recv_into(recv_fd, got, 3)
     assert_equal(n, 3)
-    assert_equal(String(StringSlice(unsafe_from_utf8=Span(got))), "456")
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(got))), "456")
 
     _close_fd(recv_fd)
     _close_fd(send_fd)

@@ -86,7 +86,7 @@ def _body_bytes(resp: HTTPResponse) -> Bytes:
 
 def _body(resp: HTTPResponse) -> String:
     var b = _body_bytes(resp)
-    return String(StringSlice(unsafe_from_utf8=Span(b)))
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
 
 
 from lightbug_http.http import HTTPResponse

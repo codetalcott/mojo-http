@@ -1,8 +1,5 @@
-from std.sys import size_of
-
 from lightbug_http.connection import default_buffer_size
 from lightbug_http.strings import BytesConstant
-from std.memory import unsafe_memcpy
 from std.collections.span import ContiguousSlice, _SpanIter
 
 
@@ -10,8 +7,8 @@ comptime Bytes = List[Byte]
 
 
 @always_inline
-def byte[s: StringSlice]() -> Byte:
-    comptime assert s.byte_length() == 1, "StringSlice must be of length 1 to convert to Byte."
+def byte[s: StringSpan]() -> Byte:
+    comptime assert s.byte_length() == 1, "StringSpan must be of length 1 to convert to Byte."
     return s.as_bytes()[0]
 
 
@@ -44,7 +41,7 @@ struct ByteWriter(Writer):
         """
         self._inner.extend(bytes)
 
-    def write_string(mut self, s: StringSlice) -> None:
+    def write_string(mut self, s: StringSpan) -> None:
         """Writes the contents of `s` into the internal buffer.
 
         Args:
@@ -311,45 +308,6 @@ struct ByteReader[origin: ImmOrigin](Copyable, Sized):
     @always_inline
     def consume(var self, bytes_len: Int = -1) -> Bytes:
         return Bytes(self^._inner[self.read_pos : self.read_pos + len(self) + 1])
-
-
-def memmove[
-    T: Copyable, dest_origin: MutOrigin, src_origin: MutOrigin
-](dest: Pointer[T, dest_origin], src: Pointer[T, src_origin], count: Int,):
-    """
-    Copies count elements from src to dest, handling overlapping memory regions safely.
-    """
-    if count <= 0:
-        return
-
-    if dest == src:
-        return
-
-    # Check if memory regions overlap
-    var dest_addr = Int(dest)
-    var src_addr = Int(src)
-    var element_size = size_of[T]()
-    var total_bytes = count * element_size
-
-    var dest_end = dest_addr + total_bytes
-    var src_end = src_addr + total_bytes
-
-    # Check for overlap: regions overlap if one starts before the other ends
-    var overlaps = (dest_addr < src_end) and (src_addr < dest_end)
-
-    if not overlaps:
-        # No overlap - use fast memcpy
-        unsafe_memcpy(dest=dest, src=src, count=count)
-    elif dest_addr < src_addr:
-        # Destination is before source - copy forwards (left to right)
-        for i in range(count):
-            dest.unsafe_offset(i).init_pointee_copy(src.unsafe_offset(i)[])
-    else:
-        # Destination is after source - copy backwards (right to left)
-        var i = count - 1
-        while i >= 0:
-            dest.unsafe_offset(i).init_pointee_copy(src.unsafe_offset(i)[])
-            i -= 1
 
 
 def create_string_from_ptr[origin: ImmOrigin](ptr: Pointer[UInt8, origin], length: Int) -> String:

@@ -461,7 +461,7 @@ struct PyBridge(Movable):
     ) raises -> PyObjectPtr:
         """A Python `str` of raw request bytes: UTF-8 when they are, the
         latin-1 tunnel when they are not. Returns a new reference."""
-        var s = cpy.PyUnicode_DecodeUTF8(StringSlice(unsafe_from_utf8=value))
+        var s = cpy.PyUnicode_DecodeUTF8(StringSpan(unsafe_from_utf8=value))
         if not s:
             # Not valid UTF-8: clear the pending decode error, tunnel as
             # latin-1 (the same re-encode the environ path uses).
@@ -469,7 +469,7 @@ struct PyBridge(Movable):
             self._scratch_value.clear()
             append_latin1_as_utf8(self._scratch_value, value)
             s = cpy.PyUnicode_DecodeUTF8(
-                StringSlice(unsafe_from_utf8=Span(self._scratch_value))
+                StringSpan(unsafe_from_utf8=Span(self._scratch_value))
             )
             if not s:
                 raise cpy.get_error()
@@ -849,7 +849,7 @@ struct PyBridge(Movable):
                 self._scratch_name, req.headers.name_span(i)
             )
             var key = cpy.PyUnicode_DecodeUTF8(
-                StringSlice(unsafe_from_utf8=Span(self._scratch_name))
+                StringSpan(unsafe_from_utf8=Span(self._scratch_name))
             )
             if not key:
                 raise cpy.get_error()
@@ -878,12 +878,12 @@ struct PyBridge(Movable):
         var s: PyObjectPtr
         if all_ascii(value):
             # ASCII is its own UTF-8: hand CPython the request's own bytes.
-            s = cpy.PyUnicode_DecodeUTF8(StringSlice(unsafe_from_utf8=value))
+            s = cpy.PyUnicode_DecodeUTF8(StringSpan(unsafe_from_utf8=value))
         else:
             self._scratch_value.clear()
             append_latin1_as_utf8(self._scratch_value, value)
             s = cpy.PyUnicode_DecodeUTF8(
-                StringSlice(unsafe_from_utf8=Span(self._scratch_value))
+                StringSpan(unsafe_from_utf8=Span(self._scratch_value))
             )
         if not s:
             raise cpy.get_error()
@@ -1154,7 +1154,7 @@ def _store_header(
         out.set_bytes(name, value)
 
 
-def _base_set(d: PyObjectPtr, key: StringSlice, var value: PythonObject) raises:
+def _base_set(d: PyObjectPtr, key: StringSpan, var value: PythonObject) raises:
     """Store one entry in the base template.
 
     `PyDict_SetItem` does not steal, and both the fresh key and `value` are
@@ -1167,7 +1167,7 @@ def _base_set(d: PyObjectPtr, key: StringSlice, var value: PythonObject) raises:
         raise cpy.get_error()
 
 
-def _py_str(s: StringSlice) raises -> PythonObject:
+def _py_str(s: StringSpan) raises -> PythonObject:
     """A Python `str` from ASCII/UTF-8 Mojo text, through the C API."""
     ref cpy = Python().cpython()
     var p = cpy.PyUnicode_DecodeUTF8(s)

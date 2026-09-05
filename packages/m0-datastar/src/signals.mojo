@@ -48,4 +48,4 @@ def read_signals(req: HTTPRequest) -> String:
 
     if len(req.body_raw) == 0:
         return String(EMPTY_SIGNALS)
-    return String(StringSlice(unsafe_from_utf8=Span(req.body_raw)))
+    return String(StringSpan(unsafe_from_utf8=Span(req.body_raw)))

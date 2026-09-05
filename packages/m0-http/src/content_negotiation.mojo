@@ -94,7 +94,7 @@ def parse_accept(accept: String, extra: List[String]) -> AcceptResult:
 
         if at_comma or at_end:
             if i > start:
-                var part = String(StringSlice(accept)[byte=start:i])
+                var part = String(StringSpan(accept)[byte=start:i])
                 _split_media_range(part, ranges, qualities)
             start = i + 1
         i += 1
@@ -141,11 +141,11 @@ def _split_media_range(
     var quality: Float64 = 1.0
 
     if semi_pos != -1:
-        media_type = _trim(String(StringSlice(part)[byte=0:semi_pos]))
-        var params = String(StringSlice(part)[byte=semi_pos + 1:])
+        media_type = _trim(String(StringSpan(part)[byte=0:semi_pos]))
+        var params = String(StringSpan(part)[byte=semi_pos + 1:])
         var q_pos = params.find("q=")
         if q_pos != -1:
-            var q_str = String(StringSlice(params)[byte=q_pos + 2:])
+            var q_str = String(StringSpan(params)[byte=q_pos + 2:])
             quality = _parse_quality(q_str)
     else:
         media_type = _trim(part)
@@ -174,7 +174,7 @@ def _resolve(
 
     var slash = target.find("/")
     if slash != -1:
-        var subtype_wildcard = String(StringSlice(target)[byte=0:slash]) + "/*"
+        var subtype_wildcard = String(StringSpan(target)[byte=0:slash]) + "/*"
         q = _last_quality(ranges, qualities, subtype_wildcard)
         if q >= 0.0:
             return q > 0.0
@@ -207,7 +207,7 @@ def _trim(s: String) -> String:
         end -= 1
     if start == 0 and end == s.byte_length():
         return s
-    return String(StringSlice(s)[byte=start:end])
+    return String(StringSpan(s)[byte=start:end])
 
 
 def _contains(types: List[String], media_type: String) -> Bool:
@@ -247,7 +247,7 @@ def _parse_codings(
             at_comma = header.as_bytes()[i] == UInt8(ord(","))
         if at_comma or at_end:
             if i > start:
-                var part = String(StringSlice(header)[byte=start:i])
+                var part = String(StringSpan(header)[byte=start:i])
                 _split_media_range(part, ranges, qualities)
             start = i + 1
         i += 1

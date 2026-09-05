@@ -350,7 +350,7 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
                 job.slot,
                 job.opcode,
                 String(
-                    StringSlice(
+                    StringSpan(
                         unsafe_from_utf8=Span(buf)[
                             job.chan_start : job.chan_start + job.chan_len
                         ]

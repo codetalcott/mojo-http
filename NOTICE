@@ -428,6 +428,18 @@ lightbug_http
         c16/c64/c256 became 172.8k/173.7k/176.4k, and the user-space
         request in `bench_http_parts` 2.11 -> 2.05 us — parity, within
         noise.
+      - Two bodies the compiler never instantiated removed (2026-09-05),
+        proven dead by the repo's method — a bare `undefined_name` in each
+        body survives build-all, test-all, build-apps and build-serve: the
+        `memmove` helper in io/bytes.mojo (no caller anywhere), and the
+        UDP send path — `Socket.send_to`, both `UDPConnection.write_to`
+        overloads, the `sendto` libc binding with its checked wrapper in
+        c/socket.mojo, and the twenty-one `Sendto*Error` structs and the
+        `SendtoError` variant in c/socket_error.mojo that existed only for
+        it. This HTTP server never sends a UDP datagram; `UDPConnection`
+        keeps its read side. Each held a spelling the 1.0 changelog
+        deprecates (`init_pointee_copy`, `as_immutable`) that the ratchet
+        could not see because nothing elaborated it.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

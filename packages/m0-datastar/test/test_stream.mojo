@@ -14,7 +14,7 @@ from src.signals import read_signals, EMPTY_SIGNALS
 
 
 def _text(buf: List[UInt8]) -> String:
-    return String(StringSlice(unsafe_from_utf8=Span(buf)))
+    return String(StringSpan(unsafe_from_utf8=Span(buf)))
 
 
 def _get(path: String) raises -> HTTPRequest:

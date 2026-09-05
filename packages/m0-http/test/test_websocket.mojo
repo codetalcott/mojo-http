@@ -43,7 +43,7 @@ def _hex(data: List[UInt8]) raises -> String:
     for i in range(len(data)):
         out.append(digits[Int(data[i]) >> 4])
         out.append(digits[Int(data[i]) & 0xF])
-    return String(StringSlice(unsafe_from_utf8=Span(out)))
+    return String(StringSpan(unsafe_from_utf8=Span(out)))
 
 
 def _mask() raises -> List[UInt8]:
@@ -204,7 +204,7 @@ def test_masked_text_round_trip() raises:
     var res = state.feed(Span(frame))
     assert_equal(len(res.msg_opcodes), 1)
     assert_equal(res.msg_opcodes[0], WS_OP_TEXT)
-    assert_equal(String(StringSlice(unsafe_from_utf8=Span(res.msg_payloads[0]))), "Hello")
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(res.msg_payloads[0]))), "Hello")
     assert_false(res.close_after_reply)
     assert_equal(len(res.reply), 0)
 
@@ -217,7 +217,7 @@ def test_partial_frame_across_feeds() raises:
     assert_equal(len(res1.msg_opcodes), 0)
     var res2 = state.feed(Span(frame)[cut:])
     assert_equal(len(res2.msg_opcodes), 1)
-    assert_equal(String(StringSlice(unsafe_from_utf8=Span(res2.msg_payloads[0]))), "split brain")
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(res2.msg_payloads[0]))), "split brain")
 
 
 def test_two_frames_in_one_feed() raises:
@@ -228,8 +228,8 @@ def test_two_frames_in_one_feed() raises:
         bytes.append(second[j])
     var res = state.feed(Span(bytes))
     assert_equal(len(res.msg_opcodes), 2)
-    assert_equal(String(StringSlice(unsafe_from_utf8=Span(res.msg_payloads[0]))), "one")
-    assert_equal(String(StringSlice(unsafe_from_utf8=Span(res.msg_payloads[1]))), "two")
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(res.msg_payloads[0]))), "one")
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(res.msg_payloads[1]))), "two")
 
 
 def test_fragmented_message_assembles() raises:
@@ -247,7 +247,7 @@ def test_fragmented_message_assembles() raises:
     var res2 = state.feed(Span(f2))
     assert_equal(len(res2.msg_opcodes), 1)
     assert_equal(res2.msg_opcodes[0], WS_OP_TEXT)
-    assert_equal(String(StringSlice(unsafe_from_utf8=Span(res2.msg_payloads[0]))), "fragment")
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(res2.msg_payloads[0]))), "fragment")
 
 
 def test_ping_earns_pong_with_same_payload() raises:

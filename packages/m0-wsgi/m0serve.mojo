@@ -136,7 +136,7 @@ def _discover_core_lib() -> String:
     var slash = exe.rfind("/")
     if slash >= 0:
         candidates.append(
-            String(StringSlice(exe)[byte = :slash]) + "/libm0core" + ext
+            String(StringSpan(exe)[byte = :slash]) + "/libm0core" + ext
         )
     candidates.append(String("packages/m0-core/libm0core") + ext)
     for i in range(len(candidates)):

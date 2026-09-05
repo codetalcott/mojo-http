@@ -9,7 +9,6 @@ from lightbug_http.c.socket_error import (
     RecvError,
     RecvfromError,
     SendError,
-    SendtoError,
     SetsockoptError,
     ShutdownEINVALError,
 )
@@ -242,7 +241,7 @@ struct ListenConfig:
 
     def listen[
         network: NetworkType = NetworkType.tcp4
-    ](self, address: StringSlice) raises ListenerError -> NoTLSListener[network]:
+    ](self, address: StringSpan) raises ListenerError -> NoTLSListener[network]:
         """Create a TCP listener on the specified address.
 
         Parameters:
@@ -525,39 +524,6 @@ struct UDPConnection[
         """
 
         return self.socket.receive_from(dest)
-
-    def write_to(mut self, src: Span[Byte, _], mut address: UDPAddr) raises SendtoError -> UInt:
-        """Writes data to the underlying file descriptor.
-
-        Args:
-            src: The buffer to read data into.
-            address: The remote peer address.
-
-        Returns:
-            The number of bytes written, or an error if one occurred.
-
-        Raises:
-            SendtoError: If an error occurred while writing data.
-        """
-
-        return self.socket.send_to(src, address.ip, address.port)
-
-    def write_to(mut self, src: Span[Byte, _], mut host: String, port: UInt16) raises SendtoError -> UInt:
-        """Writes data to the underlying file descriptor.
-
-        Args:
-            src: The buffer to read data into.
-            host: The remote peer address in IPv4 format.
-            port: The remote peer port.
-
-        Returns:
-            The number of bytes written, or an error if one occurred.
-
-        Raises:
-            SendtoError: If an error occurred while writing data.
-        """
-
-        return self.socket.send_to(src, host, port)
 
     def close(mut self) raises FatalCloseError:
         """Close the UDP connection.

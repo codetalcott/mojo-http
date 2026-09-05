@@ -98,7 +98,7 @@ def test_zero_event_id_is_still_emitted() raises:
 # --- notify_frame: verbatim delivery for producers with their own framing ---
 
 def _as_text(buf: List[UInt8]) -> String:
-    return String(StringSlice(unsafe_from_utf8=Span(buf)))
+    return String(StringSpan(unsafe_from_utf8=Span(buf)))
 
 
 def test_notify_frame_delivers_verbatim() raises:
