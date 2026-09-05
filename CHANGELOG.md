@@ -137,6 +137,15 @@ versions may break the API**.
 
 ### Fixed
 
+- **A header line cut between its CR and its LF was answered 400.**
+  `scan_to_eol` treated a carriage return as the buffer's last byte as a
+  malformed line rather than a line whose LF had not arrived, so a
+  request whose TCP segment boundary fell between the two bytes of a
+  header's CRLF was rejected instead of waited for; the request line and
+  the terminating empty line already answered incomplete there. Found by
+  the release fuzz sweep (`fuzz-request-long`, seed 5, iteration 147067)
+  under its invalid-is-sticky rule, reproduced on v0.17.1, so latent in
+  every release before this one. `test_parsing.mojo` pins the shape.
 - **Five `String` builders read a local buffer after Mojo had freed it.**
   `Span(unsafe_ptr=out.unsafe_ptr(), length=...)` carries no origin, so
   under the manual's after-every-sub-expression destruction the `List`
