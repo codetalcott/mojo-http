@@ -7,8 +7,28 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-05
+
 ### Added
 
+- **Under `--workers N`, the worker that wins an accept gives the
+  connection to the least-loaded sibling** (SPEC E16; `smoke-accept-spread`
+  on both CI legs; `lightbug_http/accept_share.mojo` over `c/fdpass.mojo`;
+  docs/notes/accept-sharing.md). Every worker waits on the one listener
+  and the first to wake drained the whole backlog, the same one nearly
+  every time: 32 of 32 connections on macOS, 23 to 31 of 32 on Linux, so a
+  keep-alive load ran at one worker's throughput. `SO_REUSEPORT` is not
+  portable (Linux hashes, macOS sends everything to the last-bound
+  socket) and `EPOLLEXCLUSIVE` made it worse, so the acceptor reads each
+  sibling's `active + pending` off the pre-fork shared page and passes the
+  socket over an `AF_UNIX` channel with `SCM_RIGHTS`; the receiver admits
+  it by the accept path's own tail. A hand-off that fails for any reason
+  keeps the connection where it is. After: 16/16 on every platform and
+  mode for bursts and ramps alike, one worker pays nothing, two workers
+  tie on keep-alive throughput, and the Core ML embedding app on two
+  spawned workers goes from 1779 to 3090 req/s (uvicorn's two workers:
+  2510) with a p99 of 2.8 ms against 5.1. `M0_ACCEPT_SHARE=0` is the A/B
+  knob.
 - **The executor shim is a Python file.** `packages/m0-wsgi/shim/m0_shim.py`
   is the source of truth for the ~1,500-line program `PyBridge` execs —
   WSGI's `start_response`, protocol detection, the asyncio executor, the
@@ -36,10 +56,10 @@ versions may break the API**.
   rather than spending the respawn budget. `--doctor` reports
   `topology.worker_mode`. The default stays fork: start-to-ready with two
   workers is 82 ms forked and 92 ms spawned, and throughput ties once
-  started (195k against 199k req/s on hello, alternated). What it does not
-  yet buy is the second worker's throughput on macOS — the same worker wins
-  nearly every accept (ROADMAP, Known issues; SPEC E16 planned) — so the
-  Core ML app served 1675 req/s on two spawned workers as on one.
+  started (195k against 199k req/s on hello, alternated). On its own it did not
+  buy the second worker's throughput on macOS, because the same worker won
+  nearly every accept and the Core ML app served 1675 req/s on two spawned
+  workers as on one; accept sharing (E16, above) is what did.
 
 ### Changed
 
@@ -3459,6 +3479,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.18.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.18.0
 [0.17.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.1
 [0.17.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.0
 [0.16.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.16.0
