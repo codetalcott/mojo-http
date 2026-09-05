@@ -36,7 +36,7 @@ the same interpreter (Python 3.13) for every row. `--doctor` reported
 | m0serve `--workers 1 --blocking-threads 2` | 1 | MAX, CPU | 727 | 10.91 | 13.14 |
 | uvicorn `--workers 1` | 1 | MAX, CPU | 438 | 18.14 | 23.15 |
 | uvicorn `--workers 2` | 2 | MAX, CPU | 446 | 17.86 | 24.54 |
-| two `m0serve --workers 1` on one port | 2 | engine | 1694 | 4.71 | 4.98 |
+| a second `m0serve --workers 1` on the same port (refused: D6) | 1 | engine | 1694 | 4.71 | 4.98 |
 
 At 32 connections: m0serve 1690 req/s at p99 19.5 ms, uvicorn's two
 workers 2647 at 19.6. With 8 sentences per request: 5518 sentences/s
@@ -71,10 +71,11 @@ against 9569.
    confusingly: `tokenizers.Tokenizer.from_pretrained` resolves proxies
    through `_scproxy`, and the worker is SIGKILLed with the supervisor
    respawning it. The app loads the tokenizer from a file.
-3. **Two independent processes on one port do not share the load on
-   macOS.** `SO_REUSEPORT` handed all 200 warm connections to one pid, and
-   the throughput equalled one process. The Linux workaround is not one
-   here.
+3. **A second independent process on the port is refused**, by design:
+   `SO_REUSEPORT` is off (SPEC D6), so the second `m0serve --workers 1`
+   exited with "address already in use", all 200 warm connections went to
+   the one pid, and the row equals one process. The only multi-process
+   path m0serve offers is its supervisor, which forks.
 
 The feature this asks for is a **spawn-based worker mode**: the supervisor
 binds the listener and `posix_spawn`s workers that inherit it, each

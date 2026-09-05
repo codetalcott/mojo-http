@@ -21,11 +21,11 @@ runtime refuses (`+[NSPlaceholderString initialize] may have been in
 progress in another thread when fork() was called`), and with that check
 disabled the model load dies in CoreServices' libdispatch ("crashed on
 child side of fork pre-exec") — CLAUDE.md's rule "after fork() without
-exec, platform runtimes are off limits", measured 2026-09-04. Two
-independent `m0serve --workers 1` on one port (bench_serve.py's
-`--instances`) do not share the load on macOS either: SO_REUSEPORT hands
-every connection to one listener. uvicorn's workers are spawned and
-unaffected. The `pid` in each response is how the spread is measured.
+exec, platform runtimes are off limits", measured 2026-09-04. A second
+independent `m0serve --workers 1` on the port (bench_serve.py's
+`--instances`) is refused — SO_REUSEPORT is off by design (SPEC D6) — so
+the supervisor is the only multi-process path. uvicorn's workers are
+spawned and unaffected. The `pid` in each response is how the spread is measured.
 
 Backend: QKSTAT_EMBED_BACKEND=coreml|max|auto, resolved by embed.py.
 Tokenizer: HF `tokenizers`, loaded from the tokenizer.json coreml_convert.py

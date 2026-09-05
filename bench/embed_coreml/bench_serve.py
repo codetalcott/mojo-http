@@ -16,8 +16,8 @@ and the same coremltools. Requires wrk (brew install wrk), the converted
 models (`npm run convert:coreml` in mojo-addon-examples/packages/embed) and
 QKSTAT_EMBED_DIR if that checkout is not the sibling of this one. The rows
 in docs/notes/coreml-embeddings.md were driven by a script that ran these
-one at a time on an idle machine; never two at once (SO_REUSEPORT lets a
-second server take the port, and the row then measures neither).
+one at a time on an idle machine; never two harness runs at once (they
+share the port sequence, and the row then measures neither).
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def main() -> int:
     ap.add_argument("--server", choices=["m0serve", "uvicorn"], required=True)
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--instances", type=int, default=1,
-                    help="independent server processes on the same port (m0serve: Core ML cannot run in a forked worker)")
+                    help="independent server processes on the same port; m0serve refuses the second bind (SPEC D6), and the pid spread in the row records that")
     ap.add_argument("--blocking-threads", type=int, default=2, help="m0serve only")
     ap.add_argument("--m0serve", default="m0serve")
     ap.add_argument("--python-bin", required=True, help="venv bin dir with python3, uvicorn, coremltools")
