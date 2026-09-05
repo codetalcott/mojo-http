@@ -75,7 +75,7 @@ says otherwise. Where a comparator wins, the row stays.
 
 This is the decomposition that matters, and it is why the "fastest HTTP
 layer" row above is marked as uninteresting. Splitting the server into the
-part that parses HTTP and the part that calls Python locates the gap
+part that parses HTTP and the part that calls Python prices each layer
 instead of reporting one number for both:
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
@@ -111,9 +111,19 @@ is the finding:
 - zero-config, what `m0serve app.wsgi` runs, serves **<!-- num:m0-zero-config-rps-k@1 -->109.2<!-- /num -->k
   rps** on a pool of eight handler threads
 
-So the deficit is the bridge, the per-request crossing into CPython, and
-not the parsing or the event loop, which is the whole reason to split the
-measurement rather than report one number.
+What the split prices is the bridge: the 1.44x on the inline row is real
+and it is m0serve's own. What it cannot say is which thread bounds the
+one-handler-thread row, because rps per core averages two threads that do
+different work. Measured per thread
+([notes/loop-thread-bound.md](notes/loop-thread-bound.md)), that row is
+bound by the event-loop thread: it runs at 98 % while the Python thread
+runs at 70 %, and it costs about 7.2 µs of CPU per request against 5.3 µs
+for Granian's tokio thread — 1.2 µs of that the datagram handoff to the
+pool, most of the rest user-space parsing and per-request bookkeeping.
+The bridge itself, the environ build and the response read, is cheaper
+per request than Granian's PyO3 crossing. A faster bridge therefore does
+not move this row until the loop is faster; the loop-side handoff is the
+lever.
 
 Until 2026-09-05 the head-to-head row was the inline one. An explicit
 `--workers 1` switches the zero-config pool off, so the table compared the
@@ -122,11 +132,12 @@ m0serve's throughput by a third and flattered its per-core figure; the
 same-shape pair is the comparison now.
 
 **What this table cannot tell you is how much Granian's own bridge costs**,
-because there is no Granian-without-Python row to divide by; the per-side
-split needs a measurement nobody has taken yet. Quoting the hello row
-against Granian would be comparing a server that runs no Python to one
-that does. It is on this page because it locates the cost, not because it
-is a win.
+because there is no Granian-without-Python row to divide by. Per thread it
+can be read off a profile, and the note linked above puts Granian's Python
+thread at about 4.3 µs per request against this server's pool thread at
+5.1, of which 1.4 is the handoff. Quoting the hello row against Granian
+would be comparing a server that runs no Python to one that does. It is on
+this page because it prices the bridge, not because it is a win.
 
 ## ASGI throughput
 

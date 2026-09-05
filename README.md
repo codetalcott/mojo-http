@@ -549,13 +549,17 @@ values returns unchanged.
   located**: one worker and one handler thread each, <!-- num:m0-w1-rps-k@1 -->143.3<!-- /num -->k
   against <!-- num:granian-w1-rps-k@1 -->189.0<!-- /num -->k rps on a bare callable, <!-- num:m0-wsgi-rps-k@1 -->86.8<!-- /num -->k
   against <!-- num:granian-rps-k@1 -->107.4<!-- /num -->k per measured core — about <!-- num:m0-per-granian@2 -->0.81<!-- /num -->x. The
-  split says where it goes. `apps/hello`, the same server with no Python
-  in the path, runs at <!-- num:hello-rps-k@1 -->151.8<!-- /num -->k rps/core, above Granian's end-to-end
-  rate; the bare app run inline on that loop, one thread, runs at
-  <!-- num:m0-loop-rps-k@1 -->105.3<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.44<!-- /num -->x, and
-  essentially all of the deficit is that crossing rather than HTTP parsing
-  or the event loop. How much of Granian's rate its *own* bridge costs is
-  not measurable from this run: there is no Granian-without-Python row.
+  split prices each layer. `apps/hello`, the same server with no Python
+  in the path, runs at <!-- num:hello-rps-k@1 -->151.8<!-- /num -->k rps/core; the bare app run
+  inline on that loop, one thread, runs at
+  <!-- num:m0-loop-rps-k@1 -->105.3<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.44<!-- /num -->x.
+  Which layer bounds the one-handler-thread row is a per-thread question,
+  and measured per thread it is the event-loop thread: saturated while the
+  Python thread idles a third of the time, at about 7.2 µs of CPU per
+  request against 5.3 for Granian's tokio thread, 1.2 µs of that the
+  datagram handoff to the pool and the rest user-space work in the request
+  path — while the bridge itself is cheaper per request than Granian's
+  ([docs/notes/loop-thread-bound.md](docs/notes/loop-thread-bound.md)).
 
   Per *core*, because the comparator was not running one: Granian's
   `--workers 1` was measured at ~1.75 cores across its runtime's I/O
