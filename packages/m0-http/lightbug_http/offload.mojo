@@ -70,7 +70,6 @@ from lightbug_http.c.socket import (
 from lightbug_http.c.socket_error import RecvEINTRError
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.c.platform import MSG_DONTWAIT
 
 
@@ -337,8 +336,8 @@ struct OffloadPool(Movable):
     var complete_write: Int
     """Pool threads poke the loop here."""
 
-    var requests: OwningList[Optional[HTTPRequest]]
-    var responses: OwningList[Optional[HTTPResponse]]
+    var requests: List[Optional[HTTPRequest]]
+    var responses: List[Optional[HTTPResponse]]
 
     var errored: List[Bool]
     """The handler raised for this slot. Written by the pool thread before
@@ -431,13 +430,8 @@ struct OffloadPool(Movable):
         descriptors per loop; nothing consults it, since the loop is handed
         `offload_addr = 0`.
         """
-        # One slot minimum, even for a disabled pool. `OwningList`'s
-        # no-argument constructor builds a `Pointer` from address 0, which
-        # Mojo 1.0 rejects outright ("Pointer is non-nullable") — and it
-        # rejects it at INSTANTIATION, so a `mojo run` or a `--emit
-        # shared-lib` that never elaborates the generic body compiles
-        # happily and `poe test-all` does not. Reserving one element avoids
-        # the constructor entirely; `self.capacity` is what says whether
+        # One slot minimum, even for a disabled pool, so every per-slot
+        # table has an entry to index; `self.capacity` is what says whether
         # this pool is real, and it is 0 either way.
         self.lane_prefixes = List[String]()
         self.lane_submit_read = List[Int]()
@@ -451,8 +445,8 @@ struct OffloadPool(Movable):
             self.slot_lane.append(0)
             self.slot_ack_fd.append(-1)
         self.aborts = List[Int]()
-        self.requests = OwningList[Optional[HTTPRequest]](capacity=slots)
-        self.responses = OwningList[Optional[HTTPResponse]](capacity=slots)
+        self.requests = List[Optional[HTTPRequest]](capacity=slots)
+        self.responses = List[Optional[HTTPResponse]](capacity=slots)
         self.errored = List[Bool](capacity=slots)
         for _ in range(slots):
             self.requests.append(None)

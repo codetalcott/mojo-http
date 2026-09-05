@@ -24,7 +24,6 @@ from lightbug_http.c.sendfile import send_file
 from lightbug_http.c.socket import close as close_fd
 from lightbug_http.socket import EOF, FatalCloseError, SocketAcceptError, SocketClosedError, SocketRecvError
 from lightbug_http.utils.error import CustomError
-from lightbug_http.utils.owning_list import OwningList
 from std.time import perf_counter_ns
 from std.utils import Variant
 
@@ -398,7 +397,7 @@ struct ProvisionPool(Movable):
     Bit=1 means free, bit=0 means in-use. MSB-first ordering.
     """
 
-    var provisions: OwningList[ConnectionProvision]
+    var provisions: List[ConnectionProvision]
     var bitmask: List[UInt64]
     var num_words: Int
     var capacity: Int
@@ -406,7 +405,7 @@ struct ProvisionPool(Movable):
     """Size each provision's buffers are given on first use."""
 
     def __init__(out self, capacity: Int, config: ServerConfig):
-        self.provisions = OwningList[ConnectionProvision](capacity=capacity)
+        self.provisions = List[ConnectionProvision](capacity=capacity)
         self.capacity = capacity
         self.buffer_size = config.socket_buffer_size
         self.num_words = (capacity + 63) // 64

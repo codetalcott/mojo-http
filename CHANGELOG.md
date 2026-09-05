@@ -27,6 +27,20 @@ versions may break the API**.
 
 ### Changed
 
+- **`OwningList` retired.** The fork's private copy of `List`
+  (`lightbug_http/utils/owning_list.mojo`) existed for elements that are
+  Movable but not Copyable — per-slot response buffers, WebSocket parsers,
+  connection provisions, parked requests and responses, the mounted
+  `WSGIApp`s, the client's idle connection. Mojo 1.0's `List` takes those
+  as it is, so every site is a plain `List` and the file is gone.
+  Measured at parity: the hello row 171.6k/172.7k/174.8k req/s at
+  c16/c64/c256 before and 172.8k/173.7k/176.4k after, the user-space
+  request in `bench_http_parts` 2.11 → 2.05 µs. Probed on the way: the
+  reason `ExecutorState` stays behind an address rather than inside the
+  Python-bound `ExecutorPort` is not the container but the element —
+  `PythonModuleBuilder`'s derived `Writable` recurses into
+  `HTTPResponse`, whose cookie jar holds a `Dict` that is not `Writable`;
+  the docstring now says so.
 - **The event loop holds no thread state while it serves** (`_serve_offloaded`,
   `DetachingBackend.set_loop_detached`, SPEC E11; docs/notes/detached-loop.md).
   Under `--blocking-threads` and under the ASGI executor the loop used to

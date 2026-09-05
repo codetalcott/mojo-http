@@ -56,7 +56,6 @@ from lightbug_http.event_loop import (
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.event_loop_backend import EventLoopBackend
 from std.io import FileDescriptor
-from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame,
     WS_OP_TEXT, WS_OP_BINARY, WS_OP_CLOSE,
@@ -318,9 +317,12 @@ struct ExecutorState(Movable):
 
     Kept OUT of `ExecutorPort` on purpose: `PythonModuleBuilder.add_type`
     wraps `__repr__` through a `Writable` the compiler DERIVES from the
-    fields — an explicit `write_to` on the type does not stop it — and an
-    `OwningList[Optional[HTTPResponse]]` cannot be derived. Four integers
-    can. Parallel to the slots: what `after_response` needs after the
+    fields — an explicit `write_to` on the type does not stop it — and the
+    derivation recurses into every field's element type: a
+    `List[Optional[HTTPResponse]]` fails on `HTTPResponse` itself, whose
+    `ResponseCookieJar` holds a `Dict` that is not `Writable` (probed on
+    1.0.0 when `OwningList` was retired; the container was never the
+    obstacle). Four integers can. Parallel to the slots: what `after_response` needs after the
     request itself has crossed into Python, the ready 101 held for a
     WebSocket handshake until the application's `websocket.accept` comes
     back, each stream's generation, and the completions parked since the
@@ -329,7 +331,7 @@ struct ExecutorState(Movable):
 
     var methods: List[String]
     var paths: List[String]
-    var pending_101: OwningList[Optional[HTTPResponse]]
+    var pending_101: List[Optional[HTTPResponse]]
     var gens: List[Int]
     var lost: List[Bool]
     """Per slot: this stream lost a frame the chunk channel would not take,
@@ -346,7 +348,7 @@ struct ExecutorState(Movable):
     def __init__(out self, lane: Int, capacity: Int):
         self.methods = List[String](capacity=capacity)
         self.paths = List[String](capacity=capacity)
-        self.pending_101 = OwningList[Optional[HTTPResponse]](capacity=capacity)
+        self.pending_101 = List[Optional[HTTPResponse]](capacity=capacity)
         self.gens = List[Int](capacity=capacity)
         self.lost = List[Bool](capacity=capacity)
         for _ in range(capacity):

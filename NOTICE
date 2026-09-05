@@ -415,6 +415,19 @@ lightbug_http
         from Mojo 1.0.0; it is importable, and with the doc-string and
         `@export` fixes outside the fork the ratchet's baseline went from 68
         to 0. Behaviour-preserving: same pointer type, same frees.
+      - utils/owning_list.mojo removed (2026-09-05). It was a ~400-line copy
+        of the stdlib `List` from when `List[T]` required a `Copyable`
+        element, kept for the per-slot tables whose elements own buffers
+        or descriptors. On Mojo 1.0 `List` and `Optional` take a
+        Movable-only element, so its seven users — the loop's per-slot
+        response buffers and WebSocket parsers, `ProvisionPool`, the
+        offload pool's parked requests and responses, and three outside
+        the fork — are plain `List` now, and the file's two `unsafe_alloc`
+        sites and ASan container annotations went with it. Measured before
+        and after on the hello row: 171.6k/172.7k/174.8k req/s at
+        c16/c64/c256 became 172.8k/173.7k/176.4k, and the user-space
+        request in `bench_http_parts` 2.11 -> 2.05 us — parity, within
+        noise.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
