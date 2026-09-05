@@ -470,6 +470,30 @@ code depends on:
       barrier. `poe probe-pool-fairness`
       (pre-release, SPEC E11) is the gate, and `M0_POOL_TURN=0` is its
       negative arm.
+    - **Jobs and completions ride in-memory rings; the socketpairs carry
+      only wakes and payloads** (`lightbug_http/ring.mojo`; the protocol
+      is `offload.mojo`'s module docstring; the measurement is
+      docs/notes/pool-ring-handoff.md). The rule is an ORDER on each
+      side. A pool thread whose ring is empty spins `POOL_SPIN_NS`, then
+      counts itself parked, re-checks the ring, and only then blocks in
+      `recv`; `submit` pushes, then reads that count, and pokes the lane
+      only if it is non-zero. The loop raises its own flag before
+      `backend.wait` and re-checks the completion ring after raising it
+      (`_wait_for_events`); `complete` pushes, then reads the flag, and
+      pokes the completion channel only if it is set. Announce, re-check,
+      block — and push, read, poke — every step sequentially consistent:
+      reorder either sequence and a wake is lost, which is a request
+      answered a second late or a pill never read. Pills, inbound
+      WebSocket messages, stream aborts and every executor datagram still
+      ride the sockets, and reach a thread that never runs dry through its
+      non-blocking poll once per `POOL_DGRAM_POLL_NS`. The loop's flag
+      starts SET and the inversion's driver never clears it, so that path
+      keeps the datagram per completion it always had. Worth +16 % rps at
+      16 connections and +19 % at 256 on bare WSGI with one handler
+      thread: the loop's per-request cost went from 7.5 µs to 6.3 at c16
+      and 5.3 at c256, tokio's figure. The pool thread shows MORE CPU than
+      its work afterwards, because a spin is a core spent not paying a park
+      and a wake per job. `M0_POOL_RING=0` is the A/B knob.
     - **A slot with a job in flight is untouchable and unrecyclable.** The
       idle and header sweeps skip it, the read path refuses it (clearing
       `slot_read_armed` so a pipelined request is not stranded by the edge it
@@ -1205,7 +1229,8 @@ Properties of the design, not defects to fix in passing:
   worker threads at user-initiated QoS, so they stay on performance cores
   under contention; accepted and ignored elsewhere), `M0_ACCEPT_SHARE`
   (`0` turns accept sharing off under `--workers N`; an A/B knob, not a
-  flag). `m0serve` layers flags on top (flag > env > default) and
+  flag), `M0_POOL_RING` (`0` puts the `--blocking-threads` handoff back
+  on datagrams; the same kind of knob). `m0serve` layers flags on top (flag > env > default) and
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that
   it **exits with the code `m0serve` would exit with for the same

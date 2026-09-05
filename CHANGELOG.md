@@ -21,6 +21,19 @@ versions may break the API**.
 
 ### Changed
 
+- **The `--blocking-threads` handoff rides in-memory rings**, and the two
+  socketpairs carry only wakes and payloads. A bounded MPMC ring per pool
+  lane for jobs and one for completions replace the four datagram
+  syscalls a request used to cost; a pool thread spins before it parks,
+  and a wake is sent only to a side that has announced it is parked
+  (`lightbug_http/ring.mojo`; the protocol in `offload.mojo`'s docstring).
+  Same binary, same session, bare WSGI at one worker and one handler
+  thread: 155k rps against 131k at 16 connections and 184k against 154k
+  at 256, the loop thread's per-request cost from 7.5 µs to 6.3 and 5.3.
+  Found by measuring per thread rather than per core
+  (docs/notes/loop-thread-bound.md): the loop was the saturated stage and
+  1.2 µs of its 7.2 was the handoff. `M0_POOL_RING=0` restores the
+  datagram handoff for an A/B.
 - **The layer split measures one worker in three shapes**, and the
   head-to-head with Granian is same-shape. An explicit `--workers 1`
   switches the zero-config pool off, so the old one-worker row was the
