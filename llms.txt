@@ -4,8 +4,10 @@
 > toolchain, no dependencies, nothing fetched at install. Its distinguishing
 > capability: held SSE and WebSocket connections gated by plain synchronous
 > views (Django, Flask, ...), with cross-worker publish, needing neither
-> Channels nor Redis nor a second process. It is not the fastest server on
-> raw throughput; the benchmarks page has the numbers.
+> Channels nor Redis nor a second process. On throughput it is ahead of
+> uvicorn with uvloop on bare ASGI and on the fast-request tail under mixed
+> load, and behind Granian on bare WSGI; the benchmarks page has the
+> numbers, each rendered from a dated artifact.
 
 Platforms: macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact
 floor is in the wheel filename, and pip refuses rather than crashes on older
