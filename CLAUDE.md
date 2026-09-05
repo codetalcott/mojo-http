@@ -203,6 +203,19 @@ code depends on:
     **fork before the first Python call, never after.** Mojo initializes the
     interpreter lazily, so each worker's own `WSGIApp` construction after
     `fork_all()` returns is that first call — keep it there.
+    **`--spawn-workers` is the escape from the fork rule's other half**
+    (platform runtimes are off limits after `fork()` without `exec`): the
+    child still forks, then `execv`s this binary with
+    `M0_WORKER_INDEX`/`M0_WORKER_SPAWNED` set, and `main` runs again from
+    the top as a worker that binds nothing — it adopts the listener
+    (`M0_LISTEN_FD`), the bus socketpairs (`M0_BUS_READ_FDS`/
+    `M0_BUS_WRITE_FDS`) and the shared page (`M0_SHARED_ID_FD`, file-backed
+    only in this mode, because an anonymous mapping dies at exec) by fd
+    number, and re-exports `M0_SHARED_ID_ADDR` for its own address before
+    Python starts. Every inherited fd goes through `keep_across_exec`:
+    macOS's `shm_open` sets `FD_CLOEXEC`, measured as EBADF in the worker.
+    Core ML cannot run in a forked child at all
+    (docs/notes/coreml-embeddings.md), which is what this exists for.
   - **Threaded (`M0_THREADS`, free-threaded CPython only; `m0_wsgi.threaded`).**
     N event loops on N pthreads, one interpreter. The main thread initializes
     the interpreter and imports the app BEFORE spawning, then

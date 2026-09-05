@@ -20,10 +20,12 @@ from std.atomic import Atomic
 from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
+from std.os import setenv
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
     kill_process, was_signaled, term_signal, exit_code,
     install_signal_handler, SIGTERM, SIGINT, SIGKILL,
+    exec_process, shared_file_fd, map_shared_fd,
 )
 
 from .global_slot import (
@@ -56,11 +58,21 @@ struct SharedAtomics(Copyable, Movable):
 
     var _base: Int
     var _count: Int
+    var fd: Int
+    """The file backing the page, or -1 for the anonymous form.
+
+    Anonymous shared memory survives `fork()` and nothing else; a page that
+    must reach a worker that `exec`s (`--spawn-workers`) is file-backed
+    (`shm_open`, unlinked at once) and travels as this fd number, which the
+    worker maps with `from_fd`. The address differs per process, so the
+    exported `M0_SHARED_ID_ADDR` is re-derived there.
+    """
 
     def __init__(out self, count: Int) raises:
         """Allocate `count` shared Int64 atomic slots, all starting at 0."""
         var bytes_needed = count * 8
         var length = ((bytes_needed + 4095) // 4096) * 4096
+        self.fd = -1
         var raw = external_call[
             "mmap", Int, Int, Int, c_int, c_int, c_int, Int
         ](
@@ -74,13 +86,38 @@ struct SharedAtomics(Copyable, Movable):
         for i in range(count):
             self._slot(i)[] = Atomic[DType.int64](0)
 
+    def __init__(out self, count: Int, *, file_backed: Bool) raises:
+        """The exec-surviving form: a file-backed page, kept open as `self.fd`."""
+        var length = ((count * 8 + 4095) // 4096) * 4096
+        if not file_backed:
+            self = Self(count)
+            return
+        var fd = shared_file_fd(length)
+        self._base = map_shared_fd(fd, length)
+        self._count = count
+        self.fd = fd
+        for i in range(count):
+            self._slot(i)[] = Atomic[DType.int64](0)
+
+    def __init__(out self, *, from_fd: Int, count: Int) raises:
+        """Map a page a parent created with `file_backed=True`; slots are NOT reset."""
+        var length = ((count * 8 + 4095) // 4096) * 4096
+        self._base = map_shared_fd(from_fd, length)
+        self._count = count
+        self.fd = from_fd
+
     def __init__(out self, *, copy: Self):
         self._base = copy._base
         self._count = copy._count
+        self.fd = copy.fd
 
     def __init__(out self, *, deinit move: Self):
         self._base = move._base
         self._count = move._count
+        self.fd = move.fd
+
+    def count(self) -> Int:
+        return self._count
 
     def _slot(self, i: Int) -> Pointer[Atomic[DType.int64], MutUntrackedOrigin]:
         return Pointer[Atomic[DType.int64], MutUntrackedOrigin](
@@ -248,6 +285,10 @@ struct WorkerSupervisor:
     """How many reloads have happened; reported, and read by the smoke."""
     var _config_refused: Bool
     """Whether a worker exited `EX_CONFIG`. Never respawned; propagated."""
+    var _spawn_path: String
+    """Under `--spawn-workers`, the binary every worker execs; empty means fork."""
+    var _spawn_args: List[String]
+    """The argv the spawned worker re-runs, `argv[0]` included."""
     var _gave_up: Bool
     """Whether the respawn budget ran out with a worker still dead.
 
@@ -270,8 +311,53 @@ struct WorkerSupervisor:
         self._scanner = None
         self.reload_interval_ms = 300
         self.reloads = 0
+        self._spawn_path = String("")
+        self._spawn_args = List[String]()
         self._gave_up = False
         self._config_refused = False
+
+    def enable_spawn(mut self, var path: String, var args: List[String]):
+        """Make every worker an exec'd process rather than a forked one.
+
+        Call before `fork_all`. The child is still forked — from a parent that
+        has touched no platform runtime, which is what makes the fork safe —
+        but it `execv`s `path` with `args` at once, with `M0_WORKER_INDEX`
+        and `M0_WORKER_SPAWNED=1` in its environment, and the caller's
+        `main` runs again from the top in a fresh image. Open descriptors
+        and the environment survive the exec; mappings and threads do not.
+
+        What it buys: a worker that may use Objective-C, CoreFoundation,
+        libdispatch or anything else that refuses to run in a forked child
+        (Core ML, `urlopen`'s proxy lookup on macOS). What it costs: a
+        second process start per worker — the binary loads again and the
+        interpreter initialises from scratch. The supervisor's own job is
+        unchanged: the same pids, the same respawn, the same signals.
+        """
+        self._spawn_path = path^
+        self._spawn_args = args^
+
+    def spawning(self) -> Bool:
+        return self._spawn_path.byte_length() > 0
+
+    def _exec_if_spawning(self, index: Int):
+        """In a freshly forked child under spawn mode: never returns.
+
+        `exec_process` returns only on failure, and a worker whose image
+        cannot load would fail the same way on every respawn — so the exit
+        is `EX_CONFIG`, which the supervisor reads as a refusal and stops
+        respawning (E10), rather than a crash it would retry ten times.
+        """
+        if not self.spawning():
+            return
+        _ = setenv("M0_WORKER_INDEX", String(index), True)
+        _ = setenv("M0_WORKER_SPAWNED", String("1"), True)
+        var errno = exec_process(self._spawn_path, self._spawn_args)
+        print(
+            "[worker " + String(index) + "] exec of " + self._spawn_path
+            + " failed, errno " + errno,
+            flush=True,
+        )
+        process_exit(EX_CONFIG)
 
     def enable_reload(mut self, var dirs: List[String], var suffix: String):
         """Watch `dirs` for changed `suffix` files and restart workers on one.
@@ -301,7 +387,8 @@ struct WorkerSupervisor:
                 # Child: record which index this process holds and return
                 self.worker_index = i
                 _forget_supervisor_signals()
-                print("[worker {}] pid={} starting".format(i, getpid()))
+                print("[worker {}] pid={} starting".format(i, getpid()), flush=True)
+                self._exec_if_spawning(i)
                 return
             self.child_pids.append(pid)
 
@@ -521,7 +608,8 @@ struct WorkerSupervisor:
                 self.worker_index = i
                 _forget_supervisor_signals()
                 print("[worker {}] pid={} starting (reload {})".format(
-                    i, getpid(), self.reloads))
+                    i, getpid(), self.reloads), flush=True)
+                self._exec_if_spawning(i)
                 return True
             self.child_pids[i] = pid
         publish_child_pids(self.child_pids)
@@ -572,7 +660,8 @@ struct WorkerSupervisor:
             # it the dead worker's bus channel and shared slots.
             self.worker_index = respawn_index
             _forget_supervisor_signals()
-            print("[worker respawn {}] pid={} starting".format(respawn_index, getpid()))
+            print("[worker respawn {}] pid={} starting".format(respawn_index, getpid()), flush=True)
+            self._exec_if_spawning(respawn_index)
             return _RESPAWN_CHILD
         if respawn_index >= 0 and respawn_index < len(self.child_pids):
             self.child_pids[respawn_index] = new_pid

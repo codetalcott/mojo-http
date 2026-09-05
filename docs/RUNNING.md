@@ -52,6 +52,7 @@ Everything else is opt-in:
 | flag | use it when | notes |
 |---|---|---|
 | `--workers N` | you want N processes on a multi-core host | prefork; a supervisor respawns crashes and drains on SIGTERM |
+| `--spawn-workers` | a worker uses Core ML, Objective-C or anything else a forked child cannot | each worker execs the binary afresh after the fork; same supervisor, one extra process start per worker |
 | `--blocking-threads N` | you want more or fewer handler threads per loop | `0` turns the pool off; for ASGI, `N>0` selects the buffered path instead of the executor |
 | `--realtime` | sync views hold SSE streams or WebSockets with `M0-Hold` | WSGI only; the [Quickstart](../QUICKSTART.md) is the contract |
 | `--mount PREFIX=SPEC` | several applications in one process | repeatable; each mount detects its own protocol and runs in its own mode, longest prefix wins |

@@ -99,3 +99,44 @@ they hide:
   (which saturates rather than producing NaN) returned embeddings with
   cosine 0.26–0.55 against PyTorch, with an all-ones mask too. A
   timing-only experiment cannot see this. `-1e4` fixes it.
+
+## Shipped the same evening: `--spawn-workers` (SPEC E15)
+
+The mode exists: the supervisor forks as before and the child at once
+`execv`s the binary with `M0_WORKER_INDEX` set, adopting the listener, the
+bus socketpairs and a now file-backed shared page by descriptor. Gated by
+`smoke-spawn-workers` on both CI platforms, with the macOS negative arm
+(`urllib.request.getproxies()` kills a forked worker 3 of 3, answers under
+spawn) and three exec-path tests in `test_respawn.mojo`.
+
+A/B against fork, two workers, five starts each and two alternated wrk
+rounds on the bare app:
+
+| Measure | fork | spawn |
+|---|---:|---:|
+| start to first answered request, median of 5 | 82 ms | 92 ms |
+| hello `wrk -t4 -c64 -d10s`, req/s, round 1 / round 2 | 195k / 199k | 199k / 193k |
+
+The exec costs about ten milliseconds per worker at start and nothing
+after. The default stays fork.
+
+**The 1.5x did not arrive.** The Core ML app on two spawned workers:
+
+| Shape | req/s | p50 ms | p99 ms | warm connections per pid |
+|---|---:|---:|---:|---|
+| c8, 1 sentence | 1675 | 4.74 | 6.83 | 197 / 3 |
+| c32, 1 sentence | 1695 | 18.9 | 30.2 | 199 / 1 |
+| c8, 8 sentences | 711 (5684 sentences/s) | 11.5 | 13.5 | 193 / 7 |
+
+One worker's throughput, because one worker holds nearly every
+connection. This is not the exec: forked workers show the same skew on
+the bare app (32 of 32 in a burst, 26 of 32 on a 50 ms ramp), and so do
+spawned ones (31 of 32, 27 of 32). Two mechanisms tried behind a knob and
+reverted: a level-triggered listen with one accept per wakeup (a burst
+still 31 of 32; the ramp balanced once, 17 to 15, and not again), and the
+same plus `sched_yield` after the accept (28 to 4). The loop re-enters
+`kevent` in microseconds and wins the next race before its sibling is
+scheduled. uvicorn's workers spread (123 to 77 warm, and 2586 req/s)
+because a Python loop iteration is slow enough to lose races. The item is
+now ROADMAP's E16, with the mechanisms that could retire it; Linux is
+unmeasured.

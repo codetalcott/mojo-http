@@ -339,6 +339,8 @@ jobs:
       # stop` does, and what used to leave them orphaned on the port.
       - name: Smoke test graceful shutdown
         run: uv run poe smoke-shutdown
+      - name: Smoke test spawned workers
+        run: uv run poe smoke-spawn-workers
       # The drain's other half (SPEC D9): a request whose body is still
       # arriving when SIGTERM lands is read on and answered, in both
       # execution shapes, and the process leaves inside 3 s of the signal

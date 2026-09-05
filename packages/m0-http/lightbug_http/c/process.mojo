@@ -222,3 +222,172 @@ def install_signal_handler(sig: Int, handler_address: Int) -> Bool:
         SIGKILL and SIGSTOP always answer.
     """
     return _raw_signal(c_int(sig), handler_address) != _SIG_ERR
+
+
+# --- exec, and the shared page that survives it ----------------------------
+#
+# A spawned worker is a forked child that immediately `execv`s the same
+# binary. What it keeps across the exec is what POSIX keeps: open file
+# descriptors (the listener, the bus socketpairs, the shared page's fd) and
+# the environment. What it loses is every mapping — which is why the shared
+# atomics page must be FILE-backed to survive, where fork alone was happy
+# with MAP_ANONYMOUS.
+#
+# Buffers here are `List`s, not `alloc`: `alloc` without a `Layout` is one
+# of the ratchet's counted warnings, and a list's `unsafe_ptr()` is the same
+# pointer for the duration of the call.
+
+from std.sys.info import CompilationTarget
+from lightbug_http.c.kqueue import _fcntl
+
+
+def _c_string(s: String) -> List[UInt8]:
+    """A NUL-terminated copy: Mojo's `String` guarantees no NUL past its end."""
+    var b = s.as_bytes()
+    var out = List[UInt8](capacity=len(b) + 1)
+    out.extend(b)
+    out.append(0)
+    return out^
+
+
+def executable_path() raises -> String:
+    """The running binary's path, from the OS rather than from `argv[0]`.
+
+    `argv[0]` may be a bare name resolved through PATH or a path relative to
+    a directory the process has since left; a worker that re-execs must name
+    the file itself. macOS answers through `_NSGetExecutablePath`, Linux
+    through `/proc/self/exe`.
+    """
+    comptime cap = 4096
+    var buf = List[UInt8](capacity=cap)
+    buf.resize(cap, 0)
+    var n: Int
+    comptime if CompilationTarget.is_macos():
+        var size = List[UInt32](capacity=1)
+        size.append(UInt32(cap))
+        var rc = external_call[
+            "_NSGetExecutablePath", c_int, type_of(buf.unsafe_ptr()),
+            type_of(size.unsafe_ptr()),
+        ](buf.unsafe_ptr(), size.unsafe_ptr())
+        _ = size
+        if rc != 0:
+            raise Error("_NSGetExecutablePath failed: path longer than 4096")
+        n = 0
+        while n < cap and buf[n] != 0:
+            n += 1
+    else:
+        var link = _c_string("/proc/self/exe")
+        var got = external_call[
+            "readlink", c_ssize_t, type_of(link.unsafe_ptr()),
+            type_of(buf.unsafe_ptr()), Int,
+        ](link.unsafe_ptr(), buf.unsafe_ptr(), cap - 1)
+        _ = link
+        if got < 0:
+            raise Error("readlink(/proc/self/exe) failed, errno: ", get_errno())
+        n = Int(got)
+    var out = String()
+    for i in range(n):
+        out += chr(Int(buf[i]))
+    return out^
+
+
+def exec_process(path: String, args: List[String]) -> String:
+    """`execv(path, args)`: replace this process image. Returns only on failure.
+
+    `args` is the whole argv, `args[0]` included. The environment is the
+    caller's — `execv` passes `environ` — so anything `setenv`'d before this
+    call reaches the new image, which is how a spawned worker learns its
+    index. The return value names the errno.
+    """
+    var bufs = List[List[UInt8]]()
+    for i in range(len(args)):
+        bufs.append(_c_string(args[i]))
+    var path_c = _c_string(path)
+    var argv = List[Int](capacity=len(args) + 1)
+    for i in range(len(args)):
+        argv.append(Int(bufs[i].unsafe_ptr()))
+    argv.append(0)
+    _ = external_call[
+        "execv", c_int, type_of(path_c.unsafe_ptr()), type_of(argv.unsafe_ptr())
+    ](path_c.unsafe_ptr(), argv.unsafe_ptr())
+    # Only reached on failure.
+    var errno = String(get_errno())
+    _ = argv
+    _ = bufs
+    _ = path_c
+    return errno^
+
+
+comptime _O_RDWR = 0x2
+comptime _O_CREAT = 0x200 if CompilationTarget.is_macos() else 0x40
+comptime _O_EXCL = 0x800 if CompilationTarget.is_macos() else 0x80
+comptime _PROT_READ_WRITE = 0x1 | 0x2
+comptime _MAP_SHARED = 0x01
+
+
+comptime _F_GETFD = 1
+comptime _F_SETFD = 2
+comptime _FD_CLOEXEC = 1
+
+
+def keep_across_exec(fd: Int) -> Bool:
+    """Clear `FD_CLOEXEC` on `fd`, so an exec'd worker inherits it.
+
+    Sockets and socketpairs are created without the flag here, but macOS's
+    `shm_open` sets it on the descriptor it returns (measured: the spawned
+    worker's `mmap` answered EBADF), and a future `SOCK_CLOEXEC` somewhere
+    would silently detach a worker from its listener. Every descriptor a
+    spawned worker must inherit goes through this, whatever its origin.
+    """
+    # `_fcntl` carries the macOS variadic ABI; a second `external_call` of
+    # the same symbol with a different signature does not compile.
+    var flags = _fcntl(c_int(fd), c_int(_F_GETFD), c_int(0))
+    if flags < 0:
+        return False
+    if (Int(flags) & _FD_CLOEXEC) == 0:
+        return True
+    var rc = _fcntl(c_int(fd), c_int(_F_SETFD), c_int(Int(flags) & ~_FD_CLOEXEC))
+    return rc == 0
+
+
+def shared_file_fd(length: Int) raises -> Int:
+    """An fd backing `length` bytes of shared memory that survives `exec`.
+
+    `shm_open` under a name derived from this pid, unlinked at once so the
+    fd is the only handle, sized with `ftruncate`. Not `FD_CLOEXEC`, on
+    purpose: a spawned worker maps the same fd number it inherits.
+    """
+    var attempt = 0
+    while True:
+        var name = _c_string(
+            "/m0-" + String(getpid()) + "-" + String(attempt)
+        )
+        var fd = external_call[
+            "shm_open", c_int, type_of(name.unsafe_ptr()), c_int, c_int
+        ](name.unsafe_ptr(), c_int(_O_RDWR | _O_CREAT | _O_EXCL), c_int(0o600))
+        if fd >= 0:
+            _ = external_call["shm_unlink", c_int, type_of(name.unsafe_ptr())](
+                name.unsafe_ptr()
+            )
+            _ = name
+            var rc = external_call["ftruncate", c_int, c_int, Int](fd, length)
+            if rc != 0:
+                raise Error("ftruncate on the shared page failed, errno: ", get_errno())
+            if not keep_across_exec(Int(fd)):
+                raise Error("could not clear FD_CLOEXEC on the shared page, errno: ", get_errno())
+            return Int(fd)
+        var errno = get_errno()
+        _ = name
+        attempt += 1
+        if attempt > 16:
+            raise Error("shm_open failed, errno: ", errno)
+
+
+def map_shared_fd(fd: Int, length: Int) raises -> Int:
+    """`mmap(MAP_SHARED)` the file `fd` describes; returns the address."""
+    var raw = external_call[
+        "mmap", Int, Int, Int, c_int, c_int, c_int, Int
+    ](0, length, c_int(_PROT_READ_WRITE), c_int(_MAP_SHARED), c_int(fd), 0)
+    if raw == -1 or raw == 0:
+        raise Error("mmap of the shared page failed, errno: ", get_errno())
+    return raw

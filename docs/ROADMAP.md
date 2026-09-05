@@ -76,6 +76,16 @@ the page would have believed the close path was unreliable.
 
 ## Known issues
 
+- **Prefork workers on macOS do not share a listener's connections.** The
+  same worker wins nearly every accept (32 of 32 in a burst, 26–29 of 32
+  on a slow ramp, two workers, forked or spawned), so `--workers 2` serves
+  a keep-alive load at one worker's throughput; the measurement and the two
+  mechanisms that did not fix it are under [Planned](#workers-sharing-a-listener-share-its-connections).
+  Linux is unmeasured. `--spawn-workers` (E15) makes a second Core ML
+  worker *possible*; this is what keeps it from paying.
+
+  **Closed by:** E16.
+
 - **The asyncio executor cannot run on free-threaded CPython.** The
   executor's `ExecutorPort` is a Python type built in-process with
   `PythonModuleBuilder`, and Mojo 1.0's stdlib lays `PyObject` out for the
@@ -297,9 +307,33 @@ checker fails if one does not resolve. So this section is the whole list of
 things that page promises: adding a `planned` row means writing down what it
 means here first.
 
-Nothing is `planned` today; everything the sheet promises is `verified` or
-`out of scope`. The design notes for the last four things this section held,
-all built since:
+### Workers sharing a listener share its connections
+
+`--workers N` has every worker wait on the one listener the supervisor
+bound, and on macOS the same worker wins nearly every accept: measured
+2026-09-04 with two workers (forked or spawned alike), 32 of 32
+keep-alive connections opened in a burst went to one process, and 26–29
+of 32 opened 50 ms apart. A second worker therefore adds nothing to a
+keep-alive load — the Core ML embedding app served 1675 req/s on one
+worker and 1675 on two, where uvicorn's two spawned workers reached 2586.
+Two mechanisms were tried behind a knob and did not move a burst: a
+level-triggered listen with one accept per wakeup (32 of 32 still), and
+the same plus `sched_yield` after the accept (28 to 4). The loop re-enters
+its wait in microseconds and wins the next race before a sibling is
+scheduled; kqueue's wakeup order is not a balancing mechanism.
+
+What would retire this (SPEC E16): a mechanism that shares the accepts —
+per-worker listeners under `SO_REUSEPORT` where the kernel distributes
+(Linux; macOS unmeasured), an accept token between workers in the
+`SharedAtomics` page (nginx's `accept_mutex` shape), or the supervisor
+accepting and passing descriptors over the bus (`SCM_RIGHTS`) — measured
+on both platforms with a burst of keep-alive connections spreading to
+within 2:1, and no loss on a single worker. Linux has not been measured
+at all yet; epoll's wakeup order may differ, and `EPOLLEXCLUSIVE` was
+already found worse for a related flake.
+
+The design notes for the last four things this section held, all built
+since:
 
 - [A conformance-suite tier](notes/conformance-suite-tier.md)
 - [Structured CI results](notes/structured-ci-results.md)

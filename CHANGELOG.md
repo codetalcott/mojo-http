@@ -7,6 +7,24 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **`--spawn-workers` / `M0_SPAWN_WORKERS`** (SPEC E15; `smoke-spawn-workers`).
+  Each worker is forked and at once execs the binary afresh, inheriting the
+  listener, the bus channels and a file-backed shared page by descriptor,
+  so an application may use what a forked child cannot: Core ML,
+  Objective-C, CoreFoundation, libdispatch — `urllib.request.getproxies()`
+  on macOS kills a forked worker 3 of 3 and answers under spawn. The
+  supervisor, respawn (through a fresh exec) and signal propagation are
+  unchanged; an image that cannot exec exits 78 and ends supervision
+  rather than spending the respawn budget. `--doctor` reports
+  `topology.worker_mode`. The default stays fork: start-to-ready with two
+  workers is 82 ms forked and 92 ms spawned, and throughput ties once
+  started (195k against 199k req/s on hello, alternated). What it does not
+  yet buy is the second worker's throughput on macOS — the same worker wins
+  nearly every accept (ROADMAP, Known issues; SPEC E16 planned) — so the
+  Core ML app served 1675 req/s on two spawned workers as on one.
+
 ### Changed
 
 - **The event loop holds no thread state while it serves** (`_serve_offloaded`,

@@ -174,3 +174,110 @@ def test_a_worker_refusing_its_configuration_is_not_respawned() raises:
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
+
+
+# --- spawned workers -------------------------------------------------------
+#
+# Under `enable_spawn` a child is forked and at once execs the given path, so
+# what returns to the caller is never a worker: the scenario's own code after
+# `fork_all` runs only in the supervisor, which exits inside `fork_all`. The
+# worker is `/bin/sh -c ...`, which can read its environment and leave
+# markers exactly as a Mojo worker would, without re-entering this suite.
+
+
+def _spawn_scenario(script: String, workers: Int, exe: String):
+    try:
+        var supervisor = WorkerSupervisor(workers)
+        var args = List[String]()
+        args.append(String("sh"))
+        args.append(String("-c"))
+        args.append(script)
+        supervisor.enable_spawn(exe, args^)
+        supervisor.fork_all()
+        # Unreachable: every child exec'd, and the parent exits in fork_all.
+        process_exit(7)
+    except:
+        process_exit(7)
+
+
+def test_spawned_workers_run_the_exec_image_with_their_index() raises:
+    """Each spawned worker is a fresh image that knows its index.
+
+    The worker here is the shell, and it exits 0 only if the supervisor put
+    `M0_WORKER_SPAWNED=1` and a numeric `M0_WORKER_INDEX` in its
+    environment before the exec; two workers must see two different
+    indices, which the marker files prove. A supervisor whose workers all
+    exit 0 exits 0.
+
+    covers: E15
+    """
+    var tag = String(getpid())
+    var m0 = "/tmp/m0_spawn_idx0_" + tag
+    var m1 = "/tmp/m0_spawn_idx1_" + tag
+    for m in [m0, m1]:
+        if path.exists(m):
+            remove(m)
+    var script = (
+        String('[ "$M0_WORKER_SPAWNED" = 1 ] || exit 9; ')
+        + 'case "$M0_WORKER_INDEX" in 0) touch ' + m0 + ';; 1) touch ' + m1
+        + ';; *) exit 9;; esac; exit 0'
+    )
+    var pid = fork()
+    if pid == 0:
+        _spawn_scenario(script, 2, String("/bin/sh"))
+        process_exit(99)
+    var result = waitpid_blocking(pid)
+    assert_false(was_signaled(result[1]), "supervisor died on a signal")
+    assert_equal(exit_code(result[1]), 0)
+    assert_true(path.exists(m0), "worker 0 never ran the exec image with its index")
+    assert_true(path.exists(m1), "worker 1 never ran the exec image with its index")
+    remove(m0)
+    remove(m1)
+
+
+def test_a_crashed_spawned_worker_is_respawned_through_exec() raises:
+    """A respawn under spawn mode is a fresh exec too.
+
+    First incarnation: no marker, leave one, exit 9 (a crash). The
+    supervisor respawns index 0, and the replacement -- which must again be
+    the exec image, not a forked copy of the supervisor -- sees the marker
+    and exits 0, leaving a second marker. The supervisor then exits 0.
+
+    covers: E15
+    """
+    var tag = String(getpid())
+    var first = "/tmp/m0_spawn_first_" + tag
+    var again = "/tmp/m0_spawn_again_" + tag
+    for m in [first, again]:
+        if path.exists(m):
+            remove(m)
+    var script = (
+        String('if [ -e ') + first + ' ]; then [ "$M0_WORKER_INDEX" = 0 ] || exit 9; touch '
+        + again + '; exit 0; fi; touch ' + first + '; exit 9'
+    )
+    var pid = fork()
+    if pid == 0:
+        _spawn_scenario(script, 1, String("/bin/sh"))
+        process_exit(99)
+    var result = waitpid_blocking(pid)
+    assert_false(was_signaled(result[1]), "supervisor died on a signal")
+    assert_equal(exit_code(result[1]), 0)
+    assert_true(path.exists(again), "the respawned worker was not a fresh exec image")
+    remove(first)
+    remove(again)
+
+
+def test_a_spawn_that_cannot_exec_is_a_refusal_not_a_crash_loop() raises:
+    """An image that cannot load would fail on every respawn, so the child
+    exits EX_CONFIG and the supervisor stops at once with 78 (E10's path),
+    rather than spending its budget on ten identical failures.
+
+    covers: E15
+    """
+    var pid = fork()
+    if pid == 0:
+        _spawn_scenario(String("exit 0"), 1, String("/nonexistent/m0serve"))
+        process_exit(99)
+    var result = waitpid_blocking(pid)
+    assert_false(was_signaled(result[1]), "supervisor died on a signal")
+    assert_equal(exit_code(result[1]), 78)

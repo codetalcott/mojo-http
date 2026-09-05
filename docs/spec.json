@@ -466,6 +466,22 @@
       "evidence": "`Smoke test Apple Silicon topology, QoS and the native build flavor` (every PR) \u2014 the doctor reports the knob from both spellings, and a server under it answers a loop-answered route and a pool-thread view. The effect is measured rather than smoked: docs/notes/desktop-mac-server.md"
     },
     {
+      "id": "E15",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "`--spawn-workers` / `M0_SPAWN_WORKERS`: each worker is forked and at once execs the binary afresh, inheriting the listener, the bus channels and a file-backed shared page by fd, so an application may use what a forked child cannot (Core ML, Objective-C, CoreFoundation, libdispatch); the same supervisor, respawn and signals",
+      "status": "verified",
+      "evidence": "`Smoke test spawned workers` (every PR) \u2014 two exec'd workers serve one listener, a SIGKILLed one is re-exec'd, SIGTERM to the supervisor reaps them, and the doctor reports `worker_mode`; on macOS the negative arm: `urllib.request.getproxies()` answers under spawn and kills a forked worker 3 of 3. The exec path itself: `test_respawn.mojo:test_spawned_workers_run_the_exec_image_with_their_index`"
+    },
+    {
+      "id": "E16",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "Workers sharing one listener share its connections: a burst of keep-alive connections spreads across `--workers N` to within 2:1 on both platforms, at no cost to a single worker",
+      "status": "planned",
+      "evidence": "ROADMAP: Workers sharing a listener share its connections"
+    },
+    {
       "id": "F1",
       "section": "F",
       "category": "F. Observability",
