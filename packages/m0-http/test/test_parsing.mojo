@@ -363,6 +363,27 @@ def test_a_truncated_request_is_incomplete_not_invalid() raises:
     assert_false(_accepted(raw))
 
 
+def test_a_header_line_cut_between_cr_and_lf_is_incomplete() raises:
+    """The same contract one byte later: a segment boundary between a
+    header line's CR and its LF is a partial read, not a malformed line.
+
+    `scan_to_eol` answered invalid there while the request line and the
+    terminating empty line answered incomplete; the release fuzz's
+    invalid-is-sticky rule found the disagreement (seed 5, iteration
+    147067), latent since the parser was written.
+    """
+    var first = String("GET / HTTP/1.1\r\nHost: example.com\r")
+    assert_false(_rejected(first))
+    assert_false(_accepted(first))
+    var second = String("GET / HTTP/1.1\r\nHost: example.com\r\nX-A: b\r")
+    assert_false(_rejected(second))
+    assert_false(_accepted(second))
+    # A CR followed by anything but LF is still a bad line.
+    assert_true(_rejected(String("GET / HTTP/1.1\r\nHost: example.com\rX")))
+    # And the completed line still parses.
+    assert_true(_accepted(String("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")))
+
+
 # --- Request target normalization: RFC 9112 3.2.2 ----------------------------
 
 

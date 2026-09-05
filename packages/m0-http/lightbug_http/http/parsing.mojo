@@ -252,7 +252,14 @@ def scan_to_eol[
     if current_byte == BytesConstant.CR:
         buf.increment()
         var next_byte = try_peek(buf)
-        if not next_byte or next_byte.value() != BytesConstant.LF:
+        # A CR as the buffer's last byte is a line whose LF has not arrived,
+        # not a bad line: the TCP segment ended between the two. Reporting
+        # it invalid answered 400 to a request the next read would have
+        # completed. Found by the release fuzz (seed 5, iteration 147067)
+        # and latent in every release before 0.18.0.
+        if not next_byte:
+            raise IncompleteError()
+        if next_byte.value() != BytesConstant.LF:
             raise ParseError()
         length = buf.read_pos - 1 - token_start
         buf.increment()
