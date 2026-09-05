@@ -19,6 +19,7 @@ dev = [
     "flask>=3.0",
     "markdown-it-py>=4.2.0",
     "poethepoet>=0.30",
+    "pyflakes>=3.4.0",
     "python-fasthtml>=0.12",
 ]
 # The benchmark reference implementation. Pinned exactly, because every
@@ -420,6 +421,9 @@ python3 scripts/render_bench_docs.py --selftest || exit 1
 # standard library only); this proves those checks can fail, for the same
 # reason as the line above.
 python3 scripts/docsite.py --selftest || exit 1
+# The executor shim's rendering check runs inside check_docs
+# (`render_shim --check`); same rule.
+python3 scripts/render_shim.py --selftest || exit 1
 # The citation tracker runs inside check_docs (`check_citations.check`);
 # same rule: prove its rules can fail before believing they passed.
 python3 scripts/check_citations.py --selftest || exit 1
@@ -442,6 +446,19 @@ cmd = "python3 scripts/check_citations.py"
 [tool.poe.tasks.render-bench-docs]
 help = "Render the newest bench/results artifact into WSGI_PERFORMANCE.md"
 shell = "python3 scripts/render_bench_docs.py"
+
+# The executor shim is a Python file (packages/m0-wsgi/shim/m0_shim.py)
+# rendered into the Mojo constant the binary embeds
+# (packages/m0-wsgi/src/shim_source.mojo). Edit the .py, run this, commit
+# both; `check-docs` fails when the rendering is stale, and `lint-shim` is
+# pyflakes over the .py — the reason it is a file at all.
+[tool.poe.tasks.render-shim]
+help = "Render packages/m0-wsgi/shim/m0_shim.py into src/shim_source.mojo"
+shell = "python3 scripts/render_shim.py"
+
+[tool.poe.tasks.lint-shim]
+help = "pyflakes over the executor shim and its renderer"
+shell = "python3 -m pyflakes packages/m0-wsgi/shim/m0_shim.py scripts/render_shim.py"
 
 # The spec-sheet ratchet. docs/SPEC.md is a public completeness tracker, so
 # `verified` is defined mechanically: a row may claim it only by naming a CI
