@@ -373,6 +373,7 @@ of this page until 2026-09-03, when the page became state-only.
 **Open questions, and questions since answered**
 
 - [The desktop-Mac server, and what the wheel gives up to ship](notes/desktop-mac-server.md)
+- [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)
 
