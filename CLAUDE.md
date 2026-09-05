@@ -329,8 +329,10 @@ code depends on:
     type holds four integers and reaches its tables through
     `ExecutorState` by address, because `add_type` wraps `__repr__`
     through a `Writable` the compiler DERIVES from the fields (an
-    explicit `write_to` does not stop it, and an `OwningList` cannot be
-    derived); and the pill only sets `stopping` — the shim then runs the
+    explicit `write_to` does not stop it, and the derivation recurses into
+    element types — `HTTPResponse`'s cookie jar holds a `Dict`, which is
+    not `Writable`, so no container of responses can be a field); and
+    the pill only sets `stopping` — the shim then runs the
     in-flight tasks to completion (their events dispatch as they finish)
     and stops the loop, so the executor's final flush and lifespan
     shutdown run after `run_forever` returns. `smoke-asgi`'s
@@ -1223,8 +1225,9 @@ This project targets **Mojo 1.0** (pinned in `uv.lock`).
 9. **Parallel arrays (SoA)** — `SSERegistry` and `PatchJournal` keep parallel
    `List` fields for cheap per-field scans, not because `List[Struct]` is
    refused: the `ImplicitlyCopyable` constraint that first motivated them is
-   gone. `OwningList` in the fork predates the same change and is a retirement
-   candidate once the swap is measured
+   gone. The fork's `OwningList` — a copy of `List` from before that change —
+   was retired on 2026-09-05 with the swap measured at parity (the numbers
+   are in NOTICE's fork change list); do not reintroduce a private list
 
 ## Design principles
 

@@ -44,7 +44,6 @@ from lightbug_http.server import (
 )
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.service import HTTPService
-from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.websocket import (
     WSState, is_ws_upgrade_response, encode_ws_frame, close_frame,
     WS_OP_PING, WS_CLOSE_GOING_AWAY,
@@ -140,7 +139,7 @@ def prepare_loop[B: EventLoopBackend](
 
     # Per-slot state (SoA pattern)
     var slot_fds = List[Int](capacity=max_conns)
-    var slot_response = OwningList[Bytes](capacity=max_conns)
+    var slot_response = List[Bytes](capacity=max_conns)
     var slot_send_offset = List[Int](capacity=max_conns)
     var slot_header_start = List[Int](capacity=max_conns)
     var slot_sse = List[Bool](capacity=max_conns)
@@ -160,7 +159,7 @@ def prepare_loop[B: EventLoopBackend](
     var slot_idle_deadline = List[Int](capacity=max_conns)
     # Per-slot WebSocket frame parser. Always allocated, tiny while unused;
     # reset (not reallocated) when a slot is reused.
-    var slot_ws_state = OwningList[WSState](capacity=max_conns)
+    var slot_ws_state = List[WSState](capacity=max_conns)
 
     for _ in range(max_conns):
         slot_fds.append(UNUSED)
@@ -283,14 +282,14 @@ struct LoopState(Movable):
     var max_conns: Int
     var provision_pool: ProvisionPool
     var slot_fds: List[Int]
-    var slot_response: OwningList[Bytes]
+    var slot_response: List[Bytes]
     var slot_send_offset: List[Int]
     var slot_header_start: List[Int]
     var slot_sse: List[Bool]
     var slot_ws: List[Bool]
     var slot_read_armed: List[Bool]
     var slot_idle_deadline: List[Int]
-    var slot_ws_state: OwningList[WSState]
+    var slot_ws_state: List[WSState]
     var fd_map_size: Int
     var fd_to_slot: List[Int]
     var active_count: Int
@@ -315,14 +314,14 @@ struct LoopState(Movable):
         max_conns: Int,
         var provision_pool: ProvisionPool,
         var slot_fds: List[Int],
-        var slot_response: OwningList[Bytes],
+        var slot_response: List[Bytes],
         var slot_send_offset: List[Int],
         var slot_header_start: List[Int],
         var slot_sse: List[Bool],
         var slot_ws: List[Bool],
         var slot_read_armed: List[Bool],
         var slot_idle_deadline: List[Int],
-        var slot_ws_state: OwningList[WSState],
+        var slot_ws_state: List[WSState],
         fd_map_size: Int,
         var fd_to_slot: List[Int],
         active_count: Int,
@@ -1554,7 +1553,7 @@ def _close_between_requests[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     offload: OffloadLoopState,
 ):
     """Close every connection that is between requests, during a shutdown.
@@ -1614,7 +1613,7 @@ def _admit_connection[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -1623,7 +1622,7 @@ def _admit_connection[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -1747,7 +1746,7 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -1756,7 +1755,7 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -1968,7 +1967,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -1977,7 +1976,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -2341,7 +2340,7 @@ def _drain_pipelined[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -2350,7 +2349,7 @@ def _drain_pipelined[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -2410,7 +2409,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -2419,7 +2418,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -2600,7 +2599,7 @@ def _flush_submits[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -2609,7 +2608,7 @@ def _flush_submits[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -2648,7 +2647,7 @@ def _run_inline[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -2657,7 +2656,7 @@ def _run_inline[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -2720,7 +2719,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -2729,7 +2728,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -2811,7 +2810,7 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -2820,7 +2819,7 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -3023,7 +3022,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -3032,7 +3031,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
     mut date_cache_sec: Int64,
@@ -3290,7 +3289,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     server_address: String,
     tcp_keep_alive: Bool,
     mut slot_fds: List[Int],
-    mut slot_response: OwningList[Bytes],
+    mut slot_response: List[Bytes],
     mut slot_send_offset: List[Int],
     mut slot_header_start: List[Int],
     mut fd_to_slot: List[Int],
@@ -3299,7 +3298,7 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     mut slot_read_armed: List[Bool],
     mut slot_idle_deadline: List[Int],
 ):
@@ -3465,7 +3464,7 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     mut metrics: ServerMetrics,
     mut slot_sse: List[Bool],
     mut slot_ws: List[Bool],
-    mut slot_ws_state: OwningList[WSState],
+    mut slot_ws_state: List[WSState],
     release_provision: Bool = True,
 ):
     """Close a connection and release its slot.

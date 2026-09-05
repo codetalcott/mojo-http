@@ -34,7 +34,6 @@ from lightbug_http.broadcast import encode_bus_frame
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
 from lightbug_http.offload import OffloadPool, STREAM_GEN_NONE
-from lightbug_http.utils.owning_list import OwningList
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame, WS_OP_TEXT,
@@ -110,14 +109,14 @@ struct WSGIHandler(ThreadHandler):
     of `_serve_offloaded`, docs/notes/detached-loop.md), so `func` and the
     inline WebSocket serve attach for their own duration. False on pool
     threads and the executor, whose threads are attached for life."""
-    var apps: OwningList[WSGIApp]
+    var apps: List[WSGIApp]
     """The mounted applications, parallel to `mount_prefixes`.
 
     Always at least one: a server with no `--mount` holds a single app at
     the empty prefix, so routing has one shape and the ordinary case is the
-    degenerate mount rather than a separate path. `OwningList` because
-    `WSGIApp` owns a bridge and is Movable but not Copyable — copying one
-    would duplicate an interpreter handle.
+    degenerate mount rather than a separate path. `WSGIApp` owns a bridge
+    and is Movable but not Copyable — copying one would duplicate an
+    interpreter handle — and `List` takes a Movable-only element as it is.
     """
     var mount_prefixes: List[String]
     """Each app's prefix, stored without a trailing slash (`''` at the root).
@@ -304,10 +303,8 @@ struct WSGIHandler(ThreadHandler):
         asgi_streaming: Bool = False,
         var root_prefix: String = String(""),
     ):
-        # capacity=1, never `OwningList[WSGIApp]()`: the no-argument form
-        # constructs a null `Pointer`, which Mojo 1.0 refuses outright. One
-        # slot is exactly the unmounted case; `mount` grows it.
-        self.apps = OwningList[WSGIApp](capacity=1)
+        # One slot is exactly the unmounted case; `mount` grows it.
+        self.apps = List[WSGIApp](capacity=1)
         self.apps.append(app^)
         self.attach_in_func = False
         self.mount_prefixes = List[String]()

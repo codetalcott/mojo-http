@@ -60,7 +60,6 @@ from lightbug_http.socket import EOF
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI
-from lightbug_http.utils.owning_list import OwningList
 
 
 comptime DEFAULT_TIMEOUT_S = 30
@@ -167,9 +166,10 @@ struct Client(Copyable, Movable):
     this still at 1 is what connection reuse looks like from the caller."""
 
     # The one-deep pool: empty, or exactly one idle connection and the
-    # host/port it is warm for. An OwningList because Optional demands
-    # ImplicitlyCopyable and a connection owns an fd.
-    var _idle: OwningList[TCPConnection[NetworkType.tcp4]]
+    # host/port it is warm for. A one-element `List` rather than an
+    # `Optional`: a connection owns an fd, and `pop` moves it out without
+    # a copy.
+    var _idle: List[TCPConnection[NetworkType.tcp4]]
     var _idle_host: String
     var _idle_port: UInt16
 
@@ -183,7 +183,7 @@ struct Client(Copyable, Movable):
         self.max_response_bytes = max_response_bytes
         self.keep_alive = keep_alive
         self.connections_opened = 0
-        self._idle = OwningList[TCPConnection[NetworkType.tcp4]](capacity=1)
+        self._idle = List[TCPConnection[NetworkType.tcp4]](capacity=1)
         self._idle_host = String()
         self._idle_port = 0
 
@@ -193,7 +193,7 @@ struct Client(Copyable, Movable):
         self.max_response_bytes = copy.max_response_bytes
         self.keep_alive = copy.keep_alive
         self.connections_opened = 0
-        self._idle = OwningList[TCPConnection[NetworkType.tcp4]](capacity=1)
+        self._idle = List[TCPConnection[NetworkType.tcp4]](capacity=1)
         self._idle_host = String()
         self._idle_port = 0
 
