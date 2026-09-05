@@ -65,7 +65,8 @@ announced that it is parked:
 - a pool thread that finds its ring empty spins for `POOL_SPIN_NS`
   (yielding after `POOL_YIELD_AFTER_NS`), then counts itself parked,
   re-checks the ring, and blocks in `recv`; `submit` pushes, then reads
-  that count, and pokes the lane only if it is non-zero;
+  that count, and pokes the lane only if it exceeds the wakes already in
+  flight to it (one wake per parked thread, never one per push);
 - the loop raises its own flag before `backend.wait` and re-checks the
   completion ring after raising it (`event_loop._wait_for_events`);
   `complete` pushes, then reads the flag, and pokes the completion
@@ -155,8 +156,9 @@ tenths of a percent of the thread."""
 
 comptime _WAKE_BYTES = 8192
 """The wake words: the loop's parked flag at +0, then per lane at
-`_WAKE_LANE_BASE + lane * _WAKE_LANE_STRIDE` a parked-thread count (+0)
-and the last datagram-poll time (+8), each lane on its own cache line."""
+`_WAKE_LANE_BASE + lane * _WAKE_LANE_STRIDE` a parked-thread count (+0),
+the last datagram-poll time (+8) and the wakes in flight (+16), each lane
+on its own cache line."""
 comptime _WAKE_LANE_BASE = 128
 comptime _WAKE_LANE_STRIDE = 64
 comptime _WAKE_MAX_LANES = (_WAKE_BYTES - _WAKE_LANE_BASE) // _WAKE_LANE_STRIDE
@@ -937,6 +939,15 @@ struct OffloadPool(Movable):
     def _poll_addr(self, lane: Int) -> Int:
         return self._parked_addr(lane) + 8
 
+    def _wakes_addr(self, lane: Int) -> Int:
+        return self._parked_addr(lane) + 16
+
+    def wakes_in_flight(self, lane: Int) -> Int:
+        """Wake datagrams sent to `lane` and not yet read. Test surface."""
+        if not self.ring_enabled:
+            return 0
+        return Int(atomic_at(self._wakes_addr(lane))[].load())
+
     def ring_active(self) -> Bool:
         """Whether jobs and completions ride the rings (else datagrams)."""
         return self.ring_enabled
@@ -982,7 +993,8 @@ struct OffloadPool(Movable):
                 _sched_yield()
 
     def _recv_datagram(
-        self, fd: FileDescriptor, cap: Int, mut buf: List[UInt8], flags: c_int
+        self, lane: Int, fd: FileDescriptor, cap: Int, mut buf: List[UInt8],
+        flags: c_int,
     ) -> PoolJob:
         """One datagram off a submit lane, decoded.
 
@@ -1010,6 +1022,8 @@ struct OffloadPool(Movable):
                 if slot == _POISON:
                     return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
                 if slot == _POKE:
+                    if self.ring_enabled:
+                        _ = atomic_at(self._wakes_addr(lane))[].fetch_add(-1)
                     return _none_job()
                 return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
             if n >= UInt(_WS_HEADER) and buf[0] == TAG_WS_MESSAGE:
@@ -1141,7 +1155,14 @@ struct OffloadPool(Movable):
         if ring.enabled():
             if not ring.push(slot):
                 return False
-            if atomic_at(self._parked_addr(lane))[].load() > 0:
+            # A wake per parked thread, not per push: a burst of pushes
+            # into N parked threads used to send a poke each until the
+            # threads had decremented the count, and every stale poke
+            # later cost a parking thread a spin. A thread already owed a
+            # wake will drain the ring when it comes.
+            var wakes = atomic_at(self._wakes_addr(lane))
+            if atomic_at(self._parked_addr(lane))[].load() > wakes[].load():
+                _ = wakes[].fetch_add(1)
                 self._poke(self.submit_write_fd(lane))
             return True
         var job = _encode_job(slot)
@@ -1308,22 +1329,26 @@ struct OffloadPool(Movable):
         var ring = self._ring_for(lane)
         if not ring.enabled():
             while True:
-                var job = self._recv_datagram(fd, cap, buf, 0)
+                var job = self._recv_datagram(lane, fd, cap, buf, 0)
                 if job.kind != JOB_NONE:
                     return job^
         var parked = atomic_at(self._parked_addr(lane))
         var poll = atomic_at(self._poll_addr(lane))
         var spin_start = 0
         while True:
-            var slot = 0
-            if ring.pop(slot):
-                return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+            # The socket first, on its cadence, whatever the ring holds: a
+            # pill or a WebSocket message must not wait behind a ring that
+            # a pool-bound load keeps full. One clock read per job; one
+            # non-blocking recv per lane per POOL_DGRAM_POLL_NS.
             var now = perf_counter_ns()
             if now - Int(poll[].load()) >= POOL_DGRAM_POLL_NS:
                 poll[].store(Int64(now))
-                var polled = self._recv_datagram(fd, cap, buf, MSG_DONTWAIT)
+                var polled = self._recv_datagram(lane, fd, cap, buf, MSG_DONTWAIT)
                 if polled.kind != JOB_NONE:
                     return polled^
+            var slot = 0
+            if ring.pop(slot):
+                return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
             if spin_start == 0:
                 spin_start = now
                 continue
@@ -1335,7 +1360,7 @@ struct OffloadPool(Movable):
                 if ring.pop(slot):
                     _ = parked[].fetch_add(-1)
                     return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
-                var woke = self._recv_datagram(fd, cap, buf, 0)
+                var woke = self._recv_datagram(lane, fd, cap, buf, 0)
                 _ = parked[].fetch_add(-1)
                 if woke.kind != JOB_NONE:
                     return woke^

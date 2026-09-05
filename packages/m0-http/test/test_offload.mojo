@@ -539,6 +539,28 @@ def test_submit_wakes_only_a_parked_thread() raises:
     assert_equal(pool.parked_count(0), 0)
 
 
+def test_a_burst_sends_one_wake_per_parked_thread() raises:
+    """Three pushes into two parked threads send two wakes, not three; a
+    wake read by a thread retires itself, and a fresh push then wakes."""
+    var pool = OffloadPool(8)
+    if not pool.ring_active():
+        return
+    pool.note_parked(0, 2)
+    for slot in range(3):
+        pool.park_request(slot, _request("/b"))
+        assert_true(pool.submit(slot))
+    assert_equal(pool.wakes_in_flight(0), 2)
+    # The two threads "wake" and read the ring dry; `next_job` retires a
+    # wake it reads on its socket poll, and reads the other behind the
+    # pill when it parks for good. Two sent, two retired, none served.
+    pool.note_parked(0, -2)
+    for slot in range(3):
+        assert_equal(_next_slot(pool), slot)
+    pool.stop(1)
+    assert_equal(_next_slot(pool), -1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+
+
 def test_complete_wakes_only_a_parked_loop() raises:
     """The pool thread's half: push, then read the loop's flag, then poke.
     The flag starts SET (the inversion's driver never clears it), so a
@@ -581,9 +603,10 @@ def test_a_wake_datagram_is_not_a_job() raises:
     pool.park_request(1, _request("/a"))
     assert_true(pool.submit(1))
     pool.note_parked(0, -1)
-    # The ring is popped before the socket is looked at: the wake stays
-    # queued behind this job.
+    # The socket poll and the ring pop both happen inside next_job, and
+    # whichever order they land in the answer is the job, never the wake.
     assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
     pool.stop(1)
     assert_equal(_next_slot(pool), -1)
 
