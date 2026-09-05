@@ -76,3 +76,21 @@ exempts exactly those cadences and the rollup says so.
 The argument this section made for the change held: a test added next month
 that quietly drifts from its row is now a disagreement between a declaration
 and a citation, which is a named failure rather than nothing.
+
+## How the rows were read against their gates (2026-08-30)
+
+Moved here from SPEC.md's preamble on 2026-09-05, as written.
+
+**How the rows were checked, and what that leaves.** The machine proves a gate
+exists and runs; only reading proves it tests the row's claim. Every row has
+been read against its gate once, 2026-08-30, and roughly a fifth were wrong —
+claims whose cited test asserted something narrower (a predicate rather than
+the behaviour it guards), claims covering two things while citing one test,
+and four rows citing a gate that did not touch the capability at all. Those are
+now split, re-pointed, or demoted to `implemented`.
+
+The two halves of that pass were not equally thorough, and the weaker one is
+worth knowing about: every unit-test citation was checked by reading the test
+body, while single-claim smoke steps were checked by a relevance probe with
+the flagged ones read in full. A smoke step whose name matches its row but
+whose body drifted away from it is the case most likely to have survived.

@@ -628,7 +628,7 @@ Holds are described here from the server side only. The **application**
 contract — a sync view approving a connection with `M0-Hold`/`M0-Channel`
 headers, `m0pub.publish()`, inbound WebSocket messages arriving as a plain
 POST — is [QUICKSTART.md](QUICKSTART.md), which is executable: `poe
-smoke-quickstart` runs its fenced blocks against the tree's own wheel, so
+smoke-quickstart` runs its fenced blocks, then `docs/QUICKSTART_NEXT.md`'s, against the tree's own wheel, so
 editing it can break CI.
 
 `packaging/m0serve/` builds the `pip install m0serve` wheel and holds the

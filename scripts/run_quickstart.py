@@ -1,4 +1,5 @@
-"""Execute QUICKSTART.md: the quickstart is a smoke, and the smoke is the doc.
+"""Execute QUICKSTART.md, then docs/QUICKSTART_NEXT.md: the quickstart is a smoke,
+and the smoke is the doc.
 
 The launch checklist calls for "a quickstart a human or agent completes and
 *verifies* without help" — which only stays true while someone re-runs it.
@@ -26,7 +27,7 @@ PyPI package on `pip install` lines. CI sets it: a pull request must prove
 the TREE's wheel, and must pass with no network dependence on what is
 published. Run without it to rehearse the published-package path verbatim.
 
-    python3 scripts/run_quickstart.py [--doc QUICKSTART.md] [--keep]
+    python3 scripts/run_quickstart.py [--doc QUICKSTART.md --doc docs/QUICKSTART_NEXT.md] [--keep]
 """
 
 import argparse
@@ -83,7 +84,9 @@ def substitute_wheel(body, wheel):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--doc", default="QUICKSTART.md")
+    ap.add_argument("--doc", action="append",
+                    help="a page to run; repeatable, in order, one scratch "
+                         "directory for all of them (default: QUICKSTART.md)")
     ap.add_argument("--keep", action="store_true", help="keep the scratch dir")
     ap.add_argument(
         "--expect",
@@ -97,15 +100,16 @@ def main():
 
     import pathlib
 
-    doc = pathlib.Path(args.doc).resolve()
-    blocks = extract(doc)
+    docs = [pathlib.Path(d).resolve() for d in (args.doc or ["QUICKSTART.md"])]
+    blocks = [b for d in docs for b in extract(d)]
+    names = ", ".join(d.name for d in docs)
     counts = {t: sum(1 for tag, _ in blocks if tag == t) for t in ("setup", "serve", "verify")}
     # A doc edit that mangles a fence tag silently demotes the block to
     # display-only, and the run "passes" by testing less. Floor-check the
     # shape so that failure is loud instead.
     if counts["setup"] < 1 or counts["serve"] < 1 or counts["verify"] < 1:
         raise SystemExit(
-            f"run-quickstart: {doc.name} yielded {counts} executable blocks - "
+            f"run-quickstart: {names} yielded {counts} executable blocks - "
             "a tagged fence has probably lost its tag"
         )
     if args.expect:
@@ -113,7 +117,7 @@ def main():
         expected = {k: int(v) for k, v in expected.items()}
         if counts != expected:
             raise SystemExit(
-                f"run-quickstart: {doc.name} has {counts} executable blocks, "
+                f"run-quickstart: {names} has {counts} executable blocks, "
                 f"--expect says {expected}. If the doc's shape changed on "
                 "purpose, update the --expect in the smoke-quickstart task; "
                 "if not, a fence has lost its tag and part of the quickstart "

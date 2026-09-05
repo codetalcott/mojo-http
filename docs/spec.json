@@ -887,7 +887,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A synchronous Flask view gating a held SSE stream and a WebSocket, with cross-worker publish",
       "status": "verified",
-      "evidence": "`Smoke test the Flask realtime views` (every PR) \u2014 the headline names Flask, and K10 only proves plain WSGI. The file under test is extracted from QUICKSTART.md's own fenced block, so it is the one a reader types; the Django rows' RFC 6455 probe drives it unchanged (its gate phase off: the quickstart's views take no token), one stream and one socket pinned per worker under `--workers 2`, so a message sent on one worker's socket reaches a Flask view and comes back on the other worker's. The quickstart runs the same file from the wheel with curl alone (M10)"
+      "evidence": "`Smoke test the Flask realtime views` (every PR) \u2014 the headline names Flask, and K10 only proves plain WSGI. The file under test is extracted from docs/QUICKSTART_NEXT.md's own fenced block, so it is the one a reader types; the Django rows' RFC 6455 probe drives it unchanged (its gate phase off: the quickstart's views take no token), one stream and one socket pinned per worker under `--workers 2`, so a message sent on one worker's socket reaches a Flask view and comes back on the other worker's. The quickstart runs the same file from the wheel with curl alone (M10)"
     },
     {
       "id": "J1",

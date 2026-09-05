@@ -1,19 +1,11 @@
-# Specification coverage
+# Capabilities
 
 [![Tests](https://github.com/codetalcott/mojo-http/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/codetalcott/mojo-http/actions/workflows/test.yml)
 [![Docs](https://github.com/codetalcott/mojo-http/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/codetalcott/mojo-http/actions/workflows/docs.yml)
 
-What this server implements, and what proves it. One row per capability, and
-every row carries its evidence — a named CI gate, a source file, a roadmap
-heading, or a reason for the refusal.
-
-The badges are half of what makes a `verified` row mean anything. The claim is
-a composition: **CI is green for this commit** AND **every `verified` row names
-a gate CI actually runs**. `poe check-docs` enforces the second half and fails
-the build if a row names a gate that does not exist or does not run; the badges
-are the only visible evidence of the first. Read them together, and read them
-knowing a badge reports the newest run on `main` rather than the commit you are
-looking at.
+What this server implements, and what proves it. One row per capability,
+each with its evidence: a CI step and its cadence, a test function, a
+roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
 **167 capabilities: 143 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 143 verified, 137 are gated on every pull request, 2 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
@@ -21,63 +13,35 @@ looking at.
 
 ## How to read this page
 
-Each row carries a permanent **id** (`A7`, `K3`). Ids are assigned once, never
-renumbered, and never reused — a deleted row's id is retired rather than
-recycled, so an id in an old commit, an issue or a conversation still means
-what it meant. Refer to a row by its id, not its wording: the wording is meant
-to be edited as understanding improves, and it has been.
+Rows have a permanent id (`A7`, `K3`). Ids are never renumbered or reused;
+refer to a row by its id, since the wording is edited as understanding
+improves.
 
 | status | means |
 |---|---|
 | `verified` | a named CI gate exercises this, on the cadence the evidence states |
-| `implemented` | it is in the tree, and no gate is dedicated to it — this is the work queue, not a claim of correctness |
+| `implemented` | in the tree, with no gate dedicated to it: the work queue, not a claim of correctness |
 | `planned` | intended and not built; the evidence names the roadmap heading |
 | `out of scope` | a deliberate refusal; the evidence is the reason |
 
-**`verified` means a gate runs, not that the capability is correct.** No
-checker can read a test's meaning. `smoke-sendfile`'s RSS ceiling is 16 MB for
-three 64 MB passes — generous on purpose so CI is not flaky — and a regression
-that buffered 8 MB would pass it. The word is a statement about evidence, not
-a warranty.
+`verified` says a gate runs, not that the capability is correct: no checker
+reads a test's meaning, and a gate can be looser than its row. Cadence is
+part of the evidence. `(every PR)` is a step in `.github/workflows/test.yml`.
+`(weekly)` is `py-canary.yml` or `nightly-canary.yml` on a cron; the
+free-threading rows live there because CI pins GIL-enabled 3.13.
+`(monthly)` is `citations.yml`, which asks the RFC Editor whether the cited
+RFCs are still current. `(pre-release)` is a gate `docs/RELEASING.md`
+requires and CI does not run, because shared runners cannot reproduce the
+timing.
 
-**Cadence matters and is stated per row.** `(every PR)` is a step in
-`.github/workflows/test.yml`. `(weekly)` is `py-canary.yml` or
-`nightly-canary.yml` on a cron — the free-threading rows live here, because
-CI pins GIL-enabled 3.13 and every `--threads` phase skips on it.
-`(monthly)` is `citations.yml`, which asks the RFC Editor whether the
-committed RFC snapshot is still true -- a document is obsoleted about once
-a decade, so monthly is plenty. `(pre-release)` is a gate `docs/RELEASING.md` requires and CI deliberately
-does not run, because shared runners cannot reproduce the timing.
-
-**One conformance suite runs on a cadence**: Autobahn\|Testsuite, at
-pre-release (`poe autobahn`, I13), compared both directions against a
-pinned baseline. No h2spec and no PortSwigger desync harness is wired to
-any gate (B8 and B9 refuse them, each with its reason). The WebSocket and
-smuggling rows below are otherwise pinned by hand-written probes and unit
-tests against the RFC text — real evidence that is not a conformance run,
-and the rows say which they are. What Autobahn measured when first run by
-hand (2026-08-30) is in ROADMAP's conformance-suite tier, including the two
-live defects it found and the reason it could not have caught the bug that
-motivated running it: its client always closes first, so the app-initiated
-close path (L15) is a region no external suite can reach.
-
-This page is checked by `poe check-docs`: a `verified` row whose gate does not
-exist or does not run fails the build, as does a CI gate no row accounts for.
-See `scripts/spec_sheet.py`.
-
-**How the rows were checked, and what that leaves.** The machine proves a gate
-exists and runs; only reading proves it tests the row's claim. Every row has
-been read against its gate once, 2026-08-30, and roughly a fifth were wrong —
-claims whose cited test asserted something narrower (a predicate rather than
-the behaviour it guards), claims covering two things while citing one test,
-and four rows citing a gate that did not touch the capability at all. Those are
-now split, re-pointed, or demoted to `implemented`.
-
-The two halves of that pass were not equally thorough, and the weaker one is
-worth knowing about: every unit-test citation was checked by reading the test
-body, while single-claim smoke steps were checked by a relevance probe with
-the flagged ones read in full. A smoke step whose name matches its row but
-whose body drifted away from it is the case most likely to have survived.
+`poe check-docs` fails the build when a `verified` row names a gate that
+does not exist or does not run, and when a CI step or a CLI flag is
+accounted for by no row (`scripts/spec_sheet.py`). The badges above report
+the newest run on `main`, not the commit you are reading. One external
+conformance suite runs, Autobahn at pre-release (I13); the WebSocket and
+smuggling rows are otherwise pinned by probes and unit tests written
+against the RFC text. How the rows were read against their gates, and what
+that found, is in [the traceability note](notes/traceability.md).
 
 ## A. HTTP/1.1 framing and connection lifecycle
 
@@ -233,7 +197,7 @@ whose body drifted away from it is the case most likely to have survived.
 | I15 | WebSocket over HTTP/2 (RFC 8441) | out of scope | follows from having no HTTP/2 |
 | I16 | A Close frame's code is VALIDATED, not just echoed | verified | `test_websocket.mojo:test_reserved_close_codes_are_refused_1002` (every PR) — with `test_legal_close_codes_are_still_echoed` as the other half, so a refusal that refuses everything cannot pass |
 | I17 | A message at or above the outbox cap ends the connection | verified | `Smoke test the outbox cap ending a connection` (every PR) — the marker sent after the oversized message must never arrive, which is what separates ending the connection from dropping a frame the peer cannot know it missed; the under-cap half stops a server that ended every large-message connection from passing. Deliberate, and what Autobahn scores as 7 failures plus all of its performance section. `poe sabotage-outbox-cap` (pre-release) reverts each of the four rules |
-| I20 | A synchronous Flask view gating a held SSE stream and a WebSocket, with cross-worker publish | verified | `Smoke test the Flask realtime views` (every PR) — the headline names Flask, and K10 only proves plain WSGI. The file under test is extracted from QUICKSTART.md's own fenced block, so it is the one a reader types; the Django rows' RFC 6455 probe drives it unchanged (its gate phase off: the quickstart's views take no token), one stream and one socket pinned per worker under `--workers 2`, so a message sent on one worker's socket reaches a Flask view and comes back on the other worker's. The quickstart runs the same file from the wheel with curl alone (M10) |
+| I20 | A synchronous Flask view gating a held SSE stream and a WebSocket, with cross-worker publish | verified | `Smoke test the Flask realtime views` (every PR) — the headline names Flask, and K10 only proves plain WSGI. The file under test is extracted from docs/QUICKSTART_NEXT.md's own fenced block, so it is the one a reader types; the Django rows' RFC 6455 probe drives it unchanged (its gate phase off: the quickstart's views take no token), one stream and one socket pinned per worker under `--workers 2`, so a message sent on one worker's socket reaches a Flask view and comes back on the other worker's. The quickstart runs the same file from the wheel with curl alone (M10) |
 
 ## J. Static file serving
 

@@ -1,12 +1,10 @@
 # m0serve
 
-**Realtime from a synchronous Python app, with no added infrastructure.**
-
-A plain sync Django or Flask view can hold a Server-Sent Events stream or a
-WebSocket by answering with two response headers, and reach every subscriber
-on every worker with one function call. No Channels, no Redis, no daphne, no
-second process. The server is written in Mojo and installs as one wheel with
-no dependencies.
+A WSGI and ASGI server written in Mojo. A plain synchronous Django or Flask
+view can hold a Server-Sent Events stream or a WebSocket by setting two
+response headers, and one call publishes to every subscriber on every
+worker. It needs neither Channels nor Redis, and runs as one process. It
+installs as one wheel with no dependencies.
 
 ```python
 from m0serve import m0pub
@@ -29,76 +27,59 @@ pip install m0serve
 m0serve myproject.wsgi --realtime
 ```
 
-**See it: [demo.m0serve.dev](https://demo.m0serve.dev).** Open it in two tabs
-and type in either; the other shows it within the second, over a held SSE
-stream and over a WebSocket, from one file of sync Django with channels
-namespaced per visitor. The line at the bottom says which m0serve version
-is serving it.
+[demo.m0serve.dev](https://demo.m0serve.dev) is this running: open it in two
+tabs and type in either. The page names the version serving it.
 
-The name is spelled with a zero, `m0serve`, the way the packages underneath
-are named: `m0-core`, `m0-http`, `m0-wsgi`.
+The view runs first, with sessions and permissions in hand, so authorization
+stays where it is. Under gunicorn the two headers pass through unread and the
+same view returns a short plain response.
 
-The view runs first, with sessions and permissions in hand, which is where
-your authorization belongs. Under gunicorn the two headers mean nothing
-(they pass through to the client) and the same view degrades to a short
-plain response, so adopting it does not fork your codebase.
+The name is m0serve with a zero, like the packages underneath it: `m0-core`,
+`m0-http`, `m0-wsgi`.
 
-The Flask version is the same four views plus one flag on the socket route,
-`websocket=True`, which Werkzeug's router requires before it will match an
-upgrade request; the Quickstart's §7 is that file, and CI runs it.
+## Where next
 
-## Where to go
+- [Quickstart](../../QUICKSTART.md): the application above, running, in
+  five steps.
+- [Running m0serve](../../docs/RUNNING.md): flags, execution modes, what to
+  put in front of it, shutdown.
+- [Capabilities](../../docs/SPEC.md): what the server does, one row per
+  capability with the test that proves it.
 
-- **[Quickstart](../../QUICKSTART.md)**: ten minutes from `pip install` to
-  live multi-tab sync from one Django file. CI executes every command in it
-  on every pull request.
-- **[Running m0serve](../../docs/RUNNING.md)**: which flags for which app,
-  the execution modes, what to put in front of it, how it shuts down.
-- **[Capabilities](../../docs/SPEC.md)**: what the server does, one row per
-  capability, each naming the test that proves it.
-- **[All documentation](../../docs/README.md)**: the map, by what you are
-  trying to do.
+## Also
 
-## What it also does
-
-- **Serves WSGI and ASGI from one binary.** The protocol is detected from the
-  object. Django, Flask and FastHTML each have a smoke test in CI, and
-  the quickstart's Flask realtime views are driven by the same RFC 6455
-  probe as Django's;
-  PEP 3333 conformance is validated by `wsgiref` and ASGI by a validator
-  written from the spec.
-- **Several applications in one process**, each in its native mode:
+- **WSGI and ASGI from one binary.** The protocol is detected from the
+  application object. Django, Flask and FastHTML each have a smoke test in
+  CI. WSGI conformance is checked with `wsgiref`, ASGI with a validator
+  written from the specification.
+- **Several applications in one process.**
   `m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on
-  handler threads and async FastHTML on an asyncio executor behind one
+  handler threads and async FastHTML on an asyncio executor, behind one
   listener with one shutdown.
-- **A slow view does not stall the rest.** Handler threads behind each event
-  loop are the default for WSGI, so a 2 s view no longer holds the
-  keep-alive connections pinned behind it.
+- **A slow view does not stall the rest.** Handler threads behind each
+  event loop are the default for WSGI.
 
-## What it is not
+## Limits
 
-- **No TLS and no HTTP/2.** Terminate at a proxy, as with gunicorn.
-- **Not the fastest server on raw throughput.** The
-  [benchmarks](../../docs/BENCHMARKS.md) say where it loses and by how much,
-  and every figure there is recomputed from a dated artifact. What it wins is
-  the fast-request tail under mixed load.
-- **Pre-1.0.** The API can still change; the [changelog](../../CHANGELOG.md)
+- No TLS and no HTTP/2. Terminate at a proxy, as with gunicorn.
+- Not the fastest server on raw throughput. The
+  [benchmarks](../../docs/BENCHMARKS.md) give the numbers, including where
+  it loses.
+- Pre-1.0. The API can still change; the [changelog](../../CHANGELOG.md)
   records every change.
-- **macOS arm64 and Linux x86_64 and aarch64 only.** No Intel Mac, no
-  Windows, no musl. CPython 3.10 to 3.14, free-threaded builds included for
-  WSGI.
+- macOS arm64 and Linux x86_64 and aarch64. CPython 3.10 to 3.14, with
+  free-threaded builds for WSGI only. Not supported: Intel Mac, Windows,
+  musl.
 
 ## For agents
 
-[llms.txt](../../llms.txt) is the operating contract in one page, with every
-page of this site indexed as Markdown; `/llms-full.txt` is the essential
-pages in one file; [spec.json](../../docs/spec.json) is the capability matrix
-as data.
+[llms.txt](../../llms.txt) is the operating contract and an index of every
+page as Markdown; `/llms-full.txt` is the main pages in one file;
+[spec.json](../../docs/spec.json) is the capability matrix as data.
 
 ## Underneath
 
-`m0serve` is one package of [mojo-http](../../README.md), an HTTP/1.1 server
-and web framework for Mojo with routing, content negotiation, ETags, SSE and
-WebSockets, a Datastar adapter and SQLite bindings. The
-[README](../../README.md) covers that side; the source is on
+m0serve is one package of [mojo-http](../../README.md), an HTTP/1.1 server
+and web framework for Mojo with routing, content negotiation, ETags, SSE,
+WebSockets, a Datastar adapter and SQLite bindings. The source is on
 [GitHub](https://github.com/codetalcott/mojo-http) under the MIT license.

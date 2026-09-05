@@ -43,6 +43,17 @@ versions may break the API**.
 
 ### Changed
 
+- **The documentation site is shorter.** The sidebar lists eight pages
+  and a link to the map, with nouns for labels; the top bar is Docs,
+  GitHub and PyPI. The quickstart ends at the two-tab demo, and its
+  two-worker, Flask and gunicorn steps are `docs/QUICKSTART_NEXT.md`, run
+  by the same smoke in the same scratch directory (`run_quickstart.py`
+  takes several `--doc` pages). `SPEC.md` and `ROADMAP.md` open with the
+  reference rather than a preamble: the row audit moved to the
+  traceability note, and the PythonObject-leak and accept-placement
+  investigations became design notes of their own. `llms-full.txt` drops
+  from eight pages to six; the roadmap and the conformance page are under
+  `More` in `llms.txt`.
 - **`OwningList` retired.** The fork's private copy of `List`
   (`lightbug_http/utils/owning_list.mojo`) existed for elements that are
   Movable but not Copyable — per-slot response buffers, WebSocket parsers,
