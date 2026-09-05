@@ -106,7 +106,8 @@ SPAN_OPEN = re.compile(r"<!-- num:")
 
 # Documents whose prose carries spans. BENCHMARKS and WSGI_PERFORMANCE also
 # hold generated regions; README.md holds spans only.
-SPAN_DOCS = ("README.md", "docs/BENCHMARKS.md", "docs/WSGI_PERFORMANCE.md")
+SPAN_DOCS = ("README.md", "docs/BENCHMARKS.md", "docs/WSGI_PERFORMANCE.md",
+             "apps/site/home.md")
 
 
 def compute_quantities(layer_medians, asgi_medians):
@@ -138,12 +139,14 @@ def compute_quantities(layer_medians, asgi_medians):
         "m0-per-granian": m0 / gran,
         "granian-per-m0": gran / m0,
         "m0-vs-granian-rps": m0_row["rps"] / gran_row["rps"],
+        "granian-vs-m0-rps": gran_row["rps"] / m0_row["rps"],
         "m0-w1-rps-k": m0_row["rps"] / 1000,
         "granian-w1-rps-k": gran_row["rps"] / 1000,
         "m0-zero-config-rps-k": zero["rps"] / 1000,
         "bridge-tax": hello / m0_loop,
         "granian-w1-cores": gran_row["cores"],
         "m0-w1-cores": m0_row["cores"],
+        "asgi-m0-cores": am0["cores"],
         "asgi-vs-uvicorn": am0["rps"] / auv["rps"],
         "asgi-per-core-vs-uvicorn": am0["rps_per_core"] / auv["rps_per_core"],
         "asgi-vs-uvloop": am0["rps"] / auvl["rps"],
@@ -504,7 +507,7 @@ def selftest():
         "granian+bare w1": {"rps": 175_000, "rps_per_core": 100_000, "cores": 1.75},
     }
     asgi = {
-        "m0serve asgi-executor": {"rps": 60_000, "rps_per_core": 60_000},
+        "m0serve asgi-executor": {"rps": 60_000, "rps_per_core": 60_000, "cores": 1.0},
         "uvicorn asyncio": {"rps": 56_600, "rps_per_core": 56_600},
         "uvicorn uvloop": {"rps": 81_000, "rps_per_core": 81_000},
     }

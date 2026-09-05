@@ -32,7 +32,7 @@ Five caveats, stated before the numbers rather than under them.
 - **Cores are measured, not configured.** Each table's `cores` column is
   sampled `%cpu` of the pids on the listen socket. The column exists
   because it caught a real error: a comparator invoked as `--workers 1` was
-  running ~<!-- num:granian-w1-cores@2 -->1.72<!-- /num --> cores across its runtime's I/O threads, so every earlier
+  running ~<!-- num:granian-w1-cores@2 -->1.76<!-- /num --> cores across its runtime's I/O threads, so every earlier
   raw-rps ratio had been comparing 1.75 cores against one.
 - **The benchmark box has performance and efficiency cores** (Apple M4, 4P
   + 6E). An E-core serves this workload at 18.6k rps against a P-core's
@@ -41,13 +41,16 @@ Five caveats, stated before the numbers rather than under them.
   server plus the load generator fit in the P-cores: on this box, 1 and 2
   workers. The 4-worker rows measure the scheduler, not the server, and are
   kept because removing them would hide that.
-- **Four of the five artifacts on this page were re-recorded on 2026-09-04**,
-  after the event loop stopped holding a thread state while it serves
-  (`docs/notes/detached-loop.md`), on the venv's CPython 3.13.6 — the GIL
-  build a `pip install` gets. The slow-view isolation artifact still dates
-  from 2026-08-26 on free-threaded 3.14t: its `--threads` rows need that
-  build, and on the GIL build its Granian row would show the convoy the
-  note describes rather than the flat tail recorded there.
+- **Every table renders from the newest committed artifact, and CI
+  refuses a stale one.** `render_bench_docs.py --check`, inside
+  `poe check-docs`, fails when the artifact behind any table lacks a
+  version stamp, was recorded on a dirty tree, or is more than one minor
+  version behind `pyproject.toml`. Until 2026-09-05 the slow-view table
+  sat on an artifact from before two changes that moved exactly its rows,
+  because nothing asked. Three of the four tables are recorded on the
+  venv's CPython 3.13, the GIL build a `pip install` gets; the slow-view
+  isolation table on free-threaded 3.14t, because its `--threads` rows
+  need that build.
 - **One anomalous round per run is normal on this box.** Three recorded
   runs of the layer split each had exactly one round land well off the
   other two, in a different position each time — which is why every bench
@@ -55,7 +58,7 @@ Five caveats, stated before the numbers rather than under them.
   from those three runs agree to within 0.03 on the per-core ratio; the
   individual rounds do not.
 
-The comparators are Granian 2.8.1 and uvicorn, both run with their own
+The comparators are Granian 2.8.2 and uvicorn, both run with their own
 recommended settings, and every row is a single process unless the label
 says otherwise. Where a comparator wins, the row stays.
 
@@ -63,8 +66,8 @@ says otherwise. Where a comparator wins, the row stays.
 
 | question | answer |
 |---|---|
-| Fastest per core on bare WSGI? | **No** — Granian, by ~<!-- num:granian-per-m0@1 -->1.1<!-- /num -->x |
-| Fastest per core on bare ASGI? | **Against `uvicorn --loop asyncio`, yes** — the executor is ahead by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x per core at 16 connections and 1.50x at 256. **Against uvloop — what `pip install uvicorn[standard]` runs by default — per core only at saturation**: at 16 connections uvicorn with uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.15<!-- /num -->x per core, at 256 the executor leads by 1.14x. In requests per second the executor leads uvloop at both (<!-- num:asgi-vs-uvloop@2 -->1.41<!-- /num -->x and 2.15x), because since 2026-09-04 its two threads use 1.7–1.9 cores where uvicorn has one |
+| Fastest on bare WSGI? | **No** — one worker and one handler thread each, Granian is ahead by ~<!-- num:granian-per-m0@2 -->1.24<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.32<!-- /num -->x in requests per second |
+| Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core, against uvloop, no**: uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.15<!-- /num -->x; against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
 | Fastest HTTP layer, Python excluded? | **Yes** — but see the note on why that is not the interesting number |
 
@@ -76,44 +79,54 @@ part that parses HTTP and the part that calls Python locates the gap
 instead of reporting one number for both:
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
-Source: [`layer-split-20260904T032639Z.json`](../bench/results/layer-split-20260904T032639Z.json) — 2026-09-04T03:26:39+00:00, commit `0766272` (dirty tree).
+Source: [`layer-split-20260905T201733Z.json`](../bench/results/layer-split-20260905T201733Z.json) — 2026-09-05T20:17:33+00:00, commit `39de02c`.
 Environment: Python 3.13.6; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `apps/hello` — mojo-http HTTP layer, zero Python | 153,054 | 0.98 | 156,177 |
-| `m0serve` + bare WSGI, 1 worker | 95,245 | 0.98 | 97,189 |
-| `granian` + bare WSGI, 1 worker | 181,017 | 1.72 | 105,243 |
-| `m0serve` + bare WSGI, 4 workers | 167,298 | 2.92 | 57,294 |
-| `granian` + bare WSGI, 4 workers | 141,344 | 3.78 | 37,393 |
+| `apps/hello` — mojo-http HTTP layer, zero Python | 148,737 | 0.98 | 151,772 |
+| `m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread) | 103,158 | 0.98 | 105,264 |
+| `m0serve` + bare WSGI, 1 worker, 1 handler thread | 143,288 | 1.65 | 86,841 |
+| `granian` + bare WSGI, 1 worker, 1 blocking thread | 188,973 | 1.76 | 107,371 |
+| `m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs) | 109,209 | 2.63 | 41,524 |
+| `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 141,818 | 4.03 | 35,191 |
+| `granian` + bare WSGI, 4 workers, 1 blocking thread each | 149,936 | 3.51 | 42,717 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
 
-Read down the `rps/core` column at one worker. Three numbers, and the
-arithmetic between them is the finding:
+Read the one-worker rows. Four numbers, and the arithmetic between them
+is the finding:
 
-- the HTTP layer with no Python at all (`apps/hello`) runs at **<!-- num:hello-rps-k@1 -->156.2<!-- /num -->k
-  rps/core** — above Granian's end-to-end **<!-- num:granian-rps-k@1 -->105.2<!-- /num -->k**
-- put the same bare WSGI application behind it and m0serve runs at **<!-- num:m0-wsgi-rps-k@1 -->97.2<!-- /num -->k
-  rps/core**, so **its own bridge costs <!-- num:bridge-tax@2 -->1.61<!-- /num -->x**
-- net, m0serve is **<!-- num:m0-per-granian@2 -->0.92<!-- /num -->x Granian per core**; Granian is <!-- num:granian-per-m0@2 -->1.08<!-- /num -->x ahead
+- the HTTP layer with no Python at all (`apps/hello`) runs at
+  **<!-- num:hello-rps-k@1 -->151.8<!-- /num -->k rps/core**, above Granian's end-to-end
+  **<!-- num:granian-rps-k@1 -->107.4<!-- /num -->k**
+- the same bare WSGI application run inline on that loop, one thread, runs
+  at **<!-- num:m0-loop-rps-k@1 -->105.3<!-- /num -->k rps/core**, so **the bridge costs
+  <!-- num:bridge-tax@2 -->1.44<!-- /num -->x**
+- give the worker one handler thread, Granian's shape, and m0serve serves
+  **<!-- num:m0-w1-rps-k@1 -->143.3<!-- /num -->k rps on <!-- num:m0-w1-cores@2 -->1.65<!-- /num --> cores** against Granian's
+  **<!-- num:granian-w1-rps-k@1 -->189.0<!-- /num -->k on <!-- num:granian-w1-cores@2 -->1.76<!-- /num -->**: **<!-- num:m0-per-granian@2 -->0.81<!-- /num -->x per
+  core**, <!-- num:m0-vs-granian-rps@2 -->0.76<!-- /num -->x in throughput
+- zero-config, what `m0serve app.wsgi` runs, serves **<!-- num:m0-zero-config-rps-k@1 -->109.2<!-- /num -->k
+  rps** on a pool of eight handler threads
 
-So the deficit is the bridge — the per-request crossing into CPython — and
+So the deficit is the bridge, the per-request crossing into CPython, and
 not the parsing or the event loop, which is the whole reason to split the
 measurement rather than report one number.
 
-**What this table cannot tell you is how much Granian's own bridge costs**,
-because there is no Granian-without-Python row to divide by. A cleaner
-decomposition — "1.0x HTTP layer × 1.35x bridge" — appeared in the working
-record and does not reconcile with this artifact: the measured gap is
-<!-- num:granian-per-m0@2 -->1.08<!-- /num -->x, and for a 1.35x bridge term to hold, the HTTP layer would have to be
-0.89x, which contradicts the row above it. Corrected rather than repeated;
-the per-side split needs a measurement nobody has taken yet.
+Until 2026-09-05 the head-to-head row was the inline one. An explicit
+`--workers 1` switches the zero-config pool off, so the table compared the
+loop alone against Granian's one blocking thread, which understated
+m0serve's throughput by a third and flattered its per-core figure; the
+same-shape pair is the comparison now.
 
-Quoting the 115.9k hello row against Granian's 100.0k would be comparing a
-server that runs no Python to one that does. It is on this page because it
-locates the cost, not because it is a win.
+**What this table cannot tell you is how much Granian's own bridge costs**,
+because there is no Granian-without-Python row to divide by; the per-side
+split needs a measurement nobody has taken yet. Quoting the hello row
+against Granian would be comparing a server that runs no Python to one
+that does. It is on this page because it locates the cost, not because it
+is a win.
 
 ## ASGI throughput
 
@@ -121,14 +134,14 @@ locates the cost, not because it is a win.
 asserted between the two responses, single process each:
 
 <!-- generated: asgi-wrk-hello -- edit bench/results, not this table -->
-Source: [`asgi-wrk-hello-20260904T131803Z.json`](../bench/results/asgi-wrk-hello-20260904T131803Z.json) — 2026-09-04T13:18:03+00:00, commit `8e9466d`.
+Source: [`asgi-wrk-hello-20260905T201953Z.json`](../bench/results/asgi-wrk-hello-20260905T201953Z.json) — 2026-09-05T20:19:53+00:00, commit `39de02c`.
 Environment: Python 3.13.6; Apple M4 (10 cores); wrk -t2 -c16 -d8s, browser headers; executor loop: uvloop.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `m0serve` — zero-config executor (its loop is stamped above) | 117,643 | 1.59 | 73,989 |
-| `uvicorn --loop asyncio` | 58,382 | 0.99 | 58,972 |
-| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 83,384 | 0.98 | 85,085 |
+| `m0serve` — zero-config executor (its loop is stamped above) | 118,686 | 1.60 | 74,179 |
+| `uvicorn --loop asyncio` | 58,609 | 0.99 | 59,201 |
+| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 83,300 | 0.98 | 85,000 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: asgi-wrk-hello -->
@@ -144,8 +157,8 @@ re-acquired the GIL after every wake and was blocked in that acquire
 16–45 % of wall time, so its parsing and writing never overlapped the
 executor's Python. Since 2026-09-04 the loop holds no thread state while it
 serves (`docs/notes/detached-loop.md`), and this row runs at 1.59 cores:
-**<!-- num:asgi-vs-uvicorn@2 -->2.02<!-- /num -->x `uvicorn --loop asyncio`** and
-<!-- num:asgi-vs-uvloop@2 -->1.41<!-- /num -->x uvicorn with uvloop in requests per second, 1.25x and
+**<!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio`** and
+<!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop in requests per second, 1.25x and
 0.87x per core. At 256 connections (`asgi-wrk-conns`, same afternoon) the
 executor does 173k on 1.77 cores against uvicorn asyncio's 59k and uvloop's
 76k on one — 1.65x and 1.26x per core — so per core it is ahead of both at
@@ -162,7 +175,7 @@ the concurrency tables and the loop-by-loop comparison are in
 Worth recording because it inverted a conclusion: an earlier run of this
 comparison used a stdlib `http.client` harness and reported 0.88–0.94x. The
 assumption was that the stdlib client understated the Mojo layer's parsing
-edge. Under wrk the ratio is <!-- num:asgi-vs-uvicorn@2 -->2.02<!-- /num -->x at 16 connections (0.72x before the
+edge. Under wrk the ratio is <!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x at 16 connections (0.72x before the
 pump was batched and then inverted) — the stdlib client had been
 *flattering* the executor as it stood, and the fix path derived from it
 was aimed the wrong way.
@@ -174,13 +187,13 @@ slow ones are in flight. Four threads measure `/` while two hammer
 `/slow?ms=200`.
 
 <!-- generated: asgi-executor -- edit bench/results, not this table -->
-Source: [`asgi-executor-20260904T033151Z.json`](../bench/results/asgi-executor-20260904T033151Z.json) — 2026-09-04T03:31:51+00:00, commit `0766272` (dirty tree).
+Source: [`asgi-executor-20260905T202031Z.json`](../bench/results/asgi-executor-20260905T202031Z.json) — 2026-09-05T20:20:31+00:00, commit `39de02c`.
 Environment: Python 3.13.6; Apple M4 (10 cores); seconds=8, threads=8.
 
 | server | rps | fast p50 | fast p99 | errors |
 |--------|----:|---------:|---------:|-------:|
-| `m0serve` — asyncio executor | 29,640 | 138 µs | 265 µs | 0 |
-| `uvicorn` | 24,600 | 169 µs | 378 µs | 0 |
+| `m0serve` — asyncio executor | 30,334 | 135 µs | 262 µs | 0 |
+| `uvicorn` | 24,422 | 171 µs | 385 µs | 0 |
 
 Fast-request latency is measured while slow requests are in flight; rps and the two percentiles come from the same run, so they trade against each other rather than being separately optimised rows.
 <!-- /generated: asgi-executor -->
@@ -218,15 +231,15 @@ The control is the point. Both halves run in one pass, so the rows without
 the flag have to keep failing for the rows with it to mean anything.
 
 <!-- generated: mixed-workload -- edit bench/results, not this table -->
-Source: [`mixed-workload-20260826T141514Z.json`](../bench/results/mixed-workload-20260826T141514Z.json) — 2026-08-26T14:15:14+00:00, commit `c182b62`.
-Environment: Python 3.14.7 free-threading build; granian 2.8.1; Apple M4 (10 cores); wrk -c16 -d10s, 2 rounds, medians.
+Source: [`mixed-workload-20260905T204712Z.json`](../bench/results/mixed-workload-20260905T204712Z.json) — 2026-09-05T20:47:12+00:00, commit `39de02c`.
+Environment: Python 3.14.7 free-threading build; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 2 rounds, medians.
 
 | configuration | slow=0 | slow=1 | slow=2 |
 |---|---|---|---|
-| `--workers 4` | 1.0 ms | 190.7 ms | 195.9 ms |
-| `--threads 4` | 1.7 ms | 195.2 ms | 200.5 ms |
-| `--workers 4 +bt=4` | 2.4 ms | 7.4 ms | 7.4 ms |
-| `--threads 4 +bt=4` | 2.2 ms | 2.5 ms | 1.6 ms |
+| `--workers 4` | 0.8 ms | 191.0 ms | 196.1 ms |
+| `--threads 4` | 1.1 ms | 194.7 ms | 200.6 ms |
+| `--workers 4 +bt=4` | 2.3 ms | 3.4 ms | 6.2 ms |
+| `--threads 4 +bt=4` | 2.1 ms | 2.0 ms | 2.1 ms |
 | `granian bt=4` | 0.6 ms | 0.5 ms | 0.6 ms |
 
 Fast-route p99, median across rounds, as concurrent slow requests are added. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.

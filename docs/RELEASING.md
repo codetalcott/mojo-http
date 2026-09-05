@@ -91,6 +91,20 @@ reference server (`--baseline`, gunicorn or uvicorn) — see
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
 
+**And the benchmarks, when `check-docs` says so.** Every table in
+docs/BENCHMARKS.md renders from the newest committed artifact, and
+`render_bench_docs.py --check` (inside `poe check-docs`) refuses one that
+is more than a minor version behind `pyproject.toml`, was recorded on a
+dirty tree, or lacks a version stamp — so the bump in step 2 fails
+`check-docs` once the artifacts are two minors old. Re-record on a clean
+checkout of the bumped tree with nothing else running: build `apps/hello`
+to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,
+`poe bench-asgi-wrk`, `poe bench-asgi`, and `scripts/bench_mixed_workload.sh`
+under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
+Reproducing section; `.venv-pinned/` is ignored so the parked venv does not
+stamp the artifact dirty). Commit the artifacts and run
+`poe render-bench-docs`.
+
 The steps, in order:
 
 1. **Update [CHANGELOG.md](../CHANGELOG.md).** Add a `## [X.Y.Z] — date`
