@@ -57,6 +57,18 @@ jobs:
       # proves those checks can fail, the way the recorder's selftest does.
       - name: Self-test the site generator's checks
         run: python3 scripts/docsite.py --selftest
+      # The executor shim's rendering check (packages/m0-wsgi/shim/m0_shim.py
+      # against the Mojo constant the binary embeds) runs inside check_docs
+      # above; this proves it can fail, for the same reason.
+      - name: Self-test the shim renderer's check
+        run: python3 scripts/render_shim.py --selftest
+      # The shim is a Python file precisely so a linter can read it: a
+      # NameError inside it surfaces at run time as streams truncated at
+      # 64 KB with a log line that says only "raised after its head". Pinned,
+      # and installed here rather than through uv, because this workflow
+      # deliberately needs no toolchain.
+      - name: pyflakes over the executor shim
+        run: python3 -m pip install --quiet pyflakes==3.4.0 && python3 -m pyflakes packages/m0-wsgi/shim/m0_shim.py scripts/render_shim.py
       # Guard the guard. The spec sheet's rules are only worth the page they
       # back if reverting one goes red, so each is reverted in memory here and
       # the checker must catch every one -- and a sabotage whose patch no

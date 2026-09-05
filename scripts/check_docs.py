@@ -223,6 +223,29 @@ def check_bench_region():
         fail((r.stdout + r.stderr).strip() or "render_bench_docs --check failed")
 
 
+def check_shim_rendered():
+    """The executor shim's Mojo constant must be the rendering of its `.py`.
+
+    `packages/m0-wsgi/shim/m0_shim.py` is the shim's source of truth and
+    `packages/m0-wsgi/src/shim_source.mojo` is what the binary embeds
+    (`scripts/render_shim.py`; `poe render-shim`). An edit to the `.py`
+    that is not re-rendered ships the OLD program while `poe test-shim`
+    tests the new one, which is the drift this exists to refuse; the same
+    `--check` proves the literal decodes back to the file byte for byte.
+    Here rather than in test.yml so a pull request that edits only the
+    `.py` -- which test.yml runs -- and one that edits only docs both see
+    it. `render_shim.py --selftest` (in the check-docs task and docs.yml)
+    proves this check can fail.
+    """
+    r = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "render_shim.py"), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        fail((r.stdout + r.stderr).strip() or "render_shim --check failed")
+
+
 def check_version_single_source():
     """The version lives in exactly two places, and the wheel adds no third.
 
@@ -1005,6 +1028,7 @@ def main():
     _artifacts_ok = len(failures) == _artifacts_ok
     if _artifacts_ok:
         check_bench_region()
+    check_shim_rendered()
     check_version_single_source()
     check_wheel_platform_claims()
     check_m0pub_twins()

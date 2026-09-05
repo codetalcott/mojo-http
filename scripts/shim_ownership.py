@@ -1,9 +1,10 @@
 """Deterministic tests for the executor shim's slot-ownership rules.
 
-The shim is a Python program inside a Mojo string (`SHIM_SOURCE` in
-`packages/m0-wsgi/src/bridge.mojo`), so its logic can be exercised with no
-server, no Mojo, no interpreter embedding and no threads: extract the
-string, `exec` it into a namespace, hand it a real asyncio loop and a
+The shim is a Python program (`packages/m0-wsgi/shim/m0_shim.py`, rendered
+into the Mojo constant the binary embeds by `scripts/render_shim.py`), so
+its logic can be exercised with no server, no Mojo, no interpreter
+embedding and no threads: read the file, `exec` it into a namespace, hand
+it a real asyncio loop and a
 socketpair for each of the two channels the Mojo loop speaks over, and
 drive it exactly as the loop does — 8-byte job datagrams, 9-byte
 disconnect tags, 8-byte drain acks. The stand-in for the Mojo side is
@@ -55,54 +56,20 @@ import sys
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BRIDGE = os.path.join(HERE, os.pardir, "packages", "m0-wsgi", "src", "bridge.mojo")
-
-_OPEN = 'comptime SHIM_SOURCE = """'
-_CLOSE = '\n"""\n'
-
-# Mojo's escape set, applied so the Python this file compiles is byte for
-# byte the Python the binary execs. Anything else backslash-prefixed is an
-# error rather than a silent divergence.
-_ESCAPES = {
-    "\\": "\\", '"': '"', "'": "'", "n": "\n", "r": "\r",
-    "t": "\t", "0": "\0",
-}
-
-
-def _unescape(text, where):
-    out = []
-    i = 0
-    while i < len(text):
-        c = text[i]
-        if c != "\\":
-            out.append(c)
-            i += 1
-            continue
-        if i + 1 >= len(text):
-            raise ValueError("%s: trailing backslash" % where)
-        nxt = text[i + 1]
-        if nxt in _ESCAPES:
-            out.append(_ESCAPES[nxt])
-            i += 2
-        elif nxt == "x":
-            out.append(chr(int(text[i + 2:i + 4], 16)))
-            i += 4
-        else:
-            raise ValueError(
-                "%s: unsupported Mojo escape '\\%s' in SHIM_SOURCE; teach "
-                "scripts/shim_ownership.py about it or this test runs a "
-                "different program than the binary does" % (where, nxt)
-            )
-    return "".join(out)
+SHIM = os.path.join(HERE, os.pardir, "packages", "m0-wsgi", "shim", "m0_shim.py")
 
 
 def shim_source():
-    """The shim's Python, exactly as the binary execs it."""
-    with open(BRIDGE, "r", encoding="utf-8") as fh:
-        src = fh.read()
-    start = src.index(_OPEN) + len(_OPEN)
-    end = src.index(_CLOSE, start)
-    return _unescape(src[start:end + 1], "SHIM_SOURCE")
+    """The shim's Python, as the binary execs it.
+
+    The `.py` is the source of truth; `scripts/render_shim.py` renders it
+    into the Mojo constant `bridge.mojo` embeds, and its `--check` (inside
+    `poe check-docs`) proves both that the rendering is current and that
+    the literal decodes back to this file byte for byte -- which is what
+    makes testing the file here the same as testing the binary's program.
+    """
+    with open(SHIM, "r", encoding="utf-8") as fh:
+        return fh.read()
 
 
 # --- the harness -----------------------------------------------------------
@@ -115,7 +82,7 @@ class Harness:
 
     def __init__(self, source):
         self.ns = {}
-        exec(compile(source, "SHIM_SOURCE(bridge.mojo)", "exec"), self.ns)
+        exec(compile(source, "m0_shim.py", "exec"), self.ns)
         self.loop = asyncio.new_event_loop()
         self.ns["_loop"] = self.loop
         self.ns["_app"] = self._app
@@ -564,8 +531,9 @@ SABOTAGES = [
     ),
     (
         "_task_gone consults only the slot",
-        "    return (slot in _exec_disconnected\n"
-        "            or getattr(asyncio.current_task(), '_m0_disconnected', False))",
+        "    return slot in _exec_disconnected or getattr(\n"
+        "        asyncio.current_task(), '_m0_disconnected', False\n"
+        "    )",
         "    return slot in _exec_disconnected",
     ),
     (
@@ -680,8 +648,8 @@ def run_sabotages(source):
 
 def main(argv):
     source = shim_source()
-    print("shim-ownership: %d lines of SHIM_SOURCE extracted from %s"
-          % (len(source.splitlines()), os.path.relpath(BRIDGE, os.getcwd())))
+    print("shim-ownership: %d lines of shim read from %s"
+          % (len(source.splitlines()), os.path.relpath(SHIM, os.getcwd())))
     failures = run_suite(source)
     if failures:
         print("shim-ownership: %d test(s) failed" % len(failures))

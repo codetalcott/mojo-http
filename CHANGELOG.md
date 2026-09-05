@@ -9,6 +9,22 @@ versions may break the API**.
 
 ### Added
 
+- **The executor shim is a Python file.** `packages/m0-wsgi/shim/m0_shim.py`
+  is the source of truth for the ~1,500-line program `PyBridge` execs —
+  WSGI's `start_response`, protocol detection, the asyncio executor, the
+  streaming seam's credit and ownership rules, the pub/sub object — and
+  `scripts/render_shim.py` (`poe render-shim`) renders it into the Mojo
+  constant `bridge.mojo` embeds (`src/shim_source.mojo`, generated and
+  committed, so the binary is still self-contained). `check-docs` fails
+  when the rendering is stale and proves the literal decodes back to the
+  file byte for byte, which is what lets `poe test-shim` read the file
+  and still be testing the binary's program; the renderer's `--selftest`
+  proves the check can fail, and a pyflakes step joins the `Docs`
+  workflow (`poe lint-shim` locally) — its first run found the one unused
+  import the audit had found by hand. The question of whether Python is
+  the right home for the shim was answered first, with measurements:
+  docs/notes/shim-language.md. The program the binary execs is unchanged
+  except for that import and black's formatting.
 - **`--spawn-workers` / `M0_SPAWN_WORKERS`** (SPEC E15; `smoke-spawn-workers`).
   Each worker is forked and at once execs the binary afresh, inheriting the
   listener, the bus channels and a file-backed shared page by descriptor,

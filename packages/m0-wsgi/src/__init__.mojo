@@ -30,7 +30,8 @@ Known limits, all inherited from the server rather than the bridge:
   Django's `SECURE_PROXY_SSL_HEADER`.
 """
 
-from .bridge import PyBridge, SHIM_SOURCE
+from .bridge import PyBridge
+from .shim_source import SHIM_SOURCE
 from .environ import (
     all_ascii,
     append_cgi_name_as_utf8,

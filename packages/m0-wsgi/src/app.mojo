@@ -11,7 +11,8 @@ from std.python import Python, PythonObject
 
 from lightbug_http import HTTPRequest, HTTPResponse
 
-from .bridge import PyBridge, SHIM_SOURCE
+from .bridge import PyBridge
+from .shim_source import SHIM_SOURCE
 from .response import build_response
 
 
