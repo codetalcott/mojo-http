@@ -430,6 +430,9 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var run_executor = executor_mode or len(asgi_lanes) > 0
     var use_offload = blocking > 0 or run_executor
     var pool = OffloadPool(server[].config.max_connections if use_offload else 0)
+    # This mode refused a GIL-enabled interpreter at startup, so the pool's
+    # stall check counts from the push (`OffloadPool.wake_on_age`).
+    pool.set_wake_on_age(True)
     var pool_addr = pool.addr() if use_offload else 0
     # This loop's handler needs the pool for one thing: a chunk frame its
     # outbox refuses must abort the stream rather than vanish. See

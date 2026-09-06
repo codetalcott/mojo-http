@@ -213,4 +213,32 @@ passed 20 of 20 rounds (2 of 10 failed on the ring's first build, 0 of
 opened while the loop was kept busy. The pool smokes on both platforms
 and the fairness probe are in the pull request's gates.
 
-<!-- the mixed-workload and layer-split rows are appended below as they are recorded -->
+## The layer split, re-recorded
+
+`scripts/bench_layer_split.sh` on the committed tree, three rounds,
+medians, process-level cores (`bench/results/layer-split-20260906T215002Z.json`,
+against `layer-split-20260906T151035Z.json` from the morning, main at
+`a72e340`):
+
+| row | before | after |
+|---|---:|---:|
+| `apps/hello` (no Python) | 195.8k rps, 0.98 cores | 196.0k, 0.98 |
+| `m0serve` + bare, `--workers 1 --blocking-threads 0` | 117.4k, 0.97 | 118.7k, 0.99 |
+| `m0serve` + bare, `--workers 1 --blocking-threads 1` | 183.1k, 1.75 | 183.8k, 1.73 |
+| **`m0serve` + bare, zero-config** | **123.4k, 2.84** | **184.4k, 1.74** |
+| granian + bare, w1 bt1 | 189.1k, 1.73 | 188.4k, 1.76 |
+| `m0serve` + bare, `--workers 4 --blocking-threads 1` | 148.9k, 4.42 | 148.7k, 4.44 |
+| granian + bare, w4 | 148.1k, 3.98 | 147.9k, 4.25 |
+
+Every row but the zero-config one is within 1 % of the morning's; that
+one is at the one-thread rate on the one-thread cores. A first
+recording of the same script an hour earlier landed the one-thread and
+zero-config rows 7 % lower with hello and Granian unmoved; an A/B of
+main's binary against this one at one thread (186.3k / 186.1k against
+184.8k / 185.3k, the rules off 187.1k / 185.5k) found nothing, and
+`ps` found `contactsd`, `knowledge-agent` and `AddressBookSourceSync`
+at a core and a half between them. The artifact above was recorded
+after they went quiet; the depressed one was discarded, as the
+comparator rows exist to allow.
+
+<!-- the mixed-workload row is appended below when it is recorded -->

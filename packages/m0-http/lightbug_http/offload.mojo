@@ -662,6 +662,19 @@ struct OffloadPool(Movable):
     last saw the count move (or the ring empty): the last moment the
     lane is known to have been draining. Loop-only."""
 
+    var wake_on_age: Bool
+    """Whether `wake_aged` counts a head's wait from its PUSH, whatever the
+    pop counter did — the rule for a FREE-THREADED interpreter, where a
+    ring one thread is draining while siblings sit parked is parallelism
+    thrown away, not GIL time saved. False on a GIL build, where a
+    draining ring is left alone (`POOL_WAKE_AGE_NS`). Set by the wiring
+    from the interpreter's own answer (`set_wake_on_age`); the same
+    threshold either way. `M0_POOL_WAKE_ON_AGE=1`/`0` overrides it, the
+    A/B knob."""
+
+    var _wake_on_age_forced: Int
+    """-1 when the knob is unset, else what it said."""
+
     var wake_age: Int
     """The age threshold the loop's check uses: `POOL_WAKE_AGE_NS`, or
     `M0_POOL_WAKE_AGE_US` in microseconds when set — the measurement
@@ -726,6 +739,12 @@ struct OffloadPool(Movable):
         self.lane_progress = List[Int]()
         self.lane_pops.append(0)
         self.lane_progress.append(0)
+        self.wake_on_age = False
+        self._wake_on_age_forced = -1
+        var on_age = getenv("M0_POOL_WAKE_ON_AGE", "")
+        if on_age == "1" or on_age == "0":
+            self._wake_on_age_forced = 1 if on_age == "1" else 0
+            self.wake_on_age = on_age == "1"
         self.wake_age = POOL_WAKE_AGE_NS
         var age_us = getenv("M0_POOL_WAKE_AGE_US", "")
         if age_us != "":
@@ -806,6 +825,8 @@ struct OffloadPool(Movable):
         self.thread_cap = move.thread_cap
         self.lane_pops = move.lane_pops^
         self.lane_progress = move.lane_progress^
+        self.wake_on_age = move.wake_on_age
+        self._wake_on_age_forced = move._wake_on_age_forced
 
     def set_hold_notify(mut self, fd: Int):
         """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
@@ -1331,6 +1352,17 @@ struct OffloadPool(Movable):
         """See `wake_age`."""
         return self.wake_age
 
+    def set_wake_on_age(mut self, flag: Bool):
+        """The wiring's answer to "is this interpreter free-threaded?"
+        (`probe_free_threading`; the threaded mode is by construction).
+        See `wake_on_age`. The knob, when set, wins."""
+        if self._wake_on_age_forced < 0:
+            self.wake_on_age = flag
+
+    def wakes_on_age(self) -> Bool:
+        """See `wake_on_age`."""
+        return self.wake_on_age
+
     def wake_counts(self, lane: Int) -> Tuple[Int, Int]:
         """`(aged, idle)`: wakes `wake_aged` sent, and wakes `submit` sent
         into an all-parked lane, since the pool was built. A measurement
@@ -1435,7 +1467,13 @@ struct OffloadPool(Movable):
         Re-evaluated every pass while the ring stands, so a wake a busy
         thread's socket poll consumed is simply sent again next pass (the
         hole the chain used to fill); `_wake_one`'s cap keeps it to one
-        wake per parked thread."""
+        wake per parked thread.
+
+        On a free-threaded interpreter (`wake_on_age`) progress is not
+        the question: the head's wait counts from its push, and a ring
+        that one thread is draining with a sibling parked beside it gets
+        the sibling once the head has waited `age_ns` — two threads on
+        two cores is twice the rate there, not twice the GIL waiters."""
         if not self.elastic:
             return 0
         var woken = 0
@@ -1450,8 +1488,9 @@ struct OffloadPool(Movable):
             if pops != self.lane_pops[lane]:
                 self.lane_pops[lane] = pops
                 self.lane_progress[lane] = now
-                continue
-            var since = self.lane_progress[lane]
+                if not self.wake_on_age:
+                    continue
+            var since = 0 if self.wake_on_age else self.lane_progress[lane]
             if slot >= 0 and slot < len(self.submit_ns) and self.submit_ns[slot] > since:
                 since = self.submit_ns[slot]
             if now - since < age_ns:
