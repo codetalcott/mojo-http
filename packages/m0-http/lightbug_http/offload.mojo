@@ -64,12 +64,8 @@ announced that it is parked:
 
 - a pool thread that finds its ring empty spins for `POOL_SPIN_NS`
   (yielding after `POOL_YIELD_AFTER_NS`), then counts itself parked,
-  re-checks the ring, and blocks in `recv`; `submit` pushes, then reads
-  that count, and pokes the lane only if it exceeds the wakes already in
-  flight to it (one wake per parked thread, never one per push); a thread
-  that takes a job and leaves work on the ring pokes a parked sibling by
-  the same rule, because its own socket poll may have consumed that
-  sibling's wake;
+  re-checks the ring, and blocks; `submit` pushes, then reads that count,
+  and wakes only if the lane needs it (below);
 - the loop raises its own flag before `backend.wait` and re-checks the
   completion ring after raising it (`event_loop._wait_for_events`);
   `complete` pushes, then reads the flag, and pokes the completion
@@ -80,6 +76,50 @@ announcement, then poke. Every one of those is sequentially consistent
 (the stdlib's default), so one side always sees the other and a wake is
 never lost. Reordering either sequence is a lost wakeup: a request
 answered a second late, or at shutdown a thread that never reads its pill.
+
+## The wake is elastic: one thread until a job has waited
+
+Measured 2026-09-06 (docs/notes/elastic-pool.md): the zero-config pool
+of eight threads served a trivial view at 0.67x the one-thread rate on
+1.6x the cores, because a burst of jobs was taken by as many threads as
+were awake and they then serialized on the GIL with an OS wake per
+hand-off. Four rules, all in `next_job`, `submit` and `wake_aged`, and
+all off under `M0_POOL_ELASTIC=0` (the A/B knob, which restores the
+rules of 2026-09-05):
+
+- **One idle spinner per lane.** A thread that finds its ring empty spins
+  only if no sibling is already spinning idle; otherwise it parks at
+  once. The spinner sees every push itself.
+- **`submit` wakes nobody while any thread of the lane is busy or
+  spinning.** A busy thread with an empty ring behind it comes back in
+  microseconds and takes the job faster than a wake could land; a wake
+  beside it is a second thread on the GIL for nothing. Only a lane whose
+  every thread is parked (`_all_idle`: `threads <= parked`, spinners
+  zero) gets a wake — and exactly one, because the wake retires the
+  woken thread's parked count before the next push can look.
+- **A job that has waited is behind a slow view, and the LOOP wakes a
+  sibling for it.** Once per pass `wake_aged` peeks each lane's ring head
+  and, if it was parked (`submit_ns`) more than `POOL_WAKE_AGE_NS` ago,
+  wakes one parked thread; `_wait_for_events` caps its timeout at
+  `POOL_WAKE_WAIT_MS` while any job is pending, so an idle loop looks
+  within a millisecond. This replaced the chained wake (a thread that
+  took a job poking a sibling for the rest — `_chain_wake`, kept for the
+  knob-off arm): the hole the chain filled, a woken thread's socket poll
+  consuming a sibling's wake, is now closed on every pass rather than
+  once, because the head is re-examined until it is gone.
+- **Every pool thread parks on a channel of its OWN, and is woken by
+  name — the one that parked LAST first** (`register_thread`,
+  `_park_on_own`, `_wake_registered`). The kernel's choice for N
+  receivers blocked on one socket is wrong on both platforms: macOS
+  wakes all of them (one datagram into eight blocked receivers costs
+  59 µs of CPU against 3 into one) and Linux wakes the oldest,
+  round-robin, so every job landed on the coldest thread and its cold
+  interpreter thread state. Pills go to those channels too (`stop`),
+  and a WebSocket message sent on the lane socket is followed by a wake
+  to a parked thread, which polls the socket first thing. A thread that
+  never registered (a test's, or every thread under the knob) parks on
+  the lane socket under the old rule: one poke per parked thread, never
+  one per push.
 
 The spin is what makes a pool thread's park rare rather than free. At
 130–180k rps the gap between jobs on one thread is a microsecond or two,
@@ -159,14 +199,92 @@ message) ride the socket now, so this bounds how late one is noticed by a
 thread that never runs out of ring work: one recv per 100 µs is a few
 tenths of a percent of the thread."""
 
+comptime POOL_WAKE_AGE_NS = 200_000
+"""How long the SAME job may sit at the head of a lane's ring, unmoved,
+before the LOOP wakes a parked sibling for it (`wake_aged`, once per
+pass).
+
+The elastic pool's threshold, `T`. Below it the pool behaves as ONE
+handler thread: `submit` wakes nobody while a thread is busy or spinning
+on the lane, because a thread that is a few microseconds from coming back
+takes the job faster than a wake can land, and a burst of trivial jobs
+taken by N threads serializes on the GIL with an OS wake per hand-off —
+zero-config's eight threads served a trivial view at 0.67x the one-thread
+rate on 1.6x the cores (docs/notes/elastic-pool.md). Above it a thread is
+inside a view that is not coming back soon, and the isolation the pool
+exists for needs a sibling: a fast request behind two 200 ms views waits
+this long plus a wake, against the view's whole hold time without the
+pool.
+
+It is time WITHOUT PROGRESS that is measured, not the head's age since
+submit. A ring 256 deep behind one thread taking 4 µs a job holds a head
+that is a millisecond old and moving every 4 µs, and waking a sibling
+for its age puts N threads on the GIL for a queue one thread drains
+faster — measured at 256 connections as 0.90x the one-thread rate with
+400 such wakes a run; and looking for the SAME job at the head across
+the loop's passes is no better there, because a pass at 256 connections
+is longer than `T` and every look finds a fresh head as old as the
+backlog. The ring's pop counter is the signal: if it advanced since the
+loop last looked, the ring is being drained, however deep; if it did
+not, the head has waited since the later of its push and the last look
+that saw progress, and past `T` of that a thread is not coming back —
+the case a sibling is for. Chosen by measurement, recorded in the note."""
+
+comptime POOL_WAKE_WAIT_MS = 1
+"""The loop's longest `wait` while a job sits on a lane's ring.
+
+The age check runs once per pass, and under load a pass is every 10–30
+µs; an IDLE loop parks in `kevent`/`epoll_wait` for up to a second, which
+would be a job behind a slow view waiting a second for its sibling.
+`_wait_for_events` bounds the timeout to this whenever `jobs_pending`, so
+the wait costs nothing while the rings are empty and a pending job is
+looked at within a millisecond, the backends' timer granularity."""
+
 comptime _WAKE_BYTES = 8192
-"""The wake words: the loop's parked flag at +0, then per lane at
-`_WAKE_LANE_BASE + lane * _WAKE_LANE_STRIDE` a parked-thread count (+0),
-the last datagram-poll time (+8) and the wakes in flight (+16), each lane
-on its own cache line."""
+"""The wake words: the loop's parked flag at +0, the registered-thread
+counter at +8 and the park sequence at +16; then per lane at
+`_WAKE_LANE_BASE + lane * _WAKE_LANE_STRIDE` a count of threads parked on
+the LANE socket (+0), the last datagram-poll time (+8), the wakes in
+flight to that socket (+16), the idle spinners (+24), the threads serving
+the lane (+32), the wakes `wake_aged` sent (+40), the wakes `submit` sent
+(+48) and the threads parked on their OWN channel (+56), each lane on its
+own cache line."""
+comptime _WAKE_THREADS = 8
+comptime _WAKE_SEQ = 16
 comptime _WAKE_LANE_BASE = 128
 comptime _WAKE_LANE_STRIDE = 64
 comptime _WAKE_MAX_LANES = (_WAKE_BYTES - _WAKE_LANE_BASE) // _WAKE_LANE_STRIDE
+
+comptime _THREAD_STRIDE = 64
+"""Bytes per registered pool thread in the thread block (`reserve_threads`):
+its state (+0: running, parked, woken), the sequence it parked with (+8),
+its lane (+16; -1 before registration, -2 after leaving), the two ends of
+its own wake channel (+24 read, +32 write) and a pill it read while
+holding a job (+40). One cache line per thread.
+
+Why a channel per thread: the kernel decides which of N threads blocked
+in `recv` on one socket a datagram wakes, and both platforms decide
+badly for this pool. macOS wakes EVERY one of them (measured: one
+datagram into eight blocked receivers costs 59 µs of CPU against 3 into
+one, and they take turns serving), and Linux wakes exactly one but the
+OLDEST — round-robin, so each job lands on the coldest thread. With its
+own channel a thread is woken by name, and `_wake_registered` names the
+one that parked LAST: the thread whose caches, and whose interpreter
+thread state, are still warm. docs/notes/elastic-pool.md has the
+measurement."""
+comptime _TR_STATE = 0
+comptime _TR_SEQ = 8
+comptime _TR_LANE = 16
+comptime _TR_READ = 24
+comptime _TR_WRITE = 32
+comptime _TR_PILL = 40
+comptime _TS_RUNNING = 0
+comptime _TS_PARKED = 1
+comptime _TS_WOKEN = 2
+comptime _OWN_NONE = 0
+comptime _OWN_POKE = 1
+comptime _OWN_PILL = 2
+comptime _OWN_DEAD = -1
 
 comptime TAG_STREAM_ABORT = UInt8(5)
 """First byte of a stream-abort datagram on the COMPLETION channel.
@@ -523,6 +641,40 @@ struct OffloadPool(Movable):
     var wake_base: Int
     """The `_WAKE_BYTES` block of parked flags, or 0 without rings."""
 
+    var elastic: Bool
+    """The elastic wake rules (`POOL_WAKE_AGE_NS`): one idle spinner per
+    lane, `submit` waking nobody while a thread is busy or spinning, and
+    the loop's age check in place of the chained wake. Off under
+    `M0_POOL_ELASTIC=0` — the A/B knob, which restores the eager rules of
+    2026-09-05: every idle thread spins, every push into a parked lane
+    pokes, and a thread that takes a job pokes a sibling for the rest.
+    Always off without rings."""
+
+    var submit_ns: List[Int]
+    """Per slot, when its current job was parked (`park_request`), the
+    loop's clock. Written and read by the loop thread only — `wake_aged`
+    reads it as the job's identity on a recycled slot and as the earliest
+    its wait can have begun — so no atomics."""
+
+    var lane_pops: List[Int]
+    var lane_progress: List[Int]
+    """Per lane, the ring's pop count `wake_aged` last saw and when it
+    last saw the count move (or the ring empty): the last moment the
+    lane is known to have been draining. Loop-only."""
+
+    var wake_age: Int
+    """The age threshold the loop's check uses: `POOL_WAKE_AGE_NS`, or
+    `M0_POOL_WAKE_AGE_US` in microseconds when set — the measurement
+    knob the threshold was chosen with (docs/notes/elastic-pool.md)."""
+
+    var thread_base: Int
+    """The block of `_THREAD_STRIDE` records `reserve_threads` made, or 0:
+    then every pool thread parks on the lane socket, the shape before
+    per-thread channels (and the shape under `M0_POOL_ELASTIC=0`)."""
+
+    var thread_cap: Int
+    """Records in `thread_base`; `register_thread` hands them out."""
+
     def __init__(out self, capacity: Int) raises:
         """`capacity == 0` builds a disabled pool: no descriptors, no storage.
 
@@ -543,9 +695,11 @@ struct OffloadPool(Movable):
         var slots = capacity if capacity > 0 else 1
         self.slot_lane = List[Int](capacity=slots)
         self.slot_ack_fd = List[Int](capacity=slots)
+        self.submit_ns = List[Int](capacity=slots)
         for _ in range(slots):
             self.slot_lane.append(0)
             self.slot_ack_fd.append(-1)
+            self.submit_ns.append(0)
         self.aborts = List[Int]()
         self._drain_buf = List[UInt8](capacity=OFFLOAD_MAX_INFLIGHT * _JOB_BYTES)
         self._drain_buf.resize(OFFLOAD_MAX_INFLIGHT * _JOB_BYTES, 0)
@@ -565,6 +719,20 @@ struct OffloadPool(Movable):
         self.hold_notify_fd = -1
         self.sweep_every_pass = False
         self.ring_enabled = capacity > 0 and getenv("M0_POOL_RING", "") != "0"
+        self.elastic = self.ring_enabled and getenv("M0_POOL_ELASTIC", "") != "0"
+        self.thread_base = 0
+        self.thread_cap = 0
+        self.lane_pops = List[Int]()
+        self.lane_progress = List[Int]()
+        self.lane_pops.append(0)
+        self.lane_progress.append(0)
+        self.wake_age = POOL_WAKE_AGE_NS
+        var age_us = getenv("M0_POOL_WAKE_AGE_US", "")
+        if age_us != "":
+            try:
+                self.wake_age = Int(age_us) * 1000
+            except:
+                pass
         self.job_rings = List[Ring]()
         self.done_ring = Ring()
         self.wake_base = 0
@@ -631,6 +799,13 @@ struct OffloadPool(Movable):
         self.job_rings = move.job_rings^
         self.done_ring = move.done_ring.copy()
         self.wake_base = move.wake_base
+        self.elastic = move.elastic
+        self.submit_ns = move.submit_ns^
+        self.wake_age = move.wake_age
+        self.thread_base = move.thread_base
+        self.thread_cap = move.thread_cap
+        self.lane_pops = move.lane_pops^
+        self.lane_progress = move.lane_progress^
 
     def set_hold_notify(mut self, fd: Int):
         """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
@@ -778,6 +953,12 @@ struct OffloadPool(Movable):
         for _ in range(64):
             try:
                 _ = send(FileDescriptor(fd), Span(msg), UInt(len(msg)), 0)
+                # A thread parked on its own channel is not watching the
+                # lane socket; wake the most recently parked one, which
+                # polls the socket first thing. No parked thread means a
+                # spinner or a busy one polls it within
+                # `POOL_DGRAM_POLL_NS`, as before.
+                _ = self._wake_registered(lane)
                 return True
             except:
                 _sched_yield()
@@ -954,6 +1135,332 @@ struct OffloadPool(Movable):
     def _wakes_addr(self, lane: Int) -> Int:
         return self._parked_addr(lane) + 16
 
+    def _spinners_addr(self, lane: Int) -> Int:
+        return self._parked_addr(lane) + 24
+
+    def _threads_addr(self, lane: Int) -> Int:
+        return self._parked_addr(lane) + 32
+
+    def _aged_wakes_addr(self, lane: Int) -> Int:
+        return self._parked_addr(lane) + 40
+
+    def _idle_wakes_addr(self, lane: Int) -> Int:
+        return self._parked_addr(lane) + 48
+
+    def _parked_reg_addr(self, lane: Int) -> Int:
+        return self._parked_addr(lane) + 56
+
+    def _rec(self, thread: Int) -> Int:
+        """Registered thread `thread`'s record (see `_THREAD_STRIDE`)."""
+        return self.thread_base + thread * _THREAD_STRIDE
+
+    def reserve_threads(mut self, n: Int):
+        """Room for `n` pool threads to register a wake channel each.
+
+        Called ONCE by whoever spawns the threads (`BlockingPool.start`),
+        before any of them starts: the records are handed out by an
+        atomic counter, but the block itself is allocated here, on the
+        spawning thread. Inert without the elastic rules — there the
+        threads park on the lane socket, as they always did."""
+        if not self.elastic or n <= 0 or self.thread_base != 0:
+            return
+        var bytes = _THREAD_STRIDE * n
+        self.thread_base = external_call["malloc", Int, Int](bytes)
+        for w in range(bytes // 8):
+            atomic_at(self.thread_base + w * 8)[] = Atomic[DType.int64](0)
+        for t in range(n):
+            atomic_at(self._rec(t) + _TR_LANE)[].store(-1)
+            atomic_at(self._rec(t) + _TR_READ)[].store(-1)
+            atomic_at(self._rec(t) + _TR_WRITE)[].store(-1)
+        self.thread_cap = n
+
+    def register_thread(mut self, lane: Int) -> Int:
+        """A pool thread announcing itself on `lane`: counts it
+        (`note_thread`) and, when a record was reserved, gives it a wake
+        channel of its own — returns the thread id to pass to `next_job`,
+        or -1 when it must park on the lane socket instead (no reservation,
+        the reservation exhausted, the pair refused, or the rules off).
+
+        The read end stays blocking (the thread parks in it, detached);
+        the write end is non-blocking, because the loop pokes it and must
+        never park. Two datagrams at most ever sit in it — one wake, one
+        pill — so the default buffer is plenty. The lane word is stored
+        LAST: it is what `_wake_registered` and `stop` test, so the record
+        is published whole."""
+        var at = lane if lane > 0 else 0
+        self.note_thread(at, 1)
+        if self.thread_cap == 0:
+            return -1
+        var t = Int(atomic_at(self.wake_base + _WAKE_THREADS)[].fetch_add(1))
+        if t >= self.thread_cap:
+            return -1
+        var pair: Tuple[Int, Int]
+        try:
+            pair = socketpair_dgram()
+        except:
+            return -1
+        _set_nonblocking_fd(pair[1])
+        var rec = self._rec(t)
+        atomic_at(rec + _TR_READ)[].store(Int64(pair[0]))
+        atomic_at(rec + _TR_WRITE)[].store(Int64(pair[1]))
+        atomic_at(rec + _TR_STATE)[].store(Int64(_TS_RUNNING))
+        atomic_at(rec + _TR_SEQ)[].store(0)
+        atomic_at(rec + _TR_PILL)[].store(0)
+        atomic_at(rec + _TR_LANE)[].store(Int64(at))
+        return t
+
+    def unregister_thread(self, thread: Int, lane: Int):
+        """The thread is leaving: uncount it, and retire its record so
+        `stop` and the wake scan skip it. Its channel stays open for the
+        process's life, like every other descriptor here."""
+        var at = lane if lane > 0 else 0
+        self.note_thread(at, -1)
+        if thread >= 0 and thread < self.thread_cap:
+            atomic_at(self._rec(thread) + _TR_LANE)[].store(-2)
+
+    def registered_threads(self) -> Int:
+        """Records handed out so far (never more than reserved). Test
+        surface."""
+        if self.thread_cap == 0:
+            return 0
+        var n = Int(atomic_at(self.wake_base + _WAKE_THREADS)[].load())
+        return n if n < self.thread_cap else self.thread_cap
+
+    def _wake_registered(self, lane: Int) -> Bool:
+        """Wake the thread of `lane` that parked most recently, on its own
+        channel: PARKED to WOKEN by compare-exchange, so a thread that took
+        a job for itself in the same instant is not poked twice and no
+        other thread is poked for it. Retires the thread's parked count
+        here, on the waker's side, so a burst into a lane where one thread
+        has just been woken is NOT all idle (`_all_idle`) and wakes nobody
+        else: that thread takes the burst, which is the one-thread shape.
+        False when no registered thread of the lane is parked."""
+        if self.thread_cap == 0:
+            return False
+        var n = self.registered_threads()
+        var best = -1
+        var best_seq = Int64(-1)
+        for t in range(n):
+            var rec = self._rec(t)
+            if atomic_at(rec + _TR_LANE)[].load() != Int64(lane):
+                continue
+            if atomic_at(rec + _TR_STATE)[].load() != Int64(_TS_PARKED):
+                continue
+            var seq = atomic_at(rec + _TR_SEQ)[].load()
+            if seq > best_seq:
+                best = t
+                best_seq = seq
+        if best < 0:
+            return False
+        var rec = self._rec(best)
+        var expected = Int64(_TS_PARKED)
+        if not atomic_at(rec + _TR_STATE)[].compare_exchange(
+            expected, Int64(_TS_WOKEN)
+        ):
+            return False
+        _ = atomic_at(self._parked_reg_addr(lane))[].fetch_add(-1)
+        self._poke(Int(atomic_at(rec + _TR_WRITE)[].load()))
+        return True
+
+    def _recv_own(self, thread: Int, mut buf: List[UInt8], flags: c_int) -> Int:
+        """One datagram off `thread`'s own channel: `_OWN_POKE`,
+        `_OWN_PILL`, `_OWN_NONE` (nothing, non-blocking) or `_OWN_DEAD`."""
+        var fd = FileDescriptor(Int(atomic_at(self._rec(thread) + _TR_READ)[].load()))
+        while True:
+            var n: UInt
+            try:
+                n = recv(fd, Span(buf), UInt(_JOB_BYTES), flags)
+            except recv_err:
+                if recv_err.isa[RecvEINTRError]():
+                    if flags != 0:
+                        return _OWN_NONE
+                    continue
+                if recv_err.isa[RecvEAGAINError]():
+                    return _OWN_NONE
+                return _OWN_DEAD
+            if n != UInt(_JOB_BYTES):
+                return _OWN_DEAD
+            return _OWN_PILL if _decode_job(Span(buf)) == _POISON else _OWN_POKE
+
+    def _park_on_own(
+        self, lane: Int, thread: Int, ring: Ring, mut buf: List[UInt8]
+    ) -> PoolJob:
+        """Park `thread` on its own channel until woken. The job it finds
+        on the announce-then-re-check, the pill (`JOB_STOP`), or
+        `JOB_NONE` for a wake — the caller then looks at the lane socket
+        and the ring again.
+
+        Announce (sequence, state, count), re-check the ring, block. The
+        re-check races the loop's `_wake_registered`, and the state word
+        settles it: whoever moves it off PARKED first owns the transition
+        and retires the parked count. If the loop won, its poke is in
+        flight for THIS thread and is consumed here, so the channel holds
+        nothing stale at the next park; a pill read in that position is
+        remembered (`_TR_PILL`) and answered at the next call, after the
+        job in hand."""
+        var rec = self._rec(thread)
+        var state = atomic_at(rec + _TR_STATE)
+        var parked_reg = atomic_at(self._parked_reg_addr(lane))
+        var seq = atomic_at(self.wake_base + _WAKE_SEQ)[].fetch_add(1) + 1
+        atomic_at(rec + _TR_SEQ)[].store(seq)
+        state[].store(Int64(_TS_PARKED))
+        _ = parked_reg[].fetch_add(1)
+        var slot = 0
+        if ring.pop(slot):
+            var expected = Int64(_TS_PARKED)
+            if state[].compare_exchange(expected, Int64(_TS_RUNNING)):
+                _ = parked_reg[].fetch_add(-1)
+            else:
+                if self._recv_own(thread, buf, 0) == _OWN_PILL:
+                    atomic_at(rec + _TR_PILL)[].store(1)
+                state[].store(Int64(_TS_RUNNING))
+            return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+        var got = self._recv_own(thread, buf, 0)
+        var expected = Int64(_TS_PARKED)
+        if state[].compare_exchange(expected, Int64(_TS_RUNNING)):
+            # A pill found us parked (or the channel died): nobody
+            # retired the count, so this thread does.
+            _ = parked_reg[].fetch_add(-1)
+        else:
+            state[].store(Int64(_TS_RUNNING))
+        if got == _OWN_PILL or got == _OWN_DEAD:
+            return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+        return _none_job()
+
+    def wake_age_ns(self) -> Int:
+        """See `wake_age`."""
+        return self.wake_age
+
+    def wake_counts(self, lane: Int) -> Tuple[Int, Int]:
+        """`(aged, idle)`: wakes `wake_aged` sent, and wakes `submit` sent
+        into an all-parked lane, since the pool was built. A measurement
+        surface (the note's rotation-versus-cascade question), not a
+        protocol word."""
+        if not self.ring_enabled:
+            return (0, 0)
+        return (
+            Int(atomic_at(self._aged_wakes_addr(lane))[].load()),
+            Int(atomic_at(self._idle_wakes_addr(lane))[].load()),
+        )
+
+    def elastic_active(self) -> Bool:
+        """Whether the elastic wake rules are in force (see `elastic`)."""
+        return self.elastic
+
+    def spinner_count(self, lane: Int) -> Int:
+        """Threads of `lane` spinning idle on an empty ring. Test surface;
+        at most one under the elastic rules."""
+        if not self.ring_enabled:
+            return 0
+        return Int(atomic_at(self._spinners_addr(lane))[].load())
+
+    def note_spinning(self, lane: Int, delta: Int):
+        """Adjust `lane`'s idle-spinner count. `next_job` does this itself;
+        a test does it to stand in for a spinning sibling."""
+        if self.ring_enabled:
+            _ = atomic_at(self._spinners_addr(lane))[].fetch_add(Int64(delta))
+
+    def thread_count(self, lane: Int) -> Int:
+        """Threads serving `lane`, as they announced themselves."""
+        if not self.ring_enabled:
+            return 0
+        return Int(atomic_at(self._threads_addr(lane))[].load())
+
+    def note_thread(self, lane: Int, delta: Int):
+        """A pool thread announcing itself on `lane` (+1 at start, -1 when
+        it leaves). What lets `submit` tell "every thread is parked" from
+        "a thread is busy in a view": busy is `threads - parked -
+        spinners`. A lane nobody announced on (a test driving `next_job`
+        by hand) reads as all idle, which is the eager rule."""
+        if self.ring_enabled:
+            _ = atomic_at(self._threads_addr(lane))[].fetch_add(Int64(delta))
+
+    def _all_idle(self, lane: Int) -> Bool:
+        """Whether no thread of `lane` is busy or spinning: nobody will
+        take a pushed job unless woken. Three words read one after
+        another, and the snapshot may straddle a thread's own transition —
+        which is safe, because every transition into spinning or parking
+        re-checks the ring AFTER announcing itself (`next_job`), and a
+        push precedes the loop's reads here."""
+        if atomic_at(self._spinners_addr(lane))[].load() > 0:
+            return False
+        var parked = (
+            atomic_at(self._parked_addr(lane))[].load()
+            + atomic_at(self._parked_reg_addr(lane))[].load()
+        )
+        return atomic_at(self._threads_addr(lane))[].load() <= parked
+
+    def _wake_one(self, lane: Int) -> Bool:
+        """One wake to `lane`: the most recently parked registered thread
+        on its own channel (`_wake_registered`), else — for threads parked
+        on the lane socket — one poke there if a parked thread is not
+        already owed one. The rule every poke site shares. Returns whether
+        a wake was sent."""
+        if self._wake_registered(lane):
+            return True
+        var wakes = atomic_at(self._wakes_addr(lane))
+        if atomic_at(self._parked_addr(lane))[].load() > wakes[].load():
+            _ = wakes[].fetch_add(1)
+            self._poke(self.submit_write_fd(lane))
+            return True
+        return False
+
+    def jobs_pending(self) -> Bool:
+        """Whether any lane's ring holds a job no thread has taken. What
+        bounds the loop's wait (`POOL_WAKE_WAIT_MS`); always False under
+        the eager rules, where a pending job already has its wake."""
+        if not self.elastic:
+            return False
+        for lane in range(len(self.job_rings)):
+            if not self.job_rings[lane].is_empty():
+                return True
+        return False
+
+    def wake_aged(mut self, now: Int, age_ns: Int) -> Int:
+        """The loop's half of the elastic pool, once per pass: for every
+        lane whose ring holds a job and has not been drained for longer
+        than `age_ns`, wake one parked thread by `_wake_one`'s rule.
+        Returns how many were woken.
+
+        This is what replaced the chained wake. A ring nobody is taking
+        from holds jobs behind a thread that is not coming back — a slow
+        view — and the loop is the one party that sees every lane, every
+        pass, and never blocks in a view. A ring whose pop count moved
+        since the loop last looked is being drained, however deep, and a
+        sibling would only share the GIL with the thread draining it.
+        The wait is counted from the later of the head's push and the
+        last look that saw the ring move or empty — so a job pushed just
+        now into a stuck lane is not aged by the loop's absence, and one
+        pushed long ago into a draining lane is not aged by its queue.
+        Re-evaluated every pass while the ring stands, so a wake a busy
+        thread's socket poll consumed is simply sent again next pass (the
+        hole the chain used to fill); `_wake_one`'s cap keeps it to one
+        wake per parked thread."""
+        if not self.elastic:
+            return 0
+        var woken = 0
+        for lane in range(len(self.job_rings)):
+            ref ring = self.job_rings[lane]
+            var pops = ring.pops()
+            var slot = 0
+            if not ring.peek(slot):
+                self.lane_pops[lane] = pops
+                self.lane_progress[lane] = now
+                continue
+            if pops != self.lane_pops[lane]:
+                self.lane_pops[lane] = pops
+                self.lane_progress[lane] = now
+                continue
+            var since = self.lane_progress[lane]
+            if slot >= 0 and slot < len(self.submit_ns) and self.submit_ns[slot] > since:
+                since = self.submit_ns[slot]
+            if now - since < age_ns:
+                continue
+            if self._wake_one(lane):
+                _ = atomic_at(self._aged_wakes_addr(lane))[].fetch_add(1)
+                woken += 1
+        return woken
+
     def wakes_in_flight(self, lane: Int) -> Int:
         """Wake datagrams sent to `lane` and not yet read. Test surface."""
         if not self.ring_enabled:
@@ -965,10 +1472,14 @@ struct OffloadPool(Movable):
         return self.ring_enabled
 
     def parked_count(self, lane: Int) -> Int:
-        """Threads of `lane` blocked in `recv` right now. Test surface."""
+        """Threads of `lane` parked right now, on the lane socket or on
+        their own channel. Test surface."""
         if not self.ring_enabled:
             return 0
-        return Int(atomic_at(self._parked_addr(lane))[].load())
+        return Int(
+            atomic_at(self._parked_addr(lane))[].load()
+            + atomic_at(self._parked_reg_addr(lane))[].load()
+        )
 
     def note_parked(self, lane: Int, delta: Int):
         """Adjust `lane`'s parked count. `next_job` does this itself; a test
@@ -1017,10 +1528,7 @@ struct OffloadPool(Movable):
         thread, and only while the ring holds something."""
         if ring.is_empty():
             return
-        var wakes = atomic_at(self._wakes_addr(lane))
-        if atomic_at(self._parked_addr(lane))[].load() > wakes[].load():
-            _ = wakes[].fetch_add(1)
-            self._poke(self.submit_write_fd(lane))
+        _ = self._wake_one(lane)
 
     def _recv_datagram(
         self, lane: Int, fd: FileDescriptor, cap: Int, mut buf: List[UInt8],
@@ -1091,8 +1599,11 @@ struct OffloadPool(Movable):
     # --- loop side -------------------------------------------------------
 
     def park_request(mut self, slot: Int, var request: HTTPRequest):
-        """Hand a request to the slot. Call immediately before `submit`."""
+        """Hand a request to the slot. Call immediately before `submit`.
+        Stamps `submit_ns` — the age `wake_aged` measures from."""
         self.requests[slot] = request^
+        if self.elastic:
+            self.submit_ns[slot] = perf_counter_ns()
 
     def add_lane(mut self, var prefix: String) raises:
         """Declare a submit lane serving `prefix`; returns nothing, appends.
@@ -1118,6 +1629,8 @@ struct OffloadPool(Movable):
         self.lane_ack_read.append(-1)
         self.lane_ack_write.append(-1)
         self.job_rings.append(self._new_lane_ring())
+        self.lane_pops.append(0)
+        self.lane_progress.append(0)
 
     def submit_read_fd(self, lane: Int) -> Int:
         """The read end a worker for `lane` blocks on."""
@@ -1178,6 +1691,13 @@ struct OffloadPool(Movable):
         With rings: push, THEN read the lane's parked count, and poke only
         if it is non-zero — the producer's half of the protocol in the
         module docstring. A thread that is spinning sees the push itself.
+
+        Elastic (the default): poke only if EVERY thread of the lane is
+        parked. A busy thread with an empty ring behind it, or the lane's
+        idle spinner, takes the job sooner than a wake could land, and a
+        wake into a burst of trivial jobs is what put N threads on the
+        GIL at once. A busy thread that is NOT coming back soon — a slow
+        view — is the loop's age check's case (`wake_aged`).
         """
         var lane = self.lane_for(path)
         self.stamp_lane(slot, lane)
@@ -1190,10 +1710,9 @@ struct OffloadPool(Movable):
             # threads had decremented the count, and every stale poke
             # later cost a parking thread a spin. A thread already owed a
             # wake will drain the ring when it comes.
-            var wakes = atomic_at(self._wakes_addr(lane))
-            if atomic_at(self._parked_addr(lane))[].load() > wakes[].load():
-                _ = wakes[].fetch_add(1)
-                self._poke(self.submit_write_fd(lane))
+            if not self.elastic or self._all_idle(lane):
+                if self._wake_one(lane):
+                    _ = atomic_at(self._idle_wakes_addr(lane))[].fetch_add(1)
             return True
         var job = _encode_job(slot)
         try:
@@ -1312,9 +1831,36 @@ struct OffloadPool(Movable):
         0 and looks fine, which is exactly how the wrong belief survived
         local testing. The close exists to release the descriptor.
         """
+        if getenv("M0_POOL_DEBUG", "") != "":
+            var counts = self.wake_counts(lane)
+            print(
+                "pool lane " + String(lane) + ": aged wakes "
+                + String(counts[0]) + ", idle wakes " + String(counts[1])
+                + ", threads " + String(self.thread_count(lane)),
+                flush=True,
+            )
         var pill = _encode_job(_POISON)
+        # A thread parked on its own channel is not reading the lane
+        # socket, so every registered thread of the lane is pilled by
+        # name, and the lane socket gets one pill per receiver beyond
+        # those — the threads that never registered (a test's, or every
+        # thread under the eager rules).
+        var pilled = 0
+        var at = lane if lane > 0 else 0
+        for t in range(self.registered_threads()):
+            var rec = self._rec(t)
+            if atomic_at(rec + _TR_LANE)[].load() != Int64(at):
+                continue
+            var own = Int(atomic_at(rec + _TR_WRITE)[].load())
+            for _ in range(64):
+                try:
+                    _ = send(FileDescriptor(own), Span(pill), UInt(len(pill)), 0)
+                    break
+                except:
+                    _sched_yield()
+            pilled += 1
         var lane_write = self.submit_write_fd(lane)
-        for _ in range(threads):
+        for _ in range(threads - pilled):
             try:
                 _ = send(
                     FileDescriptor(lane_write),
@@ -1335,16 +1881,24 @@ struct OffloadPool(Movable):
 
     # --- pool side -------------------------------------------------------
 
-    def next_job(mut self, lane: Int, mut buf: List[UInt8]) -> PoolJob:
+    def next_job(mut self, lane: Int, mut buf: List[UInt8], thread: Int = -1) -> PoolJob:
         """Block until there is something for `lane`; decode it into `buf`.
 
         With rings, the consumer's half of the protocol in the module
         docstring: pop; if nothing, spin for `POOL_SPIN_NS` (yielding past
         `POOL_YIELD_AFTER_NS`), polling the socket non-blocking once per
         `POOL_DGRAM_POLL_NS` for pills and payload datagrams; then count
-        this thread parked, pop ONCE MORE, and only then block in `recv`.
-        A wake that arrives there sends the thread back to the ring with a
-        fresh spin. Without rings this is the blocking `recv` it always was.
+        this thread parked, pop ONCE MORE, and only then block. A wake
+        that arrives there sends the thread back to the ring with a fresh
+        spin. Without rings this is the blocking `recv` it always was.
+
+        `thread` is the id `register_thread` returned, or -1. A registered
+        thread parks on its OWN channel (`_park_on_own`) and is woken by
+        name — the most recently parked thread of the lane first — and
+        polls that channel beside the lane socket; a thread without one
+        parks on the lane socket, where the kernel picks. Under the
+        elastic rules only ONE idle thread per lane spins; the rest park
+        at once.
 
         BLOCKS, and there is no timeout: the only thing that ever ends the
         park is a datagram. A pool thread must therefore detach from the
@@ -1366,35 +1920,85 @@ struct OffloadPool(Movable):
                 var job = self._recv_datagram(lane, fd, cap, buf, 0)
                 if job.kind != JOB_NONE:
                     return job^
+        var own = thread if thread >= 0 and thread < self.thread_cap else -1
+        if own >= 0 and atomic_at(self._rec(own) + _TR_PILL)[].load() != 0:
+            # A pill read while this thread held a job: answered now.
+            return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
         var parked = atomic_at(self._parked_addr(lane))
         var poll = atomic_at(self._poll_addr(lane))
+        var spinners = atomic_at(self._spinners_addr(lane))
         var spin_start = 0
+        # Whether THIS thread holds the lane's one idle spin (elastic).
+        var spinning = False
         while True:
             # The socket first, on its cadence, whatever the ring holds: a
             # pill or a WebSocket message must not wait behind a ring that
             # a pool-bound load keeps full. One clock read per job; one
-            # non-blocking recv per lane per POOL_DGRAM_POLL_NS.
+            # non-blocking recv per lane per POOL_DGRAM_POLL_NS — and for a
+            # registered thread one more on its own channel, where its
+            # pill arrives.
             var now = perf_counter_ns()
             if now - Int(poll[].load()) >= POOL_DGRAM_POLL_NS:
                 poll[].store(Int64(now))
+                if own >= 0:
+                    var mine = self._recv_own(own, buf, MSG_DONTWAIT)
+                    if mine == _OWN_PILL or mine == _OWN_DEAD:
+                        if spinning:
+                            _ = spinners[].fetch_add(-1)
+                        return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
                 var polled = self._recv_datagram(lane, fd, cap, buf, MSG_DONTWAIT)
                 if polled.kind != JOB_NONE:
+                    if spinning:
+                        _ = spinners[].fetch_add(-1)
                     return polled^
             var slot = 0
             if ring.pop(slot):
-                self._chain_wake(lane, ring)
+                if spinning:
+                    _ = spinners[].fetch_add(-1)
+                if not self.elastic:
+                    self._chain_wake(lane, ring)
                 return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+            var park_now = False
             if spin_start == 0:
                 spin_start = now
-                continue
-            if now - spin_start >= POOL_SPIN_NS:
+                if self.elastic:
+                    # One idle spinner per lane. Announce, then re-check
+                    # (the `continue` pops again): the spinner sees every
+                    # push itself, so `submit` never wakes anyone while
+                    # one exists — and the spin is what makes a park
+                    # rare, not free. A second idle thread spinning
+                    # beside it would only burn a core; it parks at once.
+                    if spinners[].fetch_add(1) == 0:
+                        spinning = True
+                    else:
+                        _ = spinners[].fetch_add(-1)
+                        park_now = True
+                if not park_now:
+                    continue
+            if park_now or now - spin_start >= POOL_SPIN_NS:
                 # Announce, re-check, block — in that order, or a push that
                 # lands between the last pop and the recv is a job nobody
-                # is woken for.
+                # is woken for. The spin is given up BEFORE the park is
+                # announced, so `_all_idle` never counts this thread as
+                # both, and its re-check below follows both stores.
+                if spinning:
+                    _ = spinners[].fetch_add(-1)
+                    spinning = False
+                if own >= 0:
+                    var mine = self._park_on_own(lane, own, ring, buf)
+                    if mine.kind != JOB_NONE:
+                        return mine^
+                    # Woken by name: the lane socket may hold what the
+                    # loop woke us for (a WebSocket message), so it is
+                    # polled first thing, and the ring looked at again.
+                    poll[].store(0)
+                    spin_start = 0
+                    continue
                 _ = parked[].fetch_add(1)
                 if ring.pop(slot):
                     _ = parked[].fetch_add(-1)
-                    self._chain_wake(lane, ring)
+                    if not self.elastic:
+                        self._chain_wake(lane, ring)
                     return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
                 var woke = self._recv_datagram(lane, fd, cap, buf, 0)
                 _ = parked[].fetch_add(-1)
@@ -1760,6 +2364,21 @@ struct OffloadLoopState(Movable):
         if not self.enabled():
             return False
         return self.pool()[].done_pending()
+
+    def jobs_pending(self) -> Bool:
+        """`OffloadPool.jobs_pending`, False when the pool is disabled."""
+        if not self.enabled():
+            return False
+        return self.pool()[].jobs_pending()
+
+    def wake_aged(self, now: Int) -> Int:
+        """`OffloadPool.wake_aged` at the pool's threshold, 0 when the
+        pool is disabled."""
+        if not self.enabled():
+            return 0
+        ref pool = self.pool()[]
+        var age = pool.wake_age_ns()
+        return pool.wake_aged(now, age)
 
     def set_loop_parked(self, flag: Bool):
         """`OffloadPool.set_loop_parked`, inert when the pool is disabled."""

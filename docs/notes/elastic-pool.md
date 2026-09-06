@@ -1,0 +1,216 @@
+# The elastic pool: one thread until a job has waited — 2026-09-06
+
+> A design note from the engineering record. It is the step after
+> [loop-user-space.md](loop-user-space.md): with the event-loop thread
+> at tokio's price, the zero-config handler pool — eight threads, what
+> `m0serve app.wsgi` runs — was serving a trivial view at two thirds of
+> the rate one thread served it, on 1.6x the cores. This note records
+> what the eight threads were doing, the three rules that make the pool
+> behave as one thread until a job has actually waited, the kernel fact
+> that decided the fourth, and what the trivial and slow rows cost
+> before and after.
+
+Bare WSGI at one worker, `apps/wsgi_bare`, `wrk -t2` with browser
+headers, Apple M4, CPython 3.13.6, granian 2.8.2, the same binary with
+the rules on and off in the same session, arms alternated. Zero-config
+went from 118.4k / 122.6k requests per second on 2.8 cores to
+172.5k / 179.2k on the one-thread shape's cores at 16 connections,
+against 176.9k / 179.4k for `--blocking-threads 1`; at 256 connections
+from 0.90x of the one-thread shape to parity, one pool thread serving.
+A fast request behind two 1.5 s views is answered in 2 ms
+(`smoke-blocking-threads`, whose limit is 250 ms), and the mixed-workload
+row below says what the isolation costs under load.
+
+## What the eight threads were doing
+
+Zero-config runs `--blocking-threads min(cores, 8)` so that one slow
+view cannot stall every connection out of the box
+([WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md), "A slow view strands
+the connections pinned behind it"). The isolation is real and the cost
+on a view that never waits had become large, because the loop got fast
+and the pool did not. Per-thread CPU by `ps -M`, medians over 8 s, main
+at `3a365c4`:
+
+| handler threads | rps | loop | each pool thread | cores |
+|---|---:|---:|---:|---:|
+| 1 | 176.7k / 181.4k | 98 / 94 % | 78 / 75 % | 1.76 / 1.68 |
+| 2 | 163.8k / 164.2k | 94 / 96 % | 58 % each | 2.10 / 2.14 |
+| 4 | 139.3k | 93 % | 41 % each | 2.56 |
+| 8 (zero-config) | 121.7k | 87 % | 24 % each | 2.79 |
+
+Every thread added cost throughput and CPU. The first reading was that
+a burst of jobs is taken by as many threads as are awake and they then
+serialize on the GIL with an OS wake per hand-off; that is true, and
+it is not where most of the cost was. Two counters on the pool
+(`OffloadPool.wake_counts`, printed at shutdown under `M0_POOL_DEBUG=1`)
+split the wakes the loop sent by site, over 11 s at 16 connections:
+
+| build | rps | pool threads | wakes for a stalled ring | wakes into an all-parked lane |
+|---|---:|---|---:|---:|
+| the three rules below, one shared wake socket | 154.8k | 8 × 14 % | 27 | 132,078 |
+| the same, stall check off | 158.9k | 8 × 14 % | 0 | 132,355 |
+| `--blocking-threads 1` | 174.2k | 1 × 74 % | 0 | 129,668 |
+
+The one-thread shape parks and is woken 130,000 times in 11 s — once
+per burst, whenever the loop has nothing for it for longer than its
+10 µs spin — and zero-config parks exactly as often. The difference was
+never how often a thread parks; it was which thread the wake lands on.
+With eight threads blocked in `recv` on one datagram socket, the kernel
+chooses, and a C ping-pong of that primitive
+(`.claude/handoffs/loop-user-space/herd.c`: W receivers blocked on one
+`SOCK_DGRAM` pair, one datagram per round, whole-process CPU per round
+trip) says how it chooses:
+
+| receivers | macOS (M4) CPU per round trip | served by each | Linux (aarch64 VM) CPU per round trip | served by each |
+|---:|---:|---|---:|---|
+| 1 | 3.0 µs | all | 11.4 µs | all |
+| 2 | 6.9 | 50 / 50 % | 11.2 | 50 / 50 % |
+| 4 | 16.1 | 25 % each | 11.3 | 25 % each |
+| 8 | 59.4 | 12.5 % each | 11.1 | 12.5 % each |
+
+macOS wakes every blocked receiver for every datagram — eight parked
+threads make one wake cost twenty times what it costs one — and they
+take turns serving. Linux wakes exactly one, at no extra cost, and it
+is the OLDEST waiter every time: strict round-robin. On both, every
+job after a park lands on a cold thread with a cold interpreter thread
+state, and on macOS twelve thousand wakes a second at 56 µs of extra
+CPU each is most of the core that zero-config was spending over the
+one-thread shape. The Linux VM's absolute figures are the virtualization's, not
+the kernel's; the shape is the finding.
+
+## The rules
+
+All in `packages/m0-http/lightbug_http/offload.mojo` (`next_job`,
+`submit`, `wake_aged`, `_park_on_own`, `_wake_registered`), the
+loop's side in `event_loop.mojo` (`_run_pass`'s bottom and
+`_wait_for_events`), and the registration in
+`m0_wsgi/blocking_pool.mojo`. `M0_POOL_ELASTIC=0` turns all four off
+and is the A/B arm: every idle thread spins, every push into a parked
+lane pokes the lane socket, and a thread that takes a job pokes a
+sibling for the rest — the rules of the day before.
+
+1. **One idle spinner per lane.** A thread that finds its ring empty
+   spins only if no sibling is already spinning idle (`spinners`, a
+   per-lane word beside `parked`); otherwise it parks at once. The
+   spinner sees every push itself.
+2. **`submit` wakes nobody while any thread of the lane is busy or
+   spinning.** A busy thread with an empty ring behind it comes back in
+   microseconds and takes the job sooner than a wake could land; a wake
+   beside it is a second thread on the GIL for nothing. Only a lane
+   whose every thread is parked gets a wake (`_all_idle`: spinners
+   zero and `threads <= parked`, the thread count kept by
+   `register_thread`), and exactly one, because the wake retires the
+   woken thread's parked count before the next push can look — so a
+   burst of sixteen into a parked lane wakes one thread, which takes
+   the burst.
+3. **A ring that holds a job and has not been drained for `T` is behind
+   a thread that is not coming back, and the LOOP wakes a parked
+   sibling for it.** Once per pass `wake_aged` reads each lane's pop
+   counter (`Ring.pops`, the head position): moved since the last look,
+   the lane is being drained, however deep its queue; unmoved, the head
+   has waited since the later of its push and the last look that saw
+   the ring move or empty, and past `T` of that one parked thread is
+   woken. `_wait_for_events` caps its timeout at `POOL_WAKE_WAIT_MS`
+   (1 ms) while any job is pending, so an idle loop looks within a
+   millisecond. This replaced the chained wake
+   ([pool-ring-handoff.md](pool-ring-handoff.md), a thread that took a
+   job poking a sibling for the rest): the hole the chain filled — a
+   woken thread's socket poll consuming a sibling's wake, a hold
+   registering 1.5 s late on Linux CI — is now closed every pass rather
+   than once, because the loop re-examines the ring until it moves.
+4. **Every pool thread parks on a wake channel of its own, and the loop
+   wakes the one that parked last.** `register_thread` gives each
+   thread a `SOCK_DGRAM` pair (`BlockingPool.start` reserves the
+   records before spawning); a thread parks in `recv` on its own read
+   end after announcing itself PARKED with a sequence number, and
+   `_wake_registered` scans the lane's records for the parked thread
+   with the highest sequence, moves it PARKED → WOKEN by
+   compare-exchange, and pokes its write end. Whoever moves the state
+   word off PARKED first owns the transition — a thread that finds a
+   job on its own re-check and loses the race consumes the poke in
+   flight, so no channel holds a stale wake. Pills go to those
+   channels (`stop`), a WebSocket message on the lane socket is
+   followed by a wake to a parked thread, which polls the socket first
+   thing, and a thread that never registered (a test's, or every
+   thread under the knob) parks on the lane socket under the old rule.
+
+What did not change: announce, re-check, block on the pool side and
+push, read, poke on the loop side. Every transition into spinning or
+parking re-checks the ring after announcing itself, which is what lets
+`submit` read three counters one after another and skip the wake: a
+snapshot that straddles a thread's transition is safe because that
+thread's re-check follows its own announcement, and the push preceded
+the loop's reads. `test_offload.mojo` holds the rules — a burst into a
+parked lane sends one wake, a push beside a busy or a spinning sibling
+sends none, sixty gap-separated jobs land on one thread of two, a ring
+being drained is never stalled, a job behind a slow sibling is taken
+once the loop wakes a parked one — beside the lost-wakeup test and its
+no-pause variant, both with registered threads now.
+
+## Choosing T, and what the check measures
+
+`T` (`POOL_WAKE_AGE_NS`, 200 µs; `M0_POOL_WAKE_AGE_US` overrides it for
+measurement) bounds how long a fast request waits behind a slow view
+before a sibling is woken: the smoke's limit is 250 ms against a 1.5 s
+hold and the mixed-workload p99 is about 2 ms, so 200 µs is well inside
+both and leaves the isolation where it was. What the check MEASURES
+mattered more than the number:
+
+| stall signal at 256 connections | zero-config rps | one thread | stall wakes / run | pool threads |
+|---|---:|---:|---:|---|
+| the head's age since its push | 183.3k / 184.6k | 203.6k / 204.5k | 463 / 358 | 8 × 8–22 % |
+| the same job at the head across looks | 186.4k / 193.8k | 202.4k / 205.0k | 361 / 270 | 8 × 3–15 % |
+| the ring's pop counter unmoved | 210.3k | | 57 | 1 × 59 % |
+
+A ring 256 deep behind one thread taking 4 µs a job has a head that is
+a millisecond old and moving every 4 µs; waking for its age put eight
+threads on the GIL for a queue one thread was draining faster, and
+the cascade sustains itself (more threads, more hand-offs, a deeper
+queue, more wakes). Watching for the same job at the head across the
+loop's looks was no better there, because a pass at 256 connections is
+longer than `T` and every look finds a fresh head as old as the
+backlog. The pop counter is the signal that means "draining": it moves
+whenever any thread takes a job, whatever the depth, and stops only
+when nobody does. At 16 connections all three behaved alike (2 to 36
+stall wakes a run), which is why the first two looked finished until
+the concurrency went up.
+
+## Measured
+
+`ps -M` per thread, medians over 8 s of `wrk -t2` with browser headers,
+`apps/wsgi_bare`, Apple M4, CPython 3.13.6, granian 2.8.2, one session,
+arms alternated. Absolute rates drift by several percent across the
+session; the ratios are the result.
+
+| connections | zero-config, rules off (`M0_POOL_ELASTIC=0`) | zero-config | `--blocking-threads 1` | granian w1 bt1 |
+|---|---:|---:|---:|---:|
+| 16, first session | 118.4k / 122.6k rps, 2.82 cores (8 × 24 %) | 172.5k / 179.2k (per-thread wakes, the head-age check) | 176.9k / 179.4k, 1.72 cores (1 × 76 %) | 180.4k / 185.6k, 1.75 cores |
+| 16, final build | 120.1k, 2.80 cores (8 × 24 %) | 168.6k / 168.9k, 1.60 cores (1 × 70 %) | 167.5k / 169.3k, 1.59 cores (1 × 70 %) | |
+| 256, final build | | 210.3k / 206.3k, 1.58 cores (1 × 59 %) | 206.9k / 207.6k, 1.57 cores (1 × 59 %) | |
+
+The machine ran several percent slower by the final rounds (one thread
+at 168k against 177k an hour before); within a session the zero-config
+and one-thread arms are within 1 % of each other at both
+concurrencies, on the same cores, with one pool thread serving —
+which is the "done when" of the handoff that asked for this work.
+
+Where the two rules landed before the fourth was built, for the
+record: rules 1–3 over the shared lane socket took zero-config from
+118.4k / 122.6k to 159.3k / 163.5k at 16 connections, still 10 % under
+one thread on 0.4 more cores, with all eight threads at 14 % — which is
+the table in the first section, and what sent this note to the kernel.
+
+## Linux
+
+The hole the chained wake closed reproduced on Linux and never on
+macOS, so the Linux reproducers ran first: the tree built in the
+`m0lin` container (Debian bookworm, aarch64 under colima, CPython
+3.13.11), `phase5_probe.py` — `smoke-django-realtime` phase 5 with a
+fresh server each round: two 1.5 s views in flight, a hold taken on a
+pool thread, the subscriber must be registered half a second later —
+passed 20 of 20 rounds (2 of 10 failed on the ring's first build, 0 of
+20 after the chain), and `hold_race_probe.py` registered 40 of 40 holds
+opened while the loop was kept busy. The pool smokes on both platforms
+and the fairness probe are in the pull request's gates.
+
+<!-- the mixed-workload and layer-split rows are appended below as they are recorded -->

@@ -63,6 +63,11 @@ from .thread_handler import ThreadContext, ThreadHandler
 comptime BLK_POOL = 7
 """Block slot holding the `OffloadPool`'s address."""
 
+comptime BLK_THREAD_ID = 10
+"""Block slot holding the id `OffloadPool.register_thread` gave this
+thread (-1: it parks on the lane socket). Written by `_pool_body` before
+`_pool_serve` runs."""
+
 comptime WS_JOB_BUFFER = 65546
 """Bytes a pool thread's receive buffer holds.
 
@@ -165,6 +170,11 @@ struct BlockingPool(Movable):
         var body = _pool_body[T]
         var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
         self._lanes = List[Int]()
+        # A wake channel per thread (offload.mojo, `_THREAD_STRIDE`),
+        # reserved here on the spawning thread before any of them exists.
+        Pointer[OffloadPool, MutUntrackedOrigin](
+            unsafe_from_address=pool_addr
+        )[].reserve_threads(self.count)
         # The hand-off barrier. With the loop thread holding no thread state
         # (docs/notes/detached-loop.md) nothing forces CPython's GIL hand-off
         # between pool threads: a thread that finishes a job re-takes the GIL
@@ -263,6 +273,7 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     var lane = block.get(BLK_LANE)
     var index = block.get(BLK_INDEX)
     var turn_addr = block.get(BLK_TURN_ADDR)
+    var thread_id = block.get(BLK_THREAD_ID)
     if block.get(BLK_QOS) == 1:
         _ = request_qos_class(QOS_CLASS_USER_INITIATED)
 
@@ -323,7 +334,7 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
         var yielded = False
         if turn_addr != 0 and now - streak_start >= TURN_SLICE_NS:
             yielded = _yield_turn(turn_addr, attaches_before)
-        var job = pool.next_job(lane if lane > 0 else 0, buf)
+        var job = pool.next_job(lane if lane > 0 else 0, buf, thread_id)
         if turn_addr != 0:
             _ = shared_fetch_add(turn_addr, 1)
         var t_attach = perf_counter_ns()
@@ -475,8 +486,19 @@ def _yield_turn(addr: Int, attaches_before: Int) -> Bool:
 
 
 def _pool_body[T: ThreadHandler](arg: Int) -> Int:
-    """pthread start routine: attach, serve, release, report."""
+    """pthread start routine: announce, attach, serve, release, report."""
     var block = ThreadBlock(arg)
+    # This thread counts on its lane from here until it leaves, however
+    # it leaves: the elastic wake (`OffloadPool.note_thread`) reads the
+    # count to tell "every thread is parked" from "one is busy in a view",
+    # and a thread that died without un-announcing would be a busy thread
+    # forever — every job on the lane then waiting out the age check.
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_POOL)
+    )[]
+    var lane = block.get(BLK_LANE)
+    lane = lane if lane > 0 else 0
+    block.set(BLK_THREAD_ID, pool.register_thread(lane))
     ref cpy = Python().cpython()
     var gs = cpy.PyGILState_Ensure()
     var status = STATUS_RAISED
@@ -490,5 +512,6 @@ def _pool_body[T: ThreadHandler](arg: Int) -> Int:
             flush=True,
         )
     cpy.PyGILState_Release(gs)
+    pool.unregister_thread(block.get(BLK_THREAD_ID), lane)
     block.set(BLK_STATUS, status)
     return 0
