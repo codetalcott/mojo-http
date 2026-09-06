@@ -7,23 +7,37 @@
 # completely different fixes. This script splits it into three rows that
 # differ by exactly one layer each:
 #
-#   1. apps/hello       Mojo handler, ZERO Python   -> mojo-http's HTTP ceiling
-#                       (single process: that app has no WorkerSupervisor)
-#   2. m0serve + bare   the same HTTP layer + the WSGI bridge
-#   3. granian + bare   Granian's HTTP layer + its PyO3 bridge
+#   1. apps/hello          Mojo handler, ZERO Python   -> mojo-http's HTTP ceiling
+#                          (single process: that app has no WorkerSupervisor)
+#   2. m0serve + bare bt0  the same HTTP layer + the WSGI bridge, the app run
+#                          inline on the loop thread: ONE thread, so (1)-(2)
+#                          is the bridge alone
+#   3. m0serve + bare bt1  one worker, one handler thread: Granian's shape
+#   4. m0serve + bare      zero-config, what `m0serve app.wsgi` runs (a pool
+#                          of min(cores, 8) handler threads)
+#   5. granian + bare      Granian's HTTP layer + its PyO3 bridge, one
+#                          worker, one blocking thread
 #
-# Rows 2 and 3 run the SAME application (apps/wsgi_bare, a plain PEP 3333
+# Rows 2-5 run the SAME application (apps/wsgi_bare, a plain PEP 3333
 # callable with no third-party imports) so the Python work is identical. The
 # bare app is used rather than Django on purpose: Django's middleware stack is
 # a large constant both servers pay, and it compresses the ratio that this
-# script exists to resolve. All three roots return 13 bytes of text/plain.
+# script exists to resolve. Every root returns 13 bytes of text/plain.
 #
 # Reading it:
 #   (1) - (2)  is mojo-http's own bridge cost
-#   (2) vs (3) is the head-to-head on identical Python work
-#   (1) vs (3) says whether mojo-http's HTTP ceiling is even above what
+#   (3) vs (5) is the head-to-head on identical Python work and the SAME
+#              shape: one worker, one handler thread each. Before 2026-09-05
+#              the head-to-head was (2) vs (5) -- an explicit `--workers 1`
+#              switches the zero-config pool off, so m0serve's row was the
+#              loop alone against Granian's thread, understating its
+#              throughput by a third and flattering its per-core figure
+#   (4)        is the number a user gets
+#   (1) vs (5) says whether mojo-http's HTTP ceiling is even above what
 #              Granian delivers THROUGH a Python bridge - if it is not, the
 #              gap is in the HTTP layer and the bridge is a red herring
+#
+# The 4-worker rows are one handler thread per worker on both servers.
 #
 # Keep-alive only, with a cooldown and a TIME_WAIT gate: see the methodology
 # note in docs/WSGI_PERFORMANCE.md for why a close-per-request run in the same
@@ -120,16 +134,28 @@ for round in $(seq 1 $ROUNDS); do
   # twice.)
   M0_PORT=8080 "$HELLO" > /dev/null 2>&1 & pid=$!
   measure "r$round hello(no python,1proc)"; stop
-  for n in 1 4; do
-    bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8080 --workers $n > /dev/null 2>&1 & pid=$!
-    measure "r$round m0serve+bare w$n"; stop
-    if [ -x .venv/bin/granian ]; then
-      ( cd apps/wsgi_bare && exec ../../.venv/bin/granian --interface wsgi --workers $n \
-          --blocking-threads 1 --host 127.0.0.1 --port 8080 --log-level warning \
-          bareapp.wsgi:application ) > /dev/null 2>&1 & pid=$!
-      measure "r$round granian+bare w$n"; stop
-    fi
-  done
+  # One worker, three shapes: the loop alone (the bridge measurement), one
+  # handler thread (Granian's shape), and zero-config (the user's).
+  bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8080 --workers 1 --blocking-threads 0 > /dev/null 2>&1 & pid=$!
+  measure "r$round m0serve+bare w1 bt0"; stop
+  bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8080 --workers 1 --blocking-threads 1 > /dev/null 2>&1 & pid=$!
+  measure "r$round m0serve+bare w1 bt1"; stop
+  bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8080 > /dev/null 2>&1 & pid=$!
+  measure "r$round m0serve+bare zero-config"; stop
+  if [ -x .venv/bin/granian ]; then
+    ( cd apps/wsgi_bare && exec ../../.venv/bin/granian --interface wsgi --workers 1 \
+        --blocking-threads 1 --host 127.0.0.1 --port 8080 --log-level warning \
+        bareapp.wsgi:application ) > /dev/null 2>&1 & pid=$!
+    measure "r$round granian+bare w1"; stop
+  fi
+  bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8080 --workers 4 --blocking-threads 1 > /dev/null 2>&1 & pid=$!
+  measure "r$round m0serve+bare w4 bt1"; stop
+  if [ -x .venv/bin/granian ]; then
+    ( cd apps/wsgi_bare && exec ../../.venv/bin/granian --interface wsgi --workers 4 \
+        --blocking-threads 1 --host 127.0.0.1 --port 8080 --log-level warning \
+        bareapp.wsgi:application ) > /dev/null 2>&1 & pid=$!
+    measure "r$round granian+bare w4"; stop
+  fi
 done
 echo "results in $OUT"
 

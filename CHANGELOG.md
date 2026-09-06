@@ -7,6 +7,32 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Added
+
+- **A rendered benchmark table may not be stale.** Bench artifacts record
+  the version they measured (`environment.version`), and
+  `render_bench_docs.py --check`, inside `check-docs`, refuses the newest
+  artifact of any rendered kind that lacks the stamp, was recorded on a
+  dirty tree, or is more than one minor version behind `pyproject.toml`;
+  its selftest proves each rule can fail. Found by asking whether the
+  published numbers were current: the slow-view isolation table was from
+  2026-08-26, before the detached loop and the pool hand-off changed its
+  rows, and two headline artifacts were stamped "dirty tree".
+
+### Changed
+
+- **The layer split measures one worker in three shapes**, and the
+  head-to-head with Granian is same-shape. An explicit `--workers 1`
+  switches the zero-config pool off, so the old one-worker row was the
+  loop alone against Granian's one blocking thread: it understated
+  m0serve's throughput by a third and flattered its per-core figure. The
+  table now has the inline row (the bridge measurement), the one-handler-
+  thread row (Granian's shape) and zero-config (what `m0serve app.wsgi`
+  runs); the four-worker rows are one handler thread per worker on both
+  servers. All four tables re-recorded on 0.18.0; the landing page, README
+  and llms.txt state throughput as the comparison it is rather than as a
+  limit, with the numbers as spans the renderer keeps current.
+
 ## [0.18.0] — 2026-09-05
 
 ### Added

@@ -79,10 +79,12 @@ CORES_NOTE = (
 ROW_ORDER = {
     "layer-split": [
         ("hello(no python,1proc)", "`apps/hello` — mojo-http HTTP layer, zero Python"),
-        ("m0serve+bare w1", "`m0serve` + bare WSGI, 1 worker"),
-        ("granian+bare w1", "`granian` + bare WSGI, 1 worker"),
-        ("m0serve+bare w4", "`m0serve` + bare WSGI, 4 workers"),
-        ("granian+bare w4", "`granian` + bare WSGI, 4 workers"),
+        ("m0serve+bare w1 bt0", "`m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread)"),
+        ("m0serve+bare w1 bt1", "`m0serve` + bare WSGI, 1 worker, 1 handler thread"),
+        ("granian+bare w1", "`granian` + bare WSGI, 1 worker, 1 blocking thread"),
+        ("m0serve+bare zero-config", "`m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs)"),
+        ("m0serve+bare w4 bt1", "`m0serve` + bare WSGI, 4 workers, 1 handler thread each"),
+        ("granian+bare w4", "`granian` + bare WSGI, 4 workers, 1 blocking thread each"),
     ],
     "asgi-wrk-hello": [
         ("m0serve asgi-executor", "`m0serve` — zero-config executor (its loop is stamped above)"),
@@ -104,7 +106,8 @@ SPAN_OPEN = re.compile(r"<!-- num:")
 
 # Documents whose prose carries spans. BENCHMARKS and WSGI_PERFORMANCE also
 # hold generated regions; README.md holds spans only.
-SPAN_DOCS = ("README.md", "docs/BENCHMARKS.md", "docs/WSGI_PERFORMANCE.md")
+SPAN_DOCS = ("README.md", "docs/BENCHMARKS.md", "docs/WSGI_PERFORMANCE.md",
+             "apps/site/home.md")
 
 
 def compute_quantities(layer_medians, asgi_medians):
@@ -116,19 +119,34 @@ def compute_quantities(layer_medians, asgi_medians):
     silently stale number.
     """
     hello = layer_medians["hello(no python,1proc)"]["rps_per_core"]
-    m0 = layer_medians["m0serve+bare w1"]["rps_per_core"]
-    gran = layer_medians["granian+bare w1"]["rps_per_core"]
+    # The bridge is measured on the inline row (one thread, so the whole
+    # difference from `hello` is the crossing); the head-to-head is the
+    # same-shape row, one worker and one handler thread on both servers.
+    m0_loop = layer_medians["m0serve+bare w1 bt0"]["rps_per_core"]
+    m0_row = layer_medians["m0serve+bare w1 bt1"]
+    gran_row = layer_medians["granian+bare w1"]
+    m0 = m0_row["rps_per_core"]
+    gran = gran_row["rps_per_core"]
+    zero = layer_medians["m0serve+bare zero-config"]
     am0 = asgi_medians["m0serve asgi-executor"]
     auv = asgi_medians["uvicorn asyncio"]
     auvl = asgi_medians["uvicorn uvloop"]
     return {
         "hello-rps-k": hello / 1000,
+        "m0-loop-rps-k": m0_loop / 1000,
         "m0-wsgi-rps-k": m0 / 1000,
         "granian-rps-k": gran / 1000,
         "m0-per-granian": m0 / gran,
         "granian-per-m0": gran / m0,
-        "bridge-tax": hello / m0,
-        "granian-w1-cores": layer_medians["granian+bare w1"]["cores"],
+        "m0-vs-granian-rps": m0_row["rps"] / gran_row["rps"],
+        "granian-vs-m0-rps": gran_row["rps"] / m0_row["rps"],
+        "m0-w1-rps-k": m0_row["rps"] / 1000,
+        "granian-w1-rps-k": gran_row["rps"] / 1000,
+        "m0-zero-config-rps-k": zero["rps"] / 1000,
+        "bridge-tax": hello / m0_loop,
+        "granian-w1-cores": gran_row["cores"],
+        "m0-w1-cores": m0_row["cores"],
+        "asgi-m0-cores": am0["cores"],
         "asgi-vs-uvicorn": am0["rps"] / auv["rps"],
         "asgi-per-core-vs-uvicorn": am0["rps_per_core"] / auv["rps_per_core"],
         "asgi-vs-uvloop": am0["rps"] / auvl["rps"],
@@ -179,6 +197,72 @@ def end(kind):
 def newest(kind):
     files = sorted(RESULTS.glob(f"{kind}-*.json"))
     return files[-1] if files else None
+
+
+# A rendered table may lag the tree by this many MINOR versions. One: a
+# release may ship on the previous minor's numbers, never on numbers two
+# releases old. The slow-view isolation table sat on an artifact from
+# before the detached loop and the pool hand-off -- both of which change
+# exactly its rows -- for two releases, because nothing asked.
+BENCH_MAX_MINOR_LAG = 1
+
+
+def tree_version(pyproject_text):
+    m = re.search(r'^version = "(\d+)\.(\d+)\.(\d+)"', pyproject_text, re.M)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def provenance_problems(kind, artifact, current):
+    """Why this artifact may not be rendered as a current table, if it may
+    not. Pure over its arguments so --selftest can feed doctored ones.
+
+    Two rules. The artifact must record the version it measured, and that
+    version may be at most BENCH_MAX_MINOR_LAG minors behind the tree;
+    and it must have been recorded on a clean tree, so the commit it names
+    is the code it measured. `git_sha` alone cannot carry the first rule:
+    an artifact's commit is not orderable against the tree without git
+    history, which a doc-only CI checkout does not have.
+    """
+    env = artifact.get("environment", {})
+    out = []
+    if env.get("git_dirty"):
+        out.append(
+            f"{kind}: the newest artifact was recorded on a dirty tree "
+            f"(commit {env.get('git_sha', '?')} plus uncommitted changes), so "
+            "the commit it names is not the code it measured; re-record it "
+            "on a clean checkout"
+        )
+    recorded = env.get("version")
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", recorded or "")
+    if not m:
+        out.append(
+            f"{kind}: the newest artifact does not record the version it "
+            "measured (`environment.version`; bench_record.py stamps it), "
+            "so its freshness cannot be judged; re-record it"
+        )
+    elif current is not None:
+        rec = tuple(int(x) for x in m.groups())
+        lag = (current[0] - rec[0], current[1] - rec[1])
+        if lag[0] != 0 or lag[1] > BENCH_MAX_MINOR_LAG:
+            out.append(
+                f"{kind}: recorded on {recorded}, the tree is "
+                f"{'.'.join(map(str, current))}; a rendered artifact may lag by "
+                f"at most {BENCH_MAX_MINOR_LAG} minor version -- re-run the "
+                "bench and commit the artifact"
+            )
+    return out
+
+
+def check_provenance():
+    """Every rendered kind's newest artifact, against the tree's version."""
+    current = tree_version((REPO / "pyproject.toml").read_text())
+    problems = []
+    for kind in RENDERERS:
+        path = newest(kind)
+        if path is None:
+            continue
+        problems += provenance_problems(kind, json.loads(path.read_text()), current)
+    return problems
 
 
 def participants(d):
@@ -417,11 +501,13 @@ def selftest():
     """The span checks must be able to fail, one doctored input per rule."""
     medians = {
         "hello(no python,1proc)": {"rps_per_core": 115_900, "cores": 1.0},
-        "m0serve+bare w1": {"rps_per_core": 85_200, "cores": 1.0},
-        "granian+bare w1": {"rps_per_core": 100_000, "cores": 1.75},
+        "m0serve+bare w1 bt0": {"rps": 85_200, "rps_per_core": 85_200, "cores": 1.0},
+        "m0serve+bare w1 bt1": {"rps": 140_000, "rps_per_core": 82_350, "cores": 1.7},
+        "m0serve+bare zero-config": {"rps": 104_000, "rps_per_core": 40_800, "cores": 2.55},
+        "granian+bare w1": {"rps": 175_000, "rps_per_core": 100_000, "cores": 1.75},
     }
     asgi = {
-        "m0serve asgi-executor": {"rps": 60_000, "rps_per_core": 60_000},
+        "m0serve asgi-executor": {"rps": 60_000, "rps_per_core": 60_000, "cores": 1.0},
         "uvicorn asyncio": {"rps": 56_600, "rps_per_core": 56_600},
         "uvicorn uvloop": {"rps": 81_000, "rps_per_core": 81_000},
     }
@@ -439,7 +525,7 @@ def selftest():
         print(f"  MISSED          {label} — no error was raised")
         return False
 
-    good = "net ~<!-- num:granian-per-m0@2 -->1.17<!-- /num -->x per core"
+    good = "net ~<!-- num:granian-per-m0@2 -->1.21<!-- /num -->x per core"
     ok = True
 
     rendered = substitute_spans(good, values, "selftest")
@@ -449,7 +535,7 @@ def selftest():
     else:
         print("  caught          (control: a current span is left byte-identical)")
 
-    stale = good.replace("1.17", "1.35")
+    stale = good.replace("1.21", "1.35")
     if substitute_spans(stale, values, "selftest") == stale:
         print("  MISSED          a stale span survived substitution")
         ok = False
@@ -484,6 +570,34 @@ def selftest():
     else:
         print("  caught          (control: @1 renders one decimal, rounded)")
 
+    # The provenance gate, one doctored artifact per rule and two controls.
+    def art(version="0.18.0", dirty=False):
+        return {"environment": {"version": version, "git_dirty": dirty, "git_sha": "abc1234"}}
+
+    def prov(label, artifact, current, needle):
+        nonlocal ok
+        got = provenance_problems("layer-split", artifact, current)
+        if needle is None:
+            if got:
+                print(f"  MISSED          {label}: unexpected problem {got}")
+                ok = False
+            else:
+                print(f"  caught          (control: {label})")
+        elif any(needle in g for g in got):
+            print(f"  caught          {label}")
+        else:
+            print(f"  MISSED          {label} — got {got}")
+            ok = False
+
+    prov("a current, clean artifact renders", art(), (0, 18, 0), None)
+    prov("one minor behind is allowed", art("0.17.2"), (0, 18, 0), None)
+    prov("an artifact recorded on a dirty tree", art(dirty=True), (0, 18, 0), "dirty tree")
+    prov("an artifact two minors behind", art("0.16.0"), (0, 18, 0), "may lag by")
+    prov("an artifact from another major", art("0.18.0"), (1, 0, 0), "may lag by")
+    prov("an artifact with no version stamp", {"environment": {"git_dirty": False}}, (0, 18, 0), "does not record the version")
+    if tree_version('x\nversion = "0.18.0"\n') != (0, 18, 0):
+        print("  MISSED          tree_version does not read pyproject"); ok = False
+
     print("render_bench_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -492,6 +606,10 @@ def main():
     if "--selftest" in sys.argv:
         sys.exit(0 if selftest() else 1)
     check = "--check" in sys.argv
+    problems = check_provenance()
+    if problems:
+        sys.exit("render_bench_docs: a rendered artifact is not current:\n  - "
+                 + "\n  - ".join(problems))
     values = span_values()
     stale, written = [], []
     span_only = [

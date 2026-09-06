@@ -28,6 +28,8 @@ run rather than one row.
 
 import json
 import platform
+import pathlib
+import os
 import re
 import statistics
 import subprocess
@@ -192,9 +194,22 @@ def _tree_is_dirty():
     return False
 
 
+def _tree_version():
+    """`version` from pyproject.toml: what the artifact measured, in the
+    unit the freshness gate compares (`render_bench_docs.py --check`
+    refuses a rendered artifact more than one minor version behind)."""
+    m = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"',
+                  (REPO / "pyproject.toml").read_text(), re.M)
+    return m.group(1) if m else ""
+
+
 def environment():
-    venv = REPO / ".venv" / "bin"
+    # BENCH_VENV points the stamp (and the shell benches' comparator path)
+    # at another interpreter, so a run on free-threaded 3.14t records the
+    # Python it actually used rather than the tree's default venv.
+    venv = pathlib.Path(os.environ.get("BENCH_VENV", REPO / ".venv")) / "bin"
     env = {
+        "version": _tree_version(),
         "git_sha": _cmd("git", "-C", str(REPO), "rev-parse", "--short", "HEAD"),
         "git_dirty": _tree_is_dirty(),
         "os": f"{platform.system()} {platform.release()}",

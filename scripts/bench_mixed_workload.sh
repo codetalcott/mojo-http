@@ -114,6 +114,7 @@ sweep() {   # $1 = label
   fi
 }
 
+GRANIAN=$(cd "${BENCH_VENV:-.venv}/bin" && pwd)/granian
 SRVLOG=$(mktemp)
 for round in $(seq 1 $ROUNDS); do
   for n in 4; do
@@ -132,9 +133,9 @@ for round in $(seq 1 $ROUNDS); do
     : > "$SRVLOG"
     bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --threads $n --blocking-threads $n > "$SRVLOG" 2>&1 & pid=$!
     sweep "r$round --threads $n +bt=$n"; stop
-    if [ -x .venv/bin/granian ]; then
+    if [ -x ${BENCH_VENV:-.venv}/bin/granian ]; then
       : > "$SRVLOG"
-      ( cd apps/django_wsgi && exec ../../.venv/bin/granian --interface wsgi --workers 1 \
+      ( cd apps/django_wsgi && exec "${GRANIAN}" --interface wsgi --workers 1 \
           --blocking-threads $n --host 127.0.0.1 --port 8080 --log-level warning \
           djangoproj.wsgi:application ) > "$SRVLOG" 2>&1 & pid=$!
       sweep "r$round granian bt=$n"; stop
