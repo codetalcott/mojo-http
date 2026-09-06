@@ -63,7 +63,7 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
   <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one, and under mixed load its
   fast-request p99 is ahead of uvicorn's in every recorded run. On bare
   WSGI, one worker with one handler thread each, Granian is ahead by
-  <!-- num:granian-vs-m0-rps@2 -->1.32<!-- /num -->x. The [benchmarks](../../docs/BENCHMARKS.md) have
+  <!-- num:granian-vs-m0-rps@2 -->1.03<!-- /num -->x. The [benchmarks](../../docs/BENCHMARKS.md) have
   every number, each rendered from a dated artifact that CI refuses once
   it is more than a minor version old.
 

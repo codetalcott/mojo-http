@@ -32,7 +32,7 @@ Five caveats, stated before the numbers rather than under them.
 - **Cores are measured, not configured.** Each table's `cores` column is
   sampled `%cpu` of the pids on the listen socket. The column exists
   because it caught a real error: a comparator invoked as `--workers 1` was
-  running ~<!-- num:granian-w1-cores@2 -->1.76<!-- /num --> cores across its runtime's I/O threads, so every earlier
+  running ~<!-- num:granian-w1-cores@2 -->1.73<!-- /num --> cores across its runtime's I/O threads, so every earlier
   raw-rps ratio had been comparing 1.75 cores against one.
 - **The benchmark box has performance and efficiency cores** (Apple M4, 4P
   + 6E). An E-core serves this workload at 18.6k rps against a P-core's
@@ -66,7 +66,7 @@ says otherwise. Where a comparator wins, the row stays.
 
 | question | answer |
 |---|---|
-| Fastest on bare WSGI? | **No** — one worker and one handler thread each, Granian is ahead by ~<!-- num:granian-per-m0@2 -->1.24<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.32<!-- /num -->x in requests per second |
+| Fastest on bare WSGI? | **No** — one worker and one handler thread each, Granian is ahead by ~<!-- num:granian-per-m0@2 -->1.05<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.03<!-- /num -->x in requests per second |
 | Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core, against uvloop, no**: uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.15<!-- /num -->x; against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
 | Fastest HTTP layer, Python excluded? | **Yes** — but see the note on why that is not the interesting number |
@@ -79,18 +79,18 @@ part that parses HTTP and the part that calls Python prices each layer
 instead of reporting one number for both:
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
-Source: [`layer-split-20260905T201733Z.json`](../bench/results/layer-split-20260905T201733Z.json) — 2026-09-05T20:17:33+00:00, commit `39de02c`.
+Source: [`layer-split-20260906T151035Z.json`](../bench/results/layer-split-20260906T151035Z.json) — 2026-09-06T15:10:35+00:00, commit `a72e340`.
 Environment: Python 3.13.6; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `apps/hello` — mojo-http HTTP layer, zero Python | 148,737 | 0.98 | 151,772 |
-| `m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread) | 103,158 | 0.98 | 105,264 |
-| `m0serve` + bare WSGI, 1 worker, 1 handler thread | 143,288 | 1.65 | 86,841 |
-| `granian` + bare WSGI, 1 worker, 1 blocking thread | 188,973 | 1.76 | 107,371 |
-| `m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs) | 109,209 | 2.63 | 41,524 |
-| `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 141,818 | 4.03 | 35,191 |
-| `granian` + bare WSGI, 4 workers, 1 blocking thread each | 149,936 | 3.51 | 42,717 |
+| `apps/hello` — mojo-http HTTP layer, zero Python | 195,781 | 0.98 | 199,777 |
+| `m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread) | 117,409 | 0.97 | 121,040 |
+| `m0serve` + bare WSGI, 1 worker, 1 handler thread | 183,077 | 1.75 | 104,615 |
+| `granian` + bare WSGI, 1 worker, 1 blocking thread | 189,132 | 1.73 | 109,325 |
+| `m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs) | 123,393 | 2.84 | 43,448 |
+| `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 148,864 | 4.42 | 33,680 |
+| `granian` + bare WSGI, 4 workers, 1 blocking thread each | 148,144 | 3.98 | 37,222 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
@@ -99,16 +99,16 @@ Read the one-worker rows. Four numbers, and the arithmetic between them
 is the finding:
 
 - the HTTP layer with no Python at all (`apps/hello`) runs at
-  **<!-- num:hello-rps-k@1 -->151.8<!-- /num -->k rps/core**, above Granian's end-to-end
-  **<!-- num:granian-rps-k@1 -->107.4<!-- /num -->k**
+  **<!-- num:hello-rps-k@1 -->199.8<!-- /num -->k rps/core**, above Granian's end-to-end
+  **<!-- num:granian-rps-k@1 -->109.3<!-- /num -->k**
 - the same bare WSGI application run inline on that loop, one thread, runs
-  at **<!-- num:m0-loop-rps-k@1 -->105.3<!-- /num -->k rps/core**, so **the bridge costs
-  <!-- num:bridge-tax@2 -->1.44<!-- /num -->x**
+  at **<!-- num:m0-loop-rps-k@1 -->121.0<!-- /num -->k rps/core**, so **the bridge costs
+  <!-- num:bridge-tax@2 -->1.65<!-- /num -->x**
 - give the worker one handler thread, Granian's shape, and m0serve serves
-  **<!-- num:m0-w1-rps-k@1 -->143.3<!-- /num -->k rps on <!-- num:m0-w1-cores@2 -->1.65<!-- /num --> cores** against Granian's
-  **<!-- num:granian-w1-rps-k@1 -->189.0<!-- /num -->k on <!-- num:granian-w1-cores@2 -->1.76<!-- /num -->**: **<!-- num:m0-per-granian@2 -->0.81<!-- /num -->x per
-  core**, <!-- num:m0-vs-granian-rps@2 -->0.76<!-- /num -->x in throughput
-- zero-config, what `m0serve app.wsgi` runs, serves **<!-- num:m0-zero-config-rps-k@1 -->109.2<!-- /num -->k
+  **<!-- num:m0-w1-rps-k@1 -->183.1<!-- /num -->k rps on <!-- num:m0-w1-cores@2 -->1.75<!-- /num --> cores** against Granian's
+  **<!-- num:granian-w1-rps-k@1 -->189.1<!-- /num -->k on <!-- num:granian-w1-cores@2 -->1.73<!-- /num -->**: **<!-- num:m0-per-granian@2 -->0.96<!-- /num -->x per
+  core**, <!-- num:m0-vs-granian-rps@2 -->0.97<!-- /num -->x in throughput
+- zero-config, what `m0serve app.wsgi` runs, serves **<!-- num:m0-zero-config-rps-k@1 -->123.4<!-- /num -->k
   rps** on a pool of eight handler threads
 
 What the split prices is the bridge: the 1.44x on the inline row is real
@@ -126,7 +126,7 @@ was rebuilt against the on-CPU profile
 ([notes/loop-user-space.md](notes/loop-user-space.md)). The loop thread
 now costs what the tokio thread does per request, 5.1 µs at 16
 connections and 4.7 at 256 in the same session, and the two rows are
-within 2 % of each other. The bridge itself, the environ build and the
+within 3 % of each other. The bridge itself, the environ build and the
 response read, was cheaper per request than Granian's PyO3 crossing
 throughout, which is why bridge work was never the lever.
 

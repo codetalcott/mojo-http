@@ -121,7 +121,11 @@ Per request on the loop thread: 5.8 → 5.1 µs at 16 connections, 5.3 →
 4.9 at 64, 5.3 → 4.7 at 256; tokio's 5.1, 4.6 and 4.7. The pool thread
 is cheaper too, from the bridge's reserve and vector test: 4.5 → 4.1 µs
 per job at 16 connections (spin included) and 3.3 → 2.8 at 256, against
-Granian's blocking thread at 4.2 and 3.7.
+Granian's blocking thread at 4.2 and 3.7. The layer-split artifact
+re-recorded on this tree (`bench/results/layer-split-20260906T151035Z.json`,
+three rounds, medians) has the row at 183.1k against 189.1k, 0.97x, and
+the Mojo-only `apps/hello` row — the same parse and encode with no
+handler thread to hide behind — at 195.8k from 148.7k.
 
 The profile afterwards has user space at 36 % of the loop thread.
 `_name_matches` is gone from the list (the scan it did runs only for a

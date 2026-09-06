@@ -427,8 +427,8 @@ same instrument as above, twelve-header browser GET:
 
 In situ the loop thread went from 5.8 µs per request to 5.1 at 16
 connections and from 5.3 to 4.7 at 256, which is what the tokio thread
-costs in the same session; the bare WSGI row is 0.98x Granian at 16
-connections and 0.99x at 256.
+costs in the same session; the bare WSGI row is 0.97–0.98x Granian at
+16 connections and 0.99x at 256.
 
 ## The outbox sweep (2026-08-29)
 
