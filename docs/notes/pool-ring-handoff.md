@@ -122,6 +122,27 @@ constants, arms alternated, later the same day on a faster-running box
 The shorter spin gives the same throughput and a tenth of a core back,
 so it is the one shipped.
 
+## The hole the first CI run found
+
+A completion used to be an event. A pool thread sends its hold frame
+(`h`/`H`) on the loop's bus channel and then completes, and the event
+loop collected both readinesses in one batch, or the frame's first — so
+`sse_peer_frame` subscribed the slot before `_finish_response` wrote the
+head, or in the same pass, ahead of the outbox sweep. A completion off
+the ring is not an event: serviced at the bottom of a pass whose batch
+was collected before the frame arrived, the head went out, the sweep
+found a flagged slot nothing produced for and closed it, and the frame
+then subscribed a slot that was gone. Linux CI's `smoke-django-realtime`
+phase 5 caught it on the first run (`a hold taken on a pool thread did
+not register with the loop`); macOS and an idle Linux container passed
+the same phase, which is what a race looks like. The order is the loop's
+to keep now: `_complete_one` drains both bus channels — the chunk channel
+and this loop's own bus channel — before finishing any streaming head or
+101 a completion delivered, the same drain that already made
+begin-before-head deterministic for chunk-channel streams, widened to
+hold frames. The frame was sent before the push, so it is in its socket
+by the time the completion is visible.
+
 ## What did not change, and what is next
 
 The executor's protocol, the mounted server's lanes, the streaming seam

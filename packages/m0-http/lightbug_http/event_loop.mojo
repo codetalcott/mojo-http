@@ -453,7 +453,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             slot_sse, slot_ws, slot_ws_state,
             slot_read_armed, slot_idle_deadline,
             date_cache_sec, date_cache, offload, bus_read_fd,
-            read_fd=False,
+            read_fd=False, peer_bus_fd=peer_bus_fd,
         )
 
     for i in range(n_events):
@@ -510,6 +510,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 slot_sse, slot_ws, slot_ws_state,
                 slot_read_armed, slot_idle_deadline,
                 date_cache_sec, date_cache, offload, bus_read_fd,
+                peer_bus_fd=peer_bus_fd,
             )
             continue
 
@@ -1243,7 +1244,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             slot_sse, slot_ws, slot_ws_state,
             slot_read_armed, slot_idle_deadline,
             date_cache_sec, date_cache, offload, bus_read_fd,
-            read_fd=False,
+            read_fd=False, peer_bus_fd=peer_bus_fd,
         )
 
     # Credit the ack channel refused earlier (`ack_stream` returned
@@ -2792,6 +2793,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     mut offload: OffloadLoopState,
     bus_read_fd: Int = -1,
     read_fd: Bool = True,
+    peer_bus_fd: Int = -1,
 ) raises:
     """Take every finished job off the completion ring — and, with
     `read_fd`, the completion channel — and answer it.
@@ -2821,7 +2823,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
             fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state, slot_read_armed,
             slot_idle_deadline, date_cache_sec, date_cache, offload,
-            finished[f], bus_read_fd,
+            finished[f], bus_read_fd, peer_bus_fd,
         )
 
 
@@ -2885,6 +2887,7 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
     mut offload: OffloadLoopState,
     slot: Int,
     bus_read_fd: Int,
+    peer_bus_fd: Int = -1,
 ) raises:
     """Answer ONE finished job: the per-slot body of `_service_completions`.
 
@@ -2924,22 +2927,37 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
         pool.discard(slot)
         provision_pool.release(slot)
         return
-    if response.sse_streaming and bus_read_fd >= 0 and offload.slot_channel_stream(slot):
-        # Begin-before-head, made deterministic. The producer sent its
-        # begin frame on the chunk channel BEFORE this completion, so
-        # the datagram is in that socket now — but whether this pass's
-        # event batch happens to carry the chunk channel's readiness
-        # ahead of the completion's is the kernel's ready-list order,
-        # not ours. Draining it here, before the head goes out, means
-        # the handler is subscribed before the slot can ever be seen
-        # streaming, whatever order the events arrived in.
-        var begin_frames = drain_bus_channel(bus_read_fd)
-        for bf in range(len(begin_frames)):
-            handler.sse_peer_frame(
-                begin_frames[bf].url,
-                begin_frames[bf].event_id,
-                begin_frames[bf].frame,
-            )
+    if response.sse_streaming or is_ws_upgrade_response(response):
+        # Frame-before-head, made deterministic. The producer sent its
+        # frame BEFORE this completion — an executor's or a streaming
+        # pool thread's begin frame on the chunk channel (`bus_read_fd`),
+        # a pool thread's hold frame (`h`/`H`) on this loop's own bus
+        # channel (`peer_bus_fd`) — so the datagram is in its socket now.
+        # But a completion off the ring is not an event: its frame's
+        # readiness may not be in this pass's batch at all, and even a
+        # datagram completion's batch carries the two readinesses in the
+        # kernel's ready-list order, not ours. Draining both channels
+        # here, before the head goes out, means the handler is subscribed
+        # before the slot can ever be seen streaming — otherwise the
+        # outbox sweep finds a flagged slot nothing produces for and
+        # closes it, and the frame subscribes a slot that is already gone
+        # (Linux CI, smoke-django-realtime phase 5, 2026-09-05).
+        if bus_read_fd >= 0:
+            var begin_frames = drain_bus_channel(bus_read_fd)
+            for bf in range(len(begin_frames)):
+                handler.sse_peer_frame(
+                    begin_frames[bf].url,
+                    begin_frames[bf].event_id,
+                    begin_frames[bf].frame,
+                )
+        if peer_bus_fd >= 0:
+            var hold_frames = drain_bus_channel(peer_bus_fd)
+            for hf in range(len(hold_frames)):
+                handler.sse_peer_frame(
+                    hold_frames[hf].url,
+                    hold_frames[hf].event_id,
+                    hold_frames[hf].frame,
+                )
     _finish_response(
         backend, slot, slot_fds[slot], handler, config, server_address,
         tcp_keep_alive,
@@ -3001,7 +3019,7 @@ def service_direct_completions[T: HTTPService, B: EventLoopBackend](
             fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state, slot_read_armed,
             slot_idle_deadline, date_cache_sec, date_cache, offload,
-            slots[i], st.bus_read_fd,
+            slots[i], st.bus_read_fd, st.peer_bus_fd,
         )
 
 

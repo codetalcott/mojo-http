@@ -509,10 +509,17 @@ code depends on:
       thread (`hold_notify_fd >= 0`) `WSGIHandler.func` takes the hold and
       sends it as a reserved `h` frame on THIS loop's bus channel before
       the response completes; the loop handler's `sse_peer_frame` makes the
-      subscription. Safe without a same-pass guarantee because the frame
-      is sent BEFORE the completion, so any pass whose event batch holds
-      the completion holds the frame too, and the outbox drain runs at the
-      bottom of the pass — after every event, in whatever order they came.
+      subscription. The order is the LOOP's to keep, not the kernel's:
+      `_complete_one` drains both bus channels before finishing any
+      streaming head or 101 a completion delivered, and the frame — sent
+      before the completion — is in its socket by then, so the
+      subscription precedes the head deterministically. It used to rest on
+      the completion being an event in the same batch as the frame's
+      readiness; with the ring a completion is not an event, and Linux
+      CI's smoke-django-realtime phase 5 found the hole the day the ring
+      landed: a head finished at the bottom of a pass before the frame's
+      event, and the outbox sweep closed the slot as a stream nothing
+      produced for.
       An ASGI mount does bring an end-of-stream signal, but the loop reads
       it per slot and only for slots an executor produced. A WebSocket hold
       works here too: the pool thread performs the 101 (the client's key is

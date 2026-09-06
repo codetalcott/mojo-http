@@ -159,6 +159,9 @@ response completes. The ordering question resolved in the design's favour
 without needing a same-pass guarantee: with no executor there is no
 end-of-stream signal for the loop to misread, so a frame drained a pass
 late is a stream that starts a pass late, and publishes are FIFO behind it.
+(That held while a completion was an event. Since the ring handoff of
+2026-09-05 it is not, and the loop drains both bus channels before it
+finishes a streaming head instead — [pool-ring-handoff.md](pool-ring-handoff.md).)
 That is also why the `--mount` refusal stays — an ASGI mount brings the
 signal — and why a WebSocket hold under the pool is a 409 that says so,
 until inbound messages can reach a pool thread. `smoke-django-realtime`
