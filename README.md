@@ -67,9 +67,9 @@ multi-tab sync**, and CI executes every command in it on every pull request
   <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop on bare ASGI at 16 connections
   (<!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio`), on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
   measured cores where uvicorn has one; the fast-request tail under mixed
-  load ahead of uvicorn in every recorded run; and <!-- num:m0-vs-granian-rps@2 -->0.97<!-- /num -->x
+  load ahead of uvicorn in every recorded run; and <!-- num:m0-vs-granian-rps@2 -->0.98<!-- /num -->x
   Granian on bare WSGI at one worker and one handler thread each
-  (<!-- num:m0-per-granian@2 -->0.96<!-- /num -->x per measured core). Every figure is rendered from a
+  (<!-- num:m0-per-granian@2 -->0.99<!-- /num -->x per measured core). Every figure is rendered from a
   dated artifact, and CI refuses one more than a minor version old.
 
 ### What it is not
@@ -179,11 +179,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 82 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening | 638 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening | 639 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 159 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| **Total** | | **1067** |
+| **Total** | | **1068** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -546,13 +546,13 @@ values returns unchanged.
   comparable-or-better p99 in both keep-alive and close-per-request modes.
   Against **Granian**, whose own `--blocking-threads` is the architecture
   copied above, m0serve is **behind on raw WSGI throughput and the gap is
-  located**: one worker and one handler thread each, <!-- num:m0-w1-rps-k@1 -->183.1<!-- /num -->k
-  against <!-- num:granian-w1-rps-k@1 -->189.1<!-- /num -->k rps on a bare callable, <!-- num:m0-wsgi-rps-k@1 -->104.6<!-- /num -->k
-  against <!-- num:granian-rps-k@1 -->109.3<!-- /num -->k per measured core — about <!-- num:m0-per-granian@2 -->0.96<!-- /num -->x. The
+  located**: one worker and one handler thread each, <!-- num:m0-w1-rps-k@1 -->183.8<!-- /num -->k
+  against <!-- num:granian-w1-rps-k@1 -->188.4<!-- /num -->k rps on a bare callable, <!-- num:m0-wsgi-rps-k@1 -->106.2<!-- /num -->k
+  against <!-- num:granian-rps-k@1 -->107.0<!-- /num -->k per measured core — about <!-- num:m0-per-granian@2 -->0.99<!-- /num -->x. The
   split prices each layer. `apps/hello`, the same server with no Python
-  in the path, runs at <!-- num:hello-rps-k@1 -->199.8<!-- /num -->k rps/core; the bare app run
+  in the path, runs at <!-- num:hello-rps-k@1 -->200.0<!-- /num -->k rps/core; the bare app run
   inline on that loop, one thread, runs at
-  <!-- num:m0-loop-rps-k@1 -->121.0<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.65<!-- /num -->x.
+  <!-- num:m0-loop-rps-k@1 -->119.8<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.67<!-- /num -->x.
   Which layer bounds the one-handler-thread row is a per-thread question,
   and measured per thread it was the event-loop thread, at about 7.2 µs of
   CPU per request against 5.3 for Granian's tokio thread
@@ -734,7 +734,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1067 unit tests, then compiles every example
+uv run poe test-all         # 1068 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

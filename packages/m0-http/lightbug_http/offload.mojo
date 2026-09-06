@@ -97,16 +97,22 @@ rules of 2026-09-05):
   every thread is parked (`_all_idle`: `threads <= parked`, spinners
   zero) gets a wake — and exactly one, because the wake retires the
   woken thread's parked count before the next push can look.
-- **A job that has waited is behind a slow view, and the LOOP wakes a
-  sibling for it.** Once per pass `wake_aged` peeks each lane's ring head
-  and, if it was parked (`submit_ns`) more than `POOL_WAKE_AGE_NS` ago,
-  wakes one parked thread; `_wait_for_events` caps its timeout at
-  `POOL_WAKE_WAIT_MS` while any job is pending, so an idle loop looks
-  within a millisecond. This replaced the chained wake (a thread that
-  took a job poking a sibling for the rest — `_chain_wake`, kept for the
-  knob-off arm): the hole the chain filled, a woken thread's socket poll
-  consuming a sibling's wake, is now closed on every pass rather than
-  once, because the head is re-examined until it is gone.
+- **A ring nobody is draining is behind a slow view, and the LOOP wakes
+  a sibling for it.** Once per pass `wake_aged` reads each lane's pop
+  counter: moved since the last look, the ring is being drained, however
+  deep; unmoved, the head has waited since the later of its push and the
+  last look that saw the ring move or empty, and past `POOL_WAKE_AGE_NS`
+  of that one parked thread is woken. `_wait_for_events` caps its
+  timeout at `POOL_WAKE_WAIT_MS` while any job is pending, so an idle
+  loop looks within a millisecond. On a free-threaded interpreter
+  (`parallel`) `submit` wakes a parked thread whenever there is one and
+  the wait counts from the push whatever the progress: a parked thread
+  beside a queued job is an idle core there. This
+  replaced the chained wake (a thread that took a job poking a sibling
+  for the rest — `_chain_wake`, kept for the knob-off arm): the hole
+  the chain filled, a woken thread's socket poll consuming a sibling's
+  wake, is now closed on every pass rather than once, because the ring
+  is re-examined until it moves.
 - **Every pool thread parks on a channel of its OWN, and is woken by
   name — the one that parked LAST first** (`register_thread`,
   `_park_on_own`, `_wake_registered`). The kernel's choice for N

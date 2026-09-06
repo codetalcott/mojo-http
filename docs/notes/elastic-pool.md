@@ -19,7 +19,10 @@ against 176.9k / 179.4k for `--blocking-threads 1`; at 256 connections
 from 0.90x of the one-thread shape to parity, one pool thread serving.
 A fast request behind two 1.5 s views is answered in 2 ms
 (`smoke-blocking-threads`, whose limit is 250 ms), and the mixed-workload
-row below says what the isolation costs under load.
+table's pool rows are flat under slow load at the throughput they had —
+on a free-threaded interpreter by a fourth rule, recorded at the end of
+this note: there the pool is parallel, because a parked thread beside a
+queued job is an idle core rather than a GIL waiter.
 
 ## What the eight threads were doing
 
@@ -241,4 +244,96 @@ at a core and a half between them. The artifact above was recorded
 after they went quiet; the depressed one was discarded, as the
 comparator rows exist to allow.
 
-<!-- the mixed-workload row is appended below when it is recorded -->
+## The fast-route tail, and why a free-threaded pool is parallel instead
+
+The handoff's last condition was the mixed-workload row: the fast route's
+p99 with two 200 ms views in flight, unchanged at about 2 ms. The first
+recording of `scripts/bench_mixed_workload.sh` on this tree (3.14t,
+`--workers 4 --blocking-threads 4`, Django, `wrk -c16`) had that row's
+p99 at 8.6 / 9.0 ms with one slow view and 4.1 / 6.4 with two, against
+the previous artifact's 3.4 and 6.2 — and its throughput up from 55k to
+80k requests per second, its p50 halved. Three things were needed to
+read that.
+
+**The tail on a GIL build is noise-shaped, on every binary.** On the
+pinned 3.13, the same shape, fresh server per run, three and then four
+rounds alternated (`bench_slow.py` beside the other instruments):
+
+| arm | slow=0 p99 | slow=1 | slow=2 | rps | p50 |
+|---|---:|---:|---:|---:|---:|
+| main (`3a365c4`) | 1.7 / 2.9 / 2.9, then 1.8 / 7.6 / 3.1 / 7.3 ms | 2.5 / 2.7 / 2.9 | 3.3 / 3.9 / 2.5 | 54k | 280 µs |
+| this tree, `M0_POOL_ELASTIC=0` | 7.5 / 7.5 / 7.6, then 2.3 / 1.9 / 2.7 / 3.1 | 4.6 / 4.4 / 4.3 | 6.3 / 6.8 / 6.3 | 54k | 285 |
+| this tree, elastic | 9.9 / 5.0 / 5.5, then 6.3 / 3.2 / 7.5 / 3.3 | 6.5 / 6.9 / 8.2 | 4.9 / 7.5 / 5.7 | 82–86k | 152 |
+
+main's own p99 with no slow view at all lands at 1.8 ms in one run and
+7.6 in the next; the rules-off arm — code-identical to main on every
+path with the knob off — reads 7.5 three times and then 2 to 3 four
+times. The tail of four connections per worker on one interpreter is
+bimodal on this machine at 2–3 and 7–8 ms, for every binary, and an
+artifact's two-round median can land on either mode. What is not noise:
+the elastic arm halves the p50 and carries 55 % more throughput.
+
+**Without a GIL the tail is systematic, and the stall check is not the
+cause.** The same A/B under the 3.14t swap, two rounds:
+
+| arm (3.14t) | slow=0 p99 | slow=1 | slow=2 | rps |
+|---|---:|---:|---:|---:|
+| rules off | 3.3 / 3.7 ms | 2.0 / 3.1 | 2.8 / 2.8 | 60–64k |
+| elastic, stall check counting from the push | 0.7 / 6.7 | 8.1 / 10.2 | 8.6 / 8.0 | 72–80k |
+| elastic, stall check on progress | 8.0 / 8.7 | 8.3 / 8.6 | 8.4 / 9.1 | 72–80k |
+
+Here the rules-off arm is steadily better in the tail, and letting the
+loop wake a sibling for a head that has waited 200 µs since its push —
+the first hypothesis, that a queue one thread was draining needed a
+second — changed nothing. The difference is the shape: with a GIL, four
+threads on four connections serialize into one thread's worth of work
+and the elastic arm loses nothing by being one thread; without a GIL
+four threads are four cores, and a request queued behind an occasional
+slow one on the single hot thread pays that delay whole, while the
+rules-off arm's four threads absorb it. The stall check is for a thread
+that is not coming back; this is a thread that is coming back a few
+milliseconds late, and 200 µs of patience is the wrong instrument.
+
+So the pool is **parallel** on a free-threaded interpreter
+(`OffloadPool.parallel`, set by the prefork worker from
+`probe_free_threading` and by the threaded mode unconditionally,
+`M0_POOL_PARALLEL` overriding either way): `submit` wakes a parked
+thread whenever there is one — a parked thread beside a queued job is
+an idle core — and the stall check counts from the push. The single
+spinner and the wake by name on each thread's own channel apply either
+way, which is what the GIL build's herd fix was. Measured under the
+swap, same shape, the arms alternated:
+
+| arm (3.14t) | slow=0 p99 | slow=1 | slow=2 | rps | p50 / p90 |
+|---|---:|---:|---:|---:|---:|
+| parallel (the default there) | 2.2 / 2.8 ms | 2.4 / 2.4 | 10.5 / 3.6 | 54–57k | 200 µs / 1.0 ms |
+| `M0_POOL_PARALLEL=0`, the GIL rules | 7.6 / 6.2 | 9.4 / 10.4 | 8.6 / 9.1 | 78–80k | 160 / 350 |
+| `M0_POOL_ELASTIC=0`, the rules off | 4.7 / 5.4 | 3.4 / 3.6 | 3.7 / 6.4 | 54–57k | 200 / 1.0 ms |
+
+The parallel pool is the rules-off shape with the herd fix: the same
+throughput and percentiles as four threads on the old wake, a tail a
+third of the GIL rules'. What the GIL rules would have bought on a
+free-threaded build — 40 % more throughput, a p50 of 160 µs against
+200 and a p90 of 350 against a millisecond — is the other side of a
+real trade, and `M0_POOL_PARALLEL=0` takes it for a deployment that
+prefers the median to the tail. The default keeps the table's claim.
+
+## The mixed workload, re-recorded
+
+`scripts/bench_mixed_workload.sh` under the 3.14t swap, two rounds,
+fast-route p99 medians (`bench/results/mixed-workload-20260906T225838Z.json`,
+against `mixed-workload-20260905T204712Z.json`):
+
+| configuration | before | after | fast rps before → after |
+|---|---:|---:|---:|
+| `--workers 4` | 0.8 / 191.0 / 196.1 ms | (the control, unchanged in kind) | |
+| `--workers 4 +bt=4` | 2.3 / 3.4 / 6.2 | 2.6 / 2.8 / 4.1 | 55.2k → 55.0k |
+| `--threads 4 +bt=4` | 2.1 / 2.0 / 2.1 | 2.1 / 2.6 / 3.2 | 42.0k → 41.4k |
+| granian bt=4 | 0.6 / 0.5 / 0.6 | 0.6 / 0.5 / 0.6 | 49.9k → 48.9k |
+
+The pool rows are flat under slow load, within the spread the section
+above measured, at the throughput they had. A recording made before
+the parallel rule existed — the GIL rules on 3.14t, kept in
+`bench/results/mixed-workload-20260906T220102Z.json` — has the
+`--workers 4 +bt=4` row at 2.5 / 8.8 / 5.2 ms and 79k requests per
+second, which is the trade above in the table's own terms.

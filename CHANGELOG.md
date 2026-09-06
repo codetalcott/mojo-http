@@ -35,7 +35,9 @@ versions may break the API**.
   has not been drained for 200 µs — which is what keeps a fast request
   from waiting out a slow view, and replaces the chained wake; a ring
   whose pop count moves is a queue one thread is draining, and is left
-  alone however deep. Same session,
+  alone however deep on a GIL build, while without a GIL the pool wakes a
+  parked thread whenever there is one and counts the wait from the push,
+  a parked thread beside a queued job being an idle core there. Same session,
   arms alternated, 16 connections: 172.5k / 179.2k rps on the
   zero-config shape against 176.9k / 179.4k on one thread, from
   118.4k / 122.6k before, on the one-thread shape's cores

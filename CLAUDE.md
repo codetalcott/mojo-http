@@ -517,7 +517,17 @@ code depends on:
       count that moved since the loop last looked is a lane being
       drained, however deep, and is left alone; one that did not has
       waited since the later of its head's push and the last look that
-      saw it move. That check replaced the chained wake (`_chain_wake`, a
+      saw it move. **Without a GIL the pool is parallel instead**
+      (`OffloadPool.set_parallel`, set by `_serve_offloaded` from
+      `probe_free_threading` and by the threaded mode unconditionally;
+      `M0_POOL_PARALLEL` is its knob): `submit` wakes a parked thread
+      whenever there is one and the stall check counts from the push,
+      because a parked thread beside a queued job is an idle core there,
+      not a GIL waiter — measured on 3.14t, where the GIL rules held the
+      fast route's p99 at 8–10 ms under slow views against 2–4 with eager
+      wakes, and neither variant of the stall check moved it. The single
+      spinner and the wake by name on each thread's own channel apply
+      either way. That check replaced the chained wake (`_chain_wake`, a
       thread that took a job poking a sibling for the rest; kept for the
       knob-off arm) and closes the hole it filled — a woken thread's
       socket poll eating a sibling's wake, a hold registering 1.5 s late
@@ -1288,7 +1298,10 @@ Properties of the design, not defects to fix in passing:
   the eager pool wakes — every idle thread spinning, every push into a
   parked lane poking it; the same kind of knob) and `M0_POOL_WAKE_AGE_US`
   (how long a job may wait at a ring's head before the loop wakes a
-  parked sibling, default 200; a measurement knob). `m0serve` layers flags on top (flag > env > default) and
+  parked sibling, default 200; a measurement knob) and `M0_POOL_PARALLEL`
+  (`1`/`0`: the free-threaded rule — a push wakes a parked thread whenever
+  there is one and that wait counts from the push — forced on or off;
+  unset, the interpreter decides). `m0serve` layers flags on top (flag > env > default) and
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that
   it **exits with the code `m0serve` would exit with for the same
