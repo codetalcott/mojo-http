@@ -1369,10 +1369,23 @@ struct WSGIHandler(ThreadHandler):
             var held_lane = self.hold_lane[slot]
             var at = held_lane if held_lane > 0 else 0
             if at < len(self.ws_pool_fds) and self.ws_pool_fds[at] >= 0:
-                return _send_ws_pool_message(
+                if not _send_ws_pool_message(
                     self.ws_pool_fds[at], slot, opcode,
                     self.sockets.filter_url(slot), payload,
-                )
+                ):
+                    return False
+                # The datagram is on the lane socket; a pool thread parked
+                # on its own wake channel is not watching it. Wake the one
+                # that parked last, which polls the socket first thing
+                # (`OffloadPool.wake_for_datagram`). Without this the
+                # message sat until a thread happened to spin — CI's
+                # WebSocket smoke saw "only pings arriving".
+                if self.abort_pool_addr != 0:
+                    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+                        unsafe_from_address=self.abort_pool_addr
+                    )[]
+                    _ = pool.wake_for_datagram(at)
+                return True
             return True
         # Executor mode: the message belongs to the app's own
         # `websocket.receive` loop — forward it to the executor thread as

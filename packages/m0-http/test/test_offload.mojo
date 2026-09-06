@@ -1118,6 +1118,43 @@ def test_a_wake_lands_on_the_parked_threads_own_channel() raises:
     assert_equal(pool.thread_count(0), 0)
 
 
+def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
+    """A payload datagram rides the lane socket, which a thread parked on
+    its own channel is not watching: `send_ws_message` — and
+    `wake_for_datagram`, for the handler's own copy of the encoder — wake
+    the most recently parked thread, which polls the socket first thing.
+    The echo thread counts the message as served (it answers nothing for
+    it) and parks again; without the wake it would sit parked and the
+    message with it — CI's WebSocket smoke, "only pings arriving"."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(1)
+    _spawn_echo[False](pool, threads, 1)
+    var payload = List[UInt8]()
+    for b in String("hello").as_bytes():
+        payload.append(b)
+    assert_true(pool.send_ws_message(0, 3, 1, String("chan"), Span(payload)))
+    # The thread wakes for it: parked count drops, then it parks again.
+    var deadline = perf_counter_ns() + 2_000_000_000
+    var woke = False
+    while perf_counter_ns() < deadline:
+        if pool.parked_count(0) == 0:
+            woke = True
+            break
+        sleep(0.0001)
+    assert_true(woke)
+    _await_parked(pool, 1)
+    # The handler's path: the datagram already sent, the wake alone.
+    assert_true(pool.wake_for_datagram(0))
+    _await_parked(pool, 1)
+    assert_false(pool.wake_for_datagram(7))  # no thread on that lane
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    assert_equal(threads.block(0).get(_BLK_SERVED), 0)
+
+
 def test_sequential_jobs_with_idle_gaps_stay_on_one_thread() raises:
     """Most recently parked first. Two threads, sixty jobs each submitted
     after a pause longer than the spin, so the lane is all parked before

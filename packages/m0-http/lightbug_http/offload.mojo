@@ -1293,6 +1293,16 @@ struct OffloadPool(Movable):
         self._poke(Int(atomic_at(rec + _TR_WRITE)[].load()))
         return True
 
+    def wake_for_datagram(self, lane: Int) -> Bool:
+        """A sender that put a payload datagram on `lane`'s socket itself —
+        `m0_wsgi.handler`'s copy of the inbound-WebSocket encoder — calls
+        this after the send, for the reason `send_ws_message` wakes: a
+        thread parked on its own channel is not watching the lane socket,
+        and the most recently parked one polls it first thing when woken.
+        Returns whether a thread was woken; False means one is spinning or
+        busy and will poll the socket within `POOL_DGRAM_POLL_NS`."""
+        return self._wake_registered(lane)
+
     def _recv_own(self, thread: Int, mut buf: List[UInt8], flags: c_int) -> Int:
         """One datagram off `thread`'s own channel: `_OWN_POKE`,
         `_OWN_PILL`, `_OWN_NONE` (nothing, non-blocking) or `_OWN_DEAD`."""
