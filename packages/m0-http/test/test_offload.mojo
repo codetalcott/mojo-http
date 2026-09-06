@@ -561,6 +561,35 @@ def test_a_burst_sends_one_wake_per_parked_thread() raises:
     assert_equal(pool.wakes_in_flight(0), 0)
 
 
+def test_a_thread_that_takes_a_job_wakes_a_parked_sibling_for_the_rest() raises:
+    """Two jobs, one parked sibling, one wake in flight: the thread that
+    takes the first job must send the wake the second one is owed, since
+    its own socket poll may have eaten the sibling's. Without the chain the
+    second job waits for a busy thread to come back — measured as a hold
+    registering 1.5 s late on Linux."""
+    var pool = OffloadPool(8)
+    if not pool.ring_active():
+        return
+    pool.note_parked(0, 1)
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    pool.park_request(2, _request("/b"))
+    assert_true(pool.submit(2))
+    # One parked thread, so one wake for the two pushes.
+    assert_equal(pool.wakes_in_flight(0), 1)
+    # This thread stands in for a second, running sibling: its socket poll
+    # reads the wake, it takes job 1, and work remains for the parked one —
+    # so it sends the wake that thread is now owed.
+    assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    # The "parked" thread takes the rest, and nothing is owed any more.
+    pool.note_parked(0, -1)
+    assert_equal(_next_slot(pool), 2)
+    pool.stop(1)
+    assert_equal(_next_slot(pool), -1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+
+
 def test_complete_wakes_only_a_parked_loop() raises:
     """The pool thread's half: push, then read the loop's flag, then poke.
     The flag starts SET (the inversion's driver never clears it), so a

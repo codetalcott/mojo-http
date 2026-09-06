@@ -488,7 +488,13 @@ code depends on:
       ride the sockets, and reach a thread that never runs dry through its
       non-blocking poll once per `POOL_DGRAM_POLL_NS`. The loop's flag
       starts SET and the inversion's driver never clears it, so that path
-      keeps the datagram per completion it always had. Worth +16 % rps at
+      keeps the datagram per completion it always had. **A thread that
+      takes a job and leaves work on the ring pokes a parked sibling by
+      the same rule** (`_chain_wake`): a wake is a credit for one thread,
+      and a woken thread's socket poll can consume a sibling's, which
+      left a job on the ring until a busy thread came back — a hold
+      registering 1.5 s late on Linux CI, 2 of 10 rounds, 0 of 10 with
+      the ring off, 0 of 20 after. Worth +16 % rps at
       16 connections and +19 % at 256 on bare WSGI with one handler
       thread: the loop's per-request cost went from 7.5 µs to 6.3 at c16
       and 5.3 at c256, tokio's figure. The pool thread shows MORE CPU than
@@ -515,11 +521,12 @@ code depends on:
       before the completion — is in its socket by then, so the
       subscription precedes the head deterministically. It used to rest on
       the completion being an event in the same batch as the frame's
-      readiness; with the ring a completion is not an event, and Linux
-      CI's smoke-django-realtime phase 5 found the hole the day the ring
-      landed: a head finished at the bottom of a pass before the frame's
-      event, and the outbox sweep closed the slot as a stream nothing
-      produced for.
+      readiness; with the ring a completion is not an event. (For a hold
+      the old order was already harmless — the outbox sweep closes an
+      unsubscribed flagged slot only for an executor's stream — so this
+      is hardening; the Linux failure the ring's first CI run produced in
+      smoke-django-realtime phase 5 was a lost pool wake, the chained
+      wake in the ring bullet above.)
       An ASGI mount does bring an end-of-stream signal, but the loop reads
       it per slot and only for slots an executor produced. A WebSocket hold
       works here too: the pool thread performs the 101 (the client's key is

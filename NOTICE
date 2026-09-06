@@ -399,10 +399,13 @@ lightbug_http
         once per `POOL_DGRAM_POLL_NS`; `drain_completions(read_fd=False)`
         is the syscall-free drain the loop runs at the top and bottom of
         every pass; `_wait_for_events` is the loop's announce-then-recheck
-        around `backend.wait`; `_complete_one` drains both bus channels
-        before finishing a streaming head or 101, since a ring completion
-        is not an event and its frame's readiness may not be in the pass.
-        `M0_POOL_RING=0` restores the datagram handoff.
+        around `backend.wait`; a thread that takes a job and leaves work
+        on the ring pokes a parked sibling (`_chain_wake`), since its own
+        socket poll may have consumed that sibling's wake; `_complete_one`
+        drains both bus channels before finishing a streaming head or
+        101, since a ring completion is not an event and its frame's
+        readiness may not be in the pass. `M0_POOL_RING=0` restores the
+        datagram handoff.
 
       - event_loop.mojo / websocket.mojo: a WebSocket the SERVER closes
         now lingers for the peer's Close reply rather than closing at

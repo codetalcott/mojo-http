@@ -66,7 +66,10 @@ announced that it is parked:
   (yielding after `POOL_YIELD_AFTER_NS`), then counts itself parked,
   re-checks the ring, and blocks in `recv`; `submit` pushes, then reads
   that count, and pokes the lane only if it exceeds the wakes already in
-  flight to it (one wake per parked thread, never one per push);
+  flight to it (one wake per parked thread, never one per push); a thread
+  that takes a job and leaves work on the ring pokes a parked sibling by
+  the same rule, because its own socket poll may have consumed that
+  sibling's wake;
 - the loop raises its own flag before `backend.wait` and re-checks the
   completion ring after raising it (`event_loop._wait_for_events`);
   `complete` pushes, then reads the flag, and pokes the completion
@@ -994,6 +997,24 @@ struct OffloadPool(Movable):
             except:
                 _sched_yield()
 
+    def _chain_wake(self, lane: Int, ring: Ring):
+        """A thread that just took a job wakes a parked sibling if work
+        remains. A wake datagram is a credit for ONE thread, but a thread's
+        socket poll can consume a sibling's credit — a thread woken for
+        job 1 polls its socket on its way back to the ring and reads the
+        wake sent for job 2 — and two jobs then had one thread while the
+        other stayed parked, until a busy thread came back for the
+        leftover. Measured on Linux as a hold on a pool thread registering
+        1.5 s late, behind two slow views (smoke-django-realtime phase 5,
+        2026-09-05). Same rule as `submit`'s: at most one wake per parked
+        thread, and only while the ring holds something."""
+        if ring.is_empty():
+            return
+        var wakes = atomic_at(self._wakes_addr(lane))
+        if atomic_at(self._parked_addr(lane))[].load() > wakes[].load():
+            _ = wakes[].fetch_add(1)
+            self._poke(self.submit_write_fd(lane))
+
     def _recv_datagram(
         self, lane: Int, fd: FileDescriptor, cap: Int, mut buf: List[UInt8],
         flags: c_int,
@@ -1350,6 +1371,7 @@ struct OffloadPool(Movable):
                     return polled^
             var slot = 0
             if ring.pop(slot):
+                self._chain_wake(lane, ring)
                 return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
             if spin_start == 0:
                 spin_start = now
@@ -1361,6 +1383,7 @@ struct OffloadPool(Movable):
                 _ = parked[].fetch_add(1)
                 if ring.pop(slot):
                     _ = parked[].fetch_add(-1)
+                    self._chain_wake(lane, ring)
                     return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
                 var woke = self._recv_datagram(lane, fd, cap, buf, 0)
                 _ = parked[].fetch_add(-1)

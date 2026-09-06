@@ -124,24 +124,35 @@ so it is the one shipped.
 
 ## The hole the first CI run found
 
-A completion used to be an event. A pool thread sends its hold frame
-(`h`/`H`) on the loop's bus channel and then completes, and the event
-loop collected both readinesses in one batch, or the frame's first — so
-`sse_peer_frame` subscribed the slot before `_finish_response` wrote the
-head, or in the same pass, ahead of the outbox sweep. A completion off
-the ring is not an event: serviced at the bottom of a pass whose batch
-was collected before the frame arrived, the head went out, the sweep
-found a flagged slot nothing produced for and closed it, and the frame
-then subscribed a slot that was gone. Linux CI's `smoke-django-realtime`
-phase 5 caught it on the first run (`a hold taken on a pool thread did
-not register with the loop`); macOS and an idle Linux container passed
-the same phase, which is what a race looks like. The order is the loop's
-to keep now: `_complete_one` drains both bus channels — the chunk channel
-and this loop's own bus channel — before finishing any streaming head or
-101 a completion delivered, the same drain that already made
-begin-before-head deterministic for chunk-channel streams, widened to
-hold frames. The frame was sent before the push, so it is in its socket
-by the time the completion is visible.
+Linux CI's `smoke-django-realtime` phase 5 failed on the first run: `a
+hold taken on a pool thread did not register with the loop`. Two 1.5 s
+views hold two of four pool threads, a subscribe follows 0.3 s later, and
+half a second after that the loop had no subscriber. The same phase
+passed on macOS and in an idle Linux container, four times under two CPU
+hogs, and under a probe that opened forty holds while three clients kept
+the loop busy — so the first model, a hold's head finished before its
+frame was read, was wrong, and the outbox sweep says why: it closes an
+unsubscribed flagged slot only for an executor's stream. What reproduced
+it was the phase itself, repeated with a fresh server each round: 2 of 10
+rounds with the ring on, 0 of 10 with `M0_POOL_RING=0`, and in the
+failing rounds the subscriber appeared 1.5 s late — when a slow view's
+thread came back to the ring. The job had been pushed and nobody was
+woken for it.
+
+A wake datagram is a credit for ONE parked thread, and the cap sends at
+most one per parked thread. But a thread woken for job 1 polls its socket
+on its way back to the ring, and that poll can read the wake sent for job
+2; it takes job 1, its sibling stays parked with no datagram to wake it,
+and job 2 waits for whichever busy thread returns first. The fix is the
+chained wake a condition variable would use: a thread that takes a job
+and leaves work on the ring pokes a parked sibling by `submit`'s own
+rule (`_chain_wake`; the unit test is
+`test_a_thread_that_takes_a_job_wakes_a_parked_sibling_for_the_rest`).
+After it, 0 of 20 rounds failed in the container. The same commit also
+made frame-before-head deterministic for a completion off the ring —
+`_complete_one` drains both bus channels before finishing a streaming
+head or a 101, since a ring completion is not an event and its frame's
+readiness may not be in the pass — which is hardening, not the fix.
 
 ## What did not change, and what is next
 
