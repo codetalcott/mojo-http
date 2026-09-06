@@ -179,11 +179,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 82 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening | 618 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening | 627 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 159 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| **Total** | | **1047** |
+| **Total** | | **1056** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -554,12 +554,14 @@ values returns unchanged.
   inline on that loop, one thread, runs at
   <!-- num:m0-loop-rps-k@1 -->105.3<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.44<!-- /num -->x.
   Which layer bounds the one-handler-thread row is a per-thread question,
-  and measured per thread it is the event-loop thread: saturated while the
-  Python thread idles a third of the time, at about 7.2 µs of CPU per
-  request against 5.3 for Granian's tokio thread, 1.2 µs of that the
-  datagram handoff to the pool and the rest user-space work in the request
-  path — while the bridge itself is cheaper per request than Granian's
-  ([docs/notes/loop-thread-bound.md](docs/notes/loop-thread-bound.md)).
+  and measured per thread it was the event-loop thread, at about 7.2 µs of
+  CPU per request against 5.3 for Granian's tokio thread
+  ([docs/notes/loop-thread-bound.md](docs/notes/loop-thread-bound.md)) —
+  while the bridge itself was cheaper per request than Granian's. The
+  in-memory pool handoff and the rebuilt header path since brought the
+  loop to the tokio thread's cost, 5.1 µs per request at 16 connections,
+  and the row to within 2 % of Granian's in the same session
+  ([docs/notes/loop-user-space.md](docs/notes/loop-user-space.md)).
 
   Per *core*, because the comparator was not running one: Granian's
   `--workers 1` was measured at ~1.75 cores across its runtime's I/O
@@ -732,7 +734,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1047 unit tests, then compiles every example
+uv run poe test-all         # 1056 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

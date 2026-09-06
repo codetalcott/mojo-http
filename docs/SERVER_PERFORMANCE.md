@@ -403,6 +403,33 @@ carries the reading.
 What remains is ~0.86 µs of parse against the 5.3 µs of a request that is
 the two syscalls, which no parser touches.
 
+## The loop's user space, by profile (2026-09-06)
+
+With the pool handoff in memory
+([notes/pool-ring-handoff.md](notes/pool-ring-handoff.md)) the
+one-handler-thread `m0serve` was still about a microsecond per request
+dearer on its event-loop thread than Granian's tokio thread, and the
+on-CPU profile put all of it in user space: the header-name scan behind
+every lookup, the token scanner's per-byte walk, an `append` per name
+byte on insert, the staging copy after every `recv`, and a completion
+drain that allocated. Each was rebuilt against the ranking and measured
+both ways — [notes/loop-user-space.md](notes/loop-user-space.md) is the
+record, including two levers measured and not kept. The isolated parts,
+same instrument as above, twelve-header browser GET:
+
+| part | before | after |
+|---|---:|---:|
+| `parse_request_headers` | 0.889 µs | 0.621 µs |
+| `from_parsed` (derived) | 0.186 µs | 0.097 µs |
+| `Headers` lookups (`in`, `value_equals_ic`, `content_length`) | 38–51 ns | 2.5–12 ns |
+| `OK()` construct | 0.488 µs | 0.221 µs |
+| **whole user-space request** | **1.978 µs** | **1.330 µs** |
+
+In situ the loop thread went from 5.8 µs per request to 5.1 at 16
+connections and from 5.3 to 4.7 at 256, which is what the tokio thread
+costs in the same session; the bare WSGI row is 0.98x Granian at 16
+connections and 0.99x at 256.
+
 ## The outbox sweep (2026-08-29)
 
 The other per-pass cost the inversion entry in ROADMAP.md had named.

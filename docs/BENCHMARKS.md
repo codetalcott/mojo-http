@@ -115,15 +115,20 @@ What the split prices is the bridge: the 1.44x on the inline row is real
 and it is m0serve's own. What it cannot say is which thread bounds the
 one-handler-thread row, because rps per core averages two threads that do
 different work. Measured per thread
-([notes/loop-thread-bound.md](notes/loop-thread-bound.md)), that row is
-bound by the event-loop thread: it runs at 98 % while the Python thread
-runs at 70 %, and it costs about 7.2 µs of CPU per request against 5.3 µs
-for Granian's tokio thread — 1.2 µs of that the datagram handoff to the
-pool, most of the rest user-space parsing and per-request bookkeeping.
-The bridge itself, the environ build and the response read, is cheaper
-per request than Granian's PyO3 crossing. A faster bridge therefore does
-not move this row until the loop is faster; the loop-side handoff is the
-lever.
+([notes/loop-thread-bound.md](notes/loop-thread-bound.md)), that row was
+bound by the event-loop thread, at 7.2 µs of CPU per request against
+5.3 µs for Granian's tokio thread while the Python thread idled a third
+of the time. Two changes since closed that gap on the loop: the pool
+handoff moved into memory, taking the 1.2 µs of datagram syscalls
+([notes/pool-ring-handoff.md](notes/pool-ring-handoff.md)), and the
+header path — lookups, inserts, the token scanner, the receive copy —
+was rebuilt against the on-CPU profile
+([notes/loop-user-space.md](notes/loop-user-space.md)). The loop thread
+now costs what the tokio thread does per request, 5.1 µs at 16
+connections and 4.7 at 256 in the same session, and the two rows are
+within 2 % of each other. The bridge itself, the environ build and the
+response read, was cheaper per request than Granian's PyO3 crossing
+throughout, which is why bridge work was never the lever.
 
 Until 2026-09-05 the head-to-head row was the inline one. An explicit
 `--workers 1` switches the zero-config pool off, so the table compared the

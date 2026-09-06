@@ -1,3 +1,4 @@
+from std.memory import unsafe_memcpy
 from lightbug_http.http.parsing import (
     HTTPHeader,
     _first_lane,
@@ -300,6 +301,8 @@ struct ParsedRequestHeaders(Movable):
         carry the header at all: the `get` returns None for everything else
         and this returns on the line above.
         """
+        if self.headers.known_index(KH_TRANSFER_ENCODING) < 0:
+            return False
         var te = self.headers.get(HeaderKey.TRANSFER_ENCODING)
         if te:
             return "chunked" in te.value().lower()
@@ -432,7 +435,7 @@ def ascii_lower_byte(b: Byte) -> Byte:
 
 
 @always_inline
-def name_is(name: Span[Byte, _], lowercase: String) -> Bool:
+def name_is(name: Span[Byte, _], lowercase: StaticString) -> Bool:
     """Whether a raw header name equals a known-lowercase constant.
 
     Lets the parser dispatch on field names without calling `.lower()`,
@@ -445,6 +448,116 @@ def name_is(name: Span[Byte, _], lowercase: String) -> Bool:
         if ascii_lower_byte(name[i]) != want[i]:
             return False
     return True
+
+
+# The names the server itself asks a `Headers` about, per request, on the
+# event loop: framing (content-length, transfer-encoding, expect), the
+# connection (connection, upgrade, host), and what it stamps on every
+# response (date, content-type, server), plus cookie, which the parser
+# rejoins. `Headers` records the entry index of each, so a lookup for one
+# of them is O(1) whatever the collection holds; every other name is found
+# by the presence-filtered scan.
+comptime KNOWN_HEADER_COUNT = 10
+comptime KH_CONTENT_LENGTH = 0
+comptime KH_CONTENT_TYPE = 1
+comptime KH_CONNECTION = 2
+comptime KH_TRANSFER_ENCODING = 3
+comptime KH_HOST = 4
+comptime KH_DATE = 5
+comptime KH_COOKIE = 6
+comptime KH_UPGRADE = 7
+comptime KH_EXPECT = 8
+comptime KH_SERVER = 9
+
+
+@always_inline
+def known_header_id(name: Span[Byte, _]) -> Int:
+    """Which of the `KH_*` names `name` is, case-insensitively, or -1.
+
+    The length and the first byte narrow the candidates to at most one
+    before any full compare runs, so a name that is not one of the ten --
+    most of a browser's -- is classified by two integer tests. The parser
+    dispatches on this id once per field and `Headers` indexes by it; the
+    linear `name_is` chain this replaces asked three questions per field
+    and answered every lookup on the loop with a scan.
+    """
+    var n = len(name)
+    if n < 4 or n > 17:
+        return -1
+    var first = ascii_lower_byte(name[0])
+    if n == 14:
+        if first == 0x63 and name_is(name, HeaderKey.CONTENT_LENGTH):
+            return KH_CONTENT_LENGTH
+    elif n == 12:
+        if first == 0x63 and name_is(name, HeaderKey.CONTENT_TYPE):
+            return KH_CONTENT_TYPE
+    elif n == 10:
+        if first == 0x63 and name_is(name, HeaderKey.CONNECTION):
+            return KH_CONNECTION
+    elif n == 17:
+        if first == 0x74 and name_is(name, HeaderKey.TRANSFER_ENCODING):
+            return KH_TRANSFER_ENCODING
+    elif n == 4:
+        if first == 0x68:
+            if name_is(name, HeaderKey.HOST):
+                return KH_HOST
+        elif first == 0x64:
+            if name_is(name, HeaderKey.DATE):
+                return KH_DATE
+    elif n == 6:
+        if first == 0x63:
+            if name_is(name, HeaderKey.COOKIE):
+                return KH_COOKIE
+        elif first == 0x65:
+            if name_is(name, HeaderKey.EXPECT):
+                return KH_EXPECT
+        elif first == 0x73:
+            if name_is(name, HeaderKey.SERVER):
+                return KH_SERVER
+    elif n == 7:
+        if first == 0x75 and name_is(name, HeaderKey.UPGRADE):
+            return KH_UPGRADE
+    return -1
+
+
+@always_inline
+def span_is_ascii(s: Span[Byte, _]) -> Bool:
+    """Whether every byte of `s` is below 0x80: sixteen lanes at a time,
+    then eight, then the tail. The byte loop this replaces walked every
+    response header value on the event loop, about eighty bytes a
+    response."""
+    var n = len(s)
+    var p = s.unsafe_ptr()
+    var i = 0
+    while i + 16 <= n:
+        if p.unsafe_offset(i).unsafe_load[width=16]().reduce_max() >= 0x80:
+            return False
+        i += 16
+    while i + 8 <= n:
+        if p.unsafe_offset(i).unsafe_load[width=8]().reduce_max() >= 0x80:
+            return False
+        i += 8
+    while i < n:
+        if p[unsafe_offset=i] >= 0x80:
+            return False
+        i += 1
+    return True
+
+
+@always_inline
+def _presence_bit(name: Span[Byte, _]) -> UInt64:
+    """The bit `name` sets in a `Headers._present` word.
+
+    Length, first byte and last byte, case-folded: three loads, no loop.
+    A clear bit proves the name absent; a set bit only permits the scan.
+    """
+    var n = len(name)
+    if n == 0:
+        return UInt64(1)
+    var h = n * 5 + Int(ascii_lower_byte(name[0])) * 3 + Int(
+        ascii_lower_byte(name[n - 1])
+    )
+    return UInt64(1) << UInt64(h & 63)
 
 
 struct Headers(Copyable, Writable):
@@ -472,10 +585,23 @@ struct Headers(Copyable, Writable):
     four index allocations per construction was a fifth of the hello row's
     allocator traffic, and nothing outside this struct ever saw the four
     arrays."""
+    var _present: UInt64
+    """One bit per name inserted (`_presence_bit`), never cleared. A
+    lookup whose bit is clear answers "absent" without touching the index,
+    which is what makes the parser's per-field duplicate check -- twelve
+    scans of a growing collection, before -- a single AND per field."""
+    var _known: Array[Int16, KNOWN_HEADER_COUNT]
+    """Entry index of each `KH_*` name, or -1 while it is absent. The event
+    loop asks about these -- and only these -- on every request, and each
+    of those lookups used to be a case-folding scan of the whole
+    collection (`_name_matches` was the loop thread's largest user-space
+    symbol, 5.6 % of it, before this). `pop` rebuilds it."""
 
     def __init__(out self):
         self._buf = List[Byte]()
         self._idx = List[Int32]()
+        self._present = 0
+        self._known = Array[Int16, KNOWN_HEADER_COUNT](fill=-1)
 
     def __init__(out self, var *headers: Header):
         self = Headers()
@@ -505,8 +631,32 @@ struct Headers(Copyable, Writable):
                 return False
         return True
 
+    @always_inline
     def _find(self, key: Span[Byte, _]) -> Int:
         """Index of the entry named `key`, or -1."""
+        var kid = known_header_id(key)
+        if kid >= 0:
+            return Int(self._known[kid])
+        return self._find_unknown(key)
+
+    @always_inline
+    def known_index(self, kid: Int) -> Int:
+        """Entry index of the `KH_*` name `kid`, or -1: the O(1) lookup for
+        a caller that already knows which name it wants, with no
+        classification of the name at all."""
+        return Int(self._known[kid])
+
+    @always_inline
+    def set_known(mut self, kid: Int, name: Span[Byte, _], value: Span[Byte, _]):
+        """`set_bytes` for a `KH_*` name the caller has already identified;
+        `name` must be that name."""
+        self._set_bytes(name, value, kid)
+
+    def _find_unknown(self, key: Span[Byte, _]) -> Int:
+        """`_find` for a name outside the `KH_*` set: the presence word
+        first, then the scan it permits."""
+        if (self._present & _presence_bit(key)) == 0:
+            return -1
         for i in range(self.count()):
             if self._name_matches(i, key):
                 return i
@@ -604,20 +754,78 @@ struct Headers(Copyable, Writable):
         than compacting the blob. The stranded bytes are bounded by the
         header count and die with the request.
         """
-        var i = self._find(name)
+        self._set_bytes(name, value, known_header_id(name))
+
+    def _set_bytes(mut self, name: Span[Byte, _], value: Span[Byte, _], kid: Int):
+        """`set_bytes` with the name already classified (`known_header_id`),
+        so the parser, which dispatches on the id anyway, classifies once."""
+        var i: Int
+        if kid >= 0:
+            i = Int(self._known[kid])
+        else:
+            i = self._find_unknown(name)
         var v_off = len(self._buf)
-        self._buf.extend(value)
+        var n_len = len(name)
+        # Room for the value and the name together, grown geometrically:
+        # `reserve` sizes a List exactly, so reserving per insert made an
+        # unreserved collection (a handler's response) reallocate on every
+        # one -- measured as +0.13 µs on `OK()` before this line existed.
+        var v_len = len(value)
+        var needed = v_off + v_len + n_len
+        if self._buf.capacity() < needed:
+            var grown = self._buf.capacity() * 2
+            if grown < 128:
+                grown = 128
+            self._buf.reserve(needed if needed > grown else grown)
+        # The blob has room for the value and the name now, so both go in
+        # by raw copy with one length store at the end -- `extend`'s
+        # capacity test and `memcpy` call per header, and an `append` per
+        # name byte, were together 3-4 % of the loop thread.
+        var dst = self._buf.unsafe_ptr()
+        if v_len > 0:
+            unsafe_memcpy(dest=dst.unsafe_offset(v_off), src=value.unsafe_ptr(), count=v_len)
         if i >= 0:
+            self._buf._len = v_off + v_len
             self._idx[4 * i + 2] = Int32(v_off)
-            self._idx[4 * i + 3] = Int32(len(value))
+            self._idx[4 * i + 3] = Int32(v_len)
             return
-        var n_off = len(self._buf)
-        for j in range(len(name)):
-            self._buf.append(ascii_lower_byte(name[j]))
-        self._idx.append(Int32(n_off))
-        self._idx.append(Int32(len(name)))
-        self._idx.append(Int32(v_off))
-        self._idx.append(Int32(len(value)))
+        var n_off = v_off + v_len
+        # Lowercased eight bytes at a time: ASCII letters are the only
+        # bytes case-folding touches, and a header name is ASCII by
+        # definition (RFC 9110 §5.1).
+        var src = name.unsafe_ptr()
+        var j = 0
+        while j + 8 <= n_len:
+            var w = src.unsafe_offset(j).unsafe_load[width=8]()
+            var upper = w.ge(SIMD[DType.uint8, 8](0x41)) & w.le(SIMD[DType.uint8, 8](0x5A))
+            dst.unsafe_offset(n_off + j).unsafe_store[width=8](
+                upper.select(w | SIMD[DType.uint8, 8](0x20), w)
+            )
+            j += 8
+        while j < n_len:
+            dst.unsafe_offset(n_off + j)[] = ascii_lower_byte(src[unsafe_offset=j])
+            j += 1
+        self._buf._len = n_off + n_len
+        var entry = self.count()
+        # Four words per entry, so `append`'s one-at-a-time doubling (1,
+        # 2, 4, 8...) reallocated three times for the FIRST header of an
+        # unreserved collection; eight entries up front is one allocation
+        # for a typical response.
+        var at = len(self._idx)
+        if self._idx.capacity() < at + 4:
+            var grown_idx = self._idx.capacity() * 2
+            if grown_idx < 32:
+                grown_idx = 32
+            self._idx.reserve(grown_idx)
+        var ip = self._idx.unsafe_ptr()
+        ip.unsafe_offset(at)[] = Int32(n_off)
+        ip.unsafe_offset(at + 1)[] = Int32(n_len)
+        ip.unsafe_offset(at + 2)[] = Int32(v_off)
+        ip.unsafe_offset(at + 3)[] = Int32(v_len)
+        self._idx._len = at + 4
+        if kid >= 0:
+            self._known[kid] = Int16(entry)
+        self._present |= _presence_bit(name)
 
     @always_inline
     def __setitem__(mut self, key: String, value: String):
@@ -631,6 +839,10 @@ struct Headers(Copyable, Writable):
         (Content-Length on the request and on the response). Twenty bytes of
         stack covers Int64's digits.
         """
+        self.set_int_known(known_header_id(key.as_bytes()), key.as_bytes(), value)
+
+    def set_int_known(mut self, kid: Int, name: Span[Byte, _], value: Int):
+        """`set_int` for a name already classified; -1 is any other name."""
         var digits = Array[Byte, 20](fill=0)
         var n = value
         if n < 0:
@@ -646,10 +858,7 @@ struct Headers(Copyable, Writable):
                 pos -= 1
                 digits[pos] = Byte(0x30 + (n % 10))
                 n //= 10
-        self.set_bytes(
-            key.as_bytes(),
-            Span(digits)[pos:],
-        )
+        self._set_bytes(name, Span(digits)[pos:], kid)
 
     def pop(mut self, key: String):
         """Remove a header by name (no-op if absent).
@@ -662,6 +871,17 @@ struct Headers(Copyable, Writable):
             return
         for _ in range(4):
             _ = self._idx.pop(4 * i)
+        # Every entry after `i` moved down one; the known-name index is
+        # rebuilt rather than patched, because a pop is rare (a 101, a
+        # stream head) and a patch that missed a case would be a lookup
+        # answering with the wrong header's value. `_present` stays a
+        # superset, which it is allowed to be.
+        for k in range(KNOWN_HEADER_COUNT):
+            self._known[k] = -1
+        for e in range(self.count()):
+            var kid = known_header_id(self.name_span(e))
+            if kid >= 0:
+                self._known[kid] = Int16(e)
 
     def content_length(self) -> Int:
         """Content-Length as an Int, or 0 if absent or malformed.
@@ -695,20 +915,14 @@ struct Headers(Copyable, Writable):
     def write_latin1_to(self, mut writer: ByteWriter):
         """Write headers with values transcoded to ISO-8859-1 for the wire."""
         for i in range(self.count()):
-            writer.write(StringSpan(unsafe_from_utf8=self.name_span(i)), ": ")
             var value = self.value_span(i)
-            var all_ascii = True
-            for j in range(len(value)):
-                if value[j] >= 0x80:
-                    all_ascii = False
-                    break
-            if all_ascii:
-                writer.write(StringSpan(unsafe_from_utf8=value))
+            if span_is_ascii(value):
+                writer.write_header_line(self.name_span(i), value)
             else:
-                writer.consuming_write(
-                    encode_latin1_header_value(String(unsafe_from_utf8=value))
+                var latin1 = encode_latin1_header_value(
+                    String(unsafe_from_utf8=value)
                 )
-            writer.write(lineBreak)
+                writer.write_header_line(self.name_span(i), Span(latin1))
 
     def __str__(self) -> String:
         return String(self)
@@ -836,13 +1050,14 @@ def parse_request_headers(
             ve -= 1
         var value = vb[vs:ve]
 
-        if name_is(name_bytes, HeaderKey.COOKIE):
+        var kid = known_header_id(name_bytes)
+        if kid == KH_COOKIE:
             # Collected for the jar *and* left in `headers` below, because a
             # WSGI application is handed the raw header and parses cookies
             # itself. Diverting it out of `headers` is what kept `HTTP_COOKIE`
             # out of the environ, and with it every session and CSRF token.
             cookies.append(String(unsafe_from_utf8=value))
-        elif name_is(name_bytes, HeaderKey.CONTENT_LENGTH):
+        elif kid == KH_CONTENT_LENGTH:
             if seen_content_length:
                 raise RequestParseError(InvalidHTTPRequestError())
             seen_content_length = True
@@ -864,16 +1079,16 @@ def parse_request_headers(
             # the same reason: `content_length()` would wrap it silently.
             if len(value) > 18:
                 raise RequestParseError(InvalidHTTPRequestError())
-            headers.set_bytes(name_bytes, value)
+            headers._set_bytes(name_bytes, value, kid)
         else:
             # The two fields the RFC checks below ask about are noted on
             # the way past. They used to be three scans of the finished
             # collection — and the Host one built a String to measure it.
-            if name_is(name_bytes, HeaderKey.HOST):
+            if kid == KH_HOST:
                 host_len = len(value)
-            elif name_is(name_bytes, HeaderKey.TRANSFER_ENCODING):
+            elif kid == KH_TRANSFER_ENCODING:
                 seen_transfer_encoding = True
-            headers.set_bytes(name_bytes, value)
+            headers._set_bytes(name_bytes, value, kid)
 
     # Put the cookies back as one `Cookie` field. RFC 6265 §5.4 sends a single
     # header, but HTTP/2 downgrades and some proxies split it across several,
@@ -882,7 +1097,7 @@ def parse_request_headers(
     # unique-key map: setting it per header line would keep only the last.
     if len(cookies) > 0:
         var joined = StaticString("; ").join(cookies)
-        headers.set_bytes(HeaderKey.COOKIE.as_bytes(), joined.as_bytes())
+        headers._set_bytes(HeaderKey.COOKIE.as_bytes(), joined.as_bytes(), KH_COOKIE)
 
     # RFC 9112 §6.3: reject requests with both Transfer-Encoding and Content-Length
     if seen_transfer_encoding and seen_content_length:

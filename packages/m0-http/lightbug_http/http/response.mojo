@@ -1,6 +1,9 @@
 from lightbug_http.connection import TCPConnection, default_buffer_size
 from lightbug_http.cookie import ResponseCookieJar
-from lightbug_http.header import HeaderKey, Headers, ParsedResponseHeaders, parse_response_headers, write_header
+from lightbug_http.header import (
+    HeaderKey, Headers, ParsedResponseHeaders, parse_response_headers, write_header,
+    KH_CONNECTION, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_DATE,
+)
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.http.date import http_date_now
 from lightbug_http.http.encodable import Encodable
@@ -327,7 +330,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         # again afterwards.
         self.headers = headers^
         self.cookies = cookies^
-        if HeaderKey.CONTENT_TYPE not in self.headers:
+        if self.headers.known_index(KH_CONTENT_TYPE) < 0:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
         self.status_text = status_text
@@ -338,9 +341,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.body_fd_offset = 0
         self.body_fd_len = 0
         self.stream_gen = 0
-        if HeaderKey.CONNECTION not in self.headers:
+        if self.headers.known_index(KH_CONNECTION) < 0:
             self.set_connection_keep_alive()
-        if HeaderKey.CONTENT_LENGTH not in self.headers:
+        if self.headers.known_index(KH_CONTENT_LENGTH) < 0:
             self.set_content_length(len(body_bytes))
         # No Date header here: encode() adds one at wire-write time if the
         # response still lacks it (and the event loop injects a per-second
@@ -359,7 +362,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         """Initialize with an owned body buffer (zero-copy move)."""
         self.headers = headers^
         self.cookies = cookies^
-        if HeaderKey.CONTENT_TYPE not in self.headers:
+        if self.headers.known_index(KH_CONTENT_TYPE) < 0:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
         self.status_text = status_text
@@ -371,9 +374,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.body_fd_offset = 0
         self.body_fd_len = 0
         self.stream_gen = 0
-        if HeaderKey.CONNECTION not in self.headers:
+        if self.headers.known_index(KH_CONNECTION) < 0:
             self.set_connection_keep_alive()
-        if HeaderKey.CONTENT_LENGTH not in self.headers:
+        if self.headers.known_index(KH_CONTENT_LENGTH) < 0:
             self.set_content_length(body_len)
         # No Date header here: encode() adds one at wire-write time if the
         # response still lacks it (and the event loop injects a per-second
@@ -391,7 +394,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     ) raises:
         self.headers = headers^
         self.cookies = cookies^
-        if HeaderKey.CONTENT_TYPE not in self.headers:
+        if self.headers.known_index(KH_CONTENT_TYPE) < 0:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
         self.status_text = status_text
@@ -403,9 +406,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.body_fd_len = 0
         self.stream_gen = 0
         self.set_content_length(len(self.body_raw))
-        if HeaderKey.CONNECTION not in self.headers:
+        if self.headers.known_index(KH_CONNECTION) < 0:
             self.set_connection_keep_alive()
-        if HeaderKey.CONTENT_LENGTH not in self.headers:
+        if self.headers.known_index(KH_CONTENT_LENGTH) < 0:
             self.set_content_length(len(self.body_raw))
         # No Date header here: encode() adds one at wire-write time if the
         # response still lacks it (and the event loop injects a per-second
@@ -420,7 +423,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
 
     @always_inline
     def set_connection_close(mut self):
-        self.headers[HeaderKey.CONNECTION] = "close"
+        self.headers.set_known(
+            KH_CONNECTION, HeaderKey.CONNECTION.as_bytes(), "close".as_bytes()
+        )
 
     def connection_close(self) -> Bool:
         """RFC 9110 §7.6.1: Connection option tokens are case-insensitive.
@@ -432,11 +437,15 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
 
     @always_inline
     def set_connection_keep_alive(mut self):
-        self.headers[HeaderKey.CONNECTION] = "keep-alive"
+        self.headers.set_known(
+            KH_CONNECTION, HeaderKey.CONNECTION.as_bytes(), "keep-alive".as_bytes()
+        )
 
     @always_inline
     def set_content_length(mut self, l: Int):
-        self.headers.set_int(HeaderKey.CONTENT_LENGTH, l)
+        self.headers.set_int_known(
+            KH_CONTENT_LENGTH, HeaderKey.CONTENT_LENGTH.as_bytes(), l
+        )
 
     @always_inline
     def content_length(self) -> Int:
@@ -516,7 +525,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             "server: lightbug_http",
             lineBreak,
         )
-        if HeaderKey.DATE not in self.headers:
+        if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)
         writer.write(self.cookies, lineBreak)
@@ -556,7 +565,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             "server: lightbug_http",
             lineBreak,
         )
-        if HeaderKey.DATE not in self.headers:
+        if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)
         writer.write(self.cookies, lineBreak)

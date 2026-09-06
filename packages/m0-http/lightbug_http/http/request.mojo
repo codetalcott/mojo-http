@@ -1,4 +1,7 @@
-from lightbug_http.header import Header, HeaderKey, Headers, ParsedRequestHeaders, write_header
+from lightbug_http.header import (
+    Header, HeaderKey, Headers, ParsedRequestHeaders, write_header,
+    KH_CONNECTION, KH_CONTENT_LENGTH, KH_HOST,
+)
 from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
 from lightbug_http.io.sync import Duration
@@ -213,13 +216,17 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         self.remote_port = 0
         self.set_content_length(len(self.body_raw))
 
-        if HeaderKey.CONNECTION not in self.headers:
+        if self.headers.known_index(KH_CONNECTION) < 0:
             # HTTP/1.1 defaults to persistent connections; HTTP/1.0 does not
             if self.protocol == strHttp11:
-                self.headers[HeaderKey.CONNECTION] = "keep-alive"
+                self.headers.set_known(
+                    KH_CONNECTION, HeaderKey.CONNECTION.as_bytes(), "keep-alive".as_bytes()
+                )
             else:
-                self.headers[HeaderKey.CONNECTION] = "close"
-        if HeaderKey.HOST not in self.headers:
+                self.headers.set_known(
+                    KH_CONNECTION, HeaderKey.CONNECTION.as_bytes(), "close".as_bytes()
+                )
+        if self.headers.known_index(KH_HOST) < 0:
             if self.uri.port:
                 self.headers[HeaderKey.HOST] = String(self.uri.host, ":", self.uri.port.value())
             else:
@@ -235,7 +242,9 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     def set_content_length(mut self, length: Int):
         """Set the Content-Length header."""
-        self.headers.set_int(HeaderKey.CONTENT_LENGTH, length)
+        self.headers.set_int_known(
+            KH_CONTENT_LENGTH, HeaderKey.CONTENT_LENGTH.as_bytes(), length
+        )
 
     def connection_close(self) -> Bool:
         """Check if the Connection header is set to 'close'.

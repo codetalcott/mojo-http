@@ -445,6 +445,23 @@ lightbug_http
         c16/c64/c256 became 172.8k/173.7k/176.4k, and the user-space
         request in `bench_http_parts` 2.11 -> 2.05 us — parity, within
         noise.
+      - header.mojo / http/parsing.mojo / strings.mojo / io/bytes.mojo /
+        event_loop.mojo / offload.mojo (2026-09-06): the loop thread's
+        header path. `Headers` gained a known-name index (`known_header_id`,
+        the ten `KH_*` names the server asks about, each entry's index kept)
+        and a presence word, so the event loop's per-request lookups are
+        O(1) and the parser's duplicate check is one AND per field; inserts
+        reserve for value and name together (geometric growth with a floor),
+        copy the value by `memcpy` and lowercase the name eight bytes at a
+        time; `is_token_char` is a two-word bitmask and `scan_token` verifies
+        sixteen bytes per vector (`_non_tchar_lanes`); `try_peek` reads
+        directly; the header read receives into `recv_buffer` past its
+        length rather than through `recv_staging`; `ByteWriter.write_header_line`
+        writes a line as one reservation; the completion channel's receive
+        buffer and the loop's finished-slot list are kept rather than
+        allocated per drain; `_drain_pipelined` is inlined. Measured in
+        docs/notes/loop-user-space.md: the loop thread from 5.8 to 5.1 us per
+        request at 16 connections, the isolated parse from 0.89 to 0.62 us.
       - Two bodies the compiler never instantiated removed (2026-09-05),
         proven dead by the repo's method — a bare `undefined_name` in each
         body survives build-all, test-all, build-apps and build-serve: the
