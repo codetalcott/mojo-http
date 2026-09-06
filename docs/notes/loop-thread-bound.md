@@ -218,5 +218,6 @@ to serve both sides.
 The paragraph under the layer-split table in
 [BENCHMARKS.md](../BENCHMARKS.md) and the Granian bullet in the README no
 longer say the deficit is the bridge rather than the event loop; they say
-what this page measured and point here. The tables, the artifacts and the
-code are as they were.
+what this page measured and point here. The tables and the artifacts are
+as they were. The ring handoff this page names as the lever was built the
+same day: [pool-ring-handoff.md](pool-ring-handoff.md).

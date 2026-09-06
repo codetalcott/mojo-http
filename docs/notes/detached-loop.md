@@ -137,7 +137,8 @@ to catch.
   contend for) keep their attached loops.
 - The `SOCK_DGRAM` handoff itself. Its cost was measured at ~13 µs at p99 on
   the Mojo-only pool and is the next lever (an in-memory ring with a
-  wake-only-if-parked flag), not this one.
+  wake-only-if-parked flag), not this one. Built 2026-09-05:
+  [pool-ring-handoff.md](pool-ring-handoff.md).
 - The benchmark pages. Their tables render from `bench/results/` artifacts
   recorded by `bench_asgi_wrk.sh` and `bench_layer_split.sh`; re-recording
   them is a separate, mechanical step.

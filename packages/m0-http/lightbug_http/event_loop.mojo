@@ -253,10 +253,36 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         peer_bus_fd, accept_share,
     )
     while True:
-        var n_events = backend.wait(1000)
+        var n_events = _wait_for_events(backend, st, 1000)
         if _run_pass(handler, backend, st, n_events):
             _run_shutdown(handler, backend, st)
             break
+
+
+def _wait_for_events[B: EventLoopBackend](
+    mut backend: B, mut st: LoopState, timeout_ms: Int
+) raises -> Int:
+    """`backend.wait`, announced to the pool threads.
+
+    With the ring handoff (`offload.mojo`, module docstring) a pool thread
+    pokes this loop's completion channel only when the loop has said it
+    is parked — so the flag goes up BEFORE the wait and the completion
+    ring is re-checked AFTER it goes up, in that order. A completion
+    published between the check and the park would otherwise wait for
+    the next event, up to the timeout, with nobody sending the datagram.
+    A non-empty ring skips the wait entirely and runs a pass with no
+    events, whose first act is to drain it. Without rings this is the
+    plain wait it always was.
+    """
+    if not st.offload.ring_active():
+        return backend.wait(timeout_ms)
+    st.offload.set_loop_parked(True)
+    if st.offload.done_pending():
+        st.offload.set_loop_parked(False)
+        return 0
+    var n = backend.wait(timeout_ms)
+    st.offload.set_loop_parked(False)
+    return n
 
 
 struct LoopState(Movable):
@@ -415,6 +441,21 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     if accept_share.active():
         accept_share.pass_begin(perf_counter_ns())
 
+    # Pool completions that arrived in memory: first, because a pass may
+    # have been entered with no events at all for exactly this (see
+    # `_wait_for_events`), and no syscall — the channel is read only when
+    # its readiness says a datagram is there.
+    if offload.done_pending():
+        _service_completions(
+            backend, handler, config, server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset, slot_header_start,
+            fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload, bus_read_fd,
+            read_fd=False, peer_bus_fd=peer_bus_fd,
+        )
+
     for i in range(n_events):
         if (backend.event_flags(i) & EV_ERROR) != 0:
             continue
@@ -469,6 +510,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 slot_sse, slot_ws, slot_ws_state,
                 slot_read_armed, slot_idle_deadline,
                 date_cache_sec, date_cache, offload, bus_read_fd,
+                peer_bus_fd=peer_bus_fd,
             )
             continue
 
@@ -1190,6 +1232,21 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         slot_sse, slot_ws, slot_ws_state,
                     )
 
+    # And once more after the events: what the pool threads finished
+    # while this pass ran gets answered now, before the outbox drain
+    # below (a streaming head completed here has its first chunks swept
+    # this pass) and before the loop can park.
+    if offload.done_pending():
+        _service_completions(
+            backend, handler, config, server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset, slot_header_start,
+            fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload, bus_read_fd,
+            read_fd=False, peer_bus_fd=peer_bus_fd,
+        )
+
     # Credit the ack channel refused earlier (`ack_stream` returned
     # False: EAGAIN, the executor not reading at that instant — most
     # likely because it was itself waiting for THIS loop to drain its
@@ -1901,7 +1958,7 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
     while active_count > 0 or offload.inflight > 0:
         if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
             break
-        var drain_events = backend.wait(100)
+        var drain_events = _wait_for_events(backend, st, 100)
         _ = _run_pass(handler, backend, st, drain_events)
         # A completion that just went out whole on a keep-alive
         # connection re-armed the slot for a request the drain must not
@@ -2735,8 +2792,11 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     mut date_cache: String,
     mut offload: OffloadLoopState,
     bus_read_fd: Int = -1,
+    read_fd: Bool = True,
+    peer_bus_fd: Int = -1,
 ) raises:
-    """Take every finished job off the completion channel and answer it.
+    """Take every finished job off the completion ring — and, with
+    `read_fd`, the completion channel — and answer it.
 
     Two outcomes per slot. The ordinary one hands the response to
     `_finish_response`, which is the same code the synchronous path runs. The
@@ -2754,7 +2814,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     if not offload.enabled():
         return
     ref pool = offload.pool()[]
-    var finished = pool.drain_completions()
+    var finished = pool.drain_completions(read_fd)
     var aborts = pool.take_aborts()
     for f in range(len(finished)):
         _complete_one(
@@ -2763,7 +2823,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
             fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state, slot_read_armed,
             slot_idle_deadline, date_cache_sec, date_cache, offload,
-            finished[f], bus_read_fd,
+            finished[f], bus_read_fd, peer_bus_fd,
         )
 
 
@@ -2827,6 +2887,7 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
     mut offload: OffloadLoopState,
     slot: Int,
     bus_read_fd: Int,
+    peer_bus_fd: Int = -1,
 ) raises:
     """Answer ONE finished job: the per-slot body of `_service_completions`.
 
@@ -2866,22 +2927,37 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
         pool.discard(slot)
         provision_pool.release(slot)
         return
-    if response.sse_streaming and bus_read_fd >= 0 and offload.slot_channel_stream(slot):
-        # Begin-before-head, made deterministic. The producer sent its
-        # begin frame on the chunk channel BEFORE this completion, so
-        # the datagram is in that socket now — but whether this pass's
-        # event batch happens to carry the chunk channel's readiness
-        # ahead of the completion's is the kernel's ready-list order,
-        # not ours. Draining it here, before the head goes out, means
-        # the handler is subscribed before the slot can ever be seen
-        # streaming, whatever order the events arrived in.
-        var begin_frames = drain_bus_channel(bus_read_fd)
-        for bf in range(len(begin_frames)):
-            handler.sse_peer_frame(
-                begin_frames[bf].url,
-                begin_frames[bf].event_id,
-                begin_frames[bf].frame,
-            )
+    if response.sse_streaming or is_ws_upgrade_response(response):
+        # Frame-before-head, made deterministic. The producer sent its
+        # frame BEFORE this completion — an executor's or a streaming
+        # pool thread's begin frame on the chunk channel (`bus_read_fd`),
+        # a pool thread's hold frame (`h`/`H`) on this loop's own bus
+        # channel (`peer_bus_fd`) — so the datagram is in its socket now.
+        # But a completion off the ring is not an event: its frame's
+        # readiness may not be in this pass's batch at all, and even a
+        # datagram completion's batch carries the two readinesses in the
+        # kernel's ready-list order, not ours. Draining both channels
+        # here, before the head goes out, means the handler is subscribed
+        # before the slot can ever be seen streaming — otherwise the
+        # outbox sweep finds a flagged slot nothing produces for and
+        # closes it, and the frame subscribes a slot that is already gone
+        # (Linux CI, smoke-django-realtime phase 5, 2026-09-05).
+        if bus_read_fd >= 0:
+            var begin_frames = drain_bus_channel(bus_read_fd)
+            for bf in range(len(begin_frames)):
+                handler.sse_peer_frame(
+                    begin_frames[bf].url,
+                    begin_frames[bf].event_id,
+                    begin_frames[bf].frame,
+                )
+        if peer_bus_fd >= 0:
+            var hold_frames = drain_bus_channel(peer_bus_fd)
+            for hf in range(len(hold_frames)):
+                handler.sse_peer_frame(
+                    hold_frames[hf].url,
+                    hold_frames[hf].event_id,
+                    hold_frames[hf].frame,
+                )
     _finish_response(
         backend, slot, slot_fds[slot], handler, config, server_address,
         tcp_keep_alive,
@@ -2943,7 +3019,7 @@ def service_direct_completions[T: HTTPService, B: EventLoopBackend](
             fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state, slot_read_armed,
             slot_idle_deadline, date_cache_sec, date_cache, offload,
-            slots[i], st.bus_read_fd,
+            slots[i], st.bus_read_fd, st.peer_bus_fd,
         )
 
 
