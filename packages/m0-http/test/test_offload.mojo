@@ -721,47 +721,60 @@ def test_a_ring_being_drained_is_never_stalled() raises:
     pool.note_thread(0, -2)
 
 
-def test_on_a_free_threaded_interpreter_a_waiting_head_wakes_whatever_the_progress() raises:
-    """`set_wake_on_age(True)`, the free-threaded rule: the same ring the
-    progress test left alone — moved since the loop's last look — wakes a
-    parked sibling once its head has waited the threshold since its push,
-    because a draining ring beside a parked thread is a core idle there.
-    The knob `M0_POOL_WAKE_ON_AGE` wins over the wiring's answer."""
+def test_on_a_free_threaded_interpreter_the_pool_wakes_eagerly_and_counts_from_the_push() raises:
+    """`set_parallel(True)`, the free-threaded rule. A push beside a busy
+    sibling wakes a parked thread anyway (an idle core there), and the
+    ring the progress test left alone — moved since the loop's last look
+    — is stalled once its head has waited the threshold since its push.
+    The knob `M0_POOL_PARALLEL` wins over the wiring's answer."""
     var pool = OffloadPool(8)
     if not pool.elastic_active():
         return
-    assert_false(pool.wakes_on_age())
-    pool.set_wake_on_age(True)
-    assert_true(pool.wakes_on_age())
+    assert_false(pool.is_parallel())
+    pool.set_parallel(True)
+    assert_true(pool.is_parallel())
     comptime T = 100_000_000
     comptime MS = 1_000_000
     pool.note_thread(0, 2)
     pool.note_parked(0, 1)
-    var t0 = perf_counter_ns()
-    assert_equal(pool.wake_aged(t0, T), 0)
-    for slot in range(3):
-        pool.park_request(slot, _request("/q"))
-        assert_true(pool.submit(slot))
-    # The busy thread takes job 0: the ring moved. Under the GIL rule the
-    # look at 150 ms would start the count there; here the head (job 1)
-    # has waited since its push, and 150 ms is past the threshold.
-    pool.note_parked(0, -1)
-    assert_equal(_next_slot(pool), 0)
-    pool.note_parked(0, 1)
-    assert_equal(pool.wake_aged(t0 + 150 * MS, T), 1)
+    # A busy sibling is no reason not to wake here.
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
     assert_equal(pool.wakes_in_flight(0), 1)
     pool.note_parked(0, -1)
     sleep(0.0002)
     assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    pool.note_parked(0, 1)
+    # The stall check counts from the push whatever the progress.
+    var t0 = perf_counter_ns()
+    assert_equal(pool.wake_aged(t0, T), 0)
+    for slot in range(2, 5):
+        pool.park_request(slot, _request("/q"))
+        assert_true(pool.submit(slot))
+    # (One wake for the burst: the parked stand-in is owed one already.)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
     assert_equal(_next_slot(pool), 2)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    pool.note_parked(0, 1)
+    # The ring moved since the loop's look at t0; under the GIL rule the
+    # count would start at 150 ms. Here job 3 has waited since its push.
+    assert_equal(pool.wake_aged(t0 + 150 * MS, T), 1)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 3)
+    assert_equal(_next_slot(pool), 4)
     assert_equal(pool.wakes_in_flight(0), 0)
     pool.note_thread(0, -2)
     # The knob: forced off, the wiring cannot turn it on.
-    _ = setenv("M0_POOL_WAKE_ON_AGE", "0", True)
+    _ = setenv("M0_POOL_PARALLEL", "0", True)
     var forced = OffloadPool(8)
-    _ = setenv("M0_POOL_WAKE_ON_AGE", "", True)
-    forced.set_wake_on_age(True)
-    assert_false(forced.wakes_on_age())
+    _ = setenv("M0_POOL_PARALLEL", "", True)
+    forced.set_parallel(True)
+    assert_false(forced.is_parallel())
 
 
 def test_the_wait_is_bounded_only_while_a_job_is_pending() raises:

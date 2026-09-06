@@ -662,17 +662,21 @@ struct OffloadPool(Movable):
     last saw the count move (or the ring empty): the last moment the
     lane is known to have been draining. Loop-only."""
 
-    var wake_on_age: Bool
-    """Whether `wake_aged` counts a head's wait from its PUSH, whatever the
-    pop counter did — the rule for a FREE-THREADED interpreter, where a
-    ring one thread is draining while siblings sit parked is parallelism
-    thrown away, not GIL time saved. False on a GIL build, where a
-    draining ring is left alone (`POOL_WAKE_AGE_NS`). Set by the wiring
-    from the interpreter's own answer (`set_wake_on_age`); the same
-    threshold either way. `M0_POOL_WAKE_ON_AGE=1`/`0` overrides it, the
-    A/B knob."""
+    var parallel: Bool
+    """The FREE-THREADED rule: `submit` wakes a parked thread whenever
+    there is one (a parked thread beside a queued job is an idle core,
+    not a GIL waiter), and `wake_aged` counts a head's wait from its
+    PUSH, whatever the pop counter did. False on a GIL build, where a
+    busy thread takes the job sooner than a wake could land and a
+    draining ring is left alone. Set by the wiring from the
+    interpreter's own answer (`set_parallel`); the single spinner and
+    the wake by name on each thread's own channel apply either way.
+    `M0_POOL_PARALLEL=1`/`0` overrides it, the A/B knob. Measured on
+    3.14t (docs/notes/elastic-pool.md): with the GIL rules the fast
+    route's p99 under slow views was 8–10 ms against 2–4 with the eager
+    wakes, and neither variant of the stall check moved it."""
 
-    var _wake_on_age_forced: Int
+    var _parallel_forced: Int
     """-1 when the knob is unset, else what it said."""
 
     var wake_age: Int
@@ -739,12 +743,12 @@ struct OffloadPool(Movable):
         self.lane_progress = List[Int]()
         self.lane_pops.append(0)
         self.lane_progress.append(0)
-        self.wake_on_age = False
-        self._wake_on_age_forced = -1
-        var on_age = getenv("M0_POOL_WAKE_ON_AGE", "")
-        if on_age == "1" or on_age == "0":
-            self._wake_on_age_forced = 1 if on_age == "1" else 0
-            self.wake_on_age = on_age == "1"
+        self.parallel = False
+        self._parallel_forced = -1
+        var par = getenv("M0_POOL_PARALLEL", "")
+        if par == "1" or par == "0":
+            self._parallel_forced = 1 if par == "1" else 0
+            self.parallel = par == "1"
         self.wake_age = POOL_WAKE_AGE_NS
         var age_us = getenv("M0_POOL_WAKE_AGE_US", "")
         if age_us != "":
@@ -825,8 +829,8 @@ struct OffloadPool(Movable):
         self.thread_cap = move.thread_cap
         self.lane_pops = move.lane_pops^
         self.lane_progress = move.lane_progress^
-        self.wake_on_age = move.wake_on_age
-        self._wake_on_age_forced = move._wake_on_age_forced
+        self.parallel = move.parallel
+        self._parallel_forced = move._parallel_forced
 
     def set_hold_notify(mut self, fd: Int):
         """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
@@ -1352,16 +1356,16 @@ struct OffloadPool(Movable):
         """See `wake_age`."""
         return self.wake_age
 
-    def set_wake_on_age(mut self, flag: Bool):
+    def set_parallel(mut self, flag: Bool):
         """The wiring's answer to "is this interpreter free-threaded?"
         (`probe_free_threading`; the threaded mode is by construction).
-        See `wake_on_age`. The knob, when set, wins."""
-        if self._wake_on_age_forced < 0:
-            self.wake_on_age = flag
+        See `parallel`. The knob, when set, wins."""
+        if self._parallel_forced < 0:
+            self.parallel = flag
 
-    def wakes_on_age(self) -> Bool:
-        """See `wake_on_age`."""
-        return self.wake_on_age
+    def is_parallel(self) -> Bool:
+        """See `parallel`."""
+        return self.parallel
 
     def wake_counts(self, lane: Int) -> Tuple[Int, Int]:
         """`(aged, idle)`: wakes `wake_aged` sent, and wakes `submit` sent
@@ -1469,11 +1473,11 @@ struct OffloadPool(Movable):
         hole the chain used to fill); `_wake_one`'s cap keeps it to one
         wake per parked thread.
 
-        On a free-threaded interpreter (`wake_on_age`) progress is not
-        the question: the head's wait counts from its push, and a ring
-        that one thread is draining with a sibling parked beside it gets
-        the sibling once the head has waited `age_ns` — two threads on
-        two cores is twice the rate there, not twice the GIL waiters."""
+        On a free-threaded interpreter (`parallel`) progress is not the
+        question: the head's wait counts from its push, and a ring that
+        one thread is draining with a sibling parked beside it gets the
+        sibling once the head has waited `age_ns` — two threads on two
+        cores is twice the rate there, not twice the GIL waiters."""
         if not self.elastic:
             return 0
         var woken = 0
@@ -1488,9 +1492,9 @@ struct OffloadPool(Movable):
             if pops != self.lane_pops[lane]:
                 self.lane_pops[lane] = pops
                 self.lane_progress[lane] = now
-                if not self.wake_on_age:
+                if not self.parallel:
                     continue
-            var since = 0 if self.wake_on_age else self.lane_progress[lane]
+            var since = 0 if self.parallel else self.lane_progress[lane]
             if slot >= 0 and slot < len(self.submit_ns) and self.submit_ns[slot] > since:
                 since = self.submit_ns[slot]
             if now - since < age_ns:
@@ -1736,7 +1740,8 @@ struct OffloadPool(Movable):
         idle spinner, takes the job sooner than a wake could land, and a
         wake into a burst of trivial jobs is what put N threads on the
         GIL at once. A busy thread that is NOT coming back soon — a slow
-        view — is the loop's age check's case (`wake_aged`).
+        view — is the loop's age check's case (`wake_aged`). Without a
+        GIL (`parallel`) a parked thread is woken whenever there is one.
         """
         var lane = self.lane_for(path)
         self.stamp_lane(slot, lane)
@@ -1749,7 +1754,9 @@ struct OffloadPool(Movable):
             # threads had decremented the count, and every stale poke
             # later cost a parking thread a spin. A thread already owed a
             # wake will drain the ring when it comes.
-            if not self.elastic or self._all_idle(lane):
+            # Free-threaded (`parallel`): a parked thread beside this job
+            # is an idle core, so wake one whenever there is one.
+            if not self.elastic or self.parallel or self._all_idle(lane):
                 if self._wake_one(lane):
                     _ = atomic_at(self._idle_wakes_addr(lane))[].fetch_add(1)
             return True

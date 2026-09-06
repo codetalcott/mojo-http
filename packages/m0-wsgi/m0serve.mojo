@@ -1200,11 +1200,11 @@ def _serve_offloaded(
     channel) and is still refused with the executor and with `--mount`.
     """
     var pool = OffloadPool(config.max_connections)
-    # Without a GIL a ring one thread is draining beside parked siblings
-    # is parallelism thrown away, so the stall check counts from the push
-    # there (`OffloadPool.wake_on_age`). A Python call, startup-only, on
-    # the worker's attached main thread — after the process's first.
-    pool.set_wake_on_age(not probe_free_threading().gil_enabled)
+    # Without a GIL a parked thread beside a queued job is an idle core,
+    # so the pool wakes eagerly there (`OffloadPool.parallel`). A Python
+    # call, startup-only, on the worker's attached main thread — after
+    # the process's first.
+    pool.set_parallel(not probe_free_threading().gil_enabled)
     # The loop's handler needs the pool for one thing only: a chunk frame
     # its outbox has to refuse must abort the stream rather than vanish.
     # See `WSGIHandler.abort_pool_addr`.
