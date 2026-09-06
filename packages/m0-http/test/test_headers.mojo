@@ -605,3 +605,81 @@ def test_name_is_is_ascii_only_by_design() raises:
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
+
+
+def test_known_name_index_agrees_with_a_scan() raises:
+    """Every `KH_*` name resolves to the entry a plain scan finds, present
+    or absent, whatever else the collection holds and in any case."""
+    var h = Headers()
+    h["Accept"] = "text/html"
+    h["Content-Length"] = "12"
+    h["X-Thread"] = "1"
+    h["Connection"] = "close"
+    h["Host"] = "example.org"
+    h["Cookie"] = "a=1"
+    var probes: List[String] = [
+        "content-length", "Content-Type", "CONNECTION", "transfer-encoding",
+        "host", "Date", "cookie", "Upgrade", "expect", "Server", "accept",
+        "x-thread", "nothing",
+    ]
+    for p in probes:
+        var scan = -1
+        for i in range(h.count()):
+            if h._name_matches(i, p.as_bytes()):
+                scan = i
+                break
+        assert_equal(h._find(p.as_bytes()), scan, p)
+
+
+def test_known_name_index_survives_pop_and_reinsert() raises:
+    var h = Headers()
+    h["Content-Type"] = "text/plain"
+    h["Content-Length"] = "5"
+    h["Connection"] = "keep-alive"
+    h["Date"] = "now"
+    h.pop("content-type")
+    assert_equal(h.get("content-length").value(), "5")
+    assert_equal(h.get("connection").value(), "keep-alive")
+    assert_equal(h.get("date").value(), "now")
+    assert_true("content-type" not in h)
+    h.pop("connection")
+    assert_true("connection" not in h)
+    assert_equal(h.get("date").value(), "now")
+    h["Connection"] = "close"
+    assert_equal(h.get("connection").value(), "close")
+    assert_equal(h.count(), 3)
+    h["content-length"] = "6"
+    assert_equal(h.get("content-length").value(), "6")
+    assert_equal(h.count(), 3)
+
+
+def test_presence_word_never_hides_a_present_name() raises:
+    """Names that share a presence bit still resolve; the word only ever
+    proves absence."""
+    var h = Headers()
+    # `_presence_bit` is length, first and last byte: these three collide.
+    h["abcx"] = "1"
+    h["abdx"] = "2"
+    h["aeex"] = "3"
+    assert_equal(h.get("abcx").value(), "1")
+    assert_equal(h.get("abdx").value(), "2")
+    assert_equal(h.get("aeex").value(), "3")
+    assert_true("abfx" not in h)
+    h["ABDX"] = "4"
+    assert_equal(h.get("abdx").value(), "4")
+    assert_equal(h.count(), 3)
+
+
+def test_known_names_from_the_parser_are_indexed() raises:
+    var req = String(
+        "GET / HTTP/1.1\r\nHOST: h\r\nCookie: a=1\r\nCookie: b=2\r\n"
+        "Expect: 100-continue\r\nUpgrade: websocket\r\n\r\n"
+    )
+    var parsed = parse_request_headers(req.as_bytes())
+    assert_equal(parsed.headers.get("host").value(), "h")
+    assert_equal(parsed.headers.get("cookie").value(), "a=1; b=2")
+    assert_equal(parsed.headers.get("expect").value(), "100-continue")
+    assert_equal(parsed.headers.get("upgrade").value(), "websocket")
+    assert_true(parsed.headers.value_equals_ignore_case("expect", "100-CONTINUE"))
+    assert_equal(parsed.headers.content_length(), 0)
+    assert_true("content-length" not in parsed.headers)

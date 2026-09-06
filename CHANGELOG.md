@@ -21,6 +21,22 @@ versions may break the API**.
 
 ### Changed
 
+- **The event-loop thread's header path costs what tokio's does.** A
+  known-name index and a presence word on `Headers` make every lookup
+  the loop performs per request O(1) and the parser's duplicate check
+  one AND per field; inserts copy by `memcpy` and lowercase eight bytes
+  at a time; the token scanner verifies sixteen bytes per vector; the
+  header read lands in the connection's buffer with no staging copy;
+  the encoder writes a header line as one reservation; the completion
+  drain no longer allocates. Same session, arms alternated, bare WSGI
+  at one worker and one handler thread: 186k rps against 170k at 16
+  connections and 205k against 186k at 256, the loop thread's cost per
+  request from 5.8 µs to 5.1 and 5.3 to 4.7 — the tokio thread's
+  figures — and the row 0.98x Granian at 16 connections, 0.99x at 256.
+  The isolated parse went from 0.89 µs to 0.62 and the whole user-space
+  request from 1.98 to 1.33 (docs/notes/loop-user-space.md, which also
+  records two levers measured and not kept: a spin before the loop
+  parks, and servicing completions between reads).
 - **The `--blocking-threads` handoff rides in-memory rings**, and the two
   socketpairs carry only wakes and payloads. A bounded MPMC ring per pool
   lane for jobs and one for completions replace the four datagram

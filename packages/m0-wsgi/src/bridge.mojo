@@ -1030,7 +1030,12 @@ struct PyBridge(Movable):
             total += len(
                 self._head_span(cpy, _pair_item(cpy, pair, 1), bytes_pairs)
             )
-        out.reserve(total, count)
+        # Plus what the server adds after the application: a measured
+        # Content-Length, the constructor's Connection, and on the loop the
+        # Date and a keep-alive rewrite -- about sixty bytes and three
+        # entries. An exact fit here left those to reallocate the blob on
+        # the event-loop thread, twice, for every response.
+        out.reserve(total + 96, count + 4)
         for i in range(count):
             var pair = cpy.PyList_GetItem(list_ptr, i)
             if not pair:

@@ -1,6 +1,7 @@
 from lightbug_http.connection import default_buffer_size
 from lightbug_http.strings import BytesConstant
 from std.collections.span import ContiguousSlice, _SpanIter
+from std.memory import unsafe_memcpy
 
 
 comptime Bytes = List[Byte]
@@ -61,6 +62,35 @@ struct ByteWriter(Writer):
 
         comptime for i in range(args.__len__()):
             args[i].write_to(self)
+
+    def write_header_line(mut self, name: Span[Byte, _], value: Span[Byte, _]):
+        """`name: value\r\n` as one reservation and two copies.
+
+        The `write(name, ": ", value, lineBreak)` form this replaces was
+        four `extend`s per header -- each a capacity test, a possible
+        reallocation and a `memcpy` call for two bytes -- and `List.extend`
+        was 2.7 % of the loop thread with most of its calls from here.
+        """
+        var n = len(name)
+        var v = len(value)
+        var at = len(self._inner)
+        var needed = at + n + v + 4
+        if self._inner.capacity() < needed:
+            var grown = self._inner.capacity() * 2
+            self._inner.reserve(needed if needed > grown else grown)
+        var dst = self._inner.unsafe_ptr()
+        if n > 0:
+            unsafe_memcpy(dest=dst.unsafe_offset(at), src=name.unsafe_ptr(), count=n)
+        at += n
+        dst.unsafe_offset(at)[] = 0x3A  # ':'
+        dst.unsafe_offset(at + 1)[] = 0x20  # ' '
+        at += 2
+        if v > 0:
+            unsafe_memcpy(dest=dst.unsafe_offset(at), src=value.unsafe_ptr(), count=v)
+        at += v
+        dst.unsafe_offset(at)[] = 0x0D
+        dst.unsafe_offset(at + 1)[] = 0x0A
+        self._inner._len = at + 2
 
     @always_inline
     def consuming_write(mut self, var b: Bytes):

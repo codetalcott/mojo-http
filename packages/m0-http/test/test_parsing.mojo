@@ -23,6 +23,7 @@ from lightbug_http.header import (
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.io.bytes import Bytes
+from lightbug_http.strings import is_token_char
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -902,3 +903,90 @@ def test_an_ordinary_trailer_does_not_trip_the_abuse_guard() raises:
     var got = _feed_incrementally(raw, 1500, consume_trailer=True)
     assert_equal(got[0], 0)
     assert_equal(got[1].byte_length(), 8 * 8192)
+
+
+def test_tchar_table_matches_the_rfc_list() raises:
+    """`is_token_char` over every byte, against RFC 9110 §5.6.2 spelled out."""
+    var tchars = String(
+        "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    )
+    var want = Array[Bool, 256](fill=False)
+    for b in tchars.as_bytes():
+        want[Int(b)] = True
+    var count = 0
+    for c in range(256):
+        assert_equal(is_token_char(UInt8(c)), want[c], String("byte ", c))
+        if want[c]:
+            count += 1
+    assert_equal(count, 77)
+
+
+def test_a_separator_in_a_field_name_is_invalid_at_every_position() raises:
+    """Every non-tchar printable byte, at every offset across the sixteen-
+    lane boundaries the vector check works in, is a 400 -- including the
+    lane right before a chunk edge and the first lane of the next."""
+    var bad = String("()<>@,;\\\"/[]?={} ")
+    for b in bad.as_bytes():
+        for pos in range(0, 40):
+            if b == 0x20 and pos == 0:
+                # A line opening with SP is an obs-fold continuation of the
+                # previous field (RFC 9112 §5.2), not a name: accepted.
+                continue
+            var raw = List[UInt8]()
+            raw.extend("GET / HTTP/1.1\r\nHost: x\r\n".as_bytes())
+            for _ in range(pos):
+                raw.append(0x6E)
+            raw.append(b)
+            for _ in range(40 - pos):
+                raw.append(0x6E)
+            raw.extend(": 1\r\n\r\n".as_bytes())
+            var rejected = False
+            try:
+                _ = parse_request_headers(Span(raw))
+            except e:
+                rejected = e.isa[InvalidHTTPRequestError]()
+            assert_true(rejected, String("byte ", Int(b), " at ", pos))
+
+
+def test_a_byte_above_ascii_in_a_field_name_is_invalid_at_every_position() raises:
+    for pos in range(0, 40):
+        var raw = List[UInt8]()
+        raw.extend("GET / HTTP/1.1\r\nHost: x\r\n".as_bytes())
+        for _ in range(pos):
+            raw.append(0x6E)
+        raw.append(0xC3)
+        for _ in range(40 - pos):
+            raw.append(0x6E)
+        raw.extend(": 1\r\n\r\n".as_bytes())
+        var rejected = False
+        try:
+            _ = parse_request_headers(Span(raw))
+        except:
+            rejected = True
+        assert_true(rejected, String("0xC3 at ", pos))
+
+
+def test_a_field_name_of_every_tchar_round_trips_at_every_length() raises:
+    """The whole tchar alphabet, cycled, as names from one byte to eighty:
+    nothing the vector check lets through is refused by the table, and
+    the reverse."""
+    var alphabet = String(
+        "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    )
+    var ab = alphabet.as_bytes()
+    for n in range(1, 81):
+        var name = List[UInt8]()
+        for k in range(n):
+            name.append(ab[(k * 7) % len(ab)])
+        var name_s = String(unsafe_from_utf8=Span(name))
+        var raw = String("GET / HTTP/1.1\r\nHost: x\r\n") + name_s + ": v\r\n\r\n"
+        assert_equal(_header(raw, name_s.lower()), "v")
+
+
+def test_a_separator_in_the_value_is_not_the_name_s_problem() raises:
+    """The first non-tchar lane past the name is the colon or the value;
+    only lanes inside the name may refuse it."""
+    var raw = String("GET / HTTP/1.1\r\nHost: x\r\nX-Name: (a) [b] {c} \"d\"\r\n\r\n")
+    assert_equal(_header(raw, "x-name"), "(a) [b] {c} \"d\"")
+    var raw2 = String("GET / HTTP/1.1\r\nHost: x\r\nX-Nam: (a)\r\n\r\n")
+    assert_equal(_header(raw2, "x-nam"), "(a)")

@@ -63,6 +63,50 @@ def _stop_lanes[W: Int](chunk: SIMD[DType.uint8, W], stop: UInt8) -> SIMD[DType.
     return ctl | chunk.eq(SIMD[DType.uint8, W](stop))
 
 
+@always_inline
+def _non_tchar_lanes[W: Int](chunk: SIMD[DType.uint8, W]) -> SIMD[DType.bool, W]:
+    """Lanes holding a byte that is not an RFC 9110 tchar.
+
+    The complement, spelled as ranges: controls and DEL, the separators
+    `( ) , / : ; < = > ? @ [ \\ ] { }` with `"` and SP, and everything
+    above ASCII. Twelve vector compares for sixteen bytes, where the
+    per-byte table walk cost about a nanosecond a byte over every header
+    name of every request (`scan_token` was 3.8 % of the loop thread).
+    """
+    var bad = chunk.lt(SIMD[DType.uint8, W](0x21))  # controls and SP
+    bad = bad | chunk.ge(SIMD[DType.uint8, W](0x7F))  # DEL and non-ASCII
+    bad = bad | (chunk.ge(SIMD[DType.uint8, W](0x3A)) & chunk.le(SIMD[DType.uint8, W](0x40)))
+    bad = bad | (chunk.ge(SIMD[DType.uint8, W](0x5B)) & chunk.le(SIMD[DType.uint8, W](0x5D)))
+    bad = bad | chunk.eq(SIMD[DType.uint8, W](0x22)) | chunk.eq(SIMD[DType.uint8, W](0x28))
+    bad = bad | chunk.eq(SIMD[DType.uint8, W](0x29)) | chunk.eq(SIMD[DType.uint8, W](0x2C))
+    bad = bad | chunk.eq(SIMD[DType.uint8, W](0x2F)) | chunk.eq(SIMD[DType.uint8, W](0x7B))
+    bad = bad | chunk.eq(SIMD[DType.uint8, W](0x7D))
+    return bad
+
+
+def _all_tchar(ptr: Pointer[UInt8, _], n: Int, readable: Int) -> Bool:
+    """Whether the first `n` of `readable` bytes at `ptr` are all tchars.
+
+    Sixteen lanes at a time while a whole vector is readable -- the token
+    is followed by its delimiter and usually a value, so it nearly always
+    is -- and the table for what is left.
+    """
+    var i = 0
+    while i < n and i + 16 <= readable:
+        var lane = _first_lane[16](_non_tchar_lanes[16](ptr.unsafe_offset(i).unsafe_load[width=16]()))
+        if lane >= 0:
+            # The first offending lane: beyond the token it is the
+            # delimiter or the value, and every token byte before it was
+            # clean.
+            return i + lane >= n
+        i += 16
+    while i < n:
+        if not is_token_char(ptr[unsafe_offset=i]):
+            return False
+        i += 1
+    return True
+
+
 def _find_field_end(ptr: Pointer[UInt8, _], length: Int) -> Int:
     """Offset of the first byte in `length` that cannot be field content, or -1."""
     var i = 0
@@ -188,13 +232,16 @@ struct HTTPParseError(Movable, Writable):
         return String(self)
 
 
+@always_inline
 def try_peek[origin: ImmOrigin](reader: ByteReader[origin]) -> Optional[UInt8]:
-    """Try to peek at current byte, returns None if unavailable."""
+    """Try to peek at current byte, returns None if unavailable.
+
+    A direct read behind the availability test, not `peek()` in a `try`:
+    the raising call was 1.1 % of the loop thread on its own, for a byte
+    the caller had already proven was there.
+    """
     if reader.available():
-        try:
-            return reader.peek()
-        except:
-            return None
+        return reader._inner[reader.read_pos]
     return None
 
 
@@ -326,13 +373,13 @@ def scan_token[
     # is a ParseError, and a buffer that holds neither is incomplete
     # unless it already holds a byte no token could contain.
     var remaining = len(buf._inner) - buf.read_pos
-    var found = _find_stop(buf._inner.unsafe_ptr().unsafe_offset(buf.read_pos), remaining, next_char)
+    var start_ptr = buf._inner.unsafe_ptr().unsafe_offset(buf.read_pos)
+    var found = _find_stop(start_ptr, remaining, next_char)
     if found >= 0:
         if buf._inner[buf.read_pos + found] != next_char:
             raise ParseError()
-        for j in range(found):
-            if not is_token_char(buf._inner[buf.read_pos + j]):
-                raise ParseError()
+        if not _all_tchar(start_ptr, found, remaining):
+            raise ParseError()
         buf.read_pos += found
         start = buf_start
         length = found

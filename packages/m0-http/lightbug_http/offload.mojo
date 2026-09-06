@@ -486,6 +486,10 @@ struct OffloadPool(Movable):
     `TAG_STREAM_ABORT` datagrams, flattened; the loop takes them with
     `take_aborts`. Loop-side only."""
 
+    var _drain_buf: List[UInt8]
+    """The completion channel's receive buffer, sized once for the largest
+    datagram it carries. It used to be allocated and zero-filled a byte at
+    a time -- two thousand `append`s -- on every read of the channel."""
     var sweep_every_pass: Bool
     """The loop runs its per-pass outbox sweep even when no slot streams.
 
@@ -543,6 +547,8 @@ struct OffloadPool(Movable):
             self.slot_lane.append(0)
             self.slot_ack_fd.append(-1)
         self.aborts = List[Int]()
+        self._drain_buf = List[UInt8](capacity=OFFLOAD_MAX_INFLIGHT * _JOB_BYTES)
+        self._drain_buf.resize(OFFLOAD_MAX_INFLIGHT * _JOB_BYTES, 0)
         self.requests = List[Optional[HTTPRequest]](capacity=slots)
         self.responses = List[Optional[HTTPResponse]](capacity=slots)
         self.errored = List[Bool](capacity=slots)
@@ -606,6 +612,7 @@ struct OffloadPool(Movable):
         self.slot_lane = move.slot_lane^
         self.slot_ack_fd = move.slot_ack_fd^
         self.aborts = move.aborts^
+        self._drain_buf = move._drain_buf^
         self.submit_read = move.submit_read
         self.submit_write = move.submit_write
         self.complete_read = move.complete_read
@@ -1205,7 +1212,13 @@ struct OffloadPool(Movable):
         return self.requests[slot].take()
 
     def drain_completions(mut self, read_fd: Bool = True) raises -> List[Int]:
-        """Every finished slot waiting for the loop; empty when none are.
+        """`drain_completions_into`, into a fresh list."""
+        var done = List[Int]()
+        self.drain_completions_into(done, read_fd)
+        return done^
+
+    def drain_completions_into(mut self, mut done: List[Int], read_fd: Bool) raises:
+        """Every finished slot waiting for the loop, appended to `done`.
 
         The completion ring first — every pool thread's completions, in
         publish order — then, with `read_fd`, the channel: executor batches,
@@ -1219,7 +1232,6 @@ struct OffloadPool(Movable):
         the loop takes the ring's list first, and the datagram was sent
         after the push.
         """
-        var done = List[Int]()
         if self.ring_enabled:
             var slot = 0
             # Bounded by the ring's capacity so producers pushing at full
@@ -1229,30 +1241,28 @@ struct OffloadPool(Movable):
                 done.append(slot)
                 budget -= 1
         if not read_fd:
-            return done^
-        # Sized for the largest datagram the channel carries — a full
-        # completion batch — and not for one completion: a SOCK_DGRAM
-        # `recv` into a short buffer silently discards the excess, on both
-        # platforms, and a batch decoded short is a slot that never answers.
+            return
+        # `_drain_buf` is sized for the largest datagram the channel
+        # carries — a full completion batch — and not for one completion:
+        # a SOCK_DGRAM `recv` into a short buffer silently discards the
+        # excess, on both platforms, and a batch decoded short is a slot
+        # that never answers.
         comptime cap = OFFLOAD_MAX_INFLIGHT * _JOB_BYTES
-        var buf = List[UInt8](capacity=cap)
-        for _ in range(cap):
-            buf.append(0)
         var fd = FileDescriptor(self.complete_read)
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(cap), 0)
+                n = recv(fd, Span(self._drain_buf), UInt(cap), 0)
             except:
                 break  # EAGAIN: drained
             if n == 0:
                 break  # EOF
-            if n == UInt(_ABORT_BYTES) and buf[0] == TAG_STREAM_ABORT:
+            if n == UInt(_ABORT_BYTES) and self._drain_buf[0] == TAG_STREAM_ABORT:
                 var s = UInt64(0)
                 var g = UInt64(0)
                 for i in range(8):
-                    s |= UInt64(buf[1 + i]) << UInt64(i * 8)
-                    g |= UInt64(buf[9 + i]) << UInt64(i * 8)
+                    s |= UInt64(self._drain_buf[1 + i]) << UInt64(i * 8)
+                    g |= UInt64(self._drain_buf[9 + i]) << UInt64(i * 8)
                 self.aborts.append(Int(Int64(s)))
                 self.aborts.append(Int(Int64(g)))
                 continue
@@ -1260,11 +1270,12 @@ struct OffloadPool(Movable):
                 continue  # not a completion; not ours to decode
             var count = Int(n) // _JOB_BYTES
             for i in range(count):
-                var got = _decode_job(Span(buf)[i * _JOB_BYTES : (i + 1) * _JOB_BYTES])
+                var got = _decode_job(
+                    Span(self._drain_buf)[i * _JOB_BYTES : (i + 1) * _JOB_BYTES]
+                )
                 if got == _POKE:
                     continue
                 done.append(got)
-        return done^
 
     def take_response(mut self, slot: Int) -> HTTPResponse:
         """Take the response a pool thread parked. Only after its completion."""
@@ -1607,11 +1618,14 @@ struct OffloadLoopState(Movable):
     +3.5% on the Mojo-only hello row and +4% on the inverted executor
     when skipped (SERVER_PERFORMANCE.md, "The outbox sweep"). NOT
     consulted when the pool says `sweeps_every_pass`: see there."""
-
+    var done_scratch: List[Int]
+    """`_service_completions`' list of finished slots, reused across
+    passes instead of allocated per drain."""
 
     def __init__(out self, addr: Int, capacity: Int):
         self.addr = addr
         self.inflight = 0
+        self.done_scratch = List[Int](capacity=64)
         self.ack_owed_count = 0
         self.streaming_hint = 0
         self.pending_submit = List[List[Int]]()
@@ -1646,6 +1660,7 @@ struct OffloadLoopState(Movable):
         self.pending_submit = move.pending_submit^
         self.pending_submit_count = move.pending_submit_count
         self.streaming_hint = move.streaming_hint
+        self.done_scratch = move.done_scratch^
 
     def sweep_every_pass(self) -> Bool:
         """`OffloadPool.sweeps_every_pass`, False when the pool is disabled."""

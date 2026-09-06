@@ -75,36 +75,22 @@ def is_printable_ascii(c: UInt8) -> Bool:
 # RFC 9110 §5.6.2: token = 1*tchar
 # tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
 #         "0"-"9" / "A"-"Z" / "^" / "_" / "`" / "a"-"z" / "|" / "~"
+#
+# The 77 tchars as two 64-bit words: bit `c & 63` of the word for `c >> 6`.
+# One shift and one AND per byte, where the range-and-compare chain this
+# replaces walked up to eighteen tests for a hyphen -- the byte every
+# browser header name carries -- and was 4.2 % of the loop thread inside
+# `scan_token`. Built once: for c in tchars, (lo if c < 64 else hi) gets
+# bit (c & 63). `test_parsing.mojo` checks all 256 bytes against the RFC's
+# list.
+comptime TCHAR_LO: UInt64 = 0x03FF6CFA00000000
+comptime TCHAR_HI: UInt64 = 0x57FFFFFFC7FFFFFE
+
+
 @always_inline
 def is_token_char(c: UInt8) -> Bool:
-    """Check if character is a valid token character.
-
-    Optimized to be inlined and extremely fast - compiles to simple range checks.
-    """
-    # Alphanumeric ranges
-    if c >= BytesConstant.ZERO and c <= BytesConstant.NINE:  # 0-9
-        return True
-    if c >= BytesConstant.A_UPPER and c <= BytesConstant.Z_UPPER:  # A-Z
-        return True
-    if c >= BytesConstant.A_LOWER and c <= BytesConstant.Z_LOWER:  # a-z
-        return True
-
-    # Special characters allowed in tokens (ordered by ASCII value for branch prediction)
-    # !  #  $  %  &  '  *  +  -  .  ^  _  `  |  ~
-    return (
-        c == BytesConstant.EXCLAMATION
-        or c == BytesConstant.POUND
-        or c == BytesConstant.DOLLAR
-        or c == BytesConstant.PERCENT
-        or c == BytesConstant.AMPERSAND
-        or c == BytesConstant.APOSTROPHE
-        or c == BytesConstant.ASTERISK
-        or c == BytesConstant.PLUS
-        or c == BytesConstant.HYPHEN
-        or c == BytesConstant.DOT
-        or c == BytesConstant.CARET
-        or c == BytesConstant.UNDERSCORE
-        or c == BytesConstant.BACKTICK
-        or c == BytesConstant.PIPE
-        or c == BytesConstant.TILDE
-    )
+    """Check if character is a valid token character."""
+    if c >= 0x80:
+        return False
+    var word = TCHAR_HI if c >= 0x40 else TCHAR_LO
+    return ((word >> UInt64(c & 0x3F)) & 1) == 1

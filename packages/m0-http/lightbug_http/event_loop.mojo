@@ -21,7 +21,7 @@ from lightbug_http.c.socket_error import (
 )
 from lightbug_http.connection import ConnectionState, default_buffer_size
 from lightbug_http.header import (
-    HeaderKey, ParsedRequestHeaders, find_header_end, parse_request_headers,
+    HeaderKey, KH_DATE, ParsedRequestHeaders, find_header_end, parse_request_headers,
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse, encode
 from lightbug_http.http.date import http_date_from_unix, unix_now
@@ -2051,19 +2051,27 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         # request start the clock here rather than inheriting a deadline from
         # whenever the previous response happened to finish.
         if slot_header_start[slot] == 0:
+            # A request's first bytes: stamp, and nothing to measure yet.
+            # (Reading the clock twice here was a fifth of the loop's
+            # clock calls.)
             slot_header_start[slot] = perf_counter_ns()
-        var elapsed_s = (perf_counter_ns() - slot_header_start[slot]) / 1_000_000_000
-        if elapsed_s >= Int(config.header_read_timeout):
-            _send_error_to_fd(fd_val, RequestTimeout())
-            _close_slot(
-                backend, handler, slot, fd_val,
-                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse, slot_ws, slot_ws_state,
-            )
-            return
+        else:
+            var elapsed_s = (perf_counter_ns() - slot_header_start[slot]) / 1_000_000_000
+            if elapsed_s >= Int(config.header_read_timeout):
+                _send_error_to_fd(fd_val, RequestTimeout())
+                _close_slot(
+                    backend, handler, slot, fd_val,
+                    slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state,
+                )
+                return
 
-    # Phase 2a: recv into per-slot staging buffer (avoids per-recv heap alloc)
-    provision_pool.provisions[slot].recv_staging.clear()
+    # Phase 2a: recv straight into the connection's buffer, past whatever
+    # it already holds. Still exactly ONE read of `recv_staging.capacity()`
+    # bytes per call -- the 8 KB header rule at the bottom of this function
+    # depends on that size -- but the staging copy that used to follow it
+    # is gone: `List.extend` was 2.7 % of the loop thread and this was its
+    # largest caller. The body and WebSocket paths keep the staging buffer.
     var fd_desc = FileDescriptor(fd_val)
     var bytes_read: UInt
     # True only when recv itself RETURNED 0 — the peer's EOF. `bytes_read`
@@ -2072,11 +2080,17 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # EOF closed every request that was partial at an EAGAIN pass — a
     # dribbled request died on its second byte.
     var recv_eof = False
+    var have = len(provision_pool.provisions[slot].recv_buffer)
+    var want = provision_pool.provisions[slot].recv_staging.capacity()
+    provision_pool.provisions[slot].recv_buffer.reserve(have + want)
     try:
         bytes_read = recv(
             fd_desc,
-            Span(provision_pool.provisions[slot].recv_staging),
-            UInt(provision_pool.provisions[slot].recv_staging.capacity()),
+            Span(
+                unsafe_ptr=provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(have),
+                length=want,
+            ),
+            UInt(want),
             0,
         )
         recv_eof = bytes_read == 0
@@ -2111,10 +2125,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         provision_pool.provisions[slot].peer_eof = True
 
     if bytes_read > 0:
-        provision_pool.provisions[slot].recv_staging._len = Int(bytes_read)
-        provision_pool.provisions[slot].recv_buffer.extend(
-            Span(provision_pool.provisions[slot].recv_staging)
-        )
+        provision_pool.provisions[slot].recv_buffer._len = have + Int(bytes_read)
 
     if len(provision_pool.provisions[slot].recv_buffer) > config.recv_buffer_limit():
         _send_error_to_fd(fd_val, BadRequest())
@@ -2388,6 +2399,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         provision_pool.provisions[slot].last_parse_len = len(provision_pool.provisions[slot].recv_buffer)
 
 
+@always_inline
 def _drain_pipelined[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
@@ -2814,16 +2826,24 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     if not offload.enabled():
         return
     ref pool = offload.pool()[]
-    var finished = pool.drain_completions(read_fd)
+    # Into the loop's own scratch list, kept across passes: a fresh List
+    # per drain was an allocation and a free on most passes. Read by
+    # index against the live length, so a completion that somehow
+    # re-entered here could not walk a stale bound.
+    offload.done_scratch.clear()
+    pool.drain_completions_into(offload.done_scratch, read_fd)
     var aborts = pool.take_aborts()
-    for f in range(len(finished)):
+    var f = 0
+    while f < len(offload.done_scratch):
+        var finished_slot = offload.done_scratch[f]
+        f += 1
         _complete_one(
             backend, handler, config, server_address, tcp_keep_alive,
             slot_fds, slot_response, slot_send_offset, slot_header_start,
             fd_to_slot, provision_pool, active_count, metrics,
             slot_sse, slot_ws, slot_ws_state, slot_read_armed,
             slot_idle_deadline, date_cache_sec, date_cache, offload,
-            finished[f], bus_read_fd, peer_bus_fd,
+            finished_slot, bus_read_fd, peer_bus_fd,
         )
 
 
@@ -3259,12 +3279,14 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
 
     # Stamp the Date header from the loop's per-second cache (encode()
     # would otherwise format a fresh date string for every response).
-    if HeaderKey.DATE not in response.headers:
+    if response.headers.known_index(KH_DATE) < 0:
         var now_s = unix_now()
         if now_s != date_cache_sec:
             date_cache_sec = now_s
             date_cache = http_date_from_unix(now_s)
-        response.headers[HeaderKey.DATE] = date_cache
+        response.headers.set_known(
+            KH_DATE, HeaderKey.DATE.as_bytes(), date_cache.as_bytes()
+        )
 
     # Encode into the slot's spare buffer rather than allocating a fresh one.
     # `_after_send` parks the just-sent buffer back here, so one allocation
