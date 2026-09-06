@@ -165,13 +165,34 @@ response's two plus its body freed here.
 - **The clock.** `mach_absolute_time` is 1 % of the thread either way;
   one read per request came out of the header path and the rest stay.
 
-## What is next
+## What is next: measured, and not much
 
-At 256 connections the row is at parity and at 16 it is within 2 %.
-The next microsecond on the loop, if one is wanted, is structural
-rather than local: the parsed headers and the request are each moved
-twice on their way to the pool thread (`Optional.take`, `park_request`),
-the request carries a `URI` of twelve `String`s, and every function on
-the read path takes the loop's state as twenty-four separate arguments.
-Beyond that the two threads are at the kernel's price for one `recv`
-and one `sendto` per request, which is the same price tokio pays.
+At 256 connections the row is at parity and at 16 it is within 3 %.
+The first draft of this section named three structural candidates for
+the next microsecond, and a microbench the same day priced them
+(`sizeof` and park-and-take round trips through the same `Optional`
+lists the loop and pool use, opaque sinks, 200k iterations, Apple M4):
+
+| candidate | per request |
+|---|---:|
+| `ParsedRequestHeaders` (184 bytes) parked in the provision and taken back | 56 ns |
+| `HTTPRequest` (584 bytes) parked in the pool and taken back | 5 ns |
+| `HTTPResponse` (288 bytes) parked and taken | 25 ns |
+| the twelve-`String` `URI` fast-path construction | under 4 ns |
+| a call with twenty-four arguments against one state argument | 1.31 ns against 1.34 |
+
+About 85 ns together, under 2 % of the loop's 5.1 µs, and the
+twenty-four-argument calls the read path makes cost nothing measurable:
+the `mut` lists travel as pointers, and a wide call is a narrow one.
+What remains in the profile is the parser's two passes (about 0.55 µs
+for ten headers, most of it copies a `Headers` that owns its bytes has
+to make), the allocator (about 0.2 µs: the request's two header buffers
+allocated here and freed on the pool thread, the response's two and its
+body freed here), and roughly 0.6 µs of per-request state work spread
+thinly across the loop's own functions with no single symbol above
+4 %. A fused single-pass parser and a single-allocation `Headers` might
+be worth 0.2 µs between them, 4 % of the thread, on a row that is
+already within 3 % of Granian's; the next real difference would need a
+line-level profile of that state work, and beyond it both threads are
+at the kernel's price for one `recv` and one `sendto` per request,
+which is the price tokio pays. The loop-thread line of work stops here.
