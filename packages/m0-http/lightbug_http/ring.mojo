@@ -145,6 +145,36 @@ struct Ring(Copyable, Movable):
         atomic_at(self._seq_addr(mine))[].store(pos + Int64(self.mask) + 1)
         return True
 
+    def pops(self) -> Int:
+        """How many values have been taken since the ring was built: the
+        head position. The progress signal the loop's stall check reads —
+        a number that moved between two looks is a ring being drained,
+        whatever its depth. Zero for a disabled ring."""
+        if self.base == 0:
+            return 0
+        return Int(atomic_at(self.base)[].load())
+
+    def peek(self, mut out: Int) -> Bool:
+        """Read the oldest published value into `out` WITHOUT taking it;
+        False when nothing is published.
+
+        A snapshot, not a claim: a consumer may pop the cell between this
+        returning and the caller acting on `out`, and the value is then a
+        job already taken. The one caller (`OffloadPool.wake_aged`, the
+        loop's age check) tolerates that as at most one wake that may not
+        have been needed. Only a published cell is ever read — the sequence
+        word is checked first, exactly as `pop` checks it — so a value a
+        producer is still writing is never seen.
+        """
+        if self.base == 0:
+            return False
+        var pos = atomic_at(self.base)[].load()
+        var cell = Int(pos) & self.mask
+        if atomic_at(self._seq_addr(cell))[].load() != pos + 1:
+            return False
+        out = Int(_value_at(self._val_addr(cell))[])
+        return True
+
     def is_empty(self) -> Bool:
         """Whether a `pop` right now would find nothing.
 

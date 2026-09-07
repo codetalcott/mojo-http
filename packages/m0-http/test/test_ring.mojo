@@ -68,6 +68,30 @@ def test_is_empty_tracks_the_head() raises:
     assert_true(ring.is_empty())
 
 
+def test_peek_reads_the_head_without_taking_it() raises:
+    """The loop's age check looks at the oldest job and leaves it: the
+    same value comes back until a pop takes it, and an empty ring peeks
+    nothing."""
+    var ring = Ring(4)
+    var seen = 0
+    assert_false(ring.peek(seen))
+    assert_true(ring.push(7))
+    assert_true(ring.push(8))
+    assert_true(ring.peek(seen))
+    assert_equal(seen, 7)
+    assert_true(ring.peek(seen))
+    assert_equal(seen, 7)
+    var out = 0
+    assert_true(ring.pop(out))
+    assert_equal(out, 7)
+    assert_true(ring.peek(seen))
+    assert_equal(seen, 8)
+    assert_true(ring.pop(out))
+    assert_false(ring.peek(seen))
+    var dead = Ring()
+    assert_false(dead.peek(seen))
+
+
 def test_a_disabled_ring_refuses_everything() raises:
     """`Ring()` is what a lane gets with rings off: both sides read it as
     "datagrams", and nothing here can be pushed, popped or found."""

@@ -488,18 +488,68 @@ code depends on:
       ride the sockets, and reach a thread that never runs dry through its
       non-blocking poll once per `POOL_DGRAM_POLL_NS`. The loop's flag
       starts SET and the inversion's driver never clears it, so that path
-      keeps the datagram per completion it always had. **A thread that
-      takes a job and leaves work on the ring pokes a parked sibling by
-      the same rule** (`_chain_wake`): a wake is a credit for one thread,
-      and a woken thread's socket poll can consume a sibling's, which
-      left a job on the ring until a busy thread came back — a hold
-      registering 1.5 s late on Linux CI, 2 of 10 rounds, 0 of 10 with
-      the ring off, 0 of 20 after. Worth +16 % rps at
+      keeps the datagram per completion it always had. Worth +16 % rps at
       16 connections and +19 % at 256 on bare WSGI with one handler
       thread: the loop's per-request cost went from 7.5 µs to 6.3 at c16
       and 5.3 at c256, tokio's figure. The pool thread shows MORE CPU than
       its work afterwards, because a spin is a core spent not paying a park
       and a wake per job. `M0_POOL_RING=0` is the A/B knob.
+    - **The wake is elastic: one thread until a job has waited**
+      (docs/notes/elastic-pool.md; the rules are the "elastic" section
+      of `offload.mojo`'s docstring). The zero-config pool of eight
+      served a trivial view at 0.67x the one-thread rate on 1.6x the
+      cores, because a burst was taken by every thread awake and they
+      serialized on the GIL with an OS wake per hand-off. Now only ONE
+      idle thread per lane spins and the rest park at once; `submit`
+      wakes nobody while any thread of the lane is busy or spinning (it
+      takes the job sooner than a wake could land) and exactly one when
+      every thread is parked; and a ring that holds a job and has NOT
+      been drained for `POOL_WAKE_AGE_NS` (200 µs) is behind a slow
+      view, so the LOOP wakes a parked sibling for it — `wake_aged`,
+      once per pass, with `_wait_for_events` capped at
+      `POOL_WAKE_WAIT_MS` while any job is pending. Progress, not age,
+      and the ring's pop counter is the signal: a ring 256 deep behind
+      one thread has a head a millisecond old and moving every 4 µs, and
+      waking for its age put eight threads on the GIL for a queue one
+      thread drains faster (0.90x at 256 connections, 400 such wakes a
+      run) — and watching for the same job at the head is no better
+      there, a pass being longer than `T` at that concurrency. A pop
+      count that moved since the loop last looked is a lane being
+      drained, however deep, and is left alone; one that did not has
+      waited since the later of its head's push and the last look that
+      saw it move. **Without a GIL the pool is parallel instead**
+      (`OffloadPool.set_parallel`, set by `_serve_offloaded` from
+      `probe_free_threading` and by the threaded mode unconditionally;
+      `M0_POOL_PARALLEL` is its knob): `submit` wakes a parked thread
+      whenever there is one and the stall check counts from the push,
+      because a parked thread beside a queued job is an idle core there,
+      not a GIL waiter — measured on 3.14t, where the GIL rules held the
+      fast route's p99 at 8–10 ms under slow views against 2–4 with eager
+      wakes, and neither variant of the stall check moved it. The single
+      spinner and the wake by name on each thread's own channel apply
+      either way. That check replaced the chained wake (`_chain_wake`, a
+      thread that took a job poking a sibling for the rest; kept for the
+      knob-off arm) and closes the hole it filled — a woken thread's
+      socket poll eating a sibling's wake, a hold registering 1.5 s late
+      on Linux CI — every pass instead of once. **Each pool thread parks
+      on a wake channel of its OWN and the loop wakes the one that parked
+      LAST** (`register_thread`, `_wake_registered`): with N receivers
+      blocked on one socket macOS wakes all of them (one datagram into
+      eight costs 59 µs of CPU against 3 into one, measured) and Linux
+      wakes the oldest, round-robin — either way a cold thread and a
+      cold interpreter thread state per job, and the rest of the gap.
+      Pills go to those channels (`stop`), and a `TAG_WS_MESSAGE` on the
+      lane socket is followed by a wake to a parked thread, which polls
+      the socket first thing. What must not change: announce, re-check,
+      block on the pool side and push, read, poke on the loop side —
+      every transition into spinning or parking re-checks the ring AFTER
+      announcing itself, which is what lets `submit` read three counters
+      non-atomically and skip the wake. `M0_POOL_ELASTIC=0` is the A/B
+      knob (every idle thread spins, every push into a parked lane pokes
+      the lane socket, the chain), `M0_POOL_WAKE_AGE_US` the threshold
+      for measurement, and `M0_POOL_DEBUG=1` prints each lane's wake
+      counts by site at shutdown — the instrument that told a cascade of
+      aged wakes (27 in 11 s) from the 132k idle wakes that were the cost.
     - **A slot with a job in flight is untouchable and unrecyclable.** The
       idle and header sweeps skip it, the read path refuses it (clearing
       `slot_read_armed` so a pipelined request is not stranded by the edge it
@@ -1244,7 +1294,14 @@ Properties of the design, not defects to fix in passing:
   under contention; accepted and ignored elsewhere), `M0_ACCEPT_SHARE`
   (`0` turns accept sharing off under `--workers N`; an A/B knob, not a
   flag), `M0_POOL_RING` (`0` puts the `--blocking-threads` handoff back
-  on datagrams; the same kind of knob). `m0serve` layers flags on top (flag > env > default) and
+  on datagrams; the same kind of knob), `M0_POOL_ELASTIC` (`0` restores
+  the eager pool wakes — every idle thread spinning, every push into a
+  parked lane poking it; the same kind of knob) and `M0_POOL_WAKE_AGE_US`
+  (how long a job may wait at a ring's head before the loop wakes a
+  parked sibling, default 200; a measurement knob) and `M0_POOL_PARALLEL`
+  (`1`/`0`: the free-threaded rule — a push wakes a parked thread whenever
+  there is one and that wait counts from the push — forced on or off;
+  unset, the interpreter decides). `m0serve` layers flags on top (flag > env > default) and
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that
   it **exits with the code `m0serve` would exit with for the same

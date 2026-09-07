@@ -139,6 +139,10 @@ failing rounds the subscriber appeared 1.5 s late — when a slow view's
 thread came back to the ring. The job had been pushed and nobody was
 woken for it.
 
+*(The chained wake described here was replaced the next day by the
+loop's per-pass age check, and the shared lane socket by a wake channel
+per thread: [elastic-pool.md](elastic-pool.md).)*
+
 A wake datagram is a credit for ONE parked thread, and the cap sends at
 most one per parked thread. But a thread woken for job 1 polls its socket
 on its way back to the ring, and that poll can read the wake sent for job

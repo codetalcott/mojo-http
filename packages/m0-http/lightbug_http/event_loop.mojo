@@ -38,7 +38,9 @@ from lightbug_http.strings import strHttp11, strHttp10
 from lightbug_http.io.bytes import Bytes
 from std.memory import unsafe_memcpy
 from lightbug_http.metrics import ServerMetrics
-from lightbug_http.offload import OffloadPool, OffloadLoopState
+from lightbug_http.offload import (
+    OffloadPool, OffloadLoopState, POOL_WAKE_WAIT_MS,
+)
 from lightbug_http.server import (
     BodyReadState, ConnectionProvision, ProvisionPool,
 )
@@ -273,14 +275,24 @@ def _wait_for_events[B: EventLoopBackend](
     A non-empty ring skips the wait entirely and runs a pass with no
     events, whose first act is to drain it. Without rings this is the
     plain wait it always was.
+
+    With the elastic rules a job may sit on a lane's ring with nobody
+    woken for it — the loop's age check (`wake_aged`, at the bottom of
+    every pass) is what wakes a sibling once it has waited
+    `POOL_WAKE_AGE_NS` — so while any job is pending the wait is bounded
+    to `POOL_WAKE_WAIT_MS`, or an idle loop would sleep its full second
+    on top of a slow view. Rings empty, the timeout is the caller's.
     """
     if not st.offload.ring_active():
         return backend.wait(timeout_ms)
+    var timeout = timeout_ms
+    if timeout > POOL_WAKE_WAIT_MS and st.offload.jobs_pending():
+        timeout = POOL_WAKE_WAIT_MS
     st.offload.set_loop_parked(True)
     if st.offload.done_pending():
         st.offload.set_loop_parked(False)
         return 0
-    var n = backend.wait(timeout_ms)
+    var n = backend.wait(timeout)
     st.offload.set_loop_parked(False)
     return n
 
@@ -1520,6 +1532,16 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
         slot_sse, slot_ws, slot_ws_state, slot_read_armed,
         slot_idle_deadline, date_cache_sec, date_cache, offload,
     )
+
+    # The elastic pool's trigger (offload.mojo, `wake_aged`): a job that
+    # has sat at the head of a lane's ring for `POOL_WAKE_AGE_NS` is
+    # behind a thread that is not coming back — a slow view — and gets a
+    # parked sibling woken for it. Once per pass, after every submit of
+    # the pass is on its ring; `_wait_for_events` keeps the pass cadence
+    # under a millisecond while anything is pending. A peek per lane and
+    # one clock read when the rings are empty, which is the common case.
+    if offload.ring_active():
+        _ = offload.wake_aged(perf_counter_ns())
 
     # Idle-timeout sweep. Replaces the old per-request timerfd re-arm
     # (one timerfd_settime per keep-alive request) with a once-a-second

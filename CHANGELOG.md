@@ -21,6 +21,27 @@ versions may break the API**.
 
 ### Changed
 
+- **The zero-config pool serves a trivial view at the one-thread rate.**
+  `m0serve app.wsgi` runs `--blocking-threads min(cores, 8)`, and those
+  eight threads served a bare WSGI view at 0.67x the one-thread shape on
+  1.6x the cores: a burst of jobs was taken by every thread awake, they
+  serialized on the GIL with an OS wake per hand-off, and each wake
+  woke every parked thread on macOS (one datagram into eight blocked
+  receivers costs 59 µs of CPU against 3) or the coldest one on Linux.
+  The pool now behaves as one thread until a job has waited: one idle
+  spinner per lane, no wake while a thread is busy or spinning, a wake
+  by name on each thread's own channel to the thread that parked last,
+  and the loop waking a parked sibling for a ring that holds a job and
+  has not been drained for 200 µs — which is what keeps a fast request
+  from waiting out a slow view, and replaces the chained wake; a ring
+  whose pop count moves is a queue one thread is draining, and is left
+  alone however deep on a GIL build, while without a GIL the pool wakes a
+  parked thread whenever there is one and counts the wait from the push,
+  a parked thread beside a queued job being an idle core there. Same session,
+  arms alternated, 16 connections: 172.5k / 179.2k rps on the
+  zero-config shape against 176.9k / 179.4k on one thread, from
+  118.4k / 122.6k before, on the one-thread shape's cores
+  (docs/notes/elastic-pool.md). `M0_POOL_ELASTIC=0` is the A/B knob.
 - **The event-loop thread's header path costs what tokio's does.** A
   known-name index and a presence word on `Headers` make every lookup
   the loop performs per request O(1) and the parser's duplicate check

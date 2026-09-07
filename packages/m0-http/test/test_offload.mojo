@@ -561,14 +561,16 @@ def test_a_burst_sends_one_wake_per_parked_thread() raises:
     assert_equal(pool.wakes_in_flight(0), 0)
 
 
-def test_a_thread_that_takes_a_job_wakes_a_parked_sibling_for_the_rest() raises:
-    """Two jobs, one parked sibling, one wake in flight: the thread that
-    takes the first job must send the wake the second one is owed, since
-    its own socket poll may have eaten the sibling's. Without the chain the
-    second job waits for a busy thread to come back — measured as a hold
-    registering 1.5 s late on Linux."""
+def test_a_job_that_has_waited_past_the_threshold_wakes_a_parked_sibling() raises:
+    """Two jobs, one parked sibling, one wake in flight — and the thread
+    that takes the first job does NOT wake the sibling for the second (the
+    chained wake of 2026-09-05 is gone: it is what put a burst of trivial
+    jobs on N threads). The LOOP does, once the second job has aged past
+    the threshold: `wake_aged` says no while it is fresh and sends the wake
+    the sibling is owed once it is old, however the sibling's original
+    wake went — the hole the chain used to fill, now filled every pass."""
     var pool = OffloadPool(8)
-    if not pool.ring_active():
+    if not pool.elastic_active():
         return
     pool.note_parked(0, 1)
     pool.park_request(1, _request("/a"))
@@ -578,12 +580,247 @@ def test_a_thread_that_takes_a_job_wakes_a_parked_sibling_for_the_rest() raises:
     # One parked thread, so one wake for the two pushes.
     assert_equal(pool.wakes_in_flight(0), 1)
     # This thread stands in for a second, running sibling: its socket poll
-    # reads the wake, it takes job 1, and work remains for the parked one —
-    # so it sends the wake that thread is now owed.
+    # reads the wake, it takes job 1, and work remains for the parked one.
     assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    # Fresh: the loop leaves it to whoever comes back first.
+    assert_equal(pool.wake_aged(perf_counter_ns(), 1_000_000_000), 0)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    # Aged: the same head, unmoved across the loop's looks for longer than
+    # the threshold, and the loop wakes the parked sibling — once, however
+    # many passes find it standing, because the cap is a wake per parked
+    # thread.
+    sleep(0.002)
+    assert_equal(pool.wake_aged(perf_counter_ns(), 1_000_000), 1)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    assert_equal(pool.wake_aged(perf_counter_ns(), 1_000_000), 0)
     assert_equal(pool.wakes_in_flight(0), 1)
     # The "parked" thread takes the rest, and nothing is owed any more.
     pool.note_parked(0, -1)
+    assert_equal(_next_slot(pool), 2)
+    assert_equal(pool.wake_aged(perf_counter_ns(), 0), 0)
+    pool.stop(1)
+    assert_equal(_next_slot(pool), -1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+
+
+def test_submit_wakes_nobody_while_a_sibling_is_busy() raises:
+    """The elastic rule: a push into a lane where some thread is neither
+    parked nor spinning wakes no one — that thread is coming back to the
+    ring, and a wake would put a second thread on the GIL for a job the
+    first takes in microseconds. Every thread parked, the push wakes one."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    # Two threads announced on the lane, one parked: the other is busy.
+    pool.note_thread(0, 2)
+    pool.note_parked(0, 1)
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    assert_equal(pool.wakes_in_flight(0), 0)
+    assert_equal(_try_read(pool.submit_read), -1)
+    assert_true(pool.jobs_pending())
+    # The busy thread comes back and takes it, no wake having been spent.
+    assert_equal(_next_slot(pool), 1)
+    assert_false(pool.jobs_pending())
+    # Both parked: the push wakes exactly one.
+    pool.note_parked(0, 1)
+    pool.park_request(2, _request("/b"))
+    assert_true(pool.submit(2))
+    assert_equal(pool.wakes_in_flight(0), 1)
+    assert_equal(_try_read(pool.submit_read), 8)
+    pool.note_parked(0, -2)
+    pool.note_thread(0, -2)
+    assert_equal(_next_slot(pool), 2)
+
+
+def test_submit_wakes_nobody_while_a_sibling_spins() raises:
+    """The lane's idle spinner sees the push itself; a wake beside it is a
+    second thread woken for a job the spinner takes at once."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    pool.note_thread(0, 2)
+    pool.note_parked(0, 1)
+    pool.note_spinning(0, 1)
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    assert_equal(pool.wakes_in_flight(0), 0)
+    assert_equal(_try_read(pool.submit_read), -1)
+    # This thread, arriving beside a spinner, is refused a spin of its own
+    # and parks at once — and its re-check after announcing finds the job.
+    assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.spinner_count(0), 1)
+    pool.note_spinning(0, -1)
+    pool.note_parked(0, -1)
+    pool.note_thread(0, -2)
+    assert_equal(pool.spinner_count(0), 0)
+
+
+def test_a_ring_being_drained_is_never_stalled() raises:
+    """The progress rule. A ring whose pop count moved since the loop
+    last looked wakes nobody, however old its head; a ring that has not
+    moved for the threshold — counted from the later of the head's push
+    and the last look that saw it move — does. The loop's clock is
+    simulated from one real origin in 50 ms steps against a 100 ms
+    threshold, so the real milliseconds between calls cannot cross a
+    boundary. The stand-in sibling parks on the lane socket, so each wake
+    is a datagram there, retired by the next `next_job`'s socket poll."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    comptime T = 100_000_000
+    comptime MS = 1_000_000
+    pool.note_thread(0, 2)
+    pool.note_parked(0, 1)
+    # The loop's first look, nothing pending: the ring is drained now.
+    var t0 = perf_counter_ns()
+    assert_equal(pool.wake_aged(t0, T), 0)
+    for slot in range(3):
+        pool.park_request(slot, _request("/q"))
+        assert_true(pool.submit(slot))
+    assert_equal(pool.wakes_in_flight(0), 0)
+    # Nothing taken since: at 50 ms not stalled, at 150 ms stalled — one
+    # wake, and no second while that one is owed.
+    assert_equal(pool.wake_aged(t0 + 50 * MS, T), 0)
+    assert_equal(pool.wake_aged(t0 + 150 * MS, T), 1)
+    assert_equal(pool.wake_aged(t0 + 150 * MS + 1, T), 0)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    # The busy thread (this one) takes jobs 0 and 1: the ring moved. Its
+    # socket poll retires the wake on the way.
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 0)
+    assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    pool.note_parked(0, 1)
+    # Job 2 is as old as job 0 was, but the ring moved since the loop's
+    # 150 ms look: progress at 200 ms, and the stall is counted from
+    # there — not at 250 ms, stalled at 310.
+    assert_equal(pool.wake_aged(t0 + 200 * MS, T), 0)
+    assert_equal(pool.wake_aged(t0 + 250 * MS, T), 0)
+    assert_equal(pool.wake_aged(t0 + 310 * MS, T), 1)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 2)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    # A push into a lane that just drained: the wait counts from the
+    # push, not from the loop's last look — a job pushed at 390 ms into
+    # a lane last seen moving at 400 ms is not stalled at 450 ms.
+    pool.note_parked(0, 1)
+    sleep(0.0001)
+    pool.park_request(2, _request("/again"))
+    assert_true(pool.submit(2))
+    assert_equal(pool.wake_aged(t0 + 400 * MS, T), 0)
+    assert_equal(pool.wake_aged(t0 + 450 * MS, T), 0)
+    assert_equal(pool.wake_aged(t0 + 510 * MS, T), 1)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 2)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    pool.note_thread(0, -2)
+
+
+def test_on_a_free_threaded_interpreter_the_pool_wakes_eagerly_and_counts_from_the_push() raises:
+    """`set_parallel(True)`, the free-threaded rule. A push beside a busy
+    sibling wakes a parked thread anyway (an idle core there), and the
+    ring the progress test left alone — moved since the loop's last look
+    — is stalled once its head has waited the threshold since its push.
+    The knob `M0_POOL_PARALLEL` wins over the wiring's answer."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    assert_false(pool.is_parallel())
+    pool.set_parallel(True)
+    assert_true(pool.is_parallel())
+    comptime T = 100_000_000
+    comptime MS = 1_000_000
+    pool.note_thread(0, 2)
+    pool.note_parked(0, 1)
+    # A busy sibling is no reason not to wake here.
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    assert_equal(pool.wakes_in_flight(0), 1)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    pool.note_parked(0, 1)
+    # The stall check counts from the push whatever the progress.
+    var t0 = perf_counter_ns()
+    assert_equal(pool.wake_aged(t0, T), 0)
+    for slot in range(2, 5):
+        pool.park_request(slot, _request("/q"))
+        assert_true(pool.submit(slot))
+    # (One wake for the burst: the parked stand-in is owed one already.)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 2)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    pool.note_parked(0, 1)
+    # The ring moved since the loop's look at t0; under the GIL rule the
+    # count would start at 150 ms. Here job 3 has waited since its push.
+    assert_equal(pool.wake_aged(t0 + 150 * MS, T), 1)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 3)
+    assert_equal(_next_slot(pool), 4)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    pool.note_thread(0, -2)
+    # The knob: forced off, the wiring cannot turn it on.
+    _ = setenv("M0_POOL_PARALLEL", "0", True)
+    var forced = OffloadPool(8)
+    _ = setenv("M0_POOL_PARALLEL", "", True)
+    forced.set_parallel(True)
+    assert_false(forced.is_parallel())
+
+
+def test_the_wait_is_bounded_only_while_a_job_is_pending() raises:
+    """`jobs_pending` is what `_wait_for_events` consults to cap its
+    timeout at `POOL_WAKE_WAIT_MS`: false with empty rings (the loop keeps
+    its second), true from a push until the pop."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    assert_false(pool.jobs_pending())
+    pool.park_request(3, _request("/a"))
+    assert_true(pool.submit(3))
+    assert_true(pool.jobs_pending())
+    assert_equal(_next_slot(pool), 3)
+    assert_false(pool.jobs_pending())
+
+
+def test_elastic_off_restores_the_chained_wake() raises:
+    """`M0_POOL_ELASTIC=0`, the A/B arm: every push into a parked lane
+    wakes, a thread that takes a job wakes a sibling for the rest, the
+    loop's age check does nothing and the wait is never bounded — the
+    rules of 2026-09-05, verbatim."""
+    _ = setenv("M0_POOL_ELASTIC", "0", True)
+    var pool = OffloadPool(8)
+    _ = setenv("M0_POOL_ELASTIC", "", True)
+    if not pool.ring_active():
+        return
+    assert_false(pool.elastic_active())
+    pool.note_thread(0, 2)
+    pool.note_parked(0, 1)
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    # A busy sibling is no reason not to wake here.
+    assert_equal(pool.wakes_in_flight(0), 1)
+    assert_false(pool.jobs_pending())
+    pool.park_request(2, _request("/b"))
+    assert_true(pool.submit(2))
+    assert_equal(pool.wakes_in_flight(0), 1)
+    # This thread's socket poll eats the wake, it takes job 1, and the
+    # chain sends the wake the parked sibling is owed for job 2.
+    assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    sleep(0.002)
+    assert_equal(pool.wake_aged(perf_counter_ns(), 0), 0)
+    pool.note_parked(0, -1)
+    pool.note_thread(0, -2)
     assert_equal(_next_slot(pool), 2)
     pool.stop(1)
     assert_equal(_next_slot(pool), -1)
@@ -664,25 +901,141 @@ def test_ring_off_is_the_datagram_handoff() raises:
 
 comptime _PARK_ROUNDS = 200
 
+comptime _SLOW_SLOT = 7
+"""With `slow`, a job on this slot holds its echo thread for
+`_SLOW_HOLD_S`: the slow view of the two-thread test below."""
 
-def _echo_thread(arg: Int) -> Int:
-    """A pool thread that answers every job with a 200, until its pill."""
+comptime _SLOW_HOLD_S = 0.2
+
+
+comptime _BLK_SERVED = 11
+"""Block slot an echo thread counts its jobs in; read after the join."""
+
+
+def _echo_thread[slow: Bool](arg: Int) -> Int:
+    """A pool thread that answers every job with a 200, until its pill —
+    registered on its lane exactly as `m0_wsgi`'s pool body registers
+    itself, so it parks on a channel of its own and the elastic rules
+    apply to it. With `slow`, `_SLOW_SLOT` is a 200 ms view."""
     var block = ThreadBlock(arg)
     ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_USER)
     )[]
     var buf = _job_buffer()
+    var tid = pool.register_thread(0)
+    var served = 0
     while True:
-        var job = pool.next_job(0, buf)
+        var job = pool.next_job(0, buf, tid)
         if job.kind == JOB_STOP:
             break
         if job.kind != JOB_REQUEST:
             continue
         _ = pool.take_request(job.slot)
+
+        comptime if slow:
+            if job.slot == _SLOW_SLOT:
+                sleep(_SLOW_HOLD_S)
         pool.put_response(job.slot, OK(String("x")))
         pool.complete(job.slot)
+        served += 1
+    pool.unregister_thread(tid, 0)
+    block.set(_BLK_SERVED, served)
     block.set(BLK_STATUS, STATUS_OK)
     return 0
+
+
+def _spawn_echo[slow: Bool](
+    mut pool: OffloadPool, mut threads: ThreadSet, count: Int
+) raises:
+    """`count` echo threads on `pool`, with a wake channel reserved for
+    each; returns once every one is parked."""
+    pool.reserve_threads(count)
+    var body = _echo_thread[slow]
+    var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
+    for i in range(count):
+        threads.block(i).set(BLK_USER, pool.addr())
+        threads.spawn(i, body_addr)
+    _await_parked(pool, count)
+    assert_equal(pool.registered_threads(), count)
+
+
+def _await_completion(mut pool: OffloadPool, slot: Int, bound_ns: Int) raises -> Int:
+    """Poll the completions until `slot` finishes; the nanoseconds it took,
+    or -1 past `bound_ns`. Any other slot finishing first is a failure."""
+    var start = perf_counter_ns()
+    while perf_counter_ns() - start < bound_ns:
+        var done = pool.drain_completions()
+        if len(done) > 0:
+            assert_equal(len(done), 1)
+            assert_equal(done[0], slot)
+            _ = pool.take_response(slot)
+            return perf_counter_ns() - start
+        sleep(0.0001)
+    return -1
+
+
+def _await_parked(pool: OffloadPool, count: Int) raises:
+    """Wait until `count` threads of lane 0 are parked (bounded)."""
+    var deadline = perf_counter_ns() + 2_000_000_000
+    while pool.parked_count(0) != count or pool.wakes_in_flight(0) != 0:
+        if perf_counter_ns() > deadline:
+            assert_equal(pool.parked_count(0), count)
+            assert_equal(pool.wakes_in_flight(0), 0)
+        sleep(0.0005)
+
+
+def test_a_job_behind_a_slow_sibling_is_taken_once_the_loop_wakes_a_parked_one() raises:
+    """The isolation the pool exists for, under the elastic rules. Two
+    threads; one is inside a 200 ms job. A second job pushed then wakes
+    nobody (a thread is busy) and sits — until the test, standing in for
+    the loop's per-pass age check, calls `wake_aged`: the parked thread
+    takes it and it completes well inside the slow one's hold. The sit is
+    asserted too, because the wake is the whole claim: without the age
+    check the fast job waits the slow view out, which is the bug the pool
+    was built against.
+
+    covers: E17
+    """
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(2)
+    _spawn_echo[True](pool, threads, 2)
+    assert_equal(pool.thread_count(0), 2)
+
+    # The slow job: every thread parked, so the push wakes one, which
+    # takes it and sleeps.
+    pool.park_request(_SLOW_SLOT, _request("/slow"))
+    assert_true(pool.submit(_SLOW_SLOT))
+    var deadline = perf_counter_ns() + 2_000_000_000
+    while pool.jobs_pending() or pool.parked_count(0) != 1:
+        assert_true(perf_counter_ns() < deadline)
+        sleep(0.0005)
+
+    # The fast job: a thread is busy, so nobody is woken, and it sits.
+    pool.park_request(1, _request("/fast"))
+    assert_true(pool.submit(1))
+    assert_equal(pool.wakes_in_flight(0), 0)
+    # The loop's look as it pushed: the ring just moved (the slow job was
+    # taken), so nothing is stalled yet.
+    assert_equal(pool.wake_aged(perf_counter_ns(), 1_000_000), 0)
+    sleep(0.02)
+    assert_equal(len(pool.drain_completions()), 0)
+    assert_true(pool.jobs_pending())
+
+    # The loop's next look: no pop for 20 ms against a 1 ms threshold.
+    assert_equal(pool.wake_aged(perf_counter_ns(), 1_000_000), 1)
+    var took = _await_completion(pool, 1, 2_000_000_000)
+    assert_true(took >= 0)
+    # Inside the slow hold by a wide margin: the parked thread took it.
+    assert_true(took < 100_000_000)
+    took = _await_completion(pool, _SLOW_SLOT, 2_000_000_000)
+    assert_true(took >= 0)
+
+    pool.stop(2)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    assert_equal(pool.thread_count(0), 0)
 
 
 def test_a_parked_thread_is_woken_for_every_job() raises:
@@ -696,10 +1049,7 @@ def test_a_parked_thread_is_woken_for_every_job() raises:
     if not pool.ring_active():
         return
     var threads = ThreadSet(1)
-    threads.block(0).set(BLK_USER, pool.addr())
-    var body = _echo_thread
-    var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
-    threads.spawn(0, body_addr)
+    _spawn_echo[False](pool, threads, 1)
     for round in range(_PARK_ROUNDS):
         sleep(0.0002)
         var slot = round % 8
@@ -719,6 +1069,152 @@ def test_a_parked_thread_is_woken_for_every_job() raises:
     pool.stop(1)
     threads.join_all()
     assert_true(threads.all_ok())
+
+
+def test_a_job_submitted_the_instant_the_last_completed_is_still_taken() raises:
+    """The lost-wakeup test's other edge: each job submitted the moment
+    the previous completion is read, with no pause, so the submit races
+    the thread's own transitions — busy, then the lane's spinner, then
+    parked — and under the elastic rules most of these submits wake
+    nobody. Every one must still complete: a thread announcing a state
+    re-checks the ring after the announcement, and the push precedes the
+    loop's reads."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(1)
+    _spawn_echo[False](pool, threads, 1)
+    for round in range(_PARK_ROUNDS):
+        var slot = round % 6
+        pool.park_request(slot, _request("/r"))
+        assert_true(pool.submit(slot))
+        var took = _await_completion(pool, slot, 2_000_000_000)
+        assert_true(took >= 0)
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
+
+
+def test_a_wake_lands_on_the_parked_threads_own_channel() raises:
+    """A registered thread is woken by name: the lane socket stays quiet
+    across a wake, and the pill that ends it goes the same way."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(1)
+    _spawn_echo[False](pool, threads, 1)
+    pool.park_request(2, _request("/a"))
+    assert_true(pool.submit(2))
+    assert_equal(_try_read(pool.submit_read), -1)
+    assert_true(_await_completion(pool, 2, 2_000_000_000) >= 0)
+    assert_equal(pool.wake_counts(0)[1], 1)
+    _await_parked(pool, 1)
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    # The pill went to the thread's own channel, not the lane socket.
+    assert_equal(_try_read(pool.submit_read), -1)
+    assert_equal(pool.registered_threads(), 1)
+    assert_equal(pool.thread_count(0), 0)
+
+
+def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
+    """A payload datagram rides the lane socket, which a thread parked on
+    its own channel is not watching: `send_ws_message` — and
+    `wake_for_datagram`, for the handler's own copy of the encoder — wake
+    the most recently parked thread, which polls the socket first thing.
+    The echo thread counts the message as served (it answers nothing for
+    it) and parks again; without the wake it would sit parked and the
+    message with it — CI's WebSocket smoke, "only pings arriving"."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(1)
+    _spawn_echo[False](pool, threads, 1)
+    var payload = List[UInt8]()
+    for b in String("hello").as_bytes():
+        payload.append(b)
+    assert_true(pool.send_ws_message(0, 3, 1, String("chan"), Span(payload)))
+    # The thread wakes for it: parked count drops, then it parks again.
+    var deadline = perf_counter_ns() + 2_000_000_000
+    var woke = False
+    while perf_counter_ns() < deadline:
+        if pool.parked_count(0) == 0:
+            woke = True
+            break
+        sleep(0.0001)
+    assert_true(woke)
+    _await_parked(pool, 1)
+    # The handler's path: the datagram already sent, the wake alone.
+    assert_true(pool.wake_for_datagram(0))
+    _await_parked(pool, 1)
+    assert_false(pool.wake_for_datagram(7))  # no thread on that lane
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    assert_equal(threads.block(0).get(_BLK_SERVED), 0)
+
+
+def test_sequential_jobs_with_idle_gaps_stay_on_one_thread() raises:
+    """Most recently parked first. Two threads, sixty jobs each submitted
+    after a pause longer than the spin, so the lane is all parked before
+    every one: the thread that served the last job parked last, and is
+    the one woken for the next — every job on the same warm thread, the
+    other never woken. The kernel's own choice for one shared socket is
+    the opposite on both platforms (macOS wakes all, Linux the oldest),
+    which is where a third of zero-config's throughput went."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(2)
+    _spawn_echo[False](pool, threads, 2)
+    for round in range(60):
+        sleep(0.0003)
+        var slot = round % 6
+        pool.park_request(slot, _request("/s"))
+        assert_true(pool.submit(slot))
+        assert_true(_await_completion(pool, slot, 2_000_000_000) >= 0)
+    _await_parked(pool, 2)
+    pool.stop(2)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    var a = threads.block(0).get(_BLK_SERVED)
+    var b = threads.block(1).get(_BLK_SERVED)
+    assert_equal(a + b, 60)
+    assert_true(a == 60 or b == 60)
+
+
+def test_a_burst_into_a_parked_lane_wakes_one_thread() raises:
+    """Four jobs pushed back to back into two parked threads send ONE
+    wake: the first push wakes the last-parked thread, and from then on
+    the lane is not all idle — a woken thread is on its way — so the
+    other three wake nobody. All four complete, on that one thread."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(2)
+    _spawn_echo[False](pool, threads, 2)
+    for slot in range(4):
+        pool.park_request(slot, _request("/b"))
+        assert_true(pool.submit(slot))
+    assert_equal(pool.wake_counts(0)[1], 1)
+    var seen = 0
+    var deadline = perf_counter_ns() + 2_000_000_000
+    while seen < 4 and perf_counter_ns() < deadline:
+        var done = pool.drain_completions()
+        for i in range(len(done)):
+            _ = pool.take_response(done[i])
+            seen += 1
+        sleep(0.0001)
+    assert_equal(seen, 4)
+    assert_equal(pool.wake_counts(0)[1], 1)
+    _await_parked(pool, 2)
+    pool.stop(2)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    var a = threads.block(0).get(_BLK_SERVED)
+    var b = threads.block(1).get(_BLK_SERVED)
+    assert_true(a == 4 or b == 4)
 
 
 def main() raises:
