@@ -1,7 +1,7 @@
 # Exercising the server against real applications
 
-**A record. Last run 2026-09-04**, against m0serve 0.17.1 as merged at
-`0766272` — the tree with the detached event loop (PR #229) — all four
+**A record. Last run 2026-09-07**, against m0serve 0.19.0 as merged at
+`abf2016` — the tree with the detached event loop (PR #229) — all four
 applications, seven rows, in the newest section below. The full pass it
 re-runs was **2026-09-01 and 2026-09-02**, against 0.16.0 (`bin/m0serve`
 from the tree at `c823198`), macOS 26 on an M4, CPython 3.13.6. The plan
