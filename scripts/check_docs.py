@@ -1074,6 +1074,92 @@ def check_docs_cite_tracked_paths():
         fail(msg)
 
 
+# The public benchmark page. A figure in its prose is either a span the
+# renderer recomputes from the newest artifact, or sits in a block whose
+# marker says where it was observed. Bare figures are how the page drifted:
+# four hand-typed numbers, each correct when written, each outliving the
+# artifact it described, one contradicting the span eight lines above it.
+BENCH_PAGE = "docs/BENCHMARKS.md"
+_REGION = re.compile(
+    r"<!-- generated: ([a-z0-9-]+) -- .*?-->.*?<!-- /generated: \1 -->", re.S)
+_NUM_SPAN = re.compile(r"<!-- num:[a-z0-9-]+@\d -->.*?<!-- /num -->", re.S)
+_OBSERVED = re.compile(r"<!-- observed\b(?::\s*(.*?))?\s*-->")
+_UNITS = r"(?:µs|us|ms|ns|s|x|%|k|rps|cores?|bytes|KB|MB|GB)"
+_FIGURE = re.compile(
+    r"(?<![\w.\-/])~?\d[\d,]*(?:\.\d+)?"       # 1.44  ~100  1,638,400
+    r"(?:\s*[–-]\s*\d[\d,]*(?:\.\d+)?)?"      # an optional range: 16–45
+    r"\s?" + _UNITS + r"(?!\w)"                 # then a unit or multiplier
+)
+_ITEM = re.compile(r"\s*(?:[-*]|\d+\.)\s+")
+
+
+def _blocks(lines):
+    """(first line number, text) per paragraph or list item. A list item
+    is its own block even with no blank line before it, so a marker on one
+    bullet vouches for that bullet alone."""
+    out, cur, start = [], [], None
+    for n, line in enumerate(lines, 1):
+        if not line.strip() or (_ITEM.match(line) and cur):
+            if cur:
+                out.append((start, "\n".join(cur)))
+            cur, start = [], None
+            if not line.strip():
+                continue
+        if not cur:
+            start = n
+        cur.append(line)
+    if cur:
+        out.append((start, "\n".join(cur)))
+    return out
+
+
+def unsourced_figures(text):
+    """Pure: the page's text -> failure messages, one per bare figure.
+
+    Generated regions and num spans are blanked first (the renderer checks
+    those), then every remaining block is scanned for a number carrying a
+    unit or multiplier. A block holding `<!-- observed: WHERE -->` is
+    exempt -- the page's way of saying no artifact backs the figure and
+    where it came from -- and a marker with no WHERE is itself a failure,
+    because an unexplained exemption is a bare figure with extra steps.
+    Versions, dates, counts and percentiles carry no unit and are not
+    figures here; the selftest holds that line.
+    """
+    def blank(m):
+        return re.sub(r"[^\n]", " ", m.group(0))
+    text = _NUM_SPAN.sub(blank, _REGION.sub(blank, text))
+    out = []
+    for start, block in _blocks(text.split("\n")):
+        marker = _OBSERVED.search(block)
+        if marker:
+            if not (marker.group(1) or "").strip():
+                out.append(
+                    f"{BENCH_PAGE}:{start}: an `<!-- observed: ... -->` marker "
+                    "must say where the figure was observed (a note, an "
+                    "artifact, a date); an unexplained exemption is a bare "
+                    "figure with extra steps")
+            continue
+        for off, line in enumerate(block.split("\n")):
+            for fig in _FIGURE.findall(line):
+                out.append(
+                    f"{BENCH_PAGE}:{start + off}: `{fig}` is a figure outside "
+                    "any num span and any block marked `<!-- observed: ... -->`. "
+                    "A number an artifact can compute is a span (add the "
+                    "quantity to render_bench_docs.py's compute_quantities); "
+                    "one no artifact backs sits in a block whose marker says "
+                    "where it was observed")
+    return out
+
+
+def check_bench_prose_figures():
+    """No bare figure in the benchmark page's prose (see unsourced_figures)."""
+    page = REPO / BENCH_PAGE
+    if not page.exists():
+        return
+    for msg in unsourced_figures(page.read_text()):
+        fail(msg)
+
+
 def selftest():
     """The citation rule must be able to fire: one doctored input per case."""
     tracked = {".claude/handoffs/soak-design.md", "scripts/probes/herd.c",
@@ -1102,6 +1188,34 @@ def selftest():
         fired = bool(got)
         named = (not fired) or all(d in g for d in docs for g in got)
         good = fired == must_fire and named
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
+    # The bare-figure rule: fires on a hand-typed figure, stays quiet for
+    # a span, a generated region and a marked observation, and treats a
+    # marker without a source as a failure of its own.
+    figure_cases = [
+        ("a bare figure in a paragraph",
+         "the bridge costs 1.44x on the inline row\n", True),
+        ("(control: the same figure inside a num span)",
+         "the bridge costs <!-- num:bridge-tax@2 -->1.44<!-- /num -->x on the inline row\n", False),
+        ("(control: a figure inside a generated region)",
+         "<!-- generated: layer-split -- edit bench/results, not this table -->\n| row | 1.73 cores |\n<!-- /generated: layer-split -->\n", False),
+        ("(control: a figure in a block that says where it was observed)",
+         "<!-- observed: notes/detached-loop.md, 2026-09-04 -->\nthe loop was blocked 16–45 % of wall time\n", False),
+        ("an observed marker with no source",
+         "<!-- observed -->\nthe loop was blocked 16–45 % of wall time\n", True),
+        ("an observed marker with an empty source",
+         "<!-- observed: -->\nthe loop was blocked 16–45 % of wall time\n", True),
+        ("a marker on one bullet does not cover the next",
+         "- <!-- observed: pre-artifact, 2026-08 -->moves ~1.5x across sessions\n- an E-core serves 18.6k rps\n", True),
+        ("a range with a unit",
+         "it used to lose it at 0.83–0.90 cores\n", True),
+        ("(control: versions, dates, counts and percentiles are not figures)",
+         "CPython 3.13 and 3.14t, Granian 2.8.2, on 2026-09-05, at 256 connections, the p99 of HTTP/1.1, 4 workers, 2 sessions, `/slow?ms=200`\n", False),
+    ]
+    for label, text, must_fire in figure_cases:
+        got = unsourced_figures(text)
+        good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
@@ -1143,6 +1257,7 @@ def main():
     check_site_corpus()
     check_rfc_citations()
     check_docs_cite_tracked_paths()
+    check_bench_prose_figures()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

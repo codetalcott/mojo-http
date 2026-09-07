@@ -7,6 +7,22 @@ versions may break the API**.
 
 ## [Unreleased]
 
+### Changed
+
+- **BENCHMARKS.md's prose may not carry a bare figure.** Every number in
+  the page's sentences is either a span the renderer recomputes from the
+  newest artifact or sits in a paragraph whose `<!-- observed: WHERE -->`
+  marker says where it was observed, and `check-docs` refuses one that is
+  neither (`check_bench_prose_figures`, sabotaged in its selftest). Four
+  hand-typed figures had outlived their artifacts: the inline row's ratio
+  contradicted the span beside it, the executor's p50 pair quoted the
+  previous run, the isolation effect understated its own table by half,
+  and the per-thread loop costs predated the ring handoff. The isolation
+  claim's figures (the unpooled climb, the hold, the pooled p99 and the
+  factor between them) and the one-thread rows' gap are spans now,
+  computed from the same grouping the table renders; the histories are
+  marked with the note or artifact that records them.
+
 ## [0.19.0] — 2026-09-07
 
 ### Added

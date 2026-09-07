@@ -132,8 +132,11 @@ SPAN_DOCS = ("README.md", "docs/BENCHMARKS.md", "docs/WSGI_PERFORMANCE.md",
              "apps/site/home.md")
 
 
-def compute_quantities(layer_medians, asgi_medians):
-    """Every quantity the prose may cite, from the two artifact families.
+def compute_quantities(layer_medians, asgi_medians, isolation, hold_ms):
+    """Every quantity the prose may cite, from three artifact families:
+    the layer split, the ASGI hello run, and the mixed-workload isolation
+    table (`isolation` is `isolation_medians()` of it, config -> slow
+    level -> median fast-route p99 in ms; `hold_ms` its slow view's hold).
 
     Pure over its arguments so --selftest can feed doctored medians. Raises
     KeyError naming the missing row when an artifact no longer carries a
@@ -153,6 +156,8 @@ def compute_quantities(layer_medians, asgi_medians):
     am0 = asgi_medians["m0serve asgi-executor"]
     auv = asgi_medians["uvicorn asyncio"]
     auvl = asgi_medians["uvicorn uvloop"]
+    nopool = isolation["--workers 4"]
+    pooled = isolation["--workers 4 +bt=4"]
     return {
         "hello-rps-k": hello / 1000,
         "m0-loop-rps-k": m0_loop / 1000,
@@ -173,6 +178,18 @@ def compute_quantities(layer_medians, asgi_medians):
         "asgi-per-core-vs-uvicorn": am0["rps_per_core"] / auv["rps_per_core"],
         "asgi-vs-uvloop": am0["rps"] / auvl["rps"],
         "uvloop-per-core-lead": auvl["rps_per_core"] / am0["rps_per_core"],
+        "asgi-per-core-vs-uvloop": am0["rps_per_core"] / auvl["rps_per_core"],
+        # The one-thread rows' distance in throughput, as a percentage of
+        # the comparator's.
+        "w1-rps-gap-pct": abs(m0_row["rps"] - gran_row["rps"]) / gran_row["rps"] * 100,
+        # The isolation claim: the fast route's p99 with no pool, idle and
+        # behind two slow views; the hold those views take; and the factor
+        # between the unpooled and pooled p99 at that load.
+        "isolation-hold-ms": hold_ms,
+        "isolation-nopool-slow0-ms": nopool["0"],
+        "isolation-nopool-slow2-ms": nopool["2"],
+        "isolation-pool-slow2-ms": pooled["2"],
+        "isolation-ratio": nopool["2"] / pooled["2"],
     }
 
 
@@ -517,6 +534,28 @@ def render_tail_table(kind, path, d):
     return lines
 
 
+def isolation_groups(d):
+    """{config: {slow level: [p99 ms per round]}} from the rows, the round
+    prefix dropped so repeats of one configuration collapse together. The
+    table and the prose spans both read this, so a cell and the sentence
+    quoting it cannot disagree about what the median is."""
+    groups = {}
+    for row in d.get("rows", []):
+        name = row.get("name", "")
+        if " slow=" not in name:
+            continue
+        config, _, slow = name.rpartition(" slow=")
+        config = _ROUND_PREFIX.sub("", config).strip()
+        groups.setdefault(config, {}).setdefault(slow, []).append(row["p99_us"] / 1000.0)
+    return groups
+
+
+def isolation_medians(d):
+    """{config: {slow level: median p99 ms}} -- the table's cell values."""
+    return {c: {s: statistics.median(v) for s, v in by.items()}
+            for c, by in isolation_groups(d).items()}
+
+
 def render_isolation_table(kind, path, d):
     """The pool's whole claim: fast-route p99 as slow load is added.
 
@@ -532,15 +571,8 @@ def render_isolation_table(kind, path, d):
     prefix is dropped so repeats of one configuration collapse together,
     which is what makes the median meaningful.
     """
-    groups, levels = {}, set()
-    for row in d.get("rows", []):
-        name = row.get("name", "")
-        if " slow=" not in name:
-            continue
-        config, _, slow = name.rpartition(" slow=")
-        config = _ROUND_PREFIX.sub("", config).strip()
-        levels.add(slow)
-        groups.setdefault(config, {}).setdefault(slow, []).append(row)
+    groups = isolation_groups(d)
+    levels = {slow for by in groups.values() for slow in by}
 
     order = sorted(levels, key=lambda s: int(s))
     lines = provenance(path, d) + [
@@ -552,11 +584,10 @@ def render_isolation_table(kind, path, d):
     for config in groups:
         cells = []
         for slow in order:
-            rs = groups[config].get(slow, [])
-            if not rs:
+            p99s = groups[config].get(slow, [])
+            if not p99s:
                 cells.append("—")
                 continue
-            p99s = [r["p99_us"] / 1000.0 for r in rs]
             rounds.add(len(p99s))
             cell = f"{statistics.median(p99s):,.1f} ms"
             # The spread is the claim's own error bar: a median that hides
@@ -640,18 +671,22 @@ def span_values():
     family has never been recorded (mirrors the regions' leniency for a
     tree without bench/results)."""
     layer, asgi = newest("layer-split"), newest("asgi-wrk-hello")
-    if layer is None or asgi is None:
+    mixed = newest("mixed-workload")
+    if layer is None or asgi is None or mixed is None:
         return None
     try:
+        m = json.loads(mixed.read_text())
         return compute_quantities(
             json.loads(layer.read_text())["medians"],
             json.loads(asgi.read_text())["medians"],
+            isolation_medians(m),
+            float(m["parameters"]["hold_ms"]),
         )
     except KeyError as missing:
         sys.exit(
-            f"the newest artifact no longer has the row {missing} that the"
-            " prose spans quote — a renamed participant must be re-pointed,"
-            " not silently kept at its old number"
+            f"the newest artifact no longer has the row or parameter {missing}"
+            " that the prose spans quote — a renamed participant must be"
+            " re-pointed, not silently kept at its old number"
         )
 
 
@@ -669,7 +704,12 @@ def selftest():
         "uvicorn asyncio": {"rps": 56_600, "rps_per_core": 56_600},
         "uvicorn uvloop": {"rps": 81_000, "rps_per_core": 81_000},
     }
-    values = compute_quantities(medians, asgi)
+    isolation = {
+        "--workers 4": {"0": 0.8, "1": 189.7, "2": 193.6},
+        "--workers 4 +bt=4": {"0": 1.4, "1": 1.3, "2": 1.3},
+        "granian bt=4": {"0": 0.5, "1": 0.5, "2": 0.5},
+    }
+    values = compute_quantities(medians, asgi, isolation, 200.0)
 
     def expect(label, fn, needle):
         try:
@@ -717,9 +757,23 @@ def selftest():
         "an artifact that loses a row the prose quotes",
         lambda: compute_quantities(
             {k: v for k, v in medians.items() if k != "granian+bare w1"},
-            asgi),
+            asgi, isolation, 200.0),
         "granian+bare w1",
     )
+    ok &= expect(
+        "a mixed-workload artifact that loses the pooled configuration",
+        lambda: compute_quantities(
+            medians, asgi,
+            {k: v for k, v in isolation.items() if k != "--workers 4 +bt=4"},
+            200.0),
+        "--workers 4 +bt=4",
+    )
+    ratio = f"{values['isolation-ratio']:.0f}"
+    if ratio != "149":
+        print(f"  MISSED          isolation-ratio is not the unpooled p99 over the pooled: {ratio!r}")
+        ok = False
+    else:
+        print("  caught          (control: isolation-ratio is the unpooled p99 over the pooled, at slow=2)")
 
     shown = f"{values['granian-per-m0']:.1f}"
     if shown != "1.2":
@@ -783,6 +837,10 @@ def selftest():
     fold_ok = table_old.count("| `--workers 4 +bt=4` |") == 1 and "(3.6–5.6)" in table_old
     print(f"  {'caught' if fold_ok else 'MISSED'}          (control: the old row shape, prefix in the name, folds the same way)")
     ok &= fold_ok
+    med = isolation_medians(mixed(3, prefixed=True))
+    fold_med = med.get("--workers 4 +bt=4", {}).get("0") == 4.6
+    print(f"  {'caught' if fold_med else 'MISSED'}          (control: isolation_medians folds the round prefix and medians the cell the table shows)")
+    ok &= fold_med
     got = provenance_problems("mixed-workload", mixed(2, prefixed=False), (0, 18, 0))
     two_ok = any("at least 3" in g for g in got)
     print(f"  {'caught' if two_ok else 'MISSED'}          a mixed-workload artifact with two rounds")
