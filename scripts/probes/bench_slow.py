@@ -10,14 +10,18 @@ recognised — `eager` sets M0_POOL_ELASTIC=0, `noage` M0_POOL_PARALLEL=0,
 `onage` M0_POOL_PARALLEL=1; anything else is just a label), `@T` sets
 M0_POOL_WAKE_AGE_US, `=BIN` runs another m0serve binary (an A/B against a
 different build), and `:VAR=VALUE` sets any environment variable — so
-`turn0:M0_POOL_TURN=0` and `gc:M0_APP=gcwrap.wsgi:application` are arms
-too. Prints rps/p50/p90/p99/max per slow level. The tail this measures is
+`turn0:M0_POOL_TURN=0` and `gc:M0_APP=djangoproj.wsgi_gc:application,M0_GC=freeze`
+are arms too. `BENCH_WORKERS` and `BENCH_BT` (default 4 and 4) set the
+shape, and the label `granian` runs the comparator in that shape instead
+of m0serve (`granian:BENCH_WORKERS=1` is the mixed-workload script's row). Prints rps/p50/p90/p99/max per slow level. The tail this measures is
 bimodal on a GIL build (docs/notes/elastic-pool.md); one run proves
 nothing, three alternated rounds are the minimum worth quoting.
 """
 import os, re, subprocess, sys, time, signal
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+# The tree to serve from: this file's repository, or M0_ROOT -- so a copy of
+# the probe can drive a worktree whose artifact recording must stay clean.
+ROOT = os.environ.get("M0_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 PORT = int(os.environ.get("BENCH_PORT", "8080"))
 HDRS = ["-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -82,10 +86,20 @@ def run(arm, rnd):
     if t: env["M0_POOL_WAKE_AGE_US"] = t
     binary = binary or f"{ROOT}/bin/m0serve"
     app = env.get("M0_APP", "djangoproj.wsgi:application")
+    workers = env.get("BENCH_WORKERS", "4")
+    bt = env.get("BENCH_BT", "4")
     log = open(f"/tmp/bench_slow_{re.sub(r'[^A-Za-z0-9_.-]', '_', arm)}.log", "w")
-    p = subprocess.Popen([binary, app, "--app-dir", f"{ROOT}/apps/django_wsgi",
-                          "--port", str(PORT), "--workers", "4", "--blocking-threads", "4"],
-                         cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+    if name == "granian":
+        # The comparator, in whatever shape BENCH_WORKERS/BENCH_BT name --
+        # the mixed-workload script runs it at ONE worker, four threads.
+        cmd = [f"{ROOT}/.venv/bin/granian", "--interface", "wsgi", "--workers", workers,
+               "--blocking-threads", bt, "--host", "127.0.0.1", "--port", str(PORT),
+               "--log-level", "warning", app]
+        p = subprocess.Popen(cmd, cwd=f"{ROOT}/apps/django_wsgi", env=env, stdout=log, stderr=subprocess.STDOUT)
+    else:
+        p = subprocess.Popen([binary, app, "--app-dir", f"{ROOT}/apps/django_wsgi",
+                              "--port", str(PORT), "--workers", workers, "--blocking-threads", bt],
+                             cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
         if not healthy():
             print(arm, "never healthy"); return
@@ -95,7 +109,10 @@ def run(arm, rnd):
         for kid in sh(["pgrep", "-P", str(p.pid)]).stdout.split():
             try: os.kill(int(kid), signal.SIGTERM)
             except ProcessLookupError: pass
-        p.send_signal(signal.SIGTERM); p.wait(15); time.sleep(3)
+        p.send_signal(signal.SIGTERM); p.wait(15)
+        # PAUSE_S=32 lets the previous arm's TIME_WAIT sockets expire (2 x MSL
+        # on macOS) before the next arm starts; the default 3 s carries them over.
+        time.sleep(float(os.environ.get("PAUSE_S", "3")))
 
 
 for rnd in range(int(os.environ.get("ROUNDS", "1"))):
