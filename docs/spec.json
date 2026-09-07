@@ -1154,6 +1154,14 @@
       "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR)"
     },
     {
+      "id": "L19",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "The same Starlette seam driven by FastAPI: routing, `StreamingResponse`, and a WebSocket the app closes itself",
+      "status": "verified",
+      "evidence": "`Serve a FastAPI app through the ASGI bridge` (every PR) \u2014 the row L11 does not cover, because the two frameworks drive Starlette differently and only this one is named on the landing page. The streamed route is checked in the server LOG as well as the body: marking Starlette's anyio child task instead of the slot's owner left one traceback per streamed response with every body intact, so a green body proves nothing here. Request validation and the OpenAPI page are FastAPI's own to test and are deliberately not asserted"
+    },
+    {
       "id": "L12",
       "section": "L",
       "category": "L. ASGI 3.0",

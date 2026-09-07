@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**169 capabilities: 145 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 145 verified, 138 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**170 capabilities: 146 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 146 verified, 139 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -246,6 +246,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | L9 | Slot ownership under CPU contention, on the streamed AND WebSocket paths, in both loop modes | verified | `stress-asgi` (pre-release) — each round runs `chunked_keepalive.py` then `ws_probe.py`, so the handshake lands on the slot the streamed connection just released; run under CPU hogs on the pump and again under `M0_INVERTED=1` |
 | L10 | Django's own ASGI handler through the executor | verified | `Serve a Django ASGI project through the executor` (every PR) |
 | L11 | Starlette-family app (FastHTML) through the executor | verified | `Serve a FastHTML app through the ASGI bridge` (every PR) |
+| L19 | The same Starlette seam driven by FastAPI: routing, `StreamingResponse`, and a WebSocket the app closes itself | verified | `Serve a FastAPI app through the ASGI bridge` (every PR) — the row L11 does not cover, because the two frameworks drive Starlette differently and only this one is named on the landing page. The streamed route is checked in the server LOG as well as the body: marking Starlette's anyio child task instead of the slot's owner left one traceback per streamed response with every body intact, so a green body proves nothing here. Request validation and the OpenAPI page are FastAPI's own to test and are deliberately not asserted |
 | L12 | Cross-worker pub/sub as `scope["state"]["m0"]` | verified | `ASGI cross-worker fan-out over the BroadcastBus` (every PR) |
 | L13 | `http.response.pathsend` | out of scope | `--static` serves files in Mojo ahead of the application, which is the same saving without the extension |
 | L14 | `http.response.zerocopysend`, `early_hint`, `trailers` | out of scope | no application has asked; the extensions are additive and can be taken later |

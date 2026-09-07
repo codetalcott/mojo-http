@@ -49,8 +49,8 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
 ## Also
 
 - **WSGI and ASGI from one binary.** The protocol is detected from the
-  application object. Django, Flask and FastHTML each have a smoke test in
-  CI. WSGI conformance is checked with `wsgiref`, ASGI with a validator
+  application object. Django, Flask, FastAPI and FastHTML each have a smoke
+  test in CI. WSGI conformance is checked with `wsgiref`, ASGI with a validator
   written from the specification.
 - **Several applications in one process.**
   `m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on
