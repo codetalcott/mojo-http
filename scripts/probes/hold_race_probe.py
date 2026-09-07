@@ -9,9 +9,27 @@ on the loop, never a pool job), opens N SSE holds one at a time, and after each
 asks /health how many subscribers the loop has. A hold whose head went out
 before its frame was read is swept closed and never counts.
 """
-import json, os, socket, subprocess, sys, threading, time, urllib.request
+import json, os, socket, subprocess, sys, threading, time, traceback, urllib.request
 
+NAME = "hold_race_probe"
 PORT = 8080
+
+# Which phase is running, for the crash handler: a traceback names the socket
+# helper that failed, never the phase being proven (scripts/phase_stamp_check.py).
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("%s: FAIL: %s: %r" % (NAME, PHASE, exc))
+
+
+sys.excepthook = _stamped
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 env = dict(os.environ, M0_CORE_LIB=f"{os.getcwd()}/packages/m0-core/libm0core.so", M0_SSE_HEARTBEAT_MS="500")
 cmd = ["bin/m0serve", "djangoproj.wsgi:application", "--app-dir", "apps/django_realtime",
@@ -19,6 +37,7 @@ cmd = ["bin/m0serve", "djangoproj.wsgi:application", "--app-dir", "apps/django_r
        "--static", "/static/=apps/django_realtime/static", "--blocking-threads", "4"]
 log = open("/tmp/probe_srv.log", "w")
 srv = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+phase("waiting for the server to become healthy")
 
 def health():
     with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=5) as r:
@@ -50,6 +69,7 @@ def open_hold(i):
                "Accept: text/event-stream\r\n\r\n").encode())
     holds.append(s)
 
+phase("opening %d holds one at a time under a busy loop" % N)
 misses = []
 for i in range(N):
     open_hold(i)
@@ -57,6 +77,7 @@ for i in range(N):
     subs = health()["subscribers"]
     if subs != i + 1:
         misses.append((i, subs))
+phase("the final subscriber count")
 time.sleep(1.0)
 final = health()["subscribers"]
 stop = True

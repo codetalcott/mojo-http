@@ -7,9 +7,27 @@ lost pool wake reproduced (2 of 10 rounds, 2026-09-05; never on macOS).
 
     python3 scripts/probes/phase5_probe.py [ROUNDS]
 """
-import json, os, socket, subprocess, sys, threading, time, urllib.request
+import json, os, socket, subprocess, sys, threading, time, traceback, urllib.request
 
+NAME = "phase5_probe"
 PORT = 8080
+
+# Which phase is running, for the crash handler: a traceback names the socket
+# helper that failed, never the phase being proven (scripts/phase_stamp_check.py).
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("%s: FAIL: %s: %r" % (NAME, PHASE, exc))
+
+
+sys.excepthook = _stamped
 ROUNDS = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 env = dict(os.environ, M0_CORE_LIB=f"{os.getcwd()}/packages/m0-core/libm0core.so", M0_SSE_HEARTBEAT_MS="500")
 cmd = ["bin/m0serve", "djangoproj.wsgi:application", "--app-dir", "apps/django_realtime",
@@ -31,6 +49,7 @@ fails = 0
 for rnd in range(ROUNDS):
     log = open(f"/tmp/p5_{rnd}.log", "w")
     srv = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+    phase("round %d: waiting for the server to become healthy" % rnd)
     t0 = time.time()
     while True:
         try:
@@ -39,6 +58,7 @@ for rnd in range(ROUNDS):
             if time.time() - t0 > 60:
                 print(f"round {rnd}: never healthy"); srv.kill(); sys.exit(2)
             time.sleep(0.2)
+    phase("round %d: a hold opened behind two slow views" % rnd)
     s1 = threading.Thread(target=slow); s2 = threading.Thread(target=slow)
     s1.start(); s2.start()
     time.sleep(0.3)
@@ -46,6 +66,7 @@ for rnd in range(ROUNDS):
     sock.sendall(b"GET /events?channel=pool&token=letmein HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n")
     t_sub = time.time()
     time.sleep(0.5)
+    phase("round %d: the subscriber count half a second after the hold" % rnd)
     subs = health()["subscribers"]
     head = b""
     sock.setblocking(False)
