@@ -45,6 +45,23 @@ quarter second, and the same run with the barrier disabled
 negative arm is what proves the probe can see the failure. Pre-release for
 the reason above: a p99 from a shared runner is the runner's.
 
+**And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
+reproducers, in the `m0lin` Linux container — the only place a lost pool
+wake has ever been caught (`smoke-django-realtime` phase 5, 2 of 10 rounds
+on the ring's first build, docs/notes/pool-ring-handoff.md; never on macOS,
+whose kernel wakes every receiver parked on a datagram socket and so never
+leaves one parked beside a job). Per wake mode — the GIL rules,
+`M0_POOL_PARALLEL=1` (the free-threaded default, forced on the container's
+GIL build) and `M0_POOL_ELASTIC=0` (the eager wakes) —
+`scripts/probes/phase5_probe.py` runs that phase twenty times with a fresh
+server each round and `scripts/probes/hold_race_probe.py` opens forty holds
+while three clients keep the loop busy; each must be N of N. The task copies
+the tree into the container and rebuilds there, so it needs Docker and the
+container that `scripts/probes/linux_setup.sh`'s header creates. Pre-release
+rather than CI because CI has no such container and a shared runner's
+scheduler is not the one under test; `M0_STRESS_POOL_ROUNDS` and
+`M0_STRESS_POOL_MODES` tune it.
+
 **`uv run poe autobahn`** — Autobahn|Testsuite against the pinned baseline
 (SPEC I13). Pre-release because it needs Docker and ~ten minutes, and its
 unique value — close-code validation, I16 — is a defect fixed once rather

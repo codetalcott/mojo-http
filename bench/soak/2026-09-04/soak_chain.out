@@ -1,0 +1,6 @@
+FAIL  transcripts wsgi pool8 churn (rc=1) ::   [146.8s] rss=123632kB fds=69 threads=13 conns=9 verified=38063 failures=2735   [150.1s] rss=123904kB fds=69 threads=13 conns=9 verified=38906 failures=2796 soak FAIL: transcripts 
+PASS  bakerydemo wsgi pool8 churn ::   [172.5s] rss=195792kB fds=67 threads=13 conns=8 verified=21046 failures=0   [177.6s] rss=197424kB fds=69 threads=13 conns=8 verified=21667 failures=0   [180.1s] rss=198112kB fds=69 threads=13 conns=9 verified=21972 failures=0 
+PASS  color-separation wsgi pool8 uploads churn ::   [111.4s] rss=1288944kB fds=134 threads=17 conns=9 verified=49401 failures=0   [116.5s] rss=1293104kB fds=132 threads=19 conns=9 verified=51661 failures=0   [120.1s] rss=1295152kB fds=142 threads=17 conns=9 verified=53387 failures=0 
+PASS  color-separation asgi executor ::   [ 81.1s] rss=1577696kB fds=120 threads=21 conns=9 verified=18886 failures=0   [ 86.1s] rss=1596080kB fds=138 threads=20 conns=9 verified=20058 failures=0   [ 90.1s] rss=1596176kB fds=128 threads=20 conns=9 verified=20974 failures=0 
+FAIL  textshelf asgi executor churn (rc=1) :: soak FAIL: 3 of 3 logins failed: RuntimeError('login POST /accounts/login/ answered 200, expected 302') 
+FAIL  textshelf wsgi pool8 no-abandon (rc=1) :: soak FAIL: 3 of 3 logins failed: RuntimeError('login POST /accounts/login/ answered 200, expected 302') 
