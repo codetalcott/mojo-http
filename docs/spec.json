@@ -21,9 +21,9 @@
       "id": "A3",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Keep-alive request cap",
+      "capability": "Keep-alive request cap (`--max-keepalive-requests` / `M0_MAX_KEEPALIVE_REQUESTS`; 0 = never)",
       "status": "verified",
-      "evidence": "`Smoke test the keep-alive request cap` (every PR) \u2014 closes on the cap request, and a stream or WebSocket upgrade landing there survives it; the probe's third phase refuses to pass on a build whose cap never fires. No flag or env var exposes the limit"
+      "evidence": "`Smoke test the keep-alive request cap` (every PR) \u2014 closes on the cap request, and a stream or WebSocket upgrade landing there survives it; the probe's third phase refuses to pass on a build whose cap never fires. The smoke pins the cap at 100 explicitly, so the gate is independent of the default. No flag or env var exposes the limit"
     },
     {
       "id": "A4",

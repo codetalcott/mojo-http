@@ -513,7 +513,9 @@ leak.
 
 Nine of the 6,000 ASGI requests came back truncated, all of them on the same
 124 KB WhiteNoise file, at intervals of exactly 700 requests — every hundredth
-time that route was hit. `max_keepalive_requests` is 100.
+time that route was hit. `max_keepalive_requests` was 100 (the default
+then; 1000 since [notes/pool-tail.md](notes/pool-tail.md), which found the
+cap itself to be the fast route's p99).
 
 Isolated on one connection, and the two faces are the same bug:
 

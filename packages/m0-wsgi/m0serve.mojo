@@ -868,6 +868,10 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     )
     report.add_int(String("server"), String("max_body"), opts.max_body)
     report.add_int(
+        String("server"), String("max_keepalive_requests"),
+        opts.max_keepalive_requests,
+    )
+    report.add_int(
         String("server"), String("idle_timeout"), opts.idle_timeout
     )
     var statics = String("[")

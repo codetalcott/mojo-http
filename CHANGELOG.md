@@ -9,6 +9,18 @@ versions may break the API**.
 
 ### Added
 
+- **`--max-keepalive-requests N` / `M0_MAX_KEEPALIVE_REQUESTS`.** The
+  keep-alive request cap is configurable (0 = never close for count) and
+  reported by `--doctor`; SPEC A3 names it, and the cap smoke pins 100
+  explicitly so the gate is independent of the default.
+- **Pool instruments for the tail question.** Under `M0_POOL_DEBUG=1`
+  each pool thread prints histograms of its ring wait, GIL wait and
+  service at shutdown, and the loop prints how many of its waits
+  returned late past their cap and how many passes ran over 1/2/4/8 ms;
+  `M0_POOL_SPIN_US` sets the idle spin for measurement. Together with
+  the access log they split a request's time into what the server does
+  and what happens between the server and the client, which is how the
+  cap was found (docs/notes/pool-tail.md).
 - **A rendered benchmark table may not be stale.** Bench artifacts record
   the version they measured (`environment.version`), and
   `render_bench_docs.py --check`, inside `check-docs`, refuses the newest
@@ -21,6 +33,17 @@ versions may break the API**.
 
 ### Changed
 
+- **The keep-alive request cap defaults to 1000 (nginx's), from 100.**
+  Every close is a reconnect for the client, and one reconnect per
+  hundred requests IS the client's 99th percentile: the whole of the
+  fast-route tail BENCHMARKS.md conceded to Granian. Measured at equal
+  shape on 3.14t (one worker, four threads, `wrk -c16`, Django, slow
+  views beside): cap 100 p99 0.6–3.8 ms; cap 0 or 1000 0.45–0.64 ms;
+  Granian, which has no cap, 0.51–0.55. Four workers: 1.5–4.0 ms to a
+  flat 1.3, the maxima 25 ms to 5. The server's own header-to-send p99
+  was 0.45–1.35 ms throughout; the loop was never late; GC, the GIL
+  hand-off barrier, QoS placement and the idle spin moved nothing
+  (docs/notes/pool-tail.md).
 - **The zero-config pool serves a trivial view at the one-thread rate.**
   `m0serve app.wsgi` runs `--blocking-threads min(cores, 8)`, and those
   eight threads served a bare WSGI view at 0.67x the one-thread shape on

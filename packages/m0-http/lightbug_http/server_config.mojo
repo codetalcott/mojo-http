@@ -62,7 +62,11 @@ struct ServerConfig(Copyable, Movable):
 
     def __init__(out self):
         self.max_connections = 1024
-        self.max_keepalive_requests = 100
+        # 1000, nginx's default since 1.19.10, from 100: every close is a
+        # reconnect for the client, and one per hundred requests was the
+        # fast route's whole 99th percentile on a loopback benchmark
+        # (docs/notes/pool-tail.md). 0 never closes for count.
+        self.max_keepalive_requests = 1000
 
         self.socket_buffer_size = default_buffer_size
         self.recv_buffer_max = 2 * 1024 * 1024  # a floor; see recv_buffer_limit

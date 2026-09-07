@@ -474,6 +474,20 @@ lightbug_http
         keeps its read side. Each held a spelling the 1.0 changelog
         deprecates (`init_pointee_copy`, `as_immutable`) that the ratchet
         could not see because nothing elaborated it.
+      - server_config.mojo (2026-09-07): `max_keepalive_requests` defaults
+        to 1000 (nginx's since 1.19.10) from 100. The cap closes a
+        keep-alive connection after N requests and every close is a
+        reconnect for the client; one per hundred requests was the fast
+        route's whole 99th percentile on a loopback benchmark, measured
+        against Granian, which has no cap (docs/notes/pool-tail.md). The
+        gateway reaches it through `--max-keepalive-requests` and
+        `M0_MAX_KEEPALIVE_REQUESTS`. offload.mojo / event_loop.mojo, the
+        same day: under `M0_POOL_DEBUG` the pool stamps `submit_ns` whether
+        or not the elastic rules are on and the loop counts its waits
+        (capped, skipped, empty, returned late past the timeout by
+        1/2/4/8 ms) and its passes over 1/2/4/8 ms, printed at shutdown;
+        `M0_POOL_SPIN_US` overrides `POOL_SPIN_NS` for measurement. Four
+        integer adds per pass on the hot path, unconditionally.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

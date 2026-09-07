@@ -156,6 +156,10 @@ struct ServeOptions(Copyable, Movable):
     accepted and ignored elsewhere."""
     var max_body: Int
     """Request body cap in bytes; -1 leaves `ServerConfig`'s default alone."""
+    var max_keepalive_requests: Int
+    """`--max-keepalive-requests`: requests a keep-alive connection may carry
+    before the server closes it (0 = never); -1 leaves the environment's
+    `M0_MAX_KEEPALIVE_REQUESTS` or its default alone."""
     var idle_timeout: Int
     """Seconds a keep-alive connection may sit between requests; -1 leaves
     `ServerConfig`'s default (60) alone.
@@ -230,6 +234,7 @@ struct ServeOptions(Copyable, Movable):
         self.qos = False
         self.spawn_workers = False
         self.max_body = -1
+        self.max_keepalive_requests = -1
         self.idle_timeout = -1
         self.metrics = False
         self.realtime = False
@@ -268,6 +273,7 @@ struct ServeOptions(Copyable, Movable):
         self.qos = copy.qos
         self.spawn_workers = copy.spawn_workers
         self.max_body = copy.max_body
+        self.max_keepalive_requests = copy.max_keepalive_requests
         self.idle_timeout = copy.idle_timeout
         self.metrics = copy.metrics
         self.realtime = copy.realtime
@@ -306,6 +312,7 @@ struct ServeOptions(Copyable, Movable):
         self.qos = move.qos
         self.spawn_workers = move.spawn_workers
         self.max_body = move.max_body
+        self.max_keepalive_requests = move.max_keepalive_requests
         self.idle_timeout = move.idle_timeout
         self.metrics = move.metrics
         self.realtime = move.realtime
@@ -369,13 +376,16 @@ struct ServeOptions(Copyable, Movable):
 
         `--access-log` can only turn logging on (the environment may already
         have); `--max-body`, `--idle-timeout` and `--metrics` are server-only
-        tunings the environment cannot reach and a command line can.
+        tunings the environment cannot reach and a command line can;
+        `--max-keepalive-requests` overrides `M0_MAX_KEEPALIVE_REQUESTS`.
         """
         var sc = base.server_config()
         if self.access_log:
             sc.access_log = True
         if self.max_body >= 0:
             sc.max_request_body_size = self.max_body
+        if self.max_keepalive_requests >= 0:
+            sc.max_keepalive_requests = self.max_keepalive_requests
         if self.idle_timeout >= 0:
             sc.idle_timeout = self.idle_timeout
         sc.enable_metrics = self.metrics
@@ -696,6 +706,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--static"
         or name == "--static-cache-control"
         or name == "--max-body"
+        or name == "--max-keepalive-requests"
         or name == "--idle-timeout"
         or name == "--health-path"
         or name == "--reload-dir"
@@ -808,6 +819,14 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         opts.static_cache_control = value
     elif name == "--max-body":
         opts.max_body = parse_size(value)
+    elif name == "--max-keepalive-requests":
+        var cap = parse_int(value, "--max-keepalive-requests")
+        if cap < 0:
+            raise Error(
+                "--max-keepalive-requests must be 0 (never close for count)"
+                " or a positive count, got '" + value + "'"
+            )
+        opts.max_keepalive_requests = cap
     elif name == "--idle-timeout":
         var idle = parse_int(value, "--idle-timeout")
         if idle < 0:
@@ -960,6 +979,9 @@ def usage() -> String:
         "                              on performance cores under contention (M0_QOS)\n"
         "  --max-body SIZE             request body cap: bytes, or 512k / 64m / 1g\n"
         "                              (default 4m)\n"
+        "  --max-keepalive-requests N  close a keep-alive connection after N\n"
+        "                              requests (default 1000, 0 = never;\n"
+        "                              M0_MAX_KEEPALIVE_REQUESTS)\n"
         "  --idle-timeout SECONDS      close a keep-alive connection left idle\n"
         "                              this long (default 60, 0 = never)\n"
         "  --metrics                   serve Prometheus metrics at /__metrics\n"

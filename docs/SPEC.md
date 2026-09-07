@@ -49,7 +49,7 @@ that found, is in [the traceability note](notes/traceability.md).
 |---|---|---|---|
 | A1 | Persistent connections (keep-alive) | verified | `Smoke test pipelined requests` (every PR) |
 | A2 | The example Mojo server starts and answers `/health` | verified | `Smoke test the hello server` (every PR) |
-| A3 | Keep-alive request cap | verified | `Smoke test the keep-alive request cap` (every PR) — closes on the cap request, and a stream or WebSocket upgrade landing there survives it; the probe's third phase refuses to pass on a build whose cap never fires. No flag or env var exposes the limit |
+| A3 | Keep-alive request cap (`--max-keepalive-requests` / `M0_MAX_KEEPALIVE_REQUESTS`; 0 = never) | verified | `Smoke test the keep-alive request cap` (every PR) — closes on the cap request, and a stream or WebSocket upgrade landing there survives it; the probe's third phase refuses to pass on a build whose cap never fires. The smoke pins the cap at 100 explicitly, so the gate is independent of the default. No flag or env var exposes the limit |
 | A4 | Idle connection timeout, `--idle-timeout` | verified | `Smoke test the idle connection timeout` (every PR) — an answered keep-alive connection left quiet is closed at the deadline and no earlier, and one kept busy across it is not |
 | A5 | Header read timeout (slowloris defence) | verified | `Smoke test the header read timeout` (every PR) |
 | A6 | Request pipelining, answered in order (RFC 9112 §9.3) | verified | `Smoke test pipelined requests` (every PR) |
