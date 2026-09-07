@@ -221,6 +221,13 @@ hook, and `M0_PORT` config.
 `uv run poe serve-notes` runs it; `poe smoke-notes` asserts each feature end to
 end.
 
+The zero-copy end of the same toolkit, in [apps/sbin_store/](apps/sbin_store/server.mojo):
+a directory of binary entities served by `StaticFiles`, so every body goes out
+via `sendfile` with `ETag`/`304` and byte ranges, plus an SSE feed driven from
+the `tick` hook that announces each changed file with the ETag its next `GET`
+will carry. `uv run poe serve-sbin-store` runs it; the end-to-end test lives
+with its producer in [siren-grail](https://github.com/codetalcott/siren-grail).
+
 ## Datastar
 
 `m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.2 wire format, and
