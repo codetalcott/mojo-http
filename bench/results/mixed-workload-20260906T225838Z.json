@@ -18,7 +18,8 @@
     "hold_ms": "200",
     "connections": "16",
     "duration": "10s",
-    "rounds": "2"
+    "rounds": "2",
+    "accepted_drift": "mixed-workload-20260906T220102Z.json"
   },
   "rows": [
     {

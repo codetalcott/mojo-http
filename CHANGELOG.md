@@ -49,6 +49,18 @@ versions may break the API**.
   published numbers were current: the slow-view isolation table was from
   2026-08-26, before the detached loop and the pool hand-off changed its
   rows, and two headline artifacts were stamped "dirty tree".
+- **The benches refuse to lie about their own variance.** Both shell
+  benches refuse to start, and to begin a round, while any process outside
+  their own tree is above half a core across three samples
+  (`scripts/bench_guard.py`, whose selftest runs inside `check-docs`);
+  the mixed-workload artifact records the round and the p99's min and
+  max, its table renders the spread beside each median and
+  `render_bench_docs --check` refuses one with fewer than three rounds;
+  and the check refuses any rendered artifact whose rows moved more than
+  5 % against the comparator rows' own move since the previous one — the
+  contamination signature — unless `--accept-drift` stamped it with the
+  comparison it accepts. Three recordings on 2026-09-06 were wrong in
+  ways the scripts could not see (docs/notes/elastic-pool.md).
 
 ### Changed
 

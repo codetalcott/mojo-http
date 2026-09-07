@@ -55,6 +55,28 @@ the regions' leniency), but a missing ROW inside a present artifact is
 red — that is a renamed participant, and silently keeping the old number
 is how the page starts lying. And the spans carry no tilde, bold or unit;
 those belong to the sentence, so the sentence keeps them.
+
+TWO MORE REFUSALS guard what an artifact can claim, both in ``--check``:
+
+- **A spread, and a floor under it.** The mixed-workload table's claim is
+  "flat", and its fast-route p99 on a GIL build is bimodal — 2–3 ms in one
+  fresh server, 7–8 in the next (docs/notes/elastic-pool.md) — so a
+  two-round median lands on one mode and renders as a fact. The cell now
+  carries the min–max across rounds beside the median, and an artifact
+  with fewer than ``MIN_ROUNDS`` rounds behind any cell is refused.
+- **Comparator drift.** The comparator rows (Granian, uvicorn,
+  ``apps/hello``) exist so a reader can tell machine drift from a code
+  change: when the machine is slower, everything moves together. The
+  contamination signature is the opposite — our rows moved and the
+  comparators did not (three system daemons at a core and a half
+  depressed the pool rows 7 % while hello and Granian moved 2 %). An
+  artifact whose non-comparator row moved more than ``DRIFT_TOLERANCE``
+  against the comparators' own move since the previous artifact of its
+  kind is refused, unless ``--accept-drift`` has stamped it: that writes
+  the previous artifact's name into ``parameters.accepted_drift``, so the
+  acceptance names the comparison it accepted and covers no later one. A
+  real improvement trips this on purpose — the person committing the
+  artifact knows whether the code changed, and says so in the stamp.
 """
 
 import json
@@ -206,6 +228,89 @@ def newest(kind):
 # exactly its rows -- for two releases, because nothing asked.
 BENCH_MAX_MINOR_LAG = 1
 
+# The mixed-workload table renders a spread beside each median, and a
+# spread over two rounds of a bimodal quantity is a coin toss dressed up.
+MIN_ROUNDS = {"mixed-workload": 3}
+
+# The rows whose job is to move with the machine rather than with the
+# code. A non-comparator row that moves against them is contamination or
+# a change, and the artifact's committer knows which.
+COMPARATORS = {
+    "layer-split": {"hello(no python,1proc)", "granian+bare w1", "granian+bare w4"},
+    "asgi-wrk-hello": {"uvicorn asyncio", "uvicorn uvloop"},
+    "asgi-executor": {"uvicorn"},
+    "mixed-workload": {"granian bt=4"},
+}
+DRIFT_TOLERANCE = 0.05
+
+_ROUND_PREFIX = re.compile(r"^r\d+\s+")
+
+
+def folded(d):
+    """Row name -> {"rps": median, "n": rows} with any `rN ` round prefix
+    dropped, so an old-shape mixed-workload artifact (prefix in the name)
+    and a new one (prefix in `round`) fold the same way. For the
+    mixed-workload kind the slow level stays in the name and the config
+    is what the prefix is stripped from; for the others the name is the
+    whole identity."""
+    by = {}
+    for r in d.get("rows", []):
+        name = _ROUND_PREFIX.sub("", r.get("name", "")).strip()
+        if "rps" in r:
+            by.setdefault(name, []).append(r["rps"])
+    return {k: {"rps": statistics.median(v), "n": len(v)} for k, v in by.items()}
+
+
+def rounds_behind(d):
+    """The fewest rows behind any row name -- what a median in this
+    artifact is a median OF, at its thinnest."""
+    f = folded(d)
+    return min((v["n"] for v in f.values()), default=0)
+
+
+def drift_problems(kind, current, previous, current_name, previous_name,
+                   tolerance=DRIFT_TOLERANCE):
+    """The contamination signature, or nothing. Pure over its arguments.
+
+    Each comparator row's move since `previous` estimates what the machine
+    did; a non-comparator row whose move differs from the comparators'
+    median move by more than `tolerance` is flagged, unless `current` was
+    stamped as accepting exactly this comparison. No comparator in common,
+    or no previous artifact, and there is nothing to compare against.
+    """
+    if previous is None:
+        return []
+    if current.get("parameters", {}).get("accepted_drift") == previous_name:
+        return []
+    cur, prev = folded(current), folded(previous)
+    comps = COMPARATORS.get(kind, set())
+
+    def is_comparator(name):
+        # The mixed-workload rows carry their slow level in the name
+        # (`granian bt=4 slow=2`), so a comparator there is a prefix.
+        return name in comps or any(name.startswith(c + " slow=") for c in comps)
+
+    moves = {n: cur[n]["rps"] / prev[n]["rps"] - 1.0
+             for n in cur if n in prev and prev[n]["rps"] > 0}
+    comp_moves = [m for n, m in moves.items() if is_comparator(n)]
+    if not comp_moves:
+        return []
+    machine = statistics.median(comp_moves)
+    out = []
+    for name, move in sorted(moves.items()):
+        if is_comparator(name):
+            continue
+        excess = move - machine
+        if abs(excess) > tolerance:
+            out.append(
+                f"{kind}: `{name}` moved {move:+.1%} since {previous_name} while "
+                f"the comparator rows moved {machine:+.1%} — a {excess:+.1%} "
+                f"divergence, the contamination signature (or a real change). "
+                f"Re-record on a quiet machine, or if the code changed run "
+                f"`render_bench_docs.py --accept-drift` and commit the stamp"
+            )
+    return out
+
 
 def tree_version(pyproject_text):
     m = re.search(r'^version = "(\d+)\.(\d+)\.(\d+)"', pyproject_text, re.M)
@@ -232,6 +337,16 @@ def provenance_problems(kind, artifact, current):
             "the commit it names is not the code it measured; re-record it "
             "on a clean checkout"
         )
+    floor = MIN_ROUNDS.get(kind)
+    if floor and artifact.get("rows"):
+        have = rounds_behind(artifact)
+        if have < floor:
+            out.append(
+                f"{kind}: the newest artifact has {have} round(s) behind its "
+                f"thinnest row; the rendered spread needs at least {floor} "
+                "(a two-round median of a bimodal tail is a coin toss) -- "
+                "re-run the bench with BENCH_ROUNDS>=3 and commit the artifact"
+            )
     recorded = env.get("version")
     m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", recorded or "")
     if not m:
@@ -253,16 +368,50 @@ def provenance_problems(kind, artifact, current):
     return out
 
 
+def previous(kind):
+    files = sorted(RESULTS.glob(f"{kind}-*.json"))
+    return files[-2] if len(files) > 1 else None
+
+
 def check_provenance():
-    """Every rendered kind's newest artifact, against the tree's version."""
+    """Every rendered kind's newest artifact: against the tree's version,
+    and against the artifact before it for comparator drift."""
     current = tree_version((REPO / "pyproject.toml").read_text())
     problems = []
     for kind in RENDERERS:
         path = newest(kind)
         if path is None:
             continue
-        problems += provenance_problems(kind, json.loads(path.read_text()), current)
+        art = json.loads(path.read_text())
+        problems += provenance_problems(kind, art, current)
+        prev = previous(kind)
+        problems += drift_problems(
+            kind, art, json.loads(prev.read_text()) if prev else None,
+            path.name, prev.name if prev else None)
     return problems
+
+
+def accept_drift():
+    """Stamp every flagged newest artifact with the comparison it accepts.
+
+    Writes `parameters.accepted_drift = <previous artifact name>`; the
+    stamp is part of the artifact, so it is committed beside the numbers
+    it excuses and covers no later comparison."""
+    stamped = []
+    for kind in RENDERERS:
+        path, prev = newest(kind), previous(kind)
+        if path is None or prev is None:
+            continue
+        art = json.loads(path.read_text())
+        if not drift_problems(kind, art, json.loads(prev.read_text()), path.name, prev.name):
+            continue
+        art.setdefault("parameters", {})["accepted_drift"] = prev.name
+        path.write_text(json.dumps(art, indent=2) + "\n")
+        stamped.append(f"{path.name} (against {prev.name})")
+    if stamped:
+        print("accepted comparator drift in " + ", ".join(stamped))
+    else:
+        print("no comparator drift to accept")
 
 
 def participants(d):
@@ -389,7 +538,7 @@ def render_isolation_table(kind, path, d):
         if " slow=" not in name:
             continue
         config, _, slow = name.rpartition(" slow=")
-        config = re.sub(r"^r\d+\s+", "", config).strip()
+        config = _ROUND_PREFIX.sub("", config).strip()
         levels.add(slow)
         groups.setdefault(config, {}).setdefault(slow, []).append(row)
 
@@ -399,6 +548,7 @@ def render_isolation_table(kind, path, d):
         "| configuration | " + " | ".join(f"slow={s}" for s in order) + " |",
         "|---" * (len(order) + 1) + "|",
     ]
+    rounds = set()
     for config in groups:
         cells = []
         for slow in order:
@@ -406,13 +556,21 @@ def render_isolation_table(kind, path, d):
             if not rs:
                 cells.append("—")
                 continue
-            p99 = statistics.median(r["p99_us"] for r in rs) / 1000.0
-            cells.append(f"{p99:,.1f} ms")
+            p99s = [r["p99_us"] / 1000.0 for r in rs]
+            rounds.add(len(p99s))
+            cell = f"{statistics.median(p99s):,.1f} ms"
+            # The spread is the claim's own error bar: a median that hides
+            # a 2-8 ms range is not "flat", it is one mode of two.
+            if len(p99s) > 1:
+                cell += f" ({min(p99s):,.1f}–{max(p99s):,.1f})"
+            cells.append(cell)
         lines.append(f"| `{config}` | " + " | ".join(cells) + " |")
+    nrounds = (f"{min(rounds)}" if len(rounds) == 1 else f"{min(rounds)}–{max(rounds)}") if rounds else "?"
     lines += [
         "",
-        "Fast-route p99, median across rounds, as concurrent slow requests"
-        " are added. A row that stays flat isolated the slow work; a row"
+        f"Fast-route p99 as concurrent slow requests are added: the median"
+        f" across {nrounds} rounds, with the min–max across those rounds in"
+        " parentheses. A row that stays flat isolated the slow work; a row"
         " that climbs toward the slow view's hold time had its connections"
         " stranded behind it. Both halves run in one pass, because a"
         " control that stops failing has stopped measuring anything.",
@@ -598,6 +756,84 @@ def selftest():
     if tree_version('x\nversion = "0.18.0"\n') != (0, 18, 0):
         print("  MISSED          tree_version does not read pyproject"); ok = False
 
+    # The spread and the floor under it: a doctored mixed-workload artifact
+    # with the round prefix in the name (the shape recorded before 2026-09-06)
+    # and one with it in `round`, three rounds and two.
+    def mixed(rounds, prefixed):
+        rows = []
+        for r in range(1, rounds + 1):
+            for slow, p99 in (("0", 2600.0 + 1000 * r), ("2", 4100.0 + 3000 * r)):
+                name = f"--workers 4 +bt=4 slow={slow}"
+                row = {"name": (f"r{r} " + name) if prefixed else name,
+                       "rps": 55_000.0, "p99_us": p99}
+                if not prefixed:
+                    row["round"] = r
+                rows.append(row)
+        return {"environment": art()["environment"], "rows": rows,
+                "recorded_utc": "2026-09-06T00:00:00+00:00", "parameters": {}}
+
+    class _P:
+        name = "mixed-workload-20260906T000000Z.json"
+
+    table = "\n".join(render_isolation_table("mixed-workload", _P(), mixed(3, prefixed=False)))
+    cell_ok = "(3.6–5.6)" in table and "3 rounds" in table
+    print(f"  {'caught' if cell_ok else 'MISSED'}          the isolation table renders min–max beside the median")
+    ok &= cell_ok
+    table_old = "\n".join(render_isolation_table("mixed-workload", _P(), mixed(3, prefixed=True)))
+    fold_ok = table_old.count("| `--workers 4 +bt=4` |") == 1 and "(3.6–5.6)" in table_old
+    print(f"  {'caught' if fold_ok else 'MISSED'}          (control: the old row shape, prefix in the name, folds the same way)")
+    ok &= fold_ok
+    got = provenance_problems("mixed-workload", mixed(2, prefixed=False), (0, 18, 0))
+    two_ok = any("at least 3" in g for g in got)
+    print(f"  {'caught' if two_ok else 'MISSED'}          a mixed-workload artifact with two rounds")
+    ok &= two_ok
+    got = provenance_problems("mixed-workload", mixed(3, prefixed=True), (0, 18, 0))
+    print(f"  {'caught' if not got else 'MISSED'}          (control: three rounds pass the floor, old shape included)")
+    ok &= not got
+    got = provenance_problems("layer-split", {"environment": art()["environment"], "rows": [{"name": "x", "rps": 1.0}]}, (0, 18, 0))
+    print(f"  {'caught' if not got else 'MISSED'}          (control: the floor is the mixed table's, not every kind's)")
+    ok &= not got
+
+    # Comparator drift: the contamination signature is flagged, uniform
+    # machine drift is not, and the acceptance stamp names its comparison.
+    def layer(hello, gran, m0):
+        return {"parameters": {}, "rows": [
+            {"name": "hello(no python,1proc)", "rps": hello},
+            {"name": "granian+bare w1", "rps": gran},
+            {"name": "m0serve+bare w1 bt1", "rps": m0},
+        ]}
+
+    prev = layer(196_000, 188_000, 184_000)
+
+    def drift(label, cur, needle, kind="layer-split", previous=prev, pname="layer-split-prev.json"):
+        nonlocal ok
+        got = drift_problems(kind, cur, previous, "layer-split-cur.json", pname)
+        if needle is None:
+            fine = not got
+            print(f"  {'caught' if fine else 'MISSED'}          (control: {label}){'' if fine else ' -- ' + str(got)}")
+        else:
+            fine = any(needle in g for g in got)
+            print(f"  {'caught' if fine else 'MISSED'}          {label}{'' if fine else ' -- got ' + str(got)}")
+        ok &= fine
+
+    drift("our row down 10% while the comparators held", layer(196_000, 188_000, 165_600), "contamination signature")
+    drift("our row up 49% while the comparators held (a real change trips it too)", layer(196_000, 188_000, 274_000), "contamination signature")
+    drift("everything down 8% together", layer(180_300, 173_000, 169_300), None)
+    drift("a 3% divergence, inside the tolerance", layer(196_000, 188_000, 178_500), None)
+    accepted = layer(196_000, 188_000, 165_600); accepted["parameters"]["accepted_drift"] = "layer-split-prev.json"
+    drift("the stamp naming this comparison accepts it", accepted, None)
+    stale = layer(196_000, 188_000, 165_600); stale["parameters"]["accepted_drift"] = "layer-split-older.json"
+    drift("a stamp naming an OLDER comparison does not", stale, "contamination signature")
+    drift("no previous artifact", layer(196_000, 188_000, 165_600), None, previous=None, pname=None)
+    no_comp = {"rows": [{"name": "m0serve+bare w1 bt1", "rps": 184_000}]}
+    drift("no comparator in common", layer(196_000, 188_000, 165_600), None, previous=no_comp)
+    mprev = mixed(2, prefixed=True); mprev["rows"] += [{"name": "r1 granian bt=4 slow=0", "rps": 50_000.0, "p99_us": 600.0}, {"name": "r2 granian bt=4 slow=0", "rps": 49_800.0, "p99_us": 600.0}]
+    mcur = mixed(3, prefixed=False); mcur["rows"] += [{"name": "granian bt=4 slow=0", "rps": 49_500.0, "p99_us": 600.0, "round": 1}]
+    for r in mcur["rows"]:
+        if r["name"].startswith("--workers"):
+            r["rps"] = 79_000.0
+    drift("the mixed kind folds both row shapes before comparing (55k -> 79k against a flat Granian)", mcur, "contamination signature", kind="mixed-workload", previous=mprev, pname="mixed-workload-prev.json")
+
     print("render_bench_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -606,6 +842,10 @@ def main():
     if "--selftest" in sys.argv:
         sys.exit(0 if selftest() else 1)
     check = "--check" in sys.argv
+    if "--accept-drift" in sys.argv:
+        if check:
+            sys.exit("--accept-drift stamps artifacts; it cannot be combined with --check")
+        accept_drift()
     problems = check_provenance()
     if problems:
         sys.exit("render_bench_docs: a rendered artifact is not current:\n  - "

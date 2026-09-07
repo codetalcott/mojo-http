@@ -1356,7 +1356,16 @@ same `@rpath` reason as `bin/m0serve`.
 decision: its `+bt=N` rows must stay flat under slow load, and its rows
 without the flag must keep showing the ~120x degradation. A control that
 stops failing has stopped measuring anything, which is why both halves are
-in one script and one run. `granian` is not in this repo's lock file, so a
+in one script and one run. It runs three rounds at least and the table
+renders the min–max across them beside each median, because the pooled
+rows' p99 on a GIL build is bimodal — 2–3 ms in one fresh server, 7–8 in
+the next ([notes/elastic-pool.md](notes/elastic-pool.md)) — and a
+two-round median of that is one mode presented as a fact. Both shell
+benches also refuse to run while any process outside their own tree is
+busy (`scripts/bench_guard.py`; the layer split's TIME_WAIT gate, applied
+to CPU), and `render_bench_docs.py --check` refuses an artifact whose
+rows moved against the comparators' since the previous one unless
+`--accept-drift` stamped it. `granian` is not in this repo's lock file, so a
 swapped venv has none and its row is skipped; that row is a reference, not
 the gate.
 

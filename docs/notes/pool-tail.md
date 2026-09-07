@@ -193,3 +193,38 @@ is the next step, and BENCHMARKS.md's concession is rewritten with it.
   is a TCP-level policy with the same shape on both kernels, only the
   `TIME_WAIT` arithmetic differing (Linux holds a port 60 s across a
   28,000-port range).
+
+## The mixed-workload table, re-recorded
+
+`scripts/bench_mixed_workload.sh` under the 3.14t swap on the tree with
+the cap at 1000, three rounds, the equal-shape row added
+(`bench/results/mixed-workload-20260907T032546Z.json`, against
+`mixed-workload-20260906T225838Z.json`), fast-route p99 medians with the
+min–max across rounds:
+
+| configuration | slow=0 | slow=1 | slow=2 | fast rps |
+|---|---:|---:|---:|---:|
+| `--workers 4` (the control) | 0.8 ms (0.8–0.8) | 189.7 (188.7–191.0) | 193.6 (192.4–194.0) | 60k |
+| `--threads 4` (the control) | 0.7 (0.7–0.7) | 192.7 (191.2–195.5) | 198.4 (196.8–199.6) | 60k |
+| `--workers 4 +bt=4` | 1.4 (1.4–1.5) | 1.3 (1.3–1.3) | 1.3 (1.3–1.3) | 62–66k |
+| `--threads 4 +bt=4` | 0.9 (0.9–0.9) | 0.9 (0.9–0.9) | 0.9 (0.9–1.0) | 45–47k |
+| **`--workers 1 +bt=4`** — Granian's shape | **0.5 (0.5–0.5)** | **0.4 (0.4–0.5)** | **0.5 (0.5–0.6)** | 50–58k |
+| granian bt=4 | 0.5 (0.5–0.6) | 0.5 (0.5–0.5) | 0.5 (0.5–0.5) | 48–53k |
+
+The pooled rows are flat to the tenth of a millisecond across three
+rounds where the previous artifact's two-round medians read 2.6 / 2.8 /
+4.1; the equal-shape row and Granian's are the same row; the controls
+still fail by a factor of two hundred, which is what they are for.
+
+One number in the artifact is recorded rather than explained. The
+`--workers 4` control's fast-route THROUGHPUT is 60k against 80k in the
+two recordings of 2026-09-06 — and against 55–58k in every recording
+before them, so 80k was the outlier. A pinned-3.13 A/B on that shape,
+two rounds each with a 32 s drain, rules out the two mechanisms this note
+touches: cap 1000 91.5k / 91.5k, cap 100 89.8k / 92.4k, `M0_ACCEPT_SHARE=0`
+90.9k / 91.6k. The row's p99 fell from 4.0 ms to 0.8 with the reconnects
+gone, and its throughput is not a claim the table makes; the comparator
+drift check flagged it, as it should, and the artifact carries the
+acceptance stamp for the cap change that the same check flagged on the
+pooled rows.
+

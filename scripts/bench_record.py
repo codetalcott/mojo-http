@@ -64,10 +64,14 @@ _MODES_ROW = re.compile(
     r"\s+\|\s+rss\s+(?P<rss_kb>\d+)\s+KB"
 )
 
-# bench_mixed_workload.sh (no rounds; the config IS the row identity):
-#   m0serve --workers 4 +bt=4        slow=4  fast rps  12345.67 p50 ...
+# bench_mixed_workload.sh (the config plus the slow level IS the row
+# identity; the round prefix is recorded separately so repeats of one
+# configuration fold together in `medians()` -- until 2026-09-06 the prefix
+# stayed in the name, so the artifact's medians were per round and only the
+# renderer folded them):
+#   r1 --workers 4 +bt=4        slow=4  fast rps  12345.67 p50 ...
 _MIXED_ROW = re.compile(
-    r"^(?P<name>\S.*?)\s+slow=(?P<slow>\d+)\s+fast rps\s+(?P<rps>[\d.]+)"
+    r"^(?:r(?P<round>\d+)\s+)?(?P<name>\S.*?)\s+slow=(?P<slow>\d+)\s+fast rps\s+(?P<rps>[\d.]+)"
     r"\s+p50\s+(?P<p50>[\d.]+)(?P<p50u>us|ms|s)"
     r"\s+p90\s+(?P<p90>[\d.]+)(?P<p90u>us|ms|s)"
     r"\s+p99\s+(?P<p99>[\d.]+)(?P<p99u>us|ms|s)"
@@ -127,7 +131,7 @@ def _parse_mixed_workload(text):
         if not m:
             continue
         d = m.groupdict()
-        rows.append({
+        row = {
             # slow-load level folded into the identity: the same server
             # config under slow=0 and slow=4 are different measurements.
             "name": f"{d['name'].strip()} slow={d['slow']}",
@@ -136,7 +140,10 @@ def _parse_mixed_workload(text):
             "p90_us": float(d["p90"]) * _US[d["p90u"]],
             "p99_us": float(d["p99"]) * _US[d["p99u"]],
             "max_us": float(d["max"]) * _US[d["maxu"]],
-        })
+        }
+        if d["round"]:
+            row["round"] = int(d["round"])
+        rows.append(row)
     return rows
 
 
@@ -240,16 +247,27 @@ def environment():
 
 
 def medians(rows):
+    """Per row name: the median rps (and cores) across rounds, plus the p99
+    as median, min and max and the number of rounds behind them. The
+    spread is recorded because a median alone cannot say whether the
+    rounds agreed: the mixed-workload fast-route p99 is bimodal on a GIL
+    build (2-3 ms or 7-8 ms per fresh server) and a two-round median of it
+    is a coin toss that renders as a fact."""
     by_name = {}
     for r in rows:
         by_name.setdefault(r["name"], []).append(r)
     out = {}
     for name, rs in by_name.items():
-        med = {"rps": statistics.median(r["rps"] for r in rs)}
+        med = {"rps": statistics.median(r["rps"] for r in rs), "rounds": len(rs)}
         cores = [r["cores"] for r in rs if "cores" in r]
         if cores:
             med["cores"] = statistics.median(cores)
             med["rps_per_core"] = round(med["rps"] / max(med["cores"], 0.01))
+        p99 = [r["p99_us"] for r in rs if "p99_us" in r]
+        if p99:
+            med["p99_us"] = statistics.median(p99)
+            med["p99_us_min"] = min(p99)
+            med["p99_us_max"] = max(p99)
         out[name] = med
     return out
 

@@ -34,7 +34,12 @@ OUT=${BENCH_OUT:-/tmp/bench_mixed_workload.txt}; : > "$OUT"
 DUR=${BENCH_DURATION:-10s}
 CONNS=${BENCH_CONNS:-16}
 HOLD=${BENCH_HOLD_MS:-200}
-ROUNDS=${BENCH_ROUNDS:-2}
+# Three rounds is the floor, not a default: the fast-route p99 on a GIL
+# build is bimodal (2-3 ms in one fresh server, 7-8 in the next;
+# docs/notes/elastic-pool.md), so a two-round median lands on one mode
+# and the rendered spread beside it would be a coin toss. The renderer
+# refuses to render a mixed-workload artifact with fewer.
+ROUNDS=${BENCH_ROUNDS:-3}
 COOL=${BENCH_COOLDOWN:-5}
 
 HDRS=(-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
@@ -44,6 +49,23 @@ HDRS=(-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKi
       -H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document' -H 'Referer: http://127.0.0.1:8080/')
 
 field() { echo "$1" | awk -v pat="$2" '$0 ~ pat {print $2; exit}'; }
+
+# A quiet-machine gate, the CPU twin of the TIME_WAIT gate: refuse to
+# record while any process outside this benchmark's own process tree is
+# above half a core across three samples a second apart (WindowServer
+# idles at 5-30% of one on an active display; the contamination this
+# guards against was a core and a half). Contamination
+# that depressed the pool rows 7% while the comparators moved 2% was three
+# system daemons at a core and a half (docs/notes/elastic-pool.md); a run
+# that starts under it is a run that will be discarded, so it does not
+# start. Checked before the first row and at the top of every round,
+# because a daemon that wakes mid-run contaminates every row after it.
+quiet_or_die() {
+  python3 "$(dirname "$0")/bench_guard.py" wait --threshold 50 --samples 3 --timeout 120 2>&1 | tee -a "$OUT"
+  # `tee` hides the guard's status; PIPESTATUS carries it.
+  [ "${PIPESTATUS[0]}" -eq 0 ] \
+    || { echo "refusing to record on a busy machine (see above); no artifact is written" | tee -a "$OUT"; exit 1; }
+}
 
 slow_pids=""
 start_slow() {   # $1 = how many concurrent slow requests to keep in flight
@@ -97,6 +119,7 @@ stop() { stop_slow; kill -TERM $pid 2>/dev/null; for q in $(pgrep -P $pid 2>/dev
 trap 'stop_slow' EXIT
 
 echo "hold=${HOLD}ms  connections=$CONNS  duration=$DUR" | tee -a "$OUT"
+[ "$ROUNDS" -ge 3 ] || echo "WARN: BENCH_ROUNDS=$ROUNDS is under the renderer's floor of 3; the artifact will be recorded and then refused by render_bench_docs --check" | tee -a "$OUT"
 
 # All three slow levels run against ONE warm server per configuration. The
 # baseline (slow=0) is then the same process, warmed the same way, seconds
@@ -116,7 +139,9 @@ sweep() {   # $1 = label
 
 GRANIAN=$(cd "${BENCH_VENV:-.venv}/bin" && pwd)/granian
 SRVLOG=$(mktemp)
+quiet_or_die
 for round in $(seq 1 $ROUNDS); do
+  quiet_or_die
   for n in 4; do
     : > "$SRVLOG"
     bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --workers $n > "$SRVLOG" 2>&1 & pid=$!
@@ -133,6 +158,14 @@ for round in $(seq 1 $ROUNDS); do
     : > "$SRVLOG"
     bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --threads $n --blocking-threads $n > "$SRVLOG" 2>&1 & pid=$!
     sweep "r$round --threads $n +bt=$n"; stop
+    # Granian's shape exactly: ONE worker with a pool of $n. The rows above
+    # are $n loops with a pool of $n each; Granian's row below is one worker,
+    # so the comparison across the table was four processes against one
+    # until 2026-09-07 (docs/notes/pool-tail.md). This row and the next are
+    # the same shape, same machine, same minute.
+    : > "$SRVLOG"
+    bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --workers 1 --blocking-threads $n > "$SRVLOG" 2>&1 & pid=$!
+    sweep "r$round --workers 1 +bt=$n"; stop
     if [ -x ${BENCH_VENV:-.venv}/bin/granian ]; then
       : > "$SRVLOG"
       ( cd apps/django_wsgi && exec "${GRANIAN}" --interface wsgi --workers 1 \

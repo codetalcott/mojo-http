@@ -247,27 +247,38 @@ The control is the point. Both halves run in one pass, so the rows without
 the flag have to keep failing for the rows with it to mean anything.
 
 <!-- generated: mixed-workload -- edit bench/results, not this table -->
-Source: [`mixed-workload-20260906T225838Z.json`](../bench/results/mixed-workload-20260906T225838Z.json) — 2026-09-06T22:58:38+00:00, commit `a00eb84`.
-Environment: Python 3.14.7 free-threading build; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 2 rounds, medians.
+Source: [`mixed-workload-20260907T032546Z.json`](../bench/results/mixed-workload-20260907T032546Z.json) — 2026-09-07T03:25:46+00:00, commit `9f0511b`.
+Environment: Python 3.14.7 free-threading build; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | configuration | slow=0 | slow=1 | slow=2 |
 |---|---|---|---|
-| `--workers 4` | 2.5 ms | 189.6 ms | 195.6 ms |
-| `--threads 4` | 1.9 ms | 192.1 ms | 197.5 ms |
-| `--workers 4 +bt=4` | 2.6 ms | 2.8 ms | 4.1 ms |
-| `--threads 4 +bt=4` | 2.1 ms | 2.6 ms | 3.2 ms |
-| `granian bt=4` | 0.6 ms | 0.5 ms | 0.6 ms |
+| `--workers 4` | 0.8 ms (0.8–0.8) | 189.7 ms (188.7–191.0) | 193.6 ms (192.4–194.0) |
+| `--threads 4` | 0.7 ms (0.7–0.7) | 192.7 ms (191.2–195.5) | 198.4 ms (196.8–199.6) |
+| `--workers 4 +bt=4` | 1.4 ms (1.4–1.5) | 1.3 ms (1.3–1.3) | 1.3 ms (1.3–1.3) |
+| `--threads 4 +bt=4` | 0.9 ms (0.9–0.9) | 0.9 ms (0.9–0.9) | 0.9 ms (0.9–1.0) |
+| `--workers 1 +bt=4` | 0.5 ms (0.5–0.5) | 0.4 ms (0.4–0.5) | 0.5 ms (0.5–0.6) |
+| `granian bt=4` | 0.5 ms (0.5–0.6) | 0.5 ms (0.5–0.5) | 0.5 ms (0.5–0.5) |
 
-Fast-route p99, median across rounds, as concurrent slow requests are added. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
+Fast-route p99 as concurrent slow requests are added: the median across 3 rounds, with the min–max across those rounds in parentheses. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
 <!-- /generated: mixed-workload -->
 
-**And the comparator's row is better than ours.** Granian's own
-`--blocking-threads` is the architecture this feature copied, and its
-fast-route p99 stays at ~0.6 ms across all three slow levels — flat, like
-ours, but roughly 4x lower than our best row and 12x lower than
-`--workers 4 +bt=4`. So the honest claim is the one about the *stall*: the
-pool removes a hundredfold failure that is there without it. It does not
-also win the tail that remains.
+**The comparator's row and ours are the same row at the same shape.**
+Granian's own `--blocking-threads` is the architecture this feature
+copied, and its row is ONE worker with a pool of four; the `--workers 4`
+and `--threads 4` rows are four loops with a pool of four each, so the
+`--workers 1 +bt=4` row is the like-for-like comparison. Until 2026-09-07
+that comparison read 2–4 ms against 0.5–0.6, and the whole difference was
+a policy, not a path: the keep-alive request cap was 100, so the server
+closed every connection after its hundredth request, the client
+reconnected, and one reconnect per hundred requests is a 99th percentile
+by construction — invisible to every server-side instrument, because it
+sits between one response's last byte and the next request's first.
+Granian has no such cap. The cap is 1000 now (nginx's) and configurable
+(`--max-keepalive-requests`, 0 = never), and the spread column beside
+each median says how far the rounds agreed. The four-loop rows carry
+what is left: four processes' worth of parallel Python threads beside the
+client on one ten-core laptop. The record, with the instruments and the
+A/B, is [notes/pool-tail.md](notes/pool-tail.md).
 
 That row could not appear in this repository's earlier record of this
 benchmark, which noted granian was absent because it is not in the lock
