@@ -766,6 +766,8 @@ uv run poe check-warnings compile.log --update   # after genuinely fixing some
 # Benchmark runs leave environment-stamped artifacts in bench/results/;
 # the doc table renders from the newest one.
 uv run poe check-docs         # fails naming the drifted fact
+# BENCHMARKS.md prose: a figure is a num span or sits in an `observed: WHERE`
+# block; a bare one fails check-docs naming its line. Cut sentences freely.
 uv run poe render-bench-docs  # after committing a new bench artifact
 uv run poe render-spec        # after editing docs/SPEC.md's capability tables
 uv run poe sabotage-spec      # revert each spec-sheet rule; all must be caught

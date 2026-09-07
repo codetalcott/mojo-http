@@ -7,11 +7,13 @@ artifacts and compared at the precision they are written to. Both are
 CI-checked: a hand-edited table, or a sentence whose number has drifted,
 fails the build naming the file.
 
-Two figures are **not** covered by that, and each says so where it appears:
-the performance/efficiency core split and the cross-session variance
-number. Both are recorded observations from before the artifact system
-existed. The slow-view isolation result used to be the third and largest of
-them; it has an artifact now.
+Figures that no artifact backs — the performance/efficiency core split,
+the cross-session variance number, and the history of how each row got
+where it is — are marked as recorded observations in the page's source,
+each naming where it was observed, and the same check refuses a figure in
+the prose that is neither a recomputed span nor inside such a paragraph.
+The slow-view isolation result used to be the largest unbacked claim here;
+it has an artifact now.
 
 That is the only unusual claim this page makes. The performance claims
 themselves are mixed: **m0serve is not the fastest server in this
@@ -24,7 +26,7 @@ line falls.
 
 Five caveats, stated before the numbers rather than under them.
 
-- **Within-run ratios are the signal; absolute rows are not.** Identical
+- <!-- observed: cross-session runs from before the artifact system, 2026-08 -->**Within-run ratios are the signal; absolute rows are not.** Identical
   binaries move ~1.5x in absolute rps across sessions on this hardware,
   from thermal and load state alone (recorded observation, not an
   artifact). Compare rows inside one table, never a
@@ -33,8 +35,8 @@ Five caveats, stated before the numbers rather than under them.
   sampled `%cpu` of the pids on the listen socket. The column exists
   because it caught a real error: a comparator invoked as `--workers 1` was
   running ~<!-- num:granian-w1-cores@2 -->1.76<!-- /num --> cores across its runtime's I/O threads, so every earlier
-  raw-rps ratio had been comparing 1.75 cores against one.
-- **The benchmark box has performance and efficiency cores** (Apple M4, 4P
+  raw-rps ratio had been comparing that many cores against one.
+- <!-- observed: one worker pinned to background QoS, 2026-08; not re-measured -->**The benchmark box has performance and efficiency cores** (Apple M4, 4P
   + 6E). An E-core serves this workload at 18.6k rps against a P-core's
   81.7k — 4.4x slower (measured by pinning a worker to background QoS; not
   an artifact). So per-core rows are comparable only where the
@@ -111,24 +113,25 @@ is the finding:
 - zero-config, what `m0serve app.wsgi` runs, serves **<!-- num:m0-zero-config-rps-k@1 -->184.4<!-- /num -->k
   rps** on a pool of eight handler threads
 
-What the split prices is the bridge: the 1.44x on the inline row is real
-and it is m0serve's own. What it cannot say is which thread bounds the
+What the split prices is the bridge: the
+<!-- num:bridge-tax@2 -->1.67<!-- /num -->x on the inline row is real and
+it is m0serve's own. What it cannot say is which thread bounds the
 one-handler-thread row, because rps per core averages two threads that do
 different work. Measured per thread
 ([notes/loop-thread-bound.md](notes/loop-thread-bound.md)), that row was
-bound by the event-loop thread, at 7.2 µs of CPU per request against
-5.3 µs for Granian's tokio thread while the Python thread idled a third
-of the time. Two changes since closed that gap on the loop: the pool
-handoff moved into memory, taking the 1.2 µs of datagram syscalls
+bound by the event-loop thread, which cost more CPU per request than
+Granian's tokio thread while the Python thread idled a third of the time.
+Two changes since closed that gap on the loop: the pool handoff moved
+into memory, taking its datagram syscalls with it
 ([notes/pool-ring-handoff.md](notes/pool-ring-handoff.md)), and the
 header path — lookups, inserts, the token scanner, the receive copy —
 was rebuilt against the on-CPU profile
 ([notes/loop-user-space.md](notes/loop-user-space.md)). The loop thread
-now costs what the tokio thread does per request, 5.1 µs at 16
-connections and 4.7 at 256 in the same session, and the two rows are
-within 3 % of each other. The bridge itself, the environ build and the
-response read, was cheaper per request than Granian's PyO3 crossing
-throughout, which is why bridge work was never the lever.
+now costs what the tokio thread does per request, and the two rows are
+<!-- num:w1-rps-gap-pct@1 -->2.4<!-- /num --> % apart in throughput. The
+bridge itself, the environ build and the response read, was cheaper per
+request than Granian's PyO3 crossing throughout, which is why bridge work
+was never the lever. The per-thread figures are in the three notes.
 
 Until 2026-09-05 the head-to-head row was the inline one. An explicit
 `--workers 1` switches the zero-config pool off, so the table compared the
@@ -138,11 +141,10 @@ same-shape pair is the comparison now.
 
 **What this table cannot tell you is how much Granian's own bridge costs**,
 because there is no Granian-without-Python row to divide by. Per thread it
-can be read off a profile, and the note linked above puts Granian's Python
-thread at about 4.3 µs per request against this server's pool thread at
-5.1, of which 1.4 is the handoff. Quoting the hello row against Granian
-would be comparing a server that runs no Python to one that does. It is on
-this page because it prices the bridge, not because it is a win.
+can be read off a profile, and the loop-thread note does that for both
+servers' Python threads. Quoting the hello row against Granian would be
+comparing a server that runs no Python to one that does. It is on this
+page because it prices the bridge, not because it is a win.
 
 ## ASGI throughput
 
@@ -163,31 +165,37 @@ Cores are measured (sampled `%cpu` of the pids on the listen socket), not config
 <!-- /generated: asgi-wrk-hello -->
 
 **The cores column is the story of this row.** The executor used to lose
-it at 0.83–0.90 cores against uvicorn's 0.99 — wakeup-bound, every request
+it, running under one core against uvicorn's one: every request was
 serialized through loop thread → submit datagram → executor thread →
 completion datagram → loop thread, both threads idling between handoffs.
-Batching the pump (2026-08-27) and letting Python call into Mojo per event
-took it to 1.06x `uvicorn --loop asyncio` at 0.99 cores. Then the
-instrument said why it was still one core with two threads: the loop
-re-acquired the GIL after every wake and was blocked in that acquire
-16–45 % of wall time, so its parsing and writing never overlapped the
-executor's Python. Since 2026-09-04 the loop holds no thread state while it
-serves (`docs/notes/detached-loop.md`), and this row runs at 1.59 cores:
-**<!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio`** and
-<!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop in requests per second, 1.25x and
-0.87x per core. At 256 connections (`asgi-wrk-conns`, same afternoon) the
-executor does 173k on 1.77 cores against uvicorn asyncio's 59k and uvloop's
-76k on one — 1.65x and 1.26x per core — so per core it is ahead of both at
-saturation and behind uvloop at low concurrency, where the executor
-thread's own per-request work is the bound. That work was cut by a third
-the same day (`docs/notes/executor-python-objects.md`: the head read
-through the C API, the scope built in Mojo, one request object instead of
-three closures), which is the move from 0.80x to 0.87x of uvloop per core
-at 16 connections and from 163k to 173k at 256. Read it as a process that can
-use two cores against one that cannot, not as one thread beating another;
-the concurrency tables and the loop-by-loop comparison are in
-[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
+Since 2026-09-04 the loop holds no thread state while it serves
+([notes/detached-loop.md](notes/detached-loop.md)), so its parsing and
+writing overlap the executor's Python, and this row runs at
+<!-- num:asgi-m0-cores@2 -->1.60<!-- /num --> cores:
+**<!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio`**
+and <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop in
+requests per second, <!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x
+and <!-- num:asgi-per-core-vs-uvloop@2 -->0.87<!-- /num -->x per core. Read
+it as a process that can use two cores against one that cannot, not as one
+thread beating another; the concurrency tables and the loop-by-loop
+comparison are in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
 
+<!-- observed: notes/detached-loop.md, notes/executor-python-objects.md and the artifact asgi-wrk-conns-20260904T132016Z.json record these runs -->
+How it got there, with the numbers of the runs that found each step:
+batching the pump (2026-08-27) and letting Python call into Mojo per event
+took the executor from 0.83–0.90 cores to 1.06x `uvicorn --loop asyncio`
+at 0.99 cores; the instrument then showed the loop blocked in its GIL
+re-acquire 16–45 % of wall time, which detaching it removed. At 256
+connections (`asgi-wrk-conns`, recorded 2026-09-04) the executor did 173k
+on 1.77 cores against uvicorn asyncio's 59k and uvloop's 76k on one —
+1.65x and 1.26x per core — so per core it is ahead of both at saturation
+and behind uvloop at low concurrency, where the executor thread's own
+per-request work is the bound. That work was cut by a third the same day
+(the head read through the C API, the scope built in Mojo, one request
+object instead of three closures), the move from 0.80x to 0.87x of uvloop
+per core at 16 connections and from 163k to 173k at 256.
+
+<!-- observed: the stdlib http.client run predates the artifact system; WSGI_PERFORMANCE.md holds it -->
 Worth recording because it inverted a conclusion: an earlier run of this
 comparison used a stdlib `http.client` harness and reported 0.88–0.94x. The
 assumption was that the stdlib client understated the Mojo layer's parsing
@@ -217,13 +225,14 @@ Fast-request latency is measured while slow requests are in flight; rps and the 
 **This is the row m0serve wins.** The fast-request p99 is ahead of
 uvicorn's — in this run and in every recorded run — because awaits overlap
 on the loop and the Mojo acceptor never runs application code. Until
-2026-09-04 it was a narrow win stated narrowly: uvicorn's p50 was better
-by about 1.5x and its throughput by a few percent in the same run. With
-the loop off the GIL the executor now leads all three columns (p50 138 µs
-against 169, 29.6k rps against 24.6k). This bench records no cores column;
-the wrk rows above say the executor uses ~1.7 where uvicorn uses one, and
-that is where the p50 came from.
+2026-09-04 it was a narrow win stated narrowly: uvicorn's p50 and its
+throughput were both better in the same run. With the loop off the GIL
+the executor leads all three columns; the table above is the run. This
+bench records no cores column; the wrk rows above say the executor uses
+<!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn uses one,
+and that is where the p50 came from.
 
+<!-- observed: notes/wsgi-vs-asgi-history.md, the executor's first await-concurrency run -->
 The await-concurrency underneath is unambiguous in a way the percentiles
 are not: eight concurrent 1.5 s awaits complete in 1.51 s on one loop with
 zero threads, where the buffered bridge takes 12 s.
@@ -236,12 +245,16 @@ its event loop; `--blocking-threads N` puts a pool of handler threads
 behind each loop so it stops doing that.
 
 Read the first two rows across, then the next two. Without the pool the
-fast-route p99 climbs from ~1 ms to ~195 ms as slow views are added — most
-of the 200 ms hold, which is what "the connections pinned behind it" means
-arithmetically. With the pool it does not move. **That is a ~100x change
-and the largest effect recorded anywhere in this repository**, and it holds
-in both execution modes, which is the part that matters: prefork and
-threads fail identically and are fixed identically.
+fast-route p99 climbs from <!-- num:isolation-nopool-slow0-ms@1 -->0.8<!-- /num --> ms
+to <!-- num:isolation-nopool-slow2-ms@0 -->194<!-- /num --> ms as slow views
+are added — most of the <!-- num:isolation-hold-ms@0 -->200<!-- /num --> ms
+hold, which is what "the connections pinned behind it" means
+arithmetically. With the pool it stays at
+<!-- num:isolation-pool-slow2-ms@1 -->1.3<!-- /num --> ms. **That is a
+<!-- num:isolation-ratio@0 -->150<!-- /num -->x change and the largest
+effect recorded anywhere in this repository**, and it holds in both
+execution modes, which is the part that matters: prefork and threads fail
+identically and are fixed identically.
 
 The control is the point. Both halves run in one pass, so the rows without
 the flag have to keep failing for the rows with it to mean anything.
@@ -262,6 +275,7 @@ Environment: Python 3.14.7 free-threading build; granian 2.8.2; Apple M4 (10 cor
 Fast-route p99 as concurrent slow requests are added: the median across 3 rounds, with the min–max across those rounds in parentheses. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
 <!-- /generated: mixed-workload -->
 
+<!-- observed: the before is mixed-workload-20260906T225838Z.json; notes/pool-tail.md has the A/B -->
 **The comparator's row and ours are the same row at the same shape.**
 Granian's own `--blocking-threads` is the architecture this feature
 copied, and its row is ONE worker with a pool of four; the `--workers 4`
@@ -313,4 +327,4 @@ is the method and the dead ends.
 
 After recording a new artifact, `uv run poe render-bench-docs` rewrites
 every table on this page from it, and `uv run poe check-docs` fails if
-anyone edits one by hand.
+anyone edits one by hand or types a figure into the prose outside a span.
