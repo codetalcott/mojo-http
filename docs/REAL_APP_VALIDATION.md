@@ -124,6 +124,77 @@ not run: none of the four dependency trees builds on free-threaded CPython
   record of each application's shape, including every substitution and
   the reason for it.
 
+## Re-soak — 2026-09-07, against 0.19.0 as merged at `abf2016`, all four applications
+
+Three minor-version's worth of change landed between the pass above and
+this one, and two of them are on the request path of every keep-alive
+connection: the elastic pool (0.19.0 serves a trivial view on one handler
+thread until a job has waited, and wakes each thread by name on a channel
+of its own) and the keep-alive request cap, 1000 from 100, with
+`--max-keepalive-requests` to set it — the cap having turned out to be the
+whole of the fast-route tail the benchmark page had conceded to Granian
+([notes/pool-tail.md](notes/pool-tail.md)). So the corpus was run again on
+the release commit: fresh clones under `/tmp/soak/` (the 2026-09-01
+checkouts had not survived), each with its own venv on PATH, `bin/m0serve`
+built from `abf2016`, CPython 3.13.6 (the GIL build a `pip install`
+gets), macOS 26 on an M4. Same driver, same five populations, same
+durations and churn cadences; every reference capture re-recorded first,
+as the rule from the pass above says. Raw driver outputs and the three
+scripts that drove it are in `bench/soak/2026-09-07/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 30,271 | 0 | SIGTERM ×2, drains 0.07 / 0.08 s | 120.0 → 124.2 MB | 89 → 85 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions + 308 logins | 180 | 21,847 | 0 | SIGTERM ×2, 0.14 s | 183.8 → 193.5 MB | 82 → 86 / 13 → 13 |
+| color-separation | WSGI, pool 8, 343 uploads | 120 | 47,761 | 0 | SIGTERM ×1, 0.18 s | 1.06 → 1.35 GB | 144 → 143 / 18 → 18 |
+| color-separation | ASGI executor vs uvicorn, 270 uploads | 90 | 19,022 | 0 | — | 1.17 → 1.63 GB | 130 → 130 / 29 → 32 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 73,250 | 0 | SIGTERM ×1, 0.12 s | 176.8 → 185.3 MB | 113 → 120 / 17 → 16 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,755 | 0 | — | 493.1 → 193.9 MB (the startup transient) | 99 → 99 / 13 → 13 |
+
+Every row: zero failures, every slot returned (the free-slot count back at
+its starting 1,015 at every sample), threads flat, every drain inside a
+fifth of a second, and 560–1,550 abandoners per run (half FIN, half RST)
+absorbed. **No server defect.** Two shapes moved against the 2026-09-04
+table and neither is growth: the pooled rows hold 16–20 more descriptors
+from their first sample (the elastic pool parks each of the eight handler
+threads on a `SOCK_DGRAM` pair of its own — two descriptors per thread,
+allocated at start, flat for the run), and the executor rows carry more
+threads than before (29–33 on color-separation against 20), which is
+asgiref's thread pool for that app's synchronous views under a larger
+upload fixture, the application behaviour the 0.16.0 record already named.
+The color-separation gigabytes are its image renditions, as before, and
+textshelf's WSGI row again opens on the ~490 MB startup transient the
+record's finding 7 describes, settling inside the minute.
+
+**Three rows failed first, and none was the server.** Recorded because
+each cost time and the next pass should not pay it again:
+
+- **transcripts and bakerydemo, "never became ready"** — the runner had
+  put `<checkout>/bin` rather than `<checkout>/.venv/bin` on PATH, so
+  `m0serve` embedded the system interpreter, which has Django and none of
+  the apps' packages. The driver's log named the missing module on the
+  first line of the traceback.
+- **transcripts and textshelf came up on free-threaded 3.14t** — the
+  release worktree's benchmark swap had left that interpreter installed
+  and `uv sync` preferred it, so textshelf's `psycopg` had no wheel to
+  install. Both venvs were rebuilt with `--python 3.13`; color-separation
+  pins 3.12 itself and kept it.
+- **color-separation 3,062 and textshelf 22,752 "failed" stream reads**,
+  each one shape: the manifests pin a `bytes` value for their large
+  streams, and the pins were the 2026-09-01 fixtures' — a `big.png` twelve
+  bytes larger than the regenerated one, job 1 processed from the big
+  image (this pass had made it from the small one; rebuilt, and the zip is
+  9.6 MB where a photograph's was 4.7 — the fixture is noise, which does
+  not compress), and a `components.css` that textshelf has since grown by
+  187 bytes. The pins now carry the fixture sizes with a comment saying
+  so. The rule the pass above added — re-baseline before every pass —
+  covers the captures; a manifest pin is a second expectation and rots
+  the same way, so re-pin with the fixtures.
+
+**What this pass did not do**, unchanged from the records above:
+`--threads` (none of the four dependency trees builds on free-threaded
+CPython), NiceGUI, the proxy and worker shapes.
+
 ## Re-soak — 2026-09-04, against 0.17.1 as merged at `0766272`, all four applications
 
 The event loop stopped holding a thread state while it serves (PR #229,

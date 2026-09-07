@@ -16,9 +16,9 @@
     {"path": "/job/1/status/", "class": "short"},
     {"path": "/job/1/analysis-status/", "class": "short"},
     {"path": "/job/1/preview/", "class": "short", "comment": "answers 500 on a completed job -- an application bug (int64 is not JSON serializable), deterministic, so it is compared like any route"},
-    {"path": "/job/1/download/", "class": "stream", "bytes": 4763200, "comment": "FileResponse of the separations zip"},
-    {"path": "/media/outputs/2026/09/big_separations.zip", "class": "stream", "bytes": 4763200, "comment": "the same zip through Django's media serving"},
-    {"path": "/media/uploads/2026/09/big.png", "class": "stream", "bytes": 9735633, "comment": "the 9.7 MB original, larger than every buffer"}
+    {"path": "/job/1/download/", "class": "stream", "bytes": 9609368, "comment": "FileResponse of the separations zip. The size is the FIXTURE's (job 1 processed from /tmp/soak/big.png, a 1800x1800 noise PNG regenerated 2026-09-07; the 2026-09-01 fixture compressed to 4763200) -- re-pin it when the fixture changes, as the baseline is re-captured"},
+    {"path": "/media/outputs/2026/09/big_separations.zip", "class": "stream", "bytes": 9609368, "comment": "the same zip through Django's media serving (same fixture size as above)"},
+    {"path": "/media/uploads/2026/09/big.png", "class": "stream", "bytes": 9735621, "comment": "the 9.7 MB original, larger than every buffer (the fixture's size; 9735633 was the 2026-09-01 file)"}
   ],
   "uploads": [
     {"path": "/upload/", "file": "/tmp/soak/small.png", "status": 302, "follow": true,
