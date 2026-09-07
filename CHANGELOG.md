@@ -7,6 +7,8 @@ versions may break the API**.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-09-07
+
 ### Added
 
 - **`--max-keepalive-requests N` / `M0_MAX_KEEPALIVE_REQUESTS`.** The
@@ -3618,6 +3620,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[0.19.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.19.0
 [0.18.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.18.0
 [0.17.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.1
 [0.17.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.0
