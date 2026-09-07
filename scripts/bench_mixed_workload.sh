@@ -156,6 +156,14 @@ for round in $(seq 1 $ROUNDS); do
     : > "$SRVLOG"
     bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --threads $n --blocking-threads $n > "$SRVLOG" 2>&1 & pid=$!
     sweep "r$round --threads $n +bt=$n"; stop
+    # Granian's shape exactly: ONE worker with a pool of $n. The rows above
+    # are $n loops with a pool of $n each; Granian's row below is one worker,
+    # so the comparison across the table was four processes against one
+    # until 2026-09-07 (docs/notes/pool-tail.md). This row and the next are
+    # the same shape, same machine, same minute.
+    : > "$SRVLOG"
+    bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --workers 1 --blocking-threads $n > "$SRVLOG" 2>&1 & pid=$!
+    sweep "r$round --workers 1 +bt=$n"; stop
     if [ -x ${BENCH_VENV:-.venv}/bin/granian ]; then
       : > "$SRVLOG"
       ( cd apps/django_wsgi && exec "${GRANIAN}" --interface wsgi --workers 1 \

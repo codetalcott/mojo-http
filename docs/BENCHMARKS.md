@@ -261,13 +261,23 @@ Environment: Python 3.14.7 free-threading build; granian 2.8.2; Apple M4 (10 cor
 Fast-route p99, median across rounds, as concurrent slow requests are added. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
 <!-- /generated: mixed-workload -->
 
-**And the comparator's row is better than ours.** Granian's own
-`--blocking-threads` is the architecture this feature copied, and its
-fast-route p99 stays at ~0.6 ms across all three slow levels — flat, like
-ours, but roughly 4x lower than our best row and 12x lower than
-`--workers 4 +bt=4`. So the honest claim is the one about the *stall*: the
-pool removes a hundredfold failure that is there without it. It does not
-also win the tail that remains.
+**The comparator's row and ours are the same row at the same shape.**
+Granian's own `--blocking-threads` is the architecture this feature
+copied, and its row is ONE worker with a pool of four; the `--workers 4`
+and `--threads 4` rows are four loops with a pool of four each, so the
+`--workers 1 +bt=4` row is the like-for-like comparison. Until 2026-09-07
+that comparison read 2–4 ms against 0.5–0.6, and the whole difference was
+a policy, not a path: the keep-alive request cap was 100, so the server
+closed every connection after its hundredth request, the client
+reconnected, and one reconnect per hundred requests is a 99th percentile
+by construction — invisible to every server-side instrument, because it
+sits between one response's last byte and the next request's first.
+Granian has no such cap. The cap is 1000 now (nginx's) and configurable
+(`--max-keepalive-requests`, 0 = never), and the spread column beside
+each median says how far the rounds agreed. The four-loop rows carry
+what is left: four processes' worth of parallel Python threads beside the
+client on one ten-core laptop. The record, with the instruments and the
+A/B, is [notes/pool-tail.md](notes/pool-tail.md).
 
 That row could not appear in this repository's earlier record of this
 benchmark, which noted granian was absent because it is not in the lock
