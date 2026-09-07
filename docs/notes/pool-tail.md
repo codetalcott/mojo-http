@@ -228,3 +228,14 @@ drift check flagged it, as it should, and the artifact carries the
 acceptance stamp for the cap change that the same check flagged on the
 pooled rows.
 
+The same shape run again on 3.14t the next morning (`bench_slow.py`,
+two rounds, 32 s drains, the daemon paused) read 82.5k / 82.9k at cap
+1000 and 81.4k / 84.6k at cap 100 — the 80k of the two 2026-09-06
+recordings, with the cap making no difference to throughput and only
+the maxima telling them apart (10–13 ms at cap 100, 2–5 ms at 1000).
+So the 60k was a state of that one recording — all three of its rounds
+agreed with each other and with nothing before or after — and not of
+the code. What that state was is not known; the first recording attempt
+that evening, refused by the guard at its second round, had read 81k
+for the same row twenty minutes earlier.
+
