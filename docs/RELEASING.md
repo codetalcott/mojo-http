@@ -99,7 +99,7 @@ dirty tree, or lacks a version stamp — so the bump in step 2 fails
 `check-docs` once the artifacts are two minors old. Re-record on a clean
 checkout of the bumped tree with nothing else running — the two shell
 benches refuse to start, and refuse to begin a round, while any process
-outside their own tree is above 15 % of a core across three samples
+outside their own tree is above half a core across three samples
 (`scripts/bench_guard.py`), because three system daemons once depressed
 the pool rows 7 % with the comparators unmoved: build `apps/hello`
 to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,

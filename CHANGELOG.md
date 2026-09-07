@@ -32,7 +32,7 @@ versions may break the API**.
   rows, and two headline artifacts were stamped "dirty tree".
 - **The benches refuse to lie about their own variance.** Both shell
   benches refuse to start, and to begin a round, while any process outside
-  their own tree is above 15 % of a core across three samples
+  their own tree is above half a core across three samples
   (`scripts/bench_guard.py`, whose selftest runs inside `check-docs`);
   the mixed-workload artifact records the round and the p99's min and
   max, its table renders the spread beside each median and

@@ -1,7 +1,7 @@
 """Refuse to benchmark on a machine that is doing something else.
 
     python3 scripts/bench_guard.py wait            # block until quiet, or exit 1
-    python3 scripts/bench_guard.py wait --threshold 15 --samples 3 --timeout 120
+    python3 scripts/bench_guard.py wait --threshold 50 --samples 3 --timeout 120
     python3 scripts/bench_guard.py --selftest      # prove the guard can fire
 
 Why this exists: on 2026-09-06 a layer-split recording landed its pool
@@ -27,6 +27,14 @@ The decision (`intruders`) is a pure function over sampled rows so the
 selftest can feed it doctored samples: a sustained hog is reported, a
 one-sample spike is not, the benchmark's own process tree is not, and a
 quiet machine reports nothing. A guard that cannot fire is decoration.
+
+The threshold is half a core, not the 15 % first proposed: on a ten-core
+machine 15 % of one core is 1.5 % of capacity, and `WindowServer` alone
+sits at 5–30 % whenever the display is rendering — including the
+terminal this guard prints into, which is a feedback loop. The
+contamination the guard exists for was a core and a half, and a daemon
+doing real work (`mediaanalysisd` at 120 %) is caught at any threshold
+above its idle noise.
 """
 
 import os
@@ -34,7 +42,7 @@ import subprocess
 import sys
 import time
 
-DEFAULT_THRESHOLD = 15.0   # percent of one core
+DEFAULT_THRESHOLD = 50.0   # percent of one core
 DEFAULT_SAMPLES = 3
 DEFAULT_INTERVAL = 1.0     # seconds between samples
 DEFAULT_TIMEOUT = 120      # seconds to wait for quiet before refusing
@@ -199,7 +207,8 @@ def main(argv):
               f"across {opts['--samples']} samples)", flush=True)
         return 0
     print(f"bench_guard: REFUSING — the machine did not go quiet within "
-          f"{opts['--timeout']}s; nothing was recorded", flush=True)
+          f"{opts['--timeout']}s; no artifact is written (any rounds already "
+          "measured are discarded with it)", flush=True)
     return 1
 
 

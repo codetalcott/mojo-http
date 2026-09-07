@@ -61,17 +61,19 @@ field() { echo "$1" | awk -v pat="$2" '$0 ~ pat {print $2; exit}'; }
 
 # A quiet-machine gate, the CPU twin of the TIME_WAIT gate: refuse to
 # record while any process outside this benchmark's own process tree is
-# above 15% of a core across three samples a second apart. Contamination
+# above half a core across three samples a second apart (WindowServer
+# idles at 5-30% of one on an active display; the contamination this
+# guards against was a core and a half). Contamination
 # that depressed the pool rows 7% while the comparators moved 2% was three
 # system daemons at a core and a half (docs/notes/elastic-pool.md); a run
 # that starts under it is a run that will be discarded, so it does not
 # start. Checked before the first row and at the top of every round,
 # because a daemon that wakes mid-run contaminates every row after it.
 quiet_or_die() {
-  python3 "$(dirname "$0")/bench_guard.py" wait --threshold 15 --samples 3 --timeout 120 2>&1 | tee -a "$OUT"
+  python3 "$(dirname "$0")/bench_guard.py" wait --threshold 50 --samples 3 --timeout 120 2>&1 | tee -a "$OUT"
   # `tee` hides the guard's status; PIPESTATUS carries it.
   [ "${PIPESTATUS[0]}" -eq 0 ] \
-    || { echo "refusing to record on a busy machine (see above); nothing was measured" | tee -a "$OUT"; exit 1; }
+    || { echo "refusing to record on a busy machine (see above); no artifact is written" | tee -a "$OUT"; exit 1; }
 }
 
 drain_ports() {
