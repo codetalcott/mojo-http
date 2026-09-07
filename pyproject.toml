@@ -16,6 +16,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "django>=5.2.17",
+    # smoke-fastapi's framework. In dev rather than left to the developer
+    # because the task skips when the import fails, and a skipping gate that
+    # nothing installs is green having tested nothing (docs/SPEC.md's rule).
+    "fastapi>=0.115",
     "flask>=3.0",
     "markdown-it-py>=4.2.0",
     "poethepoet>=0.30",
@@ -3706,6 +3710,65 @@ wait $pid 2>/dev/null; rc=$?
 rm -f fasthtml.log
 echo "smoke-fasthtml OK"
 python3 scripts/emit.py --covers L11 --task smoke-fasthtml
+"""
+
+# FastAPI, the second Starlette-family row beside smoke-fasthtml (L11).
+# The overlap is deliberate and the difference is the point: both frameworks
+# drive Starlette, but FastAPI drives it through its own routing, response
+# classes and WebSocket API, and it is the name a reader arrives with -- the
+# landing page may only name a framework CI checks.
+#
+# What it asserts is the SEAM, not FastAPI: a buffered response, a streamed
+# one that leaves NO traceback in the log (PR #223 -- the bodies arrived
+# intact while the shim marked the anyio child task, so reading the body
+# proves nothing here), and a WebSocket the app closes itself.
+[tool.poe.tasks.smoke-fastapi]
+help = "Serve a FastAPI app through the ASGI bridge (skips if fastapi is absent)"
+deps = ["build-serve"]
+shell = """
+python3 -c 'import fastapi' 2>/dev/null || { echo "fastapi not installed - skipping smoke-fastapi"; exit 0; }
+
+srv=bin/m0serve
+SPEC="main:app --app-dir apps/fastapi_demo --port 8099"
+B=http://localhost:8099
+
+cleanup() { kill $pid 2>/dev/null; }
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f fastapi.log ]; then echo '=== fastapi.log ==='; cat fastapi.log; fi
+  exit 1
+}
+
+"$srv" $SPEC > fastapi.log 2>&1 &
+pid=$!
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+  | grep -q 'm0serve-fastapi-demo' || fail 'the FastAPI page did not render'
+grep -q 'protocol=asgi' fastapi.log || fail 'FastAPI was not detected as ASGI'
+curl -s $B/plain | grep -q 'plain text from fastapi' || fail '/plain did not answer'
+
+# StreamingResponse streams for real: ticks arrive live, the client walks
+# away, the server shrugs.
+n=$(curl -sN --max-time 3 $B/stream | grep -c 'tick')
+[ "$n" -ge 2 ] || fail "expected >=2 live ticks from /stream, got $n"
+# Starlette produces that body from a child task inside an anyio task group,
+# so the shim must mark the slot's owning task. Marking the child left one
+# traceback per streamed response in the log with the body intact, which is
+# why this line exists and the tick count above is not enough.
+grep -q 'Exception in callback' fastapi.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
+curl -s --fail $B/ > /dev/null || fail 'server died after the streaming client vanished'
+
+# And the WebSocket: echo, then FastAPI's own close(1000) ending in a FIN.
+M0_PORT=8099 python3 apps/fastapi_demo/ws_probe.py || fail 'the FastAPI WebSocket probe failed'
+curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
+
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
+rm -f fastapi.log
+echo "smoke-fastapi OK"
+python3 scripts/emit.py --covers L19 --task smoke-fastapi
 """
 
 # The documentation site: README, QUICKSTART, CHANGELOG, PROVENANCE and

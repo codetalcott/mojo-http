@@ -493,6 +493,15 @@ jobs:
       # cleanly where python-fasthtml is absent.
       - name: Serve a FastHTML app through the ASGI bridge
         run: uv run poe smoke-fasthtml
+      # The second Starlette-family row, and the one that lets the landing
+      # page name FastAPI: same seam, driven through FastAPI's own routing,
+      # StreamingResponse and WebSocket API. It asserts the seam and not the
+      # framework -- validation and the OpenAPI page are FastAPI's to test --
+      # and reads the server LOG, because the shim once marked Starlette's
+      # anyio child task and left a traceback per streamed response while
+      # every body arrived intact. Skips cleanly where fastapi is absent.
+      - name: Serve a FastAPI app through the ASGI bridge
+        run: uv run poe smoke-fastapi
       # Two applications, one process: Django and Flask at different
       # prefixes. The load-bearing assertions are the generated URLs --
       # reverse() and url_for() must carry the mount prefix, which is what
