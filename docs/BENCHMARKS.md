@@ -252,7 +252,7 @@ Fast-route p99 as concurrent slow requests are added: the median across 3 rounds
 <!-- observed: the before is mixed-workload-20260906T225838Z.json; notes/pool-tail.md has the A/B -->
 **The comparator's row and ours are the same row at the same shape.**
 Granian's own `--blocking-threads` is the architecture this feature
-copied, and its row is ONE worker with a pool of four; the `--workers 4`
+follows, and its row is ONE worker with a pool of four; the `--workers 4`
 and `--threads 4` rows are four loops with a pool of four each, so the
 `--workers 1 +bt=4` row is the like-for-like comparison. Until 2026-09-07
 that comparison read 2–4 ms against 0.5–0.6, and the whole difference was
