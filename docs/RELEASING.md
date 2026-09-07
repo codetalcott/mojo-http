@@ -97,13 +97,24 @@ docs/BENCHMARKS.md renders from the newest committed artifact, and
 is more than a minor version behind `pyproject.toml`, was recorded on a
 dirty tree, or lacks a version stamp — so the bump in step 2 fails
 `check-docs` once the artifacts are two minors old. Re-record on a clean
-checkout of the bumped tree with nothing else running: build `apps/hello`
+checkout of the bumped tree with nothing else running — the two shell
+benches refuse to start, and refuse to begin a round, while any process
+outside their own tree is above 15 % of a core across three samples
+(`scripts/bench_guard.py`), because three system daemons once depressed
+the pool rows 7 % with the comparators unmoved: build `apps/hello`
 to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,
 `poe bench-asgi-wrk`, `poe bench-asgi`, and `scripts/bench_mixed_workload.sh`
 under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
 Reproducing section; `.venv-pinned/` is ignored so the parked venv does not
 stamp the artifact dirty). Commit the artifacts and run
-`poe render-bench-docs`.
+`poe render-bench-docs`. Its `--check` refuses a new artifact whose
+non-comparator rows moved more than 5 % against the comparators' own
+move since the previous artifact of that kind — the contamination
+signature, and also what a real change looks like; when the code did
+change, `render_bench_docs.py --accept-drift` stamps the artifact with
+the comparison it accepts, and the stamp is committed beside it. The
+mixed-workload artifact needs three rounds (its p99 is bimodal on a GIL
+build and the table renders the min–max beside each median).
 
 The steps, in order:
 

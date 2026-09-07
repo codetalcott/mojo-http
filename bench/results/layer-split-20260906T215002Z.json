@@ -17,7 +17,8 @@
   "parameters": {
     "duration": "10s",
     "connections": "16",
-    "rounds": "3"
+    "rounds": "3",
+    "accepted_drift": "layer-split-20260906T151035Z.json"
   },
   "rows": [
     {
