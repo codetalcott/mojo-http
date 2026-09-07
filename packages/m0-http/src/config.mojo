@@ -33,6 +33,12 @@ Env vars:
                     user-interactive QoS and its worker threads at
                     user-initiated, which keeps them on performance cores
                     under contention. Ignored elsewhere (default: off)
+    M0_MAX_KEEPALIVE_REQUESTS — requests a keep-alive connection may carry
+                    before the server closes it with `Connection: close`;
+                    "0" never closes for count (default: 1000, nginx's).
+                    The cap's cost is a reconnect per N requests, and at
+                    100 that was the fast route's whole p99 on a loopback
+                    benchmark (docs/notes/pool-tail.md)
 """
 
 from std.os import getenv
@@ -58,6 +64,8 @@ struct AppConfig(Copyable, Movable):
     var qos: Bool
     var spawn_workers: Bool
     """`M0_SPAWN_WORKERS`: workers exec a fresh image after the fork."""
+    var max_keepalive_requests: Int
+    """`M0_MAX_KEEPALIVE_REQUESTS`: the keep-alive request cap (0 = never)."""
 
     def __init__(out self, default_port: Int = 8080):
         """Load configuration from M0_-prefixed env vars with defaults."""
@@ -81,6 +89,9 @@ struct AppConfig(Copyable, Movable):
         self.qos = qos_str == "true" or qos_str == "1"
         var spawn_str = getenv("M0_SPAWN_WORKERS", "")
         self.spawn_workers = spawn_str == "true" or spawn_str == "1"
+        self.max_keepalive_requests = _parse_int_env("M0_MAX_KEEPALIVE_REQUESTS", 1000)
+        if self.max_keepalive_requests < 0:
+            self.max_keepalive_requests = 1000
 
         var base_url_env = getenv("M0_BASE_URL", "")
         if base_url_env.byte_length() > 0:
@@ -104,6 +115,7 @@ struct AppConfig(Copyable, Movable):
         self.app_tick_ms = copy.app_tick_ms
         self.qos = copy.qos
         self.spawn_workers = copy.spawn_workers
+        self.max_keepalive_requests = copy.max_keepalive_requests
 
     def __init__(out self, *, deinit move: Self):
         self.host = move.host^
@@ -121,6 +133,7 @@ struct AppConfig(Copyable, Movable):
         self.app_tick_ms = move.app_tick_ms
         self.qos = move.qos
         self.spawn_workers = move.spawn_workers
+        self.max_keepalive_requests = move.max_keepalive_requests
 
     def address(self) -> String:
         """Return listen address string (e.g. '0.0.0.0:8080')."""
@@ -143,6 +156,7 @@ struct AppConfig(Copyable, Movable):
         sc.access_log = self.access_log
         sc.sse_heartbeat_ms = self.sse_heartbeat_ms
         sc.app_tick_ms = self.app_tick_ms
+        sc.max_keepalive_requests = self.max_keepalive_requests
         return sc^
 
 

@@ -655,6 +655,12 @@ struct OffloadPool(Movable):
     2026-09-05: every idle thread spins, every push into a parked lane
     pokes, and a thread that takes a job pokes a sibling for the rest.
     Always off without rings."""
+    var debug: Bool
+    """`M0_POOL_DEBUG` was set at construction: the pool stamps `submit_ns`
+    whether or not the elastic rules are on (a pool thread reads it to
+    histogram its ring wait), and the loop and the threads print their
+    counters at shutdown. Read once here so the per-request path never
+    consults the environment."""
 
     var submit_ns: List[Int]
     """Per slot, when its current job was parked (`park_request`), the
@@ -743,6 +749,7 @@ struct OffloadPool(Movable):
         self.sweep_every_pass = False
         self.ring_enabled = capacity > 0 and getenv("M0_POOL_RING", "") != "0"
         self.elastic = self.ring_enabled and getenv("M0_POOL_ELASTIC", "") != "0"
+        self.debug = getenv("M0_POOL_DEBUG", "") != ""
         self.thread_base = 0
         self.thread_cap = 0
         self.lane_pops = List[Int]()
@@ -829,6 +836,7 @@ struct OffloadPool(Movable):
         self.done_ring = move.done_ring.copy()
         self.wake_base = move.wake_base
         self.elastic = move.elastic
+        self.debug = move.debug
         self.submit_ns = move.submit_ns^
         self.wake_age = move.wake_age
         self.thread_base = move.thread_base
@@ -1399,6 +1407,17 @@ struct OffloadPool(Movable):
         """Whether the elastic wake rules are in force (see `elastic`)."""
         return self.elastic
 
+    def debug_active(self) -> Bool:
+        """Whether `M0_POOL_DEBUG` instruments are on (see `debug`)."""
+        return self.debug
+
+    def submitted_ns(self, slot: Int) -> Int:
+        """When the loop parked `slot`'s request (`park_request`); 0 when
+        neither the elastic rules nor `M0_POOL_DEBUG` stamp it."""
+        if slot < 0 or slot >= len(self.submit_ns):
+            return 0
+        return self.submit_ns[slot]
+
     def spinner_count(self, lane: Int) -> Int:
         """Threads of `lane` spinning idle on an empty ring. Test surface;
         at most one under the elastic rules."""
@@ -1659,9 +1678,11 @@ struct OffloadPool(Movable):
 
     def park_request(mut self, slot: Int, var request: HTTPRequest):
         """Hand a request to the slot. Call immediately before `submit`.
-        Stamps `submit_ns` — the age `wake_aged` measures from."""
+        Stamps `submit_ns` — the age `wake_aged` measures from (and, under
+        `M0_POOL_DEBUG`, what a pool thread's ring-wait histogram measures
+        from, elastic or not)."""
         self.requests[slot] = request^
-        if self.elastic:
+        if self.elastic or self.debug:
             self.submit_ns[slot] = perf_counter_ns()
 
     def add_lane(mut self, var prefix: String) raises:
@@ -2193,6 +2214,18 @@ def _set_nonblocking_fd(fd: Int):
         pass
 
 
+def _note_over(mut counters: List[Int], ns: Int):
+    """Bump every threshold `ns` exceeds: 1, 2, 4, 8 ms."""
+    if ns > 1_000_000:
+        counters[0] += 1
+    if ns > 2_000_000:
+        counters[1] += 1
+    if ns > 4_000_000:
+        counters[2] += 1
+    if ns > 8_000_000:
+        counters[3] += 1
+
+
 struct OffloadLoopState(Movable):
     """The loop's side of the pool: the pool's address and two slot arrays.
 
@@ -2288,9 +2321,38 @@ struct OffloadLoopState(Movable):
     """`_service_completions`' list of finished slots, reused across
     passes instead of allocated per drain."""
 
+    var waits: Int
+    var waits_capped: Int
+    var waits_skipped: Int
+    var waits_empty: Int
+    var wait_over: List[Int]
+    var pass_over: List[Int]
+    """Scheduling delay seen from the loop: `wait_over[i]` counts waits that
+    returned more than 1/2/4/8 ms AFTER the timeout they asked for (a
+    capped 1 ms wait that returns at 6 ms is a loop thread the kernel did
+    not run for 5), and `pass_over[i]` counts passes that took more than
+    1/2/4/8 ms of wall time. Under `M0_POOL_DEBUG`; the arrays are always
+    allocated so the move constructor has nothing conditional to do.
+
+    The pass cadence, for the same instrument: how many times the loop went
+    to wait, how many of those were capped to `POOL_WAKE_WAIT_MS` because
+    a job was pending, how many were skipped for a completion already on
+    the ring, and how many returned with no event at all (the cap or the
+    caller's timeout expired). Four adds per pass, unconditionally, beside
+    a syscall."""
+
     def __init__(out self, addr: Int, capacity: Int):
         self.addr = addr
         self.inflight = 0
+        self.waits = 0
+        self.waits_capped = 0
+        self.waits_skipped = 0
+        self.waits_empty = 0
+        self.wait_over = List[Int](capacity=4)
+        self.pass_over = List[Int](capacity=4)
+        for _ in range(4):
+            self.wait_over.append(0)
+            self.pass_over.append(0)
         self.done_scratch = List[Int](capacity=64)
         self.ack_owed_count = 0
         self.streaming_hint = 0
@@ -2327,6 +2389,43 @@ struct OffloadLoopState(Movable):
         self.pending_submit_count = move.pending_submit_count
         self.streaming_hint = move.streaming_hint
         self.done_scratch = move.done_scratch^
+        self.waits = move.waits
+        self.waits_capped = move.waits_capped
+        self.waits_skipped = move.waits_skipped
+        self.waits_empty = move.waits_empty
+        self.wait_over = move.wait_over^
+        self.pass_over = move.pass_over^
+
+    def note_wait(mut self, capped: Bool, skipped: Bool, events: Int, late_ns: Int = 0):
+        """One `_wait_for_events` call: see the `waits` fields. `late_ns` is
+        how long past its timeout the wait returned."""
+        self.waits += 1
+        if capped:
+            self.waits_capped += 1
+        if skipped:
+            self.waits_skipped += 1
+        elif events == 0:
+            self.waits_empty += 1
+        _note_over(self.wait_over, late_ns)
+
+    def note_pass(mut self, took_ns: Int):
+        """One `_run_pass`: how long it took, for `pass_over`."""
+        _note_over(self.pass_over, took_ns)
+
+    def wait_report(self) -> String:
+        """The `waits` counters as one line, for the shutdown print."""
+        return (
+            "loop waits " + String(self.waits)
+            + ": capped to the pool wait " + String(self.waits_capped)
+            + ", skipped for a pending completion " + String(self.waits_skipped)
+            + ", returned empty " + String(self.waits_empty)
+            + " | waits late by >1/2/4/8ms " + String(self.wait_over[0]) + "/"
+            + String(self.wait_over[1]) + "/" + String(self.wait_over[2]) + "/"
+            + String(self.wait_over[3])
+            + " | passes over 1/2/4/8ms " + String(self.pass_over[0]) + "/"
+            + String(self.pass_over[1]) + "/" + String(self.pass_over[2]) + "/"
+            + String(self.pass_over[3])
+        )
 
     def sweep_every_pass(self) -> Bool:
         """`OffloadPool.sweeps_every_pass`, False when the pool is disabled."""

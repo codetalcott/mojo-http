@@ -52,6 +52,7 @@ from lightbug_http.websocket import (
 )
 from std.time import perf_counter_ns
 from std.sys.info import CompilationTarget
+from std.os import getenv
 from m0_http.log import log_access
 
 
@@ -256,8 +257,13 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     )
     while True:
         var n_events = _wait_for_events(backend, st, 1000)
-        if _run_pass(handler, backend, st, n_events):
+        var pass_start = perf_counter_ns()
+        var stop = _run_pass(handler, backend, st, n_events)
+        st.offload.note_pass(perf_counter_ns() - pass_start)
+        if stop:
             _run_shutdown(handler, backend, st)
+            if st.offload.ring_active() and getenv("M0_POOL_DEBUG", "") != "":
+                print(st.offload.wait_report(), flush=True)
             break
 
 
@@ -286,14 +292,19 @@ def _wait_for_events[B: EventLoopBackend](
     if not st.offload.ring_active():
         return backend.wait(timeout_ms)
     var timeout = timeout_ms
+    var capped = False
     if timeout > POOL_WAKE_WAIT_MS and st.offload.jobs_pending():
         timeout = POOL_WAKE_WAIT_MS
+        capped = True
     st.offload.set_loop_parked(True)
     if st.offload.done_pending():
         st.offload.set_loop_parked(False)
+        st.offload.note_wait(capped, True, 0)
         return 0
+    var t0 = perf_counter_ns()
     var n = backend.wait(timeout)
     st.offload.set_loop_parked(False)
+    st.offload.note_wait(capped, False, n, perf_counter_ns() - t0 - timeout * 1_000_000)
     return n
 
 

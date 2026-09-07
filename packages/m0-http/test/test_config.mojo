@@ -31,6 +31,7 @@ def _clear():
         String("M0_ACCESS_LOG"),
         String("M0_SSE_HEARTBEAT_MS"),
         String("M0_APP_TICK_MS"),
+        String("M0_MAX_KEEPALIVE_REQUESTS"),
     ]:
         _ = setenv(name, "", True)
 
@@ -133,6 +134,19 @@ def test_access_log_is_case_sensitive() raises:
     assert_false(_with("M0_ACCESS_LOG", "TRUE").access_log)
     assert_false(_with("M0_ACCESS_LOG", "yes").access_log)
     assert_false(_with("M0_ACCESS_LOG", "0").access_log)
+
+
+def test_max_keepalive_requests_defaults_and_reaches_the_server_config() raises:
+    """The environment's cap is the ServerConfig's cap; 0 means never close
+    for count; junk and negatives fall back to the default rather than to
+    "never", because a typo must not silently turn the cap off."""
+    _clear()
+    var c = AppConfig()
+    assert_equal(c.max_keepalive_requests, c.server_config().max_keepalive_requests)
+    assert_equal(_with("M0_MAX_KEEPALIVE_REQUESTS", "1000").server_config().max_keepalive_requests, 1000)
+    assert_equal(_with("M0_MAX_KEEPALIVE_REQUESTS", "0").server_config().max_keepalive_requests, 0)
+    assert_equal(_with("M0_MAX_KEEPALIVE_REQUESTS", "-5").max_keepalive_requests, c.max_keepalive_requests)
+    assert_equal(_with("M0_MAX_KEEPALIVE_REQUESTS", "lots").max_keepalive_requests, c.max_keepalive_requests)
 
 
 def test_sse_heartbeat_defaults_to_fifteen_seconds() raises:

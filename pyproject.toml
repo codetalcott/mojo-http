@@ -4994,7 +4994,10 @@ fail() {
   if [ -f kac.log ]; then echo '=== kac.log ==='; cat kac.log; fi
   exit 1
 }
-"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8144 > kac.log 2>&1 &
+# The cap is pinned here rather than inherited: the probe counts to 100,
+# and a gate that read the default would test nothing the day the default
+# moved (docs/notes/pool-tail.md moved it).
+"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8144 --max-keepalive-requests 100 > kac.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null; rm -f kac.log' EXIT
 curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8144/ > /dev/null \

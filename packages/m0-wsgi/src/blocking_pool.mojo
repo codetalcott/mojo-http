@@ -316,6 +316,18 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     # When this thread's current run of the GIL began (the hand-off slice).
     var streak_start = perf_counter_ns()
 
+    # `M0_POOL_DEBUG`: where a job's time goes on this thread, as three
+    # histograms printed when the thread leaves -- the wait on the ring
+    # from the loop's push to this thread's pop, the wait for the GIL
+    # from the pop to the re-attach, and the service from the re-attach
+    # to the completion. The instrument for the fast-route tail question
+    # (docs/notes/pool-tail.md): which side of the pop a millisecond is on.
+    var debug = pool.debug_active()
+    var h_ring = _hist_new()
+    var h_gil = _hist_new()
+    var h_service = _hist_new()
+    var jobs = 0
+
     while True:
         # Detached across the block. This is where the thread spends its life,
         # and holding a thread state through it would stall every other
@@ -339,10 +351,10 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
             _ = shared_fetch_add(turn_addr, 1)
         var t_attach = perf_counter_ns()
         cpy.PyEval_RestoreThread(ts)
+        var t_held = perf_counter_ns()
         if turn_addr != 0:
             _ = shared_fetch_add(turn_addr, -1)
             _ = shared_fetch_add(turn_addr + 8, 1)
-            var t_held = perf_counter_ns()
             # A new run starts when this thread gave the GIL away, or had to
             # wait for it: a thread that queued a millisecond for its turn
             # must not be over its slice the moment it gets one.
@@ -372,6 +384,12 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
             continue
 
         var slot = job.slot
+        if debug:
+            var pushed = pool.submitted_ns(slot)
+            if pushed > 0:
+                _hist_add(h_ring, t_attach - pushed)
+            _hist_add(h_gil, t_held - t_attach)
+            jobs += 1
         var request = pool.take_request(slot)
         # Read before `func` consumes the request: `after_response` needs both,
         # and the loop cannot supply them — it gave the request away.
@@ -409,6 +427,8 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
             pool.set_slot_ack_fd(slot, ack_write)
             response.stream_gen = gen
             if handler.stream_begin(slot, gen, ack_write):
+                if debug:
+                    _hist_add(h_service, perf_counter_ns() - t_held)
                 pool.put_response(slot, response^, raised)
                 pool.complete(slot)
                 # The body: chunk by chunk, credit by credit, until the
@@ -428,12 +448,92 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
         # publishes this write to the loop thread. Reversing them is a race
         # that would read a half-written response, and it would be rare enough
         # to look like anything else.
+        if debug:
+            _hist_add(h_service, perf_counter_ns() - t_held)
         pool.put_response(slot, response^, raised)
         pool.complete(slot)
+
+    if debug:
+        print(
+            "pool thread[" + String(index) + "] lane " + String(lane)
+            + ": jobs " + String(jobs)
+            + " | " + _hist_line("ring-wait", h_ring)
+            + " | " + _hist_line("gil-wait", h_gil)
+            + " | " + _hist_line("service", h_service),
+            flush=True,
+        )
 
     # After the poison pill, before the handler's destructors: the one
     # point where this thread is attached, idle, and still owns its app.
     handler.shutdown()
+
+
+comptime _HIST_BUCKETS = 128
+"""Quarter-octave buckets over microseconds: `_hist_bucket`."""
+
+
+def _hist_new() -> List[Int]:
+    var h = List[Int](capacity=_HIST_BUCKETS)
+    for _ in range(_HIST_BUCKETS):
+        h.append(0)
+    return h^
+
+
+def _hist_bucket(us: Int) -> Int:
+    """0..3 hold 0..3 µs exactly; from 4 µs up, four buckets per octave
+    (the two bits under the leading one), so a bucket is ~19 % wide."""
+    if us < 4:
+        return us if us >= 0 else 0
+    var v = us
+    var octave = 0
+    while v >= 8:
+        v >>= 1
+        octave += 1
+    var b = 4 + octave * 4 + (v - 4)
+    return b if b < _HIST_BUCKETS else _HIST_BUCKETS - 1
+
+
+def _hist_upper(bucket: Int) -> Int:
+    """The exclusive upper bound, in µs, of `bucket`."""
+    if bucket < 4:
+        return bucket + 1
+    var octave = (bucket - 4) // 4
+    var sub = (bucket - 4) % 4
+    return (5 + sub) << octave
+
+
+def _hist_add(mut h: List[Int], ns: Int):
+    h[_hist_bucket(ns // 1000)] += 1
+
+
+def _hist_quantile(h: List[Int], num: Int, den: Int) -> Int:
+    """The upper bound (µs) of the bucket holding the `num/den` quantile;
+    0 for an empty histogram."""
+    var total = 0
+    for i in range(_HIST_BUCKETS):
+        total += h[i]
+    if total == 0:
+        return 0
+    var target = (total * num + den - 1) // den
+    var seen = 0
+    for i in range(_HIST_BUCKETS):
+        seen += h[i]
+        if seen >= target:
+            return _hist_upper(i)
+    return _hist_upper(_HIST_BUCKETS - 1)
+
+
+def _hist_line(name: String, h: List[Int]) -> String:
+    var total = 0
+    for i in range(_HIST_BUCKETS):
+        total += h[i]
+    return (
+        name + " n=" + String(total)
+        + " p50<" + String(_hist_quantile(h, 1, 2))
+        + "us p99<" + String(_hist_quantile(h, 99, 100))
+        + "us p999<" + String(_hist_quantile(h, 999, 1000))
+        + "us max<" + String(_hist_quantile(h, 1, 1)) + "us"
+    )
 
 
 def _stream_unavailable() -> HTTPResponse:

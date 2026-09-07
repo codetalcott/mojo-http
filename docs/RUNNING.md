@@ -110,6 +110,12 @@ has the Flask version of the whole thing, and CI drives that exact file.
   A chunked body is bounded on the wire as well as decoded.
 - `--idle-timeout SECONDS` closes idle keep-alive connections (default 60,
   0 = never). It also bounds a WebSocket's wait for the peer's close reply.
+- `--max-keepalive-requests N` (or `M0_MAX_KEEPALIVE_REQUESTS`) closes a
+  keep-alive connection after N requests (0 = never). Every close is a
+  reconnect for the client, and one reconnect per N requests is the
+  client's tail at the 1/N quantile — which is how a cap of 100 was found
+  to be the fast route's p99 on a loopback benchmark
+  ([notes/pool-tail.md](notes/pool-tail.md)).
 - **SIGTERM drains.** In-flight requests finish, held connections close, and
   the process exits 0 well inside a container's stop grace. Under
   `--workers`, signalling the supervisor reaps the workers. m0serve runs as

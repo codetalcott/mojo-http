@@ -1301,7 +1301,13 @@ Properties of the design, not defects to fix in passing:
   parked sibling, default 200; a measurement knob) and `M0_POOL_PARALLEL`
   (`1`/`0`: the free-threaded rule — a push wakes a parked thread whenever
   there is one and that wait counts from the push — forced on or off;
-  unset, the interpreter decides). `m0serve` layers flags on top (flag > env > default) and
+  unset, the interpreter decides), `M0_MAX_KEEPALIVE_REQUESTS` (the
+  keep-alive request cap, `--max-keepalive-requests` over it; 0 = never
+  close for count — every close is a client reconnect, and one per N
+  requests is the client's tail at the 1/N quantile, docs/notes/pool-tail.md)
+  and, for measurement only, `M0_POOL_SPIN_US` (the idle spin before a pool
+  thread parks) and `M0_POOL_DEBUG` (per-thread ring/GIL/service histograms
+  and the loop's wait counters at shutdown). `m0serve` layers flags on top (flag > env > default) and
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that
   it **exits with the code `m0serve` would exit with for the same

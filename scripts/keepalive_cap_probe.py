@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """The keep-alive request cap must not destroy the response it fires on.
 
-`ServerConfig.max_keepalive_requests` (100) closes a connection once it has
-been reused that many times. A STREAM and a WebSocket UPGRADE are not reuse:
+`ServerConfig.max_keepalive_requests` closes a connection once it has been
+reused that many times (the smoke pins it at 100 with
+`--max-keepalive-requests 100`; the default is 1000 since
+docs/notes/pool-tail.md, and this probe counts to 100). A STREAM and a WebSocket UPGRADE are not reuse:
 each owns the connection until it ends, and `_finish_response` says so by
 clearing `should_close` for both. The cap check sitting after those two
 branches was guarded by `not should_close` -- which is exactly the state they

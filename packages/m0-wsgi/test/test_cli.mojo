@@ -29,6 +29,7 @@ from src.cli import (
     MAX_AUTO_BLOCKING_THREADS,
 )
 from m0_http.config import AppConfig
+from lightbug_http.server_config import ServerConfig
 
 
 def _seed() -> ServeOptions:
@@ -361,6 +362,42 @@ def test_server_config_applies_max_body_and_metrics() raises:
     assert_true(sc.enable_metrics)
 
 
+def test_max_keepalive_requests_default_is_minus_one() raises:
+    """-1 means "leave the environment's cap or its default alone"."""
+    assert_equal(_parse([String("m.wsgi")]).max_keepalive_requests, -1)
+
+
+def test_max_keepalive_requests_parses_and_zero_means_never() raises:
+    assert_equal(
+        _parse([String("m.wsgi"), String("--max-keepalive-requests"), String("1000")]).max_keepalive_requests,
+        1000,
+    )
+    assert_equal(
+        _parse([String("m.wsgi"), String("--max-keepalive-requests"), String("0")]).max_keepalive_requests,
+        0,
+    )
+
+
+def test_max_keepalive_requests_rejects_junk_and_negatives() raises:
+    for bad in [String(""), String("x"), String("-1"), String("1k")]:
+        assert_true(
+            _fails([String("m.wsgi"), String("--max-keepalive-requests"), bad]),
+            "--max-keepalive-requests accepted '" + bad + "'",
+        )
+
+
+def test_server_config_applies_max_keepalive_requests_over_the_environment() raises:
+    """The flag wins over M0_MAX_KEEPALIVE_REQUESTS; absent, the environment's
+    value reaches ServerConfig; absent both, the default does."""
+    _clear_env()
+    var flagged = _parse([String("m.wsgi"), String("--max-keepalive-requests"), String("0")])
+    assert_equal(flagged.server_config(AppConfig()).max_keepalive_requests, 0)
+    var unflagged = _parse([String("m.wsgi")])
+    var base = AppConfig()
+    assert_equal(unflagged.server_config(base).max_keepalive_requests, base.max_keepalive_requests)
+    assert_equal(base.max_keepalive_requests, ServerConfig().max_keepalive_requests)
+
+
 def test_server_config_keeps_env_access_log_when_flag_absent() raises:
     """The flag can only turn logging on; it must not turn M0_ACCESS_LOG off."""
     _clear_env()
@@ -455,7 +492,7 @@ def test_usage_mentions_every_flag() raises:
     for flag in [
         String("--host"), String("--port"), String("--workers"), String("--threads"), String("--app-dir"),
         String("--static"), String("--static-cache-control"), String("--access-log"),
-        String("--max-body"), String("--metrics"), String("--realtime"),
+        String("--max-body"), String("--max-keepalive-requests"), String("--metrics"), String("--realtime"),
         String("--health-path"), String("--reload"), String("--reload-dir"),
         String("--protocol"), String("--blocking-threads"), String("--mount"),
         String("--help"), String("--version"), String("--doctor"),
