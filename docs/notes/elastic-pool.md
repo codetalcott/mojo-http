@@ -31,8 +31,8 @@ view cannot stall every connection out of the box
 ([WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md), "A slow view strands
 the connections pinned behind it"). The isolation is real and the cost
 on a view that never waits had become large, because the loop got fast
-and the pool did not. Per-thread CPU by `ps -M`, medians over 8 s, main
-at `3a365c4`:
+and the pool did not. Per-thread CPU by `ps -M` (`scripts/probes/bench_threads.py`), medians
+over 8 s, main at `3a365c4`:
 
 | handler threads | rps | loop | each pool thread | cores |
 |---|---:|---:|---:|---:|
@@ -60,7 +60,7 @@ per burst, whenever the loop has nothing for it for longer than its
 never how often a thread parks; it was which thread the wake lands on.
 With eight threads blocked in `recv` on one datagram socket, the kernel
 chooses, and a C ping-pong of that primitive
-(`.claude/handoffs/loop-user-space/herd.c`: W receivers blocked on one
+(`scripts/probes/herd.c`, run by `poe probe-herd`: W receivers blocked on one
 `SOCK_DGRAM` pair, one datagram per round, whole-process CPU per round
 trip) says how it chooses:
 
@@ -208,11 +208,11 @@ the table in the first section, and what sent this note to the kernel.
 The hole the chained wake closed reproduced on Linux and never on
 macOS, so the Linux reproducers ran first: the tree built in the
 `m0lin` container (Debian bookworm, aarch64 under colima, CPython
-3.13.11), `phase5_probe.py` — `smoke-django-realtime` phase 5 with a
+3.13.11), `scripts/probes/phase5_probe.py` — `smoke-django-realtime` phase 5 with a
 fresh server each round: two 1.5 s views in flight, a hold taken on a
 pool thread, the subscriber must be registered half a second later —
 passed 20 of 20 rounds (2 of 10 failed on the ring's first build, 0 of
-20 after the chain), and `hold_race_probe.py` registered 40 of 40 holds
+20 after the chain), and `scripts/probes/hold_race_probe.py` registered 40 of 40 holds
 opened while the loop was kept busy. The pool smokes on both platforms
 and the fairness probe are in the pull request's gates.
 
@@ -257,7 +257,7 @@ read that.
 
 **The tail on a GIL build is noise-shaped, on every binary.** On the
 pinned 3.13, the same shape, fresh server per run, three and then four
-rounds alternated (`bench_slow.py` beside the other instruments):
+rounds alternated (`scripts/probes/bench_slow.py`):
 
 | arm | slow=0 p99 | slow=1 | slow=2 | rps | p50 |
 |---|---:|---:|---:|---:|---:|

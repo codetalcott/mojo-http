@@ -21,6 +21,25 @@ versions may break the API**.
   the access log they split a request's time into what the server does
   and what happens between the server and the client, which is how the
   cap was found (docs/notes/pool-tail.md).
+- **The pool's Linux reproducers are in the tree, and pre-release.**
+  `scripts/probes/` holds the instruments the engineering record quotes
+  (`herd.c`, `handoff_pingpong.c`, `bench_threads.py`, `bench_arms.py`,
+  `bench_slow.py`, `xctrace_report.py`) and the two Linux reproducers
+  (`phase5_probe.py`, `hold_race_probe.py`), which lived untracked under
+  a session directory until now. `poe stress-pool` (SPEC E18) runs the
+  reproducers in the `m0lin` container — twenty rounds of
+  `smoke-django-realtime` phase 5 with a fresh server each, then forty
+  holds under a busy loop — once per shipped wake mode, and is a
+  pre-release step beside `stress-asgi` (docs/RELEASING.md); the
+  phase-5 probe now exits non-zero on a failed round. `poe probe-herd`
+  runs the wake-herd ping-pong. The container recipe (`linux_setup.sh`,
+  `linux_sync.sh`) moved there too.
+- **Prose may not cite an untracked path.** `check-docs` fails when a
+  page under `docs/`, the README, CLAUDE.md or this changelog cites a
+  `.claude/` path git does not track — the record cannot cite a file
+  nobody else can open. Its selftest proves the rule fires. The 2026-09-04
+  soak driver outputs the real-app record cited there are now
+  `bench/soak/2026-09-04/`.
 - **A rendered benchmark table may not be stale.** Bench artifacts record
   the version they measured (`environment.version`), and
   `render_bench_docs.py --check`, inside `check-docs`, refuses the newest

@@ -1,0 +1,11 @@
+  captured /                            302 0 bytes
+  captured /healthz/                    200 2 bytes
+  captured /admin/                      200 19224 bytes
+  captured /accounts/login/             200 34896 bytes
+  captured /setup/welcome/              302 0 bytes
+  captured /student/1/                  200 81072 bytes
+  captured /no-such-page/               404 17786 bytes
+  captured /student/1/csv/              200 291 bytes
+  skipped  /student/1/excel/            (verify: false -- status only)
+  captured /student/1/pdf/              200 64036 bytes
+baseline written to /tmp/soak/transcripts-gunicorn.json (9 routes; bodies beside it in /tmp/soak/transcripts-gunicorn.json.bodies/)

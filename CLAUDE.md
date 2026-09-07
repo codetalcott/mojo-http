@@ -745,6 +745,7 @@ uv run poe build-all        # each package -> .mojoc, in dependency order
 uv run poe test-all         # builds first, then runs all tests
 uv run poe test-shim        # the executor shim's ownership rules, sabotage-proven
 uv run poe stress-asgi      # PRE-RELEASE: N streamed + WebSocket rounds, both loop modes
+uv run poe stress-pool      # PRE-RELEASE: the pool's lost-wake reproducers, per wake mode, in the Linux container
 uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers

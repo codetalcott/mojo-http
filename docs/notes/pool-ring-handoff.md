@@ -25,7 +25,8 @@ that drained each completion (0.58). On the pool thread the handoff was
 and a `sendto` per completion. Granian's crossbeam channel and tokio
 oneshot cost it nothing on the common path: two atomics, a spin that
 absorbs the gap between jobs, and a syscall only when a thread is
-actually parked. A C ping-pong of the primitives on this machine put the
+actually parked. A C ping-pong of the primitives on this machine
+(`scripts/probes/handoff_pingpong.c`) put the
 datagram pair at 2.7–3.0 µs of CPU per round trip and the same with the
 loop side parking in `kevent` at 4.5, against 0.1–0.2 for a spin.
 

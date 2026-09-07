@@ -194,7 +194,7 @@ to serve both sides.
 ## The instruments, and a trap
 
 - **Per-thread CPU** is `ps -M -p PID` on macOS, sampled once a second
-  and reduced to a median per thread. The bench script's process-level
+  and reduced to a median per thread (`scripts/probes/bench_threads.py`). The bench script's process-level
   `%cpu` is a sum over threads and cannot distinguish a saturated loop
   beside an idle pool from two half-busy threads.
 - **On-CPU profile** is Instruments' Time Profiler through `xctrace`,
@@ -203,7 +203,8 @@ to serve both sides.
   export is not well-formed XML: Mojo symbol names put raw `&`, `<` and
   `>` inside `name=` attributes, so ElementTree refuses it and a regex
   pass over the `<row>` elements — resolving the `id`/`ref` pairs on
-  `thread`, `tagged-backtrace`, `backtrace` and `frame` — reads it.
+  `thread`, `tagged-backtrace`, `backtrace` and `frame` — reads it
+  (`scripts/probes/xctrace_report.py`).
 - **The trap is `/usr/bin/sample`.** It is a wall-clock sampler and it
   samples blocked threads too, and on this loop it attributed 28.8 % of
   the thread's samples to `kevent` where the on-CPU share is 3.3 % and the
