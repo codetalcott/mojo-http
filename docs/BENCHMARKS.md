@@ -247,18 +247,19 @@ The control is the point. Both halves run in one pass, so the rows without
 the flag have to keep failing for the rows with it to mean anything.
 
 <!-- generated: mixed-workload -- edit bench/results, not this table -->
-Source: [`mixed-workload-20260906T225838Z.json`](../bench/results/mixed-workload-20260906T225838Z.json) — 2026-09-06T22:58:38+00:00, commit `a00eb84`.
-Environment: Python 3.14.7 free-threading build; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 2 rounds, medians.
+Source: [`mixed-workload-20260907T032546Z.json`](../bench/results/mixed-workload-20260907T032546Z.json) — 2026-09-07T03:25:46+00:00, commit `9f0511b`.
+Environment: Python 3.14.7 free-threading build; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
 
 | configuration | slow=0 | slow=1 | slow=2 |
 |---|---|---|---|
-| `--workers 4` | 2.5 ms | 189.6 ms | 195.6 ms |
-| `--threads 4` | 1.9 ms | 192.1 ms | 197.5 ms |
-| `--workers 4 +bt=4` | 2.6 ms | 2.8 ms | 4.1 ms |
-| `--threads 4 +bt=4` | 2.1 ms | 2.6 ms | 3.2 ms |
-| `granian bt=4` | 0.6 ms | 0.5 ms | 0.6 ms |
+| `--workers 4` | 0.8 ms (0.8–0.8) | 189.7 ms (188.7–191.0) | 193.6 ms (192.4–194.0) |
+| `--threads 4` | 0.7 ms (0.7–0.7) | 192.7 ms (191.2–195.5) | 198.4 ms (196.8–199.6) |
+| `--workers 4 +bt=4` | 1.4 ms (1.4–1.5) | 1.3 ms (1.3–1.3) | 1.3 ms (1.3–1.3) |
+| `--threads 4 +bt=4` | 0.9 ms (0.9–0.9) | 0.9 ms (0.9–0.9) | 0.9 ms (0.9–1.0) |
+| `--workers 1 +bt=4` | 0.5 ms (0.5–0.5) | 0.4 ms (0.4–0.5) | 0.5 ms (0.5–0.6) |
+| `granian bt=4` | 0.5 ms (0.5–0.6) | 0.5 ms (0.5–0.5) | 0.5 ms (0.5–0.5) |
 
-Fast-route p99, median across rounds, as concurrent slow requests are added. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
+Fast-route p99 as concurrent slow requests are added: the median across 3 rounds, with the min–max across those rounds in parentheses. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
 <!-- /generated: mixed-workload -->
 
 **The comparator's row and ours are the same row at the same shape.**
