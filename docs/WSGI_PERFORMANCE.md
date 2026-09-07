@@ -789,7 +789,7 @@ Environment: Python 3.13.6; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 
 | `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 148,716 | 4.44 | 33,495 |
 | `granian` + bare WSGI, 4 workers, 1 blocking thread each | 147,882 | 4.25 | 34,796 |
 
-Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
+Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running well over one core. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
 
 The table between the markers is rendered from the newest artifact in
@@ -908,7 +908,7 @@ measurements, not recomputed. The shape reproduced exactly — ~1 ms →
 
 That run also retired this paragraph's note that `granian` is absent
 "because it is not in this repo's lock file". It *is* in the lock file, in
-the `bench` group, pinned at 2.8.1 — `uv sync --group bench`. With it
+the `bench` group, pinned at 2.8.1 then and 2.8.2 now — `uv sync --group bench`. With it
 installed its row appears, and it is better than ours: ~0.6 ms flat, about
 4x below our best. The pool's claim is that it removes the stall, not that
 it wins the remaining tail.
@@ -1335,65 +1335,41 @@ boundary artifact of switching load patterns, not steady-state behavior.
 
 ## Reproducing
 
-For the threads-vs-prefork row: `uv run poe py314t-try`, export
-`MOJO_PYTHON_LIBRARY` (from `sysconfig`'s `LIBDIR`/`INSTSONAME`) and
-`PYTHON_GIL=0`, `uv pip install --python .venv/bin/python gunicorn`,
-`.venv/bin/poe build-serve` (a Mojo binary carries an `@rpath` into the venv
-it was built in, so rebuild inside the swap), then
-`scripts/bench_wsgi_modes.sh`; `uv run poe py314t-restore` afterwards. Bare
-`.venv/bin/poe`, never `uv run`, while swapped — a `uv run` re-syncs the venv
-back to 3.13 mid-run. **Rebuild `bin/m0serve` again after restoring**: the
-binary left behind by the swap has an `@rpath` into a venv that no longer
-exists and aborts on start.
+Every run needs `bin/m0serve` from `poe build-serve`, `wrk`, and a machine
+with nothing else busy: both shell benches refuse to start, and refuse to
+begin a round, while any process outside their own tree is busy
+(`scripts/bench_guard.py`). Granian is the `bench` dependency group,
+`uv sync --group bench`, pinned at 2.8.2 so a comparator drift cannot move
+the rows silently; a `uv run` keeps it, a bare `uv sync` removes it.
 
-For the layer split and the mixed-workload row, the same setup plus
-`granian`, then `scripts/bench_layer_split.sh` or
-`scripts/bench_mixed_workload.sh`. The layer split also needs `apps/hello`
-built inside the swap (`mojo build ... apps/hello/server.mojo`), for the
-same `@rpath` reason as `bin/m0serve`.
+**The tables on [BENCHMARKS.md](BENCHMARKS.md)**, each one script, on the
+pinned venv unless stated:
 
-`bench_mixed_workload.sh` is now a **regression gate** rather than a
-decision: its `+bt=N` rows must stay flat under slow load, and its rows
-without the flag must keep showing the ~120x degradation. A control that
-stops failing has stopped measuring anything, which is why both halves are
-in one script and one run. It runs three rounds at least and the table
-renders the min–max across them beside each median, because the pooled
-rows' p99 on a GIL build is bimodal — 2–3 ms in one fresh server, 7–8 in
-the next ([notes/elastic-pool.md](notes/elastic-pool.md)) — and a
-two-round median of that is one mode presented as a fact. Both shell
-benches also refuse to run while any process outside their own tree is
-busy (`scripts/bench_guard.py`; the layer split's TIME_WAIT gate, applied
-to CPU), and `render_bench_docs.py --check` refuses an artifact whose
-rows moved against the comparators' since the previous one unless
-`--accept-drift` stamped it. `granian` is not in this repo's lock file, so a
-swapped venv has none and its row is skipped; that row is a reference, not
-the gate.
+- Layer split: build `apps/hello` to `/tmp/bench_hello_server`
+  (`mojo build -I packages/m0-core -I packages/m0-http apps/hello/server.mojo -o /tmp/bench_hello_server`),
+  then `scripts/bench_layer_split.sh`.
+- ASGI throughput: `poe bench-asgi-wrk`. Fast-request tail under mixed
+  load: `poe bench-asgi`. Both use the venv's uvicorn and uvloop, which the
+  executor adopts because the script puts the venv first on `PATH`.
+- Slow-view isolation, on free-threaded 3.14t because its `--threads` rows
+  need that build: the swap below, then `scripts/bench_mixed_workload.sh`.
+  It runs three rounds at least, and the renderer refuses fewer.
 
-**Do not run any `uv run` command while swapped** — not even `uv run mojo
-run` on an unrelated scratch file. It re-syncs the venv back to 3.13
-underneath the benchmark, and the symptom is not an error message: the Mojo
-binaries start aborting on a stale `@rpath` and `.venv/bin/granian`
-disappears, so rows silently go missing rather than failing loudly. Bare
-`.venv/bin/poe` and `.venv/bin/mojo` are safe; `uv run` is not.
+**This page's own tables**, all under the swap:
 
-For the tail row, the same setup plus `granian`, then
-`scripts/bench_wsgi_tail_ka.sh`. Use that one, not `bench_wsgi_tail.sh`, for
-any keep-alive question: the close-per-request runs in the latter exhaust
-the ephemeral port range and poison every row after the first. Never edit
-either script while it is running — bash reads a script by byte offset, and
-a mid-run edit shifts it (that is what produced the stray syntax error at
-the end of the recorded run, after all its rows had been written).
-
-No poe task, because gunicorn is deliberately not a dependency of this repo.
-The shape of a run:
+- Threads vs prefork: `uv pip install --python .venv/bin/python gunicorn`,
+  then `scripts/bench_wsgi_modes.sh`.
+- The keep-alive tail: `scripts/bench_wsgi_tail_ka.sh`. Not
+  `bench_wsgi_tail.sh`: its close-per-request runs exhaust the ephemeral
+  port range and poison every row after the first.
+- The gunicorn comparison in Results has no script. Its shape, with the
+  browser-shaped request the Setup section describes:
 
 ```bash
 uv run poe build-serve               # -> bin/m0serve
 source .venv/bin/activate            # the embedded CPython must see Django
 bin/m0serve djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080 --workers 2 &
 
-# A browser-shaped request; wrk's default sends only Host, which understates
-# the header-handling cost by roughly 2.4x (see the header-count table above).
 BROWSER=(-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
          -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
          -H 'Accept-Language: en-US,en;q=0.9' -H 'Accept-Encoding: gzip, deflate, br'
@@ -1408,13 +1384,28 @@ cd apps/django_wsgi && uv run --with gunicorn python -m gunicorn \
   djangoproj.wsgi:application -w 2 -b 127.0.0.1:8080 --log-level warning
 ```
 
-To reproduce a *before/after* claim rather than an absolute, build both
-binaries first and alternate them within one session — start A, measure,
-kill, start B, measure, kill, repeat. Given the drift above, three or more
-alternating rounds are the minimum worth quoting, and the ratio is the
-result; the absolutes are not.
+**The free-threaded swap.** `uv run poe py314t-try`, export
+`MOJO_PYTHON_LIBRARY` (from `sysconfig`'s `LIBDIR`/`INSTSONAME`) and
+`PYTHON_GIL=0`, `uv pip install --python .venv/bin/python granian==2.8.2`
+(the swap syncs without the `bench` group), then `.venv/bin/poe build-serve`.
+Afterwards `uv run poe py314t-restore`, then `poe build-serve` again. Two
+rules, each of which has produced a confident wrong answer:
 
-When killing the mojo server, kill the workers too — they are forks of the
-supervisor, and their pids are in its startup output. `M0_ACCESS_LOG=true`
-logs per-request server-side duration, which is how in-loop time gets
-separated from accept-queue wait when a latency number needs explaining.
+- While swapped, run bare `.venv/bin/poe` and `.venv/bin/mojo`, never
+  `uv run` anything, not even on an unrelated scratch file. It re-syncs
+  the venv to 3.13 underneath the benchmark, and the symptom is rows
+  silently missing (a stale `@rpath` abort, `.venv/bin/granian` gone)
+  rather than an error.
+- A Mojo binary carries an `@rpath` into the venv it was built in, so
+  `bin/m0serve` and `apps/hello` are rebuilt inside the swap and again
+  after restoring; the binary the swap leaves behind aborts on start.
+
+**For any run.** Never edit a bench script while it runs; bash reads a
+script by byte offset. For a before/after claim, build both binaries and
+alternate them within one session, three rounds or more; the ratio is the
+result, the absolutes are not. When killing the mojo server, kill its
+workers too, whose pids are in its startup output.
+
+After recording, commit the artifact and run `uv run poe render-bench-docs`.
+`render_bench_docs.py --check` refuses an artifact whose rows moved against
+the comparators' since the previous one unless `--accept-drift` stamped it.

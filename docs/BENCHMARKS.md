@@ -3,62 +3,37 @@
 Every number in the tables below is rendered from a dated,
 environment-stamped JSON artifact in [`bench/results/`](../bench/results/),
 and the figures quoted in the prose are recomputed from those same
-artifacts and compared at the precision they are written to. Both are
-CI-checked: a hand-edited table, or a sentence whose number has drifted,
-fails the build naming the file.
+artifacts. Both are CI-checked.
 
 Figures that no artifact backs — the performance/efficiency core split,
 the cross-session variance number, and the history of how each row got
-where it is — are marked as recorded observations in the page's source,
-each naming where it was observed, and the same check refuses a figure in
-the prose that is neither a recomputed span nor inside such a paragraph.
-The slow-view isolation result used to be the largest unbacked claim here;
-it has an artifact now.
+where it is — are marked as recorded observations in the page's source.
 
-That is the only unusual claim this page makes. The performance claims
-themselves are mixed: **m0serve is not the fastest server in this
-comparison on raw throughput, and the tables below say so.** What it is
-faster at is a narrower thing — keeping a fast request fast while slow work
-is in flight — and the reason to read the rest is to see exactly where the
-line falls.
+Performance claims themselves are mixed: m0serve is not the fastest server in this
+comparison on raw throughput, but the tables show it keeps a fast request fast while slow work is in flight.
 
 ## How to read this page
 
-Five caveats, stated before the numbers rather than under them.
-
 - <!-- observed: cross-session runs from before the artifact system, 2026-08 -->**Within-run ratios are the signal; absolute rows are not.** Identical
   binaries move ~1.5x in absolute rps across sessions on this hardware,
-  from thermal and load state alone (recorded observation, not an
-  artifact). Compare rows inside one table, never a
-  row here against a row in something else you read.
+  from thermal and load state alone. Compare rows inside one table.
 - **Cores are measured, not configured.** Each table's `cores` column is
-  sampled `%cpu` of the pids on the listen socket. The column exists
-  because it caught a real error: a comparator invoked as `--workers 1` was
-  running ~<!-- num:granian-w1-cores@2 -->1.76<!-- /num --> cores across its runtime's I/O threads, so every earlier
-  raw-rps ratio had been comparing that many cores against one.
-- <!-- observed: one worker pinned to background QoS, 2026-08; not re-measured -->**The benchmark box has performance and efficiency cores** (Apple M4, 4P
-  + 6E). An E-core serves this workload at 18.6k rps against a P-core's
-  81.7k — 4.4x slower (measured by pinning a worker to background QoS; not
-  an artifact). So per-core rows are comparable only where the
-  server plus the load generator fit in the P-cores: on this box, 1 and 2
-  workers. The 4-worker rows measure the scheduler, not the server, and are
-  kept because removing them would hide that.
+  sampled `%cpu` of the pids on the listen socket; a comparator run as
+  `--workers 1` uses ~<!-- num:granian-w1-cores@2 -->1.76<!-- /num --> cores
+  across its runtime's I/O threads, and rps/core is what corrects for it.
+- <!-- observed: one worker pinned to background QoS, 2026-08; not re-measured -->**The box has performance and efficiency cores** (Apple M4, 4P + 6E),
+  and an E-core serves this workload 4.4x slower (18.6k rps against a
+  P-core's 81.7k, measured by pinning a worker to background QoS). Per-core
+  rows are comparable only where server plus load generator fit in the
+  P-cores: 1 and 2 workers. The 4-worker rows measure the scheduler.
 - **Every table renders from the newest committed artifact, and CI
-  refuses a stale one.** `render_bench_docs.py --check`, inside
-  `poe check-docs`, fails when the artifact behind any table lacks a
-  version stamp, was recorded on a dirty tree, or is more than one minor
-  version behind `pyproject.toml`. Until 2026-09-05 the slow-view table
-  sat on an artifact from before two changes that moved exactly its rows,
-  because nothing asked. Three of the four tables are recorded on the
-  venv's CPython 3.13, the GIL build a `pip install` gets; the slow-view
-  isolation table on free-threaded 3.14t, because its `--threads` rows
-  need that build.
-- **One anomalous round per run is normal on this box.** Three recorded
-  runs of the layer split each had exactly one round land well off the
-  other two, in a different position each time — which is why every bench
-  here takes the median of three rather than a mean of one. The medians
-  from those three runs agree to within 0.03 on the per-core ratio; the
-  individual rounds do not.
+  refuses one that lacks a version stamp, was recorded on a dirty tree,
+  or is more than one minor version behind `pyproject.toml`.** Each
+  table's Environment line names its Python; the slow-view table is on
+  free-threaded 3.14t because its `--threads` rows need that build.
+- **Every figure is the median of three rounds**, because one round per
+  run lands well off the other two; the medians of three recorded runs
+  agree to within 0.03 on the per-core ratio.
 
 The comparators are Granian 2.8.2 and uvicorn, both run with their own
 recommended settings, and every row is a single process unless the label
@@ -67,7 +42,7 @@ says otherwise. Where a comparator wins, the row stays.
 ## The short version
 
 | question | answer |
-|---|---|
+| --- | --- |
 | Fastest on bare WSGI? | **No** — one worker and one handler thread each, Granian is ahead by ~<!-- num:granian-per-m0@2 -->1.01<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.02<!-- /num -->x in requests per second |
 | Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core, against uvloop, no**: uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.15<!-- /num -->x; against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
@@ -94,7 +69,7 @@ Environment: Python 3.13.6; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 
 | `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 148,716 | 4.44 | 33,495 |
 | `granian` + bare WSGI, 4 workers, 1 blocking thread each | 147,882 | 4.25 | 34,796 |
 
-Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
+Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running well over one core. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
 
 Read the one-worker rows. Four numbers, and the arithmetic between them
@@ -161,7 +136,7 @@ Environment: Python 3.13.6; Apple M4 (10 cores); wrk -t2 -c16 -d8s, browser head
 | `uvicorn --loop asyncio` | 58,609 | 0.99 | 59,201 |
 | `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 83,300 | 0.98 | 85,000 |
 
-Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running 1.6 cores. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
+Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running well over one core. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: asgi-wrk-hello -->
 
 **The cores column is the story of this row.** The executor used to lose
@@ -239,8 +214,7 @@ zero threads, where the buffered bridge takes 12 s.
 
 ## Slow-view isolation
 
-The strongest claim this project makes, and now the one with an artifact
-behind it. A synchronous view that blocks holds the connections pinned to
+The strongest claim this project makes. A synchronous view that blocks holds the connections pinned to
 its event loop; `--blocking-threads N` puts a pool of handler threads
 behind each loop so it stops doing that.
 
@@ -318,12 +292,18 @@ every number here names, and installing it is one flag:
 
 ## Reproducing
 
-The full procedure — the free-threaded interpreter swap, the rebuild inside
-it, the `granian` install, and the three traps that each produced a
-confident wrong answer — is in
-[WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md#reproducing). It is deliberately
-in the working record rather than here: this page is the result, that one
-is the method and the dead ends.
+Each table's artifact comes from one script, run on a clean checkout with
+nothing else busy on the machine:
+
+| table | recorded on | run |
+| --- | --- | --- |
+| The HTTP layer, and the bridge | the pinned venv, Granian from `uv sync --group bench` | `scripts/bench_layer_split.sh`, with `apps/hello` built to `/tmp/bench_hello_server` |
+| ASGI throughput | the pinned venv | `poe bench-asgi-wrk` |
+| Fast-request tail under mixed load | the pinned venv | `poe bench-asgi` |
+| Slow-view isolation | free-threaded 3.14t, `poe py314t-try` | `scripts/bench_mixed_workload.sh` |
+
+The prerequisites, the swap's rules, and the procedures for that page's
+own tables are in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md#reproducing).
 
 After recording a new artifact, `uv run poe render-bench-docs` rewrites
 every table on this page from it, and `uv run poe check-docs` fails if
