@@ -1,0 +1,60 @@
+soak: transcripts at http://127.0.0.1:8501 for 150s
+  baseline: /tmp/soak/transcripts-gunicorn.json (http://127.0.0.1:8423)
+  populations: burst(4) stream(2) bulk(1) abandon(1) ws(1)
+  churn: sigterm every 60s
+  [  5.1s] rss=120624kB fds=70 threads=13 conns=9 verified=1347 failures=82
+  [ 10.1s] rss=122288kB fds=70 threads=13 conns=9 verified=2712 failures=179
+  [ 15.2s] rss=122880kB fds=68 threads=13 conns=9 verified=4054 failures=274
+  [ 20.2s] rss=123248kB fds=70 threads=13 conns=9 verified=5344 failures=366
+  [ 25.3s] rss=123568kB fds=68 threads=13 conns=9 verified=6639 failures=460
+  [ 30.4s] rss=123936kB fds=68 threads=13 conns=8 verified=7973 failures=556
+  [ 35.4s] rss=123968kB fds=76 threads=13 conns=9 verified=9303 failures=652
+  [ 40.5s] rss=124064kB fds=68 threads=13 conns=9 verified=10622 failures=746
+  [ 45.5s] rss=124176kB fds=70 threads=13 conns=9 verified=11940 failures=841
+  [ 50.6s] rss=124288kB fds=69 threads=13 conns=9 verified=13239 failures=937
+  [ 55.6s] rss=124608kB fds=72 threads=13 conns=9 verified=14550 failures=1033
+  churn: SIGTERM -> exit 0 in 0.13s
+  [ 65.9s] rss=119664kB fds=69 threads=13 conns=9 verified=17014 failures=1211
+  [ 71.0s] rss=121504kB fds=77 threads=13 conns=9 verified=18361 failures=1308
+  [ 76.0s] rss=122320kB fds=69 threads=13 conns=8 verified=19694 failures=1405
+  [ 81.1s] rss=122912kB fds=70 threads=13 conns=9 verified=21042 failures=1502
+  [ 86.1s] rss=123568kB fds=67 threads=13 conns=9 verified=22351 failures=1598
+  [ 91.2s] rss=124032kB fds=72 threads=13 conns=9 verified=23682 failures=1694
+  [ 96.2s] rss=124160kB fds=70 threads=13 conns=9 verified=25018 failures=1791
+  [101.3s] rss=124256kB fds=72 threads=13 conns=9 verified=26337 failures=1885
+  [106.4s] rss=124432kB fds=69 threads=13 conns=9 verified=27636 failures=1983
+  [111.4s] rss=124544kB fds=69 threads=13 conns=9 verified=28952 failures=2076
+  [116.5s] rss=124656kB fds=66 threads=13 conns=9 verified=30280 failures=2171
+  churn: SIGTERM -> exit 0 in 0.14s
+  [126.6s] rss=119424kB fds=65 threads=13 conns=9 verified=32728 failures=2352
+  [131.7s] rss=121584kB fds=69 threads=13 conns=9 verified=34076 failures=2449
+  [136.7s] rss=122320kB fds=69 threads=13 conns=9 verified=35412 failures=2545
+  [141.8s] rss=123104kB fds=76 threads=13 conns=9 verified=36754 failures=2641
+  [146.8s] rss=123632kB fds=69 threads=13 conns=9 verified=38063 failures=2735
+  [150.1s] rss=123904kB fds=69 threads=13 conns=9 verified=38906 failures=2796
+
+--- transcripts ---
+  abandon_fin            613
+  abandon_rst            613
+  burst_reconnects       317
+  burst_requests         37687
+  churn_drain_ms_max     138
+  churn_restarts         2
+  churn_tolerated        10359
+  churn_window_ms_max    840
+  failures               2798
+  recycle_requests       1224
+  slow_requests          4611
+  status_only            4611
+  stream_reads           2798
+  verified               38911
+  rss 119424kB -> 123904kB (grew 4480kB, epoch 3)
+  fds 70 -> 69 (max 77)
+  threads 13 -> 13 (max 13)
+  active connections 9 -> 9 (max 9)
+  free slots 1015 -> 1015 (min 1015)
+
+  2798 failure(s) in 1 distinct shape(s):
+    x2798    stream /student/1/pdf/: body digest 3ae4c185b486f3f9 != 75eee4f6a042c3fe (63641 != 64036 bytes)
+  first mismatching body per route kept in /tmp/soak/rerun-transcripts_wsgi_pool8_churn.log.diffs/ — diff against the capture's .bodies/ directory
+soak FAIL: transcripts

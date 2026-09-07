@@ -427,6 +427,9 @@ python3 scripts/render_shim.py --selftest || exit 1
 # The citation tracker runs inside check_docs (`check_citations.check`);
 # same rule: prove its rules can fail before believing they passed.
 python3 scripts/check_citations.py --selftest || exit 1
+# check_docs' own citation rule (prose may not cite an untracked path);
+# same rule again: prove it can fire before believing it passed.
+python3 scripts/check_docs.py --selftest || exit 1
 python3 scripts/check_docs.py || exit 1
 python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs
@@ -4638,6 +4641,59 @@ for mode in $modes; do
   rm -f $log
   echo "stress-asgi[$mode] OK: $iters/$iters rounds under $hogs hogs"
 done
+"""
+
+# SPEC E18. The handler pool's lost-wake reproducers, run where the lost
+# wake was caught: the m0lin Linux container (docs/notes/pool-ring-handoff.md
+# -- 2 of 10 rounds on the ring's first build, never on macOS, whose kernel
+# wakes every receiver on a datagram socket and so never leaves one parked
+# beside a job). Per wake MODE, because the pool has three shipped wake
+# protocols and a wake lost in one is invisible in the others: the GIL rules
+# (the default on the container's 3.13), M0_POOL_PARALLEL=1 (the
+# free-threaded default, forced on for the run) and M0_POOL_ELASTIC=0 (the
+# eager wakes, the A/B control). Pre-release, not CI: CI has no such
+# container, and a shared runner's scheduler is not the one under test.
+[tool.poe.tasks.stress-pool]
+help = "PRE-RELEASE: the pool's lost-wake reproducers, N rounds per wake mode, in the m0lin Linux container (not in CI)"
+shell = """
+rounds=${M0_STRESS_POOL_ROUNDS:-20}
+holds=${M0_STRESS_POOL_HOLDS:-40}
+modes=${M0_STRESS_POOL_MODES:-"elastic parallel eager"}
+c=${M0_LINUX_CONTAINER:-m0lin}
+docker start "$c" > /dev/null 2>&1 \
+  || { echo "stress-pool: no docker container named '$c' — create it with the recipe in scripts/probes/linux_setup.sh's header"; exit 1; }
+# The tree goes in by tar (the container has no bind mount, so it can outlive
+# any one checkout), and the sync script rebuilds what the probes serve: the
+# packages, the binary, and the m0pub core lib the realtime app loads.
+tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/*' --exclude='.claude' \
+    -cf - packages scripts apps pyproject.toml uv.lock bench \
+  | docker exec -i "$c" bash -c 'mkdir -p /src && cd /src && tar -xf -' || exit 1
+docker exec "$c" bash /src/scripts/probes/linux_sync.sh http datastar wsgi serve ffi || exit 1
+for mode in $modes; do
+  case $mode in
+    elastic)  envs="M0_POOL_ELASTIC=1" ;;
+    parallel) envs="M0_POOL_PARALLEL=1" ;;
+    eager)    envs="M0_POOL_ELASTIC=0" ;;
+    *) echo "stress-pool: unknown mode '$mode' (elastic|parallel|eager)"; exit 1 ;;
+  esac
+  echo "stress-pool[$mode]: smoke-django-realtime phase 5, $rounds rounds, a fresh server each"
+  docker exec -w /work "$c" env $envs uv run --no-sync python3 scripts/probes/phase5_probe.py "$rounds" \
+    || { echo "stress-pool: FAILED in $mode mode (phase5_probe.py) — a job was pushed and nobody was woken for it"; exit 1; }
+  echo "stress-pool[$mode]: $holds holds opened while three clients keep the loop busy"
+  docker exec -w /work "$c" env $envs uv run --no-sync python3 scripts/probes/hold_race_probe.py "$holds" \
+    || { echo "stress-pool: FAILED in $mode mode (hold_race_probe.py)"; exit 1; }
+  echo "stress-pool[$mode] OK: $rounds/$rounds rounds, $holds/$holds holds"
+done
+"""
+
+# Not a gate: the C ping-pong docs/notes/elastic-pool.md quotes (W receivers
+# blocked on one SOCK_DGRAM pair; macOS wakes all of them, Linux the oldest).
+[tool.poe.tasks.probe-herd]
+help = "PROBE: CPU per datagram round trip with 1/2/4/8 receivers parked on one socket (the wake herd; not a gate)"
+shell = """
+out=$(mktemp -d); trap 'rm -rf "$out"' EXIT
+cc -O2 -o "$out/herd" scripts/probes/herd.c || exit 1
+for w in 1 2 4 8; do "$out/herd" $w 100000; done
 """
 
 [tool.poe.tasks.serve-asgi-bare]

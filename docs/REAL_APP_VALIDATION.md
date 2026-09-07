@@ -134,7 +134,7 @@ checkouts of 2026-09-01 under `/tmp/soak/`, each with its own venv on PATH,
 `bin/m0serve` built from main at `0766272`, CPython 3.13.6 (the GIL build a
 `pip install` gets), macOS 26 on an M4. Same driver, same five populations,
 same reference captures except where noted. Raw driver outputs are in
-`.claude/handoffs/soak-2026-09-04/`.
+`bench/soak/2026-09-04/`.
 
 | app | mode | seconds | verified | failures | churn | RSS | fds / threads |
 |---|---|---|---|---|---|---|---|

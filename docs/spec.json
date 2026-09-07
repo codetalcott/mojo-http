@@ -490,6 +490,14 @@
       "evidence": "`Smoke test accept sharing` (every PR) \u2014 two rounds of a 32-connection burst per worker mode must land within 2:1, the doctor must report `accept_sharing` for two workers and not for one, and on macOS the knob-off arm must skew; the descriptor passing and the load policy: `test_accept_share.mojo:test_a_connection_passes_between_two_workers_with_its_peer`. The measurement, both platforms before and after: docs/notes/accept-sharing.md"
     },
     {
+      "id": "E18",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "A job pushed to a pool lane whose threads are parked or inside slow views is taken without a lost wake, on Linux, where the kernel wakes one waiter and the only lost pool wake ever caught reproduced",
+      "status": "verified",
+      "evidence": "`stress-pool` (pre-release) \u2014 in the `m0lin` container, once per shipped wake mode (the GIL rules, `M0_POOL_PARALLEL=1`, `M0_POOL_ELASTIC=0`): `scripts/probes/phase5_probe.py` runs `smoke-django-realtime` phase 5 twenty times with a fresh server each round \u2014 two 1.5 s views in flight, a hold taken on a pool thread, its subscriber must be registered half a second later; 2 of 10 rounds failed on the ring's first build (docs/notes/pool-ring-handoff.md) \u2014 and `scripts/probes/hold_race_probe.py` opens forty holds while three clients keep the loop busy. The deterministic half is E17's unit tests; the isolation is C5's smoke"
+    },
+    {
       "id": "F1",
       "section": "F",
       "category": "F. Observability",

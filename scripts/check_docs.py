@@ -1,6 +1,7 @@
 """The doc-fact ratchet: prose numbers must match their machine sources.
 
     python3 scripts/check_docs.py        # exit 1 on any mismatch, naming it
+    python3 scripts/check_docs.py --selftest   # the citation rule can fire
 
 Same philosophy as the warning ratchet: a fact with a machine-readable
 source of truth is never trusted from prose. This exists because the drift
@@ -1011,7 +1012,105 @@ def check_ci_measurements_are_collected():
         )
 
 
+# Prose may cite a path under these roots only if git tracks it. `.claude/`
+# is where sessions leave drafts and instruments untracked, and the
+# engineering record cited five instruments there by path before any of
+# them was in the tree (docs/notes/elastic-pool.md, 2026-09-06) -- a record
+# citing a file nobody else can open is a record with a hole. Other roots
+# are not this rule's: a historical `/tmp/soak/` is a description of where
+# a checkout was, not a citation of the record.
+CITATION_ROOTS = (".claude/",)
+PROSE = ("README.md", "CLAUDE.md", "CHANGELOG.md")   # plus every docs/**/*.md
+
+
+def untracked_citations(docs, tracked):
+    """Pure: {doc: text} and the set of tracked paths -> failure messages.
+
+    A backticked token under a watched root must be a tracked file, or a
+    directory with tracked files under it. Two shapes are mentions of a
+    convention rather than citations of a record and are left alone: a
+    glob (`.claude/**` in a paths-ignore list) and an AREA named on its
+    own (`.claude/worktrees/`, `.claude/handoffs/` -- one segment under
+    the root). A THING inside an area (`.claude/handoffs/soak-2026-09-04/`,
+    `.claude/handoffs/loop-user-space/herd.c`) is the record naming a
+    specific artifact, and that is what must be in the tree.
+    """
+    out = []
+    for doc, text in sorted(docs.items()):
+        for cited in re.findall(r"`([^`\n]+)`", text):
+            if not cited.startswith(CITATION_ROOTS):
+                continue
+            if any(ch in cited for ch in "*?["):
+                continue
+            path = cited.rstrip("/")
+            if len(path.split("/")) < 3:
+                continue
+            if path in tracked or any(t.startswith(path + "/") for t in tracked):
+                continue
+            out.append(
+                f"{doc} cites `{cited}`, which is not in the tree (git ls-files "
+                "does not know it). The record cannot cite a file nobody else can "
+                "open: move it under scripts/probes/ or bench/ and cite that path, "
+                "or drop the citation"
+            )
+    return out
+
+
+def check_docs_cite_tracked_paths():
+    """Every `.claude/...` path the prose cites is tracked by git."""
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return fail("check_docs_cite_tracked_paths: `git ls-files` failed, so "
+                    "tracked paths cannot be told from untracked ones")
+    tracked = set(filter(None, r.stdout.split("\n")))
+    docs = {}
+    for rel in PROSE:
+        if (REPO / rel).exists():
+            docs[rel] = (REPO / rel).read_text()
+    for path in sorted((REPO / "docs").rglob("*.md")):
+        docs[str(path.relative_to(REPO))] = path.read_text()
+    for msg in untracked_citations(docs, tracked):
+        fail(msg)
+
+
+def selftest():
+    """The citation rule must be able to fire: one doctored input per case."""
+    tracked = {".claude/handoffs/soak-design.md", "scripts/probes/herd.c",
+               ".claude/handoffs/kept/one.out"}
+    cases = [
+        ("a citation of an untracked draft",
+         {"docs/notes/x.md": "measured with `.claude/handoffs/loop-user-space/herd.c` here"}, True),
+        ("an untracked directory",
+         {"docs/x.md": "raw outputs are in `.claude/handoffs/soak-2026-09-04/`."}, True),
+        ("(control: a tracked file under .claude)",
+         {"docs/x.md": "the design is `.claude/handoffs/soak-design.md`"}, False),
+        ("(control: a directory with tracked files under it)",
+         {"docs/x.md": "the kept outputs are in `.claude/handoffs/kept/`"}, False),
+        ("(control: an area named on its own, nothing tracked under it)",
+         {"CHANGELOG.md": "worktrees live in `.claude/worktrees/`"}, False),
+        ("(control: a glob is a pattern, not a record)",
+         {"CLAUDE.md": "test.yml ignores `*.md`, `docs/**` and `.claude/**`"}, False),
+        ("an untracked file inside an area",
+         {"docs/x.md": "the driver is `.claude/handoffs/soak-2026-09-04/bakerydemo-asgi.py`"}, True),
+        ("(control: paths outside the watched roots are not this rule's)",
+         {"docs/x.md": "checkouts under `/tmp/soak/`, and `scripts/nothing.py`"}, False),
+    ]
+    ok = True
+    for label, docs, must_fire in cases:
+        got = untracked_citations(docs, tracked)
+        fired = bool(got)
+        named = (not fired) or all(d in g for d in docs for g in got)
+        good = fired == must_fire and named
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
+    print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
+    return ok
+
+
 def main():
+    if "--selftest" in sys.argv:
+        sys.exit(0 if selftest() else 1)
     check_warning_counts()
     check_smoke_coverage()
     check_test_coverage()
@@ -1043,6 +1142,7 @@ def main():
     check_ci_measurements_are_collected()
     check_site_corpus()
     check_rfc_citations()
+    check_docs_cite_tracked_paths()
     if failures:
         print("check-docs: FAIL")
         for f in failures:

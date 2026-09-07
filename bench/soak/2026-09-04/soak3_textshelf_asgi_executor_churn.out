@@ -1,0 +1,62 @@
+  3 sessions logged in concurrently
+soak: textshelf at http://127.0.0.1:8505 for 180s
+  baseline: /tmp/soak/textshelf-daphne.json (http://127.0.0.1:8401)
+  populations: burst(4) stream(2) bulk(1) abandon(1) ws(1)
+  churn: sigterm every 90s
+  [  5.1s] rss=489984kB fds=96 threads=17 conns=9 verified=2145 failures=0
+  [ 10.1s] rss=490528kB fds=106 threads=18 conns=9 verified=4204 failures=0
+  [ 15.2s] rss=490560kB fds=116 threads=17 conns=9 verified=6270 failures=0
+  [ 20.2s] rss=491104kB fds=121 threads=17 conns=9 verified=8315 failures=0
+  [ 25.3s] rss=493088kB fds=127 threads=17 conns=9 verified=10343 failures=0
+  [ 30.4s] rss=493120kB fds=76 threads=16 conns=9 verified=12374 failures=0
+  [ 35.4s] rss=493104kB fds=83 threads=16 conns=8 verified=14413 failures=0
+  [ 40.5s] rss=493200kB fds=101 threads=16 conns=9 verified=16481 failures=0
+  [ 45.5s] rss=493296kB fds=111 threads=16 conns=9 verified=18464 failures=0
+  [ 50.6s] rss=493280kB fds=113 threads=17 conns=9 verified=20500 failures=0
+  [ 55.7s] rss=493360kB fds=120 threads=16 conns=9 verified=22490 failures=0
+  [ 60.7s] rss=493296kB fds=74 threads=17 conns=9 verified=24448 failures=0
+  [ 65.8s] rss=491376kB fds=88 threads=16 conns=8 verified=26411 failures=0
+  [ 70.9s] rss=491424kB fds=96 threads=14 conns=9 verified=28432 failures=0
+  [ 75.9s] rss=491456kB fds=100 threads=17 conns=7 verified=30444 failures=0
+  [ 81.0s] rss=414672kB fds=123 threads=17 conns=9 verified=32421 failures=0
+  [ 86.0s] rss=414640kB fds=75 threads=17 conns=9 verified=34433 failures=0
+  churn: SIGTERM -> exit 0 in 0.19s
+  [ 96.2s] rss=176064kB fds=102 threads=13 conns=9 verified=38181 failures=0
+  [101.3s] rss=279440kB fds=111 threads=16 conns=9 verified=40170 failures=0
+  [106.3s] rss=280128kB fds=110 threads=17 conns=8 verified=42188 failures=0
+  [111.4s] rss=282224kB fds=123 threads=17 conns=9 verified=44235 failures=0
+  [116.5s] rss=283152kB fds=128 threads=15 conns=9 verified=46232 failures=0
+  [121.5s] rss=283136kB fds=96 threads=18 conns=8 verified=48268 failures=0
+  [126.6s] rss=283328kB fds=94 threads=13 conns=9 verified=50335 failures=0
+  [131.7s] rss=181312kB fds=109 threads=16 conns=9 verified=52332 failures=0
+  [136.7s] rss=157280kB fds=109 threads=17 conns=9 verified=54338 failures=0
+  [141.8s] rss=158992kB fds=117 threads=17 conns=9 verified=56374 failures=0
+  [146.9s] rss=159168kB fds=124 threads=17 conns=9 verified=58321 failures=0
+  [151.9s] rss=159168kB fds=128 threads=17 conns=9 verified=60375 failures=0
+  [157.0s] rss=159568kB fds=88 threads=18 conns=9 verified=62390 failures=0
+  [162.0s] rss=159680kB fds=96 threads=17 conns=9 verified=64439 failures=0
+  [167.1s] rss=159744kB fds=105 threads=17 conns=9 verified=66464 failures=0
+  [172.2s] rss=158672kB fds=110 threads=16 conns=8 verified=68483 failures=0
+  [177.2s] rss=158640kB fds=127 threads=17 conns=9 verified=70524 failures=0
+  [180.1s] rss=158656kB fds=92 threads=16 conns=9 verified=71662 failures=0
+
+--- textshelf ---
+  abandon_fin            411
+  abandon_rst            410
+  burst_reconnects       188
+  burst_requests         22245
+  churn_drain_ms_max     188
+  churn_restarts         1
+  churn_tolerated        6456
+  churn_window_ms_max    1145
+  logins                 2
+  recycle_requests       819
+  slow_requests          4178
+  stream_reads           44425
+  verified               71669
+  rss 176064kB -> 158656kB (grew -17408kB, epoch 2)
+  fds 96 -> 92 (max 128)
+  threads 17 -> 16 (max 18)
+  active connections 9 -> 9 (max 9)
+  free slots 1015 -> 1015 (min 1015)
+soak ok: textshelf
