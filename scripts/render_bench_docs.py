@@ -91,7 +91,7 @@ RESULTS = REPO / "bench" / "results"
 CORES_NOTE = (
     "Cores are measured (sampled `%cpu` of the pids on the listen socket),"
     " not configured — the column exists because a \"1 worker\" comparator"
-    " was found running 1.6 cores. Cross-session absolute rps on this"
+    " was found running well over one core. Cross-session absolute rps on this"
     " hardware varies ~1.5x; within-run ratios are the signal."
 )
 
