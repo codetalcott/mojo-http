@@ -1,8 +1,8 @@
 # Exercising the server against real applications
 
 **A record. Last run 2026-09-07**, against m0serve 0.19.0 as merged at
-`abf2016` — the tree with the detached event loop (PR #229) — all four
-applications, seven rows, in the newest section below. The full pass it
+`abf2016` — the 0.19.0 release: the elastic pool, and the keep-alive request
+cap at 1000 — all four applications, six rows, in the newest section below. The full pass it
 re-runs was **2026-09-01 and 2026-09-02**, against 0.16.0 (`bin/m0serve`
 from the tree at `c823198`), macOS 26 on an M4, CPython 3.13.6. The plan
 and the previous records are below and in the history of this file.
