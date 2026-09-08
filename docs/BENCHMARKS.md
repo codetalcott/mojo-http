@@ -44,7 +44,7 @@ says otherwise. Where a comparator wins, the row stays.
 | question | answer |
 | --- | --- |
 | Fastest on bare WSGI? | **No** — one worker and one handler thread each, Granian is ahead by ~<!-- num:granian-per-m0@2 -->1.01<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.02<!-- /num -->x in requests per second |
-| Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core, against uvloop, no**: uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.15<!-- /num -->x; against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x |
+| Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.44<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.01<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core, against uvloop, no**: uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.12<!-- /num -->x; against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
 | Fastest HTTP layer, Python excluded? | **Yes** — but see the note on why that is not the interesting number |
 
@@ -127,14 +127,14 @@ page because it prices the bridge, not because it is a win.
 asserted between the two responses, single process each:
 
 <!-- generated: asgi-wrk-hello -- edit bench/results, not this table -->
-Source: [`asgi-wrk-hello-20260905T201953Z.json`](../bench/results/asgi-wrk-hello-20260905T201953Z.json) — 2026-09-05T20:19:53+00:00, commit `39de02c`.
+Source: [`asgi-wrk-hello-20260908T161109Z.json`](../bench/results/asgi-wrk-hello-20260908T161109Z.json) — 2026-09-08T16:11:09+00:00, commit `7dae923`.
 Environment: Python 3.13.6; Apple M4 (10 cores); wrk -t2 -c16 -d8s, browser headers; executor loop: uvloop.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `m0serve` — zero-config executor (its loop is stamped above) | 118,686 | 1.60 | 74,179 |
-| `uvicorn --loop asyncio` | 58,609 | 0.99 | 59,201 |
-| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 83,300 | 0.98 | 85,000 |
+| `m0serve` — zero-config executor (its loop is stamped above) | 117,185 | 1.60 | 73,241 |
+| `uvicorn --loop asyncio` | 58,178 | 0.99 | 58,766 |
+| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 81,365 | 0.99 | 82,187 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running well over one core. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: asgi-wrk-hello -->
@@ -147,10 +147,10 @@ Since 2026-09-04 the loop holds no thread state while it serves
 ([notes/detached-loop.md](notes/detached-loop.md)), so its parsing and
 writing overlap the executor's Python, and this row runs at
 <!-- num:asgi-m0-cores@2 -->1.60<!-- /num --> cores:
-**<!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio`**
-and <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop in
+**<!-- num:asgi-vs-uvicorn@2 -->2.01<!-- /num -->x `uvicorn --loop asyncio`**
+and <!-- num:asgi-vs-uvloop@2 -->1.44<!-- /num -->x uvicorn with uvloop in
 requests per second, <!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x
-and <!-- num:asgi-per-core-vs-uvloop@2 -->0.87<!-- /num -->x per core. Read
+and <!-- num:asgi-per-core-vs-uvloop@2 -->0.89<!-- /num -->x per core. Read
 it as a process that can use two cores against one that cannot, not as one
 thread beating another; the concurrency tables and the loop-by-loop
 comparison are in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
@@ -174,7 +174,7 @@ per core at 16 connections and from 163k to 173k at 256.
 Worth recording because it inverted a conclusion: an earlier run of this
 comparison used a stdlib `http.client` harness and reported 0.88–0.94x. The
 assumption was that the stdlib client understated the Mojo layer's parsing
-edge. Under wrk the ratio is <!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x at 16 connections (0.72x before the
+edge. Under wrk the ratio is <!-- num:asgi-vs-uvicorn@2 -->2.01<!-- /num -->x at 16 connections (0.72x before the
 pump was batched and then inverted) — the stdlib client had been
 *flattering* the executor as it stood, and the fix path derived from it
 was aimed the wrong way.

@@ -64,8 +64,8 @@ multi-tab sync**, and CI executes every command in it on every pull request
   conformance is validated by `wsgiref`, ASGI by a validator written from
   the spec.
 - **Where it stands on throughput**, from [docs/BENCHMARKS.md](docs/BENCHMARKS.md):
-  <!-- num:asgi-vs-uvloop@2 -->1.42<!-- /num -->x uvicorn with uvloop on bare ASGI at 16 connections
-  (<!-- num:asgi-vs-uvicorn@2 -->2.03<!-- /num -->x `uvicorn --loop asyncio`), on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
+  <!-- num:asgi-vs-uvloop@2 -->1.44<!-- /num -->x uvicorn with uvloop on bare ASGI at 16 connections
+  (<!-- num:asgi-vs-uvicorn@2 -->2.01<!-- /num -->x `uvicorn --loop asyncio`), on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
   measured cores where uvicorn has one; the fast-request tail under mixed
   load ahead of uvicorn in every recorded run; and <!-- num:m0-vs-granian-rps@2 -->0.98<!-- /num -->x
   Granian on bare WSGI at one worker and one handler thread each

@@ -54,6 +54,23 @@ HDRS=(-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKi
 
 field() { echo "$1" | awk -v pat="$2" '$0 ~ pat {print $2; exit}'; }
 
+# A quiet-machine gate, the CPU twin of the TIME_WAIT gate below, and the
+# same one `bench_layer_split.sh` and `bench_mixed_workload.sh` have had:
+# refuse to record while any process outside this benchmark's own process
+# tree is above half a core across three samples a second apart. This
+# script went without it until 2026-09-08, which meant the ASGI rows --
+# the ones the benchmark page's headline ratio is computed from -- were
+# the only recorded rows with no guard against the contamination that
+# depressed a layer-split recording 7% while its comparators moved 2%.
+# Checked before the first row and at the top of every round, because a
+# daemon that wakes mid-run contaminates every row after it.
+quiet_or_die() {
+  python3 "$(dirname "$0")/bench_guard.py" wait --threshold 50 --samples 3 --timeout 120 2>&1 | tee -a "$OUT"
+  # `tee` hides the guard's status; PIPESTATUS carries it.
+  [ "${PIPESTATUS[0]}" -eq 0 ] \
+    || { echo "refusing to record on a busy machine (see above); no artifact is written" | tee -a "$OUT"; exit 1; }
+}
+
 drain_ports() {
   local waited=0
   while [ "$(netstat -an 2>/dev/null | grep -c TIME_WAIT)" -gt 8000 ]; do
@@ -113,10 +130,12 @@ parity() {
   rm -rf "$tmp"
 }
 
+quiet_or_die
 drain_ports
 parity
 
 for round in $(seq 1 $ROUNDS); do
+  quiet_or_die
   m0;              measure "r$round m0serve asgi-executor"; stop
   uv_loop asyncio; measure "r$round uvicorn asyncio";       stop
   if [ "$has_uvloop" = 1 ]; then
