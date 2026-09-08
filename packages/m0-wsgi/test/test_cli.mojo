@@ -22,6 +22,11 @@ from src.cli import (
     resolve_blocking_threads,
     use_asgi_executor,
     effective_cpus,
+    usable_cpus,
+    clamp_cpus,
+    parse_cpus_allowed,
+    parse_cgroup_cpu_max,
+    parse_cgroup_v1_quota,
     discovery_specs,
     match_mount,
     DEFAULT_PORT,
@@ -608,6 +613,79 @@ def test_resolve_blocking_threads_realtime_keeps_the_single_loop() raises:
 
 def test_effective_cpus_is_at_least_one() raises:
     assert_true(effective_cpus() >= 1)
+
+
+def test_usable_cpus_is_at_least_one_and_never_exceeds_online() raises:
+    """The process's own budget: at least 1, and never more than the machine.
+
+    Both bounds hold on an unconstrained host (where it EQUALS the online
+    count) and in a container (where it is smaller); the parsers below are
+    what test the constrained readings, since a test process cannot pin
+    itself and still be portable.
+    """
+    assert_true(usable_cpus() >= 1)
+    assert_true(usable_cpus() <= effective_cpus())
+
+
+def test_clamp_cpus_takes_whichever_bound_binds() raises:
+    """The composition, which no in-process test could otherwise reach:
+    a test cannot pin itself and stay portable, so the clamp is exercised
+    here with the readings the container produced on 2026-09-08."""
+    # Unconstrained: both mechanisms silent, the machine is the answer.
+    assert_equal(clamp_cpus(8, 0, 0), 8)
+    # taskset -c 0 on the 8-vCPU box: affinity binds.
+    assert_equal(clamp_cpus(8, 1, 0), 1)
+    # docker run --cpus 1: affinity is untouched, quota binds.
+    assert_equal(clamp_cpus(8, 8, 1), 1)
+    # Both present: the smaller wins, in either order.
+    assert_equal(clamp_cpus(8, 4, 2), 2)
+    assert_equal(clamp_cpus(8, 2, 4), 2)
+    # A "limit" above the machine is not a limit.
+    assert_equal(clamp_cpus(4, 16, 32), 4)
+    # Never below one, whatever arrives.
+    assert_equal(clamp_cpus(0, 0, 0), 1)
+    assert_equal(clamp_cpus(1, 1, 1), 1)
+
+
+def test_parse_cpus_allowed_counts_the_mask() raises:
+    # The real shape of /proc/self/status, abbreviated: the mask line is
+    # picked and `Cpus_allowed_list` beside it is not.
+    var eight = String(
+        "Name:\tm0serve\nCpus_allowed:\tff\nCpus_allowed_list:\t0-7\n"
+    )
+    assert_equal(parse_cpus_allowed(eight), 8)
+    var one = String("Cpus_allowed:\t01\nCpus_allowed_list:\t0\n")
+    assert_equal(parse_cpus_allowed(one), 1)
+    # 32-bit groups, most significant first: the commas carry no count.
+    assert_equal(parse_cpus_allowed(String("Cpus_allowed:\tffffffff,ffffffff\n")), 64)
+    assert_equal(parse_cpus_allowed(String("Cpus_allowed:\t00000000,00000003\n")), 2)
+    # Absent, and empty: no answer rather than a wrong one.
+    assert_equal(parse_cpus_allowed(String("Name:\tm0serve\n")), 0)
+    assert_equal(parse_cpus_allowed(String("")), 0)
+
+
+def test_parse_cgroup_cpu_max_reads_quota_over_period() raises:
+    # `docker run --cpus 1`, measured 2026-09-08.
+    assert_equal(parse_cgroup_cpu_max(String("100000 100000\n")), 1)
+    assert_equal(parse_cgroup_cpu_max(String("200000 100000\n")), 2)
+    # Fractional rounds UP: 1.5 CPUs may run 2 runnable threads at once.
+    assert_equal(parse_cgroup_cpu_max(String("150000 100000\n")), 2)
+    assert_equal(parse_cgroup_cpu_max(String("50000 100000\n")), 1)
+    # v2 spells unlimited `max`, which is not a limit.
+    assert_equal(parse_cgroup_cpu_max(String("max 100000\n")), 0)
+    # Nothing to read, and nothing parseable: 0, never a raise.
+    assert_equal(parse_cgroup_cpu_max(String("")), 0)
+    assert_equal(parse_cgroup_cpu_max(String("garbage\n")), 0)
+    assert_equal(parse_cgroup_cpu_max(String("abc def\n")), 0)
+
+
+def test_parse_cgroup_v1_quota_spells_unlimited_minus_one() raises:
+    assert_equal(parse_cgroup_v1_quota(String("100000"), String("100000")), 1)
+    assert_equal(parse_cgroup_v1_quota(String("250000"), String("100000")), 3)
+    # v1's unlimited, and a zero period, are both "no limit expressed".
+    assert_equal(parse_cgroup_v1_quota(String("-1"), String("100000")), 0)
+    assert_equal(parse_cgroup_v1_quota(String("100000"), String("0")), 0)
+    assert_equal(parse_cgroup_v1_quota(String(""), String("")), 0)
 
 
 # --- discovery ---------------------------------------------------------------
