@@ -80,7 +80,7 @@ from m0_wsgi import (
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
-    effective_cpus, performance_cpus, pool_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
+    effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     asgi_free_threading_refusal,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
@@ -797,6 +797,13 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     report.add_int(
         String("topology"), String("performance_cpus"), performance_cpus()
     )
+    # What the MACHINE has online, and what this PROCESS may use, are
+    # different numbers in a container and only the second is actionable
+    # (`usable_cpus`). Reported beside each other rather than one replacing
+    # the other: `cpus` has always meant the machine, and a diagnostic that
+    # silently changes what a field means is worse than one that adds a
+    # field. Equal on an unconstrained host.
+    report.add_int(String("topology"), String("usable_cpus"), usable_cpus())
     report.add_bool(String("topology"), String("qos"), opts.qos)
     report.add_int(String("topology"), String("workers"), opts.workers)
     report.add_fact(

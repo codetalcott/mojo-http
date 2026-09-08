@@ -595,6 +595,174 @@ def effective_cpus() -> Int:
     return count if count > 0 else 1
 
 
+def _read_small_file(path: String) -> String:
+    """A whole small text file, or "" if it cannot be read.
+
+    `open` and read-to-EOF rather than a `stat`-sized read: every file this
+    is used on lives in `/proc` or `/sys`, which report a size of 0 and
+    yield their contents only when read. Verified on the toolchain --
+    `/proc/self/status` reads 1128 bytes against a stat size of 0 -- and it
+    is why nothing here binds `read(2)` itself. On macOS none of these
+    paths exist and the raise is the answer: every caller reads "" as "no
+    limit expressed here".
+    """
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except:
+        return String("")
+
+
+def parse_cpus_allowed(text: String) -> Int:
+    """CPUs in `/proc/self/status`'s `Cpus_allowed:` mask; 0 if absent.
+
+    The mask is hex, most significant group first, 32-bit groups separated
+    by commas (`ffffffff,ffffffff`), so the count is a popcount over the hex
+    digits and the grouping does not matter. `Cpus_allowed_list` would need
+    range parsing for the same answer.
+
+    Byte-wise, not codepoint-wise: the field is ASCII hex by definition, and
+    a byte scan needs no decoder. A pure function of the file's text so it
+    can be tested without a process that is actually pinned -- the shape
+    `spec_sheet.py` and `shim_ownership.py` use for the same reason.
+    """
+    comptime KEY = "Cpus_allowed:"
+    var lines = text.split("\n")
+    for i in range(len(lines)):
+        ref line = lines[i]
+        if not line.startswith(KEY):
+            continue
+        # The trailing colon in KEY is load-bearing: `/proc/self/status`
+        # also carries `Cpus_allowed_list:`, which this prefix does not
+        # match, so the mask line is picked and the range line is not.
+        var b = line.as_bytes()
+        var bits = 0
+        for j in range(KEY.byte_length(), len(b)):
+            var c = Int(b[j])
+            var v = -1
+            if c >= ord("0") and c <= ord("9"):
+                v = c - ord("0")
+            elif c >= ord("a") and c <= ord("f"):
+                v = c - ord("a") + 10
+            elif c >= ord("A") and c <= ord("F"):
+                v = c - ord("A") + 10
+            if v < 0:
+                continue          # whitespace and the group commas
+            while v > 0:
+                bits += v & 1
+                v >>= 1
+        return bits
+    return 0
+
+
+def _ceil_div(a: Int, b: Int) -> Int:
+    return (a + b - 1) // b if b > 0 else 0
+
+
+def parse_cgroup_cpu_max(text: String) -> Int:
+    """CPUs from a cgroup **v2** `cpu.max` (`"<quota> <period>"`); 0 if none.
+
+    `"max <period>"` is cgroup v2 for unlimited and answers 0, which every
+    caller reads as "this file expresses no limit". A fractional quota
+    rounds UP: `--cpus 1.5` may run 2 runnable threads at once, and a count
+    used to SIZE things should not claim fewer than can actually run.
+    """
+    var parts = text.strip().split(" ")
+    if len(parts) < 2:
+        return 0
+    if parts[0] == "max":
+        return 0
+    try:
+        var quota = Int(parts[0])
+        var period = Int(parts[1])
+        if quota <= 0 or period <= 0:
+            return 0
+        return _ceil_div(quota, period)
+    except:
+        return 0
+
+
+def parse_cgroup_v1_quota(quota_text: String, period_text: String) -> Int:
+    """CPUs from cgroup **v1**'s `cpu.cfs_quota_us` / `cpu.cfs_period_us`.
+
+    v1 spells unlimited as a quota of -1. Same rounding rule as v2.
+    """
+    try:
+        var quota = Int(quota_text.strip())
+        var period = Int(period_text.strip())
+        if quota <= 0 or period <= 0:
+            return 0
+        return _ceil_div(quota, period)
+    except:
+        return 0
+
+
+def cgroup_cpu_quota() -> Int:
+    """The container CPU limit in whole CPUs, or 0 where none is expressed.
+
+    v2 first (`/sys/fs/cgroup/cpu.max`), then v1. In a container the cgroup
+    namespace makes these the container's OWN files, so no path walking is
+    needed; on a host the v2 root has no `cpu.max` and the answer is 0.
+    """
+    var v2 = parse_cgroup_cpu_max(_read_small_file("/sys/fs/cgroup/cpu.max"))
+    if v2 > 0:
+        return v2
+    return parse_cgroup_v1_quota(
+        _read_small_file("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+        _read_small_file("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
+    )
+
+
+def clamp_cpus(online: Int, affinity: Int, quota: Int) -> Int:
+    """Whichever CPU bound binds first, never below 1.
+
+    `affinity` and `quota` use 0 for "this mechanism expresses no limit",
+    which is what both readers answer when their file is absent (macOS, a
+    host with no cgroup v2 root `cpu.max`) or says unlimited (`max`, or
+    v1's `-1`). A limit ABOVE the online count is not a limit.
+
+    Split out from `usable_cpus` so the composition is a pure function and
+    can be tested: a portable test cannot pin its own process, so without
+    this the clamp itself would be the one unguarded line here -- verified
+    by reverting it, which no test caught until this existed.
+    """
+    var n = online
+    if affinity > 0 and affinity < n:
+        n = affinity
+    if quota > 0 and quota < n:
+        n = quota
+    return n if n >= 1 else 1
+
+
+def usable_cpus() -> Int:
+    """The CPUs this PROCESS may use: online, affinity and quota, whichever
+    binds first. Never below 1.
+
+    `effective_cpus` answers how many CPUs the MACHINE has online, which is
+    not the same question and in a container is not the same number. Both
+    of the ways a deployment is actually limited are invisible to it,
+    measured 2026-09-08 in a Linux container:
+
+    - **affinity** (`taskset`, Kubernetes' static CPU manager) -- pinned to
+      one CPU, `sysconf` still answered 8 while the kernel answered 1;
+    - **quota** (`docker run --cpus 1`, Kubernetes `limits.cpu`) -- the
+      usual mechanism, and the one nothing else reveals: `nproc` answered
+      8, `sysconf` answered 8, and only `cpu.max` (`100000 100000`) said
+      1.0.
+
+    So this is what a decision about the process's own CPU budget must
+    ask, and `--doctor` reports it beside `cpus` so the two questions stay
+    distinct rather than one silently standing in for the other.
+
+    It deliberately does NOT size the handler pool -- see `pool_cpus`.
+    """
+    return clamp_cpus(
+        effective_cpus(),
+        parse_cpus_allowed(_read_small_file("/proc/self/status")),
+        cgroup_cpu_quota(),
+    )
+
+
 def performance_cpus() -> Int:
     """Cores worth sizing CPU-bound work to: the performance cores on Apple
     Silicon, every logical CPU elsewhere.
@@ -631,6 +799,21 @@ def pool_cpus() -> Int:
     does steer is PLACEMENT, through `--qos`; `--doctor` reports it beside
     this count so the two questions stay distinct. One function, so the
     policy has one home to change if a measurement ever says otherwise.
+
+    **Deliberately `effective_cpus`, not `usable_cpus`**, although the
+    latter is the truthful count of what this process may run on. The
+    obvious reading of a one-CPU container -- eight handler threads is
+    seven too many -- is wrong, measured 2026-09-08 on bare WSGI pinned to
+    one CPU: the zero-config pool of eight served 77,097 rps against one
+    thread's 77,738 at 16 connections (0.99x, inside the noise) and
+    **155,740 against 142,159 at 256 (1.10x, a gain)**. It is the same
+    reason as the paragraph above -- a pool thread's parallelism is
+    WAITING, and how many views may wait at once has nothing to do with
+    the CPU budget -- and the elastic wake rules
+    (docs/notes/elastic-pool.md) are what stopped the extra threads
+    costing anything. What the over-sized pool does cost is memory, about
+    17 MB of RSS for seven more bridges (52.8 MB against 35.5), which is a
+    footprint question and not this function's.
     """
     return effective_cpus()
 
