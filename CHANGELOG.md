@@ -2,13 +2,88 @@
 
 Notable changes to `mojo-http`. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
-[SemVer](https://semver.org/) with the standard pre-1.0 caveat: **minor
-versions may break the API**.
+[SemVer](https://semver.org/). From 1.0.0 the served contract does not break
+in a minor release: `m0serve`'s flags and environment variables, the
+`M0-Hold`/`M0-Channel` response headers, and `m0pub.publish()`.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-09
+
+Every capability in [docs/SPEC.md](docs/SPEC.md) names a gate, every
+`planned` row is built or refused with a reason, the real-application soak
+is current against this version, and each known issue declares what would
+retire it. `uv run poe milestones` computes those four from the sheet and
+the roadmap rather than from anyone's memory, and CI prints it on every
+pull request.
+
+The number changes what a minor release may break, and nothing else. The
+five [known issues](docs/ROADMAP.md#known-issues) are unchanged by it and
+are all upstream or packaging matters — Mojo 1.0.0 is still the only stable
+toolchain release, so the `PythonObject` reference leak and the
+free-threaded executor refusal both wait on it.
+
+### Added
+
+- **A view parallelises across `--blocking-threads` only if it releases the
+  GIL, and a gate says so** (SPEC E19). `--blocking-threads N` gives a view
+  N handler threads; whether N of them run at once is decided inside the
+  view. C5 covered the isolation half of that pool and nothing covered the
+  concurrency half, which is how an embedding server came to serve the same
+  rate on one handler thread and on two, and a third less on eight: Core
+  ML's `predict` holds the lock for its duration. `bareapp`'s `/work` is one
+  hashlib call over two buffer sizes either side of `HASHLIB_GIL_MINSIZE`,
+  so the lock is the only variable between its modes, and
+  `smoke-pool-parallelism` compares the two concurrency ratios on one server
+  in one run. The measurement, including what MAX does differently and why
+  it is not a reason to switch backends on a Mac, is
+  [docs/notes/gil-and-the-handler-pool.md](docs/notes/gil-and-the-handler-pool.md).
+- **`--doctor` reports the CPU budget the process can actually use.**
+  `usable_cpus` reads the affinity mask and the cgroup quota rather than the
+  machine's core count, so a container with a fraction of a host's CPUs
+  sizes its zero-config pool from what it was given.
+- **`--doctor` reports which loop an ASGI deployment resolved to**, as
+  `topology.loop`: `pump` (the default, two threads), `inverted`, or `n/a`
+  where no executor serves the application. It reported `mode: single` for
+  both shapes before, so the startup banner was the only way to tell them
+  apart.
+- **FastAPI is gated through the ASGI bridge** (SPEC L19): routing, a
+  `StreamingResponse` and a WebSocket the application closes itself, with
+  the log assertion as the load-bearing half.
+- **A page that restates a capability row's status is checked against the
+  sheet.** `check-docs` fails when prose gives a row a status
+  docs/SPEC.md disagrees with, or names a row that does not exist. The
+  validation record had called a row planned for three days after it was
+  built and gated, which is the most misleading kind of drift because that
+  page reads as a live status board. Narrow on purpose: it fires only where
+  a status is presented as a token beside a row id, never on a status word
+  that merely shares a sentence.
+- **`poe bench-linux-conclusions`, and `--remote`.** The benchmark page's
+  conclusions re-run on Linux, in the local container or over ssh on a
+  rented box, with an empty comparison failing rather than passing.
+
 ### Changed
 
+- **The inverted loop's drain is stepped.** Under `M0_INVERTED=1` a request
+  sitting in an `await` when SIGTERM lands is answered when it finishes,
+  rather than being cut off by a drain that could not step the asyncio loop.
+- **The loop inversion is documented, and deliberately not a default.** Its
+  earlier "nothing at saturation" verdict had expired: re-measured, it is
+  ahead per core at high concurrency and well ahead of uvicorn with uvloop
+  on a single CPU, and behind the default from two cores up. `--doctor` and
+  the banner both name which loop is running
+  ([the record](docs/notes/inversion-on-a-constrained-box.md)).
+- **Two of the benchmark page's four conclusions invert on Linux**, and the
+  artifact system could not have told you, because every rendered artifact
+  had been recorded on macOS. `poe bench-linux-conclusions` is the check,
+  and the page says which conclusions are platform-specific.
+- **The WSGI and ASGI modes page, and Running, say when handler threads
+  help.** The modes page called `--workers` "the answer that works under the
+  GIL", which reads as though threads never give parallelism; it now states
+  the rule E19 gates, and the `--blocking-threads` row in Running says what
+  decides the number.
+- **BENCHMARKS.md's intro and caveats are shorter**, and Reproducing names
+  the script behind every table.
 - **BENCHMARKS.md's prose may not carry a bare figure.** Every number in
   the page's sentences is either a span the renderer recomputes from the
   newest artifact or sits in a paragraph whose `<!-- observed: WHERE -->`
@@ -22,6 +97,14 @@ versions may break the API**.
   factor between them) and the one-thread rows' gap are spans now,
   computed from the same grouping the table renders; the histories are
   marked with the note or artifact that records them.
+
+### Fixed
+
+- **A `poe` shell task's `"$@"` is empty**, so `bench-linux-conclusions
+  --remote` silently dropped its flag and reported success from the local
+  machine rather than the rented one.
+- **The Linux container's sync could rebuild nothing, or rebuild the wrong
+  tree, and report success either way.**
 
 ## [0.19.0] — 2026-09-07
 
@@ -3636,6 +3719,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.0.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.0.0
 [0.19.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.19.0
 [0.18.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.18.0
 [0.17.1]: https://github.com/codetalcott/mojo-http/releases/tag/v0.17.1

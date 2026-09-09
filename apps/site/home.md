@@ -70,8 +70,9 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
 ## Limits
 
 - No TLS and no HTTP/2. Terminate at a proxy, as with gunicorn.
-- Pre-1.0. The API can still change; the [changelog](../../CHANGELOG.md)
-  records every change.
+- The served contract is stable from 1.0: flags and environment variables,
+  the two hold headers, and `m0pub.publish()`. The
+  [changelog](../../CHANGELOG.md) records every change.
 - macOS arm64 and Linux x86_64 and aarch64. CPython 3.10 to 3.14, with
   free-threaded builds for WSGI only. Not supported: Intel Mac, Windows,
   musl.
