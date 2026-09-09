@@ -4736,7 +4736,13 @@ docker start "$c" > /dev/null 2>&1 \
 tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/*' --exclude='.claude' \
     -cf - packages scripts apps pyproject.toml uv.lock bench \
   | docker exec -i "$c" bash -c 'mkdir -p /src && cd /src && tar -xf -' || exit 1
-docker exec "$c" bash /src/scripts/probes/linux_sync.sh http datastar wsgi serve ffi || exit 1
+# The stamp is what makes the copy above verifiable: the sync recomputes it
+# from what actually landed in /work and refuses to build on a mismatch.
+# Without it a partial extraction -- or a stale bind mount, in the other
+# container recipe -- rebuilds the wrong sources and this gate passes having
+# tested them.
+stamp=$(bash scripts/probes/source_stamp.sh) || exit 1
+docker exec -e M0_SYNC_STAMP="$stamp" "$c" bash /src/scripts/probes/linux_sync.sh http datastar wsgi serve ffi || exit 1
 for mode in $modes; do
   case $mode in
     elastic)  envs="M0_POOL_ELASTIC=1" ;;
