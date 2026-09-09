@@ -3781,6 +3781,10 @@ python3 scripts/emit.py --covers L19 --task smoke-fastapi
 help = "Render the documentation site from the tree's own pages into dist/site"
 cmd = "python3 scripts/docsite.py --out dist/site"
 
+[tool.poe.tasks.watch-site]
+help = "Re-render the documentation site on every change to a page source"
+cmd = "python3 scripts/docsite.py --out dist/site --watch"
+
 [tool.poe.tasks.serve-site]
 help = "Build the documentation site and serve it on :8180 with m0serve"
 deps = ["build-serve", "build-site"]
