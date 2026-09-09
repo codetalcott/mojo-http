@@ -21,6 +21,7 @@ from src.cli import (
     default_blocking_threads,
     resolve_blocking_threads,
     use_asgi_executor,
+    loop_inversion_topology,
     effective_cpus,
     usable_cpus,
     clamp_cpus,
@@ -609,6 +610,25 @@ def test_resolve_blocking_threads_explicit_wins() raises:
 def test_resolve_blocking_threads_realtime_keeps_the_single_loop() raises:
     var opts = _parse([String("x.wsgi"), String("--realtime")])
     assert_equal(resolve_blocking_threads(opts, False, 4), 0)
+
+
+def test_loop_inversion_topology_is_the_shapes_serve_inverted_implements() raises:
+    """The inversion runs on ONE thread and implements one shape: an
+    unmounted ASGI application with no handler pool and no `--realtime`.
+    Tested without the variable, which a portable unit test cannot set --
+    `use_loop_inversion` is this AND `M0_INVERTED=1`."""
+    var plain = _parse([String("x.asgi")])
+    assert_true(loop_inversion_topology(plain, True, 0))
+    # No executor: a WSGI app, or an ASGI app on the buffered pool path.
+    assert_false(loop_inversion_topology(plain, False, 0))
+    # A handler pool: those threads have no lane in the inverted shape.
+    assert_false(loop_inversion_topology(plain, True, 3))
+    # `--realtime` is the single-loop hold machinery, not this.
+    var rt = _parse([String("x.asgi"), String("--realtime")])
+    assert_false(loop_inversion_topology(rt, True, 0))
+    # Mounted: lanes and per-mount executors, which serve_inverted has not.
+    var mounted = _parse([String("--mount"), String("/a=x.asgi")])
+    assert_false(loop_inversion_topology(mounted, True, 0))
 
 
 def test_effective_cpus_is_at_least_one() raises:

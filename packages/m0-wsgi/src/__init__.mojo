@@ -69,6 +69,8 @@ from .cli import (
     default_blocking_threads,
     resolve_blocking_threads,
     use_asgi_executor,
+    use_loop_inversion,
+    loop_inversion_topology,
     wsgi_lanes,
     asgi_mount_names,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, clamp_cpus,

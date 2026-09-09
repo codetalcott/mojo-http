@@ -20,6 +20,7 @@ flag value is validated and a bad one is a usage error (exit 2), never a
 silent default.
 """
 
+from std.os import getenv
 from std.ffi import external_call
 from std.sys.info import CompilationTarget, num_performance_cores
 
@@ -551,6 +552,54 @@ def use_asgi_executor(opts: ServeOptions, is_asgi: Bool) -> Bool:
         # lane (`OffloadPool.slot_is_executor`).
         return len(opts.asgi_mounts) > 0
     return is_asgi and not opts.realtime and opts.blocking_threads == 0
+
+
+def use_loop_inversion(opts: ServeOptions, executor: Bool, pool_count: Int) -> Bool:
+    """Whether the Mojo event loop runs INSIDE the executor's asyncio loop
+    on one thread (`M0_INVERTED=1`) rather than beside it on two.
+
+    One predicate so `main` and `--doctor` cannot disagree about which
+    loop a deployment gets. `--doctor` reported `mode: single` for both
+    shapes before this existed, so the two were indistinguishable from
+    outside the process -- only the startup banner said which.
+
+    `executor` is `use_asgi_executor`'s answer -- the asyncio executor
+    serves this deployment -- and the rest are the inversion's own
+    topology conditions: unmounted, no handler pool, no `--realtime`,
+    because those are the shapes `serve_inverted` implements. It stays behind the
+    variable and is NOT chosen automatically, even where it measures
+    faster (one usable CPU: 1.14x the pump at saturation,
+    docs/notes/inversion-on-a-constrained-box.md). Picking it by detected
+    core count would switch EXECUTION MODELS on the environment rather
+    than a parameter within one, would put the less-exercised path in the
+    most constrained deployments, and would silently change model the day
+    an application adds a mount, a pool or a hold. The note argues it at
+    length; the short version is that a 14 % saturation gain does not buy
+    those three.
+    """
+    return (
+        loop_inversion_topology(opts, executor, pool_count)
+        and getenv("M0_INVERTED", "") == "1"
+    )
+
+
+def loop_inversion_topology(
+    opts: ServeOptions, executor: Bool, pool_count: Int
+) -> Bool:
+    """Whether this deployment's SHAPE is one `serve_inverted` implements,
+    ignoring the variable.
+
+    Split from `use_loop_inversion` so it can be tested: a portable test
+    cannot set the process's environment and still be a pure unit test, so
+    without this the topology conditions would be the unguarded half --
+    the same reason `clamp_cpus` exists beside `usable_cpus`.
+    """
+    return (
+        executor
+        and len(opts.mount_prefixes) == 0
+        and pool_count == 0
+        and not opts.realtime
+    )
 
 
 def wsgi_lanes(opts: ServeOptions) -> List[Int]:

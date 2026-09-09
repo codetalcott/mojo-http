@@ -81,6 +81,7 @@ from m0_wsgi import (
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
+    use_loop_inversion,
     asgi_free_threading_refusal,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
@@ -855,6 +856,21 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         else:
             mode = String("single")
         report.add_fact(String("topology"), String("mode"), mode)
+        # WHICH LOOP, which `mode` does not say: it answered `single` for
+        # the pump and for the inversion alike, so the two shapes were
+        # indistinguishable from outside the process and only the startup
+        # banner told you which one you had. `use_loop_inversion` is the
+        # same predicate `main` branches on, so this cannot drift from what
+        # actually runs. "n/a" where no executor serves the application at
+        # all (WSGI, or an explicit pool).
+        var loop_shape: String
+        if not executor:
+            loop_shape = String("n/a")
+        elif use_loop_inversion(opts, executor, blocking):
+            loop_shape = String("inverted")
+        else:
+            loop_shape = String("pump")
+        report.add_fact(String("topology"), String("loop"), loop_shape)
     else:
         report.add_int(
             String("topology"),
@@ -1233,10 +1249,7 @@ def _serve_offloaded(
         opts.blocking_threads
         if (len(wsgi_lanes) > 0 or not executor) else 0
     )
-    if (
-        executor and not mounted and pool_count == 0 and not opts.realtime
-        and getenv("M0_INVERTED", "") == "1"
-    ):
+    if use_loop_inversion(opts, executor, pool_count) and not mounted:
         # M0_INVERTED: the loop inversion, on one thread. Unmounted,
         # pool-free ASGI only -- the benchmark shape -- and behind the
         # variable until its gate passes (docs/ROADMAP.md, "The loop

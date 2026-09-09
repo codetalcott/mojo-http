@@ -58,11 +58,18 @@ Everything else is opt-in:
 | `--mount PREFIX=SPEC` | several applications in one process | repeatable; each mount detects its own protocol and runs in its own mode, longest prefix wins |
 | `--threads N` | free-threaded CPython (3.13t+), N loops in one process | WSGI only on this toolchain: an ASGI app is refused with exit 78 ([why](ROADMAP.md#known-issues)) |
 | `--reload [--reload-dir DIR]` | development | re-forks workers when a watched `.py` changes |
+| `M0_INVERTED=1` | an ASGI app on **one** usable CPU | environment variable, not a flag: the Mojo event loop runs inside the asyncio loop on one thread instead of beside it on two. Unmounted, pool-free ASGI only. [Measured](notes/inversion-on-a-constrained-box.md): 1.14x the default at saturation on one CPU, and slower than it from two cores up |
 
 The modes compose the way you would hope: `--workers` multiplies whatever
 each worker runs, `--realtime` sits beside a pool or a mount, and a mounted
 server mixes a WSGI pool with an ASGI executor in one process. The design
 behind the split is [Why two execution modes](WSGI_VS_ASGI.md).
+
+`--doctor` reports which loop an ASGI deployment resolved to as
+`topology.loop` — `pump` (the default, two threads), `inverted`, or `n/a`
+where no executor serves the application. It reported `mode: single` for
+both shapes until 2026-09-08, so the only way to tell them apart was the
+startup banner.
 
 ## The realtime contract, in one paragraph
 
