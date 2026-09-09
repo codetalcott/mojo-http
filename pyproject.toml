@@ -2951,6 +2951,49 @@ cmd = "bin/m0serve flaskproj.wsgi:application --app-dir apps/flask_wsgi --port 8
 #
 # Skips cleanly when flask is absent: it is a dev dependency for this example
 # and nothing in packages/ imports it.
+[tool.poe.tasks.smoke-pool-parallelism]
+help = "A GIL-releasing view parallelises across the pool; a GIL-holding one does not"
+deps = ["build-serve"]
+shell = """
+# The other half of C5. That row proves a slow view does not stall the
+# connections behind it -- isolation. This proves whether the pool's N threads
+# actually do N things at once, which is decided inside the view and not by
+# the server: an inference app on Core ML served the same 1680 req/s on one
+# handler thread and on two, because `MLModel.predict` never drops the lock
+# (docs/notes/gil-and-the-handler-pool.md).
+srv=bin/m0serve
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -f par.log
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  if [ -f par.log ]; then echo '=== par.log ==='; cat par.log; fi
+  exit 1
+}
+
+$srv bareapp.wsgi:application --app-dir apps/wsgi_bare \
+  --host 127.0.0.1 --port 8093 --workers 1 --blocking-threads 2 > par.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8093/ > /dev/null || fail 'server never answered'
+
+out=$(python3 scripts/pool_parallelism_probe.py 8093) || { echo "$out"; fail 'pool parallelism probe failed'; }
+echo "$out"
+
+# Recorded rather than echoed into an expiring log: the gate is the probe's
+# own exit status above, and these are what say how close it is running to
+# its bars before it goes red.
+rel=$(echo "$out" | awk '/^RATIOS/{split($2,a,"=");print a[2]}')
+hold=$(echo "$out" | awk '/^RATIOS/{split($3,a,"=");print a[2]}')
+python3 scripts/emit.py pool.releasing_ratio "$rel" --unit x --limit 1.45 --task smoke-pool-parallelism
+python3 scripts/emit.py pool.holding_ratio "$hold" --unit x --task smoke-pool-parallelism
+
+echo "smoke-pool-parallelism OK"
+python3 scripts/emit.py --covers E19 --task smoke-pool-parallelism
+"""
+
 [tool.poe.tasks.smoke-blocking-threads]
 help = "Stage B: a slow view must not stall the connections pinned behind it"
 deps = ["build-serve"]
