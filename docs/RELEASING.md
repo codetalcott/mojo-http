@@ -86,6 +86,20 @@ matter are narrow (0.98x → 1.08x), and a shared four-core runner cannot
 resolve a ten-percent ratio shift. `ROUNDS=1` is a shape check; the default
 three is what gives the 0.8–2.1 % per-arm spreads the record cites.
 
+`--remote user@host --provision` runs the identical arms on a rented Linux
+box instead, over ssh — hardware whose cpus the load generator is not also
+sharing, which is the one confound the container cannot remove. Debian 12,
+because that is what the container runs and so the toolchain path is one
+that already works. **A rented host bills from creation to deletion whatever
+this task does**, so the session is create, provision, run, delete; the task
+says so when it finishes and deletes nothing itself. Provisioning is the
+slow part, so image the host once and boot from that image afterwards.
+
+Read the per-arm spread before the verdicts. The container gives 0.8–2.1 %
+through two layers of virtualization with the server sharing cores with the
+client; a box that cannot beat that is not buying anything, and the
+container is then the right permanent answer.
+
 **`uv run poe autobahn`** — Autobahn|Testsuite against the pinned baseline
 (SPEC I13). Pre-release because it needs Docker and ~ten minutes, and its
 unique value — close-code validation, I16 — is a defect fixed once rather

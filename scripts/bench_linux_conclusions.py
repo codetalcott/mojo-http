@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Do the benchmark page's conclusions hold on Linux? Run it and find out.
 
-    uv run poe bench-linux-conclusions          # the m0lin container
-    ROUNDS=1 uv run poe bench-linux-conclusions # a quick shape check
+    uv run poe bench-linux-conclusions                      # the m0lin container
+    ROUNDS=1 uv run poe bench-linux-conclusions             # a quick shape check
+    ... --remote root@HOST --provision                      # a rented box, first run
+    ... --remote root@HOST                                  # the same box again
+
+The container is free and is what the record was made on; `--remote` runs
+the identical arms on hardware whose cpus the load generator is not also
+sharing, which is the one confound the container cannot remove. The host
+bills from creation to deletion regardless of this script, so the intended
+session is create, provision, run, DELETE.
 
 Every artifact docs/BENCHMARKS.md renders is macOS arm64. Measured
 2026-09-08 (docs/notes/the-conclusions-on-linux.md), TWO of its four
@@ -44,14 +52,46 @@ KINDS = {
 def run(*argv, **kw):
     return subprocess.run(argv, text=True, capture_output=True, **kw)
 
+# WHERE the arms run. The container is the default and costs nothing; a
+# remote host is the same three shapes on hardware whose cpus the load
+# generator is not also sharing -- the one confound the container cannot
+# remove (docs/notes/the-conclusions-on-linux.md, "What this does NOT say").
+# Everything goes through `dexec`/`push`/`pull`, so the arms, the recorder
+# and the comparison do not know which transport they are on.
+REMOTE = None          # "user@host" once --remote is given
+SSH = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
+
+def _shq(x):
+    return "'" + str(x).replace("'", "'\\''") + "'"
+
 def dexec(*argv, env=None, check=True):
-    pre = ["docker", "exec"]
-    for k, v in (env or {}).items():
-        pre += ["-e", f"{k}={v}"]
-    r = run(*pre, CONTAINER, *argv)
+    if REMOTE:
+        pre = " ".join(f"{k}={_shq(v)}" for k, v in (env or {}).items())
+        # `bash -lc` so the login profile puts ~/.local/bin (uv) on PATH;
+        # a non-interactive ssh command otherwise gets a PATH without it and
+        # every `uv run` fails with "command not found".
+        cmd = ["ssh"] + SSH + [REMOTE, f"{pre} bash -lc " + _shq(" ".join(_shq(a) for a in argv))]
+    else:
+        cmd = ["docker", "exec"]
+        for k, v in (env or {}).items():
+            cmd += ["-e", f"{k}={v}"]
+        cmd += [CONTAINER] + list(argv)
+    r = run(*cmd)
     if check and r.returncode != 0:
-        sys.exit(f"bench-linux-conclusions: `{' '.join(argv[:3])}` failed:\n{r.stdout}\n{r.stderr}")
+        sys.exit(f"bench-linux-conclusions: `{' '.join(str(a) for a in argv[:3])}` failed:\n{r.stdout}\n{r.stderr}")
     return r
+
+def push(local, remote_path):
+    if REMOTE:
+        run("scp", "-q", *SSH, str(local), f"{REMOTE}:{remote_path}")
+    else:
+        run("docker", "cp", str(local), f"{CONTAINER}:{remote_path}")
+
+def pull(remote_path, local):
+    if REMOTE:
+        run("scp", "-q", *SSH, f"{REMOTE}:{remote_path}", str(local))
+    else:
+        run("docker", "cp", f"{CONTAINER}:{remote_path}", str(local))
 
 def ensure_container():
     if run("docker", "start", CONTAINER).returncode == 0:
@@ -72,9 +112,13 @@ def push_tree():
          "--exclude=bin/*", "--exclude=.claude", "-cf", "-",
          "packages", "scripts", "apps", "pyproject.toml", "uv.lock"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    sink = subprocess.Popen(["docker", "exec", "-i", CONTAINER, "bash", "-c",
-                             "mkdir -p /src && cd /src && tar -xf -"],
-                            stdin=tar.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    unpack = "mkdir -p /src && cd /src && tar -xf - && find /src -name '._*' -delete"
+    if REMOTE:
+        sink = subprocess.Popen(["ssh"] + SSH + [REMOTE, f"bash -c {_shq(unpack)}"],
+                                stdin=tar.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        sink = subprocess.Popen(["docker", "exec", "-i", CONTAINER, "bash", "-c", unpack],
+                                stdin=tar.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     tar.stdout.close(); sink.wait(); tar.wait()
 
 def stamp():
@@ -135,15 +179,36 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=int(os.environ.get("ROUNDS", "3")))
     ap.add_argument("--keep", action="store_true", help="leave the container running")
+    ap.add_argument("--remote", metavar="USER@HOST",
+                    help="run the arms on a remote Linux host over ssh instead of "
+                         "in the container -- hardware whose cpus the load generator "
+                         "is not also sharing")
+    ap.add_argument("--provision", action="store_true",
+                    help="with --remote: install the toolchain first (once per host, "
+                         "or once per image)")
     a = ap.parse_args()
-    if run("docker", "info").returncode != 0:
-        sys.exit("bench-linux-conclusions: no docker daemon (start colima, or set DOCKER_HOST)")
-    created = ensure_container()
-    if created:
+    global REMOTE
+    REMOTE = a.remote
+    if REMOTE:
+        # Fail on the connection rather than four minutes into a provision.
+        r = run("ssh", *SSH, "-o", "ConnectTimeout=15", REMOTE, "true")
+        if r.returncode != 0:
+            sys.exit(f"bench-linux-conclusions: cannot ssh to {REMOTE}: {r.stderr.strip()}")
         push_tree()
-        print("provisioning (apt, uv sync, toolchain) -- several minutes", flush=True)
-        dexec("bash", "/src/scripts/probes/linux_setup.sh")
-    push_tree()
+        if a.provision:
+            print("provisioning the host (apt, uv, toolchain) -- several minutes", flush=True)
+            dexec("bash", "/src/scripts/probes/remote_setup.sh")
+            dexec("bash", "-c", "mkdir -p /work && cd /src && tar -cf - . | (cd /work && tar -xf -)")
+            dexec("bash", "-c", "cd /work && uv sync >/dev/null 2>&1")
+    else:
+        if run("docker", "info").returncode != 0:
+            sys.exit("bench-linux-conclusions: no docker daemon (start colima, or set DOCKER_HOST)")
+        created = ensure_container()
+        if created:
+            push_tree()
+            print("provisioning (apt, uv sync, toolchain) -- several minutes", flush=True)
+            dexec("bash", "/src/scripts/probes/linux_setup.sh")
+        push_tree()
     s = stamp()
     print(f"syncing at {git_sha()} (source stamp {s})", flush=True)
     dexec("bash", "/src/scripts/probes/linux_sync.sh", "http", "wsgi", "serve",
@@ -153,7 +218,7 @@ def main():
     dexec("bash", "-c", "cd /work && uv run mojo build -I packages/m0-core/ -I packages/m0-http/ "
                         "apps/hello/server.mojo -o /tmp/bench_hello_server >/dev/null 2>&1")
     for f in ("scripts/bench_linux_arms.py",):
-        run("docker", "cp", str(ROOT / f), f"{CONTAINER}:/work/{pathlib.Path(f).name}")
+        push(ROOT / f, f"/work/{pathlib.Path(f).name}")
     print(f"running {a.rounds} round(s) -- roughly {a.rounds * 6} minutes", flush=True)
     r = dexec("bash", "-c", f"cd /work && ROUNDS={a.rounds} python3 bench_linux_arms.py", check=False)
     print(r.stdout[-2000:] if r.stdout else r.stderr[-2000:])
@@ -166,11 +231,18 @@ def main():
     for p in names:
         base = pathlib.Path(p).name
         kind, _, rest = base.partition("-2")
-        run("docker", "cp", f"{CONTAINER}:{p}", str(out / f"{kind}-linux-2{rest}"))
+        pull(p, out / f"{kind}-linux-2{rest}")
     print(f"\nartifacts in {out.relative_to(ROOT)}/")
     missing = compare(out)
-    if not a.keep:
+    if not a.keep and not REMOTE:
         run("docker", "stop", CONTAINER)
+    if REMOTE:
+        # Deliberately NOT deleting anything: the host is the caller's, and it
+        # bills from creation to deletion whatever this script does. Saying so
+        # is the whole of the reminder -- a forgotten g6-dedicated-8 is $144 a
+        # month against about $0.22 for the session it was created for.
+        print(f"\n{REMOTE} is still running and still billing — delete it when you are done "
+              "(`linode-cli linodes delete <id>`), or image it first to skip the next provision.")
     if missing:
         # The whole task is this table. A run that produced artifacts and then
         # compared none of them is a run that measured nothing, and exiting 0
