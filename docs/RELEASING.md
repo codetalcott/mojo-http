@@ -62,6 +62,30 @@ rather than CI because CI has no such container and a shared runner's
 scheduler is not the one under test; `M0_STRESS_POOL_ROUNDS` and
 `M0_STRESS_POOL_MODES` tune it.
 
+**And `uv run poe bench-linux-conclusions`** — do the benchmark page's
+conclusions still hold on Linux? Every artifact
+[BENCHMARKS.md](BENCHMARKS.md) renders is macOS arm64, and measured
+2026-09-08 two of its four headline conclusions invert there — both of the
+"No" answers — because a cross-thread handoff costs less on epoll and futex
+than on kqueue, and the handoff is what m0serve's two-thread shape pays for
+its isolation ([the note](notes/the-conclusions-on-linux.md)). The task runs
+the three headline shapes in the `m0lin` container, records artifacts under
+`bench/results/linux-<YYYY-MM>/`, and prints each conclusion as holds or
+INVERTS. It provisions colima the way `autobahn` does and stops only what it
+started.
+
+Read the verdict column, not the rates: absolutes carry two layers of
+virtualization and the server shares the VM's cpus with the load generator,
+so nothing here is comparable to the macOS tables in absolute terms. A run
+whose comparison table is empty FAILS rather than reporting success — the
+first version of this compared nothing, printed "no data" on every row and
+exited 0, which is how a check becomes decorative.
+
+Pre-release rather than CI, and it must stay that way: the differences that
+matter are narrow (0.98x → 1.08x), and a shared four-core runner cannot
+resolve a ten-percent ratio shift. `ROUNDS=1` is a shape check; the default
+three is what gives the 0.8–2.1 % per-arm spreads the record cites.
+
 **`uv run poe autobahn`** — Autobahn|Testsuite against the pinned baseline
 (SPEC I13). Pre-release because it needs Docker and ~ten minutes, and its
 unique value — close-code validation, I16 — is a defect fixed once rather

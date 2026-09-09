@@ -4721,6 +4721,37 @@ done
 # free-threaded default, forced on for the run) and M0_POOL_ELASTIC=0 (the
 # eager wakes, the A/B control). Pre-release, not CI: CI has no such
 # container, and a shared runner's scheduler is not the one under test.
+# Do the benchmark page's conclusions still hold on Linux? Every artifact the
+# page renders is macOS arm64, and measured 2026-09-08 TWO of its four headline
+# conclusions invert there -- both of the "No" answers -- because a cross-thread
+# handoff costs less on epoll and futex than on kqueue, and the handoff is what
+# m0serve's two-thread shape pays for its isolation
+# (docs/notes/the-conclusions-on-linux.md).
+#
+# PRE-RELEASE, and it must not become a CI gate: the differences that matter are
+# narrow (0.98x -> 1.08x) and a shared four-core runner cannot resolve a
+# ten-percent ratio shift. That is `stress-pool`'s reason too. A gate that cannot
+# see what it watches for is worse than none, because it reads as coverage.
+[tool.poe.tasks.bench-linux-conclusions]
+help = "PRE-RELEASE: do the benchmark page's conclusions hold on Linux? (the m0lin container; not in CI)"
+shell = """
+started=""
+if ! docker info >/dev/null 2>&1; then
+  command -v colima >/dev/null 2>&1 \
+    || { echo "bench-linux-conclusions: no docker daemon, and colima is not installed" >&2; exit 1; }
+  echo "bench-linux-conclusions: no docker daemon — starting colima (8 cpu, 6 GiB)"
+  colima start --cpu 8 --memory 6 || exit 1
+  started=1
+fi
+rc=0
+python3 scripts/bench_linux_conclusions.py "$@" || rc=1
+if [ -n "$started" ]; then
+  echo "bench-linux-conclusions: stopping the colima it started"
+  colima stop >/dev/null 2>&1
+fi
+exit $rc
+"""
+
 [tool.poe.tasks.stress-pool]
 help = "PRE-RELEASE: the pool's lost-wake reproducers, N rounds per wake mode, in the m0lin Linux container (not in CI)"
 shell = """
