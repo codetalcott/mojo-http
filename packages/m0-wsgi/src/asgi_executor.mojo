@@ -52,6 +52,9 @@ from lightbug_http.event_loop import (
     run_pass_once,
     service_direct_completions,
     _run_shutdown,
+    _shutdown_begin,
+    _shutdown_drain_step,
+    _shutdown_finish,
 )
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.event_loop_backend import EventLoopBackend
@@ -302,6 +305,8 @@ def _ensure_port_type() raises -> PythonObject:
         _ = builder.add_type[ExecutorPort]("ExecutorPort").def_method[
             ExecutorPort.dispatch
         ]("dispatch").def_method[ExecutorPort.flush]("flush").def_method[
+            ExecutorPort.drain_step
+        ]("drain_step").def_method[ExecutorPort.drain_finish]("drain_finish").def_method[
             ExecutorPort.pass_
         ]("pass_")
         return builder.finalize()
@@ -344,6 +349,11 @@ struct ExecutorState(Movable):
     var next_gen: Int
     var pending_done: List[Int]
     var stopping: Bool
+    var drain_start: Int
+    """When the graceful drain began, `perf_counter_ns`. Inverted mode
+    only: the drain is stepped from the asyncio loop there rather than run
+    to completion inside one callback, so its deadline has to outlive the
+    call that started it. 0 until `_shutdown_begin` has run."""
 
     def __init__(out self, lane: Int, capacity: Int):
         self.methods = List[String](capacity=capacity)
@@ -362,6 +372,7 @@ struct ExecutorState(Movable):
         self.next_gen = stream_gen_seed(lane + 1)
         self.pending_done = List[Int](capacity=COMPLETE_BATCH_MAX)
         self.stopping = False
+        self.drain_start = 0
 
 
 struct ExecutorPort(Movable, Writable):
@@ -449,12 +460,74 @@ struct ExecutorPort(Movable, Writable):
             return True
         var shutdown = run_pass_once(handler, backend, st)
         if shutdown:
-            # First cut: the drain as it is, blocking inside this callback
-            # for at most its 5 s budget. The reshaped, polled drain is the
-            # design's item 6 and follows.
-            _run_shutdown(handler, backend, st)
+            # BEGIN the drain only. Running it to completion here -- which
+            # is what this did until 2026-09-08 -- blocks the asyncio
+            # callback it is called from, and the in-flight request tasks
+            # live on THAT loop: they cannot be stepped, so nothing
+            # finishes, `active_count` never falls, and every one of them
+            # is answered when the 5 s budget runs out instead of when it
+            # is done. Measured on `/slow?ms=1500`: 5.36 s inverted
+            # against the pump's 1.50. The shim now steps
+            # `drain_step` from the loop and calls `drain_finish` when it
+            # reports the drain over.
+            xs.drain_start = _shutdown_begin(handler, backend, st)
             xs.stopping = True
         return shutdown
+
+    @staticmethod
+    def drain_step(py_self: PythonObject) raises -> PythonObject:
+        """`_port.drain_step()`: ONE non-blocking pass of the graceful
+        drain. True once the drain is over -- nothing left in flight, or
+        its budget spent. Inverted mode only.
+
+        Non-blocking is the whole point: this runs inside an asyncio
+        callback, and the application's own request tasks are on that same
+        loop. The shim awaits between calls so they run.
+        """
+        var port = py_self.downcast_value_ptr[ExecutorPort]()
+        return PythonObject(port[]._drain_step())
+
+    def _drain_step(mut self) raises -> Bool:
+        return self._drain_step_with[PlatformBackend]()
+
+    def _drain_step_with[B: EventLoopBackend](mut self) raises -> Bool:
+        ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+            unsafe_from_address=self.handler_addr
+        )[]
+        ref st = Pointer[LoopState, MutUntrackedOrigin](
+            unsafe_from_address=self.loop_addr
+        )[]
+        ref xs = Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[]
+        ref backend = Pointer[B, MutUntrackedOrigin](
+            unsafe_from_address=self.backend_addr
+        )[]
+        return _shutdown_drain_step(handler, backend, st, xs.drain_start, 0)
+
+    @staticmethod
+    def drain_finish(py_self: PythonObject) raises -> PythonObject:
+        """`_port.drain_finish()`: the drain's tail -- a farewell to any
+        stream that appeared during it, the last submit flush, the accept
+        sharing record. Called once, after `drain_step` reports True."""
+        var port = py_self.downcast_value_ptr[ExecutorPort]()
+        port[]._drain_finish()
+        return PythonObject(None)
+
+    def _drain_finish(mut self) raises:
+        self._drain_finish_with[PlatformBackend]()
+
+    def _drain_finish_with[B: EventLoopBackend](mut self) raises:
+        ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+            unsafe_from_address=self.handler_addr
+        )[]
+        ref st = Pointer[LoopState, MutUntrackedOrigin](
+            unsafe_from_address=self.loop_addr
+        )[]
+        ref backend = Pointer[B, MutUntrackedOrigin](
+            unsafe_from_address=self.backend_addr
+        )[]
+        _shutdown_finish(handler, backend, st)
 
     def _place_frame(mut self, mut pool: OffloadPool, frame: Span[Byte, _]) -> Bool:
         """Place one chunk datagram: `_send_chunk_frame` on the pump, or the

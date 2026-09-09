@@ -5001,6 +5001,42 @@ grep -q 'stopped before Future completed' asgi.log \
 [ -f "$out/shutdown.marker" ] \
   || fail 'lifespan shutdown did not reach the application after the drain'
 
+# The other half of that case, and the one the loop inversion got wrong: a
+# request that finishes INSIDE the drain must be answered when it FINISHES,
+# not when the budget runs out. The phase above uses requests that outlive
+# the 5 s drain on purpose, so it cannot see this -- both a correct drain
+# and a frozen one end at the deadline there.
+#
+# Inverted, `_run_shutdown` ran to completion inside an asyncio callback,
+# and the application's in-flight tasks live on that same loop: they could
+# not be stepped, `active_count` never fell, and a 1.5 s request was
+# answered at 5.36 s against the pump's 1.50. The drain is stepped now
+# (`_port.drain_step`, one non-blocking pass, awaiting between passes).
+# The bound is deliberately loose -- 3 s, against a 1.5 s request and a 5 s
+# budget -- because what it discriminates is "finished" from "gave up", and
+# a shared runner should not fail on a slow second.
+M0_SHUTDOWN_MARKER="$out/drain2.marker" "$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'restart for the answered-inside-the-drain phase did not answer'
+started=$(python3 -c 'import time; print(time.time())')
+curl -s -m 20 -o "$out/drain2.body" -w '%{http_code}' "$B/slow?ms=1500" > "$out/drain2.code" &
+c3=$!
+sleep 0.3
+kill -TERM $pid
+wait $c3 2>/dev/null
+elapsed=$(python3 -c "import time; print('%.2f' % (time.time() - $started))")
+wait_exit 'SIGTERM with a request that finishes inside the drain'
+[ "$rc" = "0" ] || fail "SIGTERM with a request finishing inside the drain: exit $rc, want 0"
+[ "$(cat "$out/drain2.code")" = "200" ] \
+  || fail "a request finishing inside the drain was not answered 200 (got $(cat "$out/drain2.code"))"
+python3 -c "import sys; sys.exit(0 if $elapsed < 3.0 else 1)" \
+  || fail "a 1.5 s request was answered ${elapsed}s after it was sent — the drain waited out its budget instead of stepping (item 6)"
+echo "in-flight request answered ${elapsed}s after it was sent (budget is 5s)"
+python3 scripts/emit.py asgi.drain_inflight_s "$elapsed" --unit s --limit 3.0 --task smoke-asgi
+[ -f "$out/drain2.marker" ] \
+  || fail 'lifespan shutdown did not run after the answered-inside-the-drain phase'
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.

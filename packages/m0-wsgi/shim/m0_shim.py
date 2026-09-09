@@ -993,6 +993,38 @@ async def _finish_and_stop():
     _loop.stop()
 
 
+async def _drain_and_stop():
+    # The INVERTED mode's graceful shutdown. The Mojo drain used to run to
+    # completion inside the `_on_backend` callback below, and the
+    # application's in-flight request tasks live on THIS loop: a blocking
+    # drain is a loop that cannot step them, so nothing finished, the
+    # drain's `active_count` never fell, and every in-flight request was
+    # answered when the 5 s budget ran out rather than when it was done.
+    # Measured on `/slow?ms=1500`: 5.36 s inverted against the pump's
+    # 1.50, and the pump does not have the bug because its drain runs on
+    # the Mojo thread while asyncio keeps running on another.
+    #
+    # So the drain is STEPPED, one non-blocking pass at a time, with an
+    # await between passes so the loop runs everything else it has ready.
+    # A millisecond, not `sleep(0)`: a zero sleep spins a core for the
+    # length of the drain, and the drain's own granularity was 100 ms
+    # before this.
+    import asyncio
+
+    while not _port.drain_step():
+        await asyncio.sleep(0.001)
+    if _exec_tasks:
+        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    await asyncio.sleep(0)
+    # The tail the blocking drain used to run inline: a farewell to any
+    # stream that appeared during the drain, the last submit flush, the
+    # accept-sharing record. Before `stop()`, so `run_forever` returns to
+    # a loop with nothing owed, and after it the Mojo side runs the
+    # application's lifespan shutdown.
+    _port.drain_finish()
+    _loop.stop()
+
+
 def run_forever():
     # The executor thread's whole serving life. Returns after the pill,
     # via _finish_and_stop; a task that never completes (a chunk credit
@@ -1014,7 +1046,7 @@ def run_forever_inverted(backend_fd):
     def _on_backend():
         if _port.pass_():
             _loop.remove_reader(backend_fd)
-            _loop.create_task(_finish_and_stop())
+            _loop.create_task(_drain_and_stop())
             return
         if not _flush_armed[0]:
             _flush_armed[0] = True
@@ -1023,7 +1055,7 @@ def run_forever_inverted(backend_fd):
     def _tick():
         if _port.pass_():
             _loop.remove_reader(backend_fd)
-            _loop.create_task(_finish_and_stop())
+            _loop.create_task(_drain_and_stop())
             return
         _loop.call_later(1.0, _tick)
 

@@ -98,3 +98,71 @@ shutdown case, and a saturation workload showing a gain, which no
 measurement yet does. (The outbox sweep, the other named lever, was
 taken the same day — the next entry — and is worth +4.6% to the
 inversion at c16; it does not change this reading.)
+
+## Design item 6, built 2026-09-08: the drain is stepped, not blocking
+
+The shutdown limitation above is gone, and it was one line of shape. The
+inverted `pass_` called `_run_shutdown` — the whole graceful drain, its
+5 s budget and its 100 ms waits — from inside an asyncio callback. The
+application's in-flight request tasks live on that same loop, so the
+callback that was waiting for them to finish was the reason they could
+not run: `active_count` never fell, and every in-flight request was
+answered when the budget ran out rather than when it was done. The pump
+does not have the bug because its drain runs on the Mojo thread while
+asyncio keeps running on another.
+
+`_run_shutdown` is now three functions in `event_loop.mojo` —
+`_shutdown_begin` (leave accept sharing, close the listener, farewell the
+streams, stop watching the shutdown pipe, stamp the deadline),
+`_shutdown_drain_step` (ONE pass, with the blocking wait as a parameter,
+returning True when the drain is over) and `_shutdown_finish` (the late
+farewell, the last submit flush, the accept-sharing record). The blocking
+composition is unchanged and is what every other topology runs:
+
+    var drain_start = _shutdown_begin(handler, backend, st)
+    while not _shutdown_drain_step(handler, backend, st, drain_start, 100):
+        pass
+    _shutdown_finish(handler, backend, st)
+
+Inverted, the shim steps it instead (`_drain_and_stop`): `drain_step`
+with a wait of 0, `await asyncio.sleep(0.001)` between passes so the loop
+runs everything else it has ready, then the post-pill gather, then
+`drain_finish`, then `stop()`. A millisecond rather than `sleep(0)`,
+which would spin a core for the length of the drain; the drain's own
+granularity was 100 ms before this, so 1 ms costs nothing and is 100x
+finer.
+
+Measured with `/slow?ms=1500`, SIGTERM 300 ms in, on both backends:
+
+| | kqueue | epoll |
+|---|---:|---:|
+| pump (the reference) | 1.50 s | 1.51 s |
+| inverted, before | 5.36 s | — |
+| inverted, after | 1.50 s | 1.50 s |
+
+Lifespan shutdown still runs in every arm, and the process exits within
+about 10 ms of answering.
+
+**The smoke the bar asked for is `smoke-asgi`'s, and it is deliberately
+not the phase next to it.** The existing outlive-the-drain phase uses
+`/slow?ms=5800` and `/slow?ms=6800` — requests that exceed the 5 s budget
+on purpose — so a correct drain and a frozen one both end at the
+deadline there and it cannot see this defect at all. The new phase sends
+a 1.5 s request and asserts the answer arrives inside 3 s: a bound loose
+enough that a slow shared runner will not fail it, and tight enough to
+separate "finished" from "gave up". `smoke-asgi` already runs in both
+loop modes on every pull request, so the inverted arm gates it. Proven by
+sabotage: with `pass_` reverted to the blocking `_run_shutdown`, the
+inverted arm fails with `a 1.5 s request was answered 5.39s after it was
+sent`.
+
+That is the first half of the promotion bar. The second half — a
+saturation workload showing a gain — is met too, by measurements that
+postdate the verdict above rather than by anything the inversion did:
+see `bench/results/inversion-2026-09/` for the Mac artifacts (+16 % per
+core at 256 connections) and the core-constrained sweep, where the
+inversion serves 1.14x the pump and 1.42x uvicorn+uvloop on a single
+CPU. What changed is the pump: the detached loop bought its throughput by
+spreading over 1.6–1.8 cores, so its per-core efficiency fell as its rps
+rose. This note's own reading — "or a workload where CPU, not
+closed-loop latency, is the bound" — is what that turned out to be.
