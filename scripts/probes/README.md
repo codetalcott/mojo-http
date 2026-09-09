@@ -14,6 +14,7 @@ from. None is a CI gate; two are pre-release gates through `poe`.
 | `bench_slow.py` | the fast route's tail with N slow Django views in flight, one fresh server per arm and round, arms alternated; arms carry env overrides and alternative binaries | see its docstring |
 | `xctrace_report.py` | per-thread on-CPU self time by leaf symbol from an `xctrace` export (regex-based: Mojo symbols break the XML) | see its docstring |
 | `linux_setup.sh`, `linux_sync.sh` | create the `m0lin` build container and copy the Mac tree into it | header of each |
+| `source_stamp.sh` | a content hash of the sources the sync copies, computed identically on the Mac and in the container, so a sync that landed the wrong tree is loud | `bash scripts/probes/source_stamp.sh` |
 
 Absolute rates on a laptop move 5–10 % across a session; alternate arms
 and quote ratios. The two shell benches under `scripts/` refuse to run
