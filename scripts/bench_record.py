@@ -179,7 +179,7 @@ def _cmd(*argv):
 
 
 def _tree_is_dirty():
-    """Is the WORKING TREE dirty, ignoring bench artifacts?
+    """Is the WORKING TREE dirty, ignoring bench artifacts? None if unknown.
 
     `git status --porcelain` counts untracked files, and a benchmark run
     writes its artifact into bench/results/ -- so running two benches back
@@ -192,8 +192,17 @@ def _tree_is_dirty():
     Artifacts under bench/results/ are therefore excluded. Anything else --
     including an uncommitted change to a bench script -- still counts.
     """
-    status = _cmd("git", "-C", str(REPO), "status", "--porcelain") or ""
-    for line in status.splitlines():
+    if not (REPO / ".git").exists():
+        # No git here at all -- a container copy of the tree, which is how a
+        # Linux artifact gets recorded. Answering False would be the
+        # reassuring answer on no evidence, and `git_dirty` exists to WARN;
+        # None says "could not tell" and the renderer treats it as "not
+        # provably clean".
+        return None
+    status = _cmd("git", "-C", str(REPO), "status", "--porcelain")
+    if status is None or status == "" and _cmd("git", "-C", str(REPO), "rev-parse", "HEAD") == "":
+        return None
+    for line in (status or "").splitlines():
         path = line[3:].strip().strip('"')
         if path.startswith("bench/results/"):
             continue
@@ -217,7 +226,16 @@ def environment():
     venv = pathlib.Path(os.environ.get("BENCH_VENV", REPO / ".venv")) / "bin"
     env = {
         "version": _tree_version(),
-        "git_sha": _cmd("git", "-C", str(REPO), "rev-parse", "--short", "HEAD"),
+        "git_sha": (
+            _cmd("git", "-C", str(REPO), "rev-parse", "--short", "HEAD")
+            or os.environ.get("BENCH_GIT_SHA", "")
+        ),
+        # What the caller says the sources are, when git cannot say. A
+        # container copy has no `.git`, so `BENCH_GIT_SHA` states the commit
+        # and `BENCH_SOURCE_STAMP` -- `scripts/probes/source_stamp.sh`'s hash,
+        # which the sync verifies against the Mac -- is what makes stating it
+        # more than a claim. Absent where git answered for itself.
+        "source_stamp": os.environ.get("BENCH_SOURCE_STAMP", ""),
         "git_dirty": _tree_is_dirty(),
         "os": f"{platform.system()} {platform.release()}",
         "machine": platform.machine(),
@@ -234,15 +252,34 @@ def environment():
         env["cpu"] = _cmd("sysctl", "-n", "machdep.cpu.brand_string")
         env["cores_physical"] = _cmd("sysctl", "-n", "hw.physicalcpu")
     else:
+        # `model name` is an x86 field. aarch64 `/proc/cpuinfo` has no such
+        # line -- it carries `CPU implementer`/`CPU part` instead -- so on an
+        # arm64 Linux box this recorded an EMPTY cpu and no core count at all,
+        # which renders as a blank in the table's Environment line. Fall back
+        # through the arm fields, then to whatever `lscpu` names.
         model = ""
         try:
+            fields = {}
             for line in open("/proc/cpuinfo"):
-                if line.startswith("model name"):
-                    model = line.split(":", 1)[1].strip()
-                    break
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    fields.setdefault(k.strip(), v.strip())
+            model = fields.get("model name") or fields.get("Model name") or ""
+            if not model and fields.get("CPU implementer"):
+                model = "aarch64 impl {} part {}".format(
+                    fields.get("CPU implementer", "?"), fields.get("CPU part", "?")
+                )
         except OSError:
             pass
+        if not model:
+            for line in (_cmd("lscpu") or "").splitlines():
+                if line.lower().startswith("model name"):
+                    model = line.split(":", 1)[1].strip()
+                    break
         env["cpu"] = model
+        # Never set on this branch before, so every Linux artifact recorded a
+        # missing core count beside a table whose whole point is per-core.
+        env["cores_physical"] = str(os.cpu_count() or "")
     return env
 
 

@@ -150,6 +150,7 @@ The engineering record: long-form, dated, kept as written.
 - [The WebSocket send window — shipped 2026-08-28](notes/websocket-send-window.md)
 - [The loop inversion — in progress 2026-08-28](notes/loop-inversion.md)
 - [Where the loop inversion wins, on a constrained box — 2026-09-08](notes/inversion-on-a-constrained-box.md)
+- [Do the benchmark page's conclusions hold on Linux? — 2026-09-08](notes/the-conclusions-on-linux.md)
 - [The outbox sweep — taken, scoped (2026-08-29)](notes/outbox-sweep.md)
 - [Pacing the pump's loop thread](notes/pump-pacing.md)
 - [The Mojo handler pool — shipped 2026-08-28](notes/mojo-handler-pool.md)

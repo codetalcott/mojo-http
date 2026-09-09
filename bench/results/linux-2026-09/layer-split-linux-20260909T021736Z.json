@@ -1,0 +1,207 @@
+{
+  "bench": "layer_split",
+  "recorded_utc": "2026-09-09T02:17:36+00:00",
+  "environment": {
+    "version": "0.19.0",
+    "git_sha": "d40ddc5",
+    "source_stamp": "e7f869618a73eb04",
+    "git_dirty": null,
+    "os": "Linux 6.8.0-117-generic",
+    "machine": "aarch64",
+    "python": "Python 3.13.11 (main, Feb  3 2026, 05:52:03) [GCC 12.2.0]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "granian 2.8.2",
+    "wrk": "wrk debian/4.1.0-3+b2 [epoll] Copyright (C) 2012 Will Glozer",
+    "cpu": "aarch64 impl 0x61 part 0x000",
+    "cores_physical": "8"
+  },
+  "parameters": {
+    "client": "wrk -t2 -c16 -d10s, browser headers",
+    "rounds": "3",
+    "note": "Linux arm of the 2026-09-08 conclusions pass, recorded in the m0lin container (aarch64, 8 vCPU VM). NOT the benchmark page's row and not comparable to it in absolute terms -- two layers of virtualization, and server and client share the VM's cpus. The RATIOS are the signal; every comparator was re-measured in every round and each arm's spread was 0.8-2.1%."
+  },
+  "rows": [
+    {
+      "name": "hello(no python,1proc)",
+      "rps": 212875.06,
+      "p50_us": 72.0,
+      "p99_us": 91.0,
+      "cores": 1.0,
+      "rps_per_core": 212917,
+      "round": 1
+    },
+    {
+      "name": "m0serve+bare w1 bt0",
+      "rps": 112689.39,
+      "p50_us": 140.0,
+      "p99_us": 168.0,
+      "cores": 1.0,
+      "rps_per_core": 112711,
+      "round": 1
+    },
+    {
+      "name": "m0serve+bare w1 bt1",
+      "rps": 276427.04,
+      "p50_us": 48.0,
+      "p99_us": 89.0,
+      "cores": 1.965,
+      "rps_per_core": 140679,
+      "round": 1
+    },
+    {
+      "name": "m0serve+bare zero-config",
+      "rps": 273309.87,
+      "p50_us": 49.0,
+      "p99_us": 94.0,
+      "cores": 1.958,
+      "rps_per_core": 139582,
+      "round": 1
+    },
+    {
+      "name": "granian+bare w1",
+      "rps": 254332.85,
+      "p50_us": 57.0,
+      "p99_us": 100.0,
+      "cores": 1.866,
+      "rps_per_core": 136314,
+      "round": 1
+    },
+    {
+      "name": "hello(no python,1proc)",
+      "rps": 209968.32,
+      "p50_us": 73.0,
+      "p99_us": 91.0,
+      "cores": 1.0,
+      "rps_per_core": 210011,
+      "round": 2
+    },
+    {
+      "name": "m0serve+bare w1 bt0",
+      "rps": 112686.54,
+      "p50_us": 140.0,
+      "p99_us": 169.0,
+      "cores": 1.001,
+      "rps_per_core": 112597,
+      "round": 2
+    },
+    {
+      "name": "m0serve+bare w1 bt1",
+      "rps": 274337.45,
+      "p50_us": 48.0,
+      "p99_us": 89.0,
+      "cores": 1.961,
+      "rps_per_core": 139897,
+      "round": 2
+    },
+    {
+      "name": "m0serve+bare zero-config",
+      "rps": 271996.35,
+      "p50_us": 49.0,
+      "p99_us": 92.0,
+      "cores": 1.957,
+      "rps_per_core": 138981,
+      "round": 2
+    },
+    {
+      "name": "granian+bare w1",
+      "rps": 256928.29,
+      "p50_us": 56.0,
+      "p99_us": 100.0,
+      "cores": 1.869,
+      "rps_per_core": 137486,
+      "round": 2
+    },
+    {
+      "name": "hello(no python,1proc)",
+      "rps": 210076.5,
+      "p50_us": 73.0,
+      "p99_us": 90.0,
+      "cores": 1.0,
+      "rps_per_core": 210119,
+      "round": 3
+    },
+    {
+      "name": "m0serve+bare w1 bt0",
+      "rps": 110332.56,
+      "p50_us": 143.0,
+      "p99_us": 171.0,
+      "cores": 1.0,
+      "rps_per_core": 110355,
+      "round": 3
+    },
+    {
+      "name": "m0serve+bare w1 bt1",
+      "rps": 271394.72,
+      "p50_us": 49.0,
+      "p99_us": 90.0,
+      "cores": 1.952,
+      "rps_per_core": 139028,
+      "round": 3
+    },
+    {
+      "name": "m0serve+bare zero-config",
+      "rps": 271018.97,
+      "p50_us": 49.0,
+      "p99_us": 103.0,
+      "cores": 1.953,
+      "rps_per_core": 138777,
+      "round": 3
+    },
+    {
+      "name": "granian+bare w1",
+      "rps": 251537.94,
+      "p50_us": 58.0,
+      "p99_us": 102.0,
+      "cores": 1.853,
+      "rps_per_core": 135753,
+      "round": 3
+    }
+  ],
+  "medians": {
+    "hello(no python,1proc)": {
+      "rps": 210076.5,
+      "rounds": 3,
+      "cores": 1.0,
+      "rps_per_core": 210076,
+      "p99_us": 91.0,
+      "p99_us_min": 90.0,
+      "p99_us_max": 91.0
+    },
+    "m0serve+bare w1 bt0": {
+      "rps": 112686.54,
+      "rounds": 3,
+      "cores": 1.0,
+      "rps_per_core": 112687,
+      "p99_us": 169.0,
+      "p99_us_min": 168.0,
+      "p99_us_max": 171.0
+    },
+    "m0serve+bare w1 bt1": {
+      "rps": 274337.45,
+      "rounds": 3,
+      "cores": 1.961,
+      "rps_per_core": 139897,
+      "p99_us": 89.0,
+      "p99_us_min": 89.0,
+      "p99_us_max": 90.0
+    },
+    "m0serve+bare zero-config": {
+      "rps": 271996.35,
+      "rounds": 3,
+      "cores": 1.957,
+      "rps_per_core": 138986,
+      "p99_us": 94.0,
+      "p99_us_min": 92.0,
+      "p99_us_max": 103.0
+    },
+    "granian+bare w1": {
+      "rps": 254332.85,
+      "rounds": 3,
+      "cores": 1.866,
+      "rps_per_core": 136298,
+      "p99_us": 100.0,
+      "p99_us_min": 100.0,
+      "p99_us_max": 102.0
+    }
+  }
+}
