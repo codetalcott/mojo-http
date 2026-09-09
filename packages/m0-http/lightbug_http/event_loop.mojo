@@ -1873,14 +1873,22 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
         )
 
 
-def _run_shutdown[T: HTTPService, B: EventLoopBackend](
+comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
+"""The graceful drain's budget. Module scope because the drain is three
+functions now, and both the blocking composition and the polled one
+measure against the same 5 s."""
+
+def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
-) raises:
-    """The graceful shutdown: close the listener, say goodbye to streams,
-    drain in-flight requests within the budget, flush the last submits.
-    The former `if should_shutdown:` branch, unchanged — except that the
-    between-requests sweep now also runs after every completion pass of
-    the drain (`_close_between_requests`).
+) raises -> Int:
+    """Everything before the drain: leave accept sharing, close the
+    listener, say goodbye to streams, close what has nothing to drain, and
+    stop watching the shutdown pipe. Returns the stamp the drain measures
+    its budget from.
+
+    Split out of `_run_shutdown` so the drain can also be driven ONE PASS
+    AT A TIME (`_shutdown_drain_step`). The blocking composition below is
+    unchanged and is what every topology but the loop inversion uses.
     """
     ref offload = st.offload
     ref max_conns = st.max_conns
@@ -1986,21 +1994,79 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
     # the second term a shutdown could leave that job unclaimed.
     if st.shutdown_read_fd >= 0:
         backend.try_delete_read(st.shutdown_read_fd)
-    var drain_start = perf_counter_ns()
-    comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
-    while active_count > 0 or offload.inflight > 0:
-        if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
-            break
-        var drain_events = _wait_for_events(backend, st, 100)
-        _ = _run_pass(handler, backend, st, drain_events)
-        # A completion that just went out whole on a keep-alive
-        # connection re-armed the slot for a request the drain must not
-        # wait for; close it now rather than at the deadline.
-        _close_between_requests(
-            backend, handler, max_conns,
-            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-            slot_sse, slot_ws, slot_ws_state, offload,
-        )
+    return perf_counter_ns()
+
+
+def _shutdown_drain_step[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+    drain_start: Int,
+    wait_ms: Int,
+) raises -> Bool:
+    """One pass of the drain. True when the drain is OVER -- nothing left
+    in flight, or the budget spent.
+
+    `wait_ms` is how long the pass may block in the backend. The blocking
+    composition passes 100, as the `while` loop here always did; the loop
+    inversion passes 0, because this runs inside an asyncio callback there
+    and the in-flight application tasks live on that same loop -- blocking
+    here is blocking them, which is the bug this split exists to fix.
+    """
+    ref offload = st.offload
+    ref max_conns = st.max_conns
+    ref provision_pool = st.provision_pool
+    ref slot_fds = st.slot_fds
+    ref slot_sse = st.slot_sse
+    ref slot_ws = st.slot_ws
+    ref slot_ws_state = st.slot_ws_state
+    ref fd_to_slot = st.fd_to_slot
+    ref active_count = st.active_count
+    ref metrics = st.metrics
+    # The `while` condition this replaces, then the deadline it broke on:
+    # same order, so a drain with nothing left never waits, and one that
+    # ran out of budget stops before another pass.
+    if not (active_count > 0 or offload.inflight > 0):
+        return True
+    if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
+        return True
+    var drain_events = _wait_for_events(backend, st, wait_ms)
+    _ = _run_pass(handler, backend, st, drain_events)
+    # A completion that just went out whole on a keep-alive
+    # connection re-armed the slot for a request the drain must not
+    # wait for; close it now rather than at the deadline.
+    _close_between_requests(
+        backend, handler, max_conns,
+        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, offload,
+    )
+    return False
+
+
+def _shutdown_finish[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+) raises:
+    """After the drain: say goodbye to a stream that appeared during it,
+    flush the buffered submits, and record what accept sharing did."""
+    ref offload = st.offload
+    ref max_conns = st.max_conns
+    ref provision_pool = st.provision_pool
+    ref slot_fds = st.slot_fds
+    ref slot_response = st.slot_response
+    ref slot_send_offset = st.slot_send_offset
+    ref slot_header_start = st.slot_header_start
+    ref slot_sse = st.slot_sse
+    ref slot_ws = st.slot_ws
+    ref slot_read_armed = st.slot_read_armed
+    ref slot_idle_deadline = st.slot_idle_deadline
+    ref slot_ws_state = st.slot_ws_state
+    ref fd_to_slot = st.fd_to_slot
+    ref active_count = st.active_count
+    ref metrics = st.metrics
+    ref date_cache_sec = st.date_cache_sec
+    ref date_cache = st.date_cache
+    ref config = st.config
+    ref server_address = st.server_address
+    ref tcp_keep_alive = st.tcp_keep_alive
+    ref accept_share = st.accept_share
     # A stream whose head completed DURING the drain — a pool
     # thread answering a streamed WSGI response in its last job —
     # became a streaming slot after the farewell pass above, and
@@ -2048,6 +2114,21 @@ def _run_shutdown[T: HTTPService, B: EventLoopBackend](
         )
 
 
+
+
+def _run_shutdown[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+) raises:
+    """The graceful shutdown, blocking: close the listener, say goodbye to
+    streams, drain in-flight requests within the budget, flush the last
+    submits. Behaviour is exactly what it was before the split -- the
+    drain's pass still blocks up to 100 ms in the backend -- and this is
+    what every topology except the loop inversion runs.
+    """
+    var drain_start = _shutdown_begin(handler, backend, st)
+    while not _shutdown_drain_step(handler, backend, st, drain_start, 100):
+        pass
+    _shutdown_finish(handler, backend, st)
 def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
