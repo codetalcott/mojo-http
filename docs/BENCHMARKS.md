@@ -17,8 +17,9 @@ comparison on raw throughput, but the tables show it keeps a fast request fast w
 - <!-- observed: cross-session runs from before the artifact system, 2026-08 -->**Within-run ratios are the signal; absolute rows are not.** Identical
   binaries move ~1.5x in absolute rps across sessions on this hardware,
   from thermal and load state alone. Compare rows inside one table. The
-  doctrine holds across RUNS and not across PLATFORMS: two of the
-  conclusions below invert on Linux (last section).
+  doctrine holds across RUNS and not across PLATFORMS: at least one
+  conclusion below does not survive Linux, and two Linux environments
+  disagree about another (last section).
 - **Cores are measured, not configured.** Each table's `cores` column is
   sampled `%cpu` of the pids on the listen socket; a comparator run as
   `--workers 1` uses ~<!-- num:granian-w1-cores@2 -->1.76<!-- /num --> cores
@@ -45,8 +46,8 @@ says otherwise. Where a comparator wins, the row stays.
 
 | question | answer |
 | --- | --- |
-| Fastest on bare WSGI? | **On this box, no** — one worker and one handler thread each, Granian is ahead by ~<!-- num:granian-per-m0@2 -->1.01<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.02<!-- /num -->x in requests per second. <!-- observed: notes/the-conclusions-on-linux.md, artifacts in bench/results/linux-2026-09/ -->**On Linux the answer inverts** — 1.08x in requests per second and 1.03x per core, m0serve ahead |
-| Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.44<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.01<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core on this box, against uvloop, no**: uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.12<!-- /num -->x — <!-- observed: notes/the-conclusions-on-linux.md, artifacts in bench/results/linux-2026-09/ -->**this too inverts on Linux**, where the executor leads uvloop by 1.11x per core; against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x on either platform |
+| Fastest on bare WSGI? | **No** — one worker and one handler thread each, Granian is ahead by ~<!-- num:granian-per-m0@2 -->1.01<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.02<!-- /num -->x in requests per second. <!-- observed: notes/the-conclusions-on-linux.md, artifacts in bench/results/linux-2026-09/ -->A first Linux run put m0serve ahead here; a second, on x86-64 hardware, did not reproduce it and agrees with this box, so the answer stands |
+| Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.44<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.01<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core on this box, against uvloop, no**: uvloop is ahead by ~<!-- num:uvloop-per-core-lead@2 -->1.12<!-- /num -->x — <!-- observed: notes/the-conclusions-on-linux.md, artifacts in bench/results/linux-2026-09/ -->but that is macOS-specific: two Linux environments answer at or above parity (1.11x and 1.01x), so uvloop's per-core lead does not survive the platform change, though its size is unsettled. Against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.25<!-- /num -->x everywhere measured |
 | Fastest fast-request tail under mixed load? | **Yes** — p99 ahead of uvicorn in every recorded run |
 | Fastest HTTP layer, Python excluded? | **Yes** — but see the note on why that is not the interesting number |
 
@@ -292,14 +293,15 @@ every number here names, and installing it is one flag:
   artifacts are macOS arm64. The CI matrix builds and smoke-tests Linux
   x86-64 and aarch64, but the benchmark box is one machine and the page
   says which. <!-- observed: notes/the-conclusions-on-linux.md -->Measured
-  on 2026-09-08, **two of this page's four headline conclusions invert on
-  Linux** — both of the "No" answers above, both in m0serve's favour — and
-  one mechanism explains both: the row with no cross-thread handoff is the
-  same on the two platforms, and every row that has one is much better on
-  Linux, because a handoff costs less on epoll and futex than on kqueue.
-  So "within-run ratios are the signal" transfers across RUNS, not across
-  PLATFORMS. [The note](notes/the-conclusions-on-linux.md) has the table
-  and what it does not say.
+  in two Linux environments on 2026-09-08 and 09, **one of this page's
+  conclusions does not survive the platform change**: uvloop's per-core
+  lead on bare ASGI, which both answer at or above parity. A first run
+  also put m0serve ahead of Granian on WSGI; a second did not reproduce
+  it, and where two environments disagree the claim is that they
+  disagree. So "within-run ratios are the signal" transfers across RUNS,
+  not across PLATFORMS — and one Linux box is not "Linux" either.
+  [The note](notes/the-conclusions-on-linux.md) has both tables, the
+  per-arm spreads, and what neither says.
 
 ## Reproducing
 

@@ -25,9 +25,12 @@
 #     itself Up throughout. Note the script you are reading came through
 #     that same mount, which is exactly why it cannot detect this on its
 #     own -- the caller passes the stamp in.
+# No `2>/dev/null` on the tar below: a missing path makes GNU tar exit 2,
+# and suppressing its stderr turned that into a failure with NO message at
+# all -- measured against a remote host whose /src lacked `bench`.
 set -euo pipefail
 cd /src
-tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/m0serve*' --exclude='bin/*.dylib' --exclude='.claude' -cf - packages scripts apps pyproject.toml bench 2>/dev/null | (cd /work && tar -xf -)
+tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/m0serve*' --exclude='bin/*.dylib' --exclude='.claude' -cf - packages scripts apps pyproject.toml bench | (cd /work && tar -xf -)
 # virtiofs materialises macOS extended attributes as AppleDouble files in
 # the guest, so `/src` carries a `._which_package.mojo` beside sources the
 # Mac shows as clean (213 of them, measured). `mojo` then tries to parse

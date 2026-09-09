@@ -102,3 +102,55 @@ M4 and its performance and efficiency cores. It is refused now, naming the
 remedy. Before the guard the only complaint was the comparator-drift check
 firing on every row — which tells you to "re-record on a quiet machine",
 the wrong remedy entirely.
+
+
+## A second Linux environment, and a correction — 2026-09-09
+
+The table above rests on ONE Linux environment: an 8-vCPU aarch64 container
+on a Mac, with the server sharing cpus with the load generator. A rented
+box removes that confound, so the same three shapes were run on a Linode
+`g6-dedicated-4` — 4 dedicated vCPU, x86-64, AMD EPYC 7713, Python 3.13.15,
+Debian 12 — for about twenty-five cents. Artifacts beside the others in
+`bench/results/linux-2026-09/`.
+
+| conclusion | macOS (M4) | container (8 vcpu, arm) | Linode (4 vcpu, x86) |
+|---|---:|---:|---:|
+| WSGI vs Granian (rps) | 0.98 | **1.08** | **0.97** |
+| WSGI vs Granian (per core) | 0.99 | **1.03** | **0.98** |
+| ASGI vs uvloop (rps) | 1.44 | 1.19 | 1.05 |
+| ASGI vs uvloop (per core) | 0.89 | 1.11 | 1.01 |
+| ASGI vs `uvicorn --loop asyncio` | 2.01 | 1.84 | 1.85 |
+
+**The WSGI inversion does not reproduce.** Two of the three environments
+put m0serve a couple of percent behind Granian, exactly as the benchmark
+page says; the container is the outlier. That claim, made here and in
+BENCHMARKS.md on 2026-09-08, was overstated and both are corrected.
+
+**The ASGI per-core inversion survives in direction and collapses in
+size.** Both Linux environments answer at or above parity (1.11, 1.01)
+against macOS's 0.89, so "per core, uvloop is ahead" really is
+macOS-specific — but on real x86-64 hardware it is a tie, not a lead, and
+the honest statement is that the magnitude is unsettled.
+
+**Read this second environment with its spread in hand.** Its per-arm
+spreads are 4.2–12.6 %, against the container's 0.8–2.1 %, so a 0.97 here
+does not cleanly refute a 1.08 there — it declines to reproduce it, which
+is weaker and is all that is claimed. Its absolute rates are also about a
+quarter of either other environment (28.7k rps against 102k and 117k on
+the ASGI row): four vCPUs of a 64-core EPYC, with the load generator on
+the same four.
+
+## What that says about renting hardware
+
+The rented box was supposed to be the quieter instrument. **It was
+noisier** — 4.2–12.6 % against the container's 0.8–2.1 % — so at this size
+it buys nothing the container does not already give, and the container
+stays the right default. Two plausible reasons, not separated here: four
+vCPUs is too few for a server and a load generator that between them want
+about six, and a "dedicated" vCPU on a 64-core part still shares memory
+bandwidth and last-level cache with other tenants.
+
+The general lesson is the one the disagreement itself teaches: **one Linux
+environment is not "Linux."** The first pass answered a platform question
+with a single machine and got a result that a second machine did not
+confirm. Where two environments disagree, the claim is that they disagree.

@@ -59,6 +59,7 @@ def run(*argv, **kw):
 # Everything goes through `dexec`/`push`/`pull`, so the arms, the recorder
 # and the comparison do not know which transport they are on.
 REMOTE = None          # "user@host" once --remote is given
+WHERE = ""             # what the summary says it measured, set once the target answers
 SSH = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
 
 def _shq(x):
@@ -110,7 +111,10 @@ def push_tree():
     tar = subprocess.Popen(
         ["tar", "--exclude=.venv", "--exclude=.git", "--exclude=packages/*/*.mojoc",
          "--exclude=bin/*", "--exclude=.claude", "-cf", "-",
-         "packages", "scripts", "apps", "pyproject.toml", "uv.lock"],
+         # The SAME set `linux_sync.sh` re-tars from /src. It listed `bench`
+         # and this did not, so on a remote host that tar hit a missing path,
+         # exited 2, and its `2>/dev/null` made the failure silent.
+         "packages", "scripts", "apps", "pyproject.toml", "uv.lock", "bench"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     unpack = "mkdir -p /src && cd /src && tar -xf - && find /src -name '._*' -delete"
     if REMOTE:
@@ -160,6 +164,7 @@ def compare(linux_dir):
     ]
     print("\n" + "=" * 78)
     print("  Each macOS conclusion, on Linux.  >1.0 means m0serve ahead.")
+    print(f"  Measured on: {WHERE}")
     print("=" * 78)
     print(f"  {'conclusion':<36} {'macOS':>8} {'Linux':>8}   verdict")
     missing = []
@@ -199,7 +204,7 @@ def main():
             print("provisioning the host (apt, uv, toolchain) -- several minutes", flush=True)
             dexec("bash", "/src/scripts/probes/remote_setup.sh")
             dexec("bash", "-c", "mkdir -p /work && cd /src && tar -cf - . | (cd /work && tar -xf -)")
-            dexec("bash", "-c", "cd /work && uv sync >/dev/null 2>&1")
+            dexec("bash", "-c", "cd /work && uv sync --python 3.13 >/dev/null 2>&1")
     else:
         if run("docker", "info").returncode != 0:
             sys.exit("bench-linux-conclusions: no docker daemon (start colima, or set DOCKER_HOST)")
@@ -209,9 +214,24 @@ def main():
             print("provisioning (apt, uv sync, toolchain) -- several minutes", flush=True)
             dexec("bash", "/src/scripts/probes/linux_setup.sh")
         push_tree()
+    # WHERE, said out loud, first and last. `--remote` was once dropped by the
+    # poe wrapper (a shell task's "$@" is empty unless its args are declared),
+    # so a rented box was created, idled and deleted while the container ran
+    # and the summary reported success. The artifacts recorded `aarch64` and
+    # the truth was one audit away; a banner makes it zero.
+    where = f"remote {REMOTE}" if REMOTE else f"container {CONTAINER}"
+    uname = dexec("bash", "-c", "echo \"$(uname -m) $(nproc) cpu\"").stdout.strip()
+    print(f"target: {where} — {uname}", flush=True)
+    global WHERE
+    WHERE = f"{where}, {uname}"
     s = stamp()
     print(f"syncing at {git_sha()} (source stamp {s})", flush=True)
-    dexec("bash", "/src/scripts/probes/linux_sync.sh", "http", "wsgi", "serve",
+    # `core` FIRST, and on both paths. The container's `linux_setup.sh` builds
+    # it during provisioning so `http` alone worked there; `remote_setup.sh`
+    # installs packages and nothing else, so on a remote host every m0_http
+    # source failed with "unable to locate module 'm0_core'". Building it
+    # always costs seconds and makes the two paths identical.
+    dexec("bash", "/src/scripts/probes/linux_sync.sh", "core", "http", "wsgi", "serve",
           env={"M0_SYNC_STAMP": s})
     dexec("bash", "-c", "command -v wrk >/dev/null || (apt-get update -qq && apt-get install -y -qq wrk) >/dev/null 2>&1")
     dexec("bash", "-c", "cd /work && uv sync --group bench >/dev/null 2>&1 || true")
