@@ -1056,6 +1056,69 @@ def untracked_citations(docs, tracked):
     return out
 
 
+# A capability row's STATUS, restated in prose. docs/SPEC.md is the source of
+# truth for whether a row is verified, implemented, planned or out of scope,
+# but pages elsewhere describe rows in passing -- "SPEC D9 (`planned`)" in a
+# validation record's triage column, say -- and that sentence goes stale the
+# moment the row is built. It did: D9 was gated and the record still called it
+# planned and open, which is the most misleading kind of drift because the page
+# reads as a live status board.
+#
+# Every other ratchet here covers a machine-sourced NUMBER. This one covers a
+# claim, which is why it exists separately and why it is narrow: it fires only
+# where prose presents a status as a token beside a row id -- backticked, or
+# parenthesised -- and never on a status word that merely happens to be in the
+# same sentence. The sheet itself is excluded, being the source.
+_ROW_STATUS = re.compile(
+    r"\b([A-Z]\d{1,2})\b"                      # a row id
+    r"[^A-Za-z0-9\n]{0,4}"                      # a light connector: — , : is
+    r"(?:is\s+|was\s+)?"
+    r"(?:\(\s*`(verified|implemented|planned|out of scope)`\s*\)"   # (`x`)
+    r"|`(verified|implemented|planned|out of scope)`"                # `x`
+    r"|\(\s*(verified|implemented|planned|out of scope)\s*\))"      # (x)
+)
+
+
+def stale_row_statuses(docs, statuses):
+    """Prose that gives a SPEC row a status the sheet disagrees with.
+
+    `docs` maps path -> text; `statuses` maps row id -> the sheet's word. A
+    pure function of both, so the selftest can hand it doctored inputs and
+    `--sabotage` could revert the rule in memory.
+    """
+    out = []
+    for path in sorted(docs):
+        if path.endswith("SPEC.md"):
+            continue
+        for m in _ROW_STATUS.finditer(docs[path]):
+            row = m.group(1)
+            claimed = m.group(2) or m.group(3) or m.group(4)
+            actual = statuses.get(row)
+            if actual is None:
+                out.append(f"{path} gives `{row}` the status `{claimed}`, and "
+                           f"docs/SPEC.md has no row `{row}`")
+            elif actual != claimed:
+                out.append(f"{path} calls `{row}` `{claimed}`; docs/SPEC.md "
+                           f"says `{actual}`")
+    return out
+
+
+def check_row_statuses_in_prose():
+    """A page describing a SPEC row's status agrees with the sheet."""
+    import spec_sheet
+
+    rows, _ = spec_sheet.analyse(spec_sheet.read_sources())
+    statuses = {r["id"]: r["status"] for r in rows}
+    docs = {}
+    for rel in PROSE:
+        if (REPO / rel).exists():
+            docs[rel] = (REPO / rel).read_text()
+    for path in sorted((REPO / "docs").rglob("*.md")):
+        docs[str(path.relative_to(REPO))] = path.read_text()
+    for msg in stale_row_statuses(docs, statuses):
+        fail(msg)
+
+
 def check_docs_cite_tracked_paths():
     """Every `.claude/...` path the prose cites is tracked by git."""
     r = subprocess.run(["git", "-C", str(REPO), "ls-files"],
@@ -1219,6 +1282,35 @@ def selftest():
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
+    # The row-status rule: fires when prose disagrees with the sheet, and the
+    # controls matter more than usual here, because the rule reads ordinary
+    # sentences rather than a generated region. A status word loose in a
+    # sentence is not a claim about a row, and the sheet itself is the source
+    # and never its own violation.
+    status_sheet = {"D9": "verified", "L18": "verified", "C6": "out of scope"}
+    status_cases = [
+        ("prose calling a verified row planned",
+         {"docs/x.md": "triage | **open** -- SPEC D9 (`planned`), gate-to-be"}, True),
+        ("the same claim without backticks",
+         {"docs/x.md": "SPEC D9 (planned) is the row"}, True),
+        ("a row id that the sheet does not have",
+         {"docs/x.md": "covered by Z99 (`verified`)"}, True),
+        ("(control: a restatement that agrees)",
+         {"docs/x.md": "D9 (`verified`) since 0.19.0"}, False),
+        ("(control: an out-of-scope row said to be out of scope)",
+         {"docs/x.md": "rate limiting is C6 (`out of scope`), a proxy's job"}, False),
+        ("(control: a status word loose in a sentence is not a claim)",
+         {"docs/x.md": "L18 keeps the refusal honest until the fix is `verified`"}, False),
+        ("(control: the sheet itself is the source, not a violation)",
+         {"docs/SPEC.md": "| D9 | the drain reads a body | planned | ... |"}, False),
+    ]
+    for label, docs, must_fire in status_cases:
+        got = stale_row_statuses(docs, status_sheet)
+        fired = bool(got)
+        good = fired == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
+
     return ok
 
 
@@ -1257,6 +1349,7 @@ def main():
     check_site_corpus()
     check_rfc_citations()
     check_docs_cite_tracked_paths()
+    check_row_statuses_in_prose()
     check_bench_prose_figures()
     if failures:
         print("check-docs: FAIL")

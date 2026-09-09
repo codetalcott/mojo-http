@@ -53,7 +53,7 @@ Everything else is opt-in:
 |---|---|---|
 | `--workers N` | you want N processes on a multi-core host | prefork; a supervisor respawns crashes and drains on SIGTERM |
 | `--spawn-workers` | a worker uses Core ML, Objective-C or anything else a forked child cannot | each worker execs the binary afresh after the fork; same supervisor, one extra process start per worker |
-| `--blocking-threads N` | you want more or fewer handler threads per loop | `0` turns the pool off; for ASGI, `N>0` selects the buffered path instead of the executor |
+| `--blocking-threads N` | you want more or fewer handler threads per loop | more threads overlap only work that releases the GIL — a database driver, a codec, numpy — never pure Python ([which yours is](WSGI_VS_ASGI.md)); `0` turns the pool off; for ASGI, `N>0` selects the buffered path instead of the executor |
 | `--realtime` | sync views hold SSE streams or WebSockets with `M0-Hold` | WSGI only; the [Quickstart](../QUICKSTART.md) is the contract |
 | `--mount PREFIX=SPEC` | several applications in one process | repeatable; each mount detects its own protocol and runs in its own mode, longest prefix wins |
 | `--threads N` | free-threaded CPython (3.13t+), N loops in one process | WSGI only on this toolchain: an ASGI app is refused with exit 78 ([why](ROADMAP.md#known-issues)) |
@@ -71,7 +71,7 @@ where no executor serves the application. It reported `mode: single` for
 both shapes until 2026-09-08, so the only way to tell them apart was the
 startup banner.
 
-## The realtime contract, in one paragraph
+## The realtime contract
 
 Under `--realtime`, a sync view approves a held connection by answering with
 `M0-Hold: stream` (SSE) or `M0-Hold: websocket` and `M0-Channel: NAME`; the
