@@ -111,7 +111,10 @@ def push_tree():
     tar = subprocess.Popen(
         ["tar", "--exclude=.venv", "--exclude=.git", "--exclude=packages/*/*.mojoc",
          "--exclude=bin/*", "--exclude=.claude", "-cf", "-",
-         "packages", "scripts", "apps", "pyproject.toml", "uv.lock"],
+         # The SAME set `linux_sync.sh` re-tars from /src. It listed `bench`
+         # and this did not, so on a remote host that tar hit a missing path,
+         # exited 2, and its `2>/dev/null` made the failure silent.
+         "packages", "scripts", "apps", "pyproject.toml", "uv.lock", "bench"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     unpack = "mkdir -p /src && cd /src && tar -xf - && find /src -name '._*' -delete"
     if REMOTE:
@@ -201,7 +204,7 @@ def main():
             print("provisioning the host (apt, uv, toolchain) -- several minutes", flush=True)
             dexec("bash", "/src/scripts/probes/remote_setup.sh")
             dexec("bash", "-c", "mkdir -p /work && cd /src && tar -cf - . | (cd /work && tar -xf -)")
-            dexec("bash", "-c", "cd /work && uv sync >/dev/null 2>&1")
+            dexec("bash", "-c", "cd /work && uv sync --python 3.13 >/dev/null 2>&1")
     else:
         if run("docker", "info").returncode != 0:
             sys.exit("bench-linux-conclusions: no docker daemon (start colima, or set DOCKER_HOST)")
@@ -223,7 +226,12 @@ def main():
     WHERE = f"{where}, {uname}"
     s = stamp()
     print(f"syncing at {git_sha()} (source stamp {s})", flush=True)
-    dexec("bash", "/src/scripts/probes/linux_sync.sh", "http", "wsgi", "serve",
+    # `core` FIRST, and on both paths. The container's `linux_setup.sh` builds
+    # it during provisioning so `http` alone worked there; `remote_setup.sh`
+    # installs packages and nothing else, so on a remote host every m0_http
+    # source failed with "unable to locate module 'm0_core'". Building it
+    # always costs seconds and makes the two paths identical.
+    dexec("bash", "/src/scripts/probes/linux_sync.sh", "core", "http", "wsgi", "serve",
           env={"M0_SYNC_STAMP": s})
     dexec("bash", "-c", "command -v wrk >/dev/null || (apt-get update -qq && apt-get install -y -qq wrk) >/dev/null 2>&1")
     dexec("bash", "-c", "cd /work && uv sync --group bench >/dev/null 2>&1 || true")
