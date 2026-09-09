@@ -59,6 +59,7 @@ def run(*argv, **kw):
 # Everything goes through `dexec`/`push`/`pull`, so the arms, the recorder
 # and the comparison do not know which transport they are on.
 REMOTE = None          # "user@host" once --remote is given
+WHERE = ""             # what the summary says it measured, set once the target answers
 SSH = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
 
 def _shq(x):
@@ -160,6 +161,7 @@ def compare(linux_dir):
     ]
     print("\n" + "=" * 78)
     print("  Each macOS conclusion, on Linux.  >1.0 means m0serve ahead.")
+    print(f"  Measured on: {WHERE}")
     print("=" * 78)
     print(f"  {'conclusion':<36} {'macOS':>8} {'Linux':>8}   verdict")
     missing = []
@@ -209,6 +211,16 @@ def main():
             print("provisioning (apt, uv sync, toolchain) -- several minutes", flush=True)
             dexec("bash", "/src/scripts/probes/linux_setup.sh")
         push_tree()
+    # WHERE, said out loud, first and last. `--remote` was once dropped by the
+    # poe wrapper (a shell task's "$@" is empty unless its args are declared),
+    # so a rented box was created, idled and deleted while the container ran
+    # and the summary reported success. The artifacts recorded `aarch64` and
+    # the truth was one audit away; a banner makes it zero.
+    where = f"remote {REMOTE}" if REMOTE else f"container {CONTAINER}"
+    uname = dexec("bash", "-c", "echo \"$(uname -m) $(nproc) cpu\"").stdout.strip()
+    print(f"target: {where} — {uname}", flush=True)
+    global WHERE
+    WHERE = f"{where}, {uname}"
     s = stamp()
     print(f"syncing at {git_sha()} (source stamp {s})", flush=True)
     dexec("bash", "/src/scripts/probes/linux_sync.sh", "http", "wsgi", "serve",
