@@ -354,6 +354,32 @@ def provenance_problems(kind, artifact, current):
             "the commit it names is not the code it measured; re-record it "
             "on a clean checkout"
         )
+    elif env.get("git_dirty") is None:
+        # Not the same as clean. `bench_record.py` answers None where git
+        # could not be asked -- a container copy of the tree, which is how a
+        # Linux artifact is recorded -- and this page's tables must not rest
+        # on a provenance nobody checked. Such an artifact belongs in a
+        # subdirectory of bench/results/ beside a note, not in a table.
+        out.append(
+            f"{kind}: the newest artifact cannot say whether its tree was "
+            "clean (git_dirty is null -- recorded where git could not be "
+            "asked), so it must not back a rendered table; file it under a "
+            "subdirectory of bench/results/ and cite it from a note instead"
+        )
+    # A table's prose names ONE machine (this page's is an Apple M4, and the
+    # rows around it discuss its performance and efficiency cores). `newest`
+    # picks by filename alone, so a Linux artifact of the same kind dropped
+    # into bench/results/ would silently become the source for a table that
+    # describes a Mac. The Environment line would change and every sentence
+    # around it would quietly be about a different computer.
+    recorded_os = str(env.get("os", ""))
+    if recorded_os and not recorded_os.startswith("Darwin"):
+        out.append(
+            f"{kind}: the newest artifact was recorded on {recorded_os!r}, but "
+            "every table on this page describes the macOS benchmark box; file "
+            "a non-Darwin artifact under a subdirectory of bench/results/ "
+            "(the renderer's glob does not recurse) and cite it from a note"
+        )
     floor = MIN_ROUNDS.get(kind)
     if floor and artifact.get("rows"):
         have = rounds_behind(artifact)
@@ -783,8 +809,9 @@ def selftest():
         print("  caught          (control: @1 renders one decimal, rounded)")
 
     # The provenance gate, one doctored artifact per rule and two controls.
-    def art(version="0.18.0", dirty=False):
-        return {"environment": {"version": version, "git_dirty": dirty, "git_sha": "abc1234"}}
+    def art(version="0.18.0", dirty=False, os_name="Darwin 25.6.0"):
+        return {"environment": {"version": version, "git_dirty": dirty,
+                                "git_sha": "abc1234", "os": os_name}}
 
     def prov(label, artifact, current, needle):
         nonlocal ok
@@ -807,6 +834,19 @@ def selftest():
     prov("an artifact two minors behind", art("0.16.0"), (0, 18, 0), "may lag by")
     prov("an artifact from another major", art("0.18.0"), (1, 0, 0), "may lag by")
     prov("an artifact with no version stamp", {"environment": {"git_dirty": False}}, (0, 18, 0), "does not record the version")
+    # A tree whose cleanliness could not be established is NOT a clean tree:
+    # `bench_record.py` answers None where git could not be asked, which is
+    # how a Linux artifact gets recorded (a container copy has no .git), and
+    # answering False there would be the reassuring answer on no evidence.
+    prov("an artifact that cannot say whether its tree was clean",
+         art(dirty=None), (0, 18, 0), "cannot say whether its tree was clean")
+    # `newest` picks by filename, so a Linux artifact of the same kind in
+    # bench/results/ would become the source for a table whose prose is about
+    # an Apple M4 and its performance and efficiency cores.
+    prov("an artifact recorded on another platform",
+         art(os_name="Linux 6.8.0-117-generic"), (0, 18, 0), "every table on this page describes")
+    prov("an artifact with no os recorded is not refused for platform",
+         {"environment": {"version": "0.18.0", "git_dirty": False, "git_sha": "abc1234"}}, (0, 18, 0), None)
     if tree_version('x\nversion = "0.18.0"\n') != (0, 18, 0):
         print("  MISSED          tree_version does not read pyproject"); ok = False
 
