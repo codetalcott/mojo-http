@@ -544,6 +544,13 @@ jobs:
       # exists, so it is asserted here rather than only in a benchmark.
       - name: Smoke test the blocking-threads pool
         run: uv run poe smoke-blocking-threads
+      # E19, the other half of that row's claim. Isolation is what the step
+      # above proves; this proves the pool's threads actually overlap, which
+      # depends on the view releasing the GIL and is invisible until measured.
+      # A ratio comparison between two modes of one route, never a wall-clock
+      # threshold, so a loaded shared runner does not decide it.
+      - name: Smoke test pool parallelism
+        run: uv run poe smoke-pool-parallelism
       # The Mojo handler pool, same claim without an interpreter: func on a
       # pool thread (the response names which), every thread dealt work, a
       # streaming response refused with 409, and SIGTERM a clean exit -- the

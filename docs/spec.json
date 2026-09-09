@@ -498,6 +498,14 @@
       "evidence": "`stress-pool` (pre-release) \u2014 in the `m0lin` container, once per shipped wake mode (the GIL rules, `M0_POOL_PARALLEL=1`, `M0_POOL_ELASTIC=0`): `scripts/probes/phase5_probe.py` runs `smoke-django-realtime` phase 5 twenty times with a fresh server each round \u2014 two 1.5 s views in flight, a hold taken on a pool thread, its subscriber must be registered half a second later; 2 of 10 rounds failed on the ring's first build (docs/notes/pool-ring-handoff.md) \u2014 and `scripts/probes/hold_race_probe.py` opens forty holds while three clients keep the loop busy. The deterministic half is E17's unit tests; the isolation is C5's smoke"
     },
     {
+      "id": "E19",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "A view that RELEASES the GIL runs in parallel across `--blocking-threads`, and one that holds it does not \u2014 the pool's N threads do N things at once only when the work inside the view drops the interpreter lock",
+      "status": "verified",
+      "evidence": "`Smoke test pool parallelism` (every PR) \u2014 `bareapp`'s `/work` is one hashlib call over two buffer sizes either side of `HASHLIB_GIL_MINSIZE`, so the lock is the only variable: two at once cost 1.02x one for the releasing mode and 2.01x for the holding one, and a server given a single handler thread sends both to 2.0x. C5 is the isolation half of the same pool; this is the concurrency half, which C5 passes without. What it decides in practice: Core ML's `predict` holds the lock and an embedding app gained nothing from more handler threads, MAX releases it and the same app scaled \u2014 docs/notes/gil-and-the-handler-pool.md"
+    },
+    {
       "id": "F1",
       "section": "F",
       "category": "F. Observability",

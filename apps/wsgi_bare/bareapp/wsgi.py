@@ -15,6 +15,7 @@ Every response sets Content-Type except `/no-content-type`, which is
 deliberately non-conforming and is what proves `M0_WSGI_VALIDATE` is engaged.
 """
 
+import hashlib
 import os
 import sys
 import time
@@ -22,6 +23,13 @@ from http.client import HTTPConnection
 from urllib.parse import parse_qs, urlsplit
 
 TEXT = [("Content-Type", "text/plain; charset=utf-8")]
+
+# The two sides of CPython's HASHLIB_GIL_MINSIZE (2 KB): hashlib releases the
+# GIL for a buffer above it and holds it below. `/work` below is one function
+# over both, so the lock is the only variable between its two modes. Move
+# either across 2 KB and the gate stops measuring anything.
+_NOGIL_BLOCK = b"\x5a" * 65536
+_GIL_BLOCK = b"\x5a" * 1024
 
 # Bumped by CloseCounting.close(). PEP 3333 requires the server to call
 # close() on the returned iterable if it has one; Django's request_finished
@@ -281,6 +289,42 @@ def busy(environ, start_response):
     return [b"busy %d" % n]
 
 
+def work(environ, start_response):
+    """A fixed amount of CPU, with the GIL either released or held.
+
+    The pair that `smoke-pool-parallelism` measures (SPEC E19). `--blocking-
+    threads N` gives a view N handler threads; whether that makes N of them
+    run AT ONCE is decided inside the view, by whether its work drops the
+    interpreter lock. C5 proves the isolation half of the pool. This is the
+    other half, and it is invisible until measured: an embedding server on
+    Core ML served the same 1680 req/s on one handler thread and on two,
+    because `MLModel.predict` holds the lock for its duration
+    (docs/notes/gil-and-the-handler-pool.md).
+
+    Both modes call the SAME function. Only the buffer size differs, and
+    that is the whole mechanism: CPython's hashlib drops the GIL for a
+    buffer over `HASHLIB_GIL_MINSIZE` (2 KB) and keeps it under. Measured
+    here, two threads against one: 64 KB costs 1.01x, 1 KB costs 2.01x.
+
+        /work?mode=nogil&n=N   N digests of 64 KB  -- releases, parallelises
+        /work?mode=gil&n=N     N digests of 1 KB   -- holds, serialises
+
+    FIXED WORK, never a deadline -- unlike `/busy` beside this, which spins
+    to a wall-clock time and therefore costs the same whatever else is
+    running. That distinction is the difference between a gate and a
+    tautology: two `/busy` requests at once finish in 1.0x by construction,
+    on any server, however serialised they really were.
+    """
+    qs = parse_qs(environ.get("QUERY_STRING", ""))
+    mode = qs.get("mode", ["nogil"])[0]
+    buf = _NOGIL_BLOCK if mode == "nogil" else _GIL_BLOCK
+    n = int(qs.get("n", ["1000"])[0])
+    for _ in range(n):
+        hashlib.sha256(buf).digest()
+    start_response("200 OK", list(TEXT))
+    return [b"work %s %d" % (mode.encode(), n)]
+
+
 def stuck(environ, start_response):
     """A view that never comes back, to prove shutdown does not wait for it.
 
@@ -460,6 +504,7 @@ ROUTES = {
     "/reentrant": reentrant,
     "/slow": slow,
     "/busy": busy,
+    "/work": work,
     "/stuck": stuck,
     "/stream": stream,
     "/stream-forever": stream_forever,

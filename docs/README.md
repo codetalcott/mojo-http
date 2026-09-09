@@ -35,7 +35,7 @@ They age.
 | [Roadmap](ROADMAP.md) | Milestones, known issues with what retires each, what is not planned. |
 | [Design notes](notes/) | The engineering record: dated, long-form, kept as written. |
 | [WSGI conformance](WSGI_CONFORMANCE.md) | PEP 3333, clause by clause. |
-| [Releasing](RELEASING.md) | How a release happens, and the two gates CI cannot run. |
+| [Releasing](RELEASING.md) | How a release happens, and the gates CI cannot run. |
 | [README](../README.md) | The mojo-http repository as a whole. |
 | [Provenance](../PROVENANCE.md) | Where the code came from, and the licensing record. |
 

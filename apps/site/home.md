@@ -46,7 +46,7 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
 - [Capabilities](../../docs/SPEC.md): what the server does, one row per
   capability with the test that proves it.
 
-## Also
+## Beyond realtime
 
 - **WSGI and ASGI from one binary.** The protocol is detected from the
   application object. Django, Flask, FastAPI and FastHTML each have a smoke

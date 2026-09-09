@@ -12,7 +12,7 @@ behind every claim here is [the design record](notes/wsgi-vs-asgi-history.md).
 |---|---|---|
 | how the app is called | one synchronous call per request | one long-lived coroutine with `receive` and `send` |
 | what runs by default | one event loop and a pool of `min(cores, 8)` handler threads | one event loop and an asyncio executor |
-| where overlap comes from | threads waiting on I/O; `--workers` processes for CPU | the app's own `await`s; `--workers` processes for CPU |
+| where overlap comes from | threads waiting on I/O or inside a GIL-releasing C call; `--workers` processes for the rest | the app's own `await`s; `--workers` processes for CPU |
 | a slow view | holds its handler thread; the loop keeps serving | blocks the loop unless it awaits, as under uvicorn |
 | realtime | `--realtime`: a view approves a held SSE stream or WebSocket with two headers, `m0pub.publish` reaches every subscriber | native: the app streams its own response or takes a `websocket` scope |
 | several apps in one process | `--mount`, on the pool | `--mount`, each ASGI mount on its own executor |
@@ -55,10 +55,17 @@ headline capability, and it is why WSGI is first-class here rather than a
 legacy path. Under gunicorn the same headers are ignored and the view degrades
 to a short plain response.
 
-**Parallelism.** `--workers N` forks N processes, the answer that works under
-the GIL. On free-threaded CPython, `--threads N` runs N event loops in one
-process with one interpreter, each loop with its own pool; the weekly canary
-proves that path on 3.14t.
+**Parallelism.** `--workers N` forks N processes, the answer that always
+works under the GIL. Handler threads also give real parallelism, but only for
+work that lets go of the lock: a database driver, an image codec, numpy or an
+inference engine overlaps across the pool, and pure Python does not (SPEC
+E19). Which of the two your slow view is decides whether more handler threads
+are worth anything, and it is not always obvious — Core ML's `predict` holds
+the lock, so an embedding app gained nothing from a second thread and lost a
+third of its throughput on eight ([the measurement](notes/gil-and-the-handler-pool.md)).
+On free-threaded CPython, `--threads N` runs N event loops in one process with
+one interpreter, each loop with its own pool; the weekly canary proves that
+path on 3.14t.
 
 ## What the ASGI mode is for
 
@@ -82,7 +89,7 @@ GIL build. On a free-threaded CPython the server refuses an ASGI app with
 exit 78 rather than crash, so ASGI under `--threads` does not exist on this
 toolchain ([the known issue](ROADMAP.md#known-issues)).
 
-## Free-threading, briefly
+## Free-threading
 
 Free-threaded CPython removes the reason most people reached for async in
 the first place: sync thread-per-request code scales across cores in one
