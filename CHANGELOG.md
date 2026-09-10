@@ -8,8 +8,43 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The real-application soak was re-run against 1.0.0**
+  ([docs/REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). All four
+  applications, six rows, 215,214 requests compared byte for byte against
+  gunicorn, uvicorn and daphne captures, zero failures, every slot
+  returned, and six SIGTERM drains all inside 0.26 s. The release bumped
+  the version and left the record naming 0.19.0, so `poe milestones` had
+  been printing the soak STALE since the merge; it reads MET again. One
+  commit had touched the request path in between — the drain split that
+  lets the loop inversion step it — and the churn rows are what put load
+  through it.
+- **The soak's binary fixtures are generated from a seed**
+  (`scripts/soak_fixtures.py`). color-separation's two noise PNGs were
+  regenerated unseeded every pass, so the manifest's `bytes` pins had to be
+  re-measured by hand each time; the same seed now reproduces both files
+  byte for byte.
+- **The bare-figure rule reads a list of pages, and the roadmap is on it**
+  (`FIGURE_PAGES` in `scripts/check_docs.py`). The roadmap's figures
+  drifted precisely because the rule was pointed at one page, so the fix
+  for the drift and the fix for its cause are the same edit. The selftest
+  proves coverage rather than adjacency: it drives the real pages through
+  the real wiring with one doctored, pins the list's membership so a page
+  cannot be dropped quietly, and reverts the rule the way the other doc
+  rules are sabotaged — with a page removed, the same drift goes
+  unnoticed. README.md, `docs/SPEC.md` and `docs/RUNNING.md` are still
+  outside it; the selftest prints their bare-figure counts so the backlog
+  cannot rot into a claim.
+
 ### Fixed
 
+- **A milestone sabotage stopped applying at 1.0.0.** The test that deletes
+  the soak record's version and insists the checker notices searched for
+  the literal `m0serve 0.`, which the 1.0.0 headline removed from the file,
+  leaving the mutation a no-op. `sabotage()` reports a no-op as NOT
+  APPLICABLE and fails, so it failed safe; it now matches the shape of a
+  version rather than its digits.
 - **Three pages still told readers the API would break at 1.0.** The
   release replaced the docs site's caveat and missed the README's two and
   `docs/RELEASING.md`'s, which cited the README for a statement no longer
@@ -24,20 +59,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   unchanged; the numbers are spans now, rendered from the same artifacts
   the benchmark page uses. It also cited `lightbug_http/parsing.mojo`,
   which lives in `http/`.
-
-### Changed
-
-- **The bare-figure rule reads a list of pages, and the roadmap is on it**
-  (`FIGURE_PAGES` in `scripts/check_docs.py`). The roadmap's figures
-  drifted precisely because the rule was pointed at one page, so the fix
-  for the drift and the fix for its cause are the same edit. The selftest
-  proves coverage rather than adjacency: it drives the real pages through
-  the real wiring with one doctored, pins the list's membership so a page
-  cannot be dropped quietly, and reverts the rule the way the other doc
-  rules are sabotaged — with a page removed, the same drift goes
-  unnoticed. README.md, `docs/SPEC.md` and `docs/RUNNING.md` are still
-  outside it; the selftest prints their bare-figure counts so the backlog
-  cannot rot into a claim.
 
 ## [1.0.0] — 2026-09-09
 
