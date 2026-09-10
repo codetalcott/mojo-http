@@ -1,0 +1,48 @@
+{
+  "bench": "asgi_executor",
+  "recorded_utc": "2026-09-10T00:20:32+00:00",
+  "environment": {
+    "version": "1.0.0",
+    "git_sha": "bb8a7a7",
+    "source_stamp": "",
+    "git_dirty": false,
+    "os": "Darwin 25.6.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "granian 2.8.2",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "cpu": "Apple M4",
+    "cores_physical": "10"
+  },
+  "parameters": {
+    "seconds": "8",
+    "threads": "8"
+  },
+  "rows": [
+    {
+      "name": "m0serve",
+      "rps": 30652.0,
+      "errors": 0,
+      "mixed_fast_p50_us": 137.87500211037695,
+      "mixed_fast_p99_us": 238.54098981246352
+    },
+    {
+      "name": "uvicorn",
+      "rps": 25032.0,
+      "errors": 0,
+      "mixed_fast_p50_us": 167.417005286552,
+      "mixed_fast_p99_us": 368.58400562778115
+    }
+  ],
+  "medians": {
+    "m0serve": {
+      "rps": 30652.0,
+      "rounds": 1
+    },
+    "uvicorn": {
+      "rps": 25032.0,
+      "rounds": 1
+    }
+  }
+}
