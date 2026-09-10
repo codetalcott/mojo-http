@@ -72,6 +72,8 @@ from .cli import (
     use_loop_inversion,
     loop_inversion_topology,
     wsgi_lanes,
+    mojo_lanes,
+    has_wsgi_mount,
     asgi_mount_names,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, clamp_cpus,
     parse_cpus_allowed, parse_cgroup_cpu_max, parse_cgroup_v1_quota,
