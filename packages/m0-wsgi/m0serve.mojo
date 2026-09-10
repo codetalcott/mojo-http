@@ -56,7 +56,9 @@ from std.python import Python, PythonObject
 from std.sys.arg import argv
 from std.sys.info import CompilationTarget
 
-from lightbug_http import Server
+from lightbug_http import (
+    Server, MojoPool, PoolContext, PoolHandler, HTTPRequest, HTTPResponse,
+)
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.event_loop import run_event_loop
@@ -67,6 +69,7 @@ from lightbug_http.address import NetworkType, TCPAddr, parse_address
 from lightbug_http.socket import Socket
 from lightbug_http.c.process import process_exit, executable_path, keep_across_exec
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.header import Header, Headers, HeaderKey
 from lightbug_http.c.platform import PlatformBackend
 
 from m0_http import (
@@ -79,12 +82,56 @@ from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
-    zero_config_topology, use_asgi_executor, wsgi_lanes, asgi_mount_names,
+    zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     use_loop_inversion,
     asgi_free_threading_refusal,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
 )
+
+
+
+@fieldwise_init
+struct MojoMount(PoolHandler):
+    """The handler behind `--mount PREFIX=mojo`.
+
+    **This is the file a user edits.** A Mojo handler is a compile-time type,
+    not an importable object, so there is no way to name one on a command
+    line against a prebuilt binary: you replace this struct and rebuild.
+    That is the whole distribution story for a Mojo mount, and it is why the
+    shipped wheel remains a Python host and nothing more.
+
+    It lives in the entry file rather than in `src/` because `PoolHandler` is
+    an app-facing trait: a conformance declared behind the `.mojoc` has its
+    witness table silently never emitted (`lightbug_http/mojo_pool.mojo`
+    records why the trait itself sits in the fork).
+
+    It runs on a `MojoPool` thread, which **never attaches to the
+    interpreter**. That is the entire point of the mount: this path answers
+    at full speed while every Python thread in the same process is behind
+    the GIL.
+    """
+
+    var thread_index: Int
+
+    @staticmethod
+    def make(ctx: PoolContext) raises -> Self:
+        return Self(ctx.index)
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        var body = String(
+            '{"mount":"mojo","path":"', req.uri.path,
+            '","thread":', self.thread_index, "}",
+        )
+        return HTTPResponse(
+            body_bytes=body.as_bytes(),
+            headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+            status_code=200,
+            status_text="OK",
+        )
+
+    def shutdown(mut self):
+        pass
 
 
 def _realtime_without_wsgi(opts: ServeOptions, is_asgi: Bool) -> Bool:
@@ -100,7 +147,11 @@ def _realtime_without_wsgi(opts: ServeOptions, is_asgi: Bool) -> Bool:
     """
     if len(opts.mount_prefixes) == 0:
         return is_asgi
-    return len(opts.asgi_mounts) == len(opts.mount_prefixes)
+    # Asked positively. `len(asgi_mounts) == len(mount_prefixes)` was the
+    # same question while there were two kinds; with a third it lets a
+    # server of one Mojo mount and no WSGI mount pass the check and take
+    # `--realtime` with nothing that could ever hold a connection.
+    return not has_wsgi_mount(opts)
 
 
 def _fail(message: String, code: Int):
@@ -324,13 +375,26 @@ def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
 
     Mixed WSGI/ASGI mounts are the point: each gets its native execution
     mode, so `opts.asgi_mounts` records which mounts are ASGI rather than
-    reducing detection to one answer for the process. Any number of each:
+    reducing detection to one answer for the process. A `--mount X=mojo`
+    is skipped here: it has no importable object, so there is nothing to
+    detect and nothing to discover. Any number of each:
     every ASGI mount gets its own executor, on its own submit lane, with
     its own drain-ack pair — the chunk channel is the one thing executors
     share, and its datagrams are slot-addressed.
     """
     var asgi_count = 0
     for i in range(len(opts.mount_prefixes)):
+        # A Mojo mount has no importable object to detect a protocol from —
+        # its handler is a type this binary was compiled with. Nothing to
+        # resolve, and nothing to import: skip it entirely so a mounted
+        # server of one Mojo mount starts no interpreter work for it.
+        var is_mojo = False
+        for k in range(len(opts.mojo_mounts)):
+            if opts.mojo_mounts[k] == i:
+                is_mojo = True
+                break
+        if is_mojo:
+            continue
         var module = opts.mount_modules[i]
         var attribute = opts.mount_attributes[i]
         var is_asgi: Bool
@@ -1060,6 +1124,21 @@ def main() raises:
         )
         return
 
+    if len(opts.mojo_mounts) > 0 and not has_wsgi_mount(opts) and len(
+        opts.asgi_mounts
+    ) == 0:
+        # Every mount is Mojo, so this binary is hosting no Python at all —
+        # and m0serve exists to host Python. Write a Mojo server binary
+        # instead; `apps/pool_spike` is the shape. Refused rather than
+        # served, because `WSGIHandler.build` has no application to build
+        # and the process would carry an interpreter for nothing.
+        _fail(
+            "every --mount is 'mojo', so there is no Python application to"
+            " host; write a Mojo server binary instead of using m0serve",
+            EXIT_USAGE,
+        )
+        return
+
     if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
 
@@ -1245,10 +1324,18 @@ def _serve_offloaded(
         # `match_path_prefix` the same question about the same table.
         for i in range(len(opts.mount_prefixes)):
             pool.add_lane(opts.mount_prefixes[i])
+    var mojo_ln = mojo_lanes(opts)
     var pool_count = (
         opts.blocking_threads
         if (len(wsgi_lanes) > 0 or not executor) else 0
     )
+    if mounted and len(wsgi_lanes) == 0:
+        # No WSGI mount: no WSGI pool. Without this the pool starts with an
+        # empty lane list, `BlockingPool.start` deals every thread lane -1,
+        # and -1 is lane 0 — which on a Mojo-only mounted server is the Mojo
+        # mount's lane. Its jobs would be taken by threads holding a
+        # `WSGIHandler` for an application that was never imported.
+        pool_count = 0
     if use_loop_inversion(opts, executor, pool_count) and not mounted:
         # M0_INVERTED: the loop inversion, on one thread. Unmounted,
         # pool-free ASGI only -- the benchmark shape -- and behind the
@@ -1320,6 +1407,19 @@ def _serve_offloaded(
         pool_threads.start[WSGIHandler](
             pool.addr(), opts_addr, wsgi_lanes^, qos=opts.qos
         )
+    # The Mojo mount's workers. They are started like the WSGI pool and are
+    # unlike it in the one way that matters: `MojoPool`'s body has no
+    # attach/detach bracket, because there is nothing to attach to. A job on
+    # one of these lanes never touches the interpreter, which is what lets
+    # this mount answer while every Python thread is behind the GIL.
+    var mojo_threads = MojoPool(
+        opts.blocking_threads if len(mojo_ln) > 0 else 0
+    )
+    if mojo_threads.count > 0:
+        mojo_threads.start[MojoMount](
+            pool.addr(), user=0, lanes=mojo_ln.copy()
+        )
+
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
 
     # The loop releases its thread state here and takes it back only after
@@ -1363,6 +1463,11 @@ def _serve_offloaded(
     if pool_threads.count > 0:
         failed += pool_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
         stuck += pool_threads.stragglers
+    if mojo_threads.count > 0:
+        # Pills go per lane, so a Mojo thread parked on lane 2 is not woken
+        # by one sent to lane 0. `MojoPool.stop_and_join` sends its own.
+        failed += mojo_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
+        stuck += mojo_threads.stragglers
     if stuck > 0:
         # A thread still inside the application after the drain AND the join
         # budget is not coming back: a response that never ends (an SSE

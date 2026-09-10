@@ -509,6 +509,13 @@ jobs:
       # 404 for an unmounted path, answered in Mojo without entering Python.
       - name: Serve two mounted applications from one process
         run: uv run poe smoke-hybrid
+      # The mount that hosts no Python. Two routes of ONE server measured
+      # under GIL-bound load: the Mojo mount's thread never attaches to the
+      # interpreter, so its tail stays flat while the Python route convoys
+      # behind the lock. A shared execution mode cannot pass it, and the
+      # probe's `--mojo-path` pointed at a Python route is the negative arm.
+      - name: Smoke test a Mojo mount beside a Python one
+        run: uv run poe smoke-mojo-mount
       # Django's own ASGI handler: async views, live StreamingHttpResponse,
       # sessions, and scope["client"] -- Django logs every visitor as
       # address-less when the server sends client: None, silently.
