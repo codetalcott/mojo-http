@@ -1,8 +1,10 @@
 # Documentation
 
 Every page, grouped by what it is for. For the project's current state,
-`uv run poe milestones` computes what remains before 1.0 from
-[SPEC.md](SPEC.md) and the roadmap; CI prints it on every pull request.
+`uv run poe milestones` computes the milestone conditions from
+[SPEC.md](SPEC.md) and the roadmap; CI prints it on every pull request. 1.0
+has shipped, so it reports whether those conditions still hold — a released
+version does not stop the soak going stale.
 
 ## Start here
 
