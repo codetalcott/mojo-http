@@ -1143,6 +1143,24 @@ def check_docs_cite_tracked_paths():
 # four hand-typed numbers, each correct when written, each outliving the
 # artifact it described, one contradicting the span eight lines above it.
 BENCH_PAGE = "docs/BENCHMARKS.md"
+
+# Pages the bare-figure rule reads. It began as the benchmark page's rule
+# alone, and the gap was found the way gaps like this always are: the
+# roadmap's "Not planned, and why" section frames every refusal with the
+# rps figures, and by 1.0.0 they were roughly half their true values
+# (116k against 192k on the hello row, 61k against 81k on the executor)
+# while the arguments resting on them stayed correct. The page had drifted
+# BECAUSE it sat outside the rule -- nothing recomputed its numbers and
+# nothing refused a hand-typed one. Adding a page here is the whole of the
+# fix; the page's own figures then have to become spans or carry an
+# `<!-- observed: WHERE -->` marker.
+#
+# Still outside, with their bare-figure counts at the time of writing:
+# README.md (29), docs/SPEC.md (11), docs/RUNNING.md (3). Each is a real
+# claim needing a span or a marker one at a time, so they are recorded
+# here rather than half-done; `_page_figure_counts` in the selftest prints
+# them, so the number cannot rot into a claim of its own.
+FIGURE_PAGES = (BENCH_PAGE, "docs/ROADMAP.md")
 _REGION = re.compile(
     r"<!-- generated: ([a-z0-9-]+) -- .*?-->.*?<!-- /generated: \1 -->", re.S)
 _NUM_SPAN = re.compile(r"<!-- num:[a-z0-9-]+@\d -->.*?<!-- /num -->", re.S)
@@ -1176,8 +1194,11 @@ def _blocks(lines):
     return out
 
 
-def unsourced_figures(text):
+def unsourced_figures(text, page=BENCH_PAGE):
     """Pure: the page's text -> failure messages, one per bare figure.
+
+    `page` names the file in the messages only; it is what lets one rule
+    read several pages (FIGURE_PAGES) and still say which one is wrong.
 
     Generated regions and num spans are blanked first (the renderer checks
     those), then every remaining block is scanned for a number carrying a
@@ -1197,7 +1218,7 @@ def unsourced_figures(text):
         if marker:
             if not (marker.group(1) or "").strip():
                 out.append(
-                    f"{BENCH_PAGE}:{start}: an `<!-- observed: ... -->` marker "
+                    f"{page}:{start}: an `<!-- observed: ... -->` marker "
                     "must say where the figure was observed (a note, an "
                     "artifact, a date); an unexplained exemption is a bare "
                     "figure with extra steps")
@@ -1205,7 +1226,7 @@ def unsourced_figures(text):
         for off, line in enumerate(block.split("\n")):
             for fig in _FIGURE.findall(line):
                 out.append(
-                    f"{BENCH_PAGE}:{start + off}: `{fig}` is a figure outside "
+                    f"{page}:{start + off}: `{fig}` is a figure outside "
                     "any num span and any block marked `<!-- observed: ... -->`. "
                     "A number an artifact can compute is a span (add the "
                     "quantity to render_bench_docs.py's compute_quantities); "
@@ -1214,12 +1235,35 @@ def unsourced_figures(text):
     return out
 
 
+def figures_in_pages(pages):
+    """Pure: {page path: its text} -> every failure message, page by page.
+
+    The wiring is a pure function of the mapping so the selftest can drive
+    the SAME code the checker runs, with one page doctored. Testing
+    `unsourced_figures` alone would only prove the scanner works -- which
+    it did, on the one page it was pointed at, while the roadmap drifted
+    beside it.
+    """
+    out = []
+    for rel in sorted(pages):
+        out.extend(unsourced_figures(pages[rel], rel))
+    return out
+
+
+def figure_page_texts(pages=FIGURE_PAGES):
+    """The FIGURE_PAGES that exist, as {path: text}."""
+    return {rel: (REPO / rel).read_text()
+            for rel in pages if (REPO / rel).exists()}
+
+
 def check_bench_prose_figures():
-    """No bare figure in the benchmark page's prose (see unsourced_figures)."""
-    page = REPO / BENCH_PAGE
-    if not page.exists():
-        return
-    for msg in unsourced_figures(page.read_text()):
+    """No bare figure in the prose of any FIGURE_PAGES page.
+
+    The name still says `bench` because the 1.0.0 changelog entry that
+    introduced the rule names it, and a record should keep pointing at
+    something that exists. What it reads is the list, not one page.
+    """
+    for msg in figures_in_pages(figure_page_texts()):
         fail(msg)
 
 
@@ -1281,6 +1325,61 @@ def selftest():
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # COVERAGE, which is a different question from whether the scanner
+    # works. The cases above would all have passed on the day the roadmap's
+    # figures were half their true values, because the rule was only ever
+    # pointed at one page. So: drive the real pages through the real
+    # wiring, one doctored at a time, and insist the failure names the page
+    # that was doctored. A page silently dropped from FIGURE_PAGES, or one
+    # renamed on disk, fails here rather than going quiet.
+    # The list's MEMBERSHIP is pinned here, because every case below
+    # iterates FIGURE_PAGES: a page quietly removed from it would simply
+    # stop being tested, which is the failure this whole block exists to
+    # prevent. Add a page to the rule and to this set together.
+    expected_pages = {"docs/BENCHMARKS.md", "docs/ROADMAP.md"}
+    good = set(FIGURE_PAGES) == expected_pages
+    print(f"  {'caught' if good else 'MISSED'}          "
+          "(the pages the figure rule reads are the pages it is meant to)"
+          + ("" if good else f" -- {sorted(set(FIGURE_PAGES))} != {sorted(expected_pages)}"))
+    ok &= good
+    real = figure_page_texts()
+    for rel in FIGURE_PAGES:
+        if rel not in real:
+            print(f"  MISSED          {rel} is in FIGURE_PAGES and does not exist")
+            ok = False
+            continue
+        doctored = dict(real)
+        doctored[rel] = real[rel] + "\n\nthe handoff costs 1.44x per request\n"
+        got = figures_in_pages(doctored)
+        good = any(g.startswith(rel + ":") for g in got)
+        print(f"  {'caught' if good else 'MISSED'}          a bare figure in {rel}"
+              + ("" if good else f" -- got {got}"))
+        ok &= good
+    # And the list itself is load-bearing: revert the rule the way the
+    # other doc rules are sabotaged -- drop a page from FIGURE_PAGES in
+    # memory -- and the same doctored text must go unnoticed. Without this
+    # the case above passes whether or not the page is really in the list.
+    for rel in FIGURE_PAGES:
+        if rel not in real:
+            continue
+        reverted = {k: v for k, v in real.items() if k != rel}
+        reverted[rel + ".not-listed"] = (
+            real[rel] + "\n\nthe handoff costs 1.44x per request\n")
+        got = [g for g in figures_in_pages(reverted) if g.startswith(rel + ":")]
+        good = not got
+        print(f"  {'caught' if good else 'MISSED'}          "
+              f"(sabotage: {rel} dropped from FIGURE_PAGES goes unnoticed)"
+              + ("" if good else f" -- got {got}"))
+        ok &= good
+    # The pages still outside the rule, counted live so the number in
+    # FIGURE_PAGES' comment cannot rot into a claim of its own. Printed,
+    # never asserted: these are a backlog, not a failure.
+    outside = {}
+    for rel in ("README.md", "docs/SPEC.md", "docs/RUNNING.md"):
+        if (REPO / rel).exists():
+            outside[rel] = len(unsourced_figures((REPO / rel).read_text(), rel))
+    print("  outside the rule: "
+          + ", ".join(f"{k} ({v})" for k, v in sorted(outside.items())))
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     # The row-status rule: fires when prose disagrees with the sheet, and the
     # controls matter more than usual here, because the rule reads ordinary

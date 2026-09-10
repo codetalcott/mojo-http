@@ -8,6 +8,37 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Three pages still told readers the API would break at 1.0.** The
+  release replaced the docs site's caveat and missed the README's two and
+  `docs/RELEASING.md`'s, which cited the README for a statement no longer
+  there. All four now say what is actually stable: `m0serve`'s flags and
+  environment variables, the `M0-Hold`/`M0-Channel` headers, and
+  `m0pub.publish()`. The roadmap and the docs index no longer describe 1.0
+  as ahead of the tree.
+- **The roadmap argued from figures that had drifted by roughly half.**
+  Its "Not planned, and why" section frames every refusal with the rps
+  numbers, and they read 116k on the hello row against a measured 192.3k,
+  and 61k on the executor against 80.8k. The arguments they support are
+  unchanged; the numbers are spans now, rendered from the same artifacts
+  the benchmark page uses. It also cited `lightbug_http/parsing.mojo`,
+  which lives in `http/`.
+
+### Changed
+
+- **The bare-figure rule reads a list of pages, and the roadmap is on it**
+  (`FIGURE_PAGES` in `scripts/check_docs.py`). The roadmap's figures
+  drifted precisely because the rule was pointed at one page, so the fix
+  for the drift and the fix for its cause are the same edit. The selftest
+  proves coverage rather than adjacency: it drives the real pages through
+  the real wiring with one doctored, pins the list's membership so a page
+  cannot be dropped quietly, and reverts the rule the way the other doc
+  rules are sabotaged — with a page removed, the same drift goes
+  unnoticed. README.md, `docs/SPEC.md` and `docs/RUNNING.md` are still
+  outside it; the selftest prints their bare-figure counts so the backlog
+  cannot rot into a claim.
+
 ## [1.0.0] — 2026-09-09
 
 Every capability in [docs/SPEC.md](docs/SPEC.md) names a gate, every

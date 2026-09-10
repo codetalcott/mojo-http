@@ -127,9 +127,14 @@ SPAN = re.compile(
 SPAN_OPEN = re.compile(r"<!-- num:")
 
 # Documents whose prose carries spans. BENCHMARKS and WSGI_PERFORMANCE also
-# hold generated regions; README.md holds spans only.
+# hold generated regions; README.md, home.md and ROADMAP.md hold spans only.
+# ROADMAP joined on 2026-09-10: its "Not planned, and why" section frames
+# every refusal with the rps figures, and they had drifted to roughly half
+# (116k against 192k on the hello row) while the arguments they support
+# stayed correct -- a page arguing from stale numbers is worse than one
+# arguing from none.
 SPAN_DOCS = ("README.md", "docs/BENCHMARKS.md", "docs/WSGI_PERFORMANCE.md",
-             "apps/site/home.md")
+             "apps/site/home.md", "docs/ROADMAP.md")
 
 
 def compute_quantities(layer_medians, asgi_medians, isolation, hold_ms):
@@ -174,6 +179,12 @@ def compute_quantities(layer_medians, asgi_medians, isolation, hold_ms):
         "granian-w1-cores": gran_row["cores"],
         "m0-w1-cores": m0_row["cores"],
         "asgi-m0-cores": am0["cores"],
+        # Per core, in thousands: the three ASGI participants as the
+        # roadmap frames its refusals -- what the executor reaches, and
+        # what the two uvicorn loops reach beside it.
+        "asgi-m0-rps-k": am0["rps_per_core"] / 1000,
+        "asgi-uvloop-rps-k": auvl["rps_per_core"] / 1000,
+        "asgi-uvicorn-rps-k": auv["rps_per_core"] / 1000,
         "asgi-vs-uvicorn": am0["rps"] / auv["rps"],
         "asgi-per-core-vs-uvicorn": am0["rps_per_core"] / auv["rps_per_core"],
         "asgi-vs-uvloop": am0["rps"] / auvl["rps"],
