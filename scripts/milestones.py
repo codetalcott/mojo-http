@@ -221,9 +221,20 @@ SABOTAGES = [
     ("a known issue outlives the row that closes it",
      lambda rm, ra, rows: (rm.replace("**Closed by:** none",
                                       "**Closed by:** A1", 1), ra, rows)),
+    # The mutation must hit the version `_real_app_version` actually reads
+    # -- the FIRST `m0serve X.Y.Z` in the file -- and must not name a
+    # major. It was `ra.replace("m0serve 0.", ...)` behind an
+    # `if "m0serve 0." in ra` guard, which the 1.0.0 headline turned into a
+    # no-op: the string it looked for is not in the file at all any more
+    # (the older sections write their versions bare, as "against 0.19.0"),
+    # so the guard fell through to `ra` unchanged. `sabotage()` reports
+    # that as NOT APPLICABLE and fails, which is the right end -- but a
+    # sabotage that stops applying the day a version rolls is a guard with
+    # an expiry date on it, so match the shape rather than the digits.
     ("the soak record loses its version",
-     lambda rm, ra, rows: (rm, ra.replace("m0serve 0.", "m0serve X.", 1)
-                           if "m0serve 0." in ra else ra, rows)),
+     lambda rm, ra, rows: (
+         rm, re.sub(r"m0serve \d+\.\d+\.\d+", "m0serve X.Y.Z", ra, count=1),
+         rows)),
 ]
 
 

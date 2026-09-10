@@ -1,0 +1,49 @@
+soak: color-separation at http://127.0.0.1:8503 for 120s
+  baseline: /tmp/soak/cs-gunicorn.json (http://127.0.0.1:8431)
+  populations: burst(4) stream(2) bulk(1) abandon(1) ws(1)
+  churn: sigterm every 60s
+  [  5.1s] rss=1018672kB fds=144 threads=18 conns=9 verified=2037 failures=0
+  [ 10.1s] rss=1121488kB fds=139 threads=17 conns=9 verified=4042 failures=0
+  [ 15.2s] rss=1225424kB fds=145 threads=18 conns=8 verified=6012 failures=0
+  [ 20.3s] rss=1271568kB fds=147 threads=19 conns=9 verified=8008 failures=0
+  [ 25.3s] rss=1283920kB fds=150 threads=18 conns=9 verified=10167 failures=0
+  [ 30.4s] rss=1285840kB fds=149 threads=18 conns=9 verified=12144 failures=0
+  [ 35.4s] rss=1287584kB fds=151 threads=18 conns=9 verified=14102 failures=0
+  [ 40.5s] rss=1293648kB fds=152 threads=18 conns=9 verified=16075 failures=0
+  [ 45.6s] rss=1309792kB fds=154 threads=19 conns=8 verified=18106 failures=0
+  [ 50.7s] rss=1312560kB fds=154 threads=18 conns=9 verified=20195 failures=0
+  [ 55.7s] rss=1330880kB fds=145 threads=18 conns=9 verified=22155 failures=0
+  churn: SIGTERM -> exit 0 in 0.08s
+  [ 65.8s] rss=1048976kB fds=145 threads=18 conns=9 verified=25847 failures=0
+  [ 70.9s] rss=1200272kB fds=147 threads=17 conns=9 verified=27822 failures=0
+  [ 76.0s] rss=1219328kB fds=143 threads=18 conns=8 verified=29758 failures=0
+  [ 81.0s] rss=1244752kB fds=149 threads=19 conns=9 verified=31768 failures=0
+  [ 86.1s] rss=1256784kB fds=146 threads=18 conns=9 verified=33884 failures=0
+  [ 91.2s] rss=1279456kB fds=154 threads=18 conns=8 verified=35898 failures=0
+  [ 96.2s] rss=1285984kB fds=151 threads=18 conns=9 verified=37843 failures=0
+  [101.3s] rss=1303952kB fds=154 threads=18 conns=9 verified=39837 failures=0
+  [106.4s] rss=1311920kB fds=155 threads=19 conns=9 verified=41813 failures=0
+  [111.4s] rss=1325840kB fds=157 threads=18 conns=9 verified=43903 failures=0
+  [116.5s] rss=1327744kB fds=142 threads=18 conns=9 verified=45863 failures=0
+  [120.1s] rss=1359456kB fds=151 threads=19 conns=9 verified=47221 failures=0
+
+--- color-separation ---
+  abandon_fin            307
+  abandon_rst            306
+  burst_reconnects       4
+  burst_requests         45329
+  churn_drain_ms_max     82
+  churn_restarts         1
+  churn_tolerated        4054
+  churn_window_ms_max    769
+  recycle_requests       611
+  stream_reads           1287
+  uploads                343
+  uploads_landed         342
+  verified               47227
+  rss 1048976kB -> 1359456kB (grew 310480kB, epoch 2)
+  fds 144 -> 151 (max 157)
+  threads 18 -> 19 (max 19)
+  active connections 9 -> 9 (max 9)
+  free slots 1015 -> 1015 (min 1015)
+soak ok: color-separation
