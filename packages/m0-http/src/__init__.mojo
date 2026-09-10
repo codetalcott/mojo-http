@@ -8,7 +8,7 @@ SSE (Server-Sent Events) support, and multi-worker fork supervision.
 """
 
 from .router import Router, MatchResult
-from .views import Views
+from .views import Views, ViewService
 from .content_negotiation import (
     AcceptResult,
     negotiate_encoding,

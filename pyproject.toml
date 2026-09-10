@@ -578,7 +578,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -627,6 +627,14 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.
 
 # -I apps/ as well: the app is split templates/store/views/server the way
 # the pattern it demonstrates asks for, so server.mojo imports siblings.
+# The read/write split is a claim about what the compiler REFUSES, which no
+# passing test can show -- the counter-example is a file that does not build.
+# Same shape as sabotage-spec and shim_ownership.py --sabotage.
+[tool.poe.tasks.sabotage-views]
+help = "A reading view must not compile if it writes"
+cmd = "python3 scripts/sabotage_views.py"
+deps = ["build-core", "build-http"]
+
 [tool.poe.tasks.serve-views-pattern]
 help = "Run the views-pattern example on :8080 (M0_PORT, M0_API_KEY to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/views_pattern/server.mojo"

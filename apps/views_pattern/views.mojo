@@ -17,6 +17,7 @@ from lightbug_http.header import HeaderKey
 from m0_core.json_parse import parse_json_field
 
 from m0_http import reply
+from m0_http.health import HealthRegistry
 from m0_http.views import Views
 
 from views_pattern.store import NoteStore
@@ -33,14 +34,15 @@ from views_pattern.templates import (
 
 
 def index(
-    req: HTTPRequest, params: List[String], mut store: NoteStore
+    req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
-    """GET /notes — the list."""
+    """GET /notes — the list. A reading view: `store` is borrowed, so a
+    write here would not compile."""
     return reply.html(render_index(store.index_page()))
 
 
 def detail(
-    req: HTTPRequest, params: List[String], mut store: NoteStore
+    req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
     """GET /notes/:id — one note, or a 404 page."""
     var page = store.note_page(reply.param_int(params[0]))
@@ -90,8 +92,21 @@ def delete(
     return reply.no_content()
 
 
+def health(req: HTTPRequest, params: List[String]) -> HTTPResponse:
+    """GET /health, answered on the event loop.
+
+    A loop view, so it never becomes a pool job. It gets no state, which is
+    exactly right here: the answer is a constant, and reading the store from
+    the loop's handler instance would read a different copy than every other
+    view sees.
+    """
+    var reg = HealthRegistry()
+    reg.register(String("store"), True)
+    return reply.json(200, String("OK"), reg.to_json())
+
+
 def not_found(
-    req: HTTPRequest, params: List[String], mut store: NoteStore
+    req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
     """Whatever the table did not match. Registered with `set_not_found`."""
     return _missing(req.uri.path)
@@ -137,13 +152,15 @@ def _missing(path: String) -> HTTPResponse:
 def urls() raises -> Views[NoteStore]:
     """The whole URL-to-view mapping, readable top to bottom.
 
-    Each line names the function that answers it. There is no handler-id
-    constant to keep in step and no dispatch chain to fall through.
+    Each line names the function that answers it, and says whether it
+    writes. There is no handler-id constant to keep in step and no dispatch
+    chain to fall through.
     """
     var v = Views[NoteStore]()
-    v.add(String("GET"), String("/notes"), index)
-    v.add(String("POST"), String("/notes"), create)
-    v.add(String("GET"), String("/notes/:id"), detail)
-    v.add(String("DELETE"), String("/notes/:id"), delete)
+    v.add_loop(String("GET"), String("/health"), health)
+    v.add_read(String("GET"), String("/notes"), index)
+    v.add_write(String("POST"), String("/notes"), create)
+    v.add_read(String("GET"), String("/notes/:id"), detail)
+    v.add_write(String("DELETE"), String("/notes/:id"), delete)
     v.set_not_found(not_found)
     return v^

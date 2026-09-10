@@ -13,7 +13,7 @@ starting point is:
 The Mojo equivalent, and what each difference is paying for:
 
     def detail(
-        req: HTTPRequest, params: List[String], mut store: NoteStore
+        req: HTTPRequest, params: List[String], store: NoteStore
     ) raises -> HTTPResponse:
         var page = store.note_page(reply.param_int(params[0]))
         if not page:
@@ -24,12 +24,13 @@ The Mojo equivalent, and what each difference is paying for:
   table of views must hold one uniform function type, and Mojo cannot vary
   arity across it. Wrapping the request and its captures in one struct was
   the alternative and it costs more: the wrapper needs a
-  `Pointer[HTTPRequest, o]` and so an origin parameter, which lands in the
-  stored function type and stops the table being one list.
-- **State is a parameter.** Django's views reach a module-level global.
-  Mojo has no global `var`, and under `--threads` this framework requires
-  per-thread state anyway, so the caller's state is handed in. The
-  argument is that rule made visible rather than a workaround for it.
+  `Pointer[HTTPRequest, o]` and so an origin parameter, which is not
+  spellable as a struct parameter on this toolchain.
+- **State is a parameter, and its mutability is the registration.** Django's
+  views reach a module-level global; Mojo has no global `var`, and under
+  `--threads` this framework needs per-thread state anyway. `add_read` hands
+  it over borrowed and `add_write` hands it over `mut`, so a reading view
+  that writes does not compile. `poe sabotage-views` is the gate.
 - **No `TemplateResponse`.** Its job is to keep the template and context
   inspectable instead of rendering eagerly, which needs `dict[str, Any]`.
   Mojo's answer is a context *struct* and a template *function*
@@ -37,13 +38,24 @@ The Mojo equivalent, and what each difference is paying for:
   blank in the output, and the pure `state -> context` step
   (`store.mojo`) is testable without a request. Late binding is what is
   given up.
+- **The table says WHERE a view runs.** `/health` is registered with
+  `add_loop`, so it is answered on the event loop and never becomes a pool
+  job. Loop views get no state, because the loop and each pool thread own
+  separate handler instances and reading one from the other would answer
+  the same URL differently depending on where it ran.
+
+There is no handler struct in this app. `ViewService` is one in the
+framework, so `main` is the table, the state, and serve. An app that needs
+the other `HTTPService` hooks — `after_response` for CORS, `tick`,
+`ws_message` — writes its own three-line struct and calls `Views.dispatch`
+from `func`; it still has no dispatch chain in it.
 
 Where the files sit mirrors the article's implicit layout:
 
     templates.mojo   contexts (structs) and templates (functions)
     store.mojo       state, and the pure `state -> context` reads
     views.mojo       the views, the guards, and `urls()` — the whole mapping
-    server.mojo      this file: the shell, which stays small on purpose
+    server.mojo      this file: what is left, which is `main`
 
 Run it:  uv run poe serve-views-pattern
 Try it:  curl -si localhost:8080/notes
@@ -52,45 +64,19 @@ Try it:  curl -si localhost:8080/notes
 
 from std.os import getenv
 
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse
+from lightbug_http import Server
 
-from m0_http import AppConfig, HealthRegistry, Views, reply, install_shutdown_signals
+from m0_http import AppConfig, ViewService, install_shutdown_signals
 
 from views_pattern.store import NoteStore
 from views_pattern.views import urls
-
-
-struct ViewsHandler(HTTPService):
-    """The shell. It owns the table and the state, and answers `/health`.
-
-    Everything an app would otherwise pile into `func` — the dispatch
-    chain, the 404, the 405 and its `Allow` header — is `Views.dispatch`.
-    What is left here is the two things only the shell can decide: what
-    answers before routing, and what the state is.
-    """
-
-    var views: Views[NoteStore]
-    var store: NoteStore
-    var health: HealthRegistry
-
-    def __init__(out self, var api_key: String) raises:
-        self.views = urls()
-        self.store = NoteStore(api_key^)
-        self.health = HealthRegistry()
-        self.health.register(String("store"), True)
-
-    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
-        # Answered before routing because it is the server's, not the app's.
-        if req.uri.path == "/health":
-            return reply.json(200, String("OK"), self.health.to_json())
-        return self.views.dispatch(req, self.store)
 
 
 def main() raises:
     var config = AppConfig()
     print("views_pattern on " + config.base_url)
     var server = Server(config.server_config())
-    var handler = ViewsHandler(getenv("M0_API_KEY"))
+    var handler = ViewService(urls(), NoteStore(getenv("M0_API_KEY")))
     var shutdown_fd = install_shutdown_signals()
     server.listen_and_serve_nonblocking(
         config.address(), handler, shutdown_read_fd=shutdown_fd

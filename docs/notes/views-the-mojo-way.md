@@ -41,11 +41,12 @@ added without a matching arm does not 404 — it deletes.
 
 ## The pattern
 
-A view is a free function. The table names it directly:
+A view is a free function. The table names it directly, and says both
+whether it writes and where it runs:
 
 ```mojo
 def detail(
-    req: HTTPRequest, params: List[String], mut store: NoteStore
+    req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
     var page = store.note_page(reply.param_int(params[0]))
     if not page:
@@ -54,7 +55,9 @@ def detail(
 
 ...
 
-v.add(String("GET"), String("/notes/:id"), detail)
+v.add_loop(String("GET"), String("/health"), health)
+v.add_read(String("GET"), String("/notes/:id"), detail)
+v.add_write(String("POST"), String("/notes"), create)
 ```
 
 `Views[S]` (`packages/m0-http/src/views.mojo`) is a `Router` and a parallel
@@ -66,8 +69,43 @@ struct rather than a constant an app maintains.
 
 `apps/views_pattern` is the worked example, split the way the article's
 implicit layout asks: contexts and templates, state and its pure reads, the
-views and the URL table, and a `server.mojo` shell whose `func` is two
-lines.
+views and the URL table, and a `server.mojo` that is now only `main` —
+`ViewService` is the handler, so the app writes none.
+
+## Three things the first draft got wrong
+
+The shape above is the second version. The first had one table, one view
+type, and an app-written handler struct; each of the three changes came out
+of asking what the framework already knew that the table did not say.
+
+**The shell was ceremony.** An app wrote a struct that held the table, held
+the state and delegated to it — which Django never asks anyone to write.
+A parametric struct can conform to `HTTPService` (probed; the bound is
+`S: Movable & Deinitable`, and `listen_and_serve_nonblocking[T: HTTPService]`
+takes it generically), so it is library code now. The struct is still there
+for an app that needs `after_response` or `tick`, and it is three lines.
+
+**Every view got `mut` state.** With one uniform view type, a view that only
+reads still received the state mutably, which throws away something Mojo can
+check and Python cannot even state. Two tables cost a `Bool` and an `Int32`
+per route and buy a compiler-enforced answer to "does this view write?" —
+a question this framework has a specific reason to ask, shared mutable
+state across serving threads being a measured 0.7x cliff. `poe
+sabotage-views` is the gate, because the claim is about what does *not*
+compile and no passing test can show that.
+
+**The table did not say where a view runs.** `/health` was answered inside
+`func`, so it became a pool job and paid an offload round trip;
+`WSGIHandler` answers its own health path in `before_request` precisely to
+avoid that. `add_loop` registers a view the loop answers directly. Loop
+views receive **no state**, and that is the interesting part: under
+`--blocking-threads` each pool thread owns a whole handler built on the
+thread that will use it, and the loop has its own, so a loop view reading
+app state would read a different copy than every other view — the same URL
+answering differently depending on where it ran. Giving it nothing to read
+makes that unrepresentable. Loop routes live in a second `Router` because
+`before_request` runs for every request, and matching them against the full
+table would route twice on every request that is not one.
 
 ## Views are stored as thin function pointers
 
@@ -105,7 +143,7 @@ resolver calls a dynamically-typed callable. A `List[View]` must hold one
 uniform type and Mojo cannot vary arity across it.
 
 Wrapping the request and its captures in a single struct was the obvious
-alternative, and it is the one measured dead end here: the wrapper wants a
+alternative, and it is the one dead end here: the wrapper wants a
 `Pointer[HTTPRequest, o]`, which puts an origin parameter on the struct,
 which lands in the stored function type and stops the table being one list.
 A wrapper that *owned* the request instead would copy it per dispatch —
@@ -113,6 +151,23 @@ exactly the allocation `Router.match` is written to avoid, whose docstring
 brags that a 404 allocates nothing at all. A plain borrowed `HTTPRequest`
 argument costs neither: it names no origin and copies nothing. So the
 captures ride beside the request rather than inside it.
+
+This is the design's residual weakness and it is worth naming plainly.
+`params[0]` is an index, and an index drifts against its pattern the same
+way a handler id drifted against its dispatch arm: insert a segment before
+an existing capture and every view on that route shifts by one, silently.
+The router already carries the names — `add` stores `:name` minus the
+colon and comments that matching never reads it — so this is not a data
+problem but a type one. A `RouteParams` that borrowed them needs an origin
+as a struct parameter, and none of `ImmutableAnyOrigin`, `Origin[False]`,
+`Origin[False]._mlir_type` or `type_of(MutUntrackedOrigin)` resolves on the
+pinned toolchain. One that owned them allocates a `String` per name per
+request. Passing names as a fourth borrowed argument is free but puts two
+adjacent `List[String]` arguments in every signature.
+
+So positions stay, and the mitigation is a convention: a view with more
+than one capture names them on its first lines. If a later toolchain makes
+origins spellable as struct parameters, this is the first thing to revisit.
 
 **There is no `TemplateResponse`, and the replacement is stricter.** Its
 purpose is to keep the template name and context inspectable instead of
@@ -161,10 +216,19 @@ of this framework's callers are not browsers.
 ## What is not claimed
 
 Nothing here is measured. The dispatch was an `if` chain over a handful of
-integer comparisons and is now one indirect call through a `List`; that is
-very likely a wash and was not benchmarked, because the change is about
-whether a URL's answer is findable and not about throughput. No existing app
-was converted — `notes_api` still carries its handler-id chain, including
-the delete fallthrough — so nothing byte-identical on the wire has moved.
-`Views` is gated by `test_views.mojo` and `apps/views_pattern` by
-`build-apps`; neither is a smoke test against a running server.
+integer comparisons and is now one indirect call through a `List`, plus a
+`Bool` and an `Int32` load to pick the table; that is very likely a wash and
+was not benchmarked, because the change is about whether a URL's answer is
+findable and not about throughput. `add_loop` saves an offload round trip
+per hit and that is not measured either.
+
+No existing app was converted — `notes_api` still carries its handler-id
+chain, including the delete fallthrough — so nothing byte-identical on the
+wire has moved. `Views` is gated by `test_views.mojo`, the read/write split
+by `poe sabotage-views`, and `apps/views_pattern` by `build-apps`; none of
+those is a smoke test against a running server, though the example was
+driven by hand through every route.
+
+`ViewService` is not proven under `--blocking-threads`: that path wants a
+`PoolHandler` conformance with a `make(ctx)` of its own, which this does
+not have yet. An app using the pool writes its own handler struct today.
