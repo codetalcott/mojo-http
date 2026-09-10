@@ -1,0 +1,245 @@
+{
+  "bench": "mojo_mount",
+  "recorded_utc": "2026-09-10T20:33:43+00:00",
+  "environment": {
+    "version": "1.0.0",
+    "git_sha": "16723bb",
+    "source_stamp": "",
+    "git_dirty": true,
+    "os": "Darwin 25.6.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "cpu": "Apple M4",
+    "cores_physical": "10"
+  },
+  "parameters": {
+    "duration": "5s",
+    "connections": "8",
+    "rounds": "3",
+    "blocking_threads": "4",
+    "corpus": "4096x256 f32, LCG seed 20260910"
+  },
+  "rows": [
+    {
+      "rps": 35409.6,
+      "cores": 1.44,
+      "rps_per_core": 24665,
+      "p50_us": 224.0,
+      "p99_us": 256.0,
+      "round": 1,
+      "name": "python(sel=100)"
+    },
+    {
+      "rps": 42884.5,
+      "cores": 4.17,
+      "rps_per_core": 10272,
+      "p50_us": 175.0,
+      "p99_us": 320.0,
+      "round": 1,
+      "name": "mojo(sel=100)"
+    },
+    {
+      "rps": 16077.3,
+      "cores": 1.2,
+      "rps_per_core": 13372,
+      "p50_us": 496.0,
+      "p99_us": 536.0,
+      "round": 1,
+      "name": "python(sel=25)"
+    },
+    {
+      "rps": 72677.8,
+      "cores": 3.18,
+      "rps_per_core": 22826,
+      "p50_us": 100.0,
+      "p99_us": 268.0,
+      "round": 1,
+      "name": "mojo(sel=25)"
+    },
+    {
+      "rps": 43712.8,
+      "cores": 1.46,
+      "rps_per_core": 29883,
+      "p50_us": 181.0,
+      "p99_us": 210.0,
+      "round": 1,
+      "name": "python(sel=5)"
+    },
+    {
+      "rps": 109764.6,
+      "cores": 2.6,
+      "rps_per_core": 42171,
+      "p50_us": 66.0,
+      "p99_us": 146.0,
+      "round": 1,
+      "name": "mojo(sel=5)"
+    },
+    {
+      "rps": 35489.3,
+      "cores": 1.44,
+      "rps_per_core": 24692,
+      "p50_us": 224.0,
+      "p99_us": 252.0,
+      "round": 2,
+      "name": "python(sel=100)"
+    },
+    {
+      "rps": 42935.1,
+      "cores": 4.18,
+      "rps_per_core": 10260,
+      "p50_us": 175.0,
+      "p99_us": 320.0,
+      "round": 2,
+      "name": "mojo(sel=100)"
+    },
+    {
+      "rps": 16640.3,
+      "cores": 1.21,
+      "rps_per_core": 13773,
+      "p50_us": 483.0,
+      "p99_us": 525.0,
+      "round": 2,
+      "name": "python(sel=25)"
+    },
+    {
+      "rps": 72755.5,
+      "cores": 3.32,
+      "rps_per_core": 21904,
+      "p50_us": 101.0,
+      "p99_us": 251.0,
+      "round": 2,
+      "name": "mojo(sel=25)"
+    },
+    {
+      "rps": 43662.7,
+      "cores": 1.46,
+      "rps_per_core": 29810,
+      "p50_us": 181.0,
+      "p99_us": 222.0,
+      "round": 2,
+      "name": "python(sel=5)"
+    },
+    {
+      "rps": 115919.6,
+      "cores": 2.76,
+      "rps_per_core": 41953,
+      "p50_us": 63.0,
+      "p99_us": 122.0,
+      "round": 2,
+      "name": "mojo(sel=5)"
+    },
+    {
+      "rps": 35531.0,
+      "cores": 1.44,
+      "rps_per_core": 24721,
+      "p50_us": 224.0,
+      "p99_us": 257.0,
+      "round": 3,
+      "name": "python(sel=100)"
+    },
+    {
+      "rps": 42921.9,
+      "cores": 4.18,
+      "rps_per_core": 10266,
+      "p50_us": 176.0,
+      "p99_us": 320.0,
+      "round": 3,
+      "name": "mojo(sel=100)"
+    },
+    {
+      "rps": 16435.6,
+      "cores": 1.21,
+      "rps_per_core": 13604,
+      "p50_us": 484.0,
+      "p99_us": 528.0,
+      "round": 3,
+      "name": "python(sel=25)"
+    },
+    {
+      "rps": 75564.8,
+      "cores": 3.37,
+      "rps_per_core": 22424,
+      "p50_us": 98.0,
+      "p99_us": 212.0,
+      "round": 3,
+      "name": "mojo(sel=25)"
+    },
+    {
+      "rps": 42016.2,
+      "cores": 1.46,
+      "rps_per_core": 28731,
+      "p50_us": 182.0,
+      "p99_us": 444.0,
+      "round": 3,
+      "name": "python(sel=5)"
+    },
+    {
+      "rps": 113510.8,
+      "cores": 2.73,
+      "rps_per_core": 41584,
+      "p50_us": 64.0,
+      "p99_us": 141.0,
+      "round": 3,
+      "name": "mojo(sel=5)"
+    }
+  ],
+  "medians": {
+    "python(sel=100)": {
+      "rps": 35489.3,
+      "rounds": 3,
+      "cores": 1.44,
+      "rps_per_core": 24645,
+      "p99_us": 256.0,
+      "p99_us_min": 252.0,
+      "p99_us_max": 257.0
+    },
+    "mojo(sel=100)": {
+      "rps": 42921.9,
+      "rounds": 3,
+      "cores": 4.18,
+      "rps_per_core": 10268,
+      "p99_us": 320.0,
+      "p99_us_min": 320.0,
+      "p99_us_max": 320.0
+    },
+    "python(sel=25)": {
+      "rps": 16435.6,
+      "rounds": 3,
+      "cores": 1.21,
+      "rps_per_core": 13583,
+      "p99_us": 528.0,
+      "p99_us_min": 525.0,
+      "p99_us_max": 536.0
+    },
+    "mojo(sel=25)": {
+      "rps": 72755.5,
+      "rounds": 3,
+      "cores": 3.32,
+      "rps_per_core": 21914,
+      "p99_us": 251.0,
+      "p99_us_min": 212.0,
+      "p99_us_max": 268.0
+    },
+    "python(sel=5)": {
+      "rps": 43662.7,
+      "rounds": 3,
+      "cores": 1.46,
+      "rps_per_core": 29906,
+      "p99_us": 222.0,
+      "p99_us_min": 210.0,
+      "p99_us_max": 444.0
+    },
+    "mojo(sel=5)": {
+      "rps": 113510.8,
+      "rounds": 3,
+      "cores": 2.73,
+      "rps_per_core": 41579,
+      "p99_us": 141.0,
+      "p99_us_min": 122.0,
+      "p99_us_max": 146.0
+    }
+  }
+}

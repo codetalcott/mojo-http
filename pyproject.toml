@@ -22,6 +22,11 @@ dev = [
     "fastapi>=0.115",
     "flask>=3.0",
     "markdown-it-py>=4.2.0",
+    # `bench-mojo-mount`'s Python arm. In dev because `bin/m0serve` embeds
+    # the interpreter on PATH, and under `uv run` that is this venv -- so a
+    # bench that imports numpy from the system Python passes by hand and
+    # reports "server never became healthy" through poe, which is what it did.
+    "numpy>=2.0",
     "poethepoet>=0.30",
     "pyflakes>=3.4.0",
     "python-fasthtml>=0.12",
@@ -3706,6 +3711,18 @@ python3 scripts/emit.py --covers M1 --task smoke-hybrid
 # Its whole surface runs zero-config through the executor -- pages, a live
 # SSE EventStream, and an `app.ws` WebSocket. Skips cleanly where
 # python-fasthtml is not installed, like the Flask row.
+[tool.poe.tasks.bench-mojo-mount]
+help = "What the Mojo mount is worth: the same filtered search, Mojo and numpy, in one process"
+deps = ["build-serve"]
+cmd = "python3 scripts/bench_mojo_mount.py"
+
+# `smoke-mojo-mount` proves the seam is isolated from the GIL with two
+# trivial routes. This says why you would want it, and it teaches BOTH halves
+# of the rule in one table: unfiltered, the Mojo arm hand-rolls a dot product
+# and LOSES per core to numpy's BLAS call; filtered, where numpy must gather
+# and its gather holds the lock, it wins several times over. Needs wrk and
+# numpy; not in CI.
+
 [tool.poe.tasks.smoke-mojo-mount]
 help = "A Mojo mount answers with no Python in its path, while the GIL is held"
 deps = ["build-serve"]
