@@ -109,11 +109,23 @@ def test_every_thread_gets_its_own_handler() raises:
     The jobs BLOCK (60 ms each), and that is load-bearing too: with
     instant jobs this asserted a fairness property the FIFO queue does not
     have, and CI's 3-core runner promptly disproved it — one thread
-    drained all 24 before the others were ever scheduled. A burst of
-    blocking jobs is different: a thread asleep in `usleep` is not in
-    `recv`, so the next datagram wakes a different thread. Eight 60 ms
-    jobs on one thread would be 480 ms of serial sleeping; another thread
-    only has to wake once in that window.
+    drained all 24 before the others were ever scheduled.
+
+    **The drain loop calls `wake_aged`, and that is where the spread comes
+    from.** Under the elastic rules `submit` wakes nobody while any thread
+    of the lane is busy or spinning, deliberately: a wake beside a thread
+    that is microseconds from coming back is a second thread on the GIL
+    for nothing. A thread that is NOT coming back soon — a 60 ms `usleep`
+    is exactly that — is the LOOP's case, `wake_aged` once per pass. So a
+    bare pool driven with no loop has no wake at all: the lane's one
+    spinner takes the first job, every later `submit` sees a busy lane and
+    pokes nobody, and all eight jobs drain to that one thread at 60 ms
+    apiece. Not a hypothesis — this test failed that way on PR #278's
+    macOS runner (`distinct=1`, 783 ms) on a diff that cannot reach
+    `MojoPool`, and reproduces on demand by stalling the spinner across
+    the burst. Calling `wake_aged` here pairs the test with the shape a
+    served request actually has; `M0_POOL_ELASTIC=0` would also pass, by
+    testing the arm nobody runs.
     """
     var pool = OffloadPool(64)
     var threads = MojoPool(3)
@@ -127,6 +139,10 @@ def test_every_thread_gets_its_own_handler() raises:
         pool.park_request(slot, _request())
         assert_true(pool.submit(slot))
     while perf_counter_ns() < deadline and seen < JOBS:
+        # The event loop's own line, `event_loop.mojo`'s bottom-of-pass
+        # call. Without it the burst has no second taker; see the
+        # docstring.
+        _ = pool.wake_aged(perf_counter_ns(), pool.wake_age_ns())
         var done = pool.drain_completions()
         for i in range(len(done)):
             var resp = pool.take_response(done[i])
