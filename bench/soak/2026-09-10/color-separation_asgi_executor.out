@@ -1,0 +1,38 @@
+soak: color-separation at http://127.0.0.1:8504 for 90s
+  baseline: /tmp/soak/cs-uvicorn.json (http://127.0.0.1:8444)
+  populations: burst(4) stream(2) bulk(1) abandon(1) ws(1)
+  [  5.1s] rss=1243664kB fds=129 threads=26 conns=9 verified=1083 failures=0
+  [ 10.1s] rss=1327680kB fds=131 threads=30 conns=9 verified=2114 failures=0
+  [ 15.2s] rss=1398368kB fds=126 threads=33 conns=8 verified=3153 failures=0
+  [ 20.3s] rss=1423248kB fds=132 threads=33 conns=9 verified=4190 failures=0
+  [ 25.4s] rss=1447056kB fds=130 threads=33 conns=9 verified=5275 failures=0
+  [ 30.4s] rss=1447008kB fds=122 threads=33 conns=9 verified=6352 failures=0
+  [ 35.5s] rss=1456704kB fds=125 threads=33 conns=9 verified=7392 failures=0
+  [ 40.5s] rss=1459728kB fds=132 threads=31 conns=9 verified=8433 failures=0
+  [ 45.6s] rss=1467120kB fds=134 threads=32 conns=9 verified=9474 failures=0
+  [ 50.7s] rss=1473440kB fds=130 threads=32 conns=9 verified=10530 failures=0
+  [ 55.7s] rss=1473344kB fds=129 threads=31 conns=9 verified=11645 failures=0
+  [ 60.8s] rss=1471776kB fds=126 threads=32 conns=9 verified=12704 failures=0
+  [ 65.8s] rss=1474416kB fds=126 threads=32 conns=9 verified=13735 failures=0
+  [ 70.9s] rss=1486272kB fds=126 threads=32 conns=8 verified=14767 failures=0
+  [ 76.0s] rss=1512176kB fds=125 threads=30 conns=8 verified=15829 failures=0
+  [ 81.0s] rss=1512256kB fds=136 threads=33 conns=9 verified=16894 failures=0
+  [ 86.1s] rss=1512256kB fds=136 threads=33 conns=9 verified=18007 failures=0
+  [ 90.1s] rss=1565136kB fds=120 threads=30 conns=9 verified=18817 failures=0
+
+--- color-separation ---
+  abandon_fin            784
+  abandon_rst            784
+  burst_reconnects       0
+  burst_requests         15963
+  recycle_requests       1567
+  stream_reads           1293
+  uploads                268
+  uploads_landed         268
+  verified               18823
+  rss 1243664kB -> 1565136kB (grew 321472kB)
+  fds 129 -> 120 (max 136)
+  threads 26 -> 30 (max 33)
+  active connections 9 -> 9 (max 9)
+  free slots 1015 -> 1015 (min 1015)
+soak ok: color-separation

@@ -8,6 +8,33 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The real-application soak was re-run against 1.0.0**
+  ([docs/REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). All four
+  applications, six rows, 215,214 requests compared byte for byte against
+  gunicorn, uvicorn and daphne captures, zero failures, every slot
+  returned, and six SIGTERM drains all inside 0.26 s. The release bumped
+  the version and left the record naming 0.19.0, so `poe milestones` had
+  been printing the soak STALE since the merge; it reads MET again. One
+  commit had touched the request path in between — the drain split that
+  lets the loop inversion step it — and the churn rows are what put load
+  through it.
+- **The soak's binary fixtures are generated from a seed**
+  (`scripts/soak_fixtures.py`). color-separation's two noise PNGs were
+  regenerated unseeded every pass, so the manifest's `bytes` pins had to be
+  re-measured by hand each time; the same seed now reproduces both files
+  byte for byte.
+
+### Fixed
+
+- **A milestone sabotage stopped applying at 1.0.0.** The test that deletes
+  the soak record's version and insists the checker notices searched for
+  the literal `m0serve 0.`, which the 1.0.0 headline removed from the file,
+  leaving the mutation a no-op. `sabotage()` reports a no-op as NOT
+  APPLICABLE and fails, so it failed safe; it now matches the shape of a
+  version rather than its digits.
+
 ## [1.0.0] — 2026-09-09
 
 Every capability in [docs/SPEC.md](docs/SPEC.md) names a gate, every

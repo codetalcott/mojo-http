@@ -1,0 +1,30 @@
+  3 sessions logged in concurrently
+soak: textshelf at http://127.0.0.1:8506 for 60s
+  baseline: /tmp/soak/textshelf-daphne.json (http://127.0.0.1:8401)
+  populations: burst(4) stream(2) bulk(1) abandon(0) ws(1)
+  [  5.1s] rss=493296kB fds=98 threads=13 conns=8 verified=2160 failures=0
+  [ 10.1s] rss=495104kB fds=98 threads=13 conns=8 verified=4232 failures=0
+  [ 15.2s] rss=393392kB fds=97 threads=13 conns=8 verified=6299 failures=0
+  [ 20.2s] rss=393648kB fds=98 threads=13 conns=8 verified=8384 failures=0
+  [ 25.3s] rss=189408kB fds=98 threads=13 conns=8 verified=10464 failures=0
+  [ 30.4s] rss=189776kB fds=98 threads=13 conns=8 verified=12535 failures=0
+  [ 35.4s] rss=190192kB fds=99 threads=13 conns=8 verified=14607 failures=0
+  [ 40.5s] rss=190512kB fds=98 threads=13 conns=8 verified=16688 failures=0
+  [ 45.5s] rss=190608kB fds=98 threads=13 conns=8 verified=18797 failures=0
+  [ 50.6s] rss=190880kB fds=97 threads=13 conns=8 verified=20871 failures=0
+  [ 55.7s] rss=190880kB fds=98 threads=13 conns=8 verified=22948 failures=0
+  [ 60.1s] rss=191136kB fds=100 threads=13 conns=8 verified=24757 failures=0
+
+--- textshelf ---
+  burst_reconnects       0
+  burst_requests         13273
+  logins                 1
+  slow_requests          1682
+  stream_reads           9808
+  verified               24764
+  rss 493296kB -> 191136kB (grew -302160kB)
+  fds 98 -> 100 (max 100)
+  threads 13 -> 13 (max 13)
+  active connections 8 -> 8 (max 8)
+  free slots 1016 -> 1016 (min 1016)
+soak ok: textshelf
