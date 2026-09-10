@@ -92,6 +92,18 @@ struct ServeOptions(Copyable, Movable):
     slot-addressed chunk channel, and each gets its own drain-ack pair,
     because credit belongs to the executor that owns the slot.
     """
+    var mojo_mounts: List[Int]
+    """Indexes of the mounts answered by a compiled-in Mojo handler.
+
+    Written by the `--mount PREFIX=mojo` parse, not by detection: a Mojo
+    handler is a compile-time type, not an importable object, so there is
+    nothing to detect. Each names a submit lane a `MojoPool` thread reads,
+    and those threads never attach to the interpreter at all.
+
+    A third kind, so nothing may infer "not ASGI" to mean "WSGI" — three
+    kinds cannot be read off two booleans, and every place that tried is
+    listed in `wsgi_lanes`.
+    """
     var mount_explicit: List[Bool]
     """Per mount, whether the user wrote `:ATTR`. Discovery applies to a
     mount exactly as it does to a positional spec, and for the same reason:
@@ -216,6 +228,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_attributes = List[String]()
         self.mount_explicit = List[Bool]()
         self.asgi_mounts = List[Int]()
+        self.mojo_mounts = List[Int]()
         self.protocol = String(PROTOCOL_AUTO)
         self.host = String("0.0.0.0")
         self.port = DEFAULT_PORT
@@ -255,6 +268,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_attributes = copy.mount_attributes.copy()
         self.mount_explicit = copy.mount_explicit.copy()
         self.asgi_mounts = copy.asgi_mounts.copy()
+        self.mojo_mounts = copy.mojo_mounts.copy()
         self.protocol = copy.protocol
         self.host = copy.host
         self.port = copy.port
@@ -294,6 +308,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_attributes = move.mount_attributes^
         self.mount_explicit = move.mount_explicit^
         self.asgi_mounts = move.asgi_mounts^
+        self.mojo_mounts = move.mojo_mounts^
         self.protocol = move.protocol^
         self.host = move.host^
         self.port = move.port
@@ -519,10 +534,9 @@ def resolve_blocking_threads(
     if opts.realtime and len(opts.mount_prefixes) == 0:
         return 0
     if len(opts.mount_prefixes) > 0:
-        var wsgi_mounts = (
-            len(opts.mount_prefixes) - len(opts.asgi_mounts)
-        )
-        return default_blocking_threads(cpus) if wsgi_mounts > 0 else 0
+        # Counted, not inferred by subtraction: a Mojo mount is neither
+        # ASGI nor WSGI and must not conjure a pool of WSGI handler threads.
+        return default_blocking_threads(cpus) if has_wsgi_mount(opts) else 0
     if is_asgi:
         return 0
     return default_blocking_threads(cpus)
@@ -602,24 +616,42 @@ def loop_inversion_topology(
     )
 
 
+def _in(indexes: List[Int], i: Int) -> Bool:
+    for k in range(len(indexes)):
+        if indexes[k] == i:
+            return True
+    return False
+
+
 def wsgi_lanes(opts: ServeOptions) -> List[Int]:
-    """Every mount except the ASGI ones — the lanes the pool threads serve.
+    """The lanes the WSGI handler pool serves: neither ASGI nor Mojo.
 
     Here rather than beside its caller because BOTH execution modes deal
     the same lanes: prefork's `_serve_offloaded` and the `--threads`
     serving loop must partition the mounts identically, or a job reaches a
     worker that cannot run it.
+
+    This used to read "every mount except the ASGI ones", which was correct
+    while there were two kinds and silently wrong the moment there were
+    three: a Mojo lane would have been dealt to `WSGIHandler.make` with
+    `only_mount` naming a Python module that does not exist. Ask what a
+    mount IS, never what it is not.
     """
     var lanes = List[Int]()
     for i in range(len(opts.mount_prefixes)):
-        var is_asgi_lane = False
-        for k in range(len(opts.asgi_mounts)):
-            if opts.asgi_mounts[k] == i:
-                is_asgi_lane = True
-                break
-        if not is_asgi_lane:
+        if not _in(opts.asgi_mounts, i) and not _in(opts.mojo_mounts, i):
             lanes.append(i)
     return lanes^
+
+
+def mojo_lanes(opts: ServeOptions) -> List[Int]:
+    """The lanes a `MojoPool` serves. Its threads never touch Python."""
+    return opts.mojo_mounts.copy()
+
+
+def has_wsgi_mount(opts: ServeOptions) -> Bool:
+    """Whether any mount is WSGI — asked positively, see `wsgi_lanes`."""
+    return len(wsgi_lanes(opts)) > 0
 
 
 def asgi_mount_names(opts: ServeOptions) -> String:
@@ -1046,7 +1078,15 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         opts.mount_prefixes.append(prefix^)
         opts.mount_modules.append(mount_pair[0])
         opts.mount_attributes.append(mount_pair[1])
-        opts.mount_explicit.append(spec.find(":") >= 0)
+        # `=mojo` names the compiled-in Mojo handler rather than an
+        # importable object. A Mojo handler is a compile-time type, so
+        # there is nothing to import and nothing to detect: it is recorded
+        # here and skipped by `_resolve_mounts`.
+        if spec == "mojo":
+            opts.mojo_mounts.append(len(opts.mount_prefixes) - 1)
+            opts.mount_explicit.append(True)
+        else:
+            opts.mount_explicit.append(spec.find(":") >= 0)
     elif name == "--static-cache-control":
         opts.static_cache_control = value
     elif name == "--max-body":

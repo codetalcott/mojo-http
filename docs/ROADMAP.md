@@ -1,8 +1,9 @@
 # Roadmap
 
 The project's state. What the server does is [SPEC.md](SPEC.md), one row per
-capability with the gate that proves it. What remains before 1.0 is
-computed:
+capability with the gate that proves it. The milestones below are
+computed rather than remembered, and 1.0 has shipped, so what this reports
+now is whether the conditions it was taken on still hold:
 
 ```bash
 uv run poe milestones
@@ -66,7 +67,7 @@ somebody else's Django projects inside the pull request that trips it.
 - **Mojo 1.0's `PythonObject` interop leaks a reference per call argument
   and per `__setitem__` value.** The bridge works around it by building the
   environ through the raw C API and never passing a per-request object
-  through those operations; `smoke-django`'s RSS guard (0 KB over 10k
+  through those operations; <!-- observed: the limit `smoke-django` enforces, pyproject.toml -->`smoke-django`'s RSS guard (0 KB over 10k
   requests) is the instrument. The fix is upstream (modular/modular#6833),
   in every nightly from `1.1.0.dev2026081405` and in no stable release.
   What the pin bump will hit, measured by building the tree on a nightly,
@@ -103,21 +104,23 @@ five entries, all built:
 ## Not planned, and why
 
 Recorded so they are not re-proposed. The number that frames each: the
-Mojo HTTP layer alone does 116k rps/core on `hello`, the executor does
-61k, uvicorn with uvloop does 82k and `uvicorn --loop asyncio` does 58k.
-Everything between 116k and 61k is Python-side per-request work and the
-loop-to-executor handoff, so optimising the 116k layer buys nothing here.
+Mojo HTTP layer alone does <!-- num:hello-rps-k@1 -->192.3<!-- /num -->k rps/core on
+`hello`, the executor does <!-- num:asgi-m0-rps-k@1 -->80.8<!-- /num -->k, uvicorn with
+uvloop does <!-- num:asgi-uvloop-rps-k@1 -->85.6<!-- /num -->k and `uvicorn --loop asyncio`
+does <!-- num:asgi-uvicorn-rps-k@1 -->59.6<!-- /num -->k. Everything between the first two
+figures is Python-side per-request work and the loop-to-executor handoff, so
+optimising the HTTP layer buys nothing here.
 
 - **io_uring as a third backend.** Linux-only, a whole event-loop
   implementation to maintain beside kqueue and epoll, and it optimises the
   layer that is not the bottleneck.
 - **A SIMD timer wheel.** The loop already does a 1 Hz O(1024) sweep with
   no heap; there is no timer cost to remove.
-- **SIMD request parsing.** Done: `lightbug_http/parsing.mojo`.
+- **SIMD request parsing.** Done: `lightbug_http/http/parsing.mojo`.
 - **Native Mojo coroutines replacing asyncio Tasks.** The application is
   Python; its awaits are asyncio's. Replacing the executor's task
   machinery would mean reimplementing asyncio, not avoiding it.
-- **Arenas / SoA allocation in the loop.** Evidence-gated rather than
+- <!-- observed: a threshold this entry sets for itself, not a measurement -->**Arenas / SoA allocation in the loop.** Evidence-gated rather than
   refused: profile `hello` first and pursue only if allocation is over 15%
   of the layer's time. `mojo-framework/packages/m0-data` has an SoA arena
   to start from.

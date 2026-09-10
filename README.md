@@ -76,7 +76,9 @@ multi-tab sync**, and CI executes every command in it on every pull request
 
 - **No TLS and no HTTP/2.** Terminate at a proxy — gunicorn's answer, and
   the same one applies here.
-- **Pre-1.0**, and the API will change ([CHANGELOG](CHANGELOG.md)).
+- **The served contract is stable from 1.0** — flags and environment
+  variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`.
+  A minor release does not break them ([CHANGELOG](CHANGELOG.md)).
 - **macOS arm64 and Linux x86_64/aarch64 only.** No Intel Mac (no
   toolchain), no Windows, no musl.
 
@@ -723,7 +725,7 @@ so it is not worth the ownership complexity yet.
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
 - Building on Linux needs three system packages: a C compiler (`mojo build` shells out for linking), `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves), and `libsqlite3-dev` for `m0-sqlite`. `build-essential libsqlite3-dev patchelf` covers it. None are needed on macOS.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
-- Pre-1.0: the API will break.
+- The served contract is stable from 1.0: `m0serve`'s flags and environment variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`. A minor release does not break them; everything else — the Mojo APIs, the package layout, the fork's internals — is still free to move.
 - **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
 - **Server-initiated pushes go through `tick`.** The `tick(now_ms)` hook fires every `M0_APP_TICK_MS` milliseconds (0, the default, disables it) on the event loop's own timer — broadcast from it and the same loop pass delivers, no inbound request involved; the counter demo's live uptime clock is the reference. It runs on the event loop thread, so keep it quick; handlers with slower cadences sub-schedule off `now_ms`. (Idle-stream `: heartbeat` comments are separate and automatic, every `M0_SSE_HEARTBEAT_MS`.)
 - `m0-sqlite` has no statement cache and no connection pool; see above.

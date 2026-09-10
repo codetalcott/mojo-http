@@ -3720,6 +3720,57 @@ python3 scripts/emit.py --covers M1 --task smoke-hybrid
 # Its whole surface runs zero-config through the executor -- pages, a live
 # SSE EventStream, and an `app.ws` WebSocket. Skips cleanly where
 # python-fasthtml is not installed, like the Flask row.
+[tool.poe.tasks.smoke-mojo-mount]
+help = "A Mojo mount answers with no Python in its path, while the GIL is held"
+deps = ["build-serve"]
+shell = """
+set -u
+srv=bin/m0serve
+P=8791
+B=http://localhost:$P
+pid=
+fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat mojomount.log 2>/dev/null; rm -f mojomount.log; exit 1; }
+
+# Every mount being `mojo` asks a Python host to host no Python.
+"$srv" --mount /native=mojo --app-dir apps/wsgi_bare --port $P > /dev/null 2>&1
+rc=$?
+[ $rc -eq 2 ] || fail "a mojo-only mounted server exited $rc, expected 2"
+
+"$srv" --mount /=bareapp.wsgi --mount /native=mojo \
+  --app-dir apps/wsgi_bare --port $P --blocking-threads 4 > mojomount.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail "server never became healthy"
+
+# Both mounts answer, and the Mojo one names the pool thread that served it.
+curl -s $B/ | grep -q 'bare wsgi app' || fail "the WSGI mount did not answer"
+curl -s $B/native/probe | grep -q '"mount":"mojo"' || fail "the Mojo mount did not answer"
+curl -s $B/native/probe | grep -q '"thread":' || fail "no pool thread served the Mojo mount"
+
+# The segment-boundary rule on the wire: /native must not swallow /nativeapp.
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/nativeapp)
+[ "$code" = "404" ] || fail "/nativeapp answered $code; /native swallowed it"
+
+# The claim. Two routes of one server under GIL-bound load: the Mojo mount
+# stays flat because its thread never attaches to the interpreter, and the
+# Python route is convoyed behind the lock. A shared execution mode cannot
+# pass this -- `--mojo-path /pid` is the negative arm and fails on both
+# assertions.
+python3 scripts/mojo_mount_probe.py --port $P || fail "the Mojo mount tracked the Python route under load"
+
+# SIGTERM with a Mojo lane live: pills go per lane, and a thread parked on
+# lane 2 is not woken by one sent to lane 0. Asserted as an EXIT, because
+# the failure is a hung join rather than an error.
+kill -TERM $pid
+for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
+pid=
+
+rm -f mojomount.log
+echo "smoke-mojo-mount OK"
+python3 scripts/emit.py --covers M19 --task smoke-mojo-mount
+"""
+
 [tool.poe.tasks.smoke-fasthtml]
 help = "Serve a FastHTML app through the ASGI bridge (skips if fasthtml is absent)"
 deps = ["build-serve"]

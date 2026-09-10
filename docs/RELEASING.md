@@ -226,8 +226,10 @@ The steps, in order:
    release is created — fix, delete the tag if it was pushed
    (`git push origin :vX.Y.Z`), and re-run.
 
-Versioning is SemVer with the standard pre-1.0 caveat, stated in the
-README: minor versions may break the API. The version lives in
+Versioning is SemVer. From 1.0 the served contract does not break in a
+minor release — `m0serve`'s flags and environment variables, the
+`M0-Hold`/`M0-Channel` headers, and `m0pub.publish()` — which is the
+statement the README and the changelog carry. The version lives in
 `pyproject.toml`, the changelog, and `M0SERVE_VERSION` — the one constant
 a package carries, because `m0serve --version` has to answer something.
 Nothing else may add one: `smoke-serve` cross-checks exactly that pair, so

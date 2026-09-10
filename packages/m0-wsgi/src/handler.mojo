@@ -96,6 +96,29 @@ def _decline_direct(
     return False
 
 
+
+def _is_mojo_mount(opts: ServeOptions, i: Int) -> Bool:
+    """Whether mount `i` is answered by the compiled-in Mojo handler."""
+    for k in range(len(opts.mojo_mounts)):
+        if opts.mojo_mounts[k] == i:
+            return True
+    return False
+
+
+def _first_python_mount(opts: ServeOptions) -> Int:
+    """The first mount this handler can actually build an application for.
+
+    Mount 0 is not automatically it: `--mount /native=mojo --mount /=app`
+    puts the Mojo mount first. A server with no Python mount at all is
+    refused before this is reached (`m0serve.mojo`), so this always finds
+    one.
+    """
+    for i in range(len(opts.mount_prefixes)):
+        if not _is_mojo_mount(opts, i):
+            return i
+    return 0
+
+
 struct WSGIHandler(ThreadHandler):
     """Serve a WSGI application, with optional static mounts in front of it.
 
@@ -414,7 +437,13 @@ struct WSGIHandler(ThreadHandler):
             )
             return Self.for_options(app^, opts)
 
-        var head = only_mount if only_mount >= 0 else 0
+        # A `--mount X=mojo` has no Python object to build. Skip it here and
+        # never register its prefix, so `app_for` answers -1 and a request
+        # that somehow reaches this handler gets `_unmounted()`'s 404 rather
+        # than another mount's application. The Mojo mount is served by
+        # `MojoPool` threads on its own lane and never arrives here in the
+        # ordinary path.
+        var head = only_mount if only_mount >= 0 else _first_python_mount(opts)
         var first = WSGIApp(
             opts.mount_modules[head],
             server_name=opts.host,
@@ -435,7 +464,9 @@ struct WSGIHandler(ThreadHandler):
         handler.mounted = len(opts.mount_prefixes) > 1
         if only_mount >= 0:
             return handler^
-        for i in range(1, len(opts.mount_prefixes)):
+        for i in range(len(opts.mount_prefixes)):
+            if i == head or _is_mojo_mount(opts, i):
+                continue
             handler.mount(
                 opts.mount_prefixes[i],
                 WSGIApp(
