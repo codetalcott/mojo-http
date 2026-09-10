@@ -39,6 +39,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **The Mojo pool's distribution test asserted the pool's PRE-elastic wake
+  contract**, and failed pull requests that could not reach `MojoPool` at
+  all — most recently on a macOS runner with `distinct=1` at 783 ms. The
+  test submits eight 60 ms jobs to three threads and requires more than one
+  to answer, which is what a served burst does; but it drives a bare pool
+  with no event loop, and since the elastic rules landed the wake that
+  spreads such a burst is the LOOP's, not `submit`'s. `submit` wakes nobody
+  while a thread of the lane is busy or spinning, precisely so a burst of
+  trivial jobs does not put N threads on the GIL; a thread that is not
+  coming back soon is `wake_aged`'s case, once per pass. With no loop there
+  was no wake at all, so a spinner descheduled across the burst took all
+  eight jobs at 60 ms apiece. The test now makes the loop's own
+  bottom-of-pass call, which pairs it with the production shape rather than
+  with `M0_POOL_ELASTIC=0`, the arm nobody runs. Reproduced deterministically
+  by stalling the spinner across the burst: 10 of 10 rounds failed before,
+  0 of 20 after, and under CPU load the fixed test's median run fell from
+  295 ms to 228 ms because the siblings no longer sit parked.
+
 - **A milestone sabotage stopped applying at 1.0.0.** The test that deletes
   the soak record's version and insists the checker notices searched for
   the literal `m0serve 0.`, which the 1.0.0 headline removed from the file,
