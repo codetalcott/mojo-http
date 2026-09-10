@@ -16,10 +16,30 @@ Exits non-zero with the numbers when the claim fails.
 """
 import argparse
 import http.client
-import statistics
 import sys
 import threading
 import time
+import traceback
+
+
+# Which phase is running, for the crash handler below. The load threads, the
+# two samplers and the verdict all go through `http.client`, so a traceback
+# out of one says which CALL raised and never which PHASE was being proven.
+# apps/asgi_bare/ws_probe.py carries the original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("mojo_mount_probe FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 
 def _quantile(values, q):
@@ -74,6 +94,7 @@ def main():
     ap.add_argument("--budget-ms", type=float, default=25.0)
     args = ap.parse_args()
 
+    phase("applying GIL-bound load")
     stop = threading.Event()
     loaders = [
         threading.Thread(target=_load, args=(args.port, args.load_path, stop),
@@ -84,6 +105,7 @@ def main():
         t.start()
     time.sleep(1.0)          # let the GIL-bound load actually take hold
 
+    phase("sampling both routes under load")
     mojo, python = [], []
     probes = [
         threading.Thread(target=_sample,
@@ -100,6 +122,7 @@ def main():
     for t in probes:
         t.join(timeout=30)
 
+    phase("comparing the two tails")
     if len(mojo) < 20 or len(python) < 20:
         print(f"FAIL: too few samples (mojo {len(mojo)}, python {len(python)})")
         return 1
