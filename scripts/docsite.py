@@ -1,6 +1,7 @@
 """The documentation site, rendered from the tree's own pages.
 
     python3 scripts/docsite.py --out dist/site --base-url https://example.org
+    python3 scripts/docsite.py --watch        # re-render while editing
     python3 scripts/docsite.py --check        # link integrity, stdlib only
     python3 scripts/docsite.py --selftest     # the checks can fail
 
@@ -56,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -935,17 +937,111 @@ def selftest():
     return 0
 
 
+# How often --watch stats its sources. Short enough that a save and an
+# alt-tab is one motion, long enough that the poll costs nothing.
+WATCH_INTERVAL = 0.4
+
+
+def watch_sources(repo):
+    """Every file the built site is a function of, as {path: (mtime, size)}.
+
+    Recomputed each pass rather than cached once, so a note ADDED or deleted
+    while the watcher runs is noticed the same way an edit to one is -- the
+    notes are a glob, not a list.
+    """
+    paths = {repo / page.source for page in PAGES}
+    paths |= set((repo / NOTES_DIR).glob("*.md"))
+    paths |= {repo / rel for rel in ASSETS}
+    # The template, the stylesheet and PAGES itself live in this file.
+    paths.add(Path(__file__).resolve())
+    stamps = {}
+    for path in paths:
+        try:
+            st = path.stat()
+        except OSError:
+            continue  # a file being written; the next pass sees it
+        stamps[str(path)] = (st.st_mtime_ns, st.st_size)
+    return stamps
+
+
+def build_beside(site, out):
+    """Build into a sibling directory and rename it into place.
+
+    `build` replaces its output directory, which under a watcher means a
+    second and a half where a server in front of the tree has nothing to
+    serve -- and that is exactly when a reader refreshes, having just saved.
+    Building beside it makes the window a rename instead.
+    """
+    out = Path(out)
+    nxt = out.parent / (out.name + ".next")
+    prev = out.parent / (out.name + ".prev")
+    for stale in (nxt, prev):
+        if stale.exists():
+            shutil.rmtree(stale)
+    pages = site.build(nxt)
+    if out.exists():
+        out.rename(prev)
+    nxt.rename(out)
+    if prev.exists():
+        shutil.rmtree(prev)
+    return pages
+
+
+def watch(out, base_url):
+    """Re-render on every change to a page source, until interrupted.
+
+    A failed build is printed and the watch continues: a link that resolves
+    to nothing is what half an edit looks like, and exiting there would put
+    the watcher's lifetime at the mercy of the order the words are typed in.
+    """
+    print(f"docsite --watch: {out} for {base_url}, polling every "
+          f"{WATCH_INTERVAL}s; ^C to stop", flush=True)
+    stamps = None
+    try:
+        while True:
+            current = watch_sources(REPO)
+            if current != stamps:
+                if stamps is not None:
+                    changed = sorted(set(current) ^ set(stamps)) + sorted(
+                        k for k in current.keys() & stamps.keys()
+                        if current[k] != stamps[k])
+                    shown = ", ".join(os.path.relpath(c, REPO) for c in changed[:3])
+                    if len(changed) > 3:
+                        shown += f" and {len(changed) - 3} more"
+                    print(f"[{_dt.datetime.now():%H:%M:%S}] {shown}", flush=True)
+                # Stamped before the build, not after, so a save DURING a
+                # build is a change the next pass still sees.
+                stamps = current
+                started = time.monotonic()
+                try:
+                    pages = build_beside(Site(REPO, base_url), out)
+                # SystemExit is how `build` reports an unresolvable link,
+                # and it is not an Exception, so both are named.
+                except (SystemExit, Exception) as exc:
+                    print(f"  not rebuilt: {exc}", flush=True)
+                else:
+                    print(f"  {pages} pages in {time.monotonic() - started:.1f}s", flush=True)
+            time.sleep(WATCH_INTERVAL)
+    except KeyboardInterrupt:
+        print("\ndocsite --watch: stopped", flush=True)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default="dist/site", help="output directory (replaced)")
     ap.add_argument("--base-url", default=os.environ.get("M0_SITE_URL", DEFAULT_BASE),
                     help="the URL the site is served at; canonical links, the sitemap "
                          "and llms.txt are absolute (default: $M0_SITE_URL or %(default)s)")
+    ap.add_argument("--watch", action="store_true",
+                    help="build, then rebuild on every change to a page source")
     ap.add_argument("--check", action="store_true", help="link integrity only; stdlib only")
     ap.add_argument("--selftest", action="store_true", help="prove the checks can fail")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
+    if args.watch:
+        return watch(args.out, args.base_url)
     site = Site(REPO, args.base_url)
     if args.check:
         problems = site.check()

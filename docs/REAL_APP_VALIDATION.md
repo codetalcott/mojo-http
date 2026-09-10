@@ -1,11 +1,11 @@
 # Exercising the server against real applications
 
-**A record. Last run 2026-09-07**, against m0serve 0.19.0 as merged at
-`abf2016` — the 0.19.0 release: the elastic pool, and the keep-alive request
-cap at 1000 — all four applications, six rows, in the newest section below. The full pass it
-re-runs was **2026-09-01 and 2026-09-02**, against 0.16.0 (`bin/m0serve`
-from the tree at `c823198`), macOS 26 on an M4, CPython 3.13.6. The plan
-and the previous records are below and in the history of this file.
+**A record. Last run 2026-09-10**, against m0serve 1.0.0 as merged at
+`a4f0aa5` — the 1.0.0 release — all four applications, six rows, in the
+newest section below. The full pass it re-runs was **2026-09-01 and
+2026-09-02**, against 0.16.0 (`bin/m0serve` from the tree at `c823198`),
+macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
+below and in the history of this file.
 
 Every application this server had been tested against was written to test
 it — until the 2026-08-26 pass below, which put three real Django projects
@@ -123,6 +123,92 @@ not run: none of the four dependency trees builds on free-threaded CPython
 - Four manifests under `scripts/soak_manifests/` are the re-runnable
   record of each application's shape, including every substitution and
   the reason for it.
+
+## Re-soak — 2026-09-10, against 1.0.0 as merged at `a4f0aa5`, all four applications
+
+**The version number is why this pass exists, and almost nothing else
+is.** The 1.0.0 release bumped `pyproject.toml` and left the soak record
+naming 0.19.0, so `poe milestones` printed the soak STALE from the merge
+commit onward — the milestone's staleness rule allows two minors of lag and
+scores a major bump far past it. The release commit's own message says the
+soak is current against this version; it was true when written against
+0.19.0 and false the moment the bump landed in the same commit. This pass
+is what makes it true.
+
+The code under it barely moved. Between the 0.19.0 pass and this one,
+exactly one commit touches the request path: `bf212a3`, which splits the
+graceful drain into begin, step and finish so the loop inversion can drive
+it one pass at a time. The blocking composition every default topology runs
+is unchanged, and the stepped path is reachable only under `M0_INVERTED=1`.
+Everything else since is `--doctor` reporting (`usable_cpus`,
+`topology.loop`), the FastAPI gate, the row-status ratchet and the Linux
+benchmark work — none of it on the wire. So the interesting half of this
+pass is the three churn rows, which SIGTERM the server mid-load and are the
+only place the corpus exercises that refactor.
+
+Fresh clones under `/tmp/soak/` (the 2026-09-07 checkouts had not survived,
+as always), each with its own venv on PATH, `bin/m0serve` rebuilt from
+`a4f0aa5`, CPython 3.13.6, macOS 26 on an M4. Same driver, same five
+populations, same durations and churn cadences; every reference capture
+re-recorded first. Raw driver outputs and the scripts that drove it are in
+`bench/soak/2026-09-10/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 29,546 | 0 | SIGTERM ×2, drains 0.04 / 0.14 s | 120.7 → 124.4 MB | 85 → 88 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions + 308 logins | 180 | 21,672 | 0 | SIGTERM ×2, 0.08 / 0.26 s | 185.0 → 190.6 MB | 80 → 85 / 13 → 13 |
+| color-separation | WSGI, pool 8, 343 uploads | 120 | 47,227 | 0 | SIGTERM ×1, 0.08 s | 1.05 → 1.36 GB | 144 → 151 / 18 → 19 |
+| color-separation | ASGI executor vs uvicorn, 268 uploads | 90 | 18,823 | 0 | — | 1.24 → 1.57 GB | 129 → 120 / 26 → 30 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 73,182 | 0 | SIGTERM ×1, 0.09 s | 173.1 → 181.1 MB | 101 → 125 / 17 → 16 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,764 | 0 | — | 493.3 → 191.1 MB (the startup transient) | 98 → 100 / 13 → 13 |
+
+215,214 requests verified byte for byte against the reference captures,
+**zero failures in every sample of every row**, every slot returned (the
+free-slot count back at its starting value at every sample), threads flat,
+and 5,682 abandoners across the run absorbed, half closing with FIN and
+half with RST. **No server defect.** The six
+drains all finished inside 0.26 s, which is the observation this pass was
+really after: the split left the composition alone, and a SIGTERM under
+load still ends in a quarter of a second.
+
+Nothing moved against the 2026-09-07 table that is not already explained
+there. The color-separation gigabytes are its image renditions; textshelf's
+WSGI row again opens on the ~490 MB startup transient that finding 7
+describes and settles inside the minute; the executor rows again carry more
+threads than the pooled ones, which is asgiref's thread pool for that app's
+synchronous views. One count differs by one on the color-separation churn
+row — 343 uploads, 342 landed — and it is the same shape 2026-09-07
+recorded (344 and 343): the POST is counted when it answers, the follow-up
+GET of the page it redirects to is what marks it landed, and a restart
+between the two is a tolerated connection error rather than a failure.
+
+**Three things about the corpus changed, all setup rather than server.**
+
+- **color-separation's fixtures are seeded now.** Its two images are noise
+  PNGs, generated fresh each pass and therefore a different size each pass,
+  which is what forced the manifest's `bytes` pins to be re-measured by
+  hand — the third of the three traps this record already lists.
+  `scripts/soak_fixtures.py` generates them from seed 20260910; a second
+  run reproduces both files byte for byte, so the pins are now a property
+  of the manifest rather than of the run. They moved once more in the
+  process, this seed's zip being 7.7 MB where the unseeded one was 9.6.
+- **The rows script no longer carries a database password.** 2026-09-07's
+  copy had textshelf's `DATABASE_URL` with the secret redacted by hand
+  before it was committed, which is a step that only has to be forgotten
+  once. libpq reads `~/.pgpass` for the `postgres` role, so the URL in
+  `bench/soak/2026-09-10/soak_rows.sh` names no password at all.
+- **textshelf now imports `m0serve.m0pub` at startup**, so the subject
+  cannot be served until the wheel is installed in its venv. This pass
+  built the tree's own 1.0.0 wheel and installed that, which makes the
+  application's realtime imports part of what the soak covers rather than
+  something stubbed around.
+
+**What this pass did not do**, unchanged from the records above:
+`--threads` (none of the four dependency trees builds on free-threaded
+CPython), NiceGUI, the proxy and worker shapes. It also did not exercise
+the stepped drain itself, the one thing that changed on the request path:
+that path needs `M0_INVERTED=1`, which no row here sets, and its gate is
+`smoke-asgi`'s inverted arm on every pull request.
 
 ## Re-soak — 2026-09-07, against 0.19.0 as merged at `abf2016`, all four applications
 

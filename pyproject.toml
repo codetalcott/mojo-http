@@ -1,6 +1,6 @@
 [project]
 name = "mojo-http"
-version = "0.19.0"
+version = "1.0.0"
 description = "HTTP server and web framework for Mojo — routing, content negotiation, SSE, and a maintained lightbug_http fork"
 authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.github.com" }]
 requires-python = ">=3.10"
@@ -3837,6 +3837,10 @@ python3 scripts/emit.py --covers L19 --task smoke-fastapi
 [tool.poe.tasks.build-site]
 help = "Render the documentation site from the tree's own pages into dist/site"
 cmd = "python3 scripts/docsite.py --out dist/site"
+
+[tool.poe.tasks.watch-site]
+help = "Re-render the documentation site on every change to a page source"
+cmd = "python3 scripts/docsite.py --out dist/site --watch"
 
 [tool.poe.tasks.serve-site]
 help = "Build the documentation site and serve it on :8180 with m0serve"

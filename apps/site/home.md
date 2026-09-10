@@ -58,20 +58,21 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
   listener with one shutdown.
 - **A slow view does not stall the rest.** Handler threads behind each
   event loop are the default for WSGI.
-- **Throughput.** On a bare ASGI app it serves <!-- num:asgi-vs-uvloop@2 -->1.44<!-- /num -->x the
+- **Throughput.** On a bare ASGI app it serves <!-- num:asgi-vs-uvloop@2 -->1.54<!-- /num -->x the
   requests per second of uvicorn with uvloop at 16 connections, on
   <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one, and under mixed load its
   fast-request p99 is ahead of uvicorn's in every recorded run. On bare
   WSGI, one worker with one handler thread each, Granian is ahead by
-  <!-- num:granian-vs-m0-rps@2 -->1.02<!-- /num -->x. The [benchmarks](../../docs/BENCHMARKS.md) have
+  <!-- num:granian-vs-m0-rps@2 -->1.03<!-- /num -->x. The [benchmarks](../../docs/BENCHMARKS.md) have
   every number, each rendered from a dated artifact that CI refuses once
   it is more than a minor version old.
 
 ## Limits
 
 - No TLS and no HTTP/2. Terminate at a proxy, as with gunicorn.
-- Pre-1.0. The API can still change; the [changelog](../../CHANGELOG.md)
-  records every change.
+- The served contract is stable from 1.0: flags and environment variables,
+  the two hold headers, and `m0pub.publish()`. The
+  [changelog](../../CHANGELOG.md) records every change.
 - macOS arm64 and Linux x86_64 and aarch64. CPython 3.10 to 3.14, with
   free-threaded builds for WSGI only. Not supported: Intel Mac, Windows,
   musl.
