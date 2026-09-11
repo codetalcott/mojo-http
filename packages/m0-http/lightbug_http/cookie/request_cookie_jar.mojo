@@ -43,11 +43,11 @@ struct RequestCookieJar(Copyable, Writable):
             var eq = chunk.find("=")
             if eq < 0:
                 continue
-            var name = String(String(chunk[byte=:eq]).strip())
+            var name = String(String(unsafe_from_utf8=chunk.as_bytes()[:eq]).strip())
             if name.byte_length() == 0:
                 continue
             # TODO value must be "unquoted"
-            self._inner[name] = String(chunk[byte=eq + 1 :])
+            self._inner[name] = String(unsafe_from_utf8=chunk.as_bytes()[eq + 1 :])
 
     @always_inline
     def empty(self) -> Bool:

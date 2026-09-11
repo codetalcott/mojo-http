@@ -1,12 +1,24 @@
 from std.hashlib.hash import Hasher
 
 from lightbug_http.io.bytes import ByteReader, Bytes, ByteView
-from lightbug_http.strings import find_all, http, https, strHttp10, strHttp11
+from lightbug_http.strings import http, https, strHttp10, strHttp11
 
 
 def _hex_upper(v: Int) -> String:
     """One uppercase hex digit."""
     return String("0123456789ABCDEF"[byte=v : v + 1])
+
+
+@always_inline
+def _hex_value(c: UInt8) -> Int:
+    """The value of one hex digit, or -1 for anything else."""
+    if c >= UInt8(ord("0")) and c <= UInt8(ord("9")):
+        return Int(c) - ord("0")
+    if c >= UInt8(ord("a")) and c <= UInt8(ord("f")):
+        return Int(c) - ord("a") + 10
+    if c >= UInt8(ord("A")) and c <= UInt8(ord("F")):
+        return Int(c) - ord("A") + 10
+    return -1
 
 
 def unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: List[String] = List[String]()) -> String:
@@ -31,81 +43,62 @@ def unquote[expand_plus: Bool = False](input_str: String, disallowed_escapes: Li
     fabricates a segment boundary the client did not send. Keeping the
     escape is what nginx does with `AllowEncodedSlashes off`, and it leaves
     the path distinct from every path containing a real slash.
+
+    **A byte walk, never a String slice.** The previous body located every
+    `%` and sliced the input with `String[byte=a:b]`, which asserts that
+    both ends are codepoint boundaries. A request target is not required
+    to be UTF-8, and a lone continuation byte beside an escape put a slice
+    end on a non-boundary: the assert trapped the loop thread and one
+    `GET /?x=<0x80>%41` killed the process — every app, the production
+    WSGI deployment included, since this runs for every request before any
+    handler. Percent-decoding is a byte operation; this walks
+    `input_str.as_bytes()` once into one output buffer and builds the
+    String at the end, so no input can reach a boundary check. It is also
+    stricter about what an escape is: exactly two hex digits, where `atol`
+    accepted a sign. A `%` not followed by two hex digits is kept verbatim,
+    as before. `test_unquote.mojo` pins all of it, and its process dying is
+    what the old body does on that file.
     """
-    var encoded_str = input_str.replace(QueryDelimiters.PLUS_ESCAPED_SPACE, " ") if expand_plus else input_str
+    var b = input_str.as_bytes()
+    var n = len(b)
+    var out = List[UInt8](capacity=n)
+    var i = 0
+    while i < n:
+        var c = b[i]
+        if c == UInt8(ord("%")) and i + 2 < n:
+            var hi = _hex_value(b[i + 1])
+            var lo = _hex_value(b[i + 2])
+            if hi >= 0 and lo >= 0:
+                var v = UInt8(hi * 16 + lo)
+                if _is_disallowed(v, disallowed_escapes):
+                    # Re-emit the escape, uppercase, rather than dropping
+                    # the byte; see the docstring for why deleting was wrong.
+                    out.append(c)
+                    for d in _hex_upper(hi).as_bytes():
+                        out.append(d)
+                    for d in _hex_upper(lo).as_bytes():
+                        out.append(d)
+                else:
+                    out.append(v)
+                i += 3
+                continue
+        comptime if expand_plus:
+            if c == UInt8(ord("+")):
+                out.append(UInt8(ord(" ")))
+                i += 1
+                continue
+        out.append(c)
+        i += 1
+    return String(unsafe_from_utf8=Span(out))
 
-    var percent_idxs: List[Int] = find_all(encoded_str, URIDelimiters.CHAR_ESCAPE)
 
-    if len(percent_idxs) < 1:
-        return encoded_str
-
-    var sub_strings = List[String]()
-    var current_idx = 0
-    var slice_start = 0
-
-    var str_bytes = List[UInt8]()
-    while current_idx < len(percent_idxs):
-        var slice_end = percent_idxs[current_idx]
-        sub_strings.append(String(encoded_str[byte=slice_start:slice_end]))
-
-        var current_offset = slice_end
-        while current_idx < len(percent_idxs):
-            if (current_offset + 3) > encoded_str.byte_length():
-                # If the percent escape is not followed by two hex digits, we stop processing.
-                break
-
-            var char_byte: Int
-            try:
-                char_byte = atol(
-                    encoded_str[byte=current_offset + 1 : current_offset + 3],
-                    base=16,
-                )
-                str_bytes.append(UInt8(char_byte))
-            except:
-                break
-
-            if (current_idx + 1 >= len(percent_idxs)) or (percent_idxs[current_idx + 1] != (current_offset + 3)):
-                current_offset += 3
-                break
-
-            current_idx += 1
-            current_offset = percent_idxs[current_idx]
-
-        if len(str_bytes) > 0:
-            if len(disallowed_escapes) == 0:
-                sub_strings.append(String(unsafe_from_utf8=Span(str_bytes)))
-            else:
-                # Re-emit a disallowed byte as `%XX` rather than dropping
-                # it, so the escape survives instead of the character
-                # vanishing. Built byte-wise because the decision is per
-                # byte; see this function's docstring for why deleting was
-                # wrong.
-                var kept = List[UInt8]()
-                for i in range(len(str_bytes)):
-                    var b = str_bytes[i]
-                    var is_disallowed = False
-                    for disallowed in disallowed_escapes:
-                        var db = disallowed.as_bytes()
-                        if len(db) == 1 and db[0] == b:
-                            is_disallowed = True
-                            break
-                    if is_disallowed:
-                        kept.append(UInt8(ord("%")))
-                        for c in _hex_upper(Int(b) >> 4).as_bytes():
-                            kept.append(c)
-                        for c in _hex_upper(Int(b) & 0xF).as_bytes():
-                            kept.append(c)
-                    else:
-                        kept.append(b)
-                sub_strings.append(String(unsafe_from_utf8=Span(kept)))
-            str_bytes.clear()
-
-        slice_start = current_offset
-        current_idx += 1
-
-    sub_strings.append(String(encoded_str[byte=slice_start:]))
-
-    return StaticString("").join(sub_strings)
+@always_inline
+def _is_disallowed(v: UInt8, disallowed_escapes: List[String]) -> Bool:
+    for disallowed in disallowed_escapes:
+        var db = disallowed.as_bytes()
+        if len(db) == 1 and db[0] == v:
+            return True
+    return False
 
 
 comptime QueryMap = Dict[String, String]
