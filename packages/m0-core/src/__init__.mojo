@@ -2,8 +2,7 @@
 `m0-core`: Zero-dependency foundation for the M0 framework.
 
 Provides hashing (FNV-1a, xxHash32, wyhash64), SIMD-accelerated JSON
-string escaping, HTML text escaping and assembly (`Html`, `Fragment`), and
-lightweight JSON field parsing.
+string escaping, HTML text escaping, and lightweight JSON field parsing.
 C-ABI FFI exports live in ffi_exports.mojo at the package root — outside
 src/ because it is the `mojo build --emit shared-lib` entry point (see its
 docstring); `poe build-ffi` emits the shared object.
@@ -17,5 +16,4 @@ from .hashing import (
 )
 from .json_escape import escape_json_string, escape_json_string_into, simd_find_escape_char
 from .html_escape import escape_html, escape_html_into
-from .html import Fragment, Html
 from .json_parse import parse_json_field, parse_json_int, parse_json_number, parse_json_bool

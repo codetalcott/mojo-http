@@ -173,5 +173,25 @@ def test_param_int_refuses_to_overflow() raises:
     assert_equal(param_int(String("99999999999999999999")), -1)
 
 
+def test_vary_star_stands_alone_and_an_empty_vary_is_absent() raises:
+    """RFC 9110 §12.5.5: `*` is the whole list; a sender must not emit
+    `*, name`, and a cache that parsed it as a list would re-enable the
+    caching the app disabled. An empty field is no field."""
+    var r = json(200, String("OK"), String("{}"))
+    r.headers[HeaderKey.VARY] = "*"
+    r = vary(r^, String("HX-Request"))
+    assert_equal(r.headers[HeaderKey.VARY], "*")
+    r = vary_accept(r^)
+    assert_equal(r.headers[HeaderKey.VARY], "*")
+    var e = json(200, String("OK"), String("{}"))
+    e.headers[HeaderKey.VARY] = ""
+    e = vary(e^, String("HX-Request"))
+    assert_equal(e.headers[HeaderKey.VARY], "HX-Request")
+    var w = json(200, String("OK"), String("{}"))
+    w.headers[HeaderKey.VARY] = "Accept , *"
+    w = vary(w^, String("HX-Request"))
+    assert_equal(w.headers[HeaderKey.VARY], "Accept , *")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

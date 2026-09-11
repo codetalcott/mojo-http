@@ -28,12 +28,21 @@ each other's views, or the split is a naming convention rather than a
 type.
 """
 
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The compiler beside this interpreter, never a bare `mojo`: under `poe
+# canary` a child that reaches a different `mojo` than the venv's reports a
+# nightly break as ".mojoc is newer than the compiler", and here that is
+# every case failing to build — which only the two controls would surface.
+# Same block as trailer_sabotage.py, pool_sabotage.py and fuzz_sabotage.py.
+_SIBLING = Path(sys.executable).with_name("mojo")
+MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
 
 PROGRAM = """
 from lightbug_http.http import HTTPRequest, HTTPResponse
@@ -72,7 +81,7 @@ def compile_case(source: str, out_dir: Path, name: str) -> tuple[bool, str]:
     src.write_text(source)
     proc = subprocess.run(
         [
-            "mojo", "build",
+            MOJO, "build",
             "-I", "packages/m0-core/",
             "-I", "packages/m0-http/",
             str(src),

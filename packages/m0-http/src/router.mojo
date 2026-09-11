@@ -47,20 +47,46 @@ comptime _COLON = UInt8(58)  # ':'
 
 
 @always_inline
-def _list_contains(list: String, item: String) -> Bool:
-    """Whether a `", "`-separated header value already names `item`."""
-    var start = 0
+def _ascii_lower(c: UInt8) -> UInt8:
+    if c >= UInt8(65) and c <= UInt8(90):  # 'A'..'Z'
+        return c + UInt8(32)
+    return c
+
+
+def _list_contains[fold_case: Bool = False](list: String, item: String) -> Bool:
+    """Whether a `", "`-separated header value already names `item`.
+
+    Allocation-free; trims surrounding spaces and tabs. `fold_case` for a
+    list of field names (`Vary`), which HTTP compares case-insensitively;
+    method tokens (`Allow`) are compared as written.
+    """
     var n = list.byte_length()
     var b = list.as_bytes()
-    while start < n:
+    var want = item.as_bytes()
+    var start = 0
+    while start <= n:
         var end = start
         while end < n and b[end] != UInt8(44):  # ','
             end += 1
         var s = start
-        while s < end and b[s] == UInt8(32):  # ' '
+        while s < end and (b[s] == UInt8(32) or b[s] == UInt8(9)):
             s += 1
-        if StringSpan(unsafe_from_utf8=b[s:end]) == item:
-            return True
+        var e = end
+        while e > s and (b[e - 1] == UInt8(32) or b[e - 1] == UInt8(9)):
+            e -= 1
+        if e - s == len(want):
+            var same = True
+            for j in range(len(want)):
+                var x = b[s + j]
+                var y = want[j]
+                comptime if fold_case:
+                    x = _ascii_lower(x)
+                    y = _ascii_lower(y)
+                if x != y:
+                    same = False
+                    break
+            if same:
+                return True
         start = end + 1
     return False
 
@@ -340,7 +366,15 @@ def url_for(pattern: String, *params: String) raises -> String:
     Each parameter is percent-encoded (RFC 3986 unreserved characters are
     kept, every other byte is `%XX`), so a value containing `/` or a space
     stays one segment. Raises if the count of parameters differs from the
-    pattern's captures.
+    pattern's captures, and if a parameter is EMPTY: an empty capture
+    would emit `/notes/`, which `match` collapses to the parent route, so
+    the reverse of one route would silently name another. Both are
+    programming errors whose silent form is a wrong link.
+
+    A `/` in a value reaches the view as `%2F`, not `/`: `URI.parse` keeps
+    an encoded slash distinct from a separator by design (see `unquote`),
+    so a view that wants the raw value decodes that one escape itself.
+    Every other reserved character round-trips.
     """
     var given = List[String]()
     for p in params:
@@ -369,6 +403,11 @@ def reverse(pattern: String, params: List[String]) raises -> String:
                 raise Error(
                     'url_for("', pattern, '"): the pattern has more `:name` '
                     "segments than the ", len(params), " parameter(s) given"
+                )
+            if params[next].byte_length() == 0:
+                raise Error(
+                    'url_for("', pattern, '"): parameter ', next, " is empty, "
+                    "which would reverse to a different route"
                 )
             _percent_encode_into(out, params[next])
             next += 1

@@ -1,14 +1,15 @@
 """A URL table that names view functions directly, and the service that runs it.
 
 `Router` answers *which* route matched, as an integer. Turning that integer
-back into code has been every app's own business, and all three Mojo apps
-in this tree do it the same way: a `comptime H_GET = 2` block, a
+back into code used to be every app's own business, and the Mojo apps in
+this tree all did it the same way: a `comptime H_GET = 2` block, a
 `router.add("GET", "/notes/:id", H_GET)` call, and an
 `if m.handler_id == H_GET: return self._get_one(...)` chain. The URL and
-the code that answers it are three edits apart, and nothing checks that
-they agree — `apps/notes_api` ends its chain with a bare
+the code that answered it were three edits apart, and nothing checked
+that they agreed — `apps/notes_api`'s chain ended in a bare
 `return self._delete(req, id)`, so a route added without a matching arm
-does not 404, it deletes.
+would not have 404'd, it would have deleted. Both notes apps now register
+through this table, which has no chain to fall through.
 
 This module removes the integer from the app's view. `add_read` and
 `add_write` take the function, assign the id themselves and store the two
@@ -104,8 +105,8 @@ from lightbug_http.header import HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.service import HTTPService
 
-from .reply import problem
-from .router import Router
+from .reply import empty, problem
+from .router import Router, _list_contains
 
 
 struct Views[S: Movable]:
@@ -141,16 +142,22 @@ struct Views[S: Movable]:
     Non-raising, because `HTTPService.before_request` is.
     """
 
-    var router: Router
-    """Exposed because `allow_header` is the app's business on a preflight."""
+    var _router: Router
+    """Private: a route registered here without a view would index the
+    tables below out of bounds, which in a release build is a call through
+    whatever is there. `add_read`/`add_write` are the only way in;
+    `allow_header` is the one thing an app needed from it."""
 
-    var loop_router: Router
-    """Loop routes only, kept apart from `router` on purpose.
+    var _loop_router: Router
+    """Loop routes only, kept apart from `_router` on purpose.
 
     `before_request` runs for every request, so matching loop routes against
     the whole table would route twice on every request that is not one. A
     second router holding one or two routes makes the loop's check a scan of
-    one or two routes instead.
+    one or two routes instead. `dispatch` still knows it: a loop route in
+    the wrong method is a 405 with the merged `Allow`, and a loop route that
+    reaches `dispatch` at all — a handler that forgot to wire
+    `before_request` — is answered there, one round trip slower.
     """
 
     var _reads: List[Self.ReadView]
@@ -172,8 +179,8 @@ struct Views[S: Movable]:
     var _not_found: Optional[Self.ReadView]
 
     def __init__(out self):
-        self.router = Router()
-        self.loop_router = Router()
+        self._router = Router()
+        self._loop_router = Router()
         self._reads = List[Self.ReadView]()
         self._writes = List[Self.WriteView]()
         self._is_read = List[Bool]()
@@ -183,14 +190,14 @@ struct Views[S: Movable]:
 
     def add_read(mut self, method: String, pattern: String, view: Self.ReadView):
         """Register a view that does not write. State arrives borrowed."""
-        self.router.add(method, pattern, len(self._is_read))
+        self._router.add(method, pattern, len(self._is_read))
         self._is_read.append(True)
         self._slot.append(Int32(len(self._reads)))
         self._reads.append(view)
 
     def add_write(mut self, method: String, pattern: String, view: Self.WriteView):
         """Register a view that may write. State arrives `mut`."""
-        self.router.add(method, pattern, len(self._is_read))
+        self._router.add(method, pattern, len(self._is_read))
         self._is_read.append(False)
         self._slot.append(Int32(len(self._writes)))
         self._writes.append(view)
@@ -204,7 +211,7 @@ struct Views[S: Movable]:
         reason. Keep the body quick — it runs on the thread every other
         connection is waiting on.
         """
-        self.loop_router.add(method, pattern, len(self._loops))
+        self._loop_router.add(method, pattern, len(self._loops))
         self._loops.append(view)
 
     def answer_on_loop(self, req: HTTPRequest) -> Optional[HTTPResponse]:
@@ -215,10 +222,32 @@ struct Views[S: Movable]:
         """
         if len(self._loops) == 0:
             return None
-        var m = self.loop_router.match(req.method, req.uri.path)
+        var m = self._loop_router.match(req.method, req.uri.path)
         if not m.matched:
             return None
         return self._loops[m.handler_id](req, m.params)
+
+    def allow_header(self, path: String) -> String:
+        """The `Allow` value for `path`: every method either table registers
+        for it, `OPTIONS` appended once. What a preflight or a 405 says."""
+        var allow = self._router.allow_header(path)
+        if len(self._loops) == 0:
+            return allow
+        var loop_allow = self._loop_router.allow_header(path)
+        if loop_allow == "OPTIONS":
+            return allow
+        if allow == "OPTIONS":
+            return loop_allow
+        # Both tables know the path: merge the method lists, one OPTIONS.
+        var merged = String(unsafe_from_utf8=allow.as_bytes()[: allow.byte_length() - 9])
+        var loop_methods = String(
+            unsafe_from_utf8=loop_allow.as_bytes()[: loop_allow.byte_length() - 9]
+        )
+        for item in loop_methods.split(","):
+            var m = String(String(item).strip())
+            if not _list_contains(merged, m):
+                merged += ", " + m
+        return merged + ", OPTIONS"
 
     def set_not_found(mut self, view: Self.ReadView):
         """Answer unmatched paths with `view` instead of RFC 9457 problem+json.
@@ -243,12 +272,14 @@ struct Views[S: Movable]:
     ) raises -> HTTPResponse:
         """Match `req` and call the view that owns it.
 
-        Answers 405 with the `Allow` header RFC 9110 requires, and 404
-        through `set_not_found`'s view when one was given. Every path
-        returns a response; there is no fallthrough to guess about.
+        Answers 405 with the `Allow` header RFC 9110 requires (loop routes
+        included), `OPTIONS` on any registered path with 204 and that same
+        `Allow`, and 404 through `set_not_found`'s view when one was given.
+        Every path returns a response; there is no fallthrough to guess
+        about.
         """
         var path = req.uri.path
-        var m = self.router.match(req.method, path)
+        var m = self._router.match(req.method, path)
 
         if m.matched:
             var slot = Int(self._slot[m.handler_id])
@@ -256,14 +287,32 @@ struct Views[S: Movable]:
                 return self._reads[slot](req, m.params, state)
             return self._writes[slot](req, m.params, state)
 
-        if m.method_not_allowed:
+        # A loop route that reaches dispatch: the handler did not wire
+        # `before_request` (its own struct, not `ViewService`), or the
+        # request is in a method the loop route does not take. Answer the
+        # first inline, and let the second fall into the 405 below.
+        var loop_405 = False
+        if len(self._loops) > 0:
+            var lm = self._loop_router.match(req.method, path)
+            if lm.matched:
+                return self._loops[lm.handler_id](req, lm.params)
+            loop_405 = lm.method_not_allowed
+
+        # A preflight, or any OPTIONS on a path that exists: the server
+        # answers it itself, which is what `Allow` naming OPTIONS promises.
+        # Cross-origin headers are the app's `after_response` to add.
+        if m.method_not_allowed or loop_405:
+            if req.method == "OPTIONS":
+                var pre = empty(204, String("No Content"))
+                pre.headers[HeaderKey.ALLOW] = self.allow_header(path)
+                return pre^
             var resp = problem(
                 405,
                 String("Method Not Allowed"),
                 String(req.method, " is not supported by ", path),
                 path,
             )
-            resp.headers[HeaderKey.ALLOW] = self.router.allow_header(path)
+            resp.headers[HeaderKey.ALLOW] = self.allow_header(path)
             return resp^
 
         if self._not_found:
@@ -285,12 +334,12 @@ struct ViewService[S: Movable & Deinitable](HTTPService):
     server.listen_and_serve_nonblocking(config.address(), handler)
     ```
 
-    This is the convenience, not the pattern. An app that needs the other
-    `HTTPService` hooks — `before_request` to answer on the loop thread
-    without becoming a pool job, `after_response` for CORS, `tick`,
-    `ws_message` — writes its own struct and calls `Views.dispatch` from
-    `func`, which is a three-line handler and still has no dispatch chain
-    in it.
+    This is the convenience, not the pattern. It forwards exactly two
+    hooks: `func` to `dispatch`, and `before_request` to `answer_on_loop`.
+    An app that needs any other `HTTPService` hook — `after_response` for
+    CORS, the `sse_*` four, `tick`, `ws_message` — writes its own struct
+    and calls both from it (`apps/notes_api` is the shape), which is a
+    three-line handler and still has no dispatch chain in it.
     """
 
     var views: Views[Self.S]

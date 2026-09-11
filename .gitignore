@@ -33,6 +33,7 @@ counter2.log
 django.log
 django2.log
 notes.log
+fragment.log
 todo.log
 ws.log
 chat.log

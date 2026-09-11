@@ -19,13 +19,20 @@ only when a document is actually wanted. It takes a context value first
 shape a precompiled package can accept from an app.
 
 A trait was the first design — `PageShell` with a `wrap` method, so the
-context and the function travel together — and it does not survive the
+context and the function travel together — and it did not survive the
 `.mojoc` boundary: an app's conformance to a trait it imports from a
-precompiled package is accepted and its witness table is never emitted
-(*"struct 'Site' does not have witness table for trait"*), even when the
-trait's methods name only prelude types. `HTTPService` and `PoolHandler`
-live in the source-resolved fork for the same reason. Two arguments where
-one struct would have been nicer is the cost of that, paid here.
+precompiled package was accepted and its witness table never emitted
+(*"struct 'Site' does not have witness table for trait"*), even though the
+trait's one method names only `String`. That has now been observed twice
+on this toolchain, both times with the generic CONSUMER inside the same
+`.mojoc` (`MojoPool[T: PoolHandler]`, `wrap_with[S: PageShell]`), and
+`Views[S: Movable]` — a `.mojoc` generic over an app type conforming to a
+stdlib trait — works, so the exact discriminant is not established.
+`PageShell` and `wrap_with` are kept below for `scripts/mojoc_trait_check.py`,
+which compiles an app conformance against the built package and insists
+it is refused: the day that check flips, the trait is the API to prefer.
+Until then the shell is two arguments where one struct would have been
+nicer.
 
 `Vary` is not optional here. One URL now has two representations, so a
 shared cache that stored the fragment would replay it to a direct
@@ -50,11 +57,13 @@ comptime FRAGMENT_VARY = "HX-Request"
 
 
 def wants_fragment(req: HTTPRequest) -> Bool:
-    """Whether the request asked for a bare fragment (`HX-Request: true`)."""
-    var h = req.headers.get(FRAGMENT_HEADER)
-    if h:
-        return h.value() == "true"
-    return False
+    """Whether the request asked for a bare fragment (`HX-Request: true`).
+
+    Compared without allocating and without regard to the value's case:
+    htmx sends `true`, and a proxy that capitalised it should not be
+    served a whole document.
+    """
+    return req.headers.value_equals_ignore_case(FRAGMENT_HEADER, "true")
 
 
 def page_or_fragment[C: AnyType](
@@ -62,10 +71,33 @@ def page_or_fragment[C: AnyType](
     fragment: String,
     ctx: C,
     shell: def (C, String) raises thin -> String,
+    status: Int = 200,
+    text: String = "OK",
 ) raises -> HTTPResponse:
     """`fragment` bare if the request asked for one, else `shell(ctx,
     fragment)`; `Vary: HX-Request` either way. `shell` runs only when a
-    document is wanted."""
+    document is wanted. `status` is for a styled error page — a 404 an
+    app wants to render is still a 404, not a soft one crawlers index."""
+    var resp: HTTPResponse
     if wants_fragment(req):
-        return vary(html(fragment), FRAGMENT_VARY)
-    return vary(html(shell(ctx, fragment)), FRAGMENT_VARY)
+        resp = html(fragment)
+    else:
+        resp = html(shell(ctx, fragment))
+    resp.status_code = status
+    resp.status_text = text
+    return vary(resp^, FRAGMENT_VARY)
+
+
+trait PageShell:
+    """The shell as a trait: the shape this module would prefer, kept as
+    the target of `scripts/mojoc_trait_check.py` (see the module
+    docstring). Not exported from the package."""
+
+    def wrap(self, fragment: String) raises -> String:
+        ...
+
+
+def wrap_with[S: PageShell](shell: S, fragment: String) raises -> String:
+    """`shell.wrap(fragment)`, as a generic the probe instantiates from an
+    app. Not exported from the package."""
+    return shell.wrap(fragment)

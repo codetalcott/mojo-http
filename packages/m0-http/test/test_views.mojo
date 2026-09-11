@@ -207,5 +207,61 @@ def test_view_service_answers_loop_routes_in_before_request() raises:
     assert_true(not svc.before_request(_req(String("GET"), String("/notes"))))
 
 
+def test_a_loop_route_in_the_wrong_method_is_405_with_allow() raises:
+    """A loop route lives in a second router; `dispatch` still knows it.
+    Before this, `POST /health` on an app with only `add_loop("GET",
+    "/health")` was 404 "no route for this path" with no `Allow`."""
+    var v = _table()
+    v.add_loop(String("GET"), String("/health"), _health)
+    var st = Counter()
+    var resp = v.dispatch(_req(String("POST"), String("/health")), st)
+    assert_equal(resp.status_code, 405)
+    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, OPTIONS")
+
+
+def test_allow_merges_both_tables_for_one_path() raises:
+    var v = _table()
+    v.add_loop(String("GET"), String("/x"), _health)
+    v.add_write(String("POST"), String("/x"), _bump)
+    assert_equal(v.allow_header(String("/x")), "POST, GET, OPTIONS")
+    var st = Counter()
+    var resp = v.dispatch(_req(String("PUT"), String("/x")), st)
+    assert_equal(resp.status_code, 405)
+    assert_equal(resp.headers[HeaderKey.ALLOW], "POST, GET, OPTIONS")
+    # A path only one table knows keeps that table's list.
+    assert_equal(v.allow_header(String("/health")), "OPTIONS")
+    assert_equal(v.allow_header(String("/notes")), "GET, POST, OPTIONS")
+
+
+def test_options_on_a_registered_path_is_204_with_allow() raises:
+    """`Router.allow_header` appends OPTIONS because "the server answers
+    preflight itself"; `dispatch` now does, so a preflight is never a 405
+    whose `Allow` names the method it refused."""
+    var v = _table()
+    v.add_loop(String("GET"), String("/health"), _health)
+    var st = Counter()
+    var resp = v.dispatch(_req(String("OPTIONS"), String("/notes")), st)
+    assert_equal(resp.status_code, 204)
+    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, POST, OPTIONS")
+    resp = v.dispatch(_req(String("OPTIONS"), String("/health")), st)
+    assert_equal(resp.status_code, 204)
+    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, OPTIONS")
+    # On a path nothing serves it is a 404, like any other method.
+    resp = v.dispatch(_req(String("OPTIONS"), String("/nope")), st)
+    assert_equal(resp.status_code, 404)
+
+
+def test_a_loop_route_reaching_dispatch_is_answered_inline() raises:
+    """A handler struct that forgot to wire `before_request` used to have
+    silently dead loop routes: 404 under every load-balancer probe. The
+    view is answered from `dispatch` instead, one round trip slower."""
+    var v = _table()
+    v.add_loop(String("GET"), String("/health"), _health)
+    var st = Counter()
+    var resp = v.dispatch(_req(String("GET"), String("/health")), st)
+    assert_equal(resp.status_code, 200)
+    assert_equal(_body(resp), '{"ok":true}')
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -79,5 +79,24 @@ def test_vary_on_the_header_keeps_a_vary_on_accept() raises:
     assert_equal(resp.headers[HeaderKey.VARY], "HX-Request, Accept")
 
 
+def test_a_styled_error_page_keeps_its_status() raises:
+    """A 404 an app renders through `page_or_fragment` is a 404 in both
+    representations, not a soft 200 crawlers index and htmx swaps in as
+    success."""
+    var frag = String("<h1>no such page</h1>")
+    var page = page_or_fragment(_req(""), frag, Shell("404"), wrap, status=404, text="Not Found")
+    assert_equal(page.status_code, 404)
+    assert_equal(page.status_text, "Not Found")
+    assert_equal(page.headers[HeaderKey.VARY], "HX-Request")
+    var bare = page_or_fragment(_req("true"), frag, Shell("404"), wrap, status=404, text="Not Found")
+    assert_equal(bare.status_code, 404)
+    assert_equal(_body(bare), frag)
+
+
+def test_the_header_is_compared_ignoring_case() raises:
+    assert_true(wants_fragment(_req("True")))
+    assert_true(wants_fragment(_req("TRUE")))
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
