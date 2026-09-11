@@ -12,10 +12,10 @@ docstring); `poe build-ffi` emits the shared object.
 from .hashing import (
     fnv1a, fnv1a_step, format_hash32, format_hash64,
     xxhash32, fnv1a_batch, xxhash32_batch,
-    wyhash64, wyhash64_string, hex_nibble,
+    wyhash64, wyhash64_string, hex_nibble, hex_digest,
     _fnv1a_ptr, _xxhash32_ptr, _read_u32_le,
 )
-from .sha256 import Sha256, sha256, sha256_hex, hex_digest, DIGEST_SIZE, BLOCK_SIZE
+from .sha256 import Sha256, sha256, sha256_hex, SHA256_DIGEST_SIZE, SHA256_BLOCK_SIZE
 from .hmac import HmacSha256, hmac_sha256, constant_time_equal
 from .json_escape import escape_json_string, escape_json_string_into, simd_find_escape_char
 from .html_escape import escape_html, escape_html_into
