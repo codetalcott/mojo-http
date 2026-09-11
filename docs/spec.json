@@ -1408,6 +1408,14 @@
       "capability": "`Vary` accumulates: a response that varies on two request headers names both, and a name is never repeated",
       "status": "verified",
       "evidence": "`test_reply.mojo:test_vary_appends_rather_than_overwrites` (every PR) \u2014 the overwrite it replaced kept whichever header was set last, unnoticed while nothing set `Vary` twice"
+    },
+    {
+      "id": "N5",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "Reverse URLs from the route pattern: `url_for(PATTERN, params...)` fills a pattern's `:name` segments in order, percent-encodes each value so it stays one segment, and raises on an arity mismatch; every route a router registers reverses to a path that matches back to the same handler",
+      "status": "verified",
+      "evidence": "`test_router.mojo:test_every_registered_route_reverses_and_matches` (every PR) \u2014 the pattern is a `comptime` constant given to both `add` and `url_for`, so a misspelled route is a compile error rather than a dead link"
     }
   ]
 }

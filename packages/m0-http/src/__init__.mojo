@@ -7,7 +7,7 @@ Provides routing, content negotiation, ETag computation, response caching,
 SSE (Server-Sent Events) support, and multi-worker fork supervision.
 """
 
-from .router import Router, MatchResult
+from .router import Router, MatchResult, reverse, url_for
 from .views import Views, ViewService
 from .fragment import page_or_fragment, wants_fragment
 from .content_negotiation import (

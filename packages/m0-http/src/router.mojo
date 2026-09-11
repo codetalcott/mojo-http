@@ -19,6 +19,27 @@ once up front. That costs a second pass over a short path for the few
 routes sharing a segment count with the request — routes with a different
 count are rejected before any scanning — and in exchange the matcher needs
 no scratch storage and imposes no cap on path depth.
+
+**The reverse direction is `url_for`**, and it takes the PATTERN, not a
+route name. A `thin` function value is not comparable, so the FastHTML
+shape — pass the view, read the URL off it — is closed on this toolchain;
+a name registry would make a typo a runtime error at render. What is left
+is the pattern string itself, written once as a `comptime` constant, given
+to `add` and to `url_for` — the same trick `Fragment` plays with its id:
+
+```mojo
+comptime NOTE = "/notes/:id"
+router.add("GET", NOTE, H_GET)
+url_for(NOTE, String(id))          # "/notes/7"
+```
+
+A misspelled constant is a compile error, and the arity is checked at the
+call: `url_for` raises when the parameter count does not match the
+pattern's captures, because a bad reverse is a programming error whose
+silent form is a dead link (`reply.param_int` returns -1 instead because
+it handles untrusted input). `pattern_of` reads a registered pattern back
+out of the blob, so a test can reverse every route in a table and insist
+the result matches — the property that keeps the two directions honest.
 """
 
 comptime _SLASH = UInt8(47)  # '/'
@@ -232,6 +253,41 @@ struct Router:
         var l = Int(self._r_meth_len[r])
         return String(unsafe_from_utf8=Span(self._buf)[off : off + l])
 
+    def route_count(self) -> Int:
+        """How many routes `add` has registered."""
+        return len(self._r_handler)
+
+    def handler_of(self, r: Int) -> Int:
+        """The handler id route `r` was registered with."""
+        return Int(self._r_handler[r])
+
+    def param_count_of(self, r: Int) -> Int:
+        """How many `:name` segments route `r`'s pattern has."""
+        return Int(self._r_param_count[r])
+
+    def pattern_of(self, r: Int) -> String:
+        """Route `r`'s pattern, rebuilt from the blob: `/notes/:id`.
+
+        Not byte-identical to what `add` was given — repeated and trailing
+        slashes are gone — but `match` never saw those either, so this is
+        the pattern as the router understands it, which is the one
+        `url_for` must agree with.
+        """
+        var base = Int(self._r_seg_start[r])
+        var count = Int(self._r_seg_count[r])
+        if count == 0:
+            return String("/")
+        var out = String()
+        for j in range(count):
+            var k = base + j
+            out += "/"
+            if self._seg_is_param[k]:
+                out += ":"
+            var off = Int(self._seg_off[k])
+            var l = Int(self._seg_len[k])
+            out += String(unsafe_from_utf8=Span(self._buf)[off : off + l])
+        return out
+
     def match(self, method: String, path: String) -> MatchResult:
         """Match method + path against registered routes.
 
@@ -276,3 +332,73 @@ struct Router:
             return r^
 
         return MatchResult()
+
+
+def url_for(pattern: String, *params: String) raises -> String:
+    """The path `pattern` names, with its `:name` segments filled in order.
+
+    Each parameter is percent-encoded (RFC 3986 unreserved characters are
+    kept, every other byte is `%XX`), so a value containing `/` or a space
+    stays one segment. Raises if the count of parameters differs from the
+    pattern's captures.
+    """
+    var given = List[String]()
+    for p in params:
+        given.append(p)
+    return reverse(pattern, given)
+
+
+def reverse(pattern: String, params: List[String]) raises -> String:
+    """`url_for` taking its parameters as a list."""
+    var pb = pattern.as_bytes()
+    var n = len(pb)
+    var out = String()
+    var next = 0
+    var i = 0
+    while i < n:
+        while i < n and pb[i] == _SLASH:
+            i += 1
+        if i >= n:
+            break
+        var start = i
+        while i < n and pb[i] != _SLASH:
+            i += 1
+        out += "/"
+        if pb[start] == _COLON:
+            if next >= len(params):
+                raise Error(
+                    'url_for("', pattern, '"): the pattern has more `:name` '
+                    "segments than the ", len(params), " parameter(s) given"
+                )
+            _percent_encode_into(out, params[next])
+            next += 1
+        else:
+            out += String(unsafe_from_utf8=pb[start:i])
+    if next != len(params):
+        raise Error(
+            'url_for("', pattern, '"): ', len(params), " parameter(s) given for ",
+            next, " `:name` segment(s)"
+        )
+    if out.byte_length() == 0:
+        return String("/")
+    return out
+
+
+def _percent_encode_into(mut out: String, s: String):
+    """Append `s` with every byte outside RFC 3986's unreserved set as `%XX`."""
+    comptime HEX = "0123456789ABCDEF"
+    var b = s.as_bytes()
+    for i in range(len(b)):
+        var ch = Int(b[i])
+        var keep = (
+            (ch >= ord("a") and ch <= ord("z"))
+            or (ch >= ord("A") and ch <= ord("Z"))
+            or (ch >= ord("0") and ch <= ord("9"))
+            or ch == ord("-") or ch == ord(".") or ch == ord("_") or ch == ord("~")
+        )
+        if keep:
+            out += StringSpan(unsafe_from_utf8=b[i : i + 1])
+        else:
+            out += "%"
+            out += HEX[byte=ch >> 4 : (ch >> 4) + 1]
+            out += HEX[byte=ch & 15 : (ch & 15) + 1]

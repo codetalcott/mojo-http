@@ -8,23 +8,26 @@ It was first written the way every Mojo app in this tree was written —
 attributes by hand in eight places, `String(...)` concatenation, a
 handler-id chain, every view branching on the request header — and gated
 on WIRE OUTPUT only (`poe smoke-fragment-notes`), so each of those could be
-lifted into the framework under a green gate. This is the app after three
+lifted into the framework under a green gate. This is the app after four
 of those lifts, and the smoke has not changed:
 
 - **the URL table names the view.** `urls()` is the whole mapping; a view
   is a function, `add_read` hands it the store borrowed and `add_write`
   hands it `mut`, and there is no dispatch chain to fall through.
 - **the fragment names itself.** `Fragment("notes")` writes `id="notes"`
-  once, and `f.swap("post", "/notes")` on the form generates the
+  once, and `f.swap("post", NOTES)` on the form generates the
   `hx-target` from that same id. Nothing in this file types `#notes`.
 - **the view returns one thing.** `page_or_fragment` reads `HX-Request`
   and calls `wrap` only when a whole document is wanted, with
   `Vary: HX-Request` on both. No view branches on the header.
 
-Two things are still written the old way, on purpose, because their lifts
-are the next two steps: every URL is a literal (`"/notes/"` plus an id, in
-three places), and the urlencoded form is parsed by two inline loops at
-the bottom of the file.
+- **routes are values.** `NOTES` and `NOTE` are `comptime` patterns given
+  to the table and to `url_for`; no renderer spells a path. A misspelled
+  route is a compile error, and `url_for` raises on the wrong arity.
+
+One thing is still written the old way, on purpose, because its lift is
+the last step: the urlencoded form is parsed by two inline loops at the
+bottom of the file.
 
 What the app promises on the wire, and the gate asserts:
 
@@ -59,6 +62,7 @@ from m0_http import (
     ViewService,
     install_shutdown_signals,
     page_or_fragment,
+    url_for,
 )
 
 # Pinned deliberately, as datastar_todo pins its CDN: a floating version
@@ -73,6 +77,12 @@ ul{list-style:none;padding:0}li{display:flex;gap:.5rem;align-items:center;paddin
 .tag{font-size:.8rem;background:#eee;border-radius:.5rem;padding:0 .5rem}
 button.delete{margin-left:auto}
 </style>"""
+
+# The routes, as values: each pattern is written once here, given to the
+# table below and to `url_for` in the renderers. A misspelled route is a
+# compile error, not a dead link.
+comptime NOTES = "/notes"
+comptime NOTE = "/notes/:id"
 
 
 # --- state --------------------------------------------------------------------
@@ -179,7 +189,7 @@ def render_list(store: NoteStore) raises -> String:
     """The `notes` fragment: the form, then every note with its actions."""
     var f = Fragment("notes")
     f.open("form")
-    f.swap("post", "/notes")
+    f.swap("post", NOTES)
     f.open("input")
     f.attr("name", "title")
     f.attr("placeholder", "title")
@@ -205,7 +215,7 @@ def render_list(store: NoteStore) raises -> String:
     f.close("form")
     f.open("ul")
     for i in range(len(store.ids)):
-        var url = String("/notes/", store.ids[i])
+        var url = url_for(NOTE, String(store.ids[i]))
         f.open("li")
         f.open("a")
         f.attr("href", url)
@@ -256,8 +266,8 @@ def render_note(store: NoteStore, i: Int) raises -> String:
     f.close("article")
     f.open("p")
     f.open("a")
-    f.attr("href", "/notes")
-    f.swap("get", "/notes")
+    f.attr("href", NOTES)
+    f.swap("get", NOTES)
     f.text("all notes")
     f.close("a")
     f.close("p")
@@ -282,13 +292,13 @@ def create(
         return reply.problem(
             400, "Invalid Note",
             "the request body must be application/x-www-form-urlencoded",
-            "/notes",
+            NOTES,
         )
     var body = reply.body_string(req)
     var title = _form_first(body, "title")
     if title.byte_length() == 0:
         return reply.problem(
-            400, "Invalid Note", 'the form must carry a non-empty "title"', "/notes"
+            400, "Invalid Note", 'the form must carry a non-empty "title"', NOTES
         )
     store.add(title, _form_first(body, "body"), _form_all(body, "tag"))
     return page_or_fragment(req, render_list(store), Site("notes"), wrap)
@@ -317,7 +327,7 @@ def delete(
 
 def root(req: HTTPRequest, params: List[String]) -> HTTPResponse:
     """GET / — the list lives at /notes. A loop view: no state, no job."""
-    return reply.redirect(303, "/notes")
+    return reply.redirect(303, NOTES)
 
 
 def health(req: HTTPRequest, params: List[String]) -> HTTPResponse:
@@ -344,10 +354,10 @@ def urls() raises -> Views[NoteStore]:
     var v = Views[NoteStore]()
     v.add_loop("GET", "/health", health)
     v.add_loop("GET", "/", root)
-    v.add_read("GET", "/notes", index)
-    v.add_write("POST", "/notes", create)
-    v.add_read("GET", "/notes/:id", detail)
-    v.add_write("DELETE", "/notes/:id", delete)
+    v.add_read("GET", NOTES, index)
+    v.add_write("POST", NOTES, create)
+    v.add_read("GET", NOTE, detail)
+    v.add_write("DELETE", NOTE, delete)
     return v^
 
 

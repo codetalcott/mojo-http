@@ -2,7 +2,7 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.router import Router, MatchResult
+from src.router import Router, MatchResult, reverse, url_for
 
 
 def test_exact_match() raises:
@@ -325,6 +325,89 @@ def test_method_of_reads_back_the_registration() raises:
     r.add("DELETE", "/y", 2)
     assert_equal(r.method_of(0), "GET")
     assert_equal(r.method_of(1), "DELETE")
+
+
+def test_pattern_of_reads_back_the_registration() raises:
+    """The pattern as the router understands it: repeated and trailing
+    slashes gone, `:name` segments kept, the root as `/`."""
+    var r = Router()
+    r.add("GET", "/notes/:id", 1)
+    r.add("GET", "//a///b/", 2)
+    r.add("GET", "/", 3)
+    r.add("GET", "/x/:a/:b", 4)
+    assert_equal(r.route_count(), 4)
+    assert_equal(r.pattern_of(0), "/notes/:id")
+    assert_equal(r.pattern_of(1), "/a/b")
+    assert_equal(r.pattern_of(2), "/")
+    assert_equal(r.pattern_of(3), "/x/:a/:b")
+    assert_equal(r.param_count_of(0), 1)
+    assert_equal(r.param_count_of(1), 0)
+    assert_equal(r.param_count_of(3), 2)
+    assert_equal(r.handler_of(3), 4)
+
+
+def test_url_for_fills_captures_in_order() raises:
+    assert_equal(url_for("/notes"), "/notes")
+    assert_equal(url_for("/"), "/")
+    assert_equal(url_for("/notes/:id", String(7)), "/notes/7")
+    assert_equal(url_for("/a/:x/b/:y", "1", "2"), "/a/1/b/2")
+
+
+def test_url_for_refuses_the_wrong_arity() raises:
+    """A bad reverse is a programming error whose silent form is a dead
+    link, so it raises — unlike `param_int`, which handles untrusted input
+    and returns -1."""
+    var raised = False
+    try:
+        _ = url_for("/notes/:id")
+    except:
+        raised = True
+    assert_true(raised)
+    raised = False
+    try:
+        _ = url_for("/notes", "7")
+    except:
+        raised = True
+    assert_true(raised)
+
+
+def test_url_for_encodes_a_parameter_to_one_segment() raises:
+    """A value with a slash or a space cannot add a segment or break the
+    path; unreserved characters pass through, everything else is `%XX`."""
+    assert_equal(url_for("/n/:id", "a b/c?d"), "/n/a%20b%2Fc%3Fd")
+    assert_equal(url_for("/n/:id", "A-z.0_9~"), "/n/A-z.0_9~")
+    assert_equal(url_for("/n/:id", "café"), "/n/caf%C3%A9")
+
+
+def test_every_registered_route_reverses_and_matches() raises:
+    """The property that keeps the two directions honest: for every route
+    a router holds, reversing its pattern with synthetic parameters gives
+    a path that `match` sends back to the same handler with those same
+    parameters captured. A table with a route `url_for` cannot rebuild,
+    or a pattern `match` reads differently from `pattern_of`, fails here.
+
+    covers: N5
+    """
+    var r = Router()
+    r.add("GET", "/", 10)
+    r.add("GET", "/notes", 11)
+    r.add("POST", "/notes", 12)
+    r.add("GET", "/notes/:id", 13)
+    r.add("DELETE", "/notes/:id", 14)
+    r.add("PUT", "/users/:user/notes/:id", 15)
+    r.add("GET", "/deep/a/b/c/:d/e", 16)
+    assert_equal(r.route_count(), 7)
+    for i in range(r.route_count()):
+        var params = List[String]()
+        for k in range(r.param_count_of(i)):
+            params.append(String("p", k))
+        var path = reverse(r.pattern_of(i), params)
+        var m = r.match(r.method_of(i), path)
+        assert_true(m.matched, String("route ", i, " did not match its own reverse ", path))
+        assert_equal(m.handler_id, r.handler_of(i))
+        assert_equal(len(m.params), len(params))
+        for k in range(len(params)):
+            assert_equal(m.params[k], params[k])
 
 
 def main() raises:
