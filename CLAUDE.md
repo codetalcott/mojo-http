@@ -1186,6 +1186,21 @@ Properties of the design, not defects to fix in passing:
   installed and the default signal behaviour stands, because a handler over a
   dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
   happened and `test_lifecycle.mojo` asserts it.
+- **A request-derived `String` may hold bytes that are not UTF-8, and is
+  never sliced with `[byte=a:b]`.** The request target, every header
+  value (the parser passes obs-text, bytes above 0x7F, through) and the
+  body all become `String`s via `unsafe_from_utf8`, so String's UTF-8
+  invariant does not hold for them — and `String[byte=a:b]` asserts a
+  codepoint boundary at both ends, which is a trap, not an error. Five
+  sites had it: `unquote` (one `GET /?x=<0x80>%41` killed the loop thread
+  before any handler, every app and the production WSGI deployment
+  alike), the cookie jar (built for every request: `Cookie: a=<0x80>`),
+  the static mount's path, the `Accept` negotiator and the ETag matcher.
+  Every such slice is now `String(unsafe_from_utf8=s.as_bytes()[a:b])`,
+  a byte-span slice with no boundary check; `unquote` is a single byte
+  walk. SPEC G14 is the row, one test per site declares it, and both
+  `smoke-hello` and `smoke-notes` send the bytes over a socket. Adding a
+  slice of a request string means adding it there.
 - **A response header carrying CR, LF or NUL is dropped, not transmitted.**
   `write_latin1_to` emits `name: value\r\n` with no inspection, so a value
   an application built out of user input could end the header block and

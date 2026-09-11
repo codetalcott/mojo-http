@@ -684,8 +684,34 @@ trap 'kill $pid 2>/dev/null' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || { echo '=== hello.log ==='; cat hello.log; exit 1; }
 echo
+
+# G14: a request target holding a byte that is not UTF-8 beside a
+# percent-escape used to trap the loop thread inside `unquote`, so one GET
+# killed the process -- every app, before any handler ran. Raw sockets,
+# because curl will not send the byte. Each must be ANSWERED (any status),
+# and the server must still be up afterwards.
+python3 - <<'PY' || { echo 'a malformed target got no answer'; echo '=== hello.log ==='; cat hello.log; exit 1; }
+import socket
+tail = b" HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n"
+for req in (
+    b"GET /?x=\\x80%41" + tail,                       # the decoder, in the query
+    b"GET /a\\x80%41b" + tail,                        # the decoder, in the path
+    b"GET /?\\xff=%2B" + tail,
+    b"GET /\\x80" + tail,
+    b"GET / HTTP/1.1\\r\\nHost: x\\r\\nCookie: a=\\x80; b=1\\r\\nConnection: close\\r\\n\\r\\n",  # the cookie jar, parsed for every request
+):
+    s = socket.create_connection(("127.0.0.1", 8080), timeout=5)
+    s.sendall(req)
+    head = s.recv(4096).split(b"\\r\\n")[0]
+    s.close()
+    assert head.startswith(b"HTTP/1.1 "), (req, head)
+PY
+curl --silent --fail http://localhost:8080/health > /dev/null \
+  || { echo 'the server was gone after a malformed target'; echo '=== hello.log ==='; cat hello.log; exit 1; }
+
 echo "smoke-hello OK"
 python3 scripts/emit.py --covers A2 --task smoke-hello
+python3 scripts/emit.py --covers G14 --task smoke-hello
 """
 
 # Two ways a server gets asked to stop, and both used to end the same way —
@@ -6079,10 +6105,33 @@ grep -q 'HTTPService' trav.txt && fail 'traversal probe served source code'
 code=$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://localhost:8091/static/%2e%2e/server.mojo)
 [ "$code" = "404" ] || fail "encoded traversal probe expected 404, got $code"
 
+# G14, the app-level sites: a byte that is not UTF-8 in the static path,
+# in Accept, in If-None-Match and in Range used to trap a String slice on
+# the loop thread and kill the process. Each must be answered and the
+# server must still be up. Raw sockets, because curl will not send the byte.
+python3 - <<'PY' || fail 'a request carrying a byte that is not UTF-8 got no answer'
+import socket
+def req(line, headers=b""):
+    s = socket.create_connection(("127.0.0.1", 8091), timeout=5)
+    s.sendall(line + b" HTTP/1.1\\r\\nHost: x\\r\\n" + headers + b"Connection: close\\r\\n\\r\\n")
+    head = s.recv(4096).split(b"\\r\\n")[0]
+    s.close()
+    assert head.startswith(b"HTTP/1.1 "), (line, headers, head)
+req(b"GET /static/\\x80%41.css")
+req(b"GET /static/\\x80/x.css")
+req(b"GET /static/x.\\x80")
+req(b"GET /notes", b"Accept: text/html;q=\\x80, \\x80/x\\r\\n")
+req(b"GET /notes/1", b"If-None-Match: \\"\\x80\\", W/\\"\\x80\\r\\n")
+req(b"GET /static/styles.css", b"Range: bytes=\\x80-\\r\\n")
+req(b"GET /notes", b"Cookie: a=\\x80; b=1\\r\\n")
+PY
+curl --silent --fail http://localhost:8091/health > /dev/null || fail 'the server was gone after a request carrying a byte that is not UTF-8'
+
 rm -f notes.log note1.json problem.json headers.txt static.css trav.txt
 echo "smoke-notes OK"
 python3 scripts/emit.py --covers G10 --task smoke-notes
 python3 scripts/emit.py --covers J6 --task smoke-notes
+python3 scripts/emit.py --covers G14 --task smoke-notes
 """
 
 # The notes resource as a server-rendered htmx app, gated on WIRE OUTPUT

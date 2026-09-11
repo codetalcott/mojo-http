@@ -386,5 +386,39 @@ def test_language_no_available_tags_is_empty() raises:
     assert_equal(negotiate_language("en", List[String]()), "")
 
 
+def _raw(*bytes: Int) -> String:
+    """A String holding exactly these bytes, valid UTF-8 or not."""
+    var l = List[UInt8]()
+    for b in bytes:
+        l.append(UInt8(b))
+    return String(unsafe_from_utf8=Span(l))
+
+
+def test_a_header_that_is_not_utf8_does_not_trap() raises:
+    """The range splitter, the media-range splitter, the quality slice, the
+    subtype wildcard and `_trim` all sliced request header values as
+    Strings; a byte that is not UTF-8 at a slice end trapped the process.
+    An `Accept`, `Accept-Encoding` or `Accept-Language` carrying one must
+    parse to some answer.
+
+    covers: G14
+    """
+    var bad = String("text/html;q=") + _raw(0x80) + String(", ") + _raw(0x80) + String("/x, */*;q=0.1")
+    var result = parse_accept(bad)
+    # Whatever the malformed ranges mean, the well-formed one still counts.
+    assert_true(result.wants_json)
+    _ = wants_html(bad)
+    _ = wants_html(_raw(0x80))
+    _ = wants_event_stream(String(" ") + _raw(0xFF) + String(" ,text/event-stream"))
+    var enc = negotiate_encoding(
+        String("gzip;q=") + _raw(0x80) + String(", ") + _raw(0x80) + String(", br"), ["br", "gzip"]
+    )
+    assert_equal(enc, "br")
+    var lang = negotiate_language(
+        _raw(0x80) + String("-") + _raw(0x80) + String(", en;q=0.5"), ["en", "de"]
+    )
+    assert_equal(lang, "en")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

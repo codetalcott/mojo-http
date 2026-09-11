@@ -61,6 +61,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A request carrying a byte that is not UTF-8 crashed the process.**
+  Five sites on the serving path sliced a request-derived `String` with
+  `[byte=a:b]`, which asserts a codepoint boundary and traps: `unquote`
+  (so one `GET /?x=<0x80>%41` killed the loop thread before any handler
+  ran, every app and the production WSGI deployment alike), the cookie
+  jar (built for every request, so `Cookie: a=<0x80>` did the same), the
+  static mount's path handling, the `Accept` negotiator and the ETag
+  matcher. Bytes above 0x7F pass the header parser as obs-text, so all of
+  them were one request away. Every slice is now a byte-span slice, which
+  has none; `unquote` is a single byte walk and requires exactly two hex
+  digits for an escape (SPEC G14, one test per site, plus both smokes on
+  the wire). Found by a review probe of the form parser on a pending
+  branch; the query path and the cookie jar had it on every release.
 - **`reply.vary_accept` overwrote `Vary`.** A response that varied on two
   request headers kept whichever was set last, unnoticed while nothing set
   `Vary` twice. `reply.vary` appends without repeating a name;
@@ -68,7 +81,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
 - **`apps/notes_api` deleted on route drift.** Its handler-id chain ended
   in a bare `return self._delete(...)`, so a route registered without its
   own arm did not 404, it deleted. The chain is gone with the move to
-  `Views`, and `smoke-notes` asserts a 405 on a note leaves it intact.
+  `Views`, whose `dispatch` has no fallthrough to reach; `test_views.mojo`
+  is the gate. (A wire assertion was first described as guarding this; it
+  cannot, since the old chain answered 405 before the chain for any
+  unregistered method, and the claim is withdrawn.)
 
 - **The Mojo pool's distribution test asserted the pool's PRE-elastic wake
   contract**, and failed pull requests that could not reach `MojoPool` at
