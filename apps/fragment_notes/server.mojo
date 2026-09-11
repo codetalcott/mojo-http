@@ -15,8 +15,9 @@ of those lifts, and the smoke has not changed:
   is a function, `add_read` hands it the store borrowed and `add_write`
   hands it `mut`, and there is no dispatch chain to fall through.
 - **the fragment names itself.** `Fragment("notes")` writes `id="notes"`
-  once, and `f.swap("post", NOTES)` on the form generates the
-  `hx-target` from that same id. Nothing in this file types `#notes`.
+  once — `NOTES_ID`, given to both renderers — and `f.swap("post", NOTES)`
+  on the form generates the `hx-target` from that same id. Nothing in this
+  file types `#notes`.
 - **the view returns one thing.** `page_or_fragment` reads `HX-Request`
   and calls `wrap` only when a whole document is wanted, with
   `Vary: HX-Request` on both. No view branches on the header.
@@ -27,8 +28,9 @@ of those lifts, and the smoke has not changed:
 
 - **the form is parsed once, by the framework.** `form(req)` is an
   ordered multimap — `f.all("tag")` is every ticked checkbox — and is
-  empty for any content type but the form's, so a JSON body posted here
-  is refused rather than read as a field named after itself.
+  None for any content type but the form's, so a JSON body posted here
+  is refused rather than read as a field named after itself, and the
+  check cannot be forgotten.
 
 Nothing in it is written the old way any more. The diff from the first
 commit of this file to this one is what the framework layer adds.
@@ -55,16 +57,15 @@ Run it:  uv run poe serve-fragment-notes
 
 from lightbug_http import Server, HTTPRequest, HTTPResponse
 
-from m0_core.html import Fragment, Html
-
 from m0_http import reply
 from m0_http import (
     AppConfig,
+    Fragment,
+    Html,
     Views,
     ViewService,
     form,
     install_shutdown_signals,
-    is_form,
     page_or_fragment,
     url_for,
 )
@@ -87,6 +88,11 @@ button.delete{margin-left:auto}
 # compile error, not a dead link.
 comptime NOTES = "/notes"
 comptime NOTE = "/notes/:id"
+
+# The fragment's id, written once: both renderers build the same element,
+# and a list that swapped in a section the detail view's links did not
+# target would be the retyped-id drift `Fragment` exists to prevent.
+comptime NOTES_ID = "notes"
 
 
 # --- state --------------------------------------------------------------------
@@ -186,12 +192,12 @@ def wrap(site: Site, fragment: String) raises -> String:
     h.raw("\n")
     h.close("html")
     h.raw("\n")
-    return h.finish()
+    return h^.finish()
 
 
 def render_list(store: NoteStore) raises -> String:
     """The `notes` fragment: the form, then every note with its actions."""
-    var f = Fragment("notes")
+    var f = Fragment(NOTES_ID)
     f.open("form")
     f.swap("post", NOTES)
     f.open("input")
@@ -244,12 +250,12 @@ def render_list(store: NoteStore) raises -> String:
         f.open("p")
         f.text("none yet")
         f.close("p")
-    return f.finish()
+    return f^.finish()
 
 
 def render_note(store: NoteStore, i: Int) raises -> String:
     """The same fragment showing one note, so a swap lands in the same place."""
-    var f = Fragment("notes")
+    var f = Fragment(NOTES_ID)
     f.open("article")
     f.open("h1")
     f.text(store.titles[i])
@@ -275,7 +281,7 @@ def render_note(store: NoteStore, i: Int) raises -> String:
     f.text("all notes")
     f.close("a")
     f.close("p")
-    return f.finish()
+    return f^.finish()
 
 
 # --- views ---------------------------------------------------------------------
@@ -292,13 +298,14 @@ def create(
     req: HTTPRequest, params: List[String], mut store: NoteStore
 ) raises -> HTTPResponse:
     """POST /notes — a urlencoded form; answers the list."""
-    if not is_form(req):
+    var maybe = form(req)
+    if not maybe:
         return reply.problem(
             400, "Invalid Note",
             "the request body must be application/x-www-form-urlencoded",
             NOTES,
         )
-    var f = form(req)
+    var f = maybe.take()
     var title = f.first("title")
     if title.byte_length() == 0:
         return reply.problem(

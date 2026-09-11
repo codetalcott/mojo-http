@@ -168,12 +168,9 @@ def create(
 def get_one(
     req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
-    var id = reply.param_int(params[0])
-    if id < 0:
-        return _bad_id(req.uri.path)
-    var i = store.find(id)
+    var i = _index_of(store, params[0])
     if i < 0:
-        return _missing(id)
+        return _missing(req.uri.path)
 
     var accept = parse_accept(reply.accept_header(req))
     if accept.wants_html:
@@ -200,19 +197,16 @@ def get_one(
 def update(
     req: HTTPRequest, params: List[String], mut store: NoteStore
 ) raises -> HTTPResponse:
-    var id = reply.param_int(params[0])
-    if id < 0:
-        return _bad_id(req.uri.path)
-    var i = store.find(id)
+    var i = _index_of(store, params[0])
     if i < 0:
-        return _missing(id)
+        return _missing(req.uri.path)
     var body = reply.body_string(req)
     var title = parse_json_field(body, "title")
     if title.byte_length() == 0:
         return reply.problem(
             400, "Invalid Note",
             'the request body must be JSON with a non-empty "title"',
-            String("/notes/", id),
+            req.uri.path,
         )
     store.titles[i] = title
     store.bodies[i] = parse_json_field(body, "body")
@@ -222,26 +216,26 @@ def update(
 def delete(
     req: HTTPRequest, params: List[String], mut store: NoteStore
 ) raises -> HTTPResponse:
-    var id = reply.param_int(params[0])
-    if id < 0:
-        return _bad_id(req.uri.path)
-    var i = store.find(id)
+    var i = _index_of(store, params[0])
     if i < 0:
-        return _missing(id)
+        return _missing(req.uri.path)
     store.remove(i)
     return reply.empty(204, "No Content")
 
 
-def _bad_id(path: String) -> HTTPResponse:
-    # A non-integer id matches the route pattern but can never name a note,
-    # and 404 is about the resource, not the syntax.
-    return reply.problem(404, "Not Found", "note ids are integers", path)
+def _index_of(store: NoteStore, param: String) -> Int:
+    """The store index for a `:id` capture, or -1. A non-integer id matches
+    the route pattern but can never name a note, and 404 is about the
+    resource, not the syntax — the same answer `apps/fragment_notes`
+    gives, so the two shapes of this resource agree."""
+    var id = reply.param_int(param)
+    if id < 0:
+        return -1
+    return store.find(id)
 
 
-def _missing(id: Int) -> HTTPResponse:
-    return reply.problem(
-        404, "Not Found", "no note with this id", String("/notes/", id)
-    )
+def _missing(path: String) -> HTTPResponse:
+    return reply.problem(404, "Not Found", "no note with this id", path)
 
 
 def urls() raises -> Views[NoteStore]:
@@ -291,15 +285,10 @@ struct NotesHandler(HTTPService):
         if static_hit:
             return static_hit.take()
 
-        # CORS preflight: answer before routing. The actual CORS headers are
-        # added in after_response, which runs for this response too.
-        if req.method == "OPTIONS":
-            var resp = reply.empty(204, "No Content")
-            resp.headers[HeaderKey.ALLOW] = self.views.router.allow_header(path)
-            return resp^
-
-        # Match and call the view that owns the route; 404 and 405 (with
-        # Allow) are the table's, and there is no fallthrough.
+        # Match and call the view that owns the route; 404, 405 (with
+        # Allow) and the OPTIONS preflight are the table's, and there is no
+        # fallthrough. The CORS headers a preflight needs are added in
+        # after_response, which runs for that response too.
         return self.views.dispatch(req, self.store)
 
     def after_response(

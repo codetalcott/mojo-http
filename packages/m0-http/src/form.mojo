@@ -6,14 +6,16 @@ without writing its own parser: nothing in the tree decoded a form body.
 `<input type=checkbox name=tag>` legitimately repeats one key and every
 tick must survive.
 
-Refuses to guess: `form(req)` returns an empty `Form` unless the request
-says `Content-Type: application/x-www-form-urlencoded` (parameters such
-as `; charset=UTF-8` allowed, case ignored). Without that rule a JSON body
+Refuses to guess: `form(req)` returns None unless the request says
+`Content-Type: application/x-www-form-urlencoded` (parameters such as
+`; charset=UTF-8` allowed, case ignored; the media type itself compared
+whole, so a look-alike subtype is not one). Without that rule a JSON body
 posted to a form route would parse as one field named after the whole
 document — or, if its bytes happened to be form-shaped, as a real form the
-client never meant to send. `is_form` is the check on its own, for a view
-that wants to answer 415 or 400 rather than treat "no form" as "empty
-form".
+client never meant to send. `Optional` rather than an empty `Form`, so
+"no form" and "a form with nothing in it" cannot be confused and the
+check cannot be forgotten: a view that answers 400 on None gets that
+status for a JSON POST even when every field it reads has a default.
 
 **Deliberately not factored out of `URI.parse`.** The query loop at
 `lightbug_http/uri.mojo` looks identical and means something different: it
@@ -31,7 +33,7 @@ disposition model and a spill-to-disk policy; the app that uploads a file
 is what would justify it).
 """
 
-from lightbug_http.header import HeaderKey
+from lightbug_http.header import HeaderKey, ascii_lower_byte
 from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import QueryDelimiters, unquote
 
@@ -62,14 +64,12 @@ struct Form(Movable, Sized):
 
     def has(self, name: String) -> Bool:
         """Whether the body carried `name` at all, even with an empty value."""
-        for i in range(len(self._keys)):
-            if self._keys[i] == name:
-                return True
-        return False
+        return Bool(self.get(name))
 
     def get(self, name: String) -> Optional[String]:
         """The first value for `name`, or None when the body has no such
-        field. Tells absent from empty, which `first` does not."""
+        field. Tells absent from empty, which `first` does not. The one
+        place a key is matched; `has`, `first` and `all` go through it."""
         for i in range(len(self._keys)):
             if self._keys[i] == name:
                 return self._values[i]
@@ -78,10 +78,7 @@ struct Form(Movable, Sized):
     def first(self, name: String) -> String:
         """The first value for `name`, empty when absent — the convention
         `parse_json_field` uses, for a view that treats both the same."""
-        for i in range(len(self._keys)):
-            if self._keys[i] == name:
-                return self._values[i]
-        return String("")
+        return self.get(name).or_else(String(""))
 
     def all(self, name: String) -> List[String]:
         """Every value for `name`, in body order: a checkbox group."""
@@ -97,17 +94,33 @@ struct Form(Movable, Sized):
 
 
 def is_form(req: HTTPRequest) -> Bool:
-    """Whether the request declares a urlencoded form body."""
-    var ct = req.headers.get(HeaderKey.CONTENT_TYPE)
-    if not ct:
+    """Whether the request declares a urlencoded form body: the media
+    type, before any `;`, equals `application/x-www-form-urlencoded`
+    ignoring case. Compared over the header's bytes, without allocating."""
+    var i = req.headers._find(HeaderKey.CONTENT_TYPE.as_bytes())
+    if i < 0:
         return False
-    return ct.value().lower().startswith(FORM_CONTENT_TYPE)
+    var v = req.headers.value_span(i)
+    var want = FORM_CONTENT_TYPE.as_bytes()
+    # Skip leading whitespace, then the media type runs to `;` or a space.
+    var s = 0
+    while s < len(v) and (v[s] == UInt8(32) or v[s] == UInt8(9)):
+        s += 1
+    var e = s
+    while e < len(v) and v[e] != UInt8(59) and v[e] != UInt8(32) and v[e] != UInt8(9):
+        e += 1
+    if e - s != len(want):
+        return False
+    for j in range(len(want)):
+        if ascii_lower_byte(v[s + j]) != want[j]:
+            return False
+    return True
 
 
-def form(req: HTTPRequest) -> Form:
-    """The request's form fields; empty unless `is_form(req)`."""
+def form(req: HTTPRequest) -> Optional[Form]:
+    """The request's form fields, or None when the body is not a form."""
     if not is_form(req):
-        return Form()
+        return None
     return parse_form(body_string(req))
 
 

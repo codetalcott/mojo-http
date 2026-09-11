@@ -18,7 +18,7 @@ def test_attr_owns_the_delimiters_and_escapes_the_value() raises:
     h.text("link")
     h.close("a")
     assert_equal(
-        h.finish(),
+        h^.finish(),
         '<a href="/notes?q=&lt;x&gt;&amp;r=&quot;y&quot;">link</a>',
     )
 
@@ -30,7 +30,7 @@ def test_text_escapes_and_raw_does_not() raises:
     h.raw("<b>ok</b>")
     h.close("p")
     assert_equal(
-        h.finish(), "<p>&lt;script&gt;alert(1)&lt;/script&gt;<b>ok</b></p>"
+        h^.finish(), "<p>&lt;script&gt;alert(1)&lt;/script&gt;<b>ok</b></p>"
     )
 
 
@@ -45,13 +45,13 @@ def test_a_start_tag_is_ended_by_whatever_follows() raises:
     h.open("span")
     h.text("x")
     h.close("span")
-    assert_equal(h.finish(), '<input name="title" required><br><span>x</span>')
+    assert_equal(h^.finish(), '<input name="title" required><br><span>x</span>')
 
 
 def test_finish_ends_an_open_start_tag() raises:
     var h = Html()
     h.open("hr")
-    assert_equal(h.finish(), "<hr>")
+    assert_equal(h^.finish(), "<hr>")
 
 
 def test_attr_outside_an_element_raises() raises:
@@ -76,7 +76,7 @@ def test_non_ascii_passes_through_both_paths() raises:
     h.attr("title", "café")
     h.text("café")
     h.close("i")
-    assert_equal(h.finish(), '<i title="café">café</i>')
+    assert_equal(h^.finish(), '<i title="café">café</i>')
 
 
 def test_fragment_emits_its_id_once_and_targets_it() raises:
@@ -88,16 +88,16 @@ def test_fragment_emits_its_id_once_and_targets_it() raises:
     covers: N3
     """
     var f = Fragment("notes")
+    assert_equal(f.selector(), "#notes")
     f.open("form")
     f.swap("post", "/notes")
     f.close("form")
-    var out = f.finish()
+    var out = f^.finish()
     assert_equal(
         out,
         '<section id="notes"><form hx-post="/notes" hx-target="#notes"'
         ' hx-swap="outerHTML"></form></section>',
     )
-    assert_equal(f.selector(), "#notes")
 
 
 def test_fragment_root_tag_is_the_callers() raises:
@@ -105,7 +105,7 @@ def test_fragment_root_tag_is_the_callers() raises:
     f.open("li")
     f.text("one")
     f.close("li")
-    assert_equal(f.finish(), '<ul id="todos"><li>one</li></ul>')
+    assert_equal(f^.finish(), '<ul id="todos"><li>one</li></ul>')
 
 
 def test_swap_on_a_page_element_uses_the_fragments_selector() raises:
@@ -118,7 +118,7 @@ def test_swap_on_a_page_element_uses_the_fragments_selector() raises:
     page.text("all")
     page.close("a")
     assert_equal(
-        page.finish(),
+        page^.finish(),
         '<a hx-get="/notes" hx-target="#notes" hx-swap="outerHTML">all</a>',
     )
 
@@ -134,9 +134,30 @@ def test_an_expression_with_quotes_survives_as_entities() raises:
     h.attr("data-on:click", String("@post('/toggle/", 7, "')"))
     h.close("button")
     assert_equal(
-        h.finish(),
+        h^.finish(),
         '<button class="toggle" data-on:click="@post(&#x27;/toggle/7&#x27;)"></button>',
     )
+
+
+def test_an_id_that_a_selector_cannot_name_is_refused() raises:
+    """`id="note.7"` is a valid DOM id and `#note.7` selects id `note`
+    with class `7`; `#7` is a syntax error. The constructor refuses the
+    ids for which the element and its target attribute would disagree.
+
+    covers: N3
+    """
+    for bad in ["note.7", "7", "item:7", "a b", "", "x#y"]:
+        var raised = False
+        try:
+            var f = Fragment(bad)
+            _ = f^.finish()
+        except:
+            raised = True
+        assert_true(raised, String("accepted `", bad, "`"))
+    for good in ["notes", "_x", "a-b_c9", "Todos"]:
+        var f = Fragment(good)
+        assert_equal(f.selector(), String("#", good))
+        _ = f^.finish()
 
 
 def main() raises:

@@ -73,19 +73,30 @@ def test_form_is_empty_unless_the_content_type_says_form() raises:
     body was never meant as one, and parsing it anyway is how a JSON
     document becomes one field named after the whole document."""
     var body = String("title=looks+like+a+form")
-    assert_equal(len(form(_req("application/json", body))), 0)
-    assert_equal(len(form(_req("", body))), 0)
-    assert_equal(len(form(_req("text/plain", body))), 0)
+    assert_false(Bool(form(_req("application/json", body))))
+    assert_false(Bool(form(_req("", body))))
+    assert_false(Bool(form(_req("text/plain", body))))
     assert_false(is_form(_req("application/json", body)))
+    # The media type is compared whole: a look-alike subtype is not a form.
+    assert_false(is_form(_req("application/x-www-form-urlencodedx", body)))
+    assert_false(is_form(_req("application/x-www-form-urlencoded-foo", body)))
+    assert_false(is_form(_req("xapplication/x-www-form-urlencoded", body)))
 
 
 def test_form_accepts_parameters_and_any_case_on_the_content_type() raises:
     var body = String("title=t")
     var f = form(_req("application/x-www-form-urlencoded; charset=UTF-8", body))
-    assert_equal(f.first("title"), "t")
+    assert_true(Bool(f))
+    assert_equal(f.value().first("title"), "t")
     f = form(_req("Application/X-WWW-Form-URLEncoded", body))
-    assert_equal(f.first("title"), "t")
+    assert_true(Bool(f))
+    assert_equal(f.value().first("title"), "t")
     assert_true(is_form(_req("application/x-www-form-urlencoded", body)))
+    assert_true(is_form(_req("  application/x-www-form-urlencoded ;charset=utf-8", body)))
+    # A form with no fields is still a form: Some, and empty.
+    var empty = form(_req("application/x-www-form-urlencoded", String("")))
+    assert_true(Bool(empty))
+    assert_equal(len(empty.value()), 0)
 
 
 def test_decodes_exactly_as_the_query_parser_does() raises:

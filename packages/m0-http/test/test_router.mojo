@@ -371,6 +371,24 @@ def test_url_for_refuses_the_wrong_arity() raises:
     assert_true(raised)
 
 
+def test_url_for_refuses_an_empty_value() raises:
+    """`url_for("/notes/:id", "")` used to give `/notes/`, which `match`
+    collapses to the `/notes` collection — the reverse of one route
+    naming another, silently. A blank id is a programming error."""
+    var raised = False
+    try:
+        _ = url_for("/notes/:id", "")
+    except:
+        raised = True
+    assert_true(raised)
+    raised = False
+    try:
+        _ = reverse("/a/:x/:y", [String("1"), String("")])
+    except:
+        raised = True
+    assert_true(raised)
+
+
 def test_url_for_encodes_a_parameter_to_one_segment() raises:
     """A value with a slash or a space cannot add a segment or break the
     path; unreserved characters pass through, everything else is `%XX`."""

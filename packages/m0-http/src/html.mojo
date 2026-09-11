@@ -45,12 +45,17 @@ The attribute vocabulary `swap` emits is htmx's (`hx-get`, `hx-target`,
 that calls `swap` never writes the attribute, so changing the vocabulary is
 one edit here and none in any app.
 
-Lives in m0-core beside `escape_html_into` — its first caller — so that
-m0-http never imports it and stays at the four m0-core functions CLAUDE.md
-enumerates.
+Lives in m0-http, beside `fragment.mojo`, which is its consumer; it is the
+first caller of m0-core's `escape_html_into` and the fifth m0-core
+function m0-http imports. It was first placed in m0-core to keep that
+count at four, which mistook an inventory for the constraint: the rule is
+zero upward imports and no libpython on the link line, and m0-http
+importing m0-core is downward. A specific frontend library's attribute
+names do not belong in the zero-dependency package `build-ffi` compiles
+into `libm0core`.
 """
 
-from .html_escape import escape_html_into
+from m0_core.html_escape import escape_html_into
 
 comptime _LT = UInt8(60)  # '<'
 comptime _GT = UInt8(62)  # '>'
@@ -63,7 +68,7 @@ comptime _SLASH = UInt8(47)  # '/'
 struct Html(Movable):
     """A growing HTML buffer. `open` starts an element and leaves its start
     tag open for `attr`; anything that follows — `text`, `raw`, `open`,
-    `close` or an explicit `gt` — ends the start tag first, so a void
+    `close` — ends the start tag first, so a void
     element like `<input name="t">` needs no closing call of its own."""
 
     var _buf: List[UInt8]
@@ -122,11 +127,6 @@ struct Html(Movable):
         self.attr("hx-target", target)
         self.attr("hx-swap", "outerHTML")
 
-    def gt(mut self):
-        """End the open start tag now. Rarely needed: everything else ends
-        it on the way in."""
-        self._end_tag()
-
     def text(mut self, s: String):
         """`s` as text content, escaped."""
         self._end_tag()
@@ -146,8 +146,9 @@ struct Html(Movable):
         self._buf.extend(tag.as_bytes())
         self._buf.append(_GT)
 
-    def finish(mut self) -> String:
-        """The markup so far, with any open start tag ended."""
+    def finish(var self) -> String:
+        """The markup, with any open start tag ended. Consumes the builder:
+        a second `finish` is a compile error, not a second closing tag."""
         self._end_tag()
         return String(unsafe_from_utf8=Span(self._buf))
 
@@ -177,6 +178,18 @@ struct Fragment(Movable):
     def __init__(
         out self, var id: String, tag: String = "section", capacity: Int = 512
     ) raises:
+        """Raises unless `id` is a plain identifier: a letter or underscore,
+        then letters, digits, `_` or `-`. `id="note.7"` is a valid DOM id
+        but `#note.7` selects id `note` with class `7`, and `#7` is a
+        syntax error to `querySelector` — so a looser id would put the
+        element and the attribute that targets it in silent disagreement,
+        which is the one thing this type exists to prevent. An id is code,
+        not data; the check is the constructor's, once."""
+        if not _is_identifier(id):
+            raise Error(
+                'Fragment("', id, '"): an id must be a letter or underscore, '
+                "then letters, digits, `_` or `-`, so that `#id` selects it"
+            )
         self.id = id^
         self.tag = tag
         self.html = Html(capacity)
@@ -203,9 +216,6 @@ struct Fragment(Movable):
     def flag(mut self, name: String) raises:
         self.html.flag(name)
 
-    def gt(mut self):
-        self.html.gt()
-
     def text(mut self, s: String):
         self.html.text(s)
 
@@ -215,7 +225,26 @@ struct Fragment(Movable):
     def close(mut self, tag: String):
         self.html.close(tag)
 
-    def finish(mut self) -> String:
-        """Close the root element and return the whole fragment."""
+    def finish(var self) -> String:
+        """Close the root element and return the whole fragment. Consumes
+        the fragment, so it cannot be closed twice."""
         self.html.close(self.tag)
-        return self.html.finish()
+        # Read the buffer in place rather than moving the field out of a
+        # value being consumed, which the compiler refuses.
+        self.html._end_tag()
+        return String(unsafe_from_utf8=Span(self.html._buf))
+
+
+def _is_identifier(s: String) -> Bool:
+    var b = s.as_bytes()
+    if len(b) == 0:
+        return False
+    for i in range(len(b)):
+        var c = Int(b[i])
+        var alpha = (c >= ord("a") and c <= ord("z")) or (c >= ord("A") and c <= ord("Z"))
+        if i == 0:
+            if not (alpha or c == ord("_")):
+                return False
+        elif not (alpha or (c >= ord("0") and c <= ord("9")) or c == ord("_") or c == ord("-")):
+            return False
+    return True

@@ -16,6 +16,8 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 
 from m0_core.json_escape import escape_json_string
 
+from .router import _list_contains
+
 
 def json(status: Int, text: String, body: String) -> HTTPResponse:
     """A JSON response. `body` is emitted verbatim — escape it yourself."""
@@ -104,9 +106,18 @@ def vary(var resp: HTTPResponse, name: String) -> HTTPResponse:
     """
     var existing = resp.headers.get(HeaderKey.VARY)
     if existing:
-        if _vary_names(existing.value(), name):
+        var have = existing.value()
+        # `*` stands alone (RFC 9110 §12.5.5): the response already varies
+        # on everything, and `*, name` is a shape a sender must not emit.
+        if _list_contains(have, "*"):
             return resp^
-        resp.headers[HeaderKey.VARY] = String(existing.value(), ", ", name)
+        if _list_contains[fold_case=True](have, name):
+            return resp^
+        # An empty field is the same as none.
+        if have.strip().byte_length() == 0:
+            resp.headers[HeaderKey.VARY] = name
+            return resp^
+        resp.headers[HeaderKey.VARY] = String(have, ", ", name)
         return resp^
     resp.headers[HeaderKey.VARY] = name
     return resp^
@@ -120,15 +131,6 @@ def vary_accept(var resp: HTTPResponse) -> HTTPResponse:
     it — the 304 included, per RFC 9110 §15.4.5.
     """
     return vary(resp^, "Accept")
-
-
-def _vary_names(value: String, name: String) -> Bool:
-    """Whether a comma-separated `Vary` value already lists `name`."""
-    var want = name.lower()
-    for item in value.split(","):
-        if String(item).strip().lower() == want:
-            return True
-    return False
 
 
 def accept_header(req: HTTPRequest) raises -> String:

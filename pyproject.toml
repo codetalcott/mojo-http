@@ -583,7 +583,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -643,6 +643,14 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/se
 [tool.poe.tasks.sabotage-views]
 help = "A reading view must not compile if it writes"
 cmd = "python3 scripts/sabotage_views.py"
+deps = ["build-core", "build-http"]
+
+# The toolchain claim behind page_or_fragment's shape -- an app cannot
+# conform to a trait defined in a .mojoc -- as a probe that flips the day
+# it stops being true, with a control that catches a stale .mojoc.
+[tool.poe.tasks.check-mojoc-trait]
+help = "An app conformance to a .mojoc trait is still refused (the reason the shell is a thin function)"
+cmd = "python3 scripts/mojoc_trait_check.py"
 deps = ["build-core", "build-http"]
 
 # Built and run, not `mojo run`: the app links libsqlite3, and the JIT only
@@ -6134,9 +6142,14 @@ grep -q '<h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1>' page.html || fail 'a ma
 grep -q '<script>alert' page.html && fail 'a markup title reached its page unescaped'
 grep -qi '^vary: HX-Request' headers.txt || fail 'the detail page carried no Vary: HX-Request'
 
-# The detail route, and a note that does not exist.
-curl -s -H 'HX-Request: true' $B/notes/1 | grep -q '<h1>Café au lait</h1><p>hello world</p>' \
-  || fail 'the detail fragment did not carry the note'
+# The detail route, reached by FOLLOWING a rendered link rather than typing
+# the path: a route constant that was never registered reverses fine and
+# 404s only when clicked, and this is the click. Then a note that does not
+# exist.
+href=$(grep -o 'href="/notes/[0-9]*"' frag.html | head -1 | cut -d'"' -f2)
+[ -n "$href" ] || fail 'the list rendered no link to a note'
+curl -s -H 'HX-Request: true' "$B$href" | grep -q '<h1>Café au lait</h1><p>hello world</p>' \
+  || fail "following the rendered link $href did not reach the note"
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/999)
 [ "$code" = "404" ] || fail "expected 404 for a missing note, got $code"
 
@@ -6149,7 +6162,10 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json
 [ "$code" = "400" ] || fail "expected 400 for a body declared application/json, got $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -d 'title=&body=b' $B/notes)
 [ "$code" = "400" ] || fail "expected 400 for an empty title, got $code"
-curl -s -H 'HX-Request: true' $B/notes | grep -q 'json' && fail 'a refused body still created a note'
+curl -s -H 'HX-Request: true' $B/notes -o frag.html
+grep -q 'json' frag.html && fail 'a refused body still created a note'
+# Two notes were created above; a refused one must not have become a third.
+[ "$(grep -o '<li>' frag.html | wc -l | tr -d ' ')" = "2" ] || fail 'a refused body still created a note (list length moved)'
 
 # The router distinguishes 405 from 404 and says what IS allowed; a method
 # a note's route does not take must not touch the note.
@@ -6167,6 +6183,20 @@ grep -q 'Café au lait' frag.html && fail 'the list after delete still carried t
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
 
+# G14, the body side: a form field holding a byte that is not UTF-8
+# beside a percent-escape reaches the decoder from the body, not the
+# target. It must be answered, and the server must still be up.
+python3 - <<'PY' || fail 'a form body carrying a byte that is not UTF-8 got no answer'
+import socket
+body = b"title=\\x80%41&body=x"
+s = socket.create_connection(("127.0.0.1", 8094), timeout=5)
+s.sendall(b"POST /notes HTTP/1.1\\r\\nHost: x\\r\\nContent-Type: application/x-www-form-urlencoded\\r\\nContent-Length: %d\\r\\nConnection: close\\r\\n\\r\\n%s" % (len(body), body))
+head = s.recv(4096).split(b"\\r\\n")[0]
+s.close()
+assert head.startswith(b"HTTP/1.1 "), head
+PY
+curl --silent --fail $B/health > /dev/null || fail 'the server was gone after a form body carrying a byte that is not UTF-8'
+
 # The root is a redirect to the list, not a second copy of it.
 code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt $B/)
 [ "$code" = "303" ] || fail "expected 303 from /, got $code"
@@ -6175,6 +6205,7 @@ grep -qi '^location: /notes' headers.txt || fail 'the root redirect carried no L
 rm -f fragment.log headers.txt page.html frag.html
 echo "smoke-fragment-notes OK"
 python3 scripts/emit.py --covers N1 --task smoke-fragment-notes
+python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------
