@@ -57,6 +57,25 @@ def format_hash64(val: UInt64) -> String:
     return _format_hex(val, 16)
 
 
+def hex_digest(digest: Span[UInt8, _]) -> String:
+    """Formats any byte string as lowercase hex, two characters per byte.
+
+    What a SHA-256 or HMAC digest is printed as; `format_hash64` is the same
+    formatting for the 64-bit hashes.
+
+    Args:
+        digest: The bytes to format.
+
+    Returns:
+        The hex string, `2 * len(digest)` characters.
+    """
+    var out = List[UInt8](capacity=len(digest) * 2)
+    for b in digest:
+        out.append(hex_nibble(Int(b) >> 4))
+        out.append(hex_nibble(Int(b) & 0xF))
+    return String(StringSpan(unsafe_from_utf8=Span(out)))
+
+
 # ============================================================================
 # FNV-1a 32-bit Hash
 # ============================================================================

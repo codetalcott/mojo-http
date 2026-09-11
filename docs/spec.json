@@ -746,6 +746,14 @@
       "evidence": "`test_unquote.mojo:test_invalid_utf8_beside_an_escape_does_not_trap` (every PR) \u2014 `unquote` sliced its input as a `String` and one `GET /?x=<0x80>%41` killed the process on the loop thread, every app alike; the cookie jar (parsed for every request), the static mount, the negotiator and the ETag matcher had the same shape, each pinned by a test in its own file that declares this row, and a trap ends the test process, so the gate is those files passing at all. `Smoke test the hello server` and `Smoke test the notes API` send the same bytes over a socket and require an answer with the server still up"
     },
     {
+      "id": "G15",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "SHA-256 and HMAC-SHA256 in `m0-core`, with a constant-time tag compare: FIPS 180-4's examples and the empty message, every split of one message across `update` calls, and RFC 4231's seven cases including the truncated one and the two whose keys exceed the block size; `HmacSha256` absorbs its padded key once and finishes each message from a copy, and `verify` refuses a truncated tag",
+      "status": "verified",
+      "evidence": "`test_hmac.mojo:test_rfc_4231_case_7` (every PR) \u2014 the hash's own vectors are `test_sha256.mojo:test_fips_180_4_examples`; the first cryptographic primitive in the tree, and the one a signed grant and a signed session cookie (N13) rest on"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",

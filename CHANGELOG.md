@@ -10,6 +10,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **SHA-256 and HMAC-SHA256 in `m0-core`** (SPEC G15), with a
+  constant-time tag compare. The first cryptographic primitive in the
+  tree: `Sha256` streams and `digest` leaves the state intact, so
+  `HmacSha256` absorbs its padded key once per thread and finishes each
+  message from a copy — the shape a grant verifier on a pool thread wants,
+  with no allocation in the state. Gated by FIPS 180-4's examples, every
+  split of one message across the padding boundary, and RFC 4231's seven
+  cases; every expected value was produced by CPython's `hashlib` and
+  `hmac` rather than transcribed. `wyhash64` was never a MAC (D15); this
+  is what a signed grant for a Mojo-held stream, and later a signed session
+  cookie, are built on.
+
+
 - **An SSE hold from a Mojo mount** (SPEC N11). A view on a Mojo mount
   returns the two instruction headers a Django view returns, `M0-Hold:
   stream` and `M0-Channel`, and its pool thread does what a WSGI pool
