@@ -1,4 +1,4 @@
-"""`m0-datastar`: Datastar SSE protocol for Mojo (v1.0.2).
+"""`m0-datastar`: Datastar SSE protocol for Mojo (v1.0.3).
 
 Two layers. `consts` and `sse` are the pure wire format with no dependencies —
 usable on their own to generate Datastar frames for any transport. `stream` and

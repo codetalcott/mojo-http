@@ -169,8 +169,9 @@ def test_field_order_event_before_id() raises:
 
 
 # --- Conformance cases -------------------------------------------------------
-# Byte-exact expectations copied from the official SDK test suite at v1.0.2:
-# https://github.com/starfederation/datastar/tree/v1.0.2/sdk/test/get-cases
+# Byte-exact expectations copied from the official SDK test suite at v1.0.3
+# (the sdk/ tree is byte-identical to v1.0.2; the release changed nothing there):
+# https://github.com/starfederation/datastar/tree/v1.0.3/sdk/test/get-cases
 
 
 def test_conformance_patch_elements_with_defaults() raises:
