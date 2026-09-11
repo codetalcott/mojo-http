@@ -14,13 +14,17 @@ of those lifts, and the smoke has not changed:
 - **the URL table names the view.** `urls()` is the whole mapping; a view
   is a function, `add_read` hands it the store borrowed and `add_write`
   hands it `mut`, and there is no dispatch chain to fall through.
-- **the fragment names itself.** `Fragment("notes")` writes `id="notes"`
+- **the fragment names itself.** `Frag("notes")` writes `id="notes"`
   once — `NOTES_ID`, given to both renderers — and `f.swap("post", NOTES)`
   on the form generates the `hx-target` from that same id. Nothing in this
-  file types `#notes`.
+  file types `#notes`, and nothing in it types an `hx-` attribute either:
+  `Frag` is `Fragment[Htmx]`, named once below, and that one line is what
+  this app knows about its frontend library.
 - **the view returns one thing.** `page_or_fragment` reads `HX-Request`
-  and calls `wrap` only when a whole document is wanted, with
-  `Vary: HX-Request` on both. No view branches on the header.
+  (and `HX-History-Restore-Request` and `HX-Boosted`, which ask for the
+  page back) and
+  calls `wrap` only when a whole document is wanted, with `Vary` naming
+  every header it read on both. No view branches on a header.
 
 - **routes are values.** `NOTES` and `NOTE` are `comptime` patterns given
   to the table and to `url_for`; no renderer spells a path. A misspelled
@@ -31,6 +35,11 @@ of those lifts, and the smoke has not changed:
   None for any content type but the form's, so a JSON body posted here
   is refused rather than read as a field named after itself, and the
   check cannot be forgotten.
+- **an element is an expression.** `render_list` is `el(...)` nested the
+  way its markup nests, `text(...)` at every hole that carries data and
+  `f.el(...)` for an element that swaps the fragment; `render_note` is the
+  same fragment in the builder, one call per attribute. Both are the same
+  bytes, and the smoke did not move when the list changed shape.
 
 Nothing in it is written the old way any more. The diff from the first
 commit of this file to this one is what the framework layer adds.
@@ -48,7 +57,8 @@ What the app promises on the wire, and the gate asserts:
     GET  /health         {"status":"ok"}
 
 The attribute vocabulary is htmx 2 (`hx-*`), pinned to one CDN version;
-`Html.swap` in m0-core is the only place it is spelled.
+`Htmx.swap` in m0-http is the only place it is spelled, and `Frag` below
+is the only place this app names it.
 
 The store is in-memory, parallel lists, one process — see `notes_api`.
 
@@ -62,12 +72,18 @@ from m0_http import (
     AppConfig,
     Fragment,
     Html,
+    Htmx,
     Views,
     ViewService,
+    attr,
+    el,
+    flag,
     form,
     install_shutdown_signals,
     page_or_fragment,
+    text,
     url_for,
+    void,
 )
 
 # Pinned deliberately, as datastar_todo pins its CDN: a floating version
@@ -93,6 +109,11 @@ comptime NOTE = "/notes/:id"
 # and a list that swapped in a section the detail view's links did not
 # target would be the retyped-id drift `Fragment` exists to prevent.
 comptime NOTES_ID = "notes"
+
+# The vocabulary, named once. `Fragment[Datastar]` here — and the script
+# tag in `wrap` — is the whole of switching this app to the other library;
+# no renderer would change.
+comptime Frag = Fragment[Htmx]
 
 
 # --- state --------------------------------------------------------------------
@@ -196,66 +217,45 @@ def wrap(site: Site, fragment: String) raises -> String:
 
 
 def render_list(store: NoteStore) raises -> String:
-    """The `notes` fragment: the form, then every note with its actions."""
-    var f = Fragment(NOTES_ID)
-    f.open("form")
-    f.swap("post", NOTES)
-    f.open("input")
-    f.attr("name", "title")
-    f.attr("placeholder", "title")
-    f.flag("required")
-    f.open("textarea")
-    f.attr("name", "body")
-    f.attr("placeholder", "body")
-    f.close("textarea")
-    f.open("div")
+    """The `notes` fragment: the form, then every note with its actions.
+
+    Written in the expression tier — an element per expression, the
+    escaping named at each hole (`text` for data, `attr` for a value, a
+    bare string for markup this file trusts), `f.el` for an element that
+    swaps the fragment — where `render_note` below is the builder, one
+    call per attribute. Same `Frag`, same bytes; the two shapes are kept
+    side by side on purpose.
+    """
+    var f = Frag(NOTES_ID)
+    var boxes = String()
     for tag in ["work", "home", "later"]:
-        f.open("label")
-        f.open("input")
-        f.attr("type", "checkbox")
-        f.attr("name", "tag")
-        f.attr("value", tag)
-        f.text(String(" ", tag))
-        f.close("label")
-        f.raw(" ")
-    f.close("div")
-    f.open("button")
-    f.text("Add")
-    f.close("button")
-    f.close("form")
-    f.open("ul")
+        boxes += el("label", "", void("input", attr("type", "checkbox") + attr("name", "tag") + attr("value", tag)), text(String(" ", tag))) + " "
+    f.raw(f.el("form", "post", NOTES, "",
+        void("input", attr("name", "title") + attr("placeholder", "title") + flag("required")),
+        el("textarea", attr("name", "body") + attr("placeholder", "body")),
+        el("div", "", boxes),
+        el("button", "", "Add"),
+    ))
+    var items = String()
     for i in range(len(store.ids)):
         var url = url_for(NOTE, String(store.ids[i]))
-        f.open("li")
-        f.open("a")
-        f.attr("href", url)
-        f.swap("get", url)
-        f.text(store.titles[i])
-        f.close("a")
+        var tags = String()
         for t in range(len(store.tags[i])):
-            f.raw(" ")
-            f.open("span")
-            f.attr("class", "tag")
-            f.text(store.tags[i][t])
-            f.close("span")
-        f.raw(" ")
-        f.open("button")
-        f.attr("class", "delete")
-        f.swap("delete", url)
-        f.raw("&times;")
-        f.close("button")
-        f.close("li")
-    f.close("ul")
+            tags += " " + el("span", attr("class", "tag"), text(store.tags[i][t]))
+        items += el("li", "",
+            f.el("a", "get", url, attr("href", url), text(store.titles[i])),
+            tags, " ",
+            f.el("button", "delete", url, attr("class", "delete"), "&times;"),
+        )
+    f.raw(el("ul", "", items))
     if len(store.ids) == 0:
-        f.open("p")
-        f.text("none yet")
-        f.close("p")
+        f.raw(el("p", "", text("none yet")))
     return f^.finish()
 
 
 def render_note(store: NoteStore, i: Int) raises -> String:
     """The same fragment showing one note, so a swap lands in the same place."""
-    var f = Fragment(NOTES_ID)
+    var f = Frag(NOTES_ID)
     f.open("article")
     f.open("h1")
     f.text(store.titles[i])

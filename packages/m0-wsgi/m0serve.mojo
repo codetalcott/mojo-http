@@ -60,6 +60,7 @@ from lightbug_http import (
     Server, MojoPool, PoolContext, PoolHandler, HTTPRequest, HTTPResponse,
 )
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
+from m0_http import Html, Mount, Views, reply
 from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
@@ -159,42 +160,30 @@ def _dot(
         i += 1
     return total
 
+comptime MOUNT_INDEX = "/"
+comptime MOUNT_PROBE = "/probe"
+comptime MOUNT_SEARCH = "/search"
+"""The Mojo mount's routes, as values: given to the table and reversed by
+the index through the mount, so no link is spelled by hand."""
+
+
 @fieldwise_init
-struct MojoMount(PoolHandler):
-    """The handler behind `--mount PREFIX=mojo`.
+struct Corpus(Movable):
+    """The Mojo mount's per-thread state: where the mount is, and the corpus
+    `search` scans.
 
-    **This is the file a user edits.** A Mojo handler is a compile-time type,
-    not an importable object, so there is no way to name one on a command
-    line against a prebuilt binary: you replace this struct and rebuild.
-    That is the whole distribution story for a Mojo mount, and it is why the
-    shipped wheel remains a Python host and nothing more.
-
-    It lives in the entry file rather than in `src/` because `PoolHandler` is
-    an app-facing trait: a conformance declared behind the `.mojoc` has its
-    witness table silently never emitted (`lightbug_http/mojo_pool.mojo`
-    records why the trait itself sits in the fork).
-
-    It runs on a `MojoPool` thread, which **never attaches to the
-    interpreter**. That is the entire point of the mount: this path answers
-    at full speed while every Python thread in the same process is behind
-    the GIL.
-
-    Two routes, and the second exists to be measured, the way
-    `apps/pool_spike`'s `/slow` does. `/search` is a filtered similarity
-    scan: the shape a compute endpoint actually has, and the shape numpy
-    cannot hand to one BLAS call, because a per-row filter forces it to
-    either gather the selected rows or score every row and mask -- and its
-    gather holds the GIL. `bench/mojo_mount/` holds the Python arm that
-    computes the identical answer, and `poe bench-mojo-mount` compares them
-    in one process.
-
-    The corpus is generated from a fixed seed on each thread rather than
-    read from a file, so there is no fixture to ship and no I/O in the
-    request path. Per-thread rather than shared for the reason the pool
-    exists: a thread owns its handler, and nothing here is worth a lock.
+    Per-thread rather than shared for the reason the pool exists: a thread
+    owns its handler, and nothing here is worth a lock. The corpus is
+    generated from a fixed seed on each thread rather than read from a
+    file, so there is no fixture to ship and no I/O in the request path.
     """
 
     var thread_index: Int
+    var at: Mount
+    """Where this mount is served, from the lane's own prefix. Every link
+    the mount renders reverses through it, which is what keeps a link
+    right under `--mount /native=mojo` — the case `smoke-mojo-mount`
+    follows one to check."""
     var rows: Int
     var dims: Int
     var vecs: Pointer[Float32, MutUntrackedOrigin]
@@ -203,7 +192,7 @@ struct MojoMount(PoolHandler):
     var scores: Pointer[Float32, MutUntrackedOrigin]
 
     @staticmethod
-    def make(ctx: PoolContext) raises -> Self:
+    def generate(ctx: PoolContext, at: Mount) raises -> Self:
         var rows = CORPUS_ROWS
         var dims = CORPUS_DIMS
         var vecs = unsafe_alloc[Float32](count=rows * dims)
@@ -217,9 +206,9 @@ struct MojoMount(PoolHandler):
             tags[unsafe_offset=r] = UInt8(_lcg_bits(state) % 100)
         for d in range(dims):
             query[unsafe_offset=d] = _lcg_next(state)
-        return Self(ctx.index, rows, dims, vecs, tags, query, scores)
+        return Self(ctx.index, at, rows, dims, vecs, tags, query, scores)
 
-    def _search(mut self, sel: Int, k: Int) -> String:
+    def search(mut self, sel: Int, k: Int) -> String:
         """One fused pass: the tag is checked before the row is touched."""
         var dims = self.dims
         for r in range(self.rows):
@@ -252,34 +241,137 @@ struct MojoMount(PoolHandler):
             ids += String(best[i])
         return ids^
 
+
+def mount_index(
+    req: HTTPRequest, params: List[String], st: Corpus
+) raises -> HTTPResponse:
+    """GET / under the mount: its routes, as links that carry the prefix.
+
+    The one thing here a person clicks. Both hrefs come from
+    `st.at.url_for`, so they are right wherever the mount is —
+    `/native/probe` under `--mount /native=mojo`. A reverse that forgot the
+    prefix would render `/probe`, which the application at the root
+    answers 404: a dead link nobody sees until it is followed, which is
+    exactly what `smoke-mojo-mount` does.
+    """
+    var h = Html()
+    h.open("ul")
+    h.open("li")
+    h.open("a")
+    h.attr("href", st.at.url_for(MOUNT_PROBE))
+    h.text("probe")
+    h.close("a")
+    h.close("li")
+    h.open("li")
+    h.open("a")
+    h.attr("href", String(st.at.url_for(MOUNT_SEARCH), "?sel=10&k=5"))
+    h.text("search")
+    h.close("a")
+    h.close("li")
+    h.close("ul")
+    return reply.html(h^.finish())
+
+
+def mount_probe(
+    req: HTTPRequest, params: List[String], st: Corpus
+) raises -> HTTPResponse:
+    """The route the smoke and the fairness probe hit: which thread, no work."""
+    return reply.json(
+        200,
+        String("OK"),
+        String(
+            '{"mount":"mojo","path":"', req.uri.path,
+            '","thread":', st.thread_index, "}",
+        ),
+    )
+
+
+def mount_search(
+    req: HTTPRequest, params: List[String], mut st: Corpus
+) raises -> HTTPResponse:
+    """The route that exists to be measured (`poe bench-mojo-mount`): a
+    filtered similarity scan over this thread's corpus. A writing view
+    because the scan fills the thread's own score buffer."""
+    var sel = _qint(req, String("sel"), 100)
+    var k = _qint(req, String("k"), 10)
+    if sel < 1 or sel > 100:
+        sel = 100
+    if k < 1 or k > 64:
+        k = 10
+    return reply.json(
+        200,
+        String("OK"),
+        String(
+            '{"mount":"mojo","sel":', sel, ',"thread":',
+            st.thread_index, ',"top":[', st.search(sel, k), "]}",
+        ),
+    )
+
+
+def mount_urls(at: Mount) raises -> Views[Corpus]:
+    """The mount's table, registered under its prefix."""
+    var v = Views[Corpus](at)
+    v.add_read("GET", MOUNT_INDEX, mount_index)
+    v.add_read("GET", MOUNT_PROBE, mount_probe)
+    v.add_write("GET", MOUNT_SEARCH, mount_search)
+    return v^
+
+
+struct MojoMount(PoolHandler):
+    """The handler behind `--mount PREFIX=mojo`.
+
+    **This is the file a user edits.** A Mojo handler is a compile-time type,
+    not an importable object, so there is no way to name one on a command
+    line against a prebuilt binary: you replace this struct and rebuild.
+    That is the whole distribution story for a Mojo mount, and it is why the
+    shipped wheel remains a Python host and nothing more.
+
+    It lives in the entry file rather than in `src/` because `PoolHandler` is
+    an app-facing trait: a conformance declared behind the `.mojoc` has its
+    witness table silently never emitted (`lightbug_http/mojo_pool.mojo`
+    records why the trait itself sits in the fork). The same is why this
+    struct, and not `m0_http.ViewService`, is what conforms: it holds a
+    `Views` table and its per-thread state and forwards `func`, which is
+    all `ViewService` does, and is the shape any mounted Mojo app takes.
+
+    It runs on a `MojoPool` thread, which **never attaches to the
+    interpreter**. That is the entire point of the mount: this path answers
+    at full speed while every Python thread in the same process is behind
+    the GIL.
+
+    Three routes. `/probe` is what the smoke and the fairness probe hit;
+    `/search` exists to be measured, the way `apps/pool_spike`'s `/slow`
+    does — a filtered similarity scan, the shape a compute endpoint
+    actually has and the shape numpy cannot hand to one BLAS call, because
+    a per-row filter forces it to either gather the selected rows or score
+    every row and mask, and its gather holds the GIL (`bench/mojo_mount/`
+    holds the Python arm; `poe bench-mojo-mount` compares them in one
+    process); and `/` renders the other two as links, through the mount,
+    so that a prefix-blind reverse is a failed click in the smoke rather
+    than a surprise in production.
+    """
+
+    var views: Views[Corpus]
+    var state: Corpus
+
+    def __init__(out self, var views: Views[Corpus], var state: Corpus):
+        self.views = views^
+        self.state = state^
+
+    @staticmethod
+    def make(ctx: PoolContext) raises -> Self:
+        # The prefix comes from the lane this thread serves, which the pool
+        # filled from the same table the loop routes by — so the paths this
+        # table matches and the links it renders cannot disagree with where
+        # the loop sends requests.
+        var at = Mount(ctx.prefix)
+        return Self(mount_urls(at), Corpus.generate(ctx, at))
+
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
-        var body: String
-        if req.uri.path.endswith("/search"):
-            var sel = _qint(req, String("sel"), 100)
-            var k = _qint(req, String("k"), 10)
-            if sel < 1 or sel > 100:
-                sel = 100
-            if k < 1 or k > 64:
-                k = 10
-            body = String(
-                '{"mount":"mojo","sel":', sel, ',"thread":',
-                self.thread_index, ',"top":[', self._search(sel, k), "]}",
-            )
-        else:
-            body = String(
-                '{"mount":"mojo","path":"', req.uri.path,
-                '","thread":', self.thread_index, "}",
-            )
-        return HTTPResponse(
-            body_bytes=body.as_bytes(),
-            headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
-            status_code=200,
-            status_text="OK",
-        )
+        return self.views.dispatch(req, self.state)
 
     def shutdown(mut self):
         pass
-
 
 def _realtime_without_wsgi(opts: ServeOptions, is_asgi: Bool) -> Bool:
     """Whether `--realtime` has no application that could ever take a hold.

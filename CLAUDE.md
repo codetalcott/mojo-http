@@ -695,7 +695,12 @@ resolution path as the types its methods name, or conformance is accepted and
 the witness table silently never emitted — behind the `.mojoc`,
 `PoolHandler`'s inherited methods would name `m0_http`'s `HTTPRequest` while
 an app's conformance names `lightbug_http`'s. `build-apps` compiling
-`apps/pool_spike` is the guard against moving it back.
+`apps/pool_spike` is the guard against moving it back. `scripts/pool_sabotage.py`
+reverts four of that file's rules by matching EXACT source lines (the
+`T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
+so an edit to one of those lines passes every local gate and fails the
+pull request with `anchor missing`; run `poe sabotage-pool` after touching
+`mojo_pool.mojo`, and re-point the anchor with the line.
 
 `m0-core/ffi_exports.mojo` (package root, deliberately outside `src/`) holds
 the C-ABI exports for foreign callers (Bun `dlopen`, N-API, `ctypes`); `poe
@@ -1043,7 +1048,7 @@ pieces, and the language fact each rests on:
   early returns of `Optional[HTTPResponse]`. `params` stays positional —
   origins are not spellable as struct parameters on the pinned toolchain,
   which kills both a borrowing request wrapper and named route params.
-- **`Fragment` and `Html`** (`m0-http/src/html.mojo`): a fragment writes
+- **`Fragment[V]` and `Html`** (`m0-http/src/html.mojo`): a fragment writes
   its root id once and `swap(verb, url)` generates the attribute targeting
   it from that id; `attr` owns the `="` and `"` and escapes, `text`
   escapes, `raw` says so by name; `finish` consumes the builder, so a
@@ -1051,13 +1056,56 @@ pieces, and the language fact each rests on:
   cannot select. Helpers, not a safety type — `String` stays the currency
   and `reply.html(String)` is unchanged. In m0-http beside its consumer
   (it was first put in m0-core to keep the import count at four, which
-  mistook the inventory for the rule). `Html.swap` is the only place the
-  `hx-*` vocabulary is spelled.
+  mistook the inventory for the rule). **The vocabulary is the type
+  parameter**: `Fragment[Htmx]` emits `hx-*` and `Fragment[Datastar]`
+  emits `data-on:EVENT="@verb('url')"` with no target (Datastar morphs a
+  `text/html` answer into the element whose id it carries — the
+  fragment's own), the event picked from the OPEN element by htmx's own
+  default-trigger rule (a form submits with `__prevent` and
+  `{contentType: 'form'}`, a field changes, an `a`/`button` clicks with
+  `__prevent`, the rest click — WHEN agrees; WHAT travels is each
+  library's own, and a Datastar field sends the signal store, so bind it).
+  A Datastar URL sits inside a JavaScript string literal that `attr`'s
+  HTML escaping does not protect, so `Datastar.swap` refuses a URL
+  carrying `'`, `\`, CR or LF (`url_for` encodes them; an app building a
+  query from request data must too), and both vocabularies refuse a verb
+  that is not one of the five. `Htmx.swap` and `Datastar.swap` are the
+  only places either spelling lives; an app names its vocabulary once
+  (`comptime Frag = Fragment[Htmx]`). The conformances stay INSIDE
+  `html.mojo` because an app cannot conform to a `.mojoc` trait (below).
+  One mode, on purpose: Datastar keeps a non-default mode on the
+  RESPONSE (`datastar-mode`) and htmx on the element, so a `mode` on
+  `swap` is a spelling one of them cannot honour; when an app appends,
+  the mode belongs beside `page_or_fragment`, where both libraries take
+  a header. `apps/datastar_todo` is the Datastar reference — its list is
+  one line, verbatim as the `elements` of every broadcast frame
+  (`m0-datastar/test/test_fragment_frame.mojo`, SPEC N7) — and
+  `docs/notes/one-renderer-two-transports.md` records what was checked
+  against the v1.0.3 bundle. **Two tiers over one buffer**: the builder
+  (one call per attribute, allocates once) and the expression tier —
+  `el(tag, attrs, children...)`, `void`, `attr`, `flag`, `text`, and
+  `Fragment.el(tag, verb, url, ...)` for an element that swaps the
+  fragment — where an element is a `String`, each hole names its
+  escaping and every `el` allocates. `fragment_notes` keeps its list in
+  the tier and its detail in the builder on purpose (SPEC N10; the two
+  are pinned byte-identical in `test_html.mojo`). The tag goes to
+  `Fragment.el` once because the vocabulary reads it; there is no
+  swap-attributes-as-a-string function, which would spell it twice. The
+  attrs slot is positional and `Html.raw_attrs` refuses a non-empty
+  value that does not open with a space, so `el("p", "none")` raises
+  instead of rendering `<pnone>`.
 - **`page_or_fragment`** (`m0-http/src/fragment.mojo`): the framework
-  decides page-versus-fragment from `HX-Request`; both answers carry
-  `Vary: HX-Request` through `reply.vary`, which APPENDS (`vary_accept`
-  used to overwrite, unnoticed while nothing set `Vary` twice) and keeps
-  `*` alone. A `status` parameter makes a styled 404 a 404. The shell is
+  decides page-versus-fragment from FOUR headers — `Datastar-Request:
+  true` is a fragment; `HX-Request: true` is a fragment unless
+  `HX-History-Restore-Request: true` or `HX-Boosted: true` is beside it,
+  because htmx 2.0.4's history restore sends both and swaps the answer's
+  BODY into the page it is rebuilding, and a boosted navigation targets
+  the body and takes a full document's body (a bare fragment there is a
+  page with no head, or a body that is one section) — and every answer
+  names all four in `Vary` through `reply.vary`, which
+  APPENDS (`vary_accept` used to overwrite, unnoticed while nothing set
+  `Vary` twice) and keeps `*` alone. A `status` parameter makes a styled
+  404 a 404. The shell is
   a `thin` function over a generic context, not a trait: an app's
   conformance to a trait defined in a `.mojoc` package gets no witness
   table — observed twice on this toolchain (`PoolHandler`, `PageShell`),
@@ -1074,7 +1122,16 @@ pieces, and the language fact each rests on:
   percent-encodes each value. `thin` values are not `==`-comparable, so
   routes-as-function-values is closed. `Router.pattern_of` plus
   `test_every_registered_route_reverses_and_matches` keep the two
-  directions honest.
+  directions honest. **A mounted table reverses through `Mount`**:
+  `Views[S](Mount("/native"))` registers every pattern under the prefix
+  and `Mount.url_for(PATTERN, ...)` puts it in front, one value used
+  twice, because a request under `--mount /native=mojo` arrives with its
+  path whole and a link rendered as `/notes` lands on the root
+  application — dead until clicked, which is why `smoke-mojo-mount`
+  follows a rendered link (SPEC N9). `PoolContext.prefix` is how a
+  `PoolHandler` learns it: filled by the pool from its own lane table, the
+  one the loop routes by. The state an app hands its views is the carrier
+  (`st.at.url_for(...)`); `m0serve`'s `MojoMount` is the worked example.
 - **`form(req)`** (`form.mojo`): `Optional` — None unless the content
   type is the form's, compared whole, so "not a form" cannot be read as an
   empty one and the check cannot be forgotten — holding an ordered

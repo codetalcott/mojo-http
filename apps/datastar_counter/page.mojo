@@ -6,8 +6,8 @@ binary with no static-file dependency and no `open()` in the request path.
 
 # Pinned deliberately: a floating CDN version would let an upstream release
 # break this example without a commit here. Matches the protocol version
-# m0-datastar implements (v1.0.2).
-comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"
+# m0-datastar implements (v1.0.3).
+comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.3/bundles/datastar.js"
 
 
 def render_page(count: Int, uptime: Int) -> String:
@@ -28,7 +28,7 @@ def render_page(count: Int, uptime: Int) -> String:
         _STYLE,
         '</head>\n'
         '<body data-signals=\'{"count":', String(count), ',"uptime":', String(uptime), '}\' '
-        # data-init, not the pre-1.0 data-on-load: v1.0.2 has no on-load
+        # data-init, not the pre-1.0 data-on-load: v1.0.x has no on-load
         # plugin, and the misnamed attribute fails silently.
         #
         # retry: 'always', because the default 'auto' treats the clean close

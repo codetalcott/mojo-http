@@ -66,6 +66,17 @@ specific reason to care: shared mutable state across serving threads is a
 measured 0.7x cliff (docs/notes/wsgi-vs-asgi-history.md §5), so which
 views mutate is a question the deployment shape actually asks.
 
+## A table knows where it is mounted
+
+`Views[S](Mount("/native"))` registers every pattern under the prefix, so
+the table matches the paths the loop actually routes to it under
+`--mount /native=mojo`, and `Mount.url_for` reverses to those same paths.
+The default is the root, where the prefix is empty and nothing changes.
+The state an app hands its views is the natural carrier for the same
+`Mount` value, so a renderer reaches `st.at.url_for(NOTE, id)` and never
+spells the prefix; the `Mount` docstring says why a table that did not
+know it is a dead link nobody sees until it is clicked.
+
 ## Views are stored as thin function pointers
 
 `fn` is gone in Mojo 1.0 and a function type spells `def (...) -> ...`,
@@ -106,7 +117,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.service import HTTPService
 
 from .reply import empty, problem
-from .router import Router, _list_contains
+from .router import Mount, Router, _list_contains
 
 
 struct Views[S: Movable]:
@@ -178,7 +189,11 @@ struct Views[S: Movable]:
 
     var _not_found: Optional[Self.ReadView]
 
-    def __init__(out self):
+    var mount: Mount
+    """Where this table is mounted; every pattern registers under it."""
+
+    def __init__(out self, mount: Mount = Mount()):
+        self.mount = mount
         self._router = Router()
         self._loop_router = Router()
         self._reads = List[Self.ReadView]()
@@ -190,14 +205,14 @@ struct Views[S: Movable]:
 
     def add_read(mut self, method: String, pattern: String, view: Self.ReadView):
         """Register a view that does not write. State arrives borrowed."""
-        self._router.add(method, pattern, len(self._is_read))
+        self._router.add(method, self.mount.join(pattern), len(self._is_read))
         self._is_read.append(True)
         self._slot.append(Int32(len(self._reads)))
         self._reads.append(view)
 
     def add_write(mut self, method: String, pattern: String, view: Self.WriteView):
         """Register a view that may write. State arrives `mut`."""
-        self._router.add(method, pattern, len(self._is_read))
+        self._router.add(method, self.mount.join(pattern), len(self._is_read))
         self._is_read.append(False)
         self._slot.append(Int32(len(self._writes)))
         self._writes.append(view)
@@ -211,7 +226,7 @@ struct Views[S: Movable]:
         reason. Keep the body quick — it runs on the thread every other
         connection is waiting on.
         """
-        self._loop_router.add(method, pattern, len(self._loops))
+        self._loop_router.add(method, self.mount.join(pattern), len(self._loops))
         self._loops.append(view)
 
     def answer_on_loop(self, req: HTTPRequest) -> Optional[HTTPResponse]:

@@ -3803,6 +3803,24 @@ curl -s $B/native/probe | grep -q '"thread":' || fail "no pool thread served the
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/nativeapp)
 [ "$code" = "404" ] || fail "/nativeapp answered $code; /native swallowed it"
 
+# Mount-aware links, gated the way smoke-hybrid gates Python's reverse():
+# the mount's index renders its routes through `Mount.url_for` under the
+# prefix the lane gave it, and a rendered link is FOLLOWED. A reverse that
+# forgot the prefix renders `/probe`, which the root application answers
+# 404 — a dead link invisible until clicked, which is what this click is.
+curl -s -o mount_index.html $B/native/ || fail "the mount's index did not answer"
+href=$(grep -o 'href="[^"]*/probe"' mount_index.html | head -1 | cut -d'"' -f2)
+[ -n "$href" ] || fail "the mount's index rendered no link to its probe"
+case "$href" in /native/*) ;; *) fail "the rendered link $href does not carry the mount prefix";; esac
+curl -s "$B$href" | grep -q '"mount":"mojo"' || fail "following the rendered link $href did not reach the Mojo mount"
+href=$(grep -o 'href="[^"]*/search[^"]*"' mount_index.html | head -1 | cut -d'"' -f2 | sed 's/&amp;/\\&/g')
+[ -n "$href" ] || fail "the mount's index rendered no link to its search"
+curl -s "$B$href" | grep -q '"top":\\[' || fail "following the rendered link $href did not reach the search"
+# The same link without its prefix is the dead one: the root mount does not know it.
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/probe)
+[ "$code" = "404" ] || fail "/probe answered $code at the root; the prefix was not what made the link live"
+rm -f mount_index.html
+
 # The claim. Two routes of one server under GIL-bound load: the Mojo mount
 # stays flat because its thread never attaches to the interpreter, and the
 # Python route is convoyed behind the lock. A shared execution mode cannot
@@ -3821,6 +3839,7 @@ pid=
 rm -f mojomount.log
 echo "smoke-mojo-mount OK"
 python3 scripts/emit.py --covers M19 --task smoke-mojo-mount
+python3 scripts/emit.py --covers N9 --task smoke-mojo-mount
 """
 
 [tool.poe.tasks.smoke-fasthtml]
@@ -6141,10 +6160,12 @@ python3 scripts/emit.py --covers G14 --task smoke-notes
 # through a urlencoded form (the continuation-byte regression the todo
 # demo's escaper shipped), a `<script>` title rendered inert, a checkbox
 # key repeated once per tick and every value kept, one URL answering a bare
-# fragment under `HX-Request: true` and a whole document without it with
-# `Vary` on BOTH, a body that is not a form refused rather than parsed as
-# one field named after the whole document, and a method the collection
-# does not take answered 405 with a correct Allow.
+# fragment under `HX-Request: true` (or `Datastar-Request: true`) and a
+# whole document without it — or WITH it beside a history restore or a
+# boost — with `Vary` naming all four on every answer, a body that is not a form
+# refused rather than parsed as one field named after the whole document,
+# and a method the collection does not take answered 405 with a correct
+# Allow.
 [tool.poe.tasks.smoke-fragment-notes]
 help = "Start the fragment notes app, assert its wire contract (fragment vs page, Vary, forms, escaping, 405), stop"
 shell = """
@@ -6154,6 +6175,8 @@ trap 'kill $pid 2>/dev/null' EXIT
 B=http://localhost:8094
 
 fail() { echo "$1"; echo '=== fragment.log ==='; cat fragment.log; exit 1; }
+# Every header the fragment-or-page decision reads, in the order Vary names them.
+VARY='HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request'
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
@@ -6163,12 +6186,38 @@ curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
 curl -s -D headers.txt $B/notes -o page.html
 head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /notes without HX-Request was not a document'
 grep -q '<section id="notes">' page.html || fail 'the document did not contain the fragment'
-grep -qi '^vary: HX-Request' headers.txt || fail 'the document carried no Vary: HX-Request'
+grep -qi "^vary: $VARY" headers.txt || fail 'the document carried no Vary naming every header read'
 curl -s -D headers.txt -H 'HX-Request: true' $B/notes -o frag.html
 head -c 20 frag.html | grep -q '<section id="notes">' || fail 'GET /notes with HX-Request did not start with the fragment'
 grep -qiE 'doctype|<html' frag.html && fail 'the fragment carried document markup'
-grep -qi '^vary: HX-Request' headers.txt || fail 'the fragment carried no Vary: HX-Request'
+grep -qi "^vary: $VARY" headers.txt || fail 'the fragment carried no Vary naming every header read'
 grep -q 'none yet' frag.html || fail 'the empty list did not say so'
+
+# A history restore is a page: htmx 2.0.4 sends `HX-Request: true` AND
+# `HX-History-Restore-Request: true`, then swaps the answer's body into
+# the page it is rebuilding — a bare fragment there is a page with no
+# head, no script and no styles. The second header wins.
+curl -s -D headers.txt -H 'HX-Request: true' -H 'HX-History-Restore-Request: true' $B/notes -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail 'a history restore was answered a bare fragment'
+grep -q '<section id="notes">' page.html || fail 'the restored document did not contain the fragment'
+grep -qi "^vary: $VARY" headers.txt || fail 'the restored document carried no Vary naming every header read'
+
+# A boosted navigation is a page too: hx-boost sends `HX-Boosted: true`
+# beside `HX-Request: true`, targets the body with innerHTML and takes a
+# full document's body — a bare fragment there replaces the whole page
+# with one section.
+curl -s -D headers.txt -H 'HX-Request: true' -H 'HX-Boosted: true' $B/notes -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail 'a boosted request was answered a bare fragment'
+grep -qi "^vary: $VARY" headers.txt || fail 'the boosted document carried no Vary naming every header read'
+
+# Datastar asks with its own header and gets the same bare fragment as a
+# text/html body, which it morphs into the element carrying the id. One
+# renderer, the other transport, decided by the framework from the header.
+curl -s -D headers.txt -H 'Datastar-Request: true' $B/notes -o frag.html
+head -c 20 frag.html | grep -q '<section id="notes">' || fail 'GET /notes with Datastar-Request did not answer the fragment'
+grep -qiE 'doctype|<html' frag.html && fail 'the Datastar answer carried document markup'
+grep -qi '^content-type: text/html' headers.txt || fail 'the Datastar answer was not text/html'
+grep -qi "^vary: $VARY" headers.txt || fail 'the Datastar answer carried no Vary naming every header read'
 
 # A urlencoded form: `+` is a space, %C3%A9 is one character and must come
 # back as those two bytes, and a checkbox key repeated once per tick keeps
@@ -6189,7 +6238,7 @@ grep -q '<script>alert' frag.html && fail 'a markup title reached the list unesc
 curl -s -D headers.txt $B/notes/2 -o page.html
 grep -q '<h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1>' page.html || fail 'a markup title was not escaped on its page'
 grep -q '<script>alert' page.html && fail 'a markup title reached its page unescaped'
-grep -qi '^vary: HX-Request' headers.txt || fail 'the detail page carried no Vary: HX-Request'
+grep -qi "^vary: $VARY" headers.txt || fail 'the detail page carried no Vary naming every header read'
 
 # The detail route, reached by FOLLOWING a rendered link rather than typing
 # the path: a route constant that was never registered reverses fine and
@@ -6254,6 +6303,7 @@ grep -qi '^location: /notes' headers.txt || fail 'the root redirect carried no L
 rm -f fragment.log headers.txt page.html frag.html
 echo "smoke-fragment-notes OK"
 python3 scripts/emit.py --covers N1 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N8 --task smoke-fragment-notes
 python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
 """
 
