@@ -35,6 +35,7 @@ They age.
 |---|---|
 | [Changelog](../CHANGELOG.md) | Changes by version. |
 | [Roadmap](ROADMAP.md) | Milestones, known issues with what retires each, what is not planned. |
+| [Decisions](DECISIONS.md) | Standing decisions about the application layer, each with what would retire it. |
 | [Design notes](notes/) | The engineering record: dated, long-form, kept as written. |
 | [WSGI conformance](WSGI_CONFORMANCE.md) | PEP 3333, clause by clause. |
 | [Releasing](RELEASING.md) | How a release happens, and the gates CI cannot run. |

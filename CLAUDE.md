@@ -14,14 +14,22 @@ request.
 the gate that proves it) and is the right place to look for "is X covered?".
 [docs/README.md](docs/README.md) says what every other page is for.
 
-Two milestone definitions, both derived from row STATUS rather than a
+Three milestone definitions, all derived from row STATUS rather than a
 per-row annotation:
 
 - **beta** — no row is `implemented`, the sheet's word for "in the tree, no
   gate dedicated to it". Nothing ships ungated.
-- **1.0** — beta, plus every `planned` row resolved (built, or moved to
-  `out of scope` with a reason), plus a current real-application soak, plus
-  Known issues each declaring what would retire them.
+- **1.0** — beta, plus every `planned` row outside section N resolved
+  (built, or moved to `out of scope` with a reason), plus a current
+  real-application soak, plus Known issues each declaring what would
+  retire them. Shipped; the report says whether its conditions still hold.
+- **the application layer** — no section-N row `implemented`, every
+  section-N `planned` row resolved, plus a soak on the layer: an
+  application outside `apps/` running on `Views`/`Fragment`, recorded in
+  `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
+  one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
+  (D1–D21, permanent ids, each with a retiring condition), which
+  `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
 WebSocket close linger (a slot held for the life of the process), close
@@ -1140,9 +1148,17 @@ pieces, and the language fact each rests on:
   `Dict` by contract; `test_form.mojo`'s encoding table is the anti-drift
   device, and it stays a test rather than a shared loop.
 
-Not built, each with a reason and a retiring condition in the note:
-templates, sessions and CSRF (`wyhash64` is not a MAC), multipart, `HX-*`
-header setters, named params, middleware, streaming from a Mojo mount.
+Not built, each a row of `docs/DECISIONS.md` with the note that argues it
+and the condition that would retire it: templates (D2), middleware (D3),
+named params (D4), routes as function values (D5), sessions and CSRF (D15;
+`wyhash64` is not a MAC), multipart (D16), `HX-*` header setters (D17),
+streaming from a Mojo mount (D18). Three of those are also `planned` SPEC
+rows with a ROADMAP heading each — N11 streaming from a mount, N12 a
+Datastar form end to end, N13 a login — and the ledger row stands until
+the row is built. Read the ledger and `poe milestones` before proposing a
+piece; the process is one pull request per round carrying the note, the
+rows, the ledger update and the milestone line, reviewed from a separate
+session before it merges.
 
 ## Runtime constraints
 

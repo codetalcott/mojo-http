@@ -8,6 +8,25 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **The application layer has a milestone, a ledger and planned rows.**
+  `poe milestones` prints a third milestone beside beta and 1.0, computed
+  from SPEC section N the way those are from the sheet: no row
+  `implemented`, every `planned` row resolved, and a soak on the layer — an
+  application outside `apps/` running on `Views`/`Fragment`, recorded in
+  `docs/REAL_APP_VALIDATION.md`'s new application-layer section. It reads
+  NOT MET, which is the honest state of a layer proven by demos. 1.0 now
+  counts `planned` rows outside section N only, since it shipped before
+  the section existed. Three rows are `planned` (N11 streaming from a Mojo
+  mount, N12 a Datastar form end to end, N13 a login), each with a ROADMAP
+  heading naming the application that pulls it and the gate that will
+  verify it. `docs/DECISIONS.md` is the ledger of standing decisions,
+  D1–D21, each naming the note that argues it and what would retire it;
+  `check-docs` fails when a row's note does not exist, its condition is
+  empty, its id is repeated or out of order, or its `superseded by` names
+  no row, and `--selftest` reverts each rule against the page.
+
 ## [1.1.0] — 2026-09-11
 
 A remote crash fix, and an application layer for programs written in Mojo.

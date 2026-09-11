@@ -1464,6 +1464,30 @@
       "capability": "Elements as expressions: `el(tag, attrs, children...)`, `void`, `attr`, `flag` and `text` compose as strings with the builder's escaping \u2014 the same list from both tiers is byte-identical \u2014 and `Fragment[V].el(tag, verb, url, ...)` spells the swap for the vocabulary from the tag it is given once, so a renderer reads as its markup with each escaping context named at the hole; `apps/fragment_notes`'s list is written this way beside its detail view in the builder",
       "status": "verified",
       "evidence": "`test_html.mojo:test_elements_compose_as_expressions_with_escaping_named` (every PR) \u2014 the swapping form is `test_html.mojo:test_fragment_el_spells_the_swap_from_the_tag_it_is_given`; `smoke-fragment-notes` did not change when the list moved onto the tier"
+    },
+    {
+      "id": "N11",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "Streaming from a Mojo mount: a view on a mounted `Views` table takes a Server-Sent Events hold from a pool thread the way a WSGI pool thread does \u2014 the `h` frame on the loop's bus channel \u2014 so an application's `LISTEN/NOTIFY` views can move onto the mount; decided by a probe, and if the probe fails a compute path mounts first and the note records why",
+      "status": "planned",
+      "evidence": "ROADMAP: Streaming from a Mojo mount"
+    },
+    {
+      "id": "N12",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A Datastar form end to end: `Fragment[Datastar]` on a `<form>` emits the submit action with `{contentType: 'form'}`, `form(req)` reads what the browser sends, and the broadcast morphs the answer into every tab; gated by a smoke that posts the form and greps the frame, and a browser run that submits it for real, since the form arm is where a wrong spelling fails silently",
+      "status": "planned",
+      "evidence": "ROADMAP: A Datastar form, end to end"
+    },
+    {
+      "id": "N13",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "Sessions and CSRF behind a login: an HMAC-SHA256 in `m0-core` gated by published test vectors, a signed session cookie emitted through `ResponseCookieJar.add_raw`, and a CSRF token on the form, on `apps/fragment_notes` with one user",
+      "status": "planned",
+      "evidence": "ROADMAP: Sessions and CSRF behind a login"
     }
   ]
 }

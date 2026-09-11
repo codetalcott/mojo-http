@@ -25,7 +25,11 @@ name a file that exists, a `planned` row a roadmap heading that resolves, an
 `out of scope` row a reason at all -- and because the alternative was a
 public page whose green rows nothing checked. What is NOT admitted, and is
 stated on the page: no check here can tell whether a cited gate exercises the
-capability its row claims.
+capability its row claims. check_decisions_ledger is the second widening
+of that kind, for docs/DECISIONS.md: a standing decision is a claim, and
+what is mechanical about it is that the note it says records it exists,
+its retiring condition is written down, and its id is one nobody else
+holds. Whether the decision is still right is the retiring condition's job.
 
 CI runs this via `uv run poe check-docs` on code changes. test.yml ignores
 *.md, so a doc-only edit is not re-checked — acceptable, because drift is
@@ -1267,6 +1271,219 @@ def check_bench_prose_figures():
         fail(msg)
 
 
+# The decisions ledger. docs/DECISIONS.md is one row per standing decision
+# about the application layer: a permanent id, the decision, where it is
+# recorded, its status and what would retire it. The strategy that produced
+# each row lives outside the tree; the ledger is what carries the constraint
+# into it, so a session that never reads the strategy still meets it. The
+# rules are the SPEC sheet's, applied to decisions: an id is assigned once
+# and never reused, a claim names where it is recorded and that place
+# exists, and a row that cannot say what would retire it is not a decision
+# but an omission. Pure functions of text, so the selftest can revert each
+# rule in memory and insist it is caught.
+LEDGER = "docs/DECISIONS.md"
+LEDGER_HEADER = "| id | decision | recorded in | status | retired by |"
+_LEDGER_ID = re.compile(r"^D(\d+)$")
+_LEDGER_STATUS = re.compile(
+    r"^(?:standing|superseded by (D\d+)|retired (\d{4}-\d{2}-\d{2}))$")
+_LEDGER_NOTE = re.compile(r"^\[[^\]]+\]\(notes/([A-Za-z0-9._-]+\.md)(?:#[^)]*)?\)$")
+_LEDGER_CLAUDE = re.compile(r"^CLAUDE\.md: (.+)$")
+
+
+def claude_headings(text):
+    """The `##` and `###` heading texts of CLAUDE.md, for `CLAUDE.md: <heading>`."""
+    return {m.group(1).strip() for m in re.finditer(r"^#{2,3} (.+)$", text, re.M)}
+
+
+def _ledger_rows(text):
+    """(line number, cells) for every row of every table under LEDGER_HEADER."""
+    import spec_sheet
+
+    rows = []
+    in_table = False
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.strip() == LEDGER_HEADER:
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if not line.startswith("|"):
+            in_table = False
+            continue
+        if re.match(r"^\|\s*-+", line):
+            continue
+        rows.append((n, spec_sheet.split_cells(line)))
+    return rows
+
+
+def ledger_problems(text, notes, headings):
+    """Pure: the ledger's text (None if the page is missing), the file names
+    under docs/notes/, and CLAUDE.md's heading texts -> failure strings.
+
+    Each rule is one a row can break on its own, and each has a sabotage in
+    the selftest: five cells; an id `Dn` strictly greater than the row
+    before it (which is both "never reused" and "never renumbered" as far
+    as text can say); a decision in words; a `recorded in` that is a link
+    to a note under docs/notes/ that exists, or `CLAUDE.md: <heading>` for
+    a heading CLAUDE.md has; a status that is `standing`, `superseded by
+    Dn` for a row in the table, or `retired YYYY-MM-DD`; and a retiring
+    condition, where `—` is the explicit "none foreseeable" and an empty
+    cell is the omission this exists to refuse.
+    """
+    where = LEDGER
+    if text is None:
+        return [f"{where} is missing. The application layer's standing "
+                "decisions are ledgered there, and a page that is gone is "
+                "every decision reopened at once"]
+    rows = _ledger_rows(text)
+    if not rows:
+        return [f"{where} has no table headed `{LEDGER_HEADER}`; the ledger "
+                "is read by that header and nothing else"]
+    out = []
+    ids = {}
+    for n, cells in rows:
+        if cells and _LEDGER_ID.match(cells[0]):
+            ids.setdefault(cells[0], n)
+    last = 0
+    for n, cells in rows:
+        at = f"{where}:{n}"
+        if len(cells) != 5:
+            out.append(f"{at}: a ledger row must be exactly 5 cells "
+                       f"(id, decision, recorded in, status, retired by); "
+                       f"got {len(cells)}")
+            continue
+        rid, decision, recorded, status, retire = cells
+        m = _LEDGER_ID.match(rid)
+        if not m:
+            out.append(f"{at}: {rid!r} is not a decision id (`D` and a number)")
+        else:
+            num = int(m.group(1))
+            if num <= last:
+                out.append(
+                    f"{at}: {rid} follows D{last}; ids are assigned once, "
+                    "in order, and never reused — a new decision takes the "
+                    "next number and a retired one keeps its line")
+            last = max(last, num)
+        if not decision.strip():
+            out.append(f"{at}: {rid} has no decision in its decision cell")
+        note = _LEDGER_NOTE.match(recorded)
+        heading = _LEDGER_CLAUDE.match(recorded)
+        if note:
+            if note.group(1) not in notes:
+                out.append(f"{at}: {rid} is recorded in `notes/{note.group(1)}`, "
+                           "which does not exist under docs/notes/")
+        elif heading:
+            if heading.group(1).strip() not in headings:
+                out.append(f"{at}: {rid} is recorded under CLAUDE.md heading "
+                           f"{heading.group(1).strip()!r}, which CLAUDE.md "
+                           "does not have")
+        else:
+            out.append(f"{at}: {rid}'s `recorded in` must be a link to a note "
+                       "under docs/notes/ or `CLAUDE.md: <heading>`; got "
+                       f"{recorded!r}")
+        s = _LEDGER_STATUS.match(status)
+        if not s:
+            out.append(f"{at}: {rid}'s status must be `standing`, `superseded "
+                       f"by Dn` or `retired YYYY-MM-DD`; got {status!r}")
+        elif s.group(1):
+            if s.group(1) not in ids:
+                out.append(f"{at}: {rid} is superseded by {s.group(1)}, which "
+                           "is not a row of the ledger")
+            elif s.group(1) == rid:
+                out.append(f"{at}: {rid} is superseded by itself")
+        if not retire.strip():
+            out.append(f"{at}: {rid} has no retiring condition. Write what "
+                       "would reopen it, or `—` for none foreseeable; an "
+                       "empty cell reads as a decision nobody can revisit")
+    return out
+
+
+def check_decisions_ledger():
+    """docs/DECISIONS.md: every decision is recorded somewhere that exists,
+    and says what would retire it."""
+    path = REPO / LEDGER
+    text = path.read_text() if path.exists() else None
+    notes = {p.name for p in (REPO / "docs" / "notes").glob("*.md")}
+    headings = claude_headings((REPO / "CLAUDE.md").read_text())
+    for msg in ledger_problems(text, notes, headings):
+        fail(msg)
+
+
+def _ledger_cases():
+    """The ledger rules reverted one at a time against the committed page.
+
+    Each mutation is applied to the real docs/DECISIONS.md in memory, so a
+    case that no longer matches the page (NOT APPLICABLE) fails the selftest
+    rather than going quiet -- a rule renamed out of existence is the
+    failure this is for. Returns (label, text, must_fire).
+    """
+    real = (REPO / LEDGER).read_text()
+    lines = real.splitlines(keepends=True)
+    first = next(i for i, l in enumerate(lines) if l.startswith("| D"))
+    second = next(i for i, l in enumerate(lines) if l.startswith("| D") and i > first)
+    row = lines[first]
+    import spec_sheet
+    cells = spec_sheet.split_cells(row)
+
+    def with_cells(new_cells, at=first):
+        edited = list(lines)
+        edited[at] = "| " + " | ".join(new_cells) + " |\n"
+        return "".join(edited)
+
+    def swapped():
+        edited = list(lines)
+        edited[first], edited[second] = edited[second], edited[first]
+        return "".join(edited)
+
+    def duplicated():
+        edited = list(lines)
+        edited.insert(first + 1, row)
+        return "".join(edited)
+
+    dash_row = [c if i != 4 else "—" for i, c in enumerate(cells)]
+    return [
+        ("(control: the ledger as committed)", real, False),
+        ("a decision recorded in a note that does not exist",
+         real.replace("(notes/mojo-handler-pool.md)", "(notes/no-such-note.md)", 1), True),
+        ("a decision recorded under a CLAUDE.md heading that does not exist",
+         with_cells([c if i != 2 else "CLAUDE.md: A heading that is not there"
+                     for i, c in enumerate(cells)]), True),
+        ("(control: a CLAUDE.md heading that exists resolves)",
+         with_cells([c if i != 2 else "CLAUDE.md: Runtime constraints"
+                     for i, c in enumerate(cells)]), False),
+        ("a recorded-in that is neither a note nor a heading",
+         with_cells([c if i != 2 else "the design record"
+                     for i, c in enumerate(cells)]), True),
+        ("an empty retiring condition",
+         with_cells([c if i != 4 else "" for i, c in enumerate(cells)]), True),
+        ("(control: a dash is the explicit none)", with_cells(dash_row), False),
+        ("an id used twice", duplicated(), True),
+        ("an id out of order", swapped(), True),
+        ("an id that is not a decision id",
+         with_cells(["A1"] + cells[1:]), True),
+        ("a status outside the three",
+         with_cells([c if i != 3 else "pending" for i, c in enumerate(cells)]), True),
+        ("superseded by an id that is not in the ledger",
+         with_cells([c if i != 3 else "superseded by D99" for i, c in enumerate(cells)]), True),
+        ("superseded by itself",
+         with_cells([c if i != 3 else "superseded by " + cells[0]
+                     for i, c in enumerate(cells)]), True),
+        ("(control: superseded by a row that is here)",
+         with_cells([c if i != 3 else "superseded by D2" for i, c in enumerate(cells)]), False),
+        ("retired without a date",
+         with_cells([c if i != 3 else "retired" for i, c in enumerate(cells)]), True),
+        ("(control: retired on a date)",
+         with_cells([c if i != 3 else "retired 2026-09-11"
+                     for i, c in enumerate(cells)]), False),
+        ("an empty decision cell",
+         with_cells([c if i != 1 else "" for i, c in enumerate(cells)]), True),
+        ("a row loses a cell", with_cells(cells[:4]), True),
+        ("the table header is reworded",
+         real.replace(LEDGER_HEADER, "| id | decision | where | status | retired by |", 1), True),
+        ("the page is missing", None, True),
+    ]
+
+
 def selftest():
     """The citation rule must be able to fire: one doctored input per case."""
     tracked = {".claude/handoffs/soak-design.md", "scripts/probes/herd.c",
@@ -1380,7 +1597,6 @@ def selftest():
             outside[rel] = len(unsourced_figures((REPO / rel).read_text(), rel))
     print("  outside the rule: "
           + ", ".join(f"{k} ({v})" for k, v in sorted(outside.items())))
-    print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     # The row-status rule: fires when prose disagrees with the sheet, and the
     # controls matter more than usual here, because the rule reads ordinary
     # sentences rather than a generated region. A status word loose in a
@@ -1409,7 +1625,25 @@ def selftest():
         good = fired == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
-
+    # The decisions ledger: each rule reverted against the committed page.
+    # The controls are as load-bearing as the sabotages -- a checker that
+    # fails the real ledger, or a dash, or a valid supersession, is one
+    # people learn to route around. A mutation that leaves the page
+    # unchanged is NOT APPLICABLE and counts as MISSED, so a rule whose
+    # anchor text is edited away fails here rather than going quiet.
+    real_ledger = (REPO / LEDGER).read_text()
+    notes = {p.name for p in (REPO / "docs" / "notes").glob("*.md")}
+    headings = claude_headings((REPO / "CLAUDE.md").read_text())
+    for label, text, must_fire in _ledger_cases():
+        if must_fire and text == real_ledger:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation left the page unchanged")
+            ok = False
+            continue
+        got = ledger_problems(text, notes, headings)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
+    print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
 
@@ -1449,6 +1683,7 @@ def main():
     check_rfc_citations()
     check_docs_cite_tracked_paths()
     check_row_statuses_in_prose()
+    check_decisions_ledger()
     check_bench_prose_figures()
     if failures:
         print("check-docs: FAIL")
