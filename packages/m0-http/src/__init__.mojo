@@ -9,6 +9,7 @@ SSE (Server-Sent Events) support, and multi-worker fork supervision.
 
 from .router import Router, MatchResult
 from .views import Views, ViewService
+from .fragment import page_or_fragment, wants_fragment
 from .content_negotiation import (
     AcceptResult,
     negotiate_encoding,
@@ -28,6 +29,7 @@ from .reply import (
     param_int,
     problem,
     redirect,
+    vary,
     vary_accept,
 )
 from .reload import MtimeScanner, ScanResult

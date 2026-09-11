@@ -1384,6 +1384,30 @@
       "capability": "A server-rendered fragment app: one URL answers a bare fragment under `HX-Request: true` and a whole document without it, `Vary: HX-Request` on both; a urlencoded form round-trips a multi-byte title and keeps every value of a repeated checkbox key; a markup title renders as text; a body that is not a form is refused; 405 with a correct `Allow`",
       "status": "verified",
       "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 `apps/fragment_notes`, the same resource `apps/notes_api` serves as JSON"
+    },
+    {
+      "id": "N2",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A view is a function the URL table names: registration assigns the handler id, a path in a method it does not take is 405 with `Allow`, an unmatched path is 404, and there is no fallthrough for a route to reach the wrong view. A view registered as reading receives the state borrowed, so a write in it does not compile (`poe sabotage-views`, inside `test-all`, compiles the counter-examples and insists they are refused)",
+      "status": "verified",
+      "evidence": "`test_views.mojo:test_wrong_method_is_405_with_allow` (every PR)"
+    },
+    {
+      "id": "N3",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A fragment names itself: `Fragment` writes its root id once and `swap` generates the attribute that targets it from that same id; `Html.attr` owns the attribute delimiters and escapes the value, `text` escapes, `raw` says so by name",
+      "status": "verified",
+      "evidence": "`test_html.mojo:test_fragment_emits_its_id_once_and_targets_it` (every PR)"
+    },
+    {
+      "id": "N4",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "`Vary` accumulates: a response that varies on two request headers names both, and a name is never repeated",
+      "status": "verified",
+      "evidence": "`test_reply.mojo:test_vary_appends_rather_than_overwrites` (every PR) \u2014 the overwrite it replaced kept whichever header was set last, unnoticed while nothing set `Vary` twice"
     }
   ]
 }

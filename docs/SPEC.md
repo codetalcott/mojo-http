@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**173 capabilities: 149 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 149 verified, 142 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**176 capabilities: 152 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 152 verified, 145 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -291,3 +291,6 @@ answers correctly, not that it is pleasant.
 | id | capability | status | evidence |
 |---|---|---|---|
 | N1 | A server-rendered fragment app: one URL answers a bare fragment under `HX-Request: true` and a whole document without it, `Vary: HX-Request` on both; a urlencoded form round-trips a multi-byte title and keeps every value of a repeated checkbox key; a markup title renders as text; a body that is not a form is refused; 405 with a correct `Allow` | verified | `Smoke test the fragment notes app` (every PR) — `apps/fragment_notes`, the same resource `apps/notes_api` serves as JSON |
+| N2 | A view is a function the URL table names: registration assigns the handler id, a path in a method it does not take is 405 with `Allow`, an unmatched path is 404, and there is no fallthrough for a route to reach the wrong view. A view registered as reading receives the state borrowed, so a write in it does not compile (`poe sabotage-views`, inside `test-all`, compiles the counter-examples and insists they are refused) | verified | `test_views.mojo:test_wrong_method_is_405_with_allow` (every PR) |
+| N3 | A fragment names itself: `Fragment` writes its root id once and `swap` generates the attribute that targets it from that same id; `Html.attr` owns the attribute delimiters and escapes the value, `text` escapes, `raw` says so by name | verified | `test_html.mojo:test_fragment_emits_its_id_once_and_targets_it` (every PR) |
+| N4 | `Vary` accumulates: a response that varies on two request headers names both, and a name is never repeated | verified | `test_reply.mojo:test_vary_appends_rather_than_overwrites` (every PR) — the overwrite it replaced kept whichever header was set last, unnoticed while nothing set `Vary` twice |

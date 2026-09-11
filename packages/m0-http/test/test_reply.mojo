@@ -25,6 +25,7 @@ from src.reply import (
     param_int,
     problem,
     redirect,
+    vary,
     vary_accept,
 )
 
@@ -100,6 +101,30 @@ def test_problem_escapes_the_text_it_is_given() raises:
 def test_vary_accept_marks_the_response() raises:
     var r = vary_accept(json(200, String("OK"), String("{}")))
     assert_equal(r.headers[HeaderKey.VARY], "Accept")
+
+
+def test_vary_appends_rather_than_overwrites() raises:
+    """One URL varying on two headers must name both. The overwrite this
+    replaced kept whichever was set last, which no test noticed while
+    nothing set `Vary` twice.
+
+    covers: N4
+    """
+    var r = vary(vary_accept(json(200, String("OK"), String("{}"))), String("HX-Request"))
+    assert_equal(r.headers[HeaderKey.VARY], "Accept, HX-Request")
+    r = vary(html(String("x")), String("HX-Request"))
+    assert_equal(r.headers[HeaderKey.VARY], "HX-Request")
+
+
+def test_vary_does_not_repeat_a_name() raises:
+    """Marked twice, or marked once each by two helpers spelling the name
+    in different cases, is still one entry."""
+    var r = vary_accept(vary_accept(json(200, String("OK"), String("{}"))))
+    assert_equal(r.headers[HeaderKey.VARY], "Accept")
+    r = vary(r^, String("accept"))
+    assert_equal(r.headers[HeaderKey.VARY], "Accept")
+    r = vary(vary(r^, String("HX-Request")), String("hx-request"))
+    assert_equal(r.headers[HeaderKey.VARY], "Accept, HX-Request")
 
 
 def test_accept_header_defaults_to_star_when_absent() raises:

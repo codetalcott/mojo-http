@@ -1,25 +1,30 @@
-"""Fragment notes — the notes resource as an htmx-shaped app, written ugly.
+"""Fragment notes — the notes resource as an htmx-shaped app.
 
 `apps/notes_api` serves notes as a JSON API. This is the SAME resource as a
 server-rendered app: a page with a form, a list that swaps in place, one
 note's detail, delete. The browser talks htmx; the server answers HTML.
 
-It is deliberately written the way every Mojo app in this tree was written
-before the framework layer, so that the diff between this file and its
-later shape is exactly what that layer adds. The URL table is the one piece
-lifted so far — a view is a function and `urls()` names it — and the rest
-stays as it was:
+It was first written the way every Mojo app in this tree was written —
+attributes by hand in eight places, `String(...)` concatenation, a
+handler-id chain, every view branching on the request header — and gated
+on WIRE OUTPUT only (`poe smoke-fragment-notes`), so each of those could be
+lifted into the framework under a green gate. This is the app after three
+of those lifts, and the smoke has not changed:
 
-- attributes by hand, quotes and all: `hx-target="#notes"` is typed in
-  eight places and nothing checks they agree with `id="notes"`
-- HTML by `String(...)` concatenation, `escape_html` on every value
-- literal URLs everywhere; a renamed route is a dead link nobody sees
-- an inline `application/x-www-form-urlencoded` parser, twice
-- every view branches on the `HX-Request` header itself
+- **the URL table names the view.** `urls()` is the whole mapping; a view
+  is a function, `add_read` hands it the store borrowed and `add_write`
+  hands it `mut`, and there is no dispatch chain to fall through.
+- **the fragment names itself.** `Fragment("notes")` writes `id="notes"`
+  once, and `f.swap("post", "/notes")` on the form generates the
+  `hx-target` from that same id. Nothing in this file types `#notes`.
+- **the view returns one thing.** `page_or_fragment` reads `HX-Request`
+  and calls `wrap` only when a whole document is wanted, with
+  `Vary: HX-Request` on both. No view branches on the header.
 
-Do not tidy any of that here. The smoke gate (`poe smoke-fragment-notes`)
-pins WIRE OUTPUT only, so each of those can be lifted into the framework
-one at a time under a green gate — which is how `reply.mojo` was built.
+Two things are still written the old way, on purpose, because their lifts
+are the next two steps: every URL is a literal (`"/notes/"` plus an id, in
+three places), and the urlencoded form is parsed by two inline loops at
+the bottom of the file.
 
 What the app promises on the wire, and the gate asserts:
 
@@ -33,9 +38,8 @@ What the app promises on the wire, and the gate asserts:
     GET  /               303 to /notes
     GET  /health         {"status":"ok"}
 
-The attribute vocabulary is htmx 2 (`hx-*`), pinned to one CDN version.
-That is provisional: the framework will generate these attributes, and the
-generator is the only thing that will know the spelling.
+The attribute vocabulary is htmx 2 (`hx-*`), pinned to one CDN version;
+`Html.swap` in m0-core is the only place it is spelled.
 
 The store is in-memory, parallel lists, one process — see `notes_api`.
 
@@ -46,10 +50,16 @@ from lightbug_http import Server, HTTPRequest, HTTPResponse
 from lightbug_http.header import HeaderKey
 from lightbug_http.uri import unquote
 
-from m0_core.html_escape import escape_html
+from m0_core.html import Fragment, Html
 
 from m0_http import reply
-from m0_http import AppConfig, Views, ViewService, install_shutdown_signals
+from m0_http import (
+    AppConfig,
+    Views,
+    ViewService,
+    install_shutdown_signals,
+    page_or_fragment,
+)
 
 # Pinned deliberately, as datastar_todo pins its CDN: a floating version
 # would let an upstream release break this example without a commit here.
@@ -110,121 +120,148 @@ struct NoteStore(Movable):
         _ = self.tags.pop()
 
 
-# --- html, by hand -------------------------------------------------------------
+# --- templates -----------------------------------------------------------------
 
 
-def _page(fragment: String) -> String:
-    return String(
-        "<!doctype html>\n"
-        '<html lang="en">\n'
-        "<head>\n"
-        '<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
-        "<title>notes</title>\n"
-        '<script src="', HTMX_CDN, '"></script>\n',
-        _STYLE,
-        "\n</head>\n<body>\n<main>\n",
-        fragment,
-        "\n</main>\n</body>\n</html>\n",
-    )
+struct Site:
+    """What the document knows that a fragment does not: the title."""
+
+    var title: String
+
+    def __init__(out self, var title: String):
+        self.title = title^
 
 
-def _list_fragment(store: NoteStore) -> String:
-    var out = String('<section id="notes">')
-    out += (
-        '<form hx-post="/notes" hx-target="#notes" hx-swap="outerHTML">'
-        '<input name="title" placeholder="title" required>'
-        '<textarea name="body" placeholder="body"></textarea>'
-        '<div><label><input type="checkbox" name="tag" value="work"> work</label>'
-        ' <label><input type="checkbox" name="tag" value="home"> home</label>'
-        ' <label><input type="checkbox" name="tag" value="later"> later</label></div>'
-        "<button>Add</button></form><ul>"
-    )
+def wrap(site: Site, fragment: String) raises -> String:
+    """The document around any fragment: head, the htmx script, the stylesheet."""
+    var h = Html(1024)
+    h.raw("<!doctype html>\n")
+    h.open("html")
+    h.attr("lang", "en")
+    h.raw("\n")
+    h.open("head")
+    h.raw("\n")
+    h.open("meta")
+    h.attr("charset", "utf-8")
+    h.raw("\n")
+    h.open("meta")
+    h.attr("name", "viewport")
+    h.attr("content", "width=device-width,initial-scale=1")
+    h.raw("\n")
+    h.open("title")
+    h.text(site.title)
+    h.close("title")
+    h.raw("\n")
+    h.open("script")
+    h.attr("src", HTMX_CDN)
+    h.close("script")
+    h.raw("\n")
+    h.raw(_STYLE)
+    h.raw("\n")
+    h.close("head")
+    h.raw("\n")
+    h.open("body")
+    h.raw("\n")
+    h.open("main")
+    h.raw("\n")
+    h.raw(fragment)
+    h.raw("\n")
+    h.close("main")
+    h.raw("\n")
+    h.close("body")
+    h.raw("\n")
+    h.close("html")
+    h.raw("\n")
+    return h.finish()
+
+
+def render_list(store: NoteStore) raises -> String:
+    """The `notes` fragment: the form, then every note with its actions."""
+    var f = Fragment("notes")
+    f.open("form")
+    f.swap("post", "/notes")
+    f.open("input")
+    f.attr("name", "title")
+    f.attr("placeholder", "title")
+    f.flag("required")
+    f.open("textarea")
+    f.attr("name", "body")
+    f.attr("placeholder", "body")
+    f.close("textarea")
+    f.open("div")
+    for tag in ["work", "home", "later"]:
+        f.open("label")
+        f.open("input")
+        f.attr("type", "checkbox")
+        f.attr("name", "tag")
+        f.attr("value", tag)
+        f.text(String(" ", tag))
+        f.close("label")
+        f.raw(" ")
+    f.close("div")
+    f.open("button")
+    f.text("Add")
+    f.close("button")
+    f.close("form")
+    f.open("ul")
     for i in range(len(store.ids)):
-        out += String(
-            '<li><a href="/notes/', store.ids[i], '" hx-get="/notes/', store.ids[i],
-            '" hx-target="#notes" hx-swap="outerHTML">',
-            escape_html(store.titles[i]), "</a>",
-        )
+        var url = String("/notes/", store.ids[i])
+        f.open("li")
+        f.open("a")
+        f.attr("href", url)
+        f.swap("get", url)
+        f.text(store.titles[i])
+        f.close("a")
         for t in range(len(store.tags[i])):
-            out += String(' <span class="tag">', escape_html(store.tags[i][t]), "</span>")
-        out += String(
-            ' <button class="delete" hx-delete="/notes/', store.ids[i],
-            '" hx-target="#notes" hx-swap="outerHTML">&times;</button></li>',
-        )
-    out += "</ul>"
+            f.raw(" ")
+            f.open("span")
+            f.attr("class", "tag")
+            f.text(store.tags[i][t])
+            f.close("span")
+        f.raw(" ")
+        f.open("button")
+        f.attr("class", "delete")
+        f.swap("delete", url)
+        f.raw("&times;")
+        f.close("button")
+        f.close("li")
+    f.close("ul")
     if len(store.ids) == 0:
-        out += "<p>none yet</p>"
-    out += "</section>"
-    return out
+        f.open("p")
+        f.text("none yet")
+        f.close("p")
+    return f.finish()
 
 
-def _detail_fragment(store: NoteStore, i: Int) -> String:
-    var out = String(
-        '<section id="notes"><article><h1>', escape_html(store.titles[i]),
-        "</h1><p>", escape_html(store.bodies[i]), "</p>",
-    )
+def render_note(store: NoteStore, i: Int) raises -> String:
+    """The same fragment showing one note, so a swap lands in the same place."""
+    var f = Fragment("notes")
+    f.open("article")
+    f.open("h1")
+    f.text(store.titles[i])
+    f.close("h1")
+    f.open("p")
+    f.text(store.bodies[i])
+    f.close("p")
     if len(store.tags[i]) > 0:
-        out += '<p class="tags">'
+        f.open("p")
+        f.attr("class", "tags")
         for t in range(len(store.tags[i])):
-            out += String('<span class="tag">', escape_html(store.tags[i][t]), "</span> ")
-        out += "</p>"
-    out += (
-        '</article><p><a href="/notes" hx-get="/notes" hx-target="#notes"'
-        ' hx-swap="outerHTML">all notes</a></p></section>'
-    )
-    return out
-
-
-# --- the fragment-or-page decision, per view -----------------------------------
-
-
-def _respond(req: HTTPRequest, fragment: String) -> HTTPResponse:
-    var is_hx = False
-    var hx = req.headers.get("hx-request")
-    if hx:
-        is_hx = hx.value() == "true"
-    var resp: HTTPResponse
-    if is_hx:
-        resp = reply.html(fragment)
-    else:
-        resp = reply.html(_page(fragment))
-    # One URL, two representations: a shared cache that stored the
-    # fragment would replay it to a direct navigation without this.
-    resp.headers[HeaderKey.VARY] = "HX-Request"
-    return resp^
-
-
-# --- form parsing, inline ------------------------------------------------------
-
-
-def _is_form(req: HTTPRequest) -> Bool:
-    var ct = req.headers.get(HeaderKey.CONTENT_TYPE)
-    if not ct:
-        return False
-    return ct.value().lower().startswith("application/x-www-form-urlencoded")
-
-
-def _form_first(body: String, name: String) raises -> String:
-    for item in body.split("&"):
-        var kv = String(item).split("=", 1)
-        if unquote[expand_plus=True](String(kv[0])) == name:
-            if len(kv) == 2:
-                return unquote[expand_plus=True](String(kv[1]))
-            return String("")
-    return String("")
-
-
-def _form_all(body: String, name: String) raises -> List[String]:
-    var out = List[String]()
-    for item in body.split("&"):
-        var kv = String(item).split("=", 1)
-        if unquote[expand_plus=True](String(kv[0])) == name:
-            if len(kv) == 2:
-                out.append(unquote[expand_plus=True](String(kv[1])))
-            else:
-                out.append(String(""))
-    return out^
+            f.open("span")
+            f.attr("class", "tag")
+            f.text(store.tags[i][t])
+            f.close("span")
+            f.raw(" ")
+        f.close("p")
+    f.close("article")
+    f.open("p")
+    f.open("a")
+    f.attr("href", "/notes")
+    f.swap("get", "/notes")
+    f.text("all notes")
+    f.close("a")
+    f.close("p")
+    return f.finish()
 
 
 # --- views ---------------------------------------------------------------------
@@ -233,8 +270,8 @@ def _form_all(body: String, name: String) raises -> List[String]:
 def index(
     req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
-    """GET /notes — the list, as a fragment or a page."""
-    return _respond(req, _list_fragment(store))
+    """GET /notes — the list."""
+    return page_or_fragment(req, render_list(store), Site("notes"), wrap)
 
 
 def create(
@@ -254,17 +291,17 @@ def create(
             400, "Invalid Note", 'the form must carry a non-empty "title"', "/notes"
         )
     store.add(title, _form_first(body, "body"), _form_all(body, "tag"))
-    return _respond(req, _list_fragment(store))
+    return page_or_fragment(req, render_list(store), Site("notes"), wrap)
 
 
 def detail(
     req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
-    """GET /notes/:id — one note, as a fragment or a page."""
+    """GET /notes/:id — one note."""
     var i = _index_of(store, params[0])
     if i < 0:
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
-    return _respond(req, _detail_fragment(store, i))
+    return page_or_fragment(req, render_note(store, i), Site(store.titles[i]), wrap)
 
 
 def delete(
@@ -275,7 +312,7 @@ def delete(
     if i < 0:
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
     store.remove(i)
-    return _respond(req, _list_fragment(store))
+    return page_or_fragment(req, render_list(store), Site("notes"), wrap)
 
 
 def root(req: HTTPRequest, params: List[String]) -> HTTPResponse:
@@ -312,6 +349,38 @@ def urls() raises -> Views[NoteStore]:
     v.add_read("GET", "/notes/:id", detail)
     v.add_write("DELETE", "/notes/:id", delete)
     return v^
+
+
+# --- form parsing, still inline ------------------------------------------------
+
+
+def _is_form(req: HTTPRequest) -> Bool:
+    var ct = req.headers.get(HeaderKey.CONTENT_TYPE)
+    if not ct:
+        return False
+    return ct.value().lower().startswith("application/x-www-form-urlencoded")
+
+
+def _form_first(body: String, name: String) raises -> String:
+    for item in body.split("&"):
+        var kv = String(item).split("=", 1)
+        if unquote[expand_plus=True](String(kv[0])) == name:
+            if len(kv) == 2:
+                return unquote[expand_plus=True](String(kv[1]))
+            return String("")
+    return String("")
+
+
+def _form_all(body: String, name: String) raises -> List[String]:
+    var out = List[String]()
+    for item in body.split("&"):
+        var kv = String(item).split("=", 1)
+        if unquote[expand_plus=True](String(kv[0])) == name:
+            if len(kv) == 2:
+                out.append(unquote[expand_plus=True](String(kv[1])))
+            else:
+                out.append(String(""))
+    return out^
 
 
 def main() raises:

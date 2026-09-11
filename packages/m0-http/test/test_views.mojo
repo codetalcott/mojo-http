@@ -1,9 +1,6 @@
 """The view table: dispatch, the 404/405 shapes, and the drift it prevents.
 
-No `covers:` line: SPEC.md's sections are protocol, process model and
-gateway conformance, and the framework layer (router, reply, negotiation)
-has no row there for this to claim. If routing ever gets a section, this
-file is its gate.
+SPEC section N is the framework layer's; N2 is this file's row.
 """
 
 from std.testing import TestSuite, assert_equal, assert_true
@@ -144,6 +141,12 @@ def test_a_custom_404_is_just_another_view() raises:
 
 
 def test_wrong_method_is_405_with_allow() raises:
+    """A path that exists, in a method it does not take, is 405 with the
+    Allow header RFC 9110 requires — and reaches no view, because there is
+    no fallthrough for it to reach.
+
+    covers: N2
+    """
     var v = _table()
     var st = Counter()
     var resp = v.dispatch(_req(String("PUT"), String("/notes")), st)
