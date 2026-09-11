@@ -1416,6 +1416,14 @@
       "capability": "Reverse URLs from the route pattern: `url_for(PATTERN, params...)` fills a pattern's `:name` segments in order, percent-encodes each value so it stays one segment, and raises on an arity mismatch; every route a router registers reverses to a path that matches back to the same handler",
       "status": "verified",
       "evidence": "`test_router.mojo:test_every_registered_route_reverses_and_matches` (every PR) \u2014 the pattern is a `comptime` constant given to both `add` and `url_for`, so a misspelled route is a compile error rather than a dead link"
+    },
+    {
+      "id": "N6",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "Urlencoded form bodies: `form(req)` decodes `application/x-www-form-urlencoded` into an ordered multimap that keeps every value of a repeated key, and is empty for any other content type so a JSON body is never read as a form; it decodes every value exactly as the query-string parser does, proven by one table run through both",
+      "status": "verified",
+      "evidence": "`test_form.mojo:test_decodes_exactly_as_the_query_parser_does` (every PR) \u2014 kept as a separate loop from `URI.parse` on purpose: that one is a last-wins dictionary by contract, and sharing the loop would force one of the two to change"
     }
   ]
 }

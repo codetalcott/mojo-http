@@ -8,7 +8,7 @@ It was first written the way every Mojo app in this tree was written —
 attributes by hand in eight places, `String(...)` concatenation, a
 handler-id chain, every view branching on the request header — and gated
 on WIRE OUTPUT only (`poe smoke-fragment-notes`), so each of those could be
-lifted into the framework under a green gate. This is the app after four
+lifted into the framework under a green gate. This is the app after five
 of those lifts, and the smoke has not changed:
 
 - **the URL table names the view.** `urls()` is the whole mapping; a view
@@ -25,9 +25,13 @@ of those lifts, and the smoke has not changed:
   to the table and to `url_for`; no renderer spells a path. A misspelled
   route is a compile error, and `url_for` raises on the wrong arity.
 
-One thing is still written the old way, on purpose, because its lift is
-the last step: the urlencoded form is parsed by two inline loops at the
-bottom of the file.
+- **the form is parsed once, by the framework.** `form(req)` is an
+  ordered multimap — `f.all("tag")` is every ticked checkbox — and is
+  empty for any content type but the form's, so a JSON body posted here
+  is refused rather than read as a field named after itself.
+
+Nothing in it is written the old way any more. The diff from the first
+commit of this file to this one is what the framework layer adds.
 
 What the app promises on the wire, and the gate asserts:
 
@@ -50,8 +54,6 @@ Run it:  uv run poe serve-fragment-notes
 """
 
 from lightbug_http import Server, HTTPRequest, HTTPResponse
-from lightbug_http.header import HeaderKey
-from lightbug_http.uri import unquote
 
 from m0_core.html import Fragment, Html
 
@@ -60,7 +62,9 @@ from m0_http import (
     AppConfig,
     Views,
     ViewService,
+    form,
     install_shutdown_signals,
+    is_form,
     page_or_fragment,
     url_for,
 )
@@ -288,19 +292,19 @@ def create(
     req: HTTPRequest, params: List[String], mut store: NoteStore
 ) raises -> HTTPResponse:
     """POST /notes — a urlencoded form; answers the list."""
-    if not _is_form(req):
+    if not is_form(req):
         return reply.problem(
             400, "Invalid Note",
             "the request body must be application/x-www-form-urlencoded",
             NOTES,
         )
-    var body = reply.body_string(req)
-    var title = _form_first(body, "title")
+    var f = form(req)
+    var title = f.first("title")
     if title.byte_length() == 0:
         return reply.problem(
             400, "Invalid Note", 'the form must carry a non-empty "title"', NOTES
         )
-    store.add(title, _form_first(body, "body"), _form_all(body, "tag"))
+    store.add(title, f.first("body"), f.all("tag"))
     return page_or_fragment(req, render_list(store), Site("notes"), wrap)
 
 
@@ -359,38 +363,6 @@ def urls() raises -> Views[NoteStore]:
     v.add_read("GET", NOTE, detail)
     v.add_write("DELETE", NOTE, delete)
     return v^
-
-
-# --- form parsing, still inline ------------------------------------------------
-
-
-def _is_form(req: HTTPRequest) -> Bool:
-    var ct = req.headers.get(HeaderKey.CONTENT_TYPE)
-    if not ct:
-        return False
-    return ct.value().lower().startswith("application/x-www-form-urlencoded")
-
-
-def _form_first(body: String, name: String) raises -> String:
-    for item in body.split("&"):
-        var kv = String(item).split("=", 1)
-        if unquote[expand_plus=True](String(kv[0])) == name:
-            if len(kv) == 2:
-                return unquote[expand_plus=True](String(kv[1]))
-            return String("")
-    return String("")
-
-
-def _form_all(body: String, name: String) raises -> List[String]:
-    var out = List[String]()
-    for item in body.split("&"):
-        var kv = String(item).split("=", 1)
-        if unquote[expand_plus=True](String(kv[0])) == name:
-            if len(kv) == 2:
-                out.append(unquote[expand_plus=True](String(kv[1])))
-            else:
-                out.append(String(""))
-    return out^
 
 
 def main() raises:
