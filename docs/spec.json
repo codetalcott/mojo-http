@@ -738,6 +738,14 @@
       "evidence": "`Fuzz the request decoder` (every PR) \u2014 20k mutations of a seed corpus against `parse_request_headers` and the chunked decoder, replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so \"no findings\" cannot mean \"checks nothing\""
     },
     {
+      "id": "G14",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "A request carrying bytes that are not UTF-8 \u2014 in the target, a static-mount path, a cookie, `Accept`, `If-None-Match` or `Range` \u2014 is answered, never trapped: every slice of a request-derived string on the serving path is a byte-span slice, which has no codepoint-boundary assert",
+      "status": "verified",
+      "evidence": "`test_unquote.mojo:test_invalid_utf8_beside_an_escape_does_not_trap` (every PR) \u2014 `unquote` sliced its input as a `String` and one `GET /?x=<0x80>%41` killed the process on the loop thread, every app alike; the cookie jar (parsed for every request), the static mount, the negotiator and the ETag matcher had the same shape, each pinned by a test in its own file that declares this row, and a trap ends the test process, so the gate is those files passing at all. `Smoke test the hello server` and `Smoke test the notes API` send the same bytes over a socket and require an answer with the server still up"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",

@@ -287,6 +287,40 @@ def test_prefix_and_root_are_normalized() raises:
     assert_equal(resp.take().status_code, 200)
 
 
+def _raw(*bytes: Int) -> String:
+    """A String holding exactly these bytes, valid UTF-8 or not."""
+    var l = List[UInt8]()
+    for b in bytes:
+        l.append(UInt8(b))
+    return String(unsafe_from_utf8=Span(l))
+
+
+def test_a_path_that_is_not_utf8_does_not_trap() raises:
+    """`serve` sliced the path past the prefix, `_safe_join` sliced each
+    segment and `content_type_for` sliced the extension, all as Strings —
+    a codepoint-boundary assert, so `GET /static/<0x80>x` killed the
+    process. `parse_range` had the same shape on the Range header. Every
+    one must get past its slices to the `stat`, which finds no such file
+    and declines the request (None: the app's 404 to give), with the
+    process still running to give it.
+
+    covers: G14
+    """
+    var s = StaticFiles(_fixture_root())
+    # Past the prefix: the slice used to start on the bad byte.
+    assert_false(Bool(s.serve(_get(String("/static/") + _raw(0x80) + String("%41.css")))))
+    # A whole segment of it, through `_safe_join`.
+    assert_false(Bool(s.serve(_get(String("/static/") + _raw(0x80) + String("/x.css")))))
+    # In the extension.
+    assert_false(Bool(s.serve(_get(String("/static/x.") + _raw(0x80)))))
+    assert_equal(content_type_for(String("x.") + _raw(0x80)), "application/octet-stream")
+    # The Range header, sliced after `bytes=` and around the dash.
+    var r = parse_range(String("bytes=") + _raw(0x80) + String("-"), 100)
+    assert_equal(r.kind, RANGE_NONE)
+    r = parse_range(String("bytes=0-") + _raw(0x80), 100)
+    assert_equal(r.kind, RANGE_NONE)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
 

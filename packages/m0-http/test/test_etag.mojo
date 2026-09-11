@@ -80,5 +80,26 @@ def test_etag_matches_with_spaces() raises:
     """ETag matching should handle extra whitespace around commas."""
     assert_true(etag_matches('W/"abc"', 'W/"xyz" , W/"abc" , W/"def"'))
 
+def _raw(*bytes: Int) -> String:
+    """A String holding exactly these bytes, valid UTF-8 or not."""
+    var l = List[UInt8]()
+    for b in bytes:
+        l.append(UInt8(b))
+    return String(unsafe_from_utf8=Span(l))
+
+
+def test_an_if_none_match_that_is_not_utf8_does_not_trap() raises:
+    """`etag_matches` trims each candidate with a String slice; a byte that
+    is not UTF-8 at the slice end trapped. It must compare bytes.
+
+    covers: G14
+    """
+    assert_false(etag_matches('W/"x"', _raw(0x80)))
+    assert_false(etag_matches('W/"x"', String(" ") + _raw(0x80) + String(" , W/\"x") + _raw(0xFF)))
+    # The same bytes on both sides, with surrounding whitespace to trim, match.
+    var tag = String('"') + _raw(0x80) + String('"')
+    assert_true(etag_matches(tag, String("  ") + tag + String(" ")))
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -157,7 +157,7 @@ struct StaticFiles(Copyable, Movable):
         if not path.startswith(self.prefix):
             return None
 
-        var rel = String(path[byte = self.prefix.byte_length() :])
+        var rel = String(unsafe_from_utf8=path.as_bytes()[self.prefix.byte_length() :])
         if rel.byte_length() == 0 or rel.endswith("/"):
             rel += "index.html"
 
@@ -365,7 +365,7 @@ def parse_range(header: String, total: Int) -> ByteRange:
     var h = header.lower()
     if not h.startswith("bytes="):
         return ByteRange(RANGE_NONE, 0, 0)
-    var spec = String(h[byte=6:])
+    var spec = String(unsafe_from_utf8=h.as_bytes()[6:])
     # One dash, no commas — found by byte scan ("-" at index 0 is a valid
     # suffix range, which index-as-truthiness would silently drop).
     var dash_idx = -1
@@ -377,8 +377,8 @@ def parse_range(header: String, total: Int) -> ByteRange:
             dash_idx = i
     if dash_idx < 0:
         return ByteRange(RANGE_NONE, 0, 0)
-    var lo = String(spec[byte = : dash_idx])
-    var hi = String(spec[byte = dash_idx + 1 :])
+    var lo = String(unsafe_from_utf8=sb[:dash_idx])
+    var hi = String(unsafe_from_utf8=sb[dash_idx + 1 :])
 
     if lo.byte_length() == 0:
         # Suffix: the LAST `hi` bytes.
@@ -435,7 +435,7 @@ def _safe_join(root: String, rel: String) -> Optional[String]:
             if Int(bytes[i]) == 0 or Int(bytes[i]) == ord("\\"):
                 return None
             continue
-        var seg = String(rel[byte = start:i])
+        var seg = String(unsafe_from_utf8=bytes[start:i])
         start = i + 1
         if seg.byte_length() == 0 or seg == "." or seg == "..":
             return None
@@ -453,7 +453,7 @@ def content_type_for(name: String) -> String:
     var dot = name.rfind(".")
     if not dot:
         return "application/octet-stream"
-    var ext = String(name[byte = dot.value() + 1 :]).lower()
+    var ext = String(unsafe_from_utf8=name.as_bytes()[dot.value() + 1 :]).lower()
     if ext == "html" or ext == "htm":
         return "text/html; charset=utf-8"
     if ext == "css":
