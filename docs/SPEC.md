@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**172 capabilities: 148 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 148 verified, 141 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**173 capabilities: 149 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 149 verified, 142 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -279,3 +279,15 @@ that found, is in [the traceability note](notes/traceability.md).
 | M17 | The live demo: the quickstart's shape as a public page with per-visitor channels and rate and size limits, served from its deploy image | verified | `Smoke test the live demo's deploy image` (every PR) — `deploy/demo/Dockerfile` built from the tree's own wheel and probed through a published port by `scripts/demo_probe.py`: a first visitor is handed a token cookie and the page names the served version; without the cookie the hold views answer 403 and a foreign-`Origin` upgrade is refused; one publish reaches a second stream on the visitor's channel and a stranger's stream hears nothing for a measured silence; a WebSocket frame comes back to the socket and to the streams; a message over the cap is 413 and a burst meets 429 with `Retry-After` after the first LIMIT attempts and within workers×LIMIT+1; m0serve is PID 1 by `/proc/1/cmdline` and `docker stop` drains to exit 0 with held connections open. The same probe, pointed at a URL instead of the image, verifies the live deploy |
 | M18 | A native build flavor, `poe build-serve-native`: the build host's CPU and OS floor, for a server on a desktop Mac, beside the portable wheel. A local build or a release tarball, never a second wheel, because pip cannot select a microarchitecture | verified | `Smoke test Apple Silicon topology, QoS and the native build flavor` (every PR) — the native binary launches, and its `build.apple_target` names the host's generation where the wheel flavor on the same machine said m1 — or `other` where the toolchain has no predicate for what the build targeted, which is what a virtualized CPU (GitHub's macOS runners) reads; what the line always catches is the wheel binary standing in for the native one on a host that is not an M1 |
 | M19 | A mount answered by a compiled-in Mojo handler, with no Python in its request path: `--mount PREFIX=mojo`, served by `MojoPool` threads on the mount's own lane | verified | `Smoke test a Mojo mount beside a Python one` (every PR) — both mounts answer and the Mojo one names the pool thread that served it; `/nativeapp` is not swallowed by `/native`; a mojo-only mounted server exits 2, because a Python host with no Python to host is asking for nothing; SIGTERM exits within 10 s with a Mojo lane live, asserted as an exit because the failure mode is a hung join rather than an error; and under eight GIL-bound connections `scripts/mojo_mount_probe.py` requires the Mojo mount's p99 to stay inside 25 ms AND to beat the Python route's by 3x, which a shared execution mode cannot do — pointing the probe's mojo-path option at a Python route is the negative arm and fails on both assertions |
+
+## N. Writing an application in Mojo
+
+Sections A through M are about serving Python. These rows are about the
+framework layer an application written in Mojo builds on — `m0-http`'s
+router, response constructors and HTML helpers — and each is gated by an
+example under `apps/` driven on the wire, so a row here says the layer
+answers correctly, not that it is pleasant.
+
+| id | capability | status | evidence |
+|---|---|---|---|
+| N1 | A server-rendered fragment app: one URL answers a bare fragment under `HX-Request: true` and a whole document without it, `Vary: HX-Request` on both; a urlencoded form round-trips a multi-byte title and keeps every value of a repeated checkbox key; a markup title renders as text; a body that is not a form is refused; 405 with a correct `Allow` | verified | `Smoke test the fragment notes app` (every PR) — `apps/fragment_notes`, the same resource `apps/notes_api` serves as JSON |

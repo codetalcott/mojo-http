@@ -1376,6 +1376,14 @@
       "capability": "A mount answered by a compiled-in Mojo handler, with no Python in its request path: `--mount PREFIX=mojo`, served by `MojoPool` threads on the mount's own lane",
       "status": "verified",
       "evidence": "`Smoke test a Mojo mount beside a Python one` (every PR) \u2014 both mounts answer and the Mojo one names the pool thread that served it; `/nativeapp` is not swallowed by `/native`; a mojo-only mounted server exits 2, because a Python host with no Python to host is asking for nothing; SIGTERM exits within 10 s with a Mojo lane live, asserted as an exit because the failure mode is a hung join rather than an error; and under eight GIL-bound connections `scripts/mojo_mount_probe.py` requires the Mojo mount's p99 to stay inside 25 ms AND to beat the Python route's by 3x, which a shared execution mode cannot do \u2014 pointing the probe's mojo-path option at a Python route is the negative arm and fails on both assertions"
+    },
+    {
+      "id": "N1",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A server-rendered fragment app: one URL answers a bare fragment under `HX-Request: true` and a whole document without it, `Vary: HX-Request` on both; a urlencoded form round-trips a multi-byte title and keeps every value of a repeated checkbox key; a markup title renders as text; a body that is not a form is refused; 405 with a correct `Allow`",
+      "status": "verified",
+      "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 `apps/fragment_notes`, the same resource `apps/notes_api` serves as JSON"
     }
   ]
 }

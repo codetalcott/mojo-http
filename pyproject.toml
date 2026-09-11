@@ -630,6 +630,10 @@ bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
+[tool.poe.tasks.serve-fragment-notes]
+help = "Run the fragment notes example (the notes resource as an htmx app) on :8080"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo"
+
 # Built and run, not `mojo run`: the app links libsqlite3, and the JIT only
 # resolves symbols from libraries already in its process — works on macOS via
 # the dyld shared cache, fails on Linux. Same reason as test-sqlite.
@@ -6054,6 +6058,106 @@ rm -f notes.log note1.json problem.json headers.txt static.css trav.txt
 echo "smoke-notes OK"
 python3 scripts/emit.py --covers G10 --task smoke-notes
 python3 scripts/emit.py --covers J6 --task smoke-notes
+"""
+
+# The notes resource as a server-rendered htmx app, gated on WIRE OUTPUT
+# only, so the app can be refactored onto the framework layer one piece at
+# a time under a green gate. Each assertion pins something a hand-written
+# page gets wrong: a title with a multi-byte character round-tripping
+# through a urlencoded form (the continuation-byte regression the todo
+# demo's escaper shipped), a `<script>` title rendered inert, a checkbox
+# key repeated once per tick and every value kept, one URL answering a bare
+# fragment under `HX-Request: true` and a whole document without it with
+# `Vary` on BOTH, a body that is not a form refused rather than parsed as
+# one field named after the whole document, and a method the collection
+# does not take answered 405 with a correct Allow.
+[tool.poe.tasks.smoke-fragment-notes]
+help = "Start the fragment notes app, assert its wire contract (fragment vs page, Vary, forms, escaping, 405), stop"
+shell = """
+M0_PORT=8094 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo > fragment.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null' EXIT
+B=http://localhost:8094
+
+fail() { echo "$1"; echo '=== fragment.log ==='; cat fragment.log; exit 1; }
+
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
+  | grep -q '"status":"ok"' || fail 'health check did not answer'
+
+# One URL, two representations. Without the header: a whole document, and
+# the fragment inside it. With it: the bare fragment, no doctype, no <html>.
+curl -s -D headers.txt $B/notes -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /notes without HX-Request was not a document'
+grep -q '<section id="notes">' page.html || fail 'the document did not contain the fragment'
+grep -qi '^vary: HX-Request' headers.txt || fail 'the document carried no Vary: HX-Request'
+curl -s -D headers.txt -H 'HX-Request: true' $B/notes -o frag.html
+head -c 20 frag.html | grep -q '<section id="notes">' || fail 'GET /notes with HX-Request did not start with the fragment'
+grep -qiE 'doctype|<html' frag.html && fail 'the fragment carried document markup'
+grep -qi '^vary: HX-Request' headers.txt || fail 'the fragment carried no Vary: HX-Request'
+grep -q 'none yet' frag.html || fail 'the empty list did not say so'
+
+# A urlencoded form: `+` is a space, %C3%A9 is one character and must come
+# back as those two bytes, and a checkbox key repeated once per tick keeps
+# every value. The answer is the list, as a fragment.
+code=$(curl -s -o frag.html -w '%{http_code}' -H 'HX-Request: true' \
+  -d 'title=Caf%C3%A9+au+lait&body=hello+world&tag=work&tag=home' $B/notes)
+[ "$code" = "200" ] || fail "expected 200 from create, got $code"
+grep -q 'Café au lait' frag.html || fail 'the title did not round-trip: multi-byte or plus-space decoding is wrong'
+grep -q '<span class="tag">work</span>' frag.html || fail 'the first checkbox value was lost'
+grep -q '<span class="tag">home</span>' frag.html || fail 'the repeated checkbox key lost its second value'
+head -c 20 frag.html | grep -q '<section id="notes">' || fail 'POST /notes with HX-Request did not answer the fragment'
+
+# A title that is markup is rendered as text, in the list and on its page.
+curl -s -o frag.html -H 'HX-Request: true' \
+  --data-urlencode 'title=<script>alert(1)</script>' --data-urlencode 'body=b' $B/notes
+grep -q '&lt;script&gt;alert(1)&lt;/script&gt;' frag.html || fail 'a markup title was not escaped in the list'
+grep -q '<script>alert' frag.html && fail 'a markup title reached the list unescaped'
+curl -s -D headers.txt $B/notes/2 -o page.html
+grep -q '<h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1>' page.html || fail 'a markup title was not escaped on its page'
+grep -q '<script>alert' page.html && fail 'a markup title reached its page unescaped'
+grep -qi '^vary: HX-Request' headers.txt || fail 'the detail page carried no Vary: HX-Request'
+
+# The detail route, and a note that does not exist.
+curl -s -H 'HX-Request: true' $B/notes/1 | grep -q '<h1>Café au lait</h1><p>hello world</p>' \
+  || fail 'the detail fragment did not carry the note'
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/999)
+[ "$code" = "404" ] || fail "expected 404 for a missing note, got $code"
+
+# A body whose content type is not the form's is refused, never parsed as
+# one. The bytes are deliberately form-SHAPED under a JSON content type:
+# a JSON document would fail the title check anyway, so only this shape
+# tells a server that reads the content type from one that guesses.
+# A form with no title is refused too.
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d 'title=json' $B/notes)
+[ "$code" = "400" ] || fail "expected 400 for a body declared application/json, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -d 'title=&body=b' $B/notes)
+[ "$code" = "400" ] || fail "expected 400 for an empty title, got $code"
+curl -s -H 'HX-Request: true' $B/notes | grep -q 'json' && fail 'a refused body still created a note'
+
+# The router distinguishes 405 from 404 and says what IS allowed; a method
+# a note's route does not take must not touch the note.
+code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -X DELETE $B/notes)
+[ "$code" = "405" ] || fail "expected 405 for DELETE on the collection, got $code"
+grep -qi '^allow: GET, POST, OPTIONS' headers.txt || fail '405 carried no or a wrong Allow header'
+code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH $B/notes/1)
+[ "$code" = "405" ] || fail "expected 405 for PATCH on a note, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
+[ "$code" = "200" ] || fail "a 405 on a note must leave it intact, but GET answered $code"
+
+# Delete answers the list without the note, and the note is gone.
+curl -s -X DELETE -H 'HX-Request: true' $B/notes/1 -o frag.html
+grep -q 'Café au lait' frag.html && fail 'the list after delete still carried the note'
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
+[ "$code" = "404" ] || fail "expected 404 after delete, got $code"
+
+# The root is a redirect to the list, not a second copy of it.
+code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt $B/)
+[ "$code" = "303" ] || fail "expected 303 from /, got $code"
+grep -qi '^location: /notes' headers.txt || fail 'the root redirect carried no Location'
+
+rm -f fragment.log headers.txt page.html frag.html
+echo "smoke-fragment-notes OK"
+python3 scripts/emit.py --covers N1 --task smoke-fragment-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------
