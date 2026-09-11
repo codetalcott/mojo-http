@@ -704,7 +704,7 @@ the witness table silently never emitted — behind the `.mojoc`,
 `PoolHandler`'s inherited methods would name `m0_http`'s `HTTPRequest` while
 an app's conformance names `lightbug_http`'s. `build-apps` compiling
 `apps/pool_spike` is the guard against moving it back. `scripts/pool_sabotage.py`
-reverts four of that file's rules by matching EXACT source lines (the
+reverts six of that file's rules by matching EXACT source lines (the
 `T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
 so an edit to one of those lines passes every local gate and fails the
 pull request with `anchor missing`; run `poe sabotage-pool` after touching
@@ -733,7 +733,15 @@ contract — a sync view approving a connection with `M0-Hold`/`M0-Channel`
 headers, `m0pub.publish()`, inbound WebSocket messages arriving as a plain
 POST — is [QUICKSTART.md](QUICKSTART.md), which is executable: `poe
 smoke-quickstart` runs its fenced blocks, then `docs/QUICKSTART_NEXT.md`'s, against the tree's own wheel, so
-editing it can break CI.
+editing it can break CI. The seam itself lives in the fork
+(`lightbug_http/hold.mojo`), because a Mojo view on a `--mount X=mojo`
+takes an SSE hold with the same two headers: its `MojoPool` thread does
+what a WSGI pool thread does — rewrites the response into the head, sends
+the loop the `h` frame before completing — and the loop drains it from
+its own registries (SPEC N11, `smoke-mojo-mount-hold`;
+docs/notes/hold-from-a-mojo-mount.md). Only under `--realtime`; a
+streaming response that is not a hold is still refused from a pool thread,
+and a `websocket` instruction degrades there.
 
 `packaging/m0serve/` builds the `pip install m0serve` wheel and holds the
 repo's **only** `[build-system]`: one in the root would make `uv sync` build
@@ -1152,10 +1160,10 @@ Not built, each a row of `docs/DECISIONS.md` with the note that argues it
 and the condition that would retire it: templates (D2), middleware (D3),
 named params (D4), routes as function values (D5), sessions and CSRF (D15;
 `wyhash64` is not a MAC), multipart (D16), `HX-*` header setters (D17),
-streaming from a Mojo mount (D18). Three of those are also `planned` SPEC
-rows with a ROADMAP heading each — N11 streaming from a mount, N12 a
-Datastar form end to end, N13 a login — and the ledger row stands until
-the row is built. Read the ledger and `poe milestones` before proposing a
+streaming from a Mojo mount other than as an `M0-Hold` (D22, which
+superseded D18 when the hold landed as N11). Two of those are also
+`planned` SPEC rows with a ROADMAP heading each — N12 a Datastar form end
+to end, N13 a login — and the ledger row stands until the row is built. Read the ledger and `poe milestones` before proposing a
 piece; the process is one pull request per round carrying the note, the
 rows, the ledger update and the milestone line, reviewed from a separate
 session before it merges.

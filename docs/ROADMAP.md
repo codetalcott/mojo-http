@@ -102,28 +102,10 @@ somebody else's Django projects inside the pull request that trips it.
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
-fails if it does not resolve. Three are planned, all on the application
+fails if it does not resolve. Two are planned, both on the application
 layer (SPEC section N); the server has none. Each names the application
 that pulls it, the gate that will verify it, and the
 [decision](DECISIONS.md) it retires, before it is built.
-
-### Streaming from a Mojo mount
-
-Row N11. Pulled by textshelf: its SSE views sleep in `LISTEN/NOTIFY` and
-hold pool threads (REAL_APP_VALIDATION's 2026-09 finding 2), the shape a
-Mojo mount would fix, and D18 stands in the way — `MojoPool` refuses a
-streaming response. Decided by a probe, not an argument: a WSGI pool thread
-already takes a hold by sending an `h` frame on the loop's bus channel
-([hold on a pool thread](notes/hold-on-a-pool-thread.md)); if a `MojoPool`
-thread can send the same frame and have the loop's handler subscribe the
-slot, D18 retires and the SSE view is the target. If it cannot, a compute
-path mounts first (the shape `bench-mojo-mount` measures) and the note
-records why. Gate: `smoke-hybrid`'s shape — a Django page renders a link
-into the mount through `Mount.url_for` on the Mojo side and `reverse()` on
-the Python side, the smoke follows it, and the mount's answer is served
-into the page; the negative arm is the unprefixed link, as
-`smoke-mojo-mount` does. Lands with the first record in the application
-layer's soak.
 
 ### A Datastar form, end to end
 
@@ -143,11 +125,14 @@ Row N13. `apps/fragment_notes` with one user, the smallest application with
 a login. In order: an HMAC-SHA256 in `m0-core` gated by published test
 vectors — a primitive with a test-vector gate, safe to build first — then
 a signed session cookie emitted through `ResponseCookieJar.add_raw`, then
-a CSRF token on the form. Retires D15. Not before the streaming row: a
-login on a demo proves less than one real path in production.
+a CSRF token on the form. Retires D15. Not before the textshelf path
+below it: a login on a demo proves less than one real path in production.
+The HMAC is also what that path needs first, so the primitive may land
+ahead of the login — [the note](notes/hold-from-a-mojo-mount.md) says why.
 
-The last five entries before these, all built:
+The last entries before these, all built:
 
+- [An SSE hold from a Mojo mount — shipped 2026-09-11](notes/hold-from-a-mojo-mount.md)
 - [Accept sharing: workers sharing a listener share its connections](notes/accept-sharing.md)
 - [A conformance-suite tier](notes/conformance-suite-tier.md)
 - [Structured CI results](notes/structured-ci-results.md)
