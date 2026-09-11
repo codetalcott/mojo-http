@@ -9,7 +9,7 @@ bytes before padding; case 5 is the one the RFC prints truncated.
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from src.hmac import HmacSha256, hmac_sha256, constant_time_equal
-from src.sha256 import hex_digest
+from src.hashing import hex_digest
 
 
 def _repeat(byte: UInt8, n: Int) -> List[UInt8]:
@@ -31,10 +31,13 @@ def test_rfc_4231_case_1() raises:
 
     covers: G15
     """
-    var key = _repeat(UInt8(0x0b), 20)
+    var key = _repeat(UInt8(0x0B), 20)
     var msg = List[UInt8](String("Hi There").as_bytes())
     var tag = hmac_sha256(Span(key), Span(msg))
-    assert_equal(hex_digest(Span(tag)), "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+    assert_equal(
+        hex_digest(Span(tag)),
+        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+    )
 
 
 def test_rfc_4231_case_2() raises:
@@ -45,7 +48,10 @@ def test_rfc_4231_case_2() raises:
     var key = List[UInt8](String("Jefe").as_bytes())
     var msg = List[UInt8](String("what do ya want for nothing?").as_bytes())
     var tag = hmac_sha256(Span(key), Span(msg))
-    assert_equal(hex_digest(Span(tag)), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+    assert_equal(
+        hex_digest(Span(tag)),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+    )
 
 
 def test_rfc_4231_case_3() raises:
@@ -53,10 +59,13 @@ def test_rfc_4231_case_3() raises:
 
     covers: G15
     """
-    var key = _repeat(UInt8(0xaa), 20)
-    var msg = _repeat(UInt8(0xdd), 50)
+    var key = _repeat(UInt8(0xAA), 20)
+    var msg = _repeat(UInt8(0xDD), 50)
     var tag = hmac_sha256(Span(key), Span(msg))
-    assert_equal(hex_digest(Span(tag)), "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe")
+    assert_equal(
+        hex_digest(Span(tag)),
+        "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+    )
 
 
 def test_rfc_4231_case_4() raises:
@@ -65,9 +74,12 @@ def test_rfc_4231_case_4() raises:
     covers: G15
     """
     var key = _range(1, 26)
-    var msg = _repeat(UInt8(0xcd), 50)
+    var msg = _repeat(UInt8(0xCD), 50)
     var tag = hmac_sha256(Span(key), Span(msg))
-    assert_equal(hex_digest(Span(tag)), "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b")
+    assert_equal(
+        hex_digest(Span(tag)),
+        "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
+    )
 
 
 def test_rfc_4231_case_5() raises:
@@ -75,13 +87,18 @@ def test_rfc_4231_case_5() raises:
 
     covers: G15
     """
-    var key = _repeat(UInt8(0x0c), 20)
+    var key = _repeat(UInt8(0x0C), 20)
     var msg = List[UInt8](String("Test With Truncation").as_bytes())
     var tag = hmac_sha256(Span(key), Span(msg))
-    assert_equal(hex_digest(Span(tag)), "a3b6167473100ee06e0c796c2955552bfa6f7c0a6a8aef8b93f860aab0cd20c5")
+    assert_equal(
+        hex_digest(Span(tag)),
+        "a3b6167473100ee06e0c796c2955552bfa6f7c0a6a8aef8b93f860aab0cd20c5",
+    )
     # RFC 4231 prints this one truncated to 128 bits; the full tag's
     # first sixteen bytes are that value.
-    assert_equal(hex_digest(Span(tag)[0:16]), "a3b6167473100ee06e0c796c2955552b")
+    assert_equal(
+        hex_digest(Span(tag)[0:16]), "a3b6167473100ee06e0c796c2955552b"
+    )
 
 
 def test_rfc_4231_case_6() raises:
@@ -89,10 +106,17 @@ def test_rfc_4231_case_6() raises:
 
     covers: G15
     """
-    var key = _repeat(UInt8(0xaa), 131)
-    var msg = List[UInt8](String("Test Using Larger Than Block-Size Key - Hash Key First").as_bytes())
+    var key = _repeat(UInt8(0xAA), 131)
+    var msg = List[UInt8](
+        String(
+            "Test Using Larger Than Block-Size Key - Hash Key First"
+        ).as_bytes()
+    )
     var tag = hmac_sha256(Span(key), Span(msg))
-    assert_equal(hex_digest(Span(tag)), "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
+    assert_equal(
+        hex_digest(Span(tag)),
+        "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+    )
 
 
 def test_rfc_4231_case_7() raises:
@@ -100,10 +124,19 @@ def test_rfc_4231_case_7() raises:
 
     covers: G15
     """
-    var key = _repeat(UInt8(0xaa), 131)
-    var msg = List[UInt8](String("This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.").as_bytes())
+    var key = _repeat(UInt8(0xAA), 131)
+    var msg = List[UInt8](
+        String(
+            "This is a test using a larger than block-size key and a larger"
+            " than block-size data. The key needs to be hashed before being"
+            " used by the HMAC algorithm."
+        ).as_bytes()
+    )
     var tag = hmac_sha256(Span(key), Span(msg))
-    assert_equal(hex_digest(Span(tag)), "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2")
+    assert_equal(
+        hex_digest(Span(tag)),
+        "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+    )
 
 
 def test_a_prepared_key_signs_many_messages() raises:
@@ -112,18 +145,34 @@ def test_a_prepared_key_signs_many_messages() raises:
     var key = _range(0, 64)
     var h = HmacSha256(Span(key))
     var one = h.mac(Span(String("block-size key").as_bytes()))
-    assert_equal(hex_digest(Span(one)), "1dad230598e011a4e4eabc6c8da8f55ef9a66a8881d1e16e23ea116ae28231ec")
+    assert_equal(
+        hex_digest(Span(one)),
+        "1dad230598e011a4e4eabc6c8da8f55ef9a66a8881d1e16e23ea116ae28231ec",
+    )
     var again = h.mac(Span(String("block-size key").as_bytes()))
-    assert_equal(hex_digest(Span(again)), "1dad230598e011a4e4eabc6c8da8f55ef9a66a8881d1e16e23ea116ae28231ec")
+    assert_equal(
+        hex_digest(Span(again)),
+        "1dad230598e011a4e4eabc6c8da8f55ef9a66a8881d1e16e23ea116ae28231ec",
+    )
     var other = h.mac(Span(String("another message").as_bytes()))
     assert_equal(
         hex_digest(Span(other)),
-        hex_digest(Span(hmac_sha256(Span(key), Span(String("another message").as_bytes())))),
+        hex_digest(
+            Span(
+                hmac_sha256(
+                    Span(key), Span(String("another message").as_bytes())
+                )
+            )
+        ),
     )
     assert_true(h.verify(Span(String("block-size key").as_bytes()), Span(one)))
-    assert_false(h.verify(Span(String("block-size key").as_bytes()), Span(other)))
+    assert_false(
+        h.verify(Span(String("block-size key").as_bytes()), Span(other))
+    )
     # A truncated tag is not the tag.
-    assert_false(h.verify(Span(String("block-size key").as_bytes()), Span(one)[0:16]))
+    assert_false(
+        h.verify(Span(String("block-size key").as_bytes()), Span(one)[0:16])
+    )
 
 
 def test_constant_time_equal() raises:
