@@ -223,6 +223,19 @@ hook, and `M0_PORT` config.
 `uv run poe serve-notes` runs it; `poe smoke-notes` asserts each feature end to
 end.
 
+The same resource as a server-rendered htmx app:
+[apps/fragment_notes/](apps/fragment_notes/server.mojo). A view is a function
+the URL table names (`Views`, with the state borrowed for reads and `mut` for
+writes, compile-checked); the fragment names itself (`Fragment("notes")`
+writes the id once and `swap` generates the attribute that targets it); the
+framework decides page-versus-fragment from `HX-Request` (`page_or_fragment`,
+`Vary` on both); routes are `comptime` patterns reversed by `url_for`; and
+`form(req)` keeps every value of a repeated checkbox key. `uv run poe
+serve-fragment-notes` runs it; `poe smoke-fragment-notes` pins its wire
+contract, which did not change while the app was refactored onto each of
+those in turn — the design is
+[a-fragment-that-names-itself](docs/notes/a-fragment-that-names-itself.md).
+
 ## Datastar
 
 `m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.2 wire format, and

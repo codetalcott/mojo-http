@@ -1016,6 +1016,59 @@ switches a slot to frame mode when the handler's response is
 heartbeat timer is shared: on the `sse_heartbeat_ms` cadence an SSE slot
 gets a `: heartbeat` comment and a WS slot gets a protocol ping.
 
+## Writing an application in Mojo
+
+`apps/fragment_notes` is the reference: the notes resource as an htmx app
+on the framework layer, gated on the wire by `smoke-fragment-notes` (SPEC
+section N; the design and the refusals are
+`docs/notes/a-fragment-that-names-itself.md`). It was written ugly first
+and refactored onto each piece under that green gate — do the same for any
+new piece of this layer: an app that asks, a wire gate, then the lift. The
+pieces, and the language fact each rests on:
+
+- **`Views[S]`** (`m0-http/src/views.mojo`): a view is a free function
+  `(req, params, state) raises -> HTTPResponse`; `add_read` hands the state
+  borrowed, `add_write` hands it `mut` (`poe sabotage-views` compiles the
+  counter-examples and insists they are refused), `add_loop` registers a
+  stateless view answered in `before_request` so it never becomes a pool
+  job. Views are stored as `thin` function pointers. A capturing closure is
+  not `thin`, so there is **no decorator or middleware story**: guards are
+  early returns of `Optional[HTTPResponse]`. `params` stays positional —
+  origins are not spellable as struct parameters on the pinned toolchain,
+  which kills both a borrowing request wrapper and named route params.
+- **`Fragment` and `Html`** (`m0-core/src/html.mojo`): a fragment writes
+  its root id once and `swap(verb, url)` generates the attribute targeting
+  it from that id; `attr` owns the `="` and `"` and escapes, `text`
+  escapes, `raw` says so by name. Helpers, not a safety type — `String`
+  stays the currency and `reply.html(String)` is unchanged. In m0-core so
+  the four-function import list above stays true. `Html.swap` is the only
+  place the `hx-*` vocabulary is spelled.
+- **`page_or_fragment`** (`m0-http/src/fragment.mojo`): the framework
+  decides page-versus-fragment from `HX-Request`; both answers carry
+  `Vary: HX-Request` through `reply.vary`, which APPENDS (`vary_accept`
+  used to overwrite, unnoticed while nothing set `Vary` twice). The shell
+  is a `thin` function over a generic context, not a trait: **no trait
+  defined in a `.mojoc` package can be conformed to by an app** — the
+  witness table is never emitted, even when the trait's methods name only
+  `String` — which is the same reason `HTTPService` and `PoolHandler` live
+  in the source-resolved fork.
+- **`url_for(PATTERN, params...)`** (`router.mojo`): the pattern is a
+  `comptime` constant given to both `add` and `url_for`, so a misspelled
+  route is a compile error; it raises on an arity mismatch and
+  percent-encodes each value. `thin` values are not `==`-comparable, so
+  routes-as-function-values is closed. `Router.pattern_of` plus
+  `test_every_registered_route_reverses_and_matches` keep the two
+  directions honest.
+- **`form(req)`** (`form.mojo`): an ordered multimap that keeps every
+  value of a repeated key, empty unless the content type is the form's.
+  Deliberately NOT factored out of `URI.parse`, which fills a last-wins
+  `Dict` by contract; `test_form.mojo`'s encoding table is the anti-drift
+  device, and it stays a test rather than a shared loop.
+
+Not built, each with a reason and a retiring condition in the note:
+templates, sessions and CSRF (`wyhash64` is not a MAC), multipart, `HX-*`
+header setters, named params, middleware, streaming from a Mojo mount.
+
 ## Runtime constraints
 
 Properties of the design, not defects to fix in passing:
