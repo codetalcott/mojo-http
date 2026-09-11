@@ -198,6 +198,34 @@ def publish_to_channels(
             pass  # full or gone: drop for that peer alone
 
 
+def reserved_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
+    """Build a reserved channel name: `\\x01<kind>/<slot>[/<lane>]`.
+
+    The namespace `channel_is_reserved` refuses at every publish boundary,
+    used by the internal senders that address a connection SLOT on the loop:
+    the executor's stream frames (`b`/`s`/`e`/`w`/`x`/`r`), a pool thread's
+    hold (`h`, `H`). The lane is the sender's own mount index, appended only
+    when it has one (so the unmounted wire format is unchanged); it is how
+    the loop handler routes a disconnect tag or an inbound WS message back
+    to the executor or mount that owns the slot — the name is stored as the
+    subscription's filter url, so the routing needs no side table that
+    could drift. `m0_wsgi.handler.asgi_stream_url` is this function under
+    its older name.
+    """
+    var b = List[UInt8]()
+    b.append(CHANNEL_CONTROL_BYTE)
+    for ch in kind.as_bytes():
+        b.append(ch)
+    b.append(UInt8(ord("/")))
+    for ch in String(slot).as_bytes():
+        b.append(ch)
+    if lane >= 0:
+        b.append(UInt8(ord("/")))
+        for ch in String(lane).as_bytes():
+            b.append(ch)
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
+
+
 def encode_bus_frame(url: String, event_id: Int, frame: Span[Byte, _]) -> List[UInt8]:
     """[event_id: 8 LE][url_len: 2 LE][url][frame]."""
     var out = List[UInt8](capacity=_BUS_HEADER + url.byte_length() + len(frame))

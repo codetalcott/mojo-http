@@ -10,6 +10,11 @@ from std.ffi import c_int, external_call
 from std.testing import TestSuite, assert_equal, assert_true
 from std.time import perf_counter_ns
 
+from lightbug_http.broadcast import decode_bus_frame
+from lightbug_http.c.platform import MSG_DONTWAIT
+from lightbug_http.c.socket import recv
+from lightbug_http.c.socketpair import socketpair_dgram
+from lightbug_http.header import Header, Headers
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.offload import OffloadPool
 from lightbug_http.uri import URI
@@ -53,8 +58,64 @@ struct SleepyHandler(PoolHandler):
         pass
 
 
+@fieldwise_init
+struct StreamingHandler(PoolHandler):
+    """Begins a stream that is not a hold: what `_pool_serve` must refuse."""
+
+    var index: Int
+
+    @staticmethod
+    def make(ctx: PoolContext) raises -> Self:
+        return Self(ctx.index)
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        var resp = json(200, String("OK"), String(": open\n\n"))
+        resp.sse_streaming = True
+        return resp^
+
+    def shutdown(mut self):
+        pass
+
+
+@fieldwise_init
+struct HoldHandler(PoolHandler):
+    """Takes an SSE hold the way a Django view does: two headers, a head."""
+
+    var index: Int
+
+    @staticmethod
+    def make(ctx: PoolContext) raises -> Self:
+        return Self(ctx.index)
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return HTTPResponse(
+            body_bytes=String("event: connected\ndata: {}\n\n").as_bytes(),
+            headers=Headers(
+                Header("M0-Hold", "stream"), Header("M0-Channel", "news")
+            ),
+            status_code=200,
+            status_text="OK",
+        )
+
+    def shutdown(mut self):
+        pass
+
+
 def _request() raises -> HTTPRequest:
     return HTTPRequest(URI.parse("http://127.0.0.1:8080/x"))
+
+
+def _complete(mut pool: OffloadPool, slot: Int) raises -> HTTPResponse:
+    """The loop's side of one job: wait for its completion, take the response."""
+    var deadline = perf_counter_ns() + 5_000_000_000
+    var got = False
+    while perf_counter_ns() < deadline and not got:
+        var done = pool.drain_completions()
+        for i in range(len(done)):
+            if done[i] == slot:
+                got = True
+    assert_true(got, "the pool thread never completed the job")
+    return pool.take_response(slot)
 
 
 def _thread_of(body: String) -> Int:
@@ -163,6 +224,85 @@ def test_every_thread_gets_its_own_handler() raises:
         distinct > 1,
         String("every response came from one handler (distinct=", distinct, ")"),
     )
+
+    _ = threads.stop_and_join(pool, 5_000_000_000)
+
+
+def test_an_unheld_streaming_response_is_refused() raises:
+    """A stream begun on a pool thread has no producer the loop drains, so
+    the thread answers 409 and marks the job raised (the connection closes
+    rather than hanging on a head that promises a body nothing writes).
+    A hold is the one exception, and the next test is that exception."""
+    var pool = OffloadPool(8)
+    var threads = MojoPool(1)
+    threads.start[StreamingHandler](pool.addr())
+    pool.park_request(0, _request())
+    assert_true(pool.submit(0))
+    var resp = _complete(pool, 0)
+    assert_equal(resp.status_code, 409)
+    assert_true(not resp.sse_streaming, "the refusal must not itself be a stream")
+    assert_true(pool.raised(0), "a refused stream must close the connection")
+    _ = threads.stop_and_join(pool, 5_000_000_000)
+
+
+def test_a_hold_sends_the_loop_its_frame_and_completes_with_the_head() raises:
+    """The seam a WSGI pool thread uses, taken by a Mojo one.
+
+    The response's `M0-Hold`/`M0-Channel` headers are consumed, the response
+    becomes the stream's head (`text/event-stream`, `sse_streaming` set, the
+    body kept), and an `h` frame naming the slot, the request's
+    `Last-Event-ID` and the channel is on the loop's bus channel by the time
+    the completion is — which is what lets the loop subscribe the slot in
+    its own registries before it writes the head. Without the frame the
+    client holds a stream nothing feeds; `poe sabotage-pool` reverts the
+    send and this must fail.
+
+    covers: N11
+    """
+    var pair = socketpair_dgram()
+    var loop_end = pair[0]
+    var thread_end = pair[1]
+    var pool = OffloadPool(8)
+    pool.set_hold_notify(thread_end)
+    var threads = MojoPool(1)
+    threads.start[HoldHandler](pool.addr())
+
+    pool.park_request(
+        0, HTTPRequest(URI.parse("http://127.0.0.1:8080/hold"),
+                       headers=Headers(Header("Last-Event-ID", "7")))
+    )
+    assert_true(pool.submit(0))
+    var resp = _complete(pool, 0)
+
+    assert_equal(resp.status_code, 200)
+    assert_true(resp.sse_streaming, "a hold completes as the stream's head")
+    assert_true(not pool.raised(0), "a hold is not a refusal")
+    assert_true("m0-hold" not in resp.headers, "the instruction header must not reach the wire")
+    assert_true("m0-channel" not in resp.headers, "the channel header must not reach the wire")
+    assert_equal(resp.headers["content-type"], "text/event-stream")
+    assert_true("x-worker" in resp.headers, "a hold names its worker, as a WSGI hold does")
+    assert_equal(
+        String(StringSpan(unsafe_from_utf8=Span(resp.body_raw))),
+        "event: connected\ndata: {}\n\n",
+    )
+
+    var buf = List[UInt8](capacity=256)
+    for _ in range(256):
+        buf.append(0)
+    var n = recv(FileDescriptor(loop_end), Span(buf), UInt(256), MSG_DONTWAIT)
+    assert_true(n > 10, "no hold frame on the loop's channel; the slot would never be subscribed")
+    var decoded = decode_bus_frame(Span(buf)[0:Int(n)])
+    assert_true(Bool(decoded), "the frame did not decode as a bus frame")
+    var frame = decoded.take()
+    # `\x01h/0`: the reserved byte, the kind, the slot; no lane on a
+    # single-lane pool.
+    var expected = List[UInt8]()
+    expected.append(UInt8(1))
+    for ch in String("h/0").as_bytes():
+        expected.append(ch)
+    assert_equal(frame.url, String(StringSpan(unsafe_from_utf8=Span(expected))))
+    assert_equal(frame.event_id, 7)
+    assert_equal(String(StringSpan(unsafe_from_utf8=Span(frame.frame))), "news")
 
     _ = threads.stop_and_join(pool, 5_000_000_000)
 

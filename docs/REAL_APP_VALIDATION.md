@@ -720,8 +720,12 @@ Django.
 **Not yet run.** No application outside `apps/` runs on `Views` or
 `Fragment` ([SPEC](SPEC.md) section N); the layer is proven by its demos,
 and `poe milestones` says so until a record lands here. The first candidate
-is one textshelf path on the Mojo mount
-([Streaming from a Mojo mount](ROADMAP.md#streaming-from-a-mojo-mount)).
+is textshelf's SSE hold views on a Mojo mount: the mechanism is built and
+gated (N11, [the note](notes/hold-from-a-mojo-mount.md)), and what the
+path still needs is the authorization each of those views performs before
+naming its channel — a session and a membership check — carried to the
+mount as a grant it can verify, which is the HMAC the login row also
+needs.
 
 A record here opens the way the server's does — `**Last run <date>**,
 against m0serve X.Y.Z` — names the application and the path it moved onto

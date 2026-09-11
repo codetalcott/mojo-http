@@ -163,6 +163,7 @@ def _dot(
 comptime MOUNT_INDEX = "/"
 comptime MOUNT_PROBE = "/probe"
 comptime MOUNT_SEARCH = "/search"
+comptime MOUNT_HOLD = "/hold"
 """The Mojo mount's routes, as values: given to the table and reversed by
 the index through the mount, so no link is spelled by hand."""
 
@@ -308,12 +309,49 @@ def mount_search(
     )
 
 
+def mount_hold(
+    req: HTTPRequest, params: List[String], st: Corpus
+) raises -> HTTPResponse:
+    """GET /hold?channel=NAME under the mount: an SSE hold from a Mojo view.
+
+    Spelled exactly the way a Django view spells it — the two instruction
+    headers, the body as the head of the stream — so the pool thread takes
+    it the way a WSGI pool thread takes a Django one (`mojo_pool.mojo`),
+    and a publish from Python reaches the stream through the loop's
+    registries. `smoke-mojo-mount-hold` is the gate. **Unauthenticated,
+    like `apps/django_realtime`'s publish, and wrong for production for the
+    same reason**: anyone who can reach the port can subscribe to any
+    channel. A real mount decides here whether this connection may be held
+    and which channel it joins, as a Django hold view does with its session.
+    """
+    var channel = String("news")
+    try:
+        ref q = req.uri.queries
+        if "channel" in q:
+            channel = q["channel"]
+    except:
+        pass
+    return HTTPResponse(
+        body_bytes=String(
+            'event: connected\ndata: {"mount":"mojo","thread":',
+            st.thread_index, "}\n\n",
+        ).as_bytes(),
+        headers=Headers(
+            Header("M0-Hold", "stream"),
+            Header("M0-Channel", channel),
+        ),
+        status_code=200,
+        status_text="OK",
+    )
+
+
 def mount_urls(at: Mount) raises -> Views[Corpus]:
     """The mount's table, registered under its prefix."""
     var v = Views[Corpus](at)
     v.add_read("GET", MOUNT_INDEX, mount_index)
     v.add_read("GET", MOUNT_PROBE, mount_probe)
     v.add_write("GET", MOUNT_SEARCH, mount_search)
+    v.add_read("GET", MOUNT_HOLD, mount_hold)
     return v^
 
 

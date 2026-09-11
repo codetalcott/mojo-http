@@ -65,6 +65,24 @@ SABOTAGES = [
         "        if job.kind == JOB_STOP:\n            continue",
         False,
     ),
+    # The hold seam (SPEC N11). Two rules, one each way: a stream that is
+    # NOT a hold must still be refused (the head would promise a body
+    # nothing writes), and a hold's frame must actually be sent (without it
+    # the loop never subscribes the slot, and the client holds a stream
+    # nothing feeds -- the smoke sees it as a publish that never arrives,
+    # the unit test as an empty channel).
+    (
+        "an unheld streaming response is served instead of refused",
+        "        if response.sse_streaming and not held:",
+        "        if False and not held:",
+        False,
+    ),
+    (
+        "the hold frame is never sent (a stream nothing feeds)",
+        "                if send_hold_frame(\n",
+        "                if True or send_hold_frame(\n",
+        False,
+    ),
 ]
 
 

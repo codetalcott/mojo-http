@@ -28,12 +28,24 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
 - **No `DetachingBackend` here.** The loop must detach around its wait only
   because of the GIL; with no interpreter there is nothing to detach from,
   and the plain `KqueueBackend`/`EpollBackend` is correct.
-- **Streaming handlers are refused, loudly.** `sse_drain_slot`,
-  `sse_slot_disconnected` and `ws_message` are called on the LOOP's handler,
-  while `func` here runs against a pool thread's own handler and its own
-  registries — so a stream begun on a pool thread has no producer the loop
-  can drain. `_pool_serve` answers 409 rather than serving a head that
-  promises a body nothing will write.
+- **Streaming handlers are refused, loudly — unless the stream is a hold.**
+  `sse_drain_slot`, `sse_slot_disconnected` and `ws_message` are called on
+  the LOOP's handler, while `func` here runs against a pool thread's own
+  handler and its own registries — so a stream begun on a pool thread has
+  no producer the loop can drain. `_pool_serve` answers 409 rather than
+  serving a head that promises a body nothing will write. The one stream a
+  pool thread CAN begin is an `M0-Hold: stream`, because a hold has no
+  producer of its own: the loop drains it from its registries and the bus
+  feeds it. A handler returns the same two instruction headers a Django
+  view returns (`lightbug_http/hold.mojo`), and this thread does what a
+  WSGI pool thread does with them — rewrites the response into the
+  stream's head, sends the loop an `h` frame on the loop's own bus channel
+  BEFORE completing (the frame is what subscribes the slot, in the
+  registries the loop actually drains), and completes with the head. Only
+  where the loop wired a channel (`OffloadPool.hold_notify_fd`, set by
+  `m0serve --realtime`); without one the headers go to the wire as they
+  would under any server that has never heard of them. A `websocket` hold
+  degrades the same way (`take_stream_hold`): nothing here performs a 101.
 - **`before_request` runs TWICE per pooled request**, and that is the loop's
   contract, not an accident here: once on the LOOP's handler before the job
   is submitted (`event_loop.mojo` — what answers there never becomes a job),
@@ -50,6 +62,8 @@ from lightbug_http.offload import OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_
 from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
 from lightbug_http.http.common_response import InternalError
 from lightbug_http.service import HTTPService
+from lightbug_http.hold import take_stream_hold, request_last_event_id, send_hold_frame
+from lightbug_http.c.process import getpid
 
 # The same back-edge `event_loop.mojo` uses for `m0_http.log`, and for the
 # same reason: `threads.mojo` is framework code, both sides live inside
@@ -247,6 +261,17 @@ struct MojoPool(Movable):
         return failed
 
 
+def _hold_unavailable() -> HTTPResponse:
+    return HTTPResponse(
+        body_bytes=String(
+            '{"error":"the stream could not be registered with the event loop; retry"}'
+        ).as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
+        status_code=503,
+        status_text="Service Unavailable",
+    )
+
+
 def _streaming_refused() -> HTTPResponse:
     """What a pool thread answers when a handler tries to stream from one.
 
@@ -306,8 +331,11 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
         var request = pool.take_request(slot)
         # Read before `func` consumes the request: `after_response` needs
         # both, and the loop cannot supply them — it gave the request away.
+        # The reconnect cursor too: a hold's subscription starts where the
+        # client says it left off, and only the request knows.
         var request_method = request.method
         var request_path = request.uri.path
+        var last_event_id = request_last_event_id(request)
 
         var response: HTTPResponse
         var raised = False
@@ -325,7 +353,26 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
                 # handler may return 500 deliberately — so it is signalled.
                 response = InternalError()
                 raised = True
-        if response.sse_streaming:
+        var held = False
+        if not raised and pool.hold_notify_fd >= 0:
+            # An `M0-Hold: stream` from a Mojo handler: the same headers a
+            # Django view returns, taken the way a WSGI pool thread takes
+            # them. The frame goes BEFORE the completion below — the loop
+            # drains its bus channels before it finishes a streaming head,
+            # so the subscription is in place when the head goes out. A
+            # frame the channel would not take is a client on a stream
+            # nothing feeds, hence 503 rather than the head.
+            var hold = take_stream_hold(response)
+            if hold.held:
+                if send_hold_frame(
+                    pool.hold_notify_fd, slot, last_event_id, hold.channel,
+                    kind=String("h"), lane=lane,
+                ):
+                    response.headers["x-worker"] = String(getpid())
+                    held = True
+                else:
+                    response = _hold_unavailable()
+        if response.sse_streaming and not held:
             # See the module docstring: the loop drains ITS handler, not this
             # one, so this stream would have no producer. Refused BEFORE
             # `after_response`, so that hook observes the 409 that actually

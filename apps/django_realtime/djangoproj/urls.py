@@ -146,7 +146,7 @@ def publish(request):
 
     The id is what makes redelivery suppression work. A client reconnecting
     with `Last-Event-ID: 12` is not re-sent event 12 — see
-    `request_last_event_id` in `packages/m0-wsgi/src/hold.mojo`. It is -1
+    `request_last_event_id` in `packages/m0-http/lightbug_http/hold.mojo`. It is -1
     when the server exported no shared counter, which is exactly what
     happens under a plain WSGI host.
 
