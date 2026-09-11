@@ -583,7 +583,7 @@ done
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -633,6 +633,17 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.
 [tool.poe.tasks.serve-fragment-notes]
 help = "Run the fragment notes example (the notes resource as an htmx app) on :8080"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo"
+
+# The view table's read/write split is a claim about what the compiler
+# REFUSES, which no passing test can show -- the counter-example is a file
+# that does not build. Same shape as sabotage-spec and shim_ownership.py
+# --sabotage: four cases compiled for real, two must be refused, with
+# controls, because a stale .mojoc fails every case and would read as a
+# pass without them.
+[tool.poe.tasks.sabotage-views]
+help = "A reading view must not compile if it writes"
+cmd = "python3 scripts/sabotage_views.py"
+deps = ["build-core", "build-http"]
 
 # Built and run, not `mojo run`: the app links libsqlite3, and the JIT only
 # resolves symbols from libraries already in its process — works on macOS via
@@ -6011,6 +6022,12 @@ grep -q '"status":404' problem.json || fail 'the problem body did not carry the 
 code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -X PATCH http://localhost:8091/notes/1)
 [ "$code" = "405" ] || fail "expected 405 for PATCH on a GET/PUT/DELETE route, got $code"
 grep -qi '^allow: GET, PUT, DELETE, OPTIONS' headers.txt || fail '405 carried no Allow header'
+# And a method the route does not take must not reach any view: the
+# handler-id dispatch chain this app used to carry ended in a bare
+# `return self._delete(...)`, so a route registered without its own arm
+# deleted the note instead of answering. The note must still be there.
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
+[ "$code" = "200" ] || fail "a 405 must leave the note intact, but GET answered $code"
 
 # CORS: preflight and ordinary responses both carry the headers.
 curl -s -D headers.txt -X OPTIONS http://localhost:8091/notes -o /dev/null
