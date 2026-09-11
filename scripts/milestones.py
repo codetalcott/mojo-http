@@ -12,8 +12,19 @@ the two definitions below need no new data at all:
 
     beta   every row is `verified`, `planned` or `out of scope`
            -- i.e. NOTHING in the tree ships without a gate.
-    1.0    every row is `verified` or `out of scope`, plus the three
-           non-row conditions under CHECKS below.
+    1.0    every row outside section N is `verified` or `out of scope`,
+           plus the non-row conditions under CHECKS below.
+    layer  every section-N row is `verified` or `out of scope`, plus a
+           soak on the layer: an application outside `apps/` running on
+           `Views`/`Fragment`, recorded in REAL_APP_VALIDATION.md's
+           application-layer section under the 1.0 soak's staleness rule.
+
+Section N (the application layer, SPEC's "Writing an application in Mojo")
+is the third milestone's and not 1.0's, because 1.0 shipped before the
+section existed and its `planned` rows would otherwise read as 1.0 going
+backwards. The third milestone is NOT MET until a real application runs on
+the layer -- that is the honest reading of a layer proven by demos, and
+the reason it is computed rather than assumed.
 
 The beta ordering is not arbitrary. Gating an `implemented` row has found a
 real defect four times out of four -- A4's unbounded close linger, I16's
@@ -60,6 +71,13 @@ PYPROJECT = ROOT / "pyproject.toml"
 # "somebody else's Django project still works".
 REAL_APP_MAX_MINOR_LAG = 2
 
+# The application layer's rows, and the heading its soak is recorded under
+# in REAL_APP_VALIDATION.md. The section holds a `**Last run <date>**,
+# against m0serve X.Y.Z` line once an application outside apps/ has run on
+# the layer, and says "Not yet run" until then.
+LAYER_SECTION = "N"
+LAYER_SOAK_HEADING = "The application layer"
+
 
 def _rows():
     return json.loads(SPEC_JSON.read_text())["capabilities"]
@@ -92,10 +110,49 @@ def _known_issues(text=None):
     return out
 
 
+def _layer_soak_section(text=None):
+    """The application layer's section of the soak record, or None."""
+    text = text if text is not None else REAL_APP.read_text()
+    marker = "\n## " + LAYER_SOAK_HEADING
+    try:
+        start = text.index(marker)
+    except ValueError:
+        return None
+    rest = text[start + 1:]
+    end = rest.find("\n## ", 1)
+    return rest[:end] if end > 0 else rest
+
+
+def _server_soak_text(text):
+    """The record with the layer's section cut out, so the server's version
+    is read from the server's own headline whatever order the sections
+    end up in."""
+    section = _layer_soak_section(text)
+    return text if section is None else text.replace(section, "", 1)
+
+
 def _real_app_version(text=None):
     text = text if text is not None else REAL_APP.read_text()
-    m = re.search(r"m0serve ([0-9]+)\.([0-9]+)\.([0-9]+)", text)
+    m = re.search(r"m0serve ([0-9]+)\.([0-9]+)\.([0-9]+)",
+                  _server_soak_text(text))
     return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _layer_soak_version(text=None):
+    """The version the layer's soak last ran against, or None when the
+    section is missing or says it has not run. Reads the record's own
+    `Last run ... against m0serve X.Y.Z` line and nothing looser, so a
+    version mentioned in passing is not a soak."""
+    section = _layer_soak_section(text)
+    if section is None:
+        return None
+    m = re.search(r"Last run[^\n]*?against (?:m0serve|m0-http) "
+                  r"([0-9]+)\.([0-9]+)\.([0-9]+)", section)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _lag(cur, ran):
+    return (cur[0] - ran[0]) * 1000 + (cur[1] - ran[1])
 
 
 # --- the report -------------------------------------------------------------
@@ -103,12 +160,17 @@ def _real_app_version(text=None):
 def report():
     rows = _rows()
     impl = [r for r in rows if r["status"] == "implemented"]
-    plan = [r for r in rows if r["status"] == "planned"]
+    plan = [r for r in rows if r["status"] == "planned"
+            and r["section"] != LAYER_SECTION]
+    layer = [r for r in rows if r["section"] == LAYER_SECTION]
+    layer_impl = [r for r in layer if r["status"] == "implemented"]
+    layer_plan = [r for r in layer if r["status"] == "planned"]
     ver = sum(1 for r in rows if r["status"] == "verified")
     oos = sum(1 for r in rows if r["status"] == "out of scope")
+    plan_all = sum(1 for r in rows if r["status"] == "planned")
 
     print("%d capabilities: %d verified, %d out of scope, %d implemented, "
-          "%d planned" % (len(rows), ver, oos, len(impl), len(plan)))
+          "%d planned" % (len(rows), ver, oos, len(impl), plan_all))
     print()
     print("BETA — nothing in the tree ships without a gate")
     if impl:
@@ -118,7 +180,8 @@ def report():
     else:
         print("  MET")
     print()
-    print("1.0 — beta, plus every `planned` row resolved, plus the soak")
+    print("1.0 — beta, plus every `planned` row outside section N resolved, "
+          "plus the soak")
     if plan:
         print("  %d planned row(s) remain (build, or move to `out of scope` "
               "with a reason):" % len(plan))
@@ -130,15 +193,44 @@ def report():
     cur = _current_version()
     ra = _real_app_version()
     if cur and ra:
-        lag = (cur[0] - ra[0]) * 1000 + (cur[1] - ra[1])
-        state = "MET" if lag <= REAL_APP_MAX_MINOR_LAG else "STALE"
+        state = "MET" if _lag(cur, ra) <= REAL_APP_MAX_MINOR_LAG else "STALE"
         print("  soak: real applications last run against %d.%d.%d, current "
               "is %d.%d.%d — %s" % (ra + cur + (state,)))
     issues = _known_issues()
     print("  known issues: %d open" % len(issues))
     print()
+    print("APPLICATION LAYER — section N gated, its `planned` rows resolved, "
+          "and a real application on it")
+    if layer_impl:
+        print("  %d row(s) ship without a gate:" % len(layer_impl))
+        for r in layer_impl:
+            print("    %-5s %s" % (r["id"], r["capability"][:66]))
+    if layer_plan:
+        print("  %d planned row(s) remain (build, or move to `out of scope` "
+              "with a reason):" % len(layer_plan))
+        for r in layer_plan:
+            print("    %-5s %s" % (r["id"], r["capability"][:66]))
+    if not layer_impl and not layer_plan:
+        print("  rows: MET")
+    ls = _layer_soak_version()
+    if ls is None:
+        layer_soak_met = False
+        print("  soak: no application outside apps/ has run on the layer "
+              "— NOT MET")
+    elif cur:
+        layer_soak_met = _lag(cur, ls) <= REAL_APP_MAX_MINOR_LAG
+        print("  soak: the layer last ran a real application against "
+              "%d.%d.%d, current is %d.%d.%d — %s"
+              % (ls + cur + ("MET" if layer_soak_met else "STALE",)))
+    else:
+        layer_soak_met = False
+    print()
     remaining = len(impl) + len(plan)
-    print("%d row(s) between here and 1.0." % remaining)
+    layer_left = len(layer_impl) + len(layer_plan)
+    print("%d row(s) between here and 1.0. %d row(s)%s between here and the "
+          "application layer's milestone."
+          % (remaining, layer_left,
+             "" if layer_soak_met else " and the soak"))
 
 
 # --- the gates --------------------------------------------------------------
@@ -207,6 +299,19 @@ def check(roadmap_text=None, real_app_text=None, rows=None):
             "docs/REAL_APP_VALIDATION.md — the 1.0 soak is measured against "
             "it, and an unreadable record measures nothing"
         )
+    # 3. The application layer's soak has a section to be read from. Its
+    #    STATE is reported (NOT MET is the honest answer today, and will
+    #    be until a real application runs on the layer), but the section
+    #    itself is gated: without it the third milestone has nothing to
+    #    read, and a milestone that quietly stops being computed is worse
+    #    than one that says NOT MET.
+    if _layer_soak_section(real_app_text) is None:
+        failures.append(
+            "docs/REAL_APP_VALIDATION.md has no `## %s` section — the "
+            "application layer's milestone reads its soak from there, and "
+            "says NOT MET until an application outside apps/ has run on "
+            "the layer; the section must exist to say so" % LAYER_SOAK_HEADING
+        )
     return failures
 
 
@@ -234,6 +339,11 @@ SABOTAGES = [
     ("the soak record loses its version",
      lambda rm, ra, rows: (
          rm, re.sub(r"m0serve \d+\.\d+\.\d+", "m0serve X.Y.Z", ra, count=1),
+         rows)),
+    ("the application layer's soak section is deleted",
+     lambda rm, ra, rows: (
+         rm, ra.replace("\n## " + LAYER_SOAK_HEADING,
+                        "\n## A heading the milestone does not read", 1),
          rows)),
 ]
 

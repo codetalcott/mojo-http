@@ -13,7 +13,7 @@ The reasoning behind the design is in the [design notes](#design-notes).
 
 ## Milestones
 
-Both derive from row status in SPEC.md; no row carries a milestone of its
+Three derive from row status in SPEC.md; no row carries a milestone of its
 own.
 
 **beta**: no row is `implemented`, the sheet's word for "in the tree with no
@@ -21,11 +21,21 @@ gate dedicated to it". Gating an `implemented` row has found a real defect
 four times out of four (A4, I16, L17, A11), so those rows are both the
 finish line and the highest-yield work.
 
-**1.0**: beta, plus every `planned` row built or moved to `out of scope`
-with a reason, plus a soak against real applications
+**1.0**: beta, plus every `planned` row outside section N built or moved
+to `out of scope` with a reason, plus a soak against real applications
 ([REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md)) no more than two minor
 versions behind the tree, plus each known issue below naming what retires
-it.
+it. Section N is left out because 1.0 shipped before the section existed;
+its rows are the next milestone's.
+
+**the application layer**: no section-N row `implemented`, every section-N
+`planned` row built or moved to `out of scope` with a reason, and a soak on
+the layer — an application outside `apps/` running on `Views` or
+`Fragment`, recorded in
+[REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md#the-application-layer)
+under the same staleness rule. NOT MET until a real application runs on
+the layer, which is the honest reading of a layer proven by demos; standing
+decisions about it are in [DECISIONS.md](DECISIONS.md).
 
 `poe check-milestones` gates the rot: every known issue carries a
 `Closed by:` line naming SPEC rows or `none`, and an issue whose rows are
@@ -92,8 +102,51 @@ somebody else's Django projects inside the pull request that trips it.
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
-fails if it does not resolve. Nothing is planned at the moment. The last
-five entries, all built:
+fails if it does not resolve. Three are planned, all on the application
+layer (SPEC section N); the server has none. Each names the application
+that pulls it, the gate that will verify it, and the
+[decision](DECISIONS.md) it retires, before it is built.
+
+### Streaming from a Mojo mount
+
+Row N11. Pulled by textshelf: its SSE views sleep in `LISTEN/NOTIFY` and
+hold pool threads (REAL_APP_VALIDATION's 2026-09 finding 2), the shape a
+Mojo mount would fix, and D18 stands in the way — `MojoPool` refuses a
+streaming response. Decided by a probe, not an argument: a WSGI pool thread
+already takes a hold by sending an `h` frame on the loop's bus channel
+([hold on a pool thread](notes/hold-on-a-pool-thread.md)); if a `MojoPool`
+thread can send the same frame and have the loop's handler subscribe the
+slot, D18 retires and the SSE view is the target. If it cannot, a compute
+path mounts first (the shape `bench-mojo-mount` measures) and the note
+records why. Gate: `smoke-hybrid`'s shape — a Django page renders a link
+into the mount through `Mount.url_for` on the Mojo side and `reverse()` on
+the Python side, the smoke follows it, and the mount's answer is served
+into the page; the negative arm is the unprefixed link, as
+`smoke-mojo-mount` does. Lands with the first record in the application
+layer's soak.
+
+### A Datastar form, end to end
+
+Row N12. An edit form on `apps/datastar_todo`, renaming a todo in place:
+`Fragment[Datastar]` on a `<form>` emits `submit__prevent` with
+`{contentType: 'form'}`, `form(req)` reads it, and the broadcast morphs the
+answer into every tab. The form arm is where a wrong spelling fails
+silently — a unit test spells it today and no browser has sent it. Gate:
+the smoke posts the form and greps the frame, and a Chromium run submits
+it for real; whether that run becomes a pre-release step in
+[RELEASING.md](RELEASING.md) is open, and it is not for CI. Confirms or
+corrects D21.
+
+### Sessions and CSRF behind a login
+
+Row N13. `apps/fragment_notes` with one user, the smallest application with
+a login. In order: an HMAC-SHA256 in `m0-core` gated by published test
+vectors — a primitive with a test-vector gate, safe to build first — then
+a signed session cookie emitted through `ResponseCookieJar.add_raw`, then
+a CSRF token on the form. Retires D15. Not before the streaming row: a
+login on a demo proves less than one real path in production.
+
+The last five entries before these, all built:
 
 - [Accept sharing: workers sharing a listener share its connections](notes/accept-sharing.md)
 - [A conformance-suite tier](notes/conformance-suite-tier.md)

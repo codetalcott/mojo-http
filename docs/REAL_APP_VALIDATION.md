@@ -714,3 +714,17 @@ application written to test this server. The next pass should use applications
 with shapes these three lack — a background worker, an app behind a proxy with
 `SECURE_PROXY_SSL_HEADER`, an upload-heavy API, and something that is not
 Django.
+
+## The application layer
+
+**Not yet run.** No application outside `apps/` runs on `Views` or
+`Fragment` ([SPEC](SPEC.md) section N); the layer is proven by its demos,
+and `poe milestones` says so until a record lands here. The first candidate
+is one textshelf path on the Mojo mount
+([Streaming from a Mojo mount](ROADMAP.md#streaming-from-a-mojo-mount)).
+
+A record here opens the way the server's does — `**Last run <date>**,
+against m0serve X.Y.Z` — names the application and the path it moved onto
+the layer, and carries the same table: requests verified byte for byte
+against a reference, failures, churn, RSS. The milestone reads the version
+from that line and applies the server soak's staleness rule to it.

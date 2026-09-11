@@ -165,6 +165,10 @@ PAGES = [
          "Milestones, known issues with what retires each, what is not "
          "planned, and the index of design notes.",
          "Project", optional=True),
+    Page("docs/DECISIONS.md", "/docs/decisions/", "Decisions",
+         "Standing decisions about the application layer, one row each, "
+         "with where each is recorded and what would retire it.",
+         "Project", optional=True),
     Page("docs/WSGI_CONFORMANCE.md", "/docs/wsgi-conformance/", "WSGI conformance",
          "Where the WSGI implementation stands against PEP 3333, clause by "
          "clause.",
