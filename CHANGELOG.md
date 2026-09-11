@@ -8,6 +8,30 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-11
+
+A remote crash fix, and an application layer for programs written in Mojo.
+
+The crash is why this release is not held for the rest of section N: a
+request carrying a byte that is not UTF-8 killed the server process, from
+any client, with no handler involved. Five slices on the serving path had
+it; the query parser and the cookie jar have had it since they were
+written, so every release including 1.0.0 shipped it.
+
+The layer is ten capabilities ([SPEC](docs/SPEC.md) section N), each gated
+on the wire, each built app-first — an application written deliberately
+ugly, a smoke that asserts its bytes, then every piece lifted out from
+under that green gate. An application written in Mojo now has a URL table
+whose views the compiler holds to reading or writing their state, a
+fragment renderer that emits htmx or Datastar attributes from one source,
+a page-or-fragment decision the framework makes from the request's own
+headers, reverse routing that fails to compile on a misspelled route, and
+a form parser. What it does not have is a real application on it; that is
+the next round.
+
+Nothing in the served contract changed — no flag, no environment
+variable, no header — so this is an upgrade by version alone.
+
 ### Added
 
 - **One renderer, two transports** (SPEC N7–N9). `Fragment` takes its
@@ -45,16 +69,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   rather than rendered into the tag name. The research behind the Datastar arm is
   [one-renderer-two-transports](docs/notes/one-renderer-two-transports.md).
 
-### Changed
-
-- **Datastar pinned at v1.0.3** (was v1.0.2): `m0-datastar`'s `VERSION`,
-  both demos' CDN bundles and the conformance cases' source. A patch
-  release with nothing in `sdk/` changed and every attribute rule the
-  tree records unchanged; the todo demo was driven in Chromium against
-  the new bundle for the three recorded traps (`data-init` opens the
-  stream, colon-keyed attributes, `retry: 'always'` reconnects across a
-  restart) before and after the renderer moved onto `Fragment`.
-
 - **A framework layer for applications written in Mojo** (SPEC section
   N), built app-first. `apps/fragment_notes` serves the notes resource as
   an htmx app; it was written deliberately ugly, gated on wire output
@@ -76,6 +90,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   [docs/notes/a-fragment-that-names-itself.md](docs/notes/a-fragment-that-names-itself.md).
 
 ### Changed
+
+- **Datastar pinned at v1.0.3** (was v1.0.2): `m0-datastar`'s `VERSION`,
+  both demos' CDN bundles and the conformance cases' source. A patch
+  release with nothing in `sdk/` changed and every attribute rule the
+  tree records unchanged; the todo demo was driven in Chromium against
+  the new bundle for the three recorded traps (`data-init` opens the
+  stream, colon-keyed attributes, `retry: 'always'` reconnects across a
+  restart) before and after the renderer moved onto `Fragment`.
 
 - **The fragment layer hardened after review** (SPEC N2–N6 unchanged, the
   gates widened). `Views` keeps its routers private (a route registered
@@ -3902,6 +3924,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.1.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.1.0
 [1.0.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.0.0
 [0.19.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.19.0
 [0.18.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.18.0
