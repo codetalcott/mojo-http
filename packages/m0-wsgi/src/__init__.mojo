@@ -88,7 +88,7 @@ from .cli import (
     PROTOCOL_ASGI,
     MAX_AUTO_BLOCKING_THREADS,
 )
-from .hold import (
+from lightbug_http.hold import (
     HoldResult,
     take_hold,
     take_stream_hold,

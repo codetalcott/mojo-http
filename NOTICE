@@ -501,6 +501,20 @@ lightbug_http
         1/2/4/8 ms) and its passes over 1/2/4/8 ms, printed at shutdown;
         `M0_POOL_SPIN_US` overrides `POOL_SPIN_NS` for measurement. Four
         integer adds per pass on the hot path, unconditionally.
+      - hold.mojo (2026-09-11): new to the fork, moved in from
+        m0-wsgi/src/hold.mojo unchanged but for `send_hold_frame` joining
+        it (the WSGI handler's frame sender under a public name). The
+        `M0-Hold`/`M0-Channel` seam — detect the instruction, rewrite the
+        response into a stream's head, build the synthetic POST an inbound
+        WebSocket message becomes — is shared by the WSGI handler and by
+        mojo_pool.mojo, which the same day learned to take an SSE hold on a
+        pool thread: the same two headers, the same `h` frame to the
+        loop's bus channel before the completion, the refusal of a
+        streaming response narrowed to one that is not a hold.
+        broadcast.mojo gained `reserved_stream_url`, the `\x01<kind>/
+        <slot>[/<lane>]` builder the frame uses, beside the predicate that
+        refuses that namespace at every publish boundary
+        (docs/notes/hold-from-a-mojo-mount.md).
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

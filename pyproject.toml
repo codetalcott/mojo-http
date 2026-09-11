@@ -5447,6 +5447,131 @@ python3 scripts/outbox_cap_probe.py 8156 || fail 'outbox cap probe failed'
 python3 scripts/emit.py --covers I17 --task smoke-outbox-cap
 """
 
+# An SSE hold from a Mojo mount (SPEC N11). A view on the Mojo mount
+# returns the two instruction headers a Django view returns, the pool
+# thread rewrites the response into the stream's head and sends the loop
+# the `h` frame a WSGI pool thread sends, and a publish from Django reaches
+# the Mojo-held stream through the loop's registries. Each phase pins one
+# thing that was silent-wrong or absent before: the frame arriving before
+# the head (delivery at all), the reconnect cursor reaching the
+# subscription, the hold drained as a HOLD (comment heartbeats, no chunked
+# framing -- the smoke-django-realtime phase-6 shape), the slot released
+# when the client leaves, the Mojo lane answering while the Python pool is
+# busy, and the degrade without --realtime. The negative arm is the
+# refusal that still stands: mojo_pool.mojo's 409 for an unheld stream,
+# kept by test_mojo_pool and the pool sabotage.
+[tool.poe.tasks.smoke-mojo-mount-hold]
+help = "An SSE hold taken on a Mojo mount's pool thread, fed by a publish from Django"
+deps = ["build-serve"]
+shell = """
+set -u
+srv=bin/m0serve
+P=8797
+B=http://localhost:$P
+D="--app-dir apps/django_realtime"
+pid=
+out=$(mktemp -d)
+fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat "$out"/server.log 2>/dev/null; rm -rf "$out"; exit 1; }
+cleanup() { [ -n "$pid" ] && kill $pid 2>/dev/null; rm -rf "$out"; }
+trap cleanup EXIT
+
+# --- phase 1: the hold, and a publish from Django reaching it ----------
+M0_SSE_HEARTBEAT_MS=800 "$srv" --mount /=djangoproj.wsgi:application --mount /native=mojo $D \
+  --realtime --blocking-threads 2 --health-path /health --port $P > "$out"/server.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail $B/health > /dev/null \
+  || fail "server never became healthy"
+
+curl -s -N --max-time 4 -D "$out"/head1 "$B/native/hold?channel=news" > "$out"/body1 &
+c1=$!
+sleep 1
+curl -s -X POST "$B/publish?channel=news&msg=first" | grep -q '"id": 1' \
+  || fail "the publish did not allocate id 1 (is the shared counter exported?)"
+curl -s $B/health | grep -q '"subscribers":1' \
+  || fail "the loop's registry does not show the Mojo-held slot subscribed: $(curl -s $B/health)"
+wait $c1
+grep -q '^HTTP/1.1 200' "$out"/head1 || fail "the hold was not answered 200: $(head -1 "$out"/head1)"
+grep -qi '^content-type: text/event-stream' "$out"/head1 || fail "the head is not an event stream"
+grep -qi '^x-worker:' "$out"/head1 || fail "the head does not name its worker, as a WSGI hold's does"
+grep -qi '^transfer-encoding' "$out"/head1 && fail "a hold was drained as an executor stream (chunked framing)"
+grep -qi '^m0-hold\\|^m0-channel' "$out"/head1 && fail "the instruction headers leaked to the wire under --realtime"
+grep -q '"mount":"mojo"' "$out"/body1 || fail "the Mojo view's head did not open the stream"
+grep -q '^id: 1$' "$out"/body1 || fail "the published event's id did not reach the Mojo-held stream"
+grep -q '^data: first$' "$out"/body1 || fail "the publish from Django did not reach the Mojo-held stream"
+grep -q '^: heartbeat' "$out"/body1 || fail "no comment heartbeat on the held stream (drained as a stream, not a hold?)"
+
+# --- phase 2: the slot is released when the client leaves ---------------
+for _ in $(seq 1 30); do
+  curl -s $B/health | grep -q '"subscribers":0' && break
+  sleep 0.1
+done
+curl -s $B/health | grep -q '"subscribers":0' \
+  || fail "the slot was not unsubscribed after the client left: $(curl -s $B/health)"
+
+# --- phase 3: the reconnect cursor reaches the subscription -------------
+# Last-Event-ID: 3 while the counter stands at 1 -- ids 2 and 3 must be
+# muted and id 4 delivered, which is only true if the pool thread read the
+# header off the request and the loop subscribed with it.
+curl -s -N --max-time 4 -H 'Last-Event-ID: 3' "$B/native/hold?channel=news" > "$out"/body3 &
+c3=$!
+sleep 1
+for m in second third fourth; do
+  curl -s -X POST "$B/publish?channel=news&msg=$m" > /dev/null
+done
+wait $c3
+grep -q '^data: fourth$' "$out"/body3 || fail "id 4 did not reach a client resuming at 3"
+grep -q '^data: second$\\|^data: third$' "$out"/body3 && fail "an event at or below the client's Last-Event-ID was re-sent"
+
+# --- phase 4: the Mojo lane holds while the Python pool is busy ---------
+# Both WSGI threads inside 1.5 s views; the hold rides the Mojo lane's own
+# threads, so its head arrives at once, and the publish that follows lands
+# once a Python thread is free.
+curl -s --max-time 5 "$B/slow?ms=1500" > /dev/null &
+s1=$!
+curl -s --max-time 5 "$B/slow?ms=1500" > /dev/null &
+s2=$!
+sleep 0.2
+t0=$(python3 -c 'import time; print(time.time())')
+curl -s -N --max-time 4 -D "$out"/head4 "$B/native/hold?channel=news" > "$out"/body4 &
+c4=$!
+for _ in $(seq 1 50); do
+  grep -q '^HTTP/1.1 200' "$out"/head4 2>/dev/null && break
+  sleep 0.02
+done
+dt=$(python3 -c "import time; print(round(time.time() - $t0, 3))")
+grep -q '^HTTP/1.1 200' "$out"/head4 || fail "the hold's head did not arrive while the Python pool was busy"
+python3 -c "import sys; sys.exit(0 if $dt < 1.0 else 1)" \
+  || fail "the hold's head took ${dt}s behind two 1.5 s Python views; the Mojo lane is not isolated"
+echo "hold head behind two busy Python threads: ${dt}s"
+python3 scripts/emit.py mojo-mount-hold-head-s "$dt" --unit s --limit 1.0 --task smoke-mojo-mount-hold
+sleep 1.6
+curl -s -X POST "$B/publish?channel=news&msg=fifth" > /dev/null
+wait $c4
+grep -q '^data: fifth$' "$out"/body4 || fail "the publish did not reach the hold taken under load"
+wait $s1 $s2
+
+kill -TERM $pid
+for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM with a Mojo hold live"; fi
+pid=
+
+# --- phase 5: without --realtime the same view degrades, as a Django one does
+"$srv" --mount /=djangoproj.wsgi:application --mount /native=mojo $D \
+  --blocking-threads 2 --health-path /health --port $P > "$out"/server2.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail $B/health > /dev/null \
+  || fail "server never became healthy without --realtime"
+curl -s --max-time 3 -D "$out"/head5 "$B/native/hold?channel=news" > "$out"/body5 \
+  || fail "without --realtime the hold view did not answer as an ordinary response"
+grep -q '^HTTP/1.1 200' "$out"/head5 || fail "the degraded answer is not a 200"
+grep -qi '^content-length:' "$out"/head5 || fail "the degraded answer was held rather than served"
+grep -q '"mount":"mojo"' "$out"/body5 || fail "the degraded answer lost the view's body"
+kill -TERM $pid; wait $pid 2>/dev/null; pid=
+
+echo "smoke-mojo-mount-hold OK"
+python3 scripts/emit.py --covers N11 --task smoke-mojo-mount-hold
+"""
+
 # PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
 [tool.poe.tasks.sabotage-outbox-cap]
 help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"

@@ -10,6 +10,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **An SSE hold from a Mojo mount** (SPEC N11). A view on a Mojo mount
+  returns the two instruction headers a Django view returns, `M0-Hold:
+  stream` and `M0-Channel`, and its pool thread does what a WSGI pool
+  thread does with them: rewrites the response into the stream's head,
+  sends the loop the same `h` frame before completing, and completes with
+  the head. The loop subscribes the slot in the registries it drains, so a
+  publish from Python — `m0pub.publish()` from a Django view — reaches the
+  Mojo-held stream with its id, the client's `Last-Event-ID` is honoured,
+  heartbeats keep coming, and the slot is released when the client leaves.
+  Only under `--realtime`; without it the head is served as an ordinary
+  response, as a Django hold view's is. A streaming response that is not a
+  hold is still refused from a pool thread. `smoke-mojo-mount-hold` is the
+  gate, `test_mojo_pool` the unit form, and `poe sabotage-pool` reverts
+  both the send and the refusal. The hold module moved into the fork
+  (`lightbug_http/hold.mojo`, from `m0-wsgi/src/hold.mojo`) so the WSGI
+  handler and the Mojo pool share one copy; `m0_wsgi` still exports every
+  name it did.
 - **The application layer has a milestone, a ledger and planned rows.**
   `poe milestones` prints a third milestone beside beta and 1.0, computed
   from SPEC section N the way those are from the sheet: no row
