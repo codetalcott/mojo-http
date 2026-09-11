@@ -55,8 +55,8 @@ SABOTAGES = [
     ),
     (
         "handler built once and shared instead of per thread",
-        "    var handler = T.make(PoolContext(index, block.get(BLK_USER), lane))",
-        "    var handler = T.make(PoolContext(0, block.get(BLK_USER), lane))",
+        "    var handler = T.make(PoolContext(index, block.get(BLK_USER), lane, prefix))",
+        "    var handler = T.make(PoolContext(0, block.get(BLK_USER), lane, prefix))",
         False,
     ),
     (

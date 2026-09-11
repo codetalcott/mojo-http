@@ -695,7 +695,12 @@ resolution path as the types its methods name, or conformance is accepted and
 the witness table silently never emitted — behind the `.mojoc`,
 `PoolHandler`'s inherited methods would name `m0_http`'s `HTTPRequest` while
 an app's conformance names `lightbug_http`'s. `build-apps` compiling
-`apps/pool_spike` is the guard against moving it back.
+`apps/pool_spike` is the guard against moving it back. `scripts/pool_sabotage.py`
+reverts four of that file's rules by matching EXACT source lines (the
+`T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
+so an edit to one of those lines passes every local gate and fails the
+pull request with `anchor missing`; run `poe sabotage-pool` after touching
+`mojo_pool.mojo`, and re-point the anchor with the line.
 
 `m0-core/ffi_exports.mojo` (package root, deliberately outside `src/`) holds
 the C-ABI exports for foreign callers (Bun `dlopen`, N-API, `ctypes`); `poe
