@@ -91,6 +91,27 @@ def problem(
     )
 
 
+def vary(var resp: HTTPResponse, name: String) -> HTTPResponse:
+    """Add `name` to the response's `Vary`, keeping what it already names.
+
+    It used to be an overwrite — `resp.headers[VARY] = "Accept"` — which
+    was invisible while nothing set `Vary` twice, and became a defect the
+    moment one URL varied on two things: a fragment negotiated on `Accept`
+    AND answered bare or wrapped by `HX-Request`. A response that names one
+    of the two lets a shared cache replay the wrong representation on the
+    other axis. A name already present (compared as HTTP compares field
+    names, case-insensitively) is not repeated.
+    """
+    var existing = resp.headers.get(HeaderKey.VARY)
+    if existing:
+        if _vary_names(existing.value(), name):
+            return resp^
+        resp.headers[HeaderKey.VARY] = String(existing.value(), ", ", name)
+        return resp^
+    resp.headers[HeaderKey.VARY] = name
+    return resp^
+
+
 def vary_accept(var resp: HTTPResponse) -> HTTPResponse:
     """Mark a response whose representation was chosen by the Accept header.
 
@@ -98,8 +119,16 @@ def vary_accept(var resp: HTTPResponse) -> HTTPResponse:
     happily replay it to a JSON client. Every negotiated representation gets
     it — the 304 included, per RFC 9110 §15.4.5.
     """
-    resp.headers[HeaderKey.VARY] = "Accept"
-    return resp^
+    return vary(resp^, "Accept")
+
+
+def _vary_names(value: String, name: String) -> Bool:
+    """Whether a comma-separated `Vary` value already lists `name`."""
+    var want = name.lower()
+    for item in value.split(","):
+        if String(item).strip().lower() == want:
+            return True
+    return False
 
 
 def accept_header(req: HTTPRequest) raises -> String:

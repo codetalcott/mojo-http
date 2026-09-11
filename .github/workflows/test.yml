@@ -404,6 +404,13 @@ jobs:
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API
         run: uv run poe smoke-notes
+      # The same resource as a server-rendered htmx app, gated on wire output
+      # only: one URL answering a fragment under HX-Request and a document
+      # without it with Vary on both, a urlencoded form round-tripping a
+      # multi-byte title and a repeated checkbox key, a markup title
+      # rendered inert, a non-form body refused, and 405 with Allow.
+      - name: Smoke test the fragment notes app
+        run: uv run poe smoke-fragment-notes
       # The zero-copy claim, which only a real transfer can make: a 64MB
       # file served three times must arrive byte-exact while RSS stays
       # flat. Both platforms, because sendfile(2)'s signature and its
@@ -638,6 +645,7 @@ jobs:
             shutdown1.log
             shutdown2.log
             notes.log
+            fragment.log
             counter.log
             todo.log
             django.log

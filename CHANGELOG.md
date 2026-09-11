@@ -8,6 +8,28 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **A framework layer for applications written in Mojo** (SPEC section
+  N), built app-first. `apps/fragment_notes` serves the notes resource as
+  an htmx app; it was written deliberately ugly, gated on wire output
+  alone (`smoke-fragment-notes`, sabotaged six ways), and then refactored
+  onto each piece under that green gate, in this order: `Views[S]` — a
+  view is a function the URL table names, `add_read` hands the state
+  borrowed and `add_write` `mut` (compile-checked by `sabotage-views`),
+  405 with `Allow`, no fallthrough; `Fragment` and `Html` in m0-core — a
+  fragment writes its root id once and `swap` generates the attribute
+  targeting it from that id, `attr` owns the delimiters and escapes;
+  `page_or_fragment` — the framework decides from `HX-Request` whether to
+  wrap, `Vary` on both, the shell a `thin` function over a context because
+  a trait cannot cross the `.mojoc` boundary; `url_for` — the route
+  pattern is a `comptime` constant given to the table and reversed with
+  arity checked and values encoded; `form(req)` — an ordered multimap,
+  empty unless the content type is the form's. `apps/notes_api` runs on
+  `Views` too, wire-identical under `smoke-notes`; `apps/views_pattern`
+  from draft PR #273 was not landed. The design and the refusals are
+  [docs/notes/a-fragment-that-names-itself.md](docs/notes/a-fragment-that-names-itself.md).
+
 ### Changed
 
 - **The real-application soak was re-run against 1.0.0**
@@ -52,6 +74,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   digits for an escape (SPEC G14, one test per site, plus both smokes on
   the wire). Found by a review probe of the form parser on a pending
   branch; the query path and the cookie jar had it on every release.
+- **`reply.vary_accept` overwrote `Vary`.** A response that varied on two
+  request headers kept whichever was set last, unnoticed while nothing set
+  `Vary` twice. `reply.vary` appends without repeating a name;
+  `vary_accept` is built on it.
+- **`apps/notes_api` deleted on route drift.** Its handler-id chain ended
+  in a bare `return self._delete(...)`, so a route registered without its
+  own arm did not 404, it deleted. The chain is gone with the move to
+  `Views`, and `smoke-notes` asserts a 405 on a note leaves it intact.
 
 - **The Mojo pool's distribution test asserted the pool's PRE-elastic wake
   contract**, and failed pull requests that could not reach `MojoPool` at

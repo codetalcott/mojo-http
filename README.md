@@ -180,12 +180,12 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 
 | Package | Description | Tests |
 | --- | --- | --- |
-| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, JSON field parser, C-ABI exports | 82 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening | 652 |
+| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape and builder, JSON field parser, C-ABI exports | 92 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening, view table, fragment-or-page, url_for, form bodies | 682 |
 | `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 169 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| **Total** | | **1091** |
+| **Total** | | **1131** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -222,6 +222,19 @@ RFC 9457 `problem+json` on every error, CORS from a single `after_response`
 hook, and `M0_PORT` config.
 `uv run poe serve-notes` runs it; `poe smoke-notes` asserts each feature end to
 end.
+
+The same resource as a server-rendered htmx app:
+[apps/fragment_notes/](apps/fragment_notes/server.mojo). A view is a function
+the URL table names (`Views`, with the state borrowed for reads and `mut` for
+writes, compile-checked); the fragment names itself (`Fragment("notes")`
+writes the id once and `swap` generates the attribute that targets it); the
+framework decides page-versus-fragment from `HX-Request` (`page_or_fragment`,
+`Vary` on both); routes are `comptime` patterns reversed by `url_for`; and
+`form(req)` keeps every value of a repeated checkbox key. `uv run poe
+serve-fragment-notes` runs it; `poe smoke-fragment-notes` pins its wire
+contract, which did not change while the app was refactored onto each of
+those in turn — the design is
+[a-fragment-that-names-itself](docs/notes/a-fragment-that-names-itself.md).
 
 ## Datastar
 
@@ -736,7 +749,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1091 unit tests, then compiles every example
+uv run poe test-all         # 1131 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
