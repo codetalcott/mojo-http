@@ -1432,6 +1432,38 @@
       "capability": "Urlencoded form bodies: `form(req)` decodes `application/x-www-form-urlencoded` into an ordered multimap that keeps every value of a repeated key, and is empty for any other content type so a JSON body is never read as a form; it decodes every value exactly as the query-string parser does, proven by one table run through both",
       "status": "verified",
       "evidence": "`test_form.mojo:test_decodes_exactly_as_the_query_parser_does` (every PR) \u2014 kept as a separate loop from `URI.parse` on purpose: that one is a last-wins dictionary by contract, and sharing the loop would force one of the two to change"
+    },
+    {
+      "id": "N7",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "One renderer, two transports: `Fragment[V]` takes the frontend vocabulary as a type parameter, `Htmx` and `Datastar` each spelling their attributes in one struct, so the same renderer serves both; a `Fragment[Datastar]` is one line and goes out verbatim as the single `elements` line of a `patch_elements` frame, needing no selector because it carries its own id; and a request carrying `Datastar-Request: true` is answered the bare fragment as `text/html`, which Datastar morphs by that id",
+      "status": "verified",
+      "evidence": "`test_fragment_frame.mojo:test_a_fragment_goes_out_verbatim_as_one_elements_line` (every PR) \u2014 `apps/datastar_todo`'s list is that renderer, and `smoke-todo` greps its output out of a live stream's frame; the header arm is `test_fragment.mojo:test_a_datastar_action_gets_the_bare_fragment` plus a `Datastar-Request` request in `smoke-fragment-notes`"
+    },
+    {
+      "id": "N8",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A history restore is a page: `HX-History-Restore-Request: true` beside `HX-Request: true` answers the whole document, because htmx swaps the answer's body into the page it is rebuilding and a bare fragment there is a page with no head; every answer's `Vary` names all three headers the decision reads",
+      "status": "verified",
+      "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 `test_fragment.mojo:test_a_history_restore_is_a_page` is the unit form; the request shape is htmx 2.0.4's own `loadHistoryFromServer`, which sets both headers"
+    },
+    {
+      "id": "N9",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A table knows where it is mounted: `Views[S](Mount(prefix))` registers every route under the prefix, `Mount.url_for` reverses to those same paths, and `PoolContext.prefix` carries the prefix from the pool's own lane table, so a handler on a mounted lane matches exactly what the loop sends it and renders links that carry the prefix. Gated the way `smoke-hybrid` gates Python's `reverse()`: a link the mount rendered is followed, and the same link without its prefix is followed too and answered 404 by the root application",
+      "status": "verified",
+      "evidence": "`Smoke test a Mojo mount beside a Python one` (every PR) \u2014 the unit forms are `test_router.mojo:test_a_mount_prefixes_every_reversed_url` and `test_views.mojo:test_a_mounted_table_matches_under_its_prefix_only`; the mount is `m0serve`'s own `MojoMount`, now a `Views` table whose index renders its routes"
+    },
+    {
+      "id": "N10",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "Elements as expressions: `el(tag, attrs, children...)`, `void`, `attr`, `flag` and `text` compose as strings with the builder's escaping \u2014 the same list from both tiers is byte-identical \u2014 and `Fragment[V].el(tag, verb, url, ...)` spells the swap for the vocabulary from the tag it is given once, so a renderer reads as its markup with each escaping context named at the hole; `apps/fragment_notes`'s list is written this way beside its detail view in the builder",
+      "status": "verified",
+      "evidence": "`test_html.mojo:test_elements_compose_as_expressions_with_escaping_named` (every PR) \u2014 the swapping form is `test_html.mojo:test_fragment_el_spells_the_swap_from_the_tag_it_is_given`; `smoke-fragment-notes` did not change when the list moved onto the tier"
     }
   ]
 }

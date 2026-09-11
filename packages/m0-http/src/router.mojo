@@ -423,6 +423,62 @@ def reverse(pattern: String, params: List[String]) raises -> String:
     return out
 
 
+struct Mount(Copyable, ImplicitlyCopyable, Movable):
+    """Where a table is mounted: the path prefix its routes sit under and
+    every URL it reverses carries.
+
+    `url_for(PATTERN)` reverses a pattern as written, which is right for an
+    application that owns the whole path space and wrong for one served
+    under `--mount /native=mojo`: the loop routes `/native/notes` to it, its
+    table must match that path, and a link it renders as `/notes` lands on
+    whatever application owns the root. That is the failure `smoke-hybrid`
+    exists to catch for Python applications — every direct request works,
+    every generated URL is dead, and nobody notices until someone clicks —
+    and no unit test of either direction alone can see it. So the prefix is
+    a value the table is built with (`Views[S](Mount("/native"))` registers
+    every pattern under it) and the renderers reverse through
+    (`at.url_for(NOTE, id)`): one value used twice, the discipline a
+    fragment's id follows. A `PoolHandler` on a mounted lane reads it from
+    `PoolContext.prefix`, which the pool fills from the lane's own prefix,
+    so the table cannot disagree with the loop about where it is.
+
+    Normalised on construction: a leading `/` is ensured and trailing ones
+    dropped, so `"native"`, `"/native"` and `"/native/"` are one mount; the
+    empty string (and a bare `/`) is the root and joins nothing.
+    """
+
+    var prefix: String
+
+    def __init__(out self, prefix: String = ""):
+        var b = prefix.as_bytes()
+        var n = len(b)
+        while n > 0 and b[n - 1] == _SLASH:
+            n -= 1
+        var trimmed = String(unsafe_from_utf8=b[:n])
+        if n > 0 and b[0] != _SLASH:
+            self.prefix = String("/", trimmed)
+        else:
+            self.prefix = trimmed^
+
+    def join(self, pattern: String) -> String:
+        """`pattern` under this mount: what the table registers. The router
+        tokenises on `/`, so a doubled or trailing slash here changes no
+        match; the spelling is kept tidy for `pattern_of`'s sake."""
+        if self.prefix.byte_length() == 0:
+            return pattern
+        if pattern.byte_length() > 0 and pattern.as_bytes()[0] == _SLASH:
+            return String(self.prefix, pattern)
+        return String(self.prefix, "/", pattern)
+
+    def url_for(self, pattern: String, *params: String) raises -> String:
+        """`url_for`, with the mount's prefix in front: the path the table
+        registered `pattern` under, filled in and encoded the same way."""
+        var given = List[String]()
+        for p in params:
+            given.append(p)
+        return reverse(self.join(pattern), given)
+
+
 def _percent_encode_into(mut out: String, s: String):
     """Append `s` with every byte outside RFC 3986's unreserved set as `%XX`."""
     comptime HEX = "0123456789ABCDEF"

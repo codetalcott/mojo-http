@@ -102,15 +102,30 @@ struct PoolContext(Copyable, Movable):
     """Which submit lane this thread serves, or -1 for the single-lane pool.
 
     Present so a mounted server can deal threads per mount the way `m0serve`
-    does. Nothing in-tree uses it yet; it is here because `start` already has
-    to write a lane into the block for `stop_and_join` to send its pill to the
-    right place, and hiding that from `make` would be arbitrary.
+    does. It is here because `start` already has to write a lane into the
+    block for `stop_and_join` to send its pill to the right place, and
+    hiding that from `make` would be arbitrary; `prefix` below is what a
+    handler actually reads.
+    """
+    var prefix: String
+    """The path prefix the lane serves — `--mount PREFIX=mojo`'s PREFIX —
+    or empty for an unmounted pool and for the root mount.
+
+    Read off the pool's own lane table (`OffloadPool.lane_prefixes`), the
+    table the loop routes by, so a handler that builds its URL table under
+    `Mount(ctx.prefix)` matches exactly the paths it is sent and renders
+    links that carry the prefix. Nothing else tells a handler where it is
+    mounted: a request arrives with its path whole, and a table that
+    registered `/probe` would never see `/native/probe`.
     """
 
-    def __init__(out self, index: Int, user: Int, lane: Int = -1):
+    def __init__(
+        out self, index: Int, user: Int, lane: Int = -1, prefix: String = ""
+    ):
         self.index = index
         self.user = user
         self.lane = lane
+        self.prefix = prefix
 
 
 trait PoolHandler(HTTPService, Movable, Deinitable):
@@ -264,7 +279,13 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
     var lane = block.get(BLK_LANE)
     var index = block.get(BLK_INDEX)
 
-    var handler = T.make(PoolContext(index, block.get(BLK_USER), lane))
+    # The lane's prefix, from the same table the loop routes by. Lane -1 is
+    # the single-lane pool and lane 0 an unmounted server's only lane; both
+    # read as the root. A mounted lane's prefix is what its mount was given.
+    var prefix = String("")
+    if lane >= 0 and lane < len(pool.lane_prefixes):
+        prefix = pool.lane_prefixes[lane]
+    var handler = T.make(PoolContext(index, block.get(BLK_USER), lane, prefix))
 
     # One receive buffer for this thread's life, not one per job.
     var buf = List[UInt8](capacity=JOB_BUFFER)

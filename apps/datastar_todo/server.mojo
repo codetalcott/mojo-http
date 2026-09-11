@@ -16,13 +16,18 @@ the next mutation. `apps/` is where packages compose; `m0-sqlite` itself
 still imports nothing else here.
 
 It also composes the framework layer the counter skips: the per-item actions
-are `Router` routes with `:id` captures —
+are `Router` routes with `:id` captures, each pattern a value in
+`routes.mojo` that the renderer reverses with `url_for` —
 
     GET  /              the page, list already rendered
-    GET  /events        opens the SSE stream (data-on-load)
+    GET  /events        opens the SSE stream (data-init)
     POST /add           reads the draft signal, inserts, broadcasts
     POST /toggle/:id    flips done, broadcasts
     POST /delete/:id    removes, broadcasts
+
+The list fragment is a `Fragment[Datastar]` (page.mojo): the same
+renderer whose output is the page's initial list is what every broadcast
+carries, and `smoke-todo` greps it out of a live stream's frame.
 
 One process only: SSE fan-out is per-process, so `M0_WORKERS>1` would split
 tabs across workers that cannot see each other's broadcasts. (SQLite itself
@@ -52,9 +57,10 @@ from m0_datastar.signals import read_signals
 from m0_sqlite import Connection, open
 
 from datastar_todo.page import render_page, render_todos
+from datastar_todo.routes import ADD, DELETE, EVENTS, TOGGLE
 
 
-comptime STREAM_URL = "/events"
+comptime STREAM_URL = EVENTS
 
 # How many broadcast frames survive for replay — both the DatastarStream
 # journal and the SQLite `events` table are pruned to this depth. A client
@@ -79,9 +85,9 @@ struct TodoHandler(HTTPService):
 
     def __init__(out self, var db: Connection) raises:
         self.router = Router()
-        self.router.add("POST", "/add", H_ADD)
-        self.router.add("POST", "/toggle/:id", H_TOGGLE)
-        self.router.add("POST", "/delete/:id", H_DELETE)
+        self.router.add("POST", ADD, H_ADD)
+        self.router.add("POST", TOGGLE, H_TOGGLE)
+        self.router.add("POST", DELETE, H_DELETE)
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
         self.stream = DatastarStream(1024, journal_entries=JOURNAL_ENTRIES)

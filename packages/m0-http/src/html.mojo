@@ -27,6 +27,12 @@ These are helpers, not a safety type. `String` stays the currency,
 they do is make the escaped path the SHORTER one: `text` and `attr` escape,
 `raw` says so by name. They do not make the unsafe path impossible.
 
+Two tiers over one buffer. The builder (`Html`, `Fragment`) is
+statement-shaped and allocates once; the expression tier at the bottom of
+this file (`el`, `void`, `attr`, `flag`, `text`, and `Fragment.el` for a
+swapping element) makes an element a string so a renderer reads like its
+markup, and allocates per element. Same escaping, same vocabulary seam.
+
 Three contexts stay the caller's, as `html_escape.mojo` already refuses
 them: a `<script>` or `<style>` body, a `javascript:`/`data:` URL, and an
 unquoted attribute. `attr` always quotes, so the last cannot happen here.
@@ -37,13 +43,33 @@ the root element's `id`, and generates the attribute that targets it —
 uses cannot disagree because there is only one of them. The view that
 renders a fragment returns one thing; whether to wrap it in a page is the
 framework's decision, made from the request header in `m0_http.fragment`.
-Datastar's default `outer` morph targets an element by id too, so one
-renderer serves an htmx response body and a `patch_elements` frame.
 
-The attribute vocabulary `swap` emits is htmx's (`hx-get`, `hx-target`,
-`hx-swap`). This method is the ONLY place that knows the spelling: an app
-that calls `swap` never writes the attribute, so changing the vocabulary is
-one edit here and none in any app.
+**The vocabulary is a type parameter.** Two frontend libraries can consume
+the same fragment, and they spell "fetch this URL and put the answer where
+this fragment is" differently: htmx wants `hx-post`, `hx-target` and
+`hx-swap` on the element; Datastar wants `data-on:click="@post('...')"`
+and no target at all, because it morphs the answer into the element whose
+id it carries — the id the fragment already owns. `Fragment[Htmx]` and
+`Fragment[Datastar]` render identical code with different attributes;
+an app names its vocabulary once (`comptime Frag = Fragment[Htmx]`) and
+never writes an attribute of either. The `Vocabulary` trait below is the
+seam, `Htmx` and `Datastar` are its two conformances, and each is the ONLY
+place its library's spelling lives: switching a whole app is one edit, and
+a third library is one more struct here, not a change to any app.
+
+The conformances live in this file rather than in the apps because a
+trait from a `.mojoc` package cannot be conformed to from app source on
+this toolchain (`fragment.mojo`'s docstring records the observations). A
+type parameter bound to a type whose conformance is inside the package
+does cross the boundary, which is what `Views[S]` already relies on.
+
+One mode: replace the fragment itself. The two libraries put a non-default
+mode on different sides — htmx on the element (`hx-swap="beforeend"`) or
+on the response (`HX-Reswap`), Datastar only on the response
+(`datastar-mode`) — so a `mode` parameter on `swap` would be a spelling
+one of them cannot honour. The response is the place both agree on, and no
+app in the tree appends yet; when one does, the mode belongs beside
+`page_or_fragment`, not here.
 
 Lives in m0-http, beside `fragment.mojo`, which is its consumer; it is the
 first caller of m0-core's `escape_html_into` and the fifth m0-core
@@ -64,6 +90,93 @@ comptime _QUOTE = UInt8(34)  # '"'
 comptime _EQ = UInt8(61)  # '='
 comptime _SLASH = UInt8(47)  # '/'
 
+comptime _KIND_OTHER = UInt8(0)
+comptime _KIND_FORM = UInt8(1)
+"""`<form>`: the request is the form's own submit, carrying its fields."""
+comptime _KIND_FIELD = UInt8(2)
+"""`<input>`, `<textarea>`, `<select>`: the request fires on change."""
+comptime _KIND_LINK = UInt8(3)
+"""`<a>`, `<button>`: a click whose default (navigate, submit) is cancelled."""
+
+
+def _kind_of(tag: String) -> UInt8:
+    """Which default event an element's request should fire on — htmx's
+    own rule (`getTriggerSpecs`: a form submits, a field changes, the
+    rest click), so the two vocabularies agree on WHEN as well as what."""
+    if tag == "form":
+        return _KIND_FORM
+    if tag == "input" or tag == "textarea" or tag == "select":
+        return _KIND_FIELD
+    if tag == "a" or tag == "button":
+        return _KIND_LINK
+    return _KIND_OTHER
+
+
+trait Vocabulary:
+    """How a frontend library spells "fetch `url` with `verb` and put the
+    answer where `target` is".
+
+    One static method, called with the element still open so the spelling
+    can read which element it is on. `target` is a selector (`#notes`);
+    a library that targets by id ignores it, and that is the point of
+    passing it rather than making the caller decide who needs it.
+    """
+
+    @staticmethod
+    def swap(mut h: Html, verb: String, url: String, target: String) raises:
+        ...
+
+
+struct Htmx(Vocabulary):
+    """The htmx 2 spelling: `hx-VERB`, `hx-target`, `hx-swap="outerHTML"`.
+
+    htmx picks the event itself (a form on submit, a field on change, the
+    rest on click) and cancels the default for forms, submit buttons and
+    anchors, so nothing about the element needs spelling here.
+    """
+
+    @staticmethod
+    def swap(mut h: Html, verb: String, url: String, target: String) raises:
+        h.attr(String("hx-", verb), url)
+        h.attr("hx-target", target)
+        h.attr("hx-swap", "outerHTML")
+
+
+struct Datastar(Vocabulary):
+    """The Datastar 1.0 spelling: `data-on:EVENT="@VERB('url')"`, no target.
+
+    Datastar morphs a `text/html` answer into the element whose id it
+    carries (`outer` mode, its default, by id) — so the target is the
+    fragment's own id and needs no attribute. The event follows the same
+    rule htmx applies for itself: a `<form>` fires on `submit`, with
+    `__prevent` so the browser does not also navigate and with
+    `{contentType: 'form'}` so the request carries the form's fields
+    rather than the signal store (without it a Datastar form sends no
+    fields at all); a field fires on `change`; an `<a>` or `<button>`
+    fires on `click__prevent`, which stops an anchor's navigation and a
+    button's native submit and is a no-op anywhere else; everything else
+    fires on a plain `click`.
+
+    The single quotes in the expression reach the wire as `&#x27;` because
+    `attr` escapes; the HTML parser un-escapes the attribute before
+    Datastar evaluates it, so the expression it sees is the one written.
+    """
+
+    @staticmethod
+    def swap(mut h: Html, verb: String, url: String, target: String) raises:
+        _ = target
+        if h._open_kind == _KIND_FORM:
+            h.attr(
+                "data-on:submit__prevent",
+                String("@", verb, "('", url, "', {contentType: 'form'})"),
+            )
+        elif h._open_kind == _KIND_FIELD:
+            h.attr("data-on:change", String("@", verb, "('", url, "')"))
+        elif h._open_kind == _KIND_LINK:
+            h.attr("data-on:click__prevent", String("@", verb, "('", url, "')"))
+        else:
+            h.attr("data-on:click", String("@", verb, "('", url, "')"))
+
 
 struct Html(Movable):
     """A growing HTML buffer. `open` starts an element and leaves its start
@@ -74,10 +187,14 @@ struct Html(Movable):
     var _buf: List[UInt8]
     var _open: Bool
     """Whether a start tag is open, i.e. `attr` is currently legal."""
+    var _open_kind: UInt8
+    """Which kind of element the open start tag is (`_kind_of`), so a
+    vocabulary can pick the event without the caller naming it."""
 
     def __init__(out self, capacity: Int = 512):
         self._buf = List[UInt8](capacity=capacity)
         self._open = False
+        self._open_kind = _KIND_OTHER
 
     @always_inline
     def _end_tag(mut self):
@@ -91,6 +208,7 @@ struct Html(Movable):
         self._buf.append(_LT)
         self._buf.extend(tag.as_bytes())
         self._open = True
+        self._open_kind = _kind_of(tag)
 
     def attr(mut self, name: String, value: String) raises:
         """` name="value"`, with `value` escaped. Raises if no element is
@@ -116,16 +234,29 @@ struct Html(Movable):
         self._buf.append(_SPACE)
         self._buf.extend(name.as_bytes())
 
-    def swap(mut self, verb: String, url: String, target: String) raises:
-        """The attributes that make the open element fetch `url` with `verb`
-        and replace the element `target` selects with the answer.
+    def attrs(mut self, rendered: String) raises:
+        """Attributes ALREADY rendered — by `attr`, `flag` and `+` in the
+        expression tier below — into the open start tag, verbatim. The
+        expression tier's `el` is the caller; an app that has attribute
+        text in hand may use it too, and owns the escaping if so."""
+        if not self._open:
+            raise Error(
+                "Html.attrs(...): no start tag is open — call open(tag) first"
+            )
+        self._buf.extend(rendered.as_bytes())
 
-        `target` is a selector (`#notes`); `Fragment.swap` supplies its own.
-        This is the one place the attribute vocabulary is spelled.
+    def swap[V: Vocabulary](
+        mut self, verb: String, url: String, target: String
+    ) raises:
+        """The attributes that make the open element fetch `url` with `verb`
+        and replace the element `target` selects with the answer, in `V`'s
+        spelling.
+
+        `target` is a selector (`#notes`); `Fragment.swap` supplies its own,
+        and this form is for an element rendered OUTSIDE the fragment it
+        swaps — a page-level link — which takes `frag.selector()`.
         """
-        self.attr(String("hx-", verb), url)
-        self.attr("hx-target", target)
-        self.attr("hx-swap", "outerHTML")
+        V.swap(self, verb, url, target)
 
     def text(mut self, s: String):
         """`s` as text content, escaped."""
@@ -153,22 +284,25 @@ struct Html(Movable):
         return String(unsafe_from_utf8=Span(self._buf))
 
 
-struct Fragment(Movable):
-    """An element that owns its id, and everything rendered inside it.
+struct Fragment[V: Vocabulary](Movable):
+    """An element that owns its id, and everything rendered inside it, in
+    one library's vocabulary.
 
     ```mojo
-    var f = Fragment("notes")            # <section id="notes"
+    var f = Fragment[Htmx]("notes")      # <section id="notes"
     f.open("form"); f.swap("post", "/notes")
     ...
     return f.finish()                    # ...</section>
     ```
 
     The id is written once, by the constructor. `swap` reads it back to
-    generate `hx-target`, so a swapping element inside the fragment always
-    targets the fragment it is in. `selector()` hands the same id to an
-    element rendered elsewhere — a page-level link, say — that should swap
-    this fragment; that is the one seam where the id travels as a string,
-    and it still comes from this value rather than being retyped.
+    generate the targeting attribute — for htmx an `hx-target`, for
+    Datastar nothing, since it morphs by that id — so a swapping element
+    inside the fragment always targets the fragment it is in. `selector()`
+    hands the same id to an element rendered elsewhere — a page-level link,
+    say — that should swap this fragment; that is the one seam where the
+    id travels as a string, and it still comes from this value rather than
+    being retyped.
     """
 
     var id: String
@@ -202,8 +336,31 @@ struct Fragment(Movable):
 
     def swap(mut self, verb: String, url: String) raises:
         """Make the open element fetch `url` with `verb` and replace THIS
-        fragment with the answer. Generated from the fragment's own id."""
-        self.html.swap(verb, url, self.selector())
+        fragment with the answer. Generated from the fragment's own id, in
+        `V`'s spelling."""
+        Self.V.swap(self.html, verb, url, self.selector())
+
+    def el(
+        self, tag: String, verb: String, url: String, attrs: String, *children: String
+    ) raises -> String:
+        """`swap` in the expression tier: a whole `<tag>` that fetches `url`
+        with `verb` and replaces this fragment, as a string, with `attrs`
+        (rendered by `attr`/`flag`) and `children` (each already markup —
+        `text(...)` for data, a bare string for markup the caller trusts,
+        another `el(...)`). Reads nothing from and writes nothing to the
+        fragment's own buffer; `raw` it in where it belongs. The tag is
+        given here because the vocabulary reads it — a Datastar form
+        submits where a button clicks — and giving it once, to the
+        element that is being made, is what keeps it from being spelled
+        twice."""
+        var h = Html(128)
+        h.open(tag)
+        h.attrs(attrs)
+        Self.V.swap(h, verb, url, self.selector())
+        for c in children:
+            h.raw(c)
+        h.close(tag)
+        return h^.finish()
 
     # --- the builder, delegated, so a fragment reads like a page -------------
 
@@ -233,6 +390,69 @@ struct Fragment(Movable):
         # value being consumed, which the compiler refuses.
         self.html._end_tag()
         return String(unsafe_from_utf8=Span(self.html._buf))
+
+
+# --- the expression tier -------------------------------------------------------
+#
+# The builder above is statement-shaped: one call per attribute, and a list
+# item is five lines. That made escaping and delimiters correct, and it is
+# the wrong surface for a renderer someone writes by hand — `render_list` in
+# `apps/fragment_notes` was 58 lines with 47 calls, about four per element.
+# These are the same builder, one element per expression: `el("li", attrs,
+# child, child)` is a string, so a renderer is a nested expression whose
+# shape is the markup's. The escaping contexts stay explicit and named —
+# `text(...)` for data, `attr(...)` for a value, a bare string for markup
+# the caller trusts — which is the property the builder has and a template
+# language does not. `Fragment.el` is `swap` in this form. Each `el`
+# renders into a scratch buffer and returns a `String`, so this tier
+# allocates per element; the builder is there for a renderer that cares.
+
+
+def attr(name: String, value: String) -> String:
+    """` name="value"`, escaped: an attribute as a string, for `el`."""
+    var out = List[UInt8](capacity=name.byte_length() + value.byte_length() + 4)
+    out.append(_SPACE)
+    out.extend(name.as_bytes())
+    out.append(_EQ)
+    out.append(_QUOTE)
+    escape_html_into(out, value)
+    out.append(_QUOTE)
+    return String(unsafe_from_utf8=Span(out))
+
+
+def flag(name: String) -> String:
+    """` name`: a boolean attribute as a string, for `el`."""
+    return String(" ", name)
+
+
+def text(s: String) -> String:
+    """`s` escaped: data as text content, for `el`."""
+    var out = List[UInt8](capacity=s.byte_length() + 8)
+    escape_html_into(out, s)
+    return String(unsafe_from_utf8=Span(out))
+
+
+def el(tag: String, attrs: String, *children: String) raises -> String:
+    """`<tag attrs>children</tag>`: an element as a string. `attrs` is
+    what `attr`, `flag` and `+` rendered, `""` for none; each child is
+    already markup — `text(...)` for data, a bare string for markup the
+    caller trusts, another `el(...)`. Always closed; `void` is for the
+    elements that are not."""
+    var h = Html(128)
+    h.open(tag)
+    h.attrs(attrs)
+    for c in children:
+        h.raw(c)
+    h.close(tag)
+    return h^.finish()
+
+
+def void(tag: String, attrs: String) raises -> String:
+    """`<tag attrs>`: a void element (`input`, `meta`, `br`) as a string."""
+    var h = Html(64)
+    h.open(tag)
+    h.attrs(attrs)
+    return h^.finish()
 
 
 def _is_identifier(s: String) -> Bool:

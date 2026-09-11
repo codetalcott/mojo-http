@@ -3,13 +3,14 @@
 SPEC section N is the framework layer's; N2 is this file's row.
 """
 
-from std.testing import TestSuite, assert_equal, assert_true
+from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.header import HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.uri import URI
 
 from src import reply
+from src.router import Mount
 from src.views import Views, ViewService
 
 
@@ -261,6 +262,34 @@ def test_a_loop_route_reaching_dispatch_is_answered_inline() raises:
     var resp = v.dispatch(_req(String("GET"), String("/health")), st)
     assert_equal(resp.status_code, 200)
     assert_equal(_body(resp), '{"ok":true}')
+
+
+def test_a_mounted_table_matches_under_its_prefix_only() raises:
+    """A table built with `Mount("/native")` answers `/native/...` — the
+    paths the loop routes to a mount — and nothing outside it; `Allow`
+    and the mount's own `url_for` agree with it about where things are.
+
+    covers: N9
+    """
+    var v = Views[Counter](Mount("/native"))
+    v.add_read(String("GET"), String("/"), _index)
+    v.add_read(String("GET"), String("/notes/:id"), _detail)
+    v.add_write(String("POST"), String("/notes"), _bump)
+    v.add_loop(String("GET"), String("/health"), _health)
+    var st = Counter()
+    assert_equal(_body(v.dispatch(_req(String("GET"), String("/native/notes/42")), st)), "<p>id 42</p>")
+    assert_equal(v.dispatch(_req(String("GET"), String("/native")), st).status_code, 200)
+    assert_equal(v.dispatch(_req(String("GET"), String("/native/")), st).status_code, 200)
+    assert_equal(v.dispatch(_req(String("POST"), String("/native/notes")), st).status_code, 204)
+    assert_equal(st.hits, 1)
+    assert_true(v.answer_on_loop(_req(String("GET"), String("/native/health"))))
+    # Outside the prefix the table knows nothing: 404, not a match on the
+    # unprefixed pattern, and no loop answer either.
+    assert_equal(v.dispatch(_req(String("GET"), String("/notes/42")), st).status_code, 404)
+    assert_equal(v.dispatch(_req(String("GET"), String("/")), st).status_code, 404)
+    assert_false(v.answer_on_loop(_req(String("GET"), String("/health"))))
+    assert_equal(v.allow_header(String("/native/notes")), "POST, OPTIONS")
+    assert_equal(v.mount.url_for(String("/notes/:id"), String("42")), "/native/notes/42")
 
 
 def main() raises:

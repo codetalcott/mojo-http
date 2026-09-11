@@ -2,7 +2,7 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.router import Router, MatchResult, reverse, url_for
+from src.router import Mount, Router, MatchResult, reverse, url_for
 
 
 def test_exact_match() raises:
@@ -426,6 +426,54 @@ def test_every_registered_route_reverses_and_matches() raises:
         assert_equal(len(m.params), len(params))
         for k in range(len(params)):
             assert_equal(m.params[k], params[k])
+
+
+def test_a_mount_prefixes_every_reversed_url() raises:
+    """`Mount.url_for` is `url_for` with the prefix in front — the path the
+    mounted table registered the pattern under — and the root mount is
+    exactly the free function, so an unmounted app pays nothing. The
+    prefix is normalised: `native`, `/native` and `/native/` are one
+    mount, and a bare `/` is the root.
+
+    covers: N9
+    """
+    var at = Mount("/native")
+    assert_equal(at.url_for("/probe"), "/native/probe")
+    assert_equal(at.url_for("/notes/:id", String(7)), "/native/notes/7")
+    assert_equal(at.url_for("/a/:x/b/:y", "1", "2"), "/native/a/1/b/2")
+    assert_equal(at.url_for("/"), "/native")
+    assert_equal(at.url_for("/n/:id", "a b/c"), "/native/n/a%20b%2Fc")
+    assert_equal(Mount("").url_for("/notes/:id", "7"), url_for("/notes/:id", "7"))
+    assert_equal(Mount("/").prefix, "")
+    assert_equal(Mount("native").prefix, "/native")
+    assert_equal(Mount("/native/").prefix, "/native")
+    assert_equal(Mount("/a/b/").url_for("/c"), "/a/b/c")
+    # The arity check travels with it: a bad reverse still raises.
+    var raised = False
+    try:
+        _ = at.url_for("/notes/:id")
+    except:
+        raised = True
+    assert_true(raised)
+
+
+def test_a_mounted_pattern_matches_what_it_reverses_to() raises:
+    """The two directions, under a prefix: what `Mount.join` registers is
+    what `Mount.url_for` produces, and `match` sends the latter back to
+    the same handler with the same captures."""
+    var at = Mount("/native")
+    var r = Router()
+    r.add("GET", at.join("/"), 1)
+    r.add("GET", at.join("/notes/:id"), 2)
+    var root = r.match("GET", at.url_for("/"))
+    assert_true(root.matched)
+    assert_equal(root.handler_id, 1)
+    var m = r.match("GET", at.url_for("/notes/:id", "42"))
+    assert_true(m.matched)
+    assert_equal(m.handler_id, 2)
+    assert_equal(m.params[0], "42")
+    # Outside the mount, nothing matches: the prefix is part of the route.
+    assert_false(r.match("GET", "/notes/42").matched)
 
 
 def main() raises:
