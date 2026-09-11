@@ -38,9 +38,10 @@ places, and the third is a chain.
 It was also unsafe in a way worth recording. `apps/notes_api` ended its
 chain with a bare `return self._delete(req, id)` as the fallthrough, so a
 route added without a matching arm did not 404 — it deleted. The
-conversion below removes the chain, and `poe smoke-notes` now asserts that
-a method a note's route does not take answers 405 and leaves the note
-where it was.
+conversion below removes the chain; `dispatch` has no fallthrough to
+reach, and `test_views.mojo` pins what it answers instead. (A `smoke-notes`
+assertion was first described as guarding this; it cannot, because the old
+chain answered 405 before the chain for any unregistered method.)
 
 ## The pattern
 

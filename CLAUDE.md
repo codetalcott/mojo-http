@@ -46,9 +46,12 @@ m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 ```
 
 **Zero upward imports.** `m0-core` depends on nothing. `m0-http` uses exactly
-four functions from `m0-core`: `wyhash64` and `format_hash64` in `etag.mojo`,
+five functions from `m0-core`: `wyhash64` and `format_hash64` in `etag.mojo`,
 `escape_json_string` in `health.mojo` and `reply.mojo`,
-`escape_json_string_into` in `log.mojo`. `m0-datastar` splits deliberately: `consts.mojo` and
+`escape_json_string_into` in `log.mojo`, and `escape_html_into` in
+`html.mojo`. That list is an inventory, not the constraint: the constraint
+is the direction (m0-http importing m0-core is downward) and that no
+libpython reaches the link line. `m0-datastar` splits deliberately: `consts.mojo` and
 `sse.mojo` import nothing outside themselves so the wire format is usable
 without the framework — do not add an `m0_http` import to either — while
 `stream.mojo` and `signals.mojo` are the server glue and may.
@@ -1031,27 +1034,40 @@ pieces, and the language fact each rests on:
   borrowed, `add_write` hands it `mut` (`poe sabotage-views` compiles the
   counter-examples and insists they are refused), `add_loop` registers a
   stateless view answered in `before_request` so it never becomes a pool
-  job. Views are stored as `thin` function pointers. A capturing closure is
+  job (and answered from `dispatch` too, one round trip slower, by a
+  handler that forgot to wire the hook); `dispatch` answers 405 with an
+  `Allow` merged across both tables and `OPTIONS` on any registered path
+  with 204; the routers are private, `Views.allow_header` is what an app
+  reads. Views are stored as `thin` function pointers. A capturing closure is
   not `thin`, so there is **no decorator or middleware story**: guards are
   early returns of `Optional[HTTPResponse]`. `params` stays positional —
   origins are not spellable as struct parameters on the pinned toolchain,
   which kills both a borrowing request wrapper and named route params.
-- **`Fragment` and `Html`** (`m0-core/src/html.mojo`): a fragment writes
+- **`Fragment` and `Html`** (`m0-http/src/html.mojo`): a fragment writes
   its root id once and `swap(verb, url)` generates the attribute targeting
   it from that id; `attr` owns the `="` and `"` and escapes, `text`
-  escapes, `raw` says so by name. Helpers, not a safety type — `String`
-  stays the currency and `reply.html(String)` is unchanged. In m0-core so
-  the four-function import list above stays true. `Html.swap` is the only
-  place the `hx-*` vocabulary is spelled.
+  escapes, `raw` says so by name; `finish` consumes the builder, so a
+  second call is a compile error; the constructor refuses an id `#id`
+  cannot select. Helpers, not a safety type — `String` stays the currency
+  and `reply.html(String)` is unchanged. In m0-http beside its consumer
+  (it was first put in m0-core to keep the import count at four, which
+  mistook the inventory for the rule). `Html.swap` is the only place the
+  `hx-*` vocabulary is spelled.
 - **`page_or_fragment`** (`m0-http/src/fragment.mojo`): the framework
   decides page-versus-fragment from `HX-Request`; both answers carry
   `Vary: HX-Request` through `reply.vary`, which APPENDS (`vary_accept`
-  used to overwrite, unnoticed while nothing set `Vary` twice). The shell
-  is a `thin` function over a generic context, not a trait: **no trait
-  defined in a `.mojoc` package can be conformed to by an app** — the
-  witness table is never emitted, even when the trait's methods name only
-  `String` — which is the same reason `HTTPService` and `PoolHandler` live
-  in the source-resolved fork.
+  used to overwrite, unnoticed while nothing set `Vary` twice) and keeps
+  `*` alone. A `status` parameter makes a styled 404 a 404. The shell is
+  a `thin` function over a generic context, not a trait: an app's
+  conformance to a trait defined in a `.mojoc` package gets no witness
+  table — observed twice on this toolchain (`PoolHandler`, `PageShell`),
+  both with the generic consumer inside the same `.mojoc`, while
+  `Views[S]` over an app type works, so the exact discriminant is not
+  established. `poe check-mojoc-trait` compiles an app conformance
+  against the built package and insists it is refused, with a control;
+  the day it flips, `PageShell` (kept in `fragment.mojo` for that probe)
+  is the API to prefer. `HTTPService` and `PoolHandler` live in the
+  source-resolved fork for the same reason.
 - **`url_for(PATTERN, params...)`** (`router.mojo`): the pattern is a
   `comptime` constant given to both `add` and `url_for`, so a misspelled
   route is a compile error; it raises on an arity mismatch and
@@ -1059,8 +1075,10 @@ pieces, and the language fact each rests on:
   routes-as-function-values is closed. `Router.pattern_of` plus
   `test_every_registered_route_reverses_and_matches` keep the two
   directions honest.
-- **`form(req)`** (`form.mojo`): an ordered multimap that keeps every
-  value of a repeated key, empty unless the content type is the form's.
+- **`form(req)`** (`form.mojo`): `Optional` — None unless the content
+  type is the form's, compared whole, so "not a form" cannot be read as an
+  empty one and the check cannot be forgotten — holding an ordered
+  multimap that keeps every value of a repeated key.
   Deliberately NOT factored out of `URI.parse`, which fills a last-wins
   `Dict` by contract; `test_form.mojo`'s encoding table is the anti-drift
   device, and it stays a test rather than a shared loop.

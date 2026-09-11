@@ -85,8 +85,11 @@ job; `dispatch` answers 405 with `Allow` and 404 with no fallthrough.
 Reworked from draft PR #273: both notes apps were converted rather than a
 third added, and `apps/notes_api`'s old chain — which ended in a bare
 `return self._delete(...)`, so a route registered without its own arm
-deleted instead of answering — is gone, with `smoke-notes` now asserting
-a 405 leaves the note where it was.
+deleted instead of answering — is gone. The guard is structural:
+`dispatch` has no fallthrough to reach, and `test_views.mojo` pins what it
+does answer. (A wire assertion in `smoke-notes` was first described as
+guarding this; it cannot, since the old chain answered 405 before the
+chain for any unregistered method, and the claim is withdrawn.)
 
 **The HTML helpers and the fragment** (`Html`, `Fragment`,
 `packages/m0-core/src/html.mojo`). The diagnosis behind them is that the
@@ -99,8 +102,13 @@ follows it, so a void element needs no call of its own. The single quotes
 inside a Datastar expression come out as `&#x27;`, which the HTML parser
 un-escapes before any expression evaluator sees them — what every
 templating engine does, and more correct than the hand-written line. It is
-`escape_html_into`'s first caller and lives in m0-core so that m0-http
-never imports it. Per the standing decision these are **helpers, not a
+`escape_html_into`'s first caller. It was first placed in m0-core to keep
+m0-http's import count from that package at four, which mistook an
+inventory for the constraint (zero upward imports, no libpython); it now
+lives in m0-http beside `fragment.mojo`, its consumer, and the count is
+five. `finish` consumes the builder, so a second call is a compile error
+rather than a second closing tag, and the constructor refuses an id that
+`#id` could not select. Per the standing decision these are **helpers, not a
 safety type**: `String` stays the currency, `reply.html(String)` is
 unchanged, no app is forced onto them, and escaping stays a convention
 the other apps may ignore. The helpers make the safe path the shorter one;
@@ -117,13 +125,19 @@ at app build: *"struct 'Site' does not have witness table for trait"*.
 The rule recorded from `PoolHandler` said a trait behind the `.mojoc`
 fails when its methods name types the app resolves from source; this
 trait's one method named only `String`, and it failed the same way. So
-the rule is broader: **no trait defined in a precompiled package can be
-conformed to by an application, full stop**, which is why `HTTPService`
-and `PoolHandler` live in the source-resolved fork. The shape that
-crosses the boundary is a `thin` function over a generic context —
-`page_or_fragment[C](req, fragment, ctx: C, shell: def (C, String) raises
-thin -> String)` — probed standalone and then proven by `build-apps`. Two
-arguments where one struct would have been nicer is the cost, paid there.
+the rule is broader than "types the app resolves from source" — but it is
+still generalised from two experiments, both with the generic consumer
+inside the same `.mojoc`, and `Views[S]` over an app type works, so the
+exact discriminant is not established. It is recorded as observed, with a
+probe that can flip: `poe check-mojoc-trait` compiles an app conformance
+to `PageShell` (kept in `fragment.mojo` for this) against the built
+package and insists it is refused, beside a control that catches a stale
+`.mojoc`. `HTTPService` and `PoolHandler` live in the source-resolved fork
+for the same reason. The shape that crosses the boundary today is a
+`thin` function over a generic context — `page_or_fragment[C](req,
+fragment, ctx: C, shell: def (C, String) raises thin -> String)` — probed
+standalone and then proven by `build-apps`. Two arguments where one struct
+would have been nicer is the cost, paid there.
 The same lift fixed `reply.vary_accept`, which **overwrote** `Vary`;
 `reply.vary` appends without repeating a name, and both answers carry
 `HX-Request` beside whatever `Accept` the view already named.
@@ -148,8 +162,10 @@ same captures — the property that keeps the two directions honest.
 **Form bodies** (`form(req)`, `packages/m0-http/src/form.mojo`). An
 ordered multimap, because `<input type=checkbox>` legitimately repeats
 one key; `first`, `get` (which tells absent from empty), `all`, `has`.
-Empty unless the content type is `application/x-www-form-urlencoded`,
-for the reason the missed sabotage gave. **Deliberately not factored out
+`Optional`: None unless the content type is
+`application/x-www-form-urlencoded`, compared whole, for the reason the
+missed sabotage gave — and so that "not a form" can never be read as an
+empty one by a view whose fields all have defaults. **Deliberately not factored out
 of `URI.parse`**: the query loop there fills a last-wins `Dict` by
 contract, and a shared loop would force one of the two to change; the
 anti-drift device is a test, not a type — one table of encodings runs

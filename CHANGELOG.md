@@ -32,6 +32,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **The fragment layer hardened after review** (SPEC N2–N6 unchanged, the
+  gates widened). `Views` keeps its routers private (a route registered
+  past the tables was a call through whatever the out-of-bounds index
+  held) and exposes `allow_header`, which merges both tables; a loop route
+  in the wrong method is 405 with that `Allow` rather than 404, `OPTIONS`
+  on any registered path is 204 with it (a preflight used to get a 405
+  whose `Allow` named OPTIONS), and a loop route that reaches `dispatch`
+  is answered there. `url_for` refuses an empty value, which reversed
+  `/notes/:id` to the collection. `reply.vary` keeps `*` alone and treats
+  an empty field as absent. `Html` and `Fragment` move from m0-core to
+  m0-http beside their consumer — the four-function sentence was an
+  inventory, not the constraint, and a frontend library's attribute names
+  do not belong in the package `build-ffi` compiles into `libm0core`;
+  `finish` consumes the builder and the constructor refuses an id `#id`
+  cannot select. `page_or_fragment` takes a status, so a styled 404 is a
+  404. `form(req)` is `Optional`, None unless the media type, compared
+  whole, is the form's. `poe check-mojoc-trait` is the probe behind the
+  thin-function shell, with a control. The fragment smoke follows a
+  rendered link rather than typing the path, and sends a form body
+  carrying a byte that is not UTF-8.
+
 - **The real-application soak was re-run against 1.0.0**
   ([docs/REAL_APP_VALIDATION.md](docs/REAL_APP_VALIDATION.md)). All four
   applications, six rows, 215,214 requests compared byte for byte against
