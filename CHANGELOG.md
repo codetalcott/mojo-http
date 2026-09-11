@@ -10,6 +10,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **A grant-verified hold mount** (SPEC I21): `--mount PREFIX=hold`. The
+  application keeps every authorization decision in its own views and
+  hands the browser a signed stream URL into the mount —
+  `m0serve.grant.stream_url(prefix, channel, session=request.COOKIES.get("sessionid"))`
+  — and the mount holds the stream on a Mojo pool thread that never
+  touches the interpreter, verifying the grant alone: HMAC-SHA256 in
+  constant time, expiry against the host clock, the session cookie the
+  browser sends against the binding the issuer put in. `M0_GRANT_KEY` is
+  the one secret, read by both sides; `M0_GRANT_KEY_PREV` rotates it;
+  `M0_GRANT_COOKIE` names the cookie (`sessionid`). A refusal is a 401
+  saying `expired` (fetch a fresh URL) or `invalid` (stop), with its
+  reason. The mount refuses to start without `--realtime` or the key, and
+  `--doctor` agrees. `smoke-hold-mount` is the gate; `test_grant.mojo`
+  verifies grants the same issuer signed. The issuer is stdlib-only Python
+  in the wheel and, byte-identical, in `apps/django_realtime`.
 - **SHA-256 and HMAC-SHA256 in `m0-core`** (SPEC G15), with a
   constant-time tag compare. The first cryptographic primitive in the
   tree: `Sha256` streams and `digest` leaves the state intact, so

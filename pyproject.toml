@@ -5572,6 +5572,105 @@ echo "smoke-mojo-mount-hold OK"
 python3 scripts/emit.py --covers N11 --task smoke-mojo-mount-hold
 """
 
+# The grant-verified hold mount (SPEC I21). Django decides, in its own
+# view with its own session, whether a browser may hold a stream and on
+# which channel, and signs that into the stream URL (`m0serve.grant`); a
+# `--mount PREFIX=hold` verifies the grant on a pool thread that never
+# touches Python and takes the hold. Each phase pins one property of the
+# design: the two startup refusals (and the doctor agreeing), a bound grant
+# admitting its own session and a publish reaching it, every refusal shape
+# by name (no cookie, another session's cookie, expired, tampered, no
+# grant), a grant signed under the previous key admitted while it is
+# listed, an unbound grant needing no cookie, and the issuer refusing a
+# channel the format cannot carry. The verifier's unit form is
+# test_grant.mojo, against grants the same issuer signed.
+[tool.poe.tasks.smoke-hold-mount]
+help = "A stream held on a Mojo pool thread against a grant Django signed"
+deps = ["build-serve"]
+shell = """
+set -u
+srv=bin/m0serve
+P=8803
+B=http://localhost:$P
+D="--app-dir apps/django_realtime"
+M="--mount /=djangoproj.wsgi:application --mount /rt=hold"
+export M0_GRANT_KEY="smoke-key-0123456789abcdef0123456789abcdef"
+export M0_GRANT_KEY_PREV="smoke-prev-key-fedcba9876543210fedcba98765432"
+pid=
+out=$(mktemp -d)
+fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat "$out"/server.log 2>/dev/null; rm -rf "$out"; exit 1; }
+cleanup() { [ -n "$pid" ] && kill $pid 2>/dev/null; rm -rf "$out"; }
+trap cleanup EXIT
+grant_url() { curl -s --max-time 5 "$@" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])'; }
+
+# --- phase 1: the refusals, and the doctor agreeing with each ----------
+"$srv" $M $D --port $P --blocking-threads 2 > "$out"/r1.log 2>&1
+rc=$?; [ $rc -eq 2 ] || fail "a hold mount without --realtime exited $rc, expected 2"
+grep -q 'needs --realtime' "$out"/r1.log || fail "the refusal did not name --realtime"
+"$srv" --doctor $M $D --port $P --blocking-threads 2 > /dev/null 2>&1
+rc=$?; [ $rc -eq 2 ] || fail "--doctor disagreed with main on the missing --realtime (exit $rc)"
+env -u M0_GRANT_KEY "$srv" $M $D --port $P --realtime --blocking-threads 2 > "$out"/r2.log 2>&1
+rc=$?; [ $rc -eq 2 ] || fail "a hold mount without M0_GRANT_KEY exited $rc, expected 2"
+grep -q 'needs M0_GRANT_KEY' "$out"/r2.log || fail "the refusal did not name M0_GRANT_KEY"
+env -u M0_GRANT_KEY "$srv" --doctor $M $D --port $P --realtime --blocking-threads 2 > /dev/null 2>&1
+rc=$?; [ $rc -eq 2 ] || fail "--doctor disagreed with main on the missing key (exit $rc)"
+
+# --- phase 2: a bound grant admits its session, and a publish reaches it
+"$srv" $M $D --port $P --realtime --blocking-threads 2 --health-path /health > "$out"/server.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail $B/health > /dev/null \
+  || fail "server never became healthy"
+url=$(grant_url -H 'Cookie: sessionid=s3cret' "$B/grant?channel=news")
+case "$url" in /rt/stream?g=v1.*) ;; *) fail "the issuer did not render a stream URL into the mount: $url";; esac
+curl -s -N --max-time 4 -H 'Cookie: sessionid=s3cret' -D "$out"/head "$B$url" > "$out"/body &
+c=$!
+sleep 1
+curl -s -X POST "$B/publish?channel=news&msg=granted" > /dev/null
+curl -s $B/health | grep -q '"subscribers":1' || fail "the granted stream is not subscribed in the loop's registry: $(curl -s $B/health)"
+wait $c
+grep -q '^HTTP/1.1 200' "$out"/head || fail "the granted hold was not answered 200: $(head -1 "$out"/head)"
+grep -qi '^content-type: text/event-stream' "$out"/head || fail "the head is not an event stream"
+grep -qi '^transfer-encoding' "$out"/head && fail "the hold was drained as an executor stream"
+grep -qi '^m0-hold\\|^m0-channel' "$out"/head && fail "the instruction headers leaked to the wire"
+grep -q '^data: granted$' "$out"/body || fail "the publish from Django did not reach the granted stream"
+grep -q '^id: 1$' "$out"/body || fail "the event's id did not reach the granted stream"
+
+# --- phase 3: every refusal, by name ------------------------------------
+# Every curl here carries a time limit ON PURPOSE: on a build that wrongly
+# admits one of these, the answer is a held stream, and a gate that hangs on
+# the bug it guards is worse than one that fails. Found by sabotaging the
+# session binding: the first run of this phase sat in an admitted hold for
+# an hour and three quarters.
+curl -s --max-time 5 "$B$url" | grep -q '"reason":"no session cookie"' || fail "a bound grant without its cookie was not refused as such"
+curl -s --max-time 5 -H 'Cookie: sessionid=other' "$B$url" | grep -q '"reason":"session mismatch"' || fail "another session's cookie was not refused as such"
+expired=$(grant_url -H 'Cookie: sessionid=s3cret' "$B/grant?channel=news&ttl=-5")
+curl -s --max-time 5 -H 'Cookie: sessionid=s3cret' "$B$expired" | grep -q '"error":"expired"' || fail "an expired grant was not refused as expired"
+curl -s --max-time 5 -H 'Cookie: sessionid=s3cret' "$B${url%?}Z" | grep -q '"reason":"bad signature"' || fail "a tampered tag was not refused as a bad signature"
+curl -s --max-time 5 "$B/rt/stream" | grep -q '"reason":"no grant"' || fail "a stream request with no grant was not refused as such"
+code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H 'Cookie: sessionid=s3cret' "$B${url%?}Z")
+[ "$code" = "401" ] || fail "a refusal answered $code, expected 401"
+curl -s --max-time 5 "$B/grant?channel=a.b" | grep -q 'refuses it' || fail "the issuer accepted a channel the format cannot carry"
+
+# --- phase 4: rotation, and a grant bound to no session ------------------
+prev=$(grant_url "$B/grant?channel=notate_submission_7&bind=0&key=prev")
+curl -s -N --max-time 2 -D "$out"/head4 "$B$prev" > /dev/null
+grep -q '^HTTP/1.1 200' "$out"/head4 || fail "a grant signed under M0_GRANT_KEY_PREV was refused while the key is listed"
+unbound=$(grant_url "$B/grant?channel=news&bind=0")
+curl -s -N --max-time 2 -D "$out"/head5 "$B$unbound" > /dev/null
+grep -q '^HTTP/1.1 200' "$out"/head5 || fail "an unbound grant was refused without a cookie"
+for _ in $(seq 1 30); do curl -s $B/health | grep -q '"subscribers":0' && break; sleep 0.1; done
+curl -s $B/health | grep -q '"subscribers":0' || fail "a granted slot was not released after its client left"
+
+kill -TERM $pid
+for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
+pid=
+grep -qi 'traceback' "$out"/server.log && fail "the server logged a traceback"
+
+echo "smoke-hold-mount OK"
+python3 scripts/emit.py --covers I21 --task smoke-hold-mount
+"""
+
 # PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
 [tool.poe.tasks.sabotage-outbox-cap]
 help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"
@@ -5936,7 +6035,7 @@ whl=$(ls dist/wheels/*.whl | head -1)
 [ -n "$whl" ] || { echo "smoke-quickstart: no wheel built"; exit 2; }
 M0SERVE_WHEEL="$whl" python3 scripts/run_quickstart.py \
   --doc QUICKSTART.md --doc docs/QUICKSTART_NEXT.md \
-  --expect setup=4,serve=4,verify=4 || exit 1
+  --expect setup=5,serve=5,verify=5 || exit 1
 python3 scripts/emit.py --covers M10 --task smoke-quickstart
 python3 scripts/emit.py --covers K11 --task smoke-quickstart
 python3 scripts/emit.py --covers M16 --task smoke-quickstart

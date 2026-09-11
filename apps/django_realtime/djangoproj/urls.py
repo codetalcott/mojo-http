@@ -28,6 +28,7 @@ from django.http import HttpResponse, JsonResponse
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 
+import grant
 import m0pub
 
 # The demo's "auth": real apps put sessions, tokens, or object permissions
@@ -135,6 +136,30 @@ def ws_message(request):
     return JsonResponse({"channel": channel, "slot": slot, "pid": os.getpid()})
 
 
+def grant_url(request):
+    """A stream URL into the hold mount, signed for this session.
+
+    What a real view does after its own authorization: `grant.stream_url`
+    binds the grant to the session cookie the browser will send with the
+    stream request, so a copied URL is useless without it. Three query
+    knobs exist for `smoke-hold-mount` and nothing else: `ttl` (negative
+    for an already-expired grant), `bind=0` for a grant bound to no
+    session, and `key=prev` to sign with `M0_GRANT_KEY_PREV` as a server
+    would have before a rotation.
+    """
+    channel = request.GET.get("channel") or "news"
+    ttl = int(request.GET.get("ttl") or grant.DEFAULT_TTL)
+    session = None if request.GET.get("bind") == "0" else request.COOKIES.get("sessionid")
+    key = None
+    if request.GET.get("key") == "prev":
+        key = grant.load_key(name=grant.PREV_KEY_ENV)
+    try:
+        url = grant.stream_url("/rt", channel, session=session, ttl=ttl, key=key)
+    except grant.GrantError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    return JsonResponse({"url": url})
+
+
 def publish(request):
     """Broadcast a message to every subscriber of a channel, on every worker.
 
@@ -189,4 +214,5 @@ urlpatterns = [
     path("ws", websocket),
     path("ws/message", ws_message),
     path("publish", publish),
+    path("grant", grant_url),
 ]

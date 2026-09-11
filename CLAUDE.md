@@ -741,7 +741,18 @@ the loop the `h` frame before completing — and the loop drains it from
 its own registries (SPEC N11, `smoke-mojo-mount-hold`;
 docs/notes/hold-from-a-mojo-mount.md). Only under `--realtime`; a
 streaming response that is not a hold is still refused from a pool thread,
-and a `websocket` instruction degrades there.
+and a `websocket` instruction degrades there. `--mount PREFIX=hold` is the
+built-in mount on that mechanism for a Python application that keeps its
+authorization in its own views: the view signs channel, expiry and a
+session binding into the stream URL with `m0serve.grant` (stdlib Python,
+byte-identical twin in `apps/django_realtime`, `check-docs` insists), and
+`HoldMount` verifies it on the pool thread with `m0_http.grant` — HMAC
+in constant time, expiry against the host clock, the session cookie
+against the binding — then holds. `M0_GRANT_KEY` is the one secret both
+sides read; the mount refuses to start without it or without
+`--realtime`, and `--doctor` mirrors both (SPEC I21, `smoke-hold-mount`;
+docs/notes/grant-verified-holds.md). The verifier's test vectors are
+grants the issuer signed, so the two sides cannot drift silently.
 
 `packaging/m0serve/` builds the `pip install m0serve` wheel and holds the
 repo's **only** `[build-system]`: one in the root would make `uv sync` build
@@ -1475,6 +1486,9 @@ Properties of the design, not defects to fix in passing:
   keep-alive request cap, `--max-keepalive-requests` over it; 0 = never
   close for count — every close is a client reconnect, and one per N
   requests is the client's tail at the 1/N quantile, docs/notes/pool-tail.md)
+  `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and `M0_GRANT_COOKIE` (the hold
+  mount's key, its previous key during a rotation, and the session cookie a
+  grant binds to; `sessionid`)
   and, for measurement only, `M0_POOL_SPIN_US` (the idle spin before a pool
   thread parks) and `M0_POOL_DEBUG` (per-thread ring/GIL/service histograms
   and the loop's wait counters at shutdown). `m0serve` layers flags on top (flag > env > default) and

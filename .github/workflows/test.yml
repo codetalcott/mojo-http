@@ -527,6 +527,10 @@ jobs:
       # a Django view uses, and a publish from Django reaches it (SPEC N11).
       - name: Smoke test an SSE hold from a Mojo mount
         run: uv run poe smoke-mojo-mount-hold
+      # A stream held on a Mojo pool thread against a grant Django signed
+      # into the URL: session-bound, expiring, rotatable (SPEC I21).
+      - name: Smoke test the grant-verified hold mount
+        run: uv run poe smoke-hold-mount
       # Django's own ASGI handler: async views, live StreamingHttpResponse,
       # sessions, and scope["client"] -- Django logs every visitor as
       # address-less when the server sends client: None, silently.
