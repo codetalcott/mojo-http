@@ -523,6 +523,10 @@ jobs:
       # probe's `--mojo-path` pointed at a Python route is the negative arm.
       - name: Smoke test a Mojo mount beside a Python one
         run: uv run poe smoke-mojo-mount
+      # A Mojo view takes an SSE hold on its pool thread with the two headers
+      # a Django view uses, and a publish from Django reaches it (SPEC N11).
+      - name: Smoke test an SSE hold from a Mojo mount
+        run: uv run poe smoke-mojo-mount-hold
       # Django's own ASGI handler: async views, live StreamingHttpResponse,
       # sessions, and scope["client"] -- Django logs every visitor as
       # address-less when the server sends client: None, silently.

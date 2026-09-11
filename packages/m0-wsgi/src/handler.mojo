@@ -51,10 +51,11 @@ from m0_http.sse.format import NO_EVENT_ID
 from .app import WSGIApp
 from .cli import match_mount
 from .cli import ServeOptions
-from .hold import (
-    take_hold, request_last_event_id, ws_message_request,
+from lightbug_http.hold import (
+    take_hold, request_last_event_id, ws_message_request, send_hold_frame,
     HOLD_STREAM, HOLD_WEBSOCKET,
 )
+from lightbug_http.broadcast import reserved_stream_url
 from .threaded import ThreadHandler, ThreadContext
 
 
@@ -824,7 +825,7 @@ struct WSGIHandler(ThreadHandler):
                 # worse. A frame the channel would not take is a client
                 # holding a dead stream, which is why that is a 503 and not
                 # a shrug.
-                if not _send_hold_frame(
+                if not send_hold_frame(
                     self.hold_notify_fd, slot,
                     request_last_event_id(req), hold.channel,
                     kind=String("h"), lane=self.lane,
@@ -866,7 +867,7 @@ struct WSGIHandler(ThreadHandler):
                 # thread's LANE as well as the channel — an inbound message
                 # comes back to the mount whose view gated the upgrade, and
                 # nothing else can name it.
-                if not _send_hold_frame(
+                if not send_hold_frame(
                     self.hold_notify_fd, slot,
                     request_last_event_id(req), hold.channel,
                     kind=String("H"), lane=self.lane,
@@ -1561,39 +1562,6 @@ def _unmounted() -> HTTPResponse:
     )
 
 
-def _send_hold_frame(
-    fd: Int, slot: Int, last_event_id: Int, channel: String,
-    kind: String = String("h"), lane: Int = -1,
-) -> Bool:
-    """One reserved hold frame on the loop's bus channel: `[id][len][url][channel]`.
-
-    `kind` is `h` for an SSE hold and `H` for a socket — the same two letters
-    the executor uses for its own begin frames, and read by the same branch.
-    `lane` rides in the url so the loop learns which mount holds the socket;
-    an SSE hold has no inbound half and does not need it, but carries it
-    anyway rather than having two shapes to reason about.
-
-    Bus codec on purpose — the loop drains this descriptor with
-    `drain_bus_channel` and hands every frame to `sse_peer_frame`, which is
-    where the `h` kind is turned into a subscription. Bounded retry, never a
-    park: a hold frame is ~50 bytes on a 256 KB channel the loop empties
-    every pass, so a refusal here means the loop is not draining at all,
-    and the caller answers 503 rather than leaving a client on a stream
-    nothing will ever feed."""
-    var datagram = encode_bus_frame(
-        asgi_stream_url(kind, slot, lane), last_event_id,
-        Span(channel.as_bytes()),
-    )
-    for _ in range(64):
-        var rc = external_call["send", Int](
-            c_int(fd), datagram.unsafe_ptr(), UInt(len(datagram)), c_int(0)
-        )
-        if rc == len(datagram):
-            return True
-        _ = external_call["sched_yield", c_int]()
-    return False
-
-
 def _hold_unavailable() -> HTTPResponse:
     return HTTPResponse(
         body_bytes=String(
@@ -1693,26 +1661,12 @@ comptime ASGI_URL_CONTROL = UInt8(1)
 
 
 def asgi_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
-    """Build a reserved channel name: `\\x01<kind>/<slot>[/<lane>]`.
-
-    The lane is the executor's own mount index, appended only under
-    `--mount` (so the unmounted wire format is unchanged). It is how the
-    handler routes a disconnect tag or an inbound WS message back to the
-    executor that owns the slot: the name is stored as the subscription's
-    filter url, so the routing needs no side table that could drift.
+    """`reserved_stream_url` under the name this package has always used:
+    `\\x01<kind>/<slot>[/<lane>]`. The builder moved to the fork
+    (`lightbug_http/broadcast.mojo`) when the hold frame's sender did, so a
+    Mojo pool thread and this package spell one format from one function.
     """
-    var b = List[UInt8]()
-    b.append(ASGI_URL_CONTROL)
-    for ch in kind.as_bytes():
-        b.append(ch)
-    b.append(UInt8(ord("/")))
-    for ch in String(slot).as_bytes():
-        b.append(ch)
-    if lane >= 0:
-        b.append(UInt8(ord("/")))
-        for ch in String(lane).as_bytes():
-            b.append(ch)
-    return String(StringSpan(unsafe_from_utf8=Span(b)))
+    return reserved_stream_url(kind, slot, lane)
 
 
 def pool_stream_url(slot: Int, lane: Int, ack_fd: Int) -> String:

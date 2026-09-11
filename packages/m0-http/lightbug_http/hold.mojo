@@ -42,9 +42,21 @@ makes the limit explicit instead.
 The instruction headers are stripped in every branch, including the degraded
 ones: they are addressed to this server, and leaking them to a client would
 advertise an internal control surface.
+
+**In the fork, not in `m0-wsgi`, since 2026-09-11.** The protocol was
+WSGI's alone until a `MojoPool` thread learned to take the same hold: a
+Mojo view returns the two headers exactly as a Django view does, and the
+pool thread rewrites its response and sends the loop the same `h` frame
+(`send_hold_frame`, below) a WSGI pool thread sends. One copy of the
+rewrite, imported by both, is what keeps the two paths from drifting; it
+sits beside `broadcast.mojo` and `offload.mojo` because it is server
+mechanism of the same kind, and importing nothing of the framework's.
 """
 
+from std.ffi import c_int, external_call
+
 from lightbug_http import HTTPRequest, HTTPResponse
+from lightbug_http.broadcast import encode_bus_frame, reserved_stream_url
 from lightbug_http.header import Header, Headers, HeaderKey
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI
@@ -252,3 +264,40 @@ def ws_message_request(
         method=String("POST"),
         body=Bytes(payload),
     )
+
+
+def send_hold_frame(
+    fd: Int, slot: Int, last_event_id: Int, channel: String,
+    kind: String = String("h"), lane: Int = -1,
+) -> Bool:
+    """One reserved hold frame on the loop's bus channel: `[id][len][url][channel]`.
+
+    `kind` is `h` for an SSE hold and `H` for a socket — the same two letters
+    the executor uses for its own begin frames, and read by the same branch
+    of the loop handler's `sse_peer_frame`. `lane` rides in the url so the
+    loop learns which mount holds the socket; an SSE hold has no inbound
+    half and does not need it, but carries it anyway rather than having two
+    shapes to reason about.
+
+    Bus codec on purpose — the loop drains this descriptor with
+    `drain_bus_channel` and hands every frame to `sse_peer_frame`, which is
+    where the `h` kind is turned into a subscription. Bounded retry, never a
+    park: a hold frame is ~50 bytes on a 256 KB channel the loop empties
+    every pass, so a refusal here means the loop is not draining at all,
+    and the caller answers 503 rather than leaving a client on a stream
+    nothing will ever feed. Sent by a WSGI pool thread (`WSGIHandler.func`)
+    and a Mojo pool thread (`mojo_pool._pool_serve`) alike, and in both
+    BEFORE the response completes: the loop drains its bus channels before
+    it finishes a streaming head, so the subscription precedes the head."""
+    var datagram = encode_bus_frame(
+        reserved_stream_url(kind, slot, lane), last_event_id,
+        Span(channel.as_bytes()),
+    )
+    for _ in range(64):
+        var rc = external_call["send", Int](
+            c_int(fd), datagram.unsafe_ptr(), UInt(len(datagram)), c_int(0)
+        )
+        if rc == len(datagram):
+            return True
+        _ = external_call["sched_yield", c_int]()
+    return False

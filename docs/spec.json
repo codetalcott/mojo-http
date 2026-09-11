@@ -1477,9 +1477,9 @@
       "id": "N11",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "Streaming from a Mojo mount: a view on a mounted `Views` table takes a Server-Sent Events hold from a pool thread the way a WSGI pool thread does \u2014 the `h` frame on the loop's bus channel \u2014 so an application's `LISTEN/NOTIFY` views can move onto the mount; decided by a probe, and if the probe fails a compute path mounts first and the note records why",
-      "status": "planned",
-      "evidence": "ROADMAP: Streaming from a Mojo mount"
+      "capability": "An SSE hold from a Mojo mount: a view on a mounted `Views` table returns the two instruction headers a Django view returns (`M0-Hold: stream`, `M0-Channel`), the pool thread rewrites the response into the stream's head and sends the loop the same `h` frame a WSGI pool thread sends before completing, the loop subscribes the slot in the registries it drains, and a publish from Python reaches the Mojo-held stream with its id \u2014 the client's `Last-Event-ID` honoured, comment heartbeats kept, no chunked framing, the slot released when the client leaves, and the head answered while every Python thread is busy; a streaming response that is not a hold is still refused 409, and without `--realtime` the head is served as an ordinary response, as a Django hold view's is",
+      "status": "verified",
+      "evidence": "`Smoke test an SSE hold from a Mojo mount` (every PR) \u2014 the unit form is `test_mojo_pool.mojo:test_a_hold_sends_the_loop_its_frame_and_completes_with_the_head`, and `poe sabotage-pool` reverts both the frame's send and the refusal; the mechanism is [hold-from-a-mojo-mount](notes/hold-from-a-mojo-mount.md)"
     },
     {
       "id": "N12",
