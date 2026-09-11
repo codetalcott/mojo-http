@@ -21,7 +21,8 @@ of those lifts, and the smoke has not changed:
   `Frag` is `Fragment[Htmx]`, named once below, and that one line is what
   this app knows about its frontend library.
 - **the view returns one thing.** `page_or_fragment` reads `HX-Request`
-  (and `HX-History-Restore-Request`, which asks for the page back) and
+  (and `HX-History-Restore-Request` and `HX-Boosted`, which ask for the
+  page back) and
   calls `wrap` only when a whole document is wanted, with `Vary` naming
   every header it read on both. No view branches on a header.
 

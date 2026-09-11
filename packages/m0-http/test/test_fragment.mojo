@@ -1,8 +1,9 @@
 """The fragment-or-page decision in `src/fragment.mojo`.
 
-The view returns one thing; the framework reads three request headers and
+The view returns one thing; the framework reads four request headers and
 decides whether to wrap it: htmx asks for a fragment with `HX-Request`
-unless it is restoring history, Datastar asks with `Datastar-Request`.
+unless it is restoring history or boosting a navigation, Datastar asks
+with `Datastar-Request`.
 Both answers must say they vary on every header read, and saying so must
 not lose a `Vary` the response already carried.
 """
@@ -52,7 +53,7 @@ def _req_with(name: String, value: String, hx: String = "") raises -> HTTPReques
     )
 
 
-comptime ALL_VARY = "HX-Request, HX-History-Restore-Request, Datastar-Request"
+comptime ALL_VARY = "HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request"
 """Every header the decision reads, in the order `Vary` names them."""
 
 
@@ -157,6 +158,23 @@ def test_a_datastar_action_gets_the_bare_fragment() raises:
     assert_equal(bare.headers[HeaderKey.VARY], ALL_VARY)
     assert_false(wants_fragment(_req_with("Datastar-Request", "false")))
     assert_true(wants_fragment(_req_with("Datastar-Request", "TRUE")))
+
+
+def test_a_boosted_request_is_a_page() raises:
+    """`hx-boost` sends `HX-Request: true` beside `HX-Boosted: true`,
+    targets the body with `innerHTML` and takes a full document's body.
+    A bare fragment there replaces the whole page with one section — the
+    history-restore failure in a different coat, and the same answer.
+
+    covers: N8
+    """
+    var frag = String('<section id="notes">x</section>')
+    var boosted = _req_with("HX-Boosted", "true", hx="true")
+    assert_false(wants_fragment(boosted))
+    var page = page_or_fragment(boosted, frag, Shell("t"), wrap)
+    assert_equal(_body(page), String("<!doctype html><title>t</title>", frag))
+    assert_equal(page.headers[HeaderKey.VARY], ALL_VARY)
+    assert_true(wants_fragment(_req_with("HX-Boosted", "false", hx="true")))
 
 
 def main() raises:

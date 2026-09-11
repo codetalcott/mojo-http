@@ -1445,7 +1445,7 @@
       "id": "N8",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "A history restore is a page: `HX-History-Restore-Request: true` beside `HX-Request: true` answers the whole document, because htmx swaps the answer's body into the page it is rebuilding and a bare fragment there is a page with no head; every answer's `Vary` names all three headers the decision reads",
+      "capability": "A history restore is a page, and so is a boosted navigation: `HX-History-Restore-Request: true` or `HX-Boosted: true` beside `HX-Request: true` answers the whole document, because htmx swaps the answer's body into the page it is rebuilding (or into the body it targets) and a bare fragment there is a page with no head, or a body that is one section; every answer's `Vary` names all four headers the decision reads",
       "status": "verified",
       "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 `test_fragment.mojo:test_a_history_restore_is_a_page` is the unit form; the request shape is htmx 2.0.4's own `loadHistoryFromServer`, which sets both headers"
     },

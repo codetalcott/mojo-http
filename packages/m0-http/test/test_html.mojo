@@ -287,5 +287,100 @@ def test_fragment_el_spells_the_swap_from_the_tag_it_is_given() raises:
     assert_equal(ds^.finish(), '<section id="notes"></section>')
 
 
+def test_a_datastar_url_that_would_end_the_expression_is_refused() raises:
+    """`attr` escapes for the HTML context; the browser un-escapes before
+    Datastar evaluates the expression, so a `'` in the URL would close the
+    string literal and run what follows. Refused for Datastar, where the
+    URL sits inside JavaScript; tolerated for htmx, where it is only an
+    attribute value. `%27` is the same URL and passes.
+
+    covers: N7
+    """
+    for bad in [
+        "/notes?q=x') ; alert(1) ; ('",
+        "/notes?q=\\",
+        "/notes?q=a\nb",
+        "/notes?q=a\rb",
+    ]:
+        var f = Fragment[Datastar]("notes")
+        f.open("button")
+        var raised = False
+        try:
+            f.swap("post", bad)
+        except:
+            raised = True
+        assert_true(raised, String("accepted `", bad, "`"))
+        _ = f^.finish()
+    var ok = Fragment[Datastar]("notes")
+    ok.open("button")
+    ok.swap("post", "/notes?q=x%27")
+    assert_true(ok^.finish().find("@post(&#x27;/notes?q=x%27&#x27;)") >= 0)
+    var hx = Fragment[Htmx]("notes")
+    hx.open("a")
+    hx.swap("get", "/notes?q='")
+    assert_true(hx^.finish().find('hx-get="/notes?q=&#x27;"') >= 0)
+
+
+def test_an_unknown_verb_is_refused_by_both_vocabularies() raises:
+    """`hx-psot` is a silent attribute and `@psot(...)` a runtime error;
+    a typo is the mistake the layer exists to catch, so it raises."""
+    var hx = Fragment[Htmx]("notes")
+    hx.open("a")
+    var raised = False
+    try:
+        hx.swap("psot", "/x")
+    except:
+        raised = True
+    assert_true(raised)
+    _ = hx^.finish()
+    var ds = Fragment[Datastar]("notes")
+    ds.open("a")
+    raised = False
+    try:
+        ds.swap("GET", "/x")
+    except:
+        raised = True
+    assert_true(raised)
+    _ = ds^.finish()
+
+
+def test_a_forgotten_attrs_argument_is_refused() raises:
+    """`el("p", "none")` used to render `<pnone></p>`, silently. Rendered
+    attributes always open with a space, so a child in the attrs slot is
+    refused, naming the mistake.
+
+    covers: N10
+    """
+    var shapes = List[String]()
+    shapes.append("none")
+    shapes.append(text("hi"))
+    shapes.append("<b>x</b>")
+    for i in range(len(shapes)):
+        var raised = False
+        try:
+            _ = el("p", shapes[i])
+        except:
+            raised = True
+        assert_true(raised, String("el accepted `", shapes[i], "` as attrs"))
+        raised = False
+        try:
+            _ = void("br", shapes[i])
+        except:
+            raised = True
+        assert_true(raised, String("void accepted `", shapes[i], "` as attrs"))
+    var f = Fragment[Htmx]("notes")
+    var raised = False
+    try:
+        _ = f.el("a", "get", "/x", "none")
+    except:
+        raised = True
+    assert_true(raised)
+    _ = f^.finish()
+    # The intended spellings still work: an empty attrs slot, rendered ones.
+    assert_equal(el("p", "", "none"), "<p>none</p>")
+    assert_equal(el("p", attr("class", "c"), text("hi")), '<p class="c">hi</p>')
+    assert_equal(void("br", ""), "<br>")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

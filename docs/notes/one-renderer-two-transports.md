@@ -91,12 +91,21 @@ element emits `hx-post`/`hx-target`/`hx-swap="outerHTML"` for one and
 `data-on:EVENT="@post('url')"` for the other, with no target at all,
 because the morph finds the fragment by the id it already carries. The
 event follows htmx's own default-trigger rule so the two agree on *when*
-as well as what: a `<form>` submits, with `__prevent` and
+(what travels is each library's own: htmx sends the element's value, a
+Datastar action the signal store, so a field is bound rather than sent):
+a `<form>` submits, with `__prevent` and
 `{contentType: 'form'}` so the request carries its fields; a field
 changes; an `<a>` or `<button>` clicks with `__prevent`, which cancels an
 anchor's navigation and a button's native submit and does nothing
 elsewhere; anything else clicks. An app names its vocabulary once
 (`comptime Frag = Fragment[Htmx]`) and writes no attribute of either.
+The Datastar URL sits inside a JavaScript string literal, which `attr`'s
+HTML escaping cannot protect — the browser un-escapes `&#x27;` before the
+expression is evaluated — so a URL carrying a quote, a backslash or a
+line break is refused; `url_for` percent-encodes all three, and an app
+that builds a query from request data must too. Both vocabularies refuse
+a verb outside the five, since a typo is a silent attribute in one and a
+runtime error in the other.
 
 Three seams were candidates. A fragment emitting both vocabularies through
 two methods puts the choice back in every renderer; a vocabulary *value*
@@ -114,12 +123,16 @@ response. The response is where the two agree (`HX-Reswap` and
 a row, so the mode is not built; when an application asks, it belongs
 beside `page_or_fragment`.
 
-**Three headers decide the page.** `page_or_fragment` answers the bare
+**Four headers decide the page.** `page_or_fragment` answers the bare
 fragment for `Datastar-Request: true`, and for `HX-Request: true` unless
-`HX-History-Restore-Request: true` is beside it — a history restore needs
-the whole document. Every answer's `Vary` names all three, added to any
+`HX-History-Restore-Request: true` or `HX-Boosted: true` is beside it — a
+history restore needs the whole document, and so does a boosted
+navigation, which targets the body with `innerHTML` and takes a full
+document's body. Every answer's `Vary` names all four, added to any
 `Vary` the view already set; naming a header the app's own library never
-sends costs nothing and keeps the decision one function.
+sends costs nothing and keeps the decision one function. (Review of the
+pull request found the boost case; it is the history-restore failure in
+a different coat.)
 
 **The todo demo is the proof.** `apps/datastar_todo`'s `render_todos` is a
 `Fragment[Datastar]`, its routes are values reversed with `url_for`, and
@@ -159,7 +172,11 @@ vocabulary reads it; giving it separately to a swap-attributes function
 would spell it twice. `test_html.mojo` pins the two tiers byte-identical
 on the same list item, and `smoke-fragment-notes` did not change when
 `render_list` moved onto the tier while `render_note` stayed in the
-builder, deliberately, so the reference app shows both shapes.
+builder, deliberately, so the reference app shows both shapes. The attrs
+slot is positional, and a child left in it — `el("p", "none")` — used to
+render `<pnone></p>` without a sound; rendered attributes always open
+with a space, so `raw_attrs` refuses a value that does not, naming the
+slip.
 
 ## Not built, and what would retire each
 

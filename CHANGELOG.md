@@ -18,15 +18,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   anchor clicks with `__prevent`) and no target, because Datastar morphs a
   `text/html` answer into the element whose id it carries — the id the
   fragment owns. An app names its vocabulary once (`comptime Frag =
-  Fragment[Htmx]`) and never writes an attribute of either.
+  Fragment[Htmx]`) and never writes an attribute of either. A Datastar
+  URL sits inside a JavaScript string literal that HTML escaping cannot
+  protect, so a URL carrying `'`, `\`, CR or LF is refused (`url_for`
+  encodes them), and both vocabularies refuse a verb outside the five.
   `apps/datastar_todo`'s list is now that renderer, one line, verbatim
   as the `elements` of every broadcast frame (`test_fragment_frame.mojo`)
   and byte-identical on a fresh page load (`smoke-todo`); its routes are
-  values reversed with `url_for`. `page_or_fragment` reads three headers:
+  values reversed with `url_for`. `page_or_fragment` reads four headers:
   `Datastar-Request: true` gets the bare fragment, and
-  `HX-History-Restore-Request: true` beside `HX-Request: true` gets the
-  whole document, since htmx swaps a history restore's body into the page
-  it is rebuilding; `Vary` names all three on every answer. A table knows
+  `HX-History-Restore-Request: true` or `HX-Boosted: true` beside
+  `HX-Request: true` gets the whole document, since htmx swaps a history
+  restore's body into the page it is rebuilding and a boosted navigation
+  takes a document's body; `Vary` names all four on every answer. A table knows
   where it is mounted: `Views[S](Mount("/native"))` registers under the
   prefix, `Mount.url_for` reverses to it, and `PoolContext.prefix` carries
   the lane's own prefix to a `PoolHandler`, so `m0serve`'s `MojoMount` —
@@ -37,7 +41,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   element — makes an element a string so a renderer nests like its
   markup with each escaping context named; `fragment_notes`'s list is
   written in it, its detail view in the builder, both pinned
-  byte-identical (SPEC N10). The research behind the Datastar arm is
+  byte-identical (SPEC N10); a child left in the attrs slot is refused
+  rather than rendered into the tag name. The research behind the Datastar arm is
   [one-renderer-two-transports](docs/notes/one-renderer-two-transports.md).
 
 ### Changed

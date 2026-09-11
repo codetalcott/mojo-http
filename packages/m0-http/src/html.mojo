@@ -102,7 +102,9 @@ comptime _KIND_LINK = UInt8(3)
 def _kind_of(tag: String) -> UInt8:
     """Which default event an element's request should fire on — htmx's
     own rule (`getTriggerSpecs`: a form submits, a field changes, the
-    rest click), so the two vocabularies agree on WHEN as well as what."""
+    rest click), so the two vocabularies agree on WHEN. What travels is
+    each library's own: htmx sends the element's value, Datastar the
+    signal store (see `Datastar`)."""
     if tag == "form":
         return _KIND_FORM
     if tag == "input" or tag == "textarea" or tag == "select":
@@ -110,6 +112,43 @@ def _kind_of(tag: String) -> UInt8:
     if tag == "a" or tag == "button":
         return _KIND_LINK
     return _KIND_OTHER
+
+
+def _check_verb(verb: String) raises:
+    """Refuse a verb that is not one of the five: `hx-psot` is a silent
+    attribute in htmx and `@psot(...)` a runtime error in Datastar, and a
+    typo is the mistake this layer exists to catch."""
+    if not (
+        verb == "get" or verb == "post" or verb == "put"
+        or verb == "patch" or verb == "delete"
+    ):
+        raise Error(
+            'swap("', verb, '", ...): the verb must be one of get, post, put, '
+            "patch, delete"
+        )
+
+
+def _check_action_url(url: String) raises:
+    """Refuse a URL that would end the JavaScript string literal Datastar's
+    expression places it in.
+
+    `attr` escapes the value for the HTML context — a `'` reaches the wire
+    as `&#x27;` — and the HTML parser un-escapes it before Datastar
+    evaluates the attribute, so what Datastar sees is the written `'`,
+    closing the literal: `@post('/notes?q=x') ; alert(1) ; ('')`. A URL
+    carrying a quote, a backslash or a line break is refused here rather
+    than written; `url_for` percent-encodes all of them, and an app that
+    builds a query from request data must too (`%27` is the same URL).
+    """
+    var b = url.as_bytes()
+    for i in range(len(b)):
+        var c = b[i]
+        if c == UInt8(39) or c == UInt8(92) or c == UInt8(13) or c == UInt8(10):
+            raise Error(
+                'Datastar swap("', url, '"): a URL inside a Datastar expression '
+                "may not contain a quote, a backslash or a line break — "
+                "percent-encode the value (url_for does)"
+            )
 
 
 trait Vocabulary:
@@ -137,6 +176,7 @@ struct Htmx(Vocabulary):
 
     @staticmethod
     def swap(mut h: Html, verb: String, url: String, target: String) raises:
+        _check_verb(verb)
         h.attr(String("hx-", verb), url)
         h.attr("hx-target", target)
         h.attr("hx-swap", "outerHTML")
@@ -157,14 +197,27 @@ struct Datastar(Vocabulary):
     button's native submit and is a no-op anywhere else; everything else
     fires on a plain `click`.
 
+    WHEN agrees with htmx; WHAT travels is Datastar's own. A field's
+    action sends the signal store, not the field — bind the field
+    (`data-bind:name`, the page's attribute) for its value to travel.
+    `{contentType: 'form'}` is not emitted for a field: it would send the
+    enclosing form inside one and raise `FetchFormNotFound` outside one
+    (v1.0.3), which is a runtime error for a rule the builder cannot see.
+
     The single quotes in the expression reach the wire as `&#x27;` because
     `attr` escapes; the HTML parser un-escapes the attribute before
-    Datastar evaluates it, so the expression it sees is the one written.
+    Datastar evaluates it, so the expression it sees is the one written —
+    which protects the HTML context and not the JavaScript one inside it.
+    That is why the URL is checked (`_check_action_url`): a `'` in it
+    would end the string literal, and `Fragment[Htmx]` tolerating the same
+    URL is exactly what makes the hole easy to carry across.
     """
 
     @staticmethod
     def swap(mut h: Html, verb: String, url: String, target: String) raises:
         _ = target
+        _check_verb(verb)
+        _check_action_url(url)
         if h._open_kind == _KIND_FORM:
             h.attr(
                 "data-on:submit__prevent",
@@ -234,14 +287,26 @@ struct Html(Movable):
         self._buf.append(_SPACE)
         self._buf.extend(name.as_bytes())
 
-    def attrs(mut self, rendered: String) raises:
+    def raw_attrs(mut self, rendered: String) raises:
         """Attributes ALREADY rendered — by `attr`, `flag` and `+` in the
-        expression tier below — into the open start tag, verbatim. The
-        expression tier's `el` is the caller; an app that has attribute
-        text in hand may use it too, and owns the escaping if so."""
+        expression tier below — into the open start tag, raw, and named
+        so; the expression tier's `el` is the caller, and an app that has
+        attribute text in hand owns the escaping if it uses this.
+
+        One check, because `attr` and `flag` both open with a space: a
+        non-empty string that does not is a child that was meant to follow
+        the attrs argument — `el("p", "none")` would otherwise render
+        `<pnone></p>`, silently, which is the mistake this layer exists
+        to catch."""
         if not self._open:
             raise Error(
-                "Html.attrs(...): no start tag is open — call open(tag) first"
+                "Html.raw_attrs(...): no start tag is open — call open(tag) first"
+            )
+        if rendered.byte_length() > 0 and rendered.as_bytes()[0] != _SPACE:
+            raise Error(
+                'Html.raw_attrs("', rendered, '"): attributes start with a '
+                "space, as attr() and flag() render them — is this a child "
+                "that was meant to follow the attrs argument of el()?"
             )
         self._buf.extend(rendered.as_bytes())
 
@@ -355,7 +420,7 @@ struct Fragment[V: Vocabulary](Movable):
         twice."""
         var h = Html(128)
         h.open(tag)
-        h.attrs(attrs)
+        h.raw_attrs(attrs)
         Self.V.swap(h, verb, url, self.selector())
         for c in children:
             h.raw(c)
@@ -440,7 +505,7 @@ def el(tag: String, attrs: String, *children: String) raises -> String:
     elements that are not."""
     var h = Html(128)
     h.open(tag)
-    h.attrs(attrs)
+    h.raw_attrs(attrs)
     for c in children:
         h.raw(c)
     h.close(tag)
@@ -451,7 +516,7 @@ def void(tag: String, attrs: String) raises -> String:
     """`<tag attrs>`: a void element (`input`, `meta`, `br`) as a string."""
     var h = Html(64)
     h.open(tag)
-    h.attrs(attrs)
+    h.raw_attrs(attrs)
     return h^.finish()
 
 

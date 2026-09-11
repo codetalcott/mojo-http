@@ -1063,7 +1063,13 @@ pieces, and the language fact each rests on:
   fragment's own), the event picked from the OPEN element by htmx's own
   default-trigger rule (a form submits with `__prevent` and
   `{contentType: 'form'}`, a field changes, an `a`/`button` clicks with
-  `__prevent`, the rest click). `Htmx.swap` and `Datastar.swap` are the
+  `__prevent`, the rest click — WHEN agrees; WHAT travels is each
+  library's own, and a Datastar field sends the signal store, so bind it).
+  A Datastar URL sits inside a JavaScript string literal that `attr`'s
+  HTML escaping does not protect, so `Datastar.swap` refuses a URL
+  carrying `'`, `\`, CR or LF (`url_for` encodes them; an app building a
+  query from request data must too), and both vocabularies refuse a verb
+  that is not one of the five. `Htmx.swap` and `Datastar.swap` are the
   only places either spelling lives; an app names its vocabulary once
   (`comptime Frag = Fragment[Htmx]`). The conformances stay INSIDE
   `html.mojo` because an app cannot conform to a `.mojoc` trait (below).
@@ -1084,14 +1090,19 @@ pieces, and the language fact each rests on:
   the tier and its detail in the builder on purpose (SPEC N10; the two
   are pinned byte-identical in `test_html.mojo`). The tag goes to
   `Fragment.el` once because the vocabulary reads it; there is no
-  swap-attributes-as-a-string function, which would spell it twice.
+  swap-attributes-as-a-string function, which would spell it twice. The
+  attrs slot is positional and `Html.raw_attrs` refuses a non-empty
+  value that does not open with a space, so `el("p", "none")` raises
+  instead of rendering `<pnone>`.
 - **`page_or_fragment`** (`m0-http/src/fragment.mojo`): the framework
-  decides page-versus-fragment from THREE headers — `Datastar-Request:
+  decides page-versus-fragment from FOUR headers — `Datastar-Request:
   true` is a fragment; `HX-Request: true` is a fragment unless
-  `HX-History-Restore-Request: true` is beside it, because htmx 2.0.4's
-  history restore sends both and swaps the answer's BODY into the page it
-  is rebuilding (a bare fragment there is a page with no head) — and
-  every answer names all three in `Vary` through `reply.vary`, which
+  `HX-History-Restore-Request: true` or `HX-Boosted: true` is beside it,
+  because htmx 2.0.4's history restore sends both and swaps the answer's
+  BODY into the page it is rebuilding, and a boosted navigation targets
+  the body and takes a full document's body (a bare fragment there is a
+  page with no head, or a body that is one section) — and every answer
+  names all four in `Vary` through `reply.vary`, which
   APPENDS (`vary_accept` used to overwrite, unnoticed while nothing set
   `Vary` twice) and keeps `*` alone. A `status` parameter makes a styled
   404 a 404. The shell is

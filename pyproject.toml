@@ -6161,8 +6161,8 @@ python3 scripts/emit.py --covers G14 --task smoke-notes
 # demo's escaper shipped), a `<script>` title rendered inert, a checkbox
 # key repeated once per tick and every value kept, one URL answering a bare
 # fragment under `HX-Request: true` (or `Datastar-Request: true`) and a
-# whole document without it — or WITH it beside a history restore — with
-# `Vary` naming all three on every answer, a body that is not a form
+# whole document without it — or WITH it beside a history restore or a
+# boost — with `Vary` naming all four on every answer, a body that is not a form
 # refused rather than parsed as one field named after the whole document,
 # and a method the collection does not take answered 405 with a correct
 # Allow.
@@ -6176,7 +6176,7 @@ B=http://localhost:8094
 
 fail() { echo "$1"; echo '=== fragment.log ==='; cat fragment.log; exit 1; }
 # Every header the fragment-or-page decision reads, in the order Vary names them.
-VARY='HX-Request, HX-History-Restore-Request, Datastar-Request'
+VARY='HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request'
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
@@ -6201,6 +6201,14 @@ curl -s -D headers.txt -H 'HX-Request: true' -H 'HX-History-Restore-Request: tru
 head -c 15 page.html | grep -q '<!doctype html>' || fail 'a history restore was answered a bare fragment'
 grep -q '<section id="notes">' page.html || fail 'the restored document did not contain the fragment'
 grep -qi "^vary: $VARY" headers.txt || fail 'the restored document carried no Vary naming every header read'
+
+# A boosted navigation is a page too: hx-boost sends `HX-Boosted: true`
+# beside `HX-Request: true`, targets the body with innerHTML and takes a
+# full document's body — a bare fragment there replaces the whole page
+# with one section.
+curl -s -D headers.txt -H 'HX-Request: true' -H 'HX-Boosted: true' $B/notes -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail 'a boosted request was answered a bare fragment'
+grep -qi "^vary: $VARY" headers.txt || fail 'the boosted document carried no Vary naming every header read'
 
 # Datastar asks with its own header and gets the same bare fragment as a
 # text/html body, which it morphs into the element carrying the id. One
