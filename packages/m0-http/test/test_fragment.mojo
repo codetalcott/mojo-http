@@ -42,8 +42,8 @@ def _body(resp: HTTPResponse) -> String:
 
 
 def test_wants_fragment_reads_the_header_exactly() raises:
-    """htmx sends the literal `true`; anything else is not a request for
-    a fragment, and absence is a direct navigation."""
+    """The literal `true` is what htmx sends; anything else is not a request
+    for a fragment, and absence is a direct navigation."""
     assert_true(wants_fragment(_req("true")))
     assert_false(wants_fragment(_req("")))
     assert_false(wants_fragment(_req("false")))
