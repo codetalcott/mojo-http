@@ -181,11 +181,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 82 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies | 701 |
-| `m0-datastar` | Datastar v1.0.2 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals` | 73 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies | 710 |
+| `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 75 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 169 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| **Total** | | **1140** |
+| **Total** | | **1151** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -238,7 +238,7 @@ those in turn — the design is
 
 ## Datastar
 
-`m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.2 wire format, and
+`m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.3 wire format, and
 `DatastarStream` connects it to the server. A handler holds one, wires the four SSE hooks
 through it, and broadcasts after a mutation:
 
@@ -287,10 +287,17 @@ into the `DatastarStream` journal at boot, so a tab reconnecting with
 `Last-Event-ID` is caught up by the new process instead of waiting for the
 next mutation. `poe smoke-todo` asserts both. `uv run poe serve-todo`.
 
-A note on Datastar v1.0.2 attribute syntax, learned the hard way in a real
+A note on Datastar v1.0.x attribute syntax, learned the hard way in a real
 browser: the stream opens from `data-init` (there is no `on-load` plugin), and
 keyed attributes are colon-separated — `data-on:click`, `data-bind:draft`. The
 hyphenated forms fail silently.
+
+The fragment layer speaks Datastar too. `Fragment[Datastar]("todos")` renders
+the same code as `Fragment[Htmx]` with Datastar's attributes — the todo demo's
+list is one — and `page_or_fragment` answers a `Datastar-Request: true` action
+with the bare fragment as `text/html`, which Datastar morphs into the element
+carrying the fragment's id. One renderer, two transports; what was checked
+against the bundle is [one-renderer-two-transports](docs/notes/one-renderer-two-transports.md).
 
 **SSE and WebSockets need `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only
 the non-blocking event loop assigns `req.slot_id`, drains the outbox, and parses
@@ -749,7 +756,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1140 unit tests, then compiles every example
+uv run poe test-all         # 1151 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

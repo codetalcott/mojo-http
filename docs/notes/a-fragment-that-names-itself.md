@@ -199,7 +199,7 @@ through both parsers and every value must decode identically.
 | Named route params | toolchain-blocked: none of `ImmutableAnyOrigin`, `Origin[False]`, `Origin[False]._mlir_type`, `type_of(MutUntrackedOrigin)` resolves as a struct parameter, so a borrowing `RouteParams` cannot be spelled and an owning one allocates per name per request | origins spellable as struct parameters |
 | Middleware / decorators | a capturing closure is not `thin`, so there is nothing to put back in the table; guards are early returns of `Optional[HTTPResponse]` | a language change |
 | Routes as function values | `thin` values are not comparable | comparable function values |
-| `ViewService` conforming to `PoolHandler` | a pool thread owns its handler, so the state must be per-thread; a shared in-memory store is wrong for it | an app whose state is a per-thread SQLite `Connection` |
+| `ViewService` conforming to `PoolHandler` | a pool thread owns its handler, so the state must be per-thread; a shared in-memory store is wrong for it — and a `.mojoc` conformance would get no witness table anyway. The shape is a three-line struct in the entry file holding a `Views` and its state (`m0serve`'s `MojoMount`, since the following note) | the trait boundary lifting, and an app whose state is a per-thread SQLite `Connection` |
 | Streaming from a Mojo mount | `MojoPool` refuses it | an app that needs it |
 
 ## What is not claimed
@@ -208,10 +208,10 @@ Nothing here is measured; the change is about whether an app is writable,
 not about throughput, and no row of this layer has a benchmark.
 
 The Datastar skin — the same renderer's output going out as a
-`patch_elements` frame — is not built. `apps/datastar_todo` still renders
-its fragment by hand, and proving that one renderer serves both
-transports is the strongest argument this layer could make. It is the
-next step, and it is small now that the fragment owns its id.
+`patch_elements` frame — was not built in this round. It was built the
+next day, as `Fragment[Datastar]`, and `apps/datastar_todo` renders its
+fragment through it; what Datastar was found to need, and the seam
+chosen, are in [one-renderer-two-transports](one-renderer-two-transports.md).
 
 One seam still carries the id as a string: an element rendered OUTSIDE a
 fragment that should swap it (a page-level link) takes `frag.selector()`.
