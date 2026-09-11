@@ -27,7 +27,7 @@ def _trim(s: String) -> String:
         end -= 1
     if start == 0 and end == s.byte_length():
         return s
-    return String(s[byte=start:end])
+    return String(unsafe_from_utf8=s.as_bytes()[start:end])
 
 
 def etag_matches(etag: String, if_none_match: String) -> Bool:

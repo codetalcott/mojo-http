@@ -154,5 +154,33 @@ def test_hand_built_request_still_writes_its_jar() raises:
     assert_true("token=xyz" in wire)
 
 
+def _raw(*bytes: Int) -> String:
+    """A String holding exactly these bytes, valid UTF-8 or not."""
+    var l = List[UInt8]()
+    for b in bytes:
+        l.append(UInt8(b))
+    return String(unsafe_from_utf8=Span(l))
+
+
+def test_a_cookie_value_that_is_not_utf8_does_not_trap() raises:
+    """The jar is built for every request, and `add_pairs` sliced each pair
+    as a String around its `=` — a codepoint-boundary assert, so
+    `Cookie: a=<0x80>` killed the process for every application. Bytes
+    above 0x7F pass the header parser as obs-text, so this was one request
+    away. The value is kept as its bytes; the pair beside it still parses.
+
+    covers: G14
+    """
+    var jar = RequestCookieJar()
+    jar.add_pairs(String("a=") + _raw(0x80) + String("; b=1"))
+    assert_equal(jar["b"], "1")
+    var a = jar["a"].as_bytes()
+    assert_equal(len(a), 1)
+    assert_equal(Int(a[0]), 0x80)
+    # The name side is sliced too.
+    jar.add_pairs(_raw(0x80) + String("=v"))
+    assert_equal(jar[_raw(0x80)], "v")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

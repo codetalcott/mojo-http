@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**178 capabilities: 154 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 154 verified, 147 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**179 capabilities: 155 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 155 verified, 148 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -169,6 +169,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | G11 | `X-Forwarded-*` / `Forwarded` parsing with a trusted-proxy allowlist | out of scope | the server never consults them — `REMOTE_ADDR` is the socket peer and `wsgi.url_scheme` is configuration, so there is nothing to spoof |
 | G12 | PROXY protocol v1/v2 | out of scope | same reason: the peer address is taken from the socket |
 | G13 | Parser fuzzing in CI | verified | `Fuzz the request decoder` (every PR) — 20k mutations of a seed corpus against `parse_request_headers` and the chunked decoder, replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so "no findings" cannot mean "checks nothing" |
+| G14 | A request carrying bytes that are not UTF-8 — in the target, a static-mount path, a cookie, `Accept`, `If-None-Match` or `Range` — is answered, never trapped: every slice of a request-derived string on the serving path is a byte-span slice, which has no codepoint-boundary assert | verified | `test_unquote.mojo:test_invalid_utf8_beside_an_escape_does_not_trap` (every PR) — `unquote` sliced its input as a `String` and one `GET /?x=<0x80>%41` killed the process on the loop thread, every app alike; the cookie jar (parsed for every request), the static mount, the negotiator and the ETag matcher had the same shape, each pinned by a test in its own file that declares this row, and a trap ends the test process, so the gate is those files passing at all. `Smoke test the hello server` and `Smoke test the notes API` send the same bytes over a socket and require an answer with the server still up |
 
 ## H. TLS
 
