@@ -58,6 +58,7 @@ is best-effort, exactly as it is between workers.
 """
 
 import ctypes
+import json
 import os
 import struct
 import sys
@@ -85,6 +86,18 @@ NO_EVENT_ID = -1
 # Set by server.mojo before the fork. The library path is not — nothing in
 # the server knows where the repo is — so it comes from the environment or
 # from the conventional build output next to the package.
+PG_NOTIFY_CHANNEL = "m0"
+"""The one channel `--pg-listen` subscribes to. The destination rides in the
+payload, so this never varies."""
+
+PG_NOTIFY_MAX_BYTES = 7999
+"""What Postgres accepts in a NOTIFY payload, less one byte.
+
+The server's limit is 8000 including its terminator. Refusing at the
+boundary makes an oversized publish an error where it is written, rather
+than a database error at COMMIT far from the call.
+"""
+
 BUS_FDS_ENV = "M0_BUS_WRITE_FDS"
 ID_ADDR_ENV = "M0_SHARED_ID_ADDR"
 CORE_LIB_ENV = "M0_CORE_LIB"
@@ -223,3 +236,42 @@ def publish_with_id(channel, data, event=None):
 def publish(channel, data, event=None):
     """Frame `data` and publish it to `channel`. Returns channels written."""
     return publish_with_id(channel, data, event)[0]
+
+def notify_sql(channel, data, event=None):
+    """The SQL that publishes `data` on `channel` from OUTSIDE the server.
+
+    Returns ``(statement, parameters)`` for a DB-API cursor, so a caller
+    publishes with the connection it already has::
+
+        from django.db import connection
+        with connection.cursor() as cur:
+            cur.execute(*m0pub.notify_sql("news", "hello", event="greeting"))
+
+    This is the answer to the limitation `bus_write_fds` documents: those
+    descriptors are inherited at fork, so a management command, a cron job, a
+    `flyctl ssh console` session or `psql` publishes to nobody. A Postgres
+    ``NOTIFY`` is a door every one of them already has, and a server started
+    with ``--pg-listen`` turns it into the same frame on the same bus.
+
+    A cursor rather than a connection string, and no import of any database
+    driver: this module is stdlib-only on purpose, and the caller invariably
+    has a connection already. What it does NOT do is choose a transaction —
+    ``NOTIFY`` is delivered at COMMIT, so a publish inside a transaction that
+    rolls back is correctly never sent, and one that should be seen only
+    after its rows belongs in ``transaction.on_commit``.
+
+    The payload is the three fields the listener reads: ``channel``, ``event``
+    and ``data``, all JSON strings. Everything the SSE frame needs, and
+    nothing that needs a JSON value scanner on the other side.
+    """
+    payload = json.dumps(
+        {"channel": channel, "event": event or "", "data": data},
+        separators=(",", ":"),
+    )
+    if len(payload.encode("utf-8")) > PG_NOTIFY_MAX_BYTES:
+        raise ValueError(
+            "a NOTIFY payload is limited to %d bytes and this one is %d; "
+            "publish a reference and let the client fetch the rest"
+            % (PG_NOTIFY_MAX_BYTES, len(payload.encode("utf-8")))
+        )
+    return ("SELECT pg_notify(%s, %s)", [PG_NOTIFY_CHANNEL, payload])

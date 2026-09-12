@@ -39,6 +39,16 @@ comptime DEFAULT_ATTRIBUTE = "application"
 comptime DEFAULT_PORT = 8000
 """The port uvicorn and gunicorn default to; the in-repo rows always pass `--port`."""
 
+comptime EXIT_CONFIG = 78
+"""`EX_CONFIG` from sysexits: the configuration names something absent.
+
+The same number `EXIT_NOT_FREE_THREADED` uses, for the same reason — a
+server asked for something this machine cannot provide. Distinct from
+`EXIT_USAGE`, which is a flag combination that is wrong on any machine:
+`--pg-listen` without `--realtime` is usage, and `--pg-listen` on a host
+with no libpq is configuration.
+"""
+
 comptime EXIT_USAGE = 2
 """A bad command line — getopt's and click's convention."""
 
@@ -211,6 +221,23 @@ struct ServeOptions(Copyable, Movable):
     `/health`, and a server that silently took the path would shadow it.
     """
     var show_help: Bool
+    var pg_listen: String
+    """`--pg-listen URL`: hold one Postgres `LISTEN` and publish what arrives.
+
+    Empty, the default, starts nothing — and with it empty not one libpq
+    symbol is resolved, because the library is opened at run time rather
+    than linked. Given, it is worker 0's connection to the database named,
+    subscribed to one well-known channel, turning `pg_notify` into a frame
+    on the broadcast bus.
+
+    The point is the writers that cannot reach the bus at all: `m0pub`
+    writes descriptors the server hands down at fork, so a management
+    command, a cron job, a trigger or `psql` publishes to nobody. A
+    database NOTIFY is a door all of them already have.
+
+    Needs `--realtime`, which is what creates the bus and the subscriber
+    registries there would otherwise be nothing to publish INTO.
+    """
     var show_version: Bool
     var show_doctor: Bool
     """`--doctor`: report what this configuration would do, and start nothing.
@@ -259,6 +286,7 @@ struct ServeOptions(Copyable, Movable):
         self.reload = False
         self.reload_dirs = List[String]()
         self.health_path = String("")
+        self.pg_listen = String("")
         self.show_help = False
         self.show_version = False
         self.show_doctor = False
@@ -300,6 +328,7 @@ struct ServeOptions(Copyable, Movable):
         self.reload = copy.reload
         self.reload_dirs = copy.reload_dirs.copy()
         self.health_path = copy.health_path
+        self.pg_listen = copy.pg_listen
         self.show_help = copy.show_help
         self.show_version = copy.show_version
         self.show_doctor = copy.show_doctor
@@ -341,6 +370,7 @@ struct ServeOptions(Copyable, Movable):
         self.reload = move.reload
         self.reload_dirs = move.reload_dirs^
         self.health_path = move.health_path^
+        self.pg_listen = move.pg_listen^
         self.show_help = move.show_help
         self.show_version = move.show_version
         self.show_doctor = move.show_doctor
@@ -365,6 +395,10 @@ struct ServeOptions(Copyable, Movable):
         opts.access_log = config.access_log
         opts.qos = config.qos
         opts.spawn_workers = config.spawn_workers
+        # Read here rather than through `AppConfig`: this is an m0serve
+        # option, not a server one, so it has no ServerConfig field to
+        # reach — the same position `M0_GRANT_KEY` is in.
+        opts.pg_listen = String(getenv("M0_PG_LISTEN", "").strip())
         return opts^
 
     def address(self) -> String:
@@ -1002,6 +1036,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--reload-dir"
         or name == "--protocol"
         or name == "--mount"
+        or name == "--pg-listen"
     )
 
 
@@ -1143,6 +1178,11 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         if watched.byte_length() == 0:
             raise Error("--reload-dir must not be empty")
         opts.reload_dirs.append(watched^)
+    elif name == "--pg-listen":
+        var url = String(value.strip())
+        if not url:
+            raise Error("--pg-listen needs a connection string")
+        opts.pg_listen = url^
     elif name == "--health-path":
         var path = String(value.strip())
         if not path.startswith("/"):
@@ -1291,6 +1331,9 @@ def usage() -> String:
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
         "  --realtime                  hold SSE streams and WebSockets the app\n"
         "                              approves with M0-Hold; publish with m0pub.py\n"
+        "  --pg-listen URL             also publish what arrives on a Postgres\n"
+        "                              LISTEN, so a trigger, a cron job or psql\n"
+        "                              can reach a held stream (needs --realtime)\n"
         "  --health-path PATH          answer PATH in Mojo with a liveness JSON,\n"
         "                              never entering the application\n"
         "  --reload                    restart workers when a watched .py changes\n"

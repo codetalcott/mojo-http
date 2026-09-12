@@ -10,6 +10,50 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **A Postgres `NOTIFY` reaches a held stream** (SPEC I22). `--pg-listen URL`
+  (`M0_PG_LISTEN`) holds one `LISTEN` on worker 0 and publishes what arrives
+  onto the broadcast bus, so a writer that cannot reach the datagram bus at
+  all — a trigger, a cron job, a management command, `psql` — reaches every
+  subscriber with an id, an event type and its data. The payload is three
+  JSON string fields; `m0pub.notify_sql` builds the statement for a caller
+  that already has a database cursor, with no driver imported into a
+  stdlib-only module. Refused without `--realtime`, which is what creates
+  the bus, and `--doctor` reports both that refusal and which libpq it
+  found. Nothing is resolved from libpq when the flag is absent — the
+  server binary's dynamic dependencies are unchanged, which is what keeps
+  the wheel installable on a machine with no PostgreSQL client. Started in
+  both execution modes: worker 0 under `--workers`, and once per process
+  under `--threads`, where the bus is one channel per thread. Refused with a
+  forked `--workers N` on macOS, where libpq's connect reaches Kerberos
+  through GSSAPI and Objective-C aborts a forked child; `--spawn-workers`
+  is the escape, as it is for Core ML. A host with no libpq exits 78
+  naming every path tried, rather than serving with no listener — held on
+  the wheel's own binary, since its users have neither a toolchain nor a
+  PostgreSQL client.
+
+- **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
+  sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else
+  here and links nothing: libpq is opened with `dlopen` at run time, so no
+  binary in this repo — `bin/m0serve` and the wheel included — carries a
+  libpq dependency, and an absent library is one error naming every path
+  tried. `Connection` owns its handle, `Result` owns a complete `PGresult`
+  and so can outlive its query, `Params` binds positionally with an explicit
+  OID per value, and every error carries a SQLSTATE that `sqlstate()`
+  recovers. `open()` applies a connect timeout, a statement timeout,
+  `client_encoding=UTF8` and an application name, merging rather than
+  appending so each stays overridable; `open_readonly()` adds a read-only
+  transaction default; every URL is redacted before it reaches an error, a
+  log or the doctor. `LISTEN`/`NOTIFY` is supported, including restoring
+  subscriptions across a reset. No pool, no retry, no `COPY`, and `numeric`,
+  dates, intervals and arrays read as text — each a deliberate absence, with
+  the reason in the README.
+
+  Two Mojo 1.0 findings are recorded in `lib.mojo` and pinned by
+  `test_lib.mojo`, both found by crashing: a `dlopen` handle held apart from
+  the pointers loaded from it is closed at its last mention, and a `thin`
+  pointer field cannot be called as `table.field()` from outside the struct
+  that holds it even though its address is unchanged.
+
 - **`m0-sqlite` gets its rows** (SPEC section O, O1–O5). The storage
   packages had no capability rows at all, so nothing in the sheet noticed
   the three invariants CLAUDE.md calls "look like bugs and are not": that

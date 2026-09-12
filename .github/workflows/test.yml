@@ -165,6 +165,68 @@ jobs:
       - name: Build and smoke test the aarch64 wheel
         run: uv run poe smoke-wheel
 
+  # The m0-postgres rows that need a real server (SPEC O10-O15). A separate
+  # Linux-only job, the wheel-aarch64 / pid1 shape: job-level `runs-on`, no
+  # step-level condition on the cited step, because the spec checker rightly
+  # rejects a cited step carrying an `if:`.
+  #
+  # Linux-only because GitHub's service containers require a Linux runner —
+  # not a preference, a platform fact — so there is no macOS arm to write.
+  # docs/RELEASING.md names `poe test-postgres-server` on a Mac with a local
+  # server as the pre-release arm; the lifetime rules the job pins are
+  # toolchain behaviour rather than OS behaviour, so Linux every PR is the
+  # coverage that matters for them.
+  #
+  # `libpq5` is installed explicitly rather than relied on: the runner image
+  # ships a PostgreSQL client, but this package opens the library by name at
+  # run time and an image change that dropped it would otherwise surface as a
+  # confusing "libpq could not be opened" rather than as a missing dependency.
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: m0
+          POSTGRES_DB: m0
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: postgres
+      M0_PG_TEST_URL: postgres://postgres:m0@127.0.0.1:5432/m0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install Linux build dependencies
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev libpq5 patchelf
+      - run: uv run poe build-all
+      - name: Test m0-postgres against a real server
+        run: uv run poe test-postgres-server
+      - name: Build the serve CLI
+        run: uv run poe build-serve
+      - name: Smoke test a Postgres NOTIFY reaching a held stream
+        run: uv run poe smoke-pg-notify
+      - name: Record the measurements
+        if: always()
+        run: python3 scripts/emit.py --render "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-postgres
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
   # M11: `docker stop` is SIGTERM to PID 1 and nothing else, and PID 1 gets
   # no default signal dispositions — a SIGTERM with no handler installed is
   # discarded, not fatal. The smoke matrix cannot host this (macOS runners

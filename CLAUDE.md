@@ -51,6 +51,7 @@ m0-core     (zero deps)   hashing, JSON escape, JSON parse
 m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
 m0-wsgi                   WSGI/ASGI gateway — embeds CPython, layers on m0-http
 m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
+m0-postgres (zero deps)   PostgreSQL bindings over libpq — a SIBLING too
 ```
 
 **Zero upward imports.** `m0-core` depends on nothing. `m0-http` reaches into
@@ -671,6 +672,37 @@ code depends on:
     - Not refused on a GIL-enabled interpreter, unlike `--threads`: a waiting
       view releases the GIL, so the isolation is real there.
 
+`m0-postgres` imports nothing else here and links **nothing**: libpq is opened
+with `dlopen` at run time, so no binary in this repo carries a libpq dependency
+and a server that never names a database needs no library present. Two rules
+there were each found by crashing, and both are in `lib.mojo`'s docstring:
+
+- **The handle and the pointers loaded from it live in ONE struct.** A loaded
+  `thin` pointer carries no borrow, so an `OwnedDLHandle` held anywhere else is
+  `dlclose`d at its last mention and the next call jumps into unmapped memory.
+- **A `thin` pointer FIELD cannot be called as `table.field()` from outside the
+  struct that holds it.** The pointer is identical by address before and after a
+  move, and calling it that way faults while the same call from a method beside
+  it answers correctly — so every entry point is private behind a wrapper
+  method, and `test_lib.mojo` asserts that shape in the position the broken one
+  failed in. A dangling call is a segmentation fault, not an exception, which is
+  why the rule is written down as well as tested.
+
+Also unlike m0-sqlite: a `Result` is a VALUE, not a cursor — libpq hands back a
+complete result that owns its memory, so it can outlive its query — and a
+`Prepared` is a name plus its parameter OIDs rather than a handle, because a
+server-side statement dies with its connection and a borrowing form is not
+spellable on this toolchain. Text results are the default and `binary=True` is
+per-query, because libpq's result format is one choice for the whole query.
+
+Its tests split, and the split is the point: `test-postgres` is pure (wire
+formats, URL defaults and redaction, SQLSTATE) and runs inside `test-all` on
+every leg, while `test-postgres-server` needs a server and does not — `test-all`'s
+contract is what a checkout can run with the toolchain and the system libraries.
+CI runs the server half in a Linux-only job with a service container, because
+GitHub's service containers require a Linux runner; `docs/RELEASING.md` names
+the macOS arm. Those tests FAIL without a server and never skip.
+
 `m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
 flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
 `Movable` but not `Copyable` on purpose: copying would duplicate a handle and
@@ -1225,6 +1257,39 @@ Properties of the design, not defects to fix in passing:
   + env exports are created unconditionally pre-fork — protocol
   detection is post-fork, and a single worker's own subscribers ride its
   own channel (there is deliberately no separate local-delivery path).
+- **`--pg-listen URL` is the bus's second door.** `m0pub` writes datagram
+  descriptors the server hands down at fork, so a management command, a
+  cron job, a database trigger or `psql` publishes to nobody — which
+  textshelf's own realtime module records as a known limitation. One
+  `LISTEN m0` on worker 0 turns `pg_notify` into a bus frame: the payload
+  is three JSON string fields (`channel`, `event`, `data`), so the
+  listener needs no value scanner, and the frame is built by the same
+  `format_sse_event` every other publisher uses, so a client cannot tell
+  which door an event came through. `m0pub.notify_sql` builds the
+  statement for a caller that already has a cursor, without importing a
+  driver into a stdlib-only module. **Refused with a FORKED `--workers N`
+  on macOS**, because libpq's connect reaches GSSAPI, then Kerberos, then
+  CoreFoundation, and Objective-C aborts a forked child — measured as the
+  worker killed by signal 9 and respawned until the supervisor gave up,
+  which is the same disguise the `_scproxy` entry above records.
+  `--spawn-workers` is the escape, as it is for Core ML. Both `--pg-listen`
+  refusals run BEFORE the bind and the fork: placed after it they ran in
+  every child and never in the supervisor, so a usage error read as a crash
+  loop. A host with no libpq exits 78 rather than serving without a
+  listener, asserted on the wheel's own binary. Four rules: **worker 0
+  only** (the
+  tick-owner rule — every worker would deliver its own copy), **skip_worker
+  is -1** (nothing has queued it locally, unlike an in-process publish), **a
+  malformed payload is refused and counted rather than guessed at** (the
+  check that is uniquely the listener's; a reserved channel is refused here
+  too, but `publish_to_channels` refuses the same names at the bus
+  boundary, so that one is defence in depth and measured to be — removing
+  it leaves the gate green), and **a reset re-`LISTEN`s** — a
+  reconnected connection is a new backend session listening to nothing, and
+  a listener that skipped that would deliver nothing forever while logging
+  no error. The thread never attaches to the interpreter. Refused without
+  `--realtime`, which is what creates the bus. SPEC I22,
+  `smoke-pg-notify`.
 - **A channel name opening with `\x01` is RESERVED, and every publish
   boundary refuses one.** That namespace is how the executor and pool
   threads address a connection SLOT on the loop (`\x01<kind>/<slot>[/<lane>]`

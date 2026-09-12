@@ -692,6 +692,29 @@ def _first_row(text):
     return m.group(0) if m else None
 
 
+def _drop_a_sole_covers_line(text):
+    """Delete a coverage call for a row NO other task declares.
+
+    The first one, which this used to take, stops discriminating the moment
+    any row is legitimately declared twice: deleting one of two leaves the
+    row declared, the checker stays quiet, and the sabotage reports MISSED
+    for a rule that is working. (I22 is declared by both the notify smoke
+    and the wheel smoke, which is what found this.) Picking a sole
+    declaration keeps the sabotage testing what it names.
+    """
+    lines = text.split("\n")
+    counts = {}
+    for line in lines:
+        m = re.match(r"^python3 scripts/emit\.py --covers ([A-Z]\d+)", line)
+        if m:
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    for i, line in enumerate(lines):
+        m = re.match(r"^python3 scripts/emit\.py --covers ([A-Z]\d+)", line)
+        if m and counts[m.group(1)] == 1:
+            return "\n".join(lines[:i] + lines[i + 1:])
+    return None
+
+
 def _mangle_first_row(fn):
     def patch(text):
         row = _first_row(text)
@@ -850,9 +873,7 @@ SABOTAGES = [
      lambda idx: {f: {**info, "covers": {}} for f, info in idx.items()},
      "no gate declares"),
     ("a smoke's declaration line is deleted", "pyproject",
-     lambda t: re.sub(r"^python3 scripts/emit\.py --covers [A-Z]\d+[^\n]*\n",
-                      "", t, count=1, flags=re.M),
-     "no gate declares"),
+     _drop_a_sole_covers_line, "no gate declares"),
     ("a weekly row names a gate no weekly workflow runs", "sheet",
      lambda t: (lambda m: t.replace(m.group(0), "`no-such-gate` (weekly)", 1) if m else None)(
          re.search(r"`[^`]+` \(weekly\)", t)),

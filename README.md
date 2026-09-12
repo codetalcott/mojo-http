@@ -185,7 +185,8 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 75 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 146 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| **Total** | | **1196** |
+| `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 64 |
+| **Total** | | **1260** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -749,6 +750,78 @@ not for `IN` clauses. Needs SQLite 3.26+; `register_array_module` says so if not
 chose SQLite and came out within noise at realistic row counts (~10% at N=50),
 so it is not worth the ownership complexity yet.
 
+## PostgreSQL
+
+`m0-postgres` is the same kind of layer over libpq — no ORM, no query builder,
+no connection pool — and the other **sibling**: it imports nothing else in this
+repo.
+
+```mojo
+from m0_postgres import Params, open
+
+var db = open("postgres://localhost/app")
+
+var p = Params()
+p.text("ada")
+_ = db.query("INSERT INTO users (name) VALUES ($1)", p)
+
+var rows = db.query("SELECT id, name FROM users ORDER BY id", Params())
+for r in range(rows.rows):     # rows and columns are both 0-based
+    print(rows.int(r, 0), rows.text(r, 1))
+```
+
+**libpq is opened at run time, not linked.** Nothing in this repo carries a
+libpq dependency on its link line — `bin/m0serve` and the wheel included — so a
+server that never names a database needs no library present, and an absent one
+is a single error naming every path that was tried. `M0_LIBPQ` names the file
+outright. Linking instead would mean an `-L` and an rpath into a directory that
+exists on one machine, which is the defect the release tooling already exists to
+repair for libpython.
+
+**Parameters are bound with explicit types.** A parameter Postgres resolves as
+`unknown` means whatever the surrounding expression makes it, so `Params` sends
+an OID with every value: `int`, `float`, `bool`, `text`, `bytes`, `null`, and
+`literal` for a type this package does not encode — a timestamp, a uuid, an
+array, a numeric — sent as text for the server to coerce, which is how `psql`
+sends every literal.
+
+**Results are values, not cursors.** libpq hands back a complete result that
+owns its memory, so a `Result` can outlive the query and be read in any order;
+it clears itself on destruction. Text is the default and `binary=True` is
+per-query, because libpq's result format is one choice for the whole query and
+only the caller knows whether every column it selected has a binary decoder. A
+binary column whose type has none raises naming the way out rather than
+returning plausible bytes.
+
+**`open()` applies what a server wants** and merges rather than appends, so
+every default is overridable by naming it in the URL: a connect timeout, a
+statement timeout (the twin of SQLite's busy timeout — a pool thread stuck in a
+slow query is a thread gone), `client_encoding=UTF8`, and an application name.
+`open_readonly()` adds a read-only transaction default, the belt to a read-only
+role's braces. Every URL is redacted before it reaches an error, a log or
+`--doctor`.
+
+**Errors carry their SQLSTATE**, recovered with `sqlstate(String(e))`, with the
+codes an application branches on exported by name — `UNIQUE_VIOLATION`,
+`SERIALIZATION_FAILURE`, `TOO_MANY_CONNECTIONS` and the rest. There is no retry
+anywhere in the package: re-running a statement whose effects the caller cannot
+see is a hidden double write.
+
+**One connection per thread**, never shared, which is libpq's own rule. Count
+them before deploying: workers times blocking threads times Postgres-backed
+mounts is what the server opens, and a default `max_connections` of 100 is
+reached by four workers of eight threads across three mounts.
+
+**`LISTEN`/`NOTIFY` is supported**, which is what lets a writer outside the
+server process — a trigger, a cron job, `psql` — reach a held SSE stream that
+the in-process datagram bus cannot.
+
+**Not implemented:** `COPY`, pipeline mode, row-at-a-time results, and binary
+decoders for `numeric`, dates, intervals and arrays, which read as text. Each
+is a deliberate absence rather than an oversight; `numeric`'s binary form is a
+base-10000 digit vector with its own NaN encoding, and a wrong decoding of one
+is silently a different number.
+
 ## Status and limits
 
 [docs/SPEC.md](docs/SPEC.md) is the full capability matrix — every row carries its evidence, and `poe check-docs` fails if a row claims a CI gate that does not exist or does not run. The bullets below are the short version.
@@ -769,7 +842,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1196 unit tests, then compiles every example
+uv run poe test-all         # 1260 unit tests, then compiles every example
 uv run poe test-all         # 1172 unit tests, then compiles every example
 uv run poe test-all         # 1157 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
