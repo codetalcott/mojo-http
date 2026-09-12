@@ -104,6 +104,16 @@ version alone.
   fork — exits 1. `check_dependabot_gate` in `scripts/check_docs.py` pins
   both, sabotaged four ways.
 
+- **The container gates carry a moved file.** `stress-pool` and
+  `bench-linux-conclusions` tar the tree into the `m0lin` container, and a
+  tar carries no deletion, so the hold module's move into the fork left a
+  copy behind that failed the source stamp on every container gate of this
+  release. The two `/src` copies now clear their source directories first
+  and `linux_sync.sh` mirrors removals into `/work`; and `core` is in the
+  sync's build list, because m0-core changed for the first time and the
+  stamp, which hashes sources, matched over an artifact built weeks
+  earlier.
+
 ## [1.1.0] — 2026-09-11
 
 A remote crash fix, and an application layer for programs written in Mojo.
