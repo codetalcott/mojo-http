@@ -1,7 +1,7 @@
 #!/bin/bash
 # Copy the Mac tree's sources over the container's /work and rebuild what
-# the arguments name (default: everything after core). Runs INSIDE the
-# container.
+# the arguments name (default: every package, core first, then the binary
+# and the m0pub core lib). Runs INSIDE the container.
 #
 #   M0_SYNC_STAMP=$(bash scripts/probes/source_stamp.sh) \
 #     docker exec -e M0_SYNC_STAMP m0lin bash /src/scripts/probes/linux_sync.sh
@@ -31,6 +31,21 @@
 set -euo pipefail
 cd /src
 tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/m0serve*' --exclude='bin/*.dylib' --exclude='.claude' -cf - packages scripts apps pyproject.toml bench | (cd /work && tar -xf -)
+# A tar copy carries no deletion: a file moved or removed on the Mac
+# survives here and changes the stamp. Measured 2026-09-12: hold.mojo and
+# its test, moved into the fork the day before, failed every container
+# gate with the stamp message below. So mirror the removals -- every
+# regular file under the synced roots that /src no longer has goes, except
+# what /work builds for itself (.mojoc, shared libraries, bytecode) and
+# the Linux bench artifacts it records.
+_gone=0
+while IFS= read -r f; do
+  [ -e "/src/$f" ] && continue
+  rm -f "/work/$f" && _gone=$((_gone + 1))
+done < <(cd /work && find packages scripts apps bench -type f \
+           ! -name '*.mojoc' ! -name '*.so' ! -name '*.dylib' ! -name '*.pyc' \
+           ! -path '*/__pycache__/*' ! -path '*/.venv/*' ! -path 'bench/results/*' 2> /dev/null)
+[ "$_gone" = 0 ] || echo "=== removed $_gone file(s) /src no longer has ==="
 # virtiofs materialises macOS extended attributes as AppleDouble files in
 # the guest, so `/src` carries a `._which_package.mojo` beside sources the
 # Mac shows as clean (213 of them, measured). `mojo` then tries to parse
@@ -46,11 +61,19 @@ if [ -n "${M0_SYNC_STAMP:-}" ] && [ "$got" != "$M0_SYNC_STAMP" ]; then
   echo "linux_sync: the tree in the container is NOT the tree you sent." >&2
   echo "  expected $M0_SYNC_STAMP (caller)   got $got (/work after the copy)" >&2
   echo "  A bind-mounted /src goes stale across a colima restart; recreate the" >&2
-  echo "  container, or tar the tree in from the Mac the way stress-pool does." >&2
+  echo "  container, or tar the tree in from the Mac the way stress-pool does" >&2
+  echo "  (which clears /src first, so a file the Mac moved or deleted cannot" >&2
+  echo "  linger there; /work is mirrored against /src above)." >&2
   exit 1
 fi
 echo "=== sources $got ${M0_SYNC_STAMP:+(matches the caller)} ==="
-steps="${@:-http datastar wsgi serve ffi}"
+# `core` is in the default list. It used to be left to linux_setup.sh on the
+# grounds that m0-core never changes -- and it did not, until SHA-256 and
+# HMAC landed there (2026-09-12): the stamp matched, because it hashes
+# sources, and build-http then failed to resolve `HmacSha256` against an
+# m0_core.mojoc built weeks earlier. A stale artifact under a matching
+# stamp is the wrong answer this script exists to refuse.
+steps="${@:-core http datastar wsgi serve ffi}"
 for s in $steps; do
   echo "=== build-$s ==="
   uv run poe "build-$s" 2>&1 | tail -3
