@@ -409,6 +409,12 @@ jobs:
       # without it with Vary on both, a urlencoded form round-tripping a
       # multi-byte title and a repeated checkbox key, a markup title
       # rendered inert, a non-form body refused, and 405 with Allow.
+      # Plus N13, the login the notes now sit behind: a server that
+      # refuses to start without its key or its password, an
+      # unauthenticated page and swap, forged and expired cookies (each
+      # signed by scripts/notes_session.py, so the verifier is never
+      # checked against itself), the cookie's attributes, a write without
+      # the CSRF token and with another session's, and logout.
       - name: Smoke test the fragment notes app
         run: uv run poe smoke-fragment-notes
       # The zero-copy claim, which only a real transfer can make: a 64MB

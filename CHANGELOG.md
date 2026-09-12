@@ -21,6 +21,40 @@ in a minor release: `m0serve`'s flags and environment variables, the
   pinned bundle sends — the form's fields urlencoded, and for a bound
   field's own action the signal store as JSON, which confirms D21. The last
   `planned` row on the layer is now N13.
+- **Sessions and CSRF behind a login** (SPEC N13). `m0_http.session` signs,
+  verifies and expires a stateless session cookie —
+  `v1.<kid>.<exp>.<subject>.<tag>`, HMAC-SHA256 over the rest, the tag
+  compared in constant time, the expiry against the host clock, a key ring
+  so a rotation ends every session under the key it retires — and derives
+  the CSRF token a form carries from that session's own tag, so neither
+  needs a store. `session_cookie_line` builds the `Set-Cookie` for
+  `ResponseCookieJar.add_raw` with `HttpOnly; SameSite=Lax; Path=/`, and
+  `vary_on_fragment_headers` is now exported so an application's own
+  redirects name the headers that chose them. `apps/fragment_notes` is the
+  worked application: one user from `M0_NOTES_USER`/`M0_NOTES_PASSWORD`,
+  signing with `M0_NOTES_KEY`, refusing to start (78) without a key or a
+  password, private notes, a guard that is an early return, and a login
+  that answers 303 to a navigation and 401 carrying the login fragment to
+  a swap. `smoke-fragment-notes` asserts every arm on the wire with the
+  forgeries signed by `scripts/notes_session.py`; `test_session.mojo` holds
+  that issuer's vectors; `poe sabotage-notes-login` (pre-release) reverts
+  five rules and insists the gate goes red for each. Retires D15; D24 and
+  D25 record what it deliberately is not. `poe browser-notes-login`, a
+  pre-release step, drives the same flow in Chromium: htmx 2.0.4 would put
+  a `DELETE`'s fields in the query string, so the shell narrows
+  `methodsThatUseUrlParams` to `get` and the run records that the token
+  travels in the body. Section N has no `planned` rows left.
+
+### Fixed
+
+- `poe check-milestones` read the server soak's version as the first
+  `m0serve X.Y.Z` anywhere in its half of the record. A later section's
+  heading started carrying a version too, so the sabotage that blanks the
+  headline began finding that one instead and stopped being caught — and
+  the report would have gone on printing a version the record no longer
+  named. It reads the record's own `Last run ... against` headline now,
+  which is what the layer's half already did. Nothing on the wire changes;
+  the guard does.
 
 ## [1.2.0] — 2026-09-12
 

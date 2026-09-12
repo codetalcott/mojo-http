@@ -630,9 +630,16 @@ bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
+# The app refuses to start without a signing key and a password, so the
+# dev runner supplies obviously-fake ones and lets the environment win.
+# Set M0_NOTES_KEY and M0_NOTES_PASSWORD to run it as anything but a demo.
 [tool.poe.tasks.serve-fragment-notes]
-help = "Run the fragment notes example (the notes resource as an htmx app) on :8080"
-cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo"
+help = "Run the fragment notes example (the notes resource as an htmx app, behind a login) on :8080"
+shell = """
+M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret} \
+M0_NOTES_PASSWORD=${M0_NOTES_PASSWORD:-notes} \
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo
+"""
 
 # The view table's read/write split is a claim about what the compiler
 # REFUSES, which no passing test can show -- the counter-example is a file
@@ -5675,6 +5682,14 @@ echo "smoke-hold-mount OK"
 python3 scripts/emit.py --covers I21 --task smoke-hold-mount
 """
 
+# PRE-RELEASE: rebuilds m0-http for three of its five sabotages, so minutes
+# rather than seconds. The question it answers is the only one that matters
+# about a security gate: not "does the suite pass", which it did before the
+# login existed, but "would it notice if the check were gone".
+[tool.poe.tasks.sabotage-notes-login]
+help = "PRE-RELEASE: revert each session/CSRF rule and insist smoke-fragment-notes fails"
+shell = "python3 scripts/notes_login_sabotage.py"
+
 # PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
 [tool.poe.tasks.sabotage-outbox-cap]
 help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"
@@ -6129,6 +6144,25 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
 uv run --no-project --with playwright python3 scripts/datastar_form_check.py --bin "$out/todo"
 """
 
+# The delete button's request is the one thing about this app that curl
+# cannot judge: htmx 2.0.4 would put a DELETE's fields in the query string,
+# and the app's `htmx-config` meta narrows that so the CSRF token stays in
+# the body. Serving the meta and refusing a query-string token is all the
+# wire can say; whether the bundle HONOURED it needs a bundle.
+[tool.poe.tasks.browser-notes-login]
+help = "PRE-RELEASE: the notes login driven by Chromium — sign in, write with the token in the body, delete, sign out (SPEC N13; not in CI)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ \
+  apps/fragment_notes/server.mojo -o "$out/notes" || exit 1
+# playwright is not a dependency of this project; `--with` borrows it for
+# one process, and the Chromium it drives comes from the ms-playwright
+# cache (`uv run --no-project --with playwright playwright install chromium`
+# once, if this says the browser is missing).
+uv run --no-project --with playwright python3 scripts/notes_login_browser.py --bin "$out/notes"
+"""
+
 [tool.poe.tasks.smoke-todo]
 help = "Todo demo: assert a broadcast patches a live client, the list survives a restart, and Last-Event-ID replays across it"
 shell = """
@@ -6430,37 +6464,160 @@ python3 scripts/emit.py --covers G14 --task smoke-notes
 # and a method the collection does not take answered 405 with a correct
 # Allow.
 [tool.poe.tasks.smoke-fragment-notes]
-help = "Start the fragment notes app, assert its wire contract (fragment vs page, Vary, forms, escaping, 405), stop"
+help = "Start the fragment notes app, assert its wire contract (login, sessions, CSRF, fragment vs page, Vary, forms, escaping, 405), stop"
 shell = """
-M0_PORT=8094 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo > fragment.log 2>&1 &
+KEY=notes-smoke-key-0123456789abcdef
+PASSWORD=hunter2-correct-horse
+
+# Built rather than `mojo run`, because the gate runs the app TWICE: once
+# to serve, and once with no key at all to prove it refuses to start.
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo -o notes_app
+
+fail() { echo "$1"; echo '=== fragment.log ==='; cat fragment.log; exit 1; }
+
+# Fail closed. A notes app that served everyone because a deployment
+# forgot a variable is worse than one that did not start, so the refusal
+# is a gated claim and not a comment. EX_CONFIG (78), the code the hold
+# mount refuses with.
+M0_PORT=8095 ./notes_app > refusal.log 2>&1
+code=$?
+[ "$code" = "78" ] || fail "expected exit 78 with no M0_NOTES_KEY, got $code"
+grep -q 'M0_NOTES_KEY is not set' refusal.log || fail 'the refusal did not name the missing variable'
+M0_PORT=8095 M0_NOTES_KEY=$KEY ./notes_app > refusal.log 2>&1
+code=$?
+[ "$code" = "78" ] || fail "expected exit 78 with no M0_NOTES_PASSWORD, got $code"
+grep -q 'M0_NOTES_PASSWORD is not set' refusal.log || fail 'the refusal did not name the missing password'
+
+M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > fragment.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
 B=http://localhost:8094
 
-fail() { echo "$1"; echo '=== fragment.log ==='; cat fragment.log; exit 1; }
 # Every header the fragment-or-page decision reads, in the order Vary names them.
 VARY='HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request'
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
 
+# --- N13: nothing under /notes is readable without a session ---------------
+#
+# A navigation is sent to the login page; a swap gets 401 carrying the same
+# form as a bare fragment, because a redirect a swap followed would put the
+# login page inside the element the list was in. Both answers are chosen by
+# the fragment headers, so both name them in Vary.
+code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt $B/notes)
+[ "$code" = "303" ] || fail "expected 303 for /notes with no session, got $code"
+grep -qi '^location: /login' headers.txt || fail 'the unauthenticated redirect did not name the login page'
+grep -qi "^vary: $VARY" headers.txt || fail 'the unauthenticated redirect carried no Vary naming every header read'
+code=$(curl -s -o frag.html -w '%{http_code}' -D headers.txt -H 'HX-Request: true' $B/notes)
+[ "$code" = "401" ] || fail "expected 401 for a swap with no session, got $code"
+head -c 20 frag.html | grep -q '<section id="notes">' || fail 'the 401 did not carry the login fragment'
+grep -qiE 'doctype|<html' frag.html && fail 'the 401 fragment carried document markup'
+grep -q 'name="password"' frag.html || fail 'the 401 fragment carried no login form'
+grep -qi "^vary: $VARY" headers.txt || fail 'the 401 carried no Vary naming every header read'
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'HX-Request: true' -d 'title=x' $B/notes)
+[ "$code" = "401" ] || fail "expected 401 for a write with no session, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
+[ "$code" = "303" ] || fail "expected 303 for a note with no session, got $code"
+# A detail page must not say whether the note exists: 303 before the lookup.
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/999)
+[ "$code" = "303" ] || fail "an unauthenticated request learned whether a note exists ($code)"
+
+# The login page is the one page outside the session, and it is a document
+# without the header and a fragment with it, like every other page here.
+curl -s -D headers.txt $B/login -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /login was not a document'
+grep -q 'name="user"' page.html || fail 'the login page carried no form'
+grep -qi "^vary: $VARY" headers.txt || fail 'the login page carried no Vary naming every header read'
+
+# The one library setting this app makes, and the reason the CSRF token can
+# ride in the body of a DELETE: htmx 2.0.4 ships methodsThatUseUrlParams as
+# ["get","delete"], which would put the token in the query string.
+grep -q 'name="htmx-config" content="{&quot;methodsThatUseUrlParams&quot;:\\[&quot;get&quot;\\]}"' page.html \
+  || fail 'the shell did not narrow htmx methodsThatUseUrlParams to get'
+
+# --- N13: the login itself -------------------------------------------------
+code=$(curl -s -o frag.html -w '%{http_code}' -D headers.txt -d "user=notes&password=wrong" $B/login)
+[ "$code" = "401" ] || fail "expected 401 for a wrong password, got $code"
+grep -qi '^set-cookie' headers.txt && fail 'a failed login set a cookie'
+grep -q 'wrong user or password' frag.html || fail 'a failed login did not say so'
+code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -d "user=someone&password=$PASSWORD" $B/login)
+[ "$code" = "401" ] || fail "expected 401 for a wrong user, got $code"
+grep -qi '^set-cookie' headers.txt && fail 'a login as an unknown user set a cookie'
+
+code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -c jar.txt -d "user=notes&password=$PASSWORD" $B/login)
+[ "$code" = "303" ] || fail "expected 303 from a good login, got $code"
+grep -qi '^location: /notes' headers.txt || fail 'a good login did not redirect to the notes'
+SETCOOKIE=$(grep -i '^set-cookie' headers.txt | head -1)
+echo "$SETCOOKIE" | grep -q 'HttpOnly' || fail "the session cookie is not HttpOnly: $SETCOOKIE"
+echo "$SETCOOKIE" | grep -q 'SameSite=Lax' || fail "the session cookie is not SameSite=Lax: $SETCOOKIE"
+echo "$SETCOOKIE" | grep -q 'Path=/' || fail "the session cookie has no Path: $SETCOOKIE"
+echo "$SETCOOKIE" | grep -q 'Max-Age=' || fail "the session cookie has no Max-Age: $SETCOOKIE"
+# The format, on the wire: version, key id, expiry, subject, 43 base64url
+# characters of tag. A cookie that stopped being signed would still be a
+# cookie; this is what says it is a signed one.
+echo "$SETCOOKIE" | grep -qE 'm0_notes_session=v1\\.[0-9a-f]{8}\\.[0-9]{10}\\.notes\\.[A-Za-z0-9_-]{43};' \
+  || fail "the session cookie is not a signed token: $SETCOOKIE"
+
+# --- N13: forgeries, each signed (or mis-signed) by CPython ----------------
+#
+# The verifier is never checked against itself: scripts/notes_session.py is
+# the other implementation of the same format, and what it signs under the
+# server's key the server must admit, while each way of getting it wrong
+# must be refused by NAME. The reason travels back in the login form, which
+# is what makes "refused" distinguishable from "refused for another reason".
+NOW=$(python3 -c 'import time; print(int(time.time()))')
+ISSUE="python3 scripts/notes_session.py"
+GOOD=$($ISSUE --key $KEY --subject notes --exp $((NOW + 600)))
+refusal() {
+  curl -s -H 'HX-Request: true' -H "Cookie: m0_notes_session=$1" $B/notes \
+    | grep -o 'signed out ([a-z ]*)'
+}
+[ "$(refusal "$GOOD")" = "" ] || fail 'a cookie CPython signed under the server key was refused'
+curl -s -H 'HX-Request: true' -H "Cookie: m0_notes_session=$GOOD" $B/notes \
+  | grep -q 'signed in as notes' || fail 'a cookie CPython signed did not name its subject'
+got=$(refusal "$($ISSUE --key $KEY --subject notes --exp $((NOW - 1)))")
+[ "$got" = "signed out (expired)" ] || fail "an expired cookie was not refused as expired: $got"
+got=$(refusal "$($ISSUE --key other-key --subject notes --exp $((NOW + 600)))")
+[ "$got" = "signed out (unknown key)" ] || fail "a cookie under another key was not refused: $got"
+got=$(refusal "${GOOD%?}$(echo "$GOOD" | tail -c 2 | tr 'A-Za-z' 'B-ZAb-za')")
+[ "$got" = "signed out (bad signature)" ] || fail "a tampered tag was not refused: $got"
+got=$(refusal 'not-a-session')
+[ "$got" = "signed out (malformed)" ] || fail "a malformed cookie was not refused as such: $got"
+# A subject the server never issued is still a subject the server SIGNED:
+# the cookie is stateless, so this must be admitted, and saying so here is
+# what keeps anyone from reading the session as a lookup.
+curl -s -H 'HX-Request: true' \
+  -H "Cookie: m0_notes_session=$($ISSUE --key $KEY --subject someone_else --exp $((NOW + 600)))" \
+  $B/notes | grep -q 'signed in as someone_else' \
+  || fail 'a cookie signed for another subject was not honoured as that subject'
+
+# --- the wire contract, now behind the session -----------------------------
+#
+# Everything below this line is what the app promised before it had a login,
+# asserted with the cookie the login just set. None of it changed.
+CSRF=$($ISSUE --key $KEY --csrf-for "$(grep m0_notes_session jar.txt | awk '{print $7}')")
+
 # One URL, two representations. Without the header: a whole document, and
 # the fragment inside it. With it: the bare fragment, no doctype, no <html>.
-curl -s -D headers.txt $B/notes -o page.html
+curl -s -b jar.txt -D headers.txt $B/notes -o page.html
 head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /notes without HX-Request was not a document'
 grep -q '<section id="notes">' page.html || fail 'the document did not contain the fragment'
 grep -qi "^vary: $VARY" headers.txt || fail 'the document carried no Vary naming every header read'
-curl -s -D headers.txt -H 'HX-Request: true' $B/notes -o frag.html
+curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' $B/notes -o frag.html
 head -c 20 frag.html | grep -q '<section id="notes">' || fail 'GET /notes with HX-Request did not start with the fragment'
 grep -qiE 'doctype|<html' frag.html && fail 'the fragment carried document markup'
 grep -qi "^vary: $VARY" headers.txt || fail 'the fragment carried no Vary naming every header read'
 grep -q 'none yet' frag.html || fail 'the empty list did not say so'
+# The token the browser will send back, rendered into the form by the app
+# and derived from the cookie by CPython: the two must be the same string.
+grep -q "value=\\"$CSRF\\"" frag.html || fail 'the rendered CSRF token is not the one the session stands for'
 
 # A history restore is a page: htmx 2.0.4 sends `HX-Request: true` AND
 # `HX-History-Restore-Request: true`, then swaps the answer's body into
 # the page it is rebuilding — a bare fragment there is a page with no
 # head, no script and no styles. The second header wins.
-curl -s -D headers.txt -H 'HX-Request: true' -H 'HX-History-Restore-Request: true' $B/notes -o page.html
+curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-History-Restore-Request: true' $B/notes -o page.html
 head -c 15 page.html | grep -q '<!doctype html>' || fail 'a history restore was answered a bare fragment'
 grep -q '<section id="notes">' page.html || fail 'the restored document did not contain the fragment'
 grep -qi "^vary: $VARY" headers.txt || fail 'the restored document carried no Vary naming every header read'
@@ -6469,24 +6626,41 @@ grep -qi "^vary: $VARY" headers.txt || fail 'the restored document carried no Va
 # beside `HX-Request: true`, targets the body with innerHTML and takes a
 # full document's body — a bare fragment there replaces the whole page
 # with one section.
-curl -s -D headers.txt -H 'HX-Request: true' -H 'HX-Boosted: true' $B/notes -o page.html
+curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-Boosted: true' $B/notes -o page.html
 head -c 15 page.html | grep -q '<!doctype html>' || fail 'a boosted request was answered a bare fragment'
 grep -qi "^vary: $VARY" headers.txt || fail 'the boosted document carried no Vary naming every header read'
 
 # Datastar asks with its own header and gets the same bare fragment as a
 # text/html body, which it morphs into the element carrying the id. One
 # renderer, the other transport, decided by the framework from the header.
-curl -s -D headers.txt -H 'Datastar-Request: true' $B/notes -o frag.html
+curl -s -b jar.txt -D headers.txt -H 'Datastar-Request: true' $B/notes -o frag.html
 head -c 20 frag.html | grep -q '<section id="notes">' || fail 'GET /notes with Datastar-Request did not answer the fragment'
 grep -qiE 'doctype|<html' frag.html && fail 'the Datastar answer carried document markup'
 grep -qi '^content-type: text/html' headers.txt || fail 'the Datastar answer was not text/html'
 grep -qi "^vary: $VARY" headers.txt || fail 'the Datastar answer carried no Vary naming every header read'
 
+# --- N13: a write carries the token, and only this session's ---------------
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -d 'title=forged' $B/notes)
+[ "$code" = "403" ] || fail "expected 403 for a write with no CSRF token, got $code"
+OTHER=$($ISSUE --key $KEY --subject notes --exp $((NOW + 1200)))
+OTHER_CSRF=$($ISSUE --key $KEY --csrf-for "$OTHER")
+[ "$OTHER_CSRF" != "$CSRF" ] || fail 'two sessions derived the same CSRF token'
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -d "csrf=$OTHER_CSRF&title=forged" $B/notes)
+[ "$code" = "403" ] || fail "expected 403 for another session's CSRF token, got $code"
+# The token is read from the body and from nowhere else: in the query
+# string it is in the access log, the Referer and the history, and a
+# server that accepted it there would make the htmx-config above
+# decorative.
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X POST "$B/notes?csrf=$CSRF" -d 'title=forged')
+[ "$code" = "403" ] || fail "expected 403 for a CSRF token in the query string, got $code"
+curl -s -b jar.txt -H 'HX-Request: true' $B/notes | grep -q 'forged' \
+  && fail 'a write refused for its token still happened'
+
 # A urlencoded form: `+` is a space, %C3%A9 is one character and must come
 # back as those two bytes, and a checkbox key repeated once per tick keeps
 # every value. The answer is the list, as a fragment.
-code=$(curl -s -o frag.html -w '%{http_code}' -H 'HX-Request: true' \
-  -d 'title=Caf%C3%A9+au+lait&body=hello+world&tag=work&tag=home' $B/notes)
+code=$(curl -s -o frag.html -w '%{http_code}' -b jar.txt -H 'HX-Request: true' \
+  -d "csrf=$CSRF&title=Caf%C3%A9+au+lait&body=hello+world&tag=work&tag=home" $B/notes)
 [ "$code" = "200" ] || fail "expected 200 from create, got $code"
 grep -q 'Café au lait' frag.html || fail 'the title did not round-trip: multi-byte or plus-space decoding is wrong'
 grep -q '<span class="tag">work</span>' frag.html || fail 'the first checkbox value was lost'
@@ -6494,11 +6668,11 @@ grep -q '<span class="tag">home</span>' frag.html || fail 'the repeated checkbox
 head -c 20 frag.html | grep -q '<section id="notes">' || fail 'POST /notes with HX-Request did not answer the fragment'
 
 # A title that is markup is rendered as text, in the list and on its page.
-curl -s -o frag.html -H 'HX-Request: true' \
-  --data-urlencode 'title=<script>alert(1)</script>' --data-urlencode 'body=b' $B/notes
+curl -s -o frag.html -b jar.txt -H 'HX-Request: true' \
+  --data-urlencode "csrf=$CSRF" --data-urlencode 'title=<script>alert(1)</script>' --data-urlencode 'body=b' $B/notes
 grep -q '&lt;script&gt;alert(1)&lt;/script&gt;' frag.html || fail 'a markup title was not escaped in the list'
 grep -q '<script>alert' frag.html && fail 'a markup title reached the list unescaped'
-curl -s -D headers.txt $B/notes/2 -o page.html
+curl -s -b jar.txt -D headers.txt $B/notes/2 -o page.html
 grep -q '<h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1>' page.html || fail 'a markup title was not escaped on its page'
 grep -q '<script>alert' page.html && fail 'a markup title reached its page unescaped'
 grep -qi "^vary: $VARY" headers.txt || fail 'the detail page carried no Vary naming every header read'
@@ -6509,9 +6683,9 @@ grep -qi "^vary: $VARY" headers.txt || fail 'the detail page carried no Vary nam
 # exist.
 href=$(grep -o 'href="/notes/[0-9]*"' frag.html | head -1 | cut -d'"' -f2)
 [ -n "$href" ] || fail 'the list rendered no link to a note'
-curl -s -H 'HX-Request: true' "$B$href" | grep -q '<h1>Café au lait</h1><p>hello world</p>' \
+curl -s -b jar.txt -H 'HX-Request: true' "$B$href" | grep -q '<h1>Café au lait</h1><p>hello world</p>' \
   || fail "following the rendered link $href did not reach the note"
-code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/999)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/999)
 [ "$code" = "404" ] || fail "expected 404 for a missing note, got $code"
 
 # A body whose content type is not the form's is refused, never parsed as
@@ -6519,54 +6693,108 @@ code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/999)
 # a JSON document would fail the title check anyway, so only this shape
 # tells a server that reads the content type from one that guesses.
 # A form with no title is refused too.
-code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d 'title=json' $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -H 'Content-Type: application/json' -d 'title=json' $B/notes)
 [ "$code" = "400" ] || fail "expected 400 for a body declared application/json, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -d 'title=&body=b' $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -d "csrf=$CSRF&title=&body=b" $B/notes)
 [ "$code" = "400" ] || fail "expected 400 for an empty title, got $code"
-curl -s -H 'HX-Request: true' $B/notes -o frag.html
+curl -s -b jar.txt -H 'HX-Request: true' $B/notes -o frag.html
 grep -q 'json' frag.html && fail 'a refused body still created a note'
 # Two notes were created above; a refused one must not have become a third.
 [ "$(grep -o '<li>' frag.html | wc -l | tr -d ' ')" = "2" ] || fail 'a refused body still created a note (list length moved)'
 
 # The router distinguishes 405 from 404 and says what IS allowed; a method
 # a note's route does not take must not touch the note.
-code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -X DELETE $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -D headers.txt -X DELETE $B/notes)
 [ "$code" = "405" ] || fail "expected 405 for DELETE on the collection, got $code"
 grep -qi '^allow: GET, POST, OPTIONS' headers.txt || fail '405 carried no or a wrong Allow header'
-code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X PATCH $B/notes/1)
 [ "$code" = "405" ] || fail "expected 405 for PATCH on a note, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
 [ "$code" = "200" ] || fail "a 405 on a note must leave it intact, but GET answered $code"
 
-# Delete answers the list without the note, and the note is gone.
-curl -s -X DELETE -H 'HX-Request: true' $B/notes/1 -o frag.html
+# Delete carries the token in the BODY, which is what the shell's
+# htmx-config buys: with the token in the query string it is refused, and
+# the note survives.
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE "$B/notes/1?csrf=$CSRF")
+[ "$code" = "403" ] || fail "expected 403 for a DELETE whose token was in the query, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE $B/notes/1)
+[ "$code" = "403" ] || fail "expected 403 for a DELETE with no token, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
+[ "$code" = "200" ] || fail "a refused DELETE must leave the note, but GET answered $code"
+curl -s -X DELETE -b jar.txt -H 'HX-Request: true' -d "csrf=$CSRF" $B/notes/1 -o frag.html
 grep -q 'Café au lait' frag.html && fail 'the list after delete still carried the note'
-code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
 
 # G14, the body side: a form field holding a byte that is not UTF-8
 # beside a percent-escape reaches the decoder from the body, not the
-# target. It must be answered, and the server must still be up.
-python3 - <<'PY' || fail 'a form body carrying a byte that is not UTF-8 got no answer'
-import socket
-body = b"title=\\x80%41&body=x"
+# target. It must be answered, and the server must still be up. The
+# cookie rides with it, so the session parser sees the same bytes.
+COOKIE=$(grep m0_notes_session jar.txt | awk '{print $7}')
+python3 - "$COOKIE" "$CSRF" <<'PY' || fail 'a form body carrying a byte that is not UTF-8 got no answer'
+import socket, sys
+cookie, csrf = sys.argv[1], sys.argv[2]
+body = ("csrf=%s&title=" % csrf).encode() + b"\\x80%41&body=x"
+head = (
+    "POST /notes HTTP/1.1\\r\\nHost: x\\r\\n"
+    "Cookie: m0_notes_session=%s\\r\\n"
+    "Content-Type: application/x-www-form-urlencoded\\r\\n"
+    "Content-Length: %d\\r\\nConnection: close\\r\\n\\r\\n" % (cookie, len(body))
+).encode()
 s = socket.create_connection(("127.0.0.1", 8094), timeout=5)
-s.sendall(b"POST /notes HTTP/1.1\\r\\nHost: x\\r\\nContent-Type: application/x-www-form-urlencoded\\r\\nContent-Length: %d\\r\\nConnection: close\\r\\n\\r\\n%s" % (len(body), body))
-head = s.recv(4096).split(b"\\r\\n")[0]
+s.sendall(head + body)
+line = s.recv(4096).split(b"\\r\\n")[0]
 s.close()
-assert head.startswith(b"HTTP/1.1 "), head
+assert line.startswith(b"HTTP/1.1 "), line
 PY
-curl --silent --fail $B/health > /dev/null || fail 'the server was gone after a form body carrying a byte that is not UTF-8'
+# G14, the cookie side: the session cookie is request-derived too, and a
+# byte above 0x7F in it reaches the verifier's field walk. Refused, not
+# fatal — one such request used to take the loop thread with it.
+python3 - <<'PY' || fail 'a session cookie carrying a byte that is not UTF-8 got no answer'
+import socket
+head = (
+    b"GET /notes HTTP/1.1\\r\\nHost: x\\r\\n"
+    b"Cookie: m0_notes_session=v1.aaaaaaaa.1800000600.n\\x80tes.x\\r\\n"
+    b"Connection: close\\r\\n\\r\\n"
+)
+s = socket.create_connection(("127.0.0.1", 8094), timeout=5)
+s.sendall(head)
+line = s.recv(4096).split(b"\\r\\n")[0]
+s.close()
+assert line.startswith(b"HTTP/1.1 "), line
+PY
+curl --silent --fail $B/health > /dev/null || fail 'the server was gone after a request carrying bytes that are not UTF-8'
+
+# --- N13: logout -----------------------------------------------------------
+#
+# The cookie is stateless: logout expires it in the CLIENT, and a client
+# that kept the value could use it until its own expiry. That is the TTL's
+# job, and the gate says which of the two it is asserting — the jar is
+# what honours the expiry.
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -c jar.txt -D headers.txt -d "csrf=$CSRF" $B/logout)
+[ "$code" = "303" ] || fail "expected 303 from logout, got $code"
+grep -qi '^location: /login' headers.txt || fail 'logout did not redirect to the login page'
+grep -i '^set-cookie' headers.txt | grep -q 'Max-Age=0' || fail 'logout did not expire the cookie'
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes)
+[ "$code" = "303" ] || fail "expected 303 after logout, got $code"
+# And logout is itself a write: without the token it does not happen.
+curl -s -o /dev/null -c jar.txt -d "user=notes&password=$PASSWORD" $B/login
+CSRF=$($ISSUE --key $KEY --csrf-for "$(grep m0_notes_session jar.txt | awk '{print $7}')")
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X POST $B/logout)
+[ "$code" = "403" ] || fail "expected 403 for a logout with no CSRF token, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes)
+[ "$code" = "200" ] || fail "a refused logout signed the session out anyway ($code)"
 
 # The root is a redirect to the list, not a second copy of it.
 code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt $B/)
 [ "$code" = "303" ] || fail "expected 303 from /, got $code"
 grep -qi '^location: /notes' headers.txt || fail 'the root redirect carried no Location'
 
-rm -f fragment.log headers.txt page.html frag.html
+rm -f fragment.log refusal.log headers.txt page.html frag.html jar.txt notes_app
 echo "smoke-fragment-notes OK"
 python3 scripts/emit.py --covers N1 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N8 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N13 --task smoke-fragment-notes
 python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
 """
 

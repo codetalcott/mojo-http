@@ -132,8 +132,23 @@ def _server_soak_text(text):
 
 
 def _real_app_version(text=None):
+    """The version the server's soak last ran against, from the record's own
+    `Last run ... against m0serve X.Y.Z` headline and nothing looser.
+
+    It used to take the FIRST `m0serve X.Y.Z` anywhere in the server's half
+    of the record, which was the headline until a later section's heading
+    carried a version too (the 2026-09-12 production entry). The reader
+    then still found the headline and nothing moved -- but the sabotage
+    that blanks the headline started finding the second one instead, so
+    "the soak record loses its version" stopped being caught and the
+    report would have gone on printing a version the record no longer
+    named. Anchoring on the headline is the property `_layer_soak_version`
+    already claims for itself: a version mentioned in passing is not a
+    soak.
+    """
     text = text if text is not None else REAL_APP.read_text()
-    m = re.search(r"m0serve ([0-9]+)\.([0-9]+)\.([0-9]+)",
+    m = re.search(r"Last run[^\n]*?against (?:m0serve|m0-http) "
+                  r"([0-9]+)\.([0-9]+)\.([0-9]+)",
                   _server_soak_text(text))
     return tuple(int(x) for x in m.groups()) if m else None
 

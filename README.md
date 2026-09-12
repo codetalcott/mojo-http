@@ -181,11 +181,11 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 97 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies | 747 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 761 |
 | `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 75 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 146 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| **Total** | | **1180** |
+| **Total** | | **1194** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -235,6 +235,19 @@ serve-fragment-notes` runs it; `poe smoke-fragment-notes` pins its wire
 contract, which did not change while the app was refactored onto each of
 those in turn — the design is
 [a-fragment-that-names-itself](docs/notes/a-fragment-that-names-itself.md).
+
+The notes are private, which is what `m0-http`'s session module is for:
+`issue_session`/`verify_session` sign a stateless cookie
+(`v1.<kid>.<exp>.<subject>.<tag>`, HMAC-SHA256, the tag compared in
+constant time and the expiry against the host clock), `csrf_token` derives
+the token a form carries from that session's own tag so neither needs a
+store, and `session_cookie_line` builds the `Set-Cookie` for
+`ResponseCookieJar.add_raw` with `HttpOnly; SameSite=Lax; Path=/`. There
+is no middleware to hang a guard on, so a private view opens with one —
+an early return. The app takes one user from `M0_NOTES_USER` and
+`M0_NOTES_PASSWORD`, signs with `M0_NOTES_KEY`, and refuses to start
+without a key or a password; the design is
+[a-login-on-the-notes-app](docs/notes/a-login-on-the-notes-app.md).
 
 ## Datastar
 
@@ -756,7 +769,7 @@ so it is not worth the ownership complexity yet.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1180 unit tests, then compiles every example
+uv run poe test-all         # 1194 unit tests, then compiles every example
 uv run poe test-all         # 1172 unit tests, then compiles every example
 uv run poe test-all         # 1157 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080

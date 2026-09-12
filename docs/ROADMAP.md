@@ -102,24 +102,19 @@ somebody else's Django projects inside the pull request that trips it.
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
-fails if it does not resolve. One is planned, on the application layer
-(SPEC section N); the server has none. It names the application that
+fails if it does not resolve. **Nothing is planned**: the server had none,
+and the application layer's last row (N13, sessions and CSRF behind a
+login) shipped on 2026-09-12. A row added here names the application that
 pulls it, the gate that will verify it, and the [decision](DECISIONS.md)
 it retires, before it is built.
 
-### Sessions and CSRF behind a login
+What stands between the application layer and its milestone is no longer
+a row but the soak: an application outside `apps/` running on `Views` and
+`Fragment`, recorded in [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md).
 
-Row N13. `apps/fragment_notes` with one user, the smallest application with
-a login. In order: an HMAC-SHA256 in `m0-core` gated by published test
-vectors — a primitive with a test-vector gate, safe to build first — then
-a signed session cookie emitted through `ResponseCookieJar.add_raw`, then
-a CSRF token on the form. Retires D15. Not before the textshelf path
-below it: a login on a demo proves less than one real path in production.
-The HMAC is also what that path needs first, so the primitive may land
-ahead of the login — [the note](notes/hold-from-a-mojo-mount.md) says why.
+The last entries, all built:
 
-The last entries before this, all built:
-
+- [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md)
 - [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md)
 - [An SSE hold from a Mojo mount — shipped 2026-09-11](notes/hold-from-a-mojo-mount.md)
 - [Accept sharing: workers sharing a listener share its connections](notes/accept-sharing.md)
@@ -159,6 +154,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- **Sessions and CSRF behind a login** (N13) — built 2026-09-12: a stateless signed cookie and a CSRF token derived from its tag, on `apps/fragment_notes` with one user; `m0_http.session` beside `grant.mojo`, forged and admitted on the wire by a CPython issuer, five rules sabotage-proven. D15 retired; D24 and D25 record what it deliberately is not. The write-up is [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md).
 - **A Datastar form, end to end** (N12) — built 2026-09-12: the todo demo's rename form, `form(req)` on the other side, a smoke on the wire and a Chromium run that recorded what the pinned bundle sends; D21 confirmed. The write-up is [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md).
 - **Prefork workers did not share a listener's connections** (the same worker won 32 of 32 on macOS and 23–31 of 32 on Linux, so `--workers 2` served a keep-alive load at one worker's throughput) — resolved by E16, the accept-sharing hand-off; the write-up is [Accept sharing — shipped 2026-09-05](notes/accept-sharing.md).
 - **A request body still arriving at SIGTERM held the drain to its deadline** — resolved; the write-up is [A request body still arriving at SIGTERM held the drain to its deadline — resolved](notes/request-body-at-sigterm.md).
