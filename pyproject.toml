@@ -6597,7 +6597,12 @@ got=$(refusal "$($ISSUE --key other-key --subject notes --exp $((NOW + 600)))")
 # The last character is replaced, never rotated: a tag's final character
 # carries four bits and can be 0, 4 or 8, which a letter rotation leaves
 # alone — three runs in sixteen used to present the untampered cookie.
-case "${GOOD: -1}" in A) FLIP=B ;; *) FLIP=A ;; esac
+# `${GOOD: -1}` is bash's substring expansion and poe runs these with sh,
+# which is dash on the Linux runner: it answers `Bad substitution` and the
+# gate exits 2 before reaching any assertion. The prefix/suffix forms below
+# are POSIX and behave identically in both shells.
+last=${GOOD#"${GOOD%?}"}
+case "$last" in A) FLIP=B ;; *) FLIP=A ;; esac
 got=$(refusal "${GOOD%?}$FLIP")
 [ "$got" = "signed out (bad signature)" ] || fail "a tampered tag was not refused: $got"
 got=$(refusal 'not-a-session')
