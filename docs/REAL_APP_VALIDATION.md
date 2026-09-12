@@ -124,6 +124,72 @@ not run: none of the four dependency trees builds on free-threaded CPython
   record of each application's shape, including every substitution and
   the reason for it.
 
+## In production — 2026-09-12, textshelf's streams on the hold mount (m0serve 1.2.0)
+
+Not a soak: a production record, the first use of the grant-verified hold
+mount (SPEC I21) by an application nobody wrote for this server. textshelf
+(Django 6.1, allauth, Postgres, one Fly machine, `--realtime
+--blocking-threads 8`) had run its five SSE streams as `M0-Hold` views
+since its cutover to m0serve; today it moved them onto
+`--mount /_m0/rt=hold`. Each view keeps its authentication and membership
+check and, asked with `?grant=1`, signs its decision into the stream URL
+(`m0serve.grant.stream_url`, bound to the session cookie, an hour's TTL)
+instead of holding; the page renders that URL, and a Mojo pool thread
+verifies the grant and holds with no Django request per connection. Its
+side of the change is textshelf PR #570 (`textshelf/utils/realtime.py`,
+a template tag, one renewal script, the four process commands), with the
+`M0_GRANT_KEY` secret staged on each app before the command that needs it
+ran.
+
+**Local, under the tree's 1.2.0 binary, before the deploy.** The view
+issued a grant into `/_m0/rt` bound to the session; `production_stream_check.py`
+followed it — 200, `text/event-stream`, both `M0-` headers stripped, `: open`
+as the mount's head, a heartbeat at 15 s; a `notifications_read` published
+from inside the process (mark-all-read) arrived on the mount-held stream;
+and the mount refused a missing cookie (`invalid`, no session cookie), a
+different session's cookie (`invalid`, session mismatch) and an expired
+grant (`expired`), each by name.
+
+**Staging (`textshelf-staging.fly.dev`), after the deploy.** The two
+remote stream smokes passed through the suite's own Playwright login (the
+view holds; the URL the view issues is a held stream). The production check
+on the grant route: `status 200 after 0.1s`, held by the mount, `: open`,
+`heartbeat at 15s`, ok — through Fly's proxy, with the same `Cache-Control:
+no-cache` and `X-Accel-Buffering: no` the view-held stream carries. A
+malformed grant is refused as `{"error":"invalid","reason":"malformed"}`.
+
+**Production (`textshelf.com`).** Promoted through textshelf's own workflow (staging validated, then
+`promote-to-production.yml`, then its post-deploy smoke, all green). The
+machine runs the 1.2.0 wheel's binary as
+`m0serve --mount /=config.wsgi --mount /_m0/rt=hold --realtime
+--blocking-threads 8 ...` with `M0_GRANT_KEY` in its environment; the
+mount refuses a malformed grant as `{"error":"invalid","reason":"malformed"}`,
+the view answers 401 without a session, and `/_m0/health` answers.
+No account of ours exists in production, so the check with a real
+session — `scripts/production_stream_check.py --base-url
+https://textshelf.com --path /notifications/stream/ --session-cookie
+<sessionid>` from a signed-in browser — is the owner's step, and the
+line it prints (`held by the hold mount`, then the heartbeat) completes
+this record. Until then the production claim here is that the mount is
+up, keyed and refusing correctly, and that the same build held and
+heartbeated on staging.
+
+**Two things the pass found, neither in the server.** The check script
+read a stream's head and then nothing against staging over TLS, on the
+view path as much as the mount: a fresh `iter_content` per frame marked the
+response consumed, and a single generator reading the same stream
+heartbeated on time — textshelf PR #571. And the first staging check's
+24 s heartbeat window started before the connect, which a machine waking
+from auto-stop can consume; the window now starts at the response.
+
+**What this does and does not say.** The mount holds real streams for a
+real application behind a real proxy, refuses what it should by name, and
+renews through the view when a grant expires — the browser side of that,
+`held_stream.js`, is exercised by every page that opens a stream and by no
+gate yet. The application layer's own soak is unchanged and still NOT MET
+below: this is the server holding for textshelf, not textshelf on `Views`
+and `Fragment`.
+
 ## Re-soak — 2026-09-10, against 1.0.0 as merged at `a4f0aa5`, all four applications
 
 **The version number is why this pass exists, and almost nothing else
