@@ -23,10 +23,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server binary's dynamic dependencies are unchanged, which is what keeps
   the wheel installable on a machine with no PostgreSQL client. Started in
   both execution modes: worker 0 under `--workers`, and once per process
-  under `--threads`, where the bus is one channel per thread. Refused with a
-  forked `--workers N` on macOS, where libpq's connect reaches Kerberos
-  through GSSAPI and Objective-C aborts a forked child; `--spawn-workers`
-  is the escape, as it is for Core ML. A host with no libpq exits 78
+  under `--threads`, where the bus is one channel per thread. Refused on
+  macOS wherever a worker is forked — `--workers N`, and `--reload`, which
+  supervises even one — because libpq's connect reaches Kerberos through
+  GSSAPI and Objective-C aborts a forked child; `--spawn-workers` is the
+  escape, as it is for Core ML, and composes with `--reload`. A host with no libpq exits 78
   naming every path tried, rather than serving with no listener — held on
   the wheel's own binary, since its users have neither a toolchain nor a
   PostgreSQL client.

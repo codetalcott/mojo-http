@@ -1276,11 +1276,14 @@ Properties of the design, not defects to fix in passing:
   `format_sse_event` every other publisher uses, so a client cannot tell
   which door an event came through. `m0pub.notify_sql` builds the
   statement for a caller that already has a cursor, without importing a
-  driver into a stdlib-only module. **Refused with a FORKED `--workers N`
-  on macOS**, because libpq's connect reaches GSSAPI, then Kerberos, then
+  driver into a stdlib-only module. **Refused on macOS wherever a worker
+  is FORKED** — `--workers N`, and `--reload`, which supervises even one
+  worker — because libpq's connect reaches GSSAPI, then Kerberos, then
   CoreFoundation, and Objective-C aborts a forked child — measured as the
   worker killed by signal 9 and respawned until the supervisor gave up,
-  which is the same disguise the `_scproxy` entry above records.
+  which is the same disguise the `_scproxy` entry above records. The
+  predicate asks what `main` calls `supervised`, not the worker count:
+  testing `workers > 1` alone let `--reload` through, doctor included.
   `--spawn-workers` is the escape, as it is for Core ML. Both `--pg-listen`
   refusals run BEFORE the bind and the fork: placed after it they ran in
   every child and never in the supervisor, so a usage error read as a crash

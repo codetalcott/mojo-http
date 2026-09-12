@@ -390,6 +390,44 @@ events=$(grep -c '^id: ' "$out/w2.txt" || true)
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
 
+# --- the forked-worker refusal, and --reload is a forked worker ----------
+# On macOS libpq's connect in a child forked without exec is killed, so the
+# server refuses every shape that forks one: `--workers N`, and `--reload`,
+# which puts a supervisor over even a single worker. The predicate first
+# tested the worker count alone, so `--reload` went through -- main and
+# doctor alike -- into the crash loop the refusal exists to prevent.
+# Linux refuses neither, and the doctor must say so there, because its
+# contract is m0serve's own exit code. The server itself is only run where
+# it refuses: a shape that serves would block this gate, so the run is
+# bounded and one still alive at the deadline is the failure.
+for shape in "--workers 2" "--reload"; do
+  if [ "$(uname -s)" = "Darwin" ]; then want=2; else want=0; fi
+  bin/m0serve --doctor djangoproj.wsgi:application --app-dir apps/django_realtime \
+    --realtime $shape --pg-listen "$url" > "$out/doctor.json" 2>/dev/null
+  doc=$?
+  [ "$doc" -eq "$want" ] \
+    || { cat "$out/doctor.json"; fail "--doctor for --pg-listen $shape exited $doc, want $want"; }
+  [ "$want" -eq 2 ] || continue
+  grep -q 'pg-listen-vs-fork' "$out/doctor.json" \
+    || { cat "$out/doctor.json"; fail "--doctor for --pg-listen $shape refused for some other reason"; }
+  bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+    --port 8236 --realtime $shape --pg-listen "$url" > "$out/fork.log" 2>&1 &
+  fpid=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    kill -0 $fpid 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 $fpid 2>/dev/null; then
+    kill $fpid 2>/dev/null; wait $fpid 2>/dev/null
+    cat "$out/fork.log"; fail "--pg-listen $shape was not refused on macOS -- it started serving"
+  fi
+  wait $fpid; st=$?
+  [ "$st" -eq 2 ] \
+    || { cat "$out/fork.log"; fail "--pg-listen $shape exited $st on macOS, not 2"; }
+  grep -q 'with a forked worker is refused on macOS' "$out/fork.log" \
+    || { cat "$out/fork.log"; fail "--pg-listen $shape was refused without saying why"; }
+done
+
 # --- the refusal ---------------------------------------------------------
 bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
   --port 8233 --pg-listen "$url" > "$out/refuse.log" 2>&1
