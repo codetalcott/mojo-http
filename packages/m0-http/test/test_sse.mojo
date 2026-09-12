@@ -82,6 +82,68 @@ def test_crlf_payload_splits_cleanly() raises:
     assert_false(s.find("\r") >= 0)
 
 
+def _raw_text(*bytes: Int) -> String:
+    """A String holding exactly these bytes, valid UTF-8 or not."""
+    var buf = List[UInt8]()
+    for b in bytes:
+        buf.append(UInt8(b))
+    return String(unsafe_from_utf8=Span(buf))
+
+
+def _bytes_of(s: String) -> List[Int]:
+    var out = List[Int]()
+    for b in s.as_bytes():
+        out.append(Int(b))
+    return out^
+
+
+def test_invalid_utf8_after_a_line_break_does_not_trap() raises:
+    """Bytes that are not UTF-8 reach this from outside: G14's trap class.
+
+    `--pg-listen` hands a NOTIFY payload's `data` straight to
+    `format_sse_event`, and a `SQL_ASCII` database converts nothing, so a
+    lone continuation byte can follow a newline. `split_sse_lines` sliced
+    with `StringSpan[byte=a:b]`, which asserts a codepoint boundary at both
+    ends and traps the process — on the listener's thread, which is worker
+    0. The frame decoder sliced the same way, one field later.
+
+    covers: G14
+    """
+    # "a\n<0x80>b" and "a\r\n<0xC3>" (a truncated two-byte sequence last).
+    var parts = split_sse_lines(_raw_text(0x61, 0x0A, 0x80, 0x62))
+    assert_equal(len(parts), 2)
+    assert_equal(parts[0], "a")
+    var second = _bytes_of(parts[1])
+    assert_equal(len(second), 2)
+    assert_equal(second[0], 0x80)
+    assert_equal(second[1], 0x62)
+    # A continuation byte opening a line that is NOT the last: the cut
+    # inside the loop, not the one after it.
+    var first = split_sse_lines(_raw_text(0x80, 0x0A, 0x61))
+    assert_equal(len(first), 2)
+    assert_equal(_bytes_of(first[0])[0], 0x80)
+    assert_equal(first[1], "a")
+    var tail = split_sse_lines(_raw_text(0x61, 0x0D, 0x0A, 0xC3))
+    assert_equal(len(tail), 2)
+    assert_equal(len(_bytes_of(tail[1])), 1)
+    assert_equal(_bytes_of(tail[1])[0], 0xC3)
+    # The whole frame, and back through the decoder a WebSocket bridge uses.
+    # A continuation byte where a value starts: `[byte=a:b]` asserts only
+    # that neither end lands on one, so 0xFF there would not have trapped.
+    var frame = format_sse_event(1, "e", _raw_text(0x78, 0x0A, 0x80, 0x79))
+    var payload = sse_data_payload(frame.as_bytes())
+    assert_equal(len(payload), 4)
+    assert_equal(Int(payload[0]), 0x78)
+    assert_equal(Int(payload[1]), 0x0A)
+    assert_equal(Int(payload[2]), 0x80)
+    assert_equal(Int(payload[3]), 0x79)
+    # A field NAME that is not UTF-8 is a field the decoder skips, not a trap.
+    var odd = String("id: 1\n") + _raw_text(0x80, 0x3A, 0x20, 0x71, 0x0A)
+    odd += "data: kept\n\n"
+    var kept = sse_data_payload(odd.as_bytes())
+    assert_equal(String(unsafe_from_utf8=Span(kept)), "kept")
+
+
 def test_no_event_id_omits_id_field() raises:
     """NO_EVENT_ID emits no id: line at all."""
     var s = format_sse_event(NO_EVENT_ID, "update", "x")

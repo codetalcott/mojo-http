@@ -1418,6 +1418,9 @@ Properties of the design, not defects to fix in passing:
   before any handler, every app and the production WSGI deployment
   alike), the cookie jar (built for every request: `Cookie: a=<0x80>`),
   the static mount's path, the `Accept` negotiator and the ETag matcher.
+  A sixth and seventh were not request bytes at all: `split_sse_lines` and
+  `sse_data_payload`, which a `--pg-listen` NOTIFY payload reaches on worker
+  0's listener thread, and a `SQL_ASCII` database converts nothing.
   Every such slice is now `String(unsafe_from_utf8=s.as_bytes()[a:b])`,
   a byte-span slice with no boundary check; `unquote` is a single byte
   walk. SPEC G14 is the row, one test per site declares it, and both
