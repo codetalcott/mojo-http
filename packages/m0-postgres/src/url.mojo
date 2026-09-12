@@ -12,10 +12,13 @@ leaving an application free to choose its own.
 **Redaction happens before a URL reaches anything that keeps it.** A
 `DATABASE_URL` carries its password in the authority, and an error message is
 the most widely copied string a server produces: into a log, an issue, a
-paste to a colleague. libpq's own connection errors never echo the password;
-neither may this package. `redact` handles both places one can hide — the
-authority's `user:password@` and a `password=` keyword — and is applied by
-every path that names a URL at all, including `--doctor`.
+paste to a colleague. `redact` handles every place one can hide — the
+authority's `user:password@` and the secret keywords, in both spellings — and
+masks whole any string it cannot parse. It is applied by every path that
+names a URL at all. libpq's own connection errors never echo a password they
+PARSED, but they quote pieces of a string they could not parse, so the error
+text beside a URL goes through `redact_message`, which withholds it in exactly
+that case.
 """
 
 from std.collections.span import Span
@@ -204,96 +207,433 @@ def read_only(url: String) raises -> String:
 
 
 def redact(url: String) -> String:
-    """A connection string safe to log: no password, everything else kept.
+    """A connection string safe to log: no secret, everything else kept.
 
-    Both hiding places:
+    Every place one can hide:
 
     - the URI authority, `postgres://user:secret@host/db` — everything
-      between the first `:` after the scheme's `//` and the `@`;
-    - a `password=` keyword, in a query string or a key/value conninfo.
+      between the first `:` of the userinfo and the LAST `@` of the
+      authority, so a password carrying `:` or `@` is masked whole;
+    - a secret keyword — `password`, `sslpassword`, `oauth_client_secret` —
+      in a URI's query string or a key/value conninfo, where the key/value
+      form is read the way libpq reads it: spaces allowed around `=`, a
+      value single-quoted with backslash escapes, or unquoted to the next
+      space.
 
     Deliberately total rather than raising: this is called on the error
     path, and a redactor that can fail is a redactor that eventually does
-    not run. Anything it cannot parse comes back fully masked, because a
-    string this function does not understand is exactly the one not to
-    print.
+    not run. **Anything it cannot parse comes back fully masked** — keeping
+    only the `postgres://` spelling, if it had one — because a string this
+    function does not understand is exactly the one not to print. That
+    includes every string libpq itself would refuse to parse: a keyword it
+    does not know, a query parameter with no `=`, an unterminated quote, and
+    any `@` after the authority. The last is the shape an unencoded `/` or
+    `?` in a password makes — `postgres://u:ab/cd@host/db` ends its
+    authority at the `/`, and a scan that stopped there printed the whole
+    password — and it over-masks a query value that legitimately carries an
+    `@`, which is the safe direction to be wrong in.
     """
+    if len(url.as_bytes()) == 0:
+        return url
+    var secrets = List[String]()
+    var parsed = _parse_and_mask(url, secrets)
+    if parsed:
+        return parsed.value()
+    return _fully_masked(url)
+
+
+def redact_message(message: String, url: String) -> String:
+    """The error text libpq wrote about `url`, made safe to print beside it.
+
+    libpq never echoes a password it PARSED, but a string it could not
+    parse is quoted back in pieces: `postgres://u:ab/cd@127.0.0.1:1/db`
+    answers `invalid integer value "ab" for connection option "port"`,
+    which is half the password, and the listener printed it on every retry.
+    So when `redact` could not parse the string the message is withheld
+    and replaced by what to check; when it could, the message is kept —
+    it is the diagnosis — with any secret value that appears in it masked.
+    """
+    var secrets = List[String]()
+    var parsed = _parse_and_mask(url, secrets)
+    if not parsed:
+        return String(
+            "libpq's message is withheld because the connection string could"
+            " not be parsed, and libpq quotes what it cannot parse — check"
+            " that `/`, `?`, `@` and `:` in a password are percent-encoded"
+            " (%2F, %3F, %40, %3A)"
+        )
+    var out = message
+    for secret in secrets:
+        if len(secret.as_bytes()) > 0:
+            out = _replace_all(out, secret, REDACTED)
+    return out
+
+
+def _fully_masked(url: String) -> String:
+    """The mask for a string `redact` could not parse: its spelling, no more."""
+    if url.startswith("postgresql://"):
+        return String("postgresql://") + REDACTED
+    if url.startswith("postgres://"):
+        return String("postgres://") + REDACTED
+    return String(REDACTED)
+
+
+def _parse_and_mask(url: String, mut secrets: List[String]) -> Optional[String]:
+    """The masked string, or None if libpq's grammar does not describe it.
+
+    Every secret value found is appended to `secrets`, for `redact_message`.
+    """
+    if is_uri(url):
+        return _mask_uri(url, secrets)
+    return _mask_keyvalue(url, secrets)
+
+
+def is_secret_keyword(key: String) -> Bool:
+    """Whether a libpq keyword's value is a credential.
+
+    `password` is the obvious one; `sslpassword` unlocks a client key, and
+    `oauth_client_secret` is libpq 18's. Each is masked wherever it appears.
+    """
+    return (
+        key == "password"
+        or key == "sslpassword"
+        or key == "oauth_client_secret"
+    )
+
+
+def is_libpq_keyword(key: String) -> Bool:
+    """Whether libpq 12 through 18 accepts `key` as a connection keyword.
+
+    A closed list, and it can only err towards masking: a keyword a newer
+    libpq added makes a string this function treats as unparseable, so it
+    comes back fully masked rather than half-printed. Case-sensitive, as
+    libpq's own lookup is. `ssl` is the URI-only alias libpq rewrites to
+    `sslmode=require`.
+    """
+    for known in _libpq_keywords():
+        if known == key:
+            return True
+    return False
+
+
+def _libpq_keywords() -> List[String]:
+    """`PQconninfoOptions`' names, from libpq 12 through 18."""
+    return [
+        "host",
+        "hostaddr",
+        "port",
+        "dbname",
+        "user",
+        "password",
+        "passfile",
+        "require_auth",
+        "channel_binding",
+        "connect_timeout",
+        "client_encoding",
+        "options",
+        "application_name",
+        "fallback_application_name",
+        "keepalives",
+        "keepalives_idle",
+        "keepalives_interval",
+        "keepalives_count",
+        "tcp_user_timeout",
+        "replication",
+        "gssencmode",
+        "sslmode",
+        "sslnegotiation",
+        "sslcompression",
+        "sslcert",
+        "sslkey",
+        "sslkeylogfile",
+        "sslpassword",
+        "sslcertmode",
+        "sslrootcert",
+        "sslcrl",
+        "sslcrldir",
+        "sslsni",
+        "requirepeer",
+        "requiressl",
+        "ssl_min_protocol_version",
+        "ssl_max_protocol_version",
+        "min_protocol_version",
+        "max_protocol_version",
+        "krbsrvname",
+        "gsslib",
+        "gssdelegation",
+        "service",
+        "target_session_attrs",
+        "load_balance_hosts",
+        "oauth_issuer",
+        "oauth_client_id",
+        "oauth_client_secret",
+        "oauth_scope",
+        "ssl",
+    ]
+
+
+def _is_space(b: UInt8) -> Bool:
+    """C's `isspace` over ASCII, which is what libpq's conninfo parser uses."""
+    return (
+        b == UInt8(ord(" "))
+        or b == UInt8(ord("\t"))
+        or b == UInt8(ord("\n"))
+        or b == UInt8(ord("\r"))
+        or b == UInt8(0x0B)
+        or b == UInt8(0x0C)
+    )
+
+
+def _text(b: Span[UInt8, _], start: Int, end: Int) -> String:
+    """Bytes `[start, end)` as a String, by byte span — never `[byte=a:b]`.
+
+    A connection string is operator input and may not be UTF-8 where it is
+    cut (G14's rule, for the same reason).
+    """
+    return String(unsafe_from_utf8=b[start:end])
+
+
+def _append(mut out: List[UInt8], b: Span[UInt8, _], start: Int, end: Int):
+    for k in range(start, end):
+        out.append(b[k])
+
+
+def _append_mask(mut out: List[UInt8]):
+    for ch in REDACTED.as_bytes():
+        out.append(ch)
+
+
+def _mask_uri(url: String, mut secrets: List[String]) -> Optional[String]:
+    """`postgres://[user[:password]@]hosts[/dbname][?key=value&...]`."""
     var b = url.as_bytes()
     var n = len(b)
-    var out = List[UInt8](capacity=n)
-    var i = 0
-
-    # The authority, if this is a URI: scan to the `@` that ends it, and
-    # mask from the first `:` after the scheme.
-    var scheme_end = -1
+    var start = 0
     for k in range(n - 2):
-        if b[k] == UInt8(ord(":")) and b[k + 1] == UInt8(ord("/")) and b[k + 2] == UInt8(ord("/")):
-            scheme_end = k + 3
+        if (
+            b[k] == UInt8(ord(":"))
+            and b[k + 1] == UInt8(ord("/"))
+            and b[k + 2] == UInt8(ord("/"))
+        ):
+            start = k + 3
             break
-    if scheme_end >= 0:
-        var at = -1
-        for k in range(scheme_end, n):
-            if b[k] == UInt8(ord("@")):
-                at = k
+    var auth_end = n
+    for k in range(start, n):
+        if b[k] == UInt8(ord("/")) or b[k] == UInt8(ord("?")):
+            auth_end = k
+            break
+    # An `@` past the authority is a userinfo that a `/` or `?` in the
+    # password cut short — or something this cannot tell apart from one.
+    for k in range(auth_end, n):
+        if b[k] == UInt8(ord("@")):
+            return None
+
+    var out = List[UInt8](capacity=n)
+    _append(out, b, 0, start)
+    var at = -1
+    for k in range(start, auth_end):
+        if b[k] == UInt8(ord("@")):
+            at = k
+    var hosts_start = start
+    if at >= 0:
+        var colon = -1
+        for k in range(start, at):
+            if b[k] == UInt8(ord(":")):
+                colon = k
                 break
-            if b[k] == UInt8(ord("/")) or b[k] == UInt8(ord("?")):
-                break
-        if at >= 0:
-            var colon = -1
-            for k in range(scheme_end, at):
-                if b[k] == UInt8(ord(":")):
-                    colon = k
-                    break
-            if colon >= 0:
-                for k in range(colon + 1):
-                    out.append(b[k])
-                for ch in REDACTED.as_bytes():
-                    out.append(ch)
-                i = at
-    while i < n:
-        out.append(b[i])
-        i += 1
+        if colon >= 0:
+            _append(out, b, start, colon + 1)
+            _append_mask(out)
+            secrets.append(_text(b, colon + 1, at))
+        else:
+            _append(out, b, start, at)
+        out.append(UInt8(ord("@")))
+        hosts_start = at + 1
+    if not _valid_hosts(b, hosts_start, auth_end):
+        return None
+    _append(out, b, hosts_start, auth_end)
 
-    var once = String(unsafe_from_utf8=Span(out))
-    return _mask_keyword(once, "password")
+    var q = n
+    for k in range(auth_end, n):
+        if b[k] == UInt8(ord("?")):
+            q = k
+            break
+    _append(out, b, auth_end, q)
+    if q < n:
+        out.append(UInt8(ord("?")))
+        if not _mask_query(b, q + 1, n, out, secrets):
+            return None
+    return String(unsafe_from_utf8=Span(out))
 
 
-def _mask_keyword(url: String, key: String) -> String:
-    """Replace every `key=value` value with the mask, at a boundary.
+def _valid_hosts(b: Span[UInt8, _], start: Int, end: Int) -> Bool:
+    """A comma-separated host list, each `host`, `host:port` or `[v6]:port`.
 
-    Values end at the conninfo separator: `&` in a URI's query string, a
-    space in a key/value string. Both are checked, because this runs over
-    whichever spelling arrived.
+    A port is digits. What fails here is typically a password's tail: in
+    `postgres://u:ab/cd@host` the authority is `u:ab`, whose "port" is `ab`.
     """
+    var i = start
+    while i <= end:
+        var entry_end = end
+        for k in range(i, end):
+            if b[k] == UInt8(ord(",")):
+                entry_end = k
+                break
+        var j = i
+        if j < entry_end and b[j] == UInt8(ord("[")):
+            var close = -1
+            for k in range(j, entry_end):
+                if b[k] == UInt8(ord("]")):
+                    close = k
+                    break
+            if close < 0:
+                return False
+            j = close + 1
+        else:
+            while j < entry_end and b[j] != UInt8(ord(":")):
+                if (
+                    b[j] == UInt8(ord("@"))
+                    or b[j] == UInt8(ord("["))
+                    or b[j] == UInt8(ord("]"))
+                    or _is_space(b[j])
+                ):
+                    return False
+                j += 1
+        if j < entry_end:
+            if b[j] != UInt8(ord(":")) or j + 1 == entry_end:
+                return False
+            for k in range(j + 1, entry_end):
+                if b[k] < UInt8(ord("0")) or b[k] > UInt8(ord("9")):
+                    return False
+        i = entry_end + 1
+    return True
+
+
+def _mask_query(
+    b: Span[UInt8, _],
+    start: Int,
+    end: Int,
+    mut out: List[UInt8],
+    mut secrets: List[String],
+) -> Bool:
+    """`key=value&...` into `out`, secrets masked. False if not libpq's shape."""
+    if start == end:
+        return True
+    var i = start
+    while i <= end:
+        var seg_end = end
+        for k in range(i, end):
+            if b[k] == UInt8(ord("&")):
+                seg_end = k
+                break
+        var eq = -1
+        for k in range(i, seg_end):
+            if b[k] == UInt8(ord("=")):
+                eq = k
+                break
+        if eq <= i:
+            return False
+        var key = _text(b, i, eq)
+        if not is_libpq_keyword(key):
+            return False
+        if i > start:
+            out.append(UInt8(ord("&")))
+        _append(out, b, i, eq + 1)
+        if is_secret_keyword(key):
+            _append_mask(out)
+            secrets.append(_text(b, eq + 1, seg_end))
+        else:
+            _append(out, b, eq + 1, seg_end)
+        i = seg_end + 1
+    return True
+
+
+def _mask_keyvalue(url: String, mut secrets: List[String]) -> Optional[String]:
+    """`key = value ...`, read the way libpq's `conninfo_parse` reads it."""
     var b = url.as_bytes()
-    var needle = (key + "=").as_bytes()
     var n = len(b)
-    var m = len(needle)
     var out = List[UInt8](capacity=n)
     var i = 0
-    while i < n:
-        var matched = i + m <= n
-        if matched:
-            for j in range(m):
-                if b[i + j] != needle[j]:
-                    matched = False
-                    break
-        if matched and i > 0:
-            var prev = b[i - 1]
-            matched = (
-                prev == UInt8(ord("?"))
-                or prev == UInt8(ord("&"))
-                or prev == UInt8(ord(" "))
-            )
-        if not matched:
+    while True:
+        while i < n and _is_space(b[i]):
             out.append(b[i])
             i += 1
-            continue
-        for j in range(m):
-            out.append(needle[j])
-        for ch in REDACTED.as_bytes():
-            out.append(ch)
-        i += m
-        while i < n and b[i] != UInt8(ord("&")) and b[i] != UInt8(ord(" ")):
+        if i >= n:
+            break
+        var key_start = i
+        while i < n and b[i] != UInt8(ord("=")) and not _is_space(b[i]):
+            i += 1
+        if i == key_start:
+            return None
+        var key = _text(b, key_start, i)
+        if not is_libpq_keyword(key):
+            return None
+        _append(out, b, key_start, i)
+        while i < n and _is_space(b[i]):
+            out.append(b[i])
+            i += 1
+        if i >= n or b[i] != UInt8(ord("=")):
+            return None
+        out.append(b[i])
+        i += 1
+        while i < n and _is_space(b[i]):
+            out.append(b[i])
+            i += 1
+        var value_start = i
+        var inner_start: Int
+        var inner_end: Int
+        if i < n and b[i] == UInt8(ord("'")):
+            i += 1
+            inner_start = i
+            var closed = False
+            while i < n:
+                if b[i] == UInt8(ord("\\")):
+                    i += 2
+                    continue
+                if b[i] == UInt8(ord("'")):
+                    closed = True
+                    break
+                i += 1
+            if not closed:
+                return None
+            inner_end = i
+            i += 1
+        else:
+            while i < n and not _is_space(b[i]):
+                if b[i] == UInt8(ord("\\")):
+                    i += 1
+                i += 1
+            if i > n:
+                i = n
+            inner_start = value_start
+            inner_end = i
+        if is_secret_keyword(key):
+            _append_mask(out)
+            secrets.append(_text(b, inner_start, inner_end))
+        else:
+            _append(out, b, value_start, i)
+    return String(unsafe_from_utf8=Span(out))
+
+
+def _replace_all(text: String, needle: String, replacement: String) -> String:
+    """Every occurrence of `needle` replaced, by byte comparison."""
+    var hay = text.as_bytes()
+    var nb = needle.as_bytes()
+    var h = len(hay)
+    var m = len(nb)
+    var out = List[UInt8](capacity=h)
+    var i = 0
+    while i < h:
+        var matched = i + m <= h
+        if matched:
+            for j in range(m):
+                if hay[i + j] != nb[j]:
+                    matched = False
+                    break
+        if matched:
+            for ch in replacement.as_bytes():
+                out.append(ch)
+            i += m
+        else:
+            out.append(hay[i])
             i += 1
     return String(unsafe_from_utf8=Span(out))

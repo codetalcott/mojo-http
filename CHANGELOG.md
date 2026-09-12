@@ -44,7 +44,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `client_encoding=UTF8` and an application name, merging rather than
   appending so each stays overridable; `open_readonly()` adds a read-only
   transaction default; every URL is redacted before it reaches an error, a
-  log or the doctor. `LISTEN`/`NOTIFY` is supported, including restoring
+  log or the doctor, including the ones `redact` cannot parse — an
+  unencoded `/`, `?` or `@` in a password, a key/value string with quoted
+  or spaced values, a keyword libpq does not know — which come back masked
+  whole, with libpq's own message beside them withheld, because libpq
+  quotes what it cannot parse. `sslpassword` and `oauth_client_secret` are
+  masked as `password` is. `LISTEN`/`NOTIFY` is supported, including restoring
   subscriptions across a reset. No pool, no retry, no `COPY`, and `numeric`,
   dates, intervals and arrays read as text — each a deliberate absence, with
   the reason in the README.

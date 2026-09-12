@@ -122,6 +122,20 @@ def test_a_bad_url_raises_with_the_password_masked() raises:
         assert_true("***" in String(e))
     assert_true(raised)
 
+    # A password with an unencoded `/`: libpq cannot parse it, and its own
+    # message quoted the part before the `/` ("invalid integer value "ab"
+    # for connection option "port"") beside a URL that was not masked at
+    # all. Through real libpq, because that message is libpq's to word.
+    raised = False
+    try:
+        var _db = open("postgres://m0_no_such_user:ab9x/cd7y@127.0.0.1:1/db")
+    except e:
+        raised = True
+        assert_false("ab9x" in String(e))
+        assert_false("cd7y" in String(e))
+        assert_true("could not be parsed" in String(e))
+    assert_true(raised)
+
 
 # --- Queries ----------------------------------------------------------------
 

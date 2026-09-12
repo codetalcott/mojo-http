@@ -58,7 +58,7 @@ from .params import ParamArrays, Params
 from .result import Result
 from .sqlstate import describe, describe_in, is_connection_lost
 from .url import read_only as _read_only_url
-from .url import redact, with_defaults
+from .url import redact, redact_message, with_defaults
 from .wire import OID_UNKNOWN
 
 
@@ -154,7 +154,12 @@ struct Connection(Movable):
                 + " (" + String(parsed_bytes) + " bytes of conninfo)"
 )
         if lib.status(handle) != CONNECTION_OK:
-            var detail = String(read_cstr(lib.errmsg(handle)).strip())
+            # libpq quotes pieces of a string it could not parse — half an
+            # unencoded password, measured — so its text goes through the
+            # same redaction as the URL it is printed beside.
+            var detail = redact_message(
+                String(read_cstr(lib.errmsg(handle)).strip()), url
+            )
             lib.finish(handle)
             raise Error(
                 "could not connect to " + safe + ": " + detail

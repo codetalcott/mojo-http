@@ -1567,7 +1567,7 @@
       "category": "O. Storage packages",
       "capability": "Connection defaults are merged, never appended, and every URL is redacted before it reaches an error, a log or the doctor: libpq takes the LAST occurrence of a repeated keyword, so appending a default silently overrides the caller's own",
       "status": "verified",
-      "evidence": "`test_url.mojo:test_a_default_the_caller_set_is_not_overridden` (every PR) \u2014 the redaction arm is `test_url.mojo:test_a_password_in_the_authority_is_masked`, covering both places libpq lets a password hide, and the read-only helper refuses to half-apply its promise rather than adding a second `options` keyword that would replace the caller's"
+      "evidence": "`test_url.mojo:test_a_default_the_caller_set_is_not_overridden` (every PR) \u2014 the redaction arm is `test_url.mojo:test_a_password_in_the_authority_is_masked`, covering both places libpq lets a password hide, plus a table of hostile strings each asserting only that its secret is absent from the output \u2014 an unencoded `/`, `?`, `@` or `:` in the password, a query or key/value form libpq itself would refuse, quoted and spaced values, `sslpassword` and `oauth_client_secret` \u2014 because a string `redact` cannot parse comes back masked whole, and libpq's own message beside it is withheld, since libpq quotes what it cannot parse (measured: half the password on every listener retry, before the fix fifteen of those rows leaked). The read-only helper refuses to half-apply its promise rather than adding a second `options` keyword that would replace the caller's"
     },
     {
       "id": "O8",

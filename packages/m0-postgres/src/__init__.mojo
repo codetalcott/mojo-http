@@ -83,7 +83,7 @@ from .sqlstate import (
     is_retryable,
     sqlstate,
 )
-from .url import redact, with_defaults
+from .url import redact, redact_message, with_defaults
 from .wire import (
     OID_BOOL,
     OID_BYTEA,
