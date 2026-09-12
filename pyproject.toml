@@ -300,15 +300,17 @@ grep -q 'event: greeting' "$out/quiet.txt" \
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
 
-# The listener's own account, which it prints as it stops: five delivered
-# (two in arm 1, one guarded, plus the two it refused nothing about) and the
-# four it refused. Asserted here rather than above because the counts are a
+# The listener's own account, which it prints as it stops, asserted as the
+# exact COUNTS: three delivered (arm 1's two -- the one for someone-else
+# reaches the bus and simply has no subscriber here -- and `survived`) and
+# five refused (the reserved name, `not json at all`, `{}`, the empty
+# channel and the object `data`). Matching the line's shape alone passed
+# with `refused += 1` deleted, which printed "0 refused" beside a gate that
+# stayed green. Asserted here rather than above because the counts are a
 # shutdown line -- and asserted at all because a silent drop should be
 # visible in a log, not only in this gate.
-grep -q 'refused' "$out/srv.log" \
-  || { tail -5 "$out/srv.log"; fail 'the listener never reported its refusal count'; }
-grep -q 'stopping after .* refused' "$out/srv.log" \
-  || { tail -5 "$out/srv.log"; fail 'the listener did not report delivered and refused counts at shutdown'; }
+grep -q '^pg-listen: stopping after 3 delivered, 5 refused$' "$out/srv.log" \
+  || { grep 'stopping after' "$out/srv.log"; fail 'the listener did not report 3 delivered and 5 refused at shutdown'; }
 
 # --- the Python half -----------------------------------------------------
 # `m0pub.notify_sql` is what a management command or a console publishes
