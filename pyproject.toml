@@ -341,6 +341,55 @@ grep -q 'data: from a management command' "$out/py.txt" \
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
 
+# --- worker 0 only -------------------------------------------------------
+# Without this rule every worker opens its own connection and delivers its
+# own copy of every notification, so a two-worker server sends each event
+# twice. Counted from the log rather than inferred: exactly one subscription
+# line for two workers. The publish that follows also proves the frame
+# crosses the process boundary, since the client is held by whichever worker
+# accepted it and the listener runs in worker 0.
+# The worker shape differs by platform ON PURPOSE, so each exercises the one
+# it actually has. Linux forks, and the forked path is what a Fly deploy
+# runs, so that is what is gated there. macOS refuses a forked worker with
+# this flag -- libpq's connect reaches Kerberos through GSSAPI and
+# Objective-C aborts a forked child -- so it gets the spawned shape, which
+# execs and is the documented escape. Running the refused one here would
+# gate an error message; running the spawned one on Linux would leave the
+# forked path, the one that deploys, untested.
+if [ "$(uname -s)" = "Darwin" ]; then workershape="--workers 2 --spawn-workers"; else workershape="--workers 2"; fi
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port 8235 $workershape --realtime --blocking-threads 2 --health-path /health \
+  --pg-listen "$url" > "$out/w2.log" 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8235/health > /dev/null || fail 'the two-worker server never became healthy'
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  grep -q 'pg-listen: listening on' "$out/w2.log" && break
+  sleep 0.5
+done
+listeners=$(grep -c 'pg-listen: listening on' "$out/w2.log" || true)
+[ "$listeners" = "1" ] \
+  || { tail -20 "$out/w2.log"; fail "expected exactly one listener under two workers, got $listeners"; }
+# A worker that died and was respawned is the shape the macOS refusal exists
+# to prevent; asserting its absence is what would catch the same thing
+# arriving on Linux, where nothing refuses it.
+grep -q 'killed by signal' "$out/w2.log" \
+  && { tail -20 "$out/w2.log"; fail 'a worker was killed -- a platform runtime was touched in a forked child'; }
+
+curl -sN --max-time 6 'http://127.0.0.1:8235/events?channel=room4&token=letmein' \
+  > "$out/w2.txt" &
+across=$!
+sleep 1
+notify '{"channel":"room4","event":"crossed","data":"reached another process"}'
+wait $across
+grep -q 'event: crossed' "$out/w2.txt" \
+  || { echo '--- w2.txt ---'; cat "$out/w2.txt"; fail 'the frame did not cross the process boundary'; }
+events=$(grep -c '^id: ' "$out/w2.txt" || true)
+[ "$events" = "1" ] \
+  || { echo '--- w2.txt ---'; cat "$out/w2.txt"; fail "one NOTIFY was delivered $events times -- the worker-0 rule is not holding"; }
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+
 # --- the refusal ---------------------------------------------------------
 bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
   --port 8233 --pg-listen "$url" > "$out/refuse.log" 2>&1

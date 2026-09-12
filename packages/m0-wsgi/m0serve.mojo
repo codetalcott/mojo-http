@@ -595,6 +595,16 @@ comptime _PG_LISTEN_NEEDS_REALTIME = (
     " and the subscriber registries, and a listener with nothing to publish"
     " into can do nothing at all"
 )
+comptime _PG_LISTEN_FORKED_ON_MACOS = (
+    "--pg-listen with forked --workers is refused on macOS: libpq's connect"
+    " reaches GSSAPI, which reaches Kerberos and CoreFoundation, and"
+    " Objective-C aborts a forked child rather than run in one. The worker"
+    " dies with SIGKILL and the supervisor respawns it, which reads as a"
+    " load problem and is not. Use --spawn-workers (the child execs, so the"
+    " rule does not apply), or --workers 1, or --threads, or put"
+    " gssencmode=disable in the connection string if you do not use GSSAPI"
+    " encryption"
+)
 comptime _REALTIME_ASGI_CONFLICT = (
     "--realtime requires a WSGI application: the M0-Hold contract is a"
     " response-header protocol for buffered WSGI responses, and an ASGI"
@@ -946,6 +956,32 @@ def _prepare_accept_share(opts: ServeOptions) raises -> AcceptShare:
     return share^
 
 
+def _pg_listen_forked_on_macos(opts: ServeOptions) -> Bool:
+    """Whether this configuration would connect to libpq in a forked child.
+
+    One predicate, asked by `main` and by `--doctor`, because the two are
+    required to agree and mirror each other's order rather than share
+    control flow.
+
+    macOS only, and measured rather than assumed: `PQconnectdb` calls
+    `pg_GSS_have_cred_cache`, which reaches libgssapi_krb5 and then
+    CoreFoundation, and Objective-C aborts a forked child rather than run in
+    one. The observed shape is the worker killed by signal 9 and respawned
+    until the supervisor gives up — a churning worker and dropped
+    connections, which is the same disguise CLAUDE.md records for `urlopen`
+    and `_scproxy`. `--spawn-workers` is the documented escape from exactly
+    this half of the fork rule, because the child execs.
+
+    Linux has no such abort, so it is not refused there.
+    """
+    return (
+        CompilationTarget.is_macos()
+        and len(opts.pg_listen.as_bytes()) > 0
+        and opts.workers > 1
+        and not opts.spawn_workers
+    )
+
+
 def _shared_id_addr() -> Int:
     """The shared event-id slot's address, as `_prepare_realtime` exported it.
 
@@ -1040,6 +1076,13 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
                 String("pg-listen-vs-realtime"),
                 String(_PG_LISTEN_NEEDS_REALTIME),
                 String("add --realtime"),
+                EXIT_USAGE,
+            )
+        elif _pg_listen_forked_on_macos(opts):
+            report.fail_check(
+                String("pg-listen-vs-fork"),
+                String(_PG_LISTEN_FORKED_ON_MACOS),
+                String("add --spawn-workers, or use --workers 1"),
                 EXIT_USAGE,
             )
         else:
@@ -1481,6 +1524,18 @@ def main() raises:
         print(usage(), flush=True)
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_USAGE)
 
+    # Both pg-listen refusals live HERE, before the bind and before the fork.
+    # Placed after it first, they ran in each worker and never in the
+    # supervisor: the server forked, every child refused, and the parent
+    # respawned them — so a misconfiguration read as a crash loop instead of
+    # a usage error.
+    if opts.pg_listen and not opts.realtime:
+        _fail(_PG_LISTEN_NEEDS_REALTIME, EXIT_USAGE)
+        return
+    if _pg_listen_forked_on_macos(opts):
+        _fail(_PG_LISTEN_FORKED_ON_MACOS, EXIT_USAGE)
+        return
+
     # Bind before forking; every worker accepts from this one socket.
     var listener = _listen_or_fail(opts)
 
@@ -1590,10 +1645,6 @@ def main() raises:
             " using m0serve",
             EXIT_USAGE,
         )
-        return
-
-    if opts.pg_listen and not opts.realtime:
-        _fail(_PG_LISTEN_NEEDS_REALTIME, EXIT_USAGE)
         return
 
     if len(opts.hold_mounts) > 0 and not opts.realtime:

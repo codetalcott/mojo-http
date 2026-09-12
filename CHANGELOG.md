@@ -23,7 +23,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server binary's dynamic dependencies are unchanged, which is what keeps
   the wheel installable on a machine with no PostgreSQL client. Started in
   both execution modes: worker 0 under `--workers`, and once per process
-  under `--threads`, where the bus is one channel per thread.
+  under `--threads`, where the bus is one channel per thread. Refused with a
+  forked `--workers N` on macOS, where libpq's connect reaches Kerberos
+  through GSSAPI and Objective-C aborts a forked child; `--spawn-workers`
+  is the escape, as it is for Core ML.
 
 - **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
   sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else
