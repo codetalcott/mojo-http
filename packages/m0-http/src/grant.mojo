@@ -35,13 +35,13 @@ comptime GRANT_COOKIE_DEFAULT = "sessionid"
 comptime GRANT_KID_CHARS = 8
 comptime GRANT_CHANNEL_MAX = 64
 comptime GRANT_SIG_CHARS = 43
-"""base64url of 32 bytes without padding."""
+"""Length of the tag field: base64url of 32 bytes without padding."""
 comptime GRANT_SB_CHARS = 22
-"""base64url of 16 bytes without padding."""
+"""Length of the session-binding field: base64url of 16 bytes without padding."""
 
 
 def base64url(data: Span[UInt8, _]) -> String:
-    """base64url (RFC 4648 §5) without padding, from the stdlib's encoder."""
+    """Encodes `data` as base64url (RFC 4648 §5) without padding, via the stdlib's encoder."""
     var std = b64encode(data)
     var out = List[UInt8](capacity=std.byte_length())
     for ch in std.as_bytes():
