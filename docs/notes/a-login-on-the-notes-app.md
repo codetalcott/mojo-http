@@ -33,7 +33,10 @@ HMAC-SHA256 over everything before it. It is the grant's shape
 (`grant.mojo`, I21) with the channel and the session binding replaced by
 a subject, which is not a coincidence: the two are the same primitive,
 they now share a key ring (`find_key`), and having written the second one
-is what makes that visible.
+is what makes that visible. What keeps the two apart under one key is
+that a subject may not hold a `.`: a session's signed part has exactly
+three dots and a grant's four, so neither tag verifies as the other, and
+the unit test presents each format to the other verifier.
 
 Verification refuses in a fixed order — malformed, unknown key, bad
 signature, expired — and the signature is checked BEFORE the expiry on
@@ -56,6 +59,17 @@ it is not ok; a write adds `_csrf_refusal(form(req), session, path)`. There
 is no middleware, no decorator and no per-route flag saying which views are
 private, on purpose: a table that carried it would be a second place to
 forget, and the line that reads the state is where the question belongs.
+
+`_csrf_refusal` fails closed on a verdict that is not ok. A refused
+session carries an empty token and two empty strings compare equal, so
+without that line a write view that forgot its session guard would have
+accepted `csrf=` from anyone — nothing did forget, but the smoke sends
+that exact body to an unauthenticated DELETE and logout now, and the
+sabotage suite drops `delete`'s guard to see it caught. Every answer the
+session decided carries `Cache-Control: no-store`, the redirect and the
+401 included: `Vary` names the fragment headers and not the cookie, and a
+shared cache in front would otherwise hand the anonymous redirect to a
+signed-in user or a rendered token to anyone.
 
 A navigation with no session gets 303 to the login page; a swap gets 401
 carrying the login form as the same fragment the list occupies, because a
@@ -176,18 +190,18 @@ contract did not otherwise move. The N13 arms:
 - logout, both ways: with the token it expires the cookie and the next
   request is refused, without it nothing happens.
 
-`test_session.mojo` is the unit form, fourteen cases against vectors
+`test_session.mojo` is the unit form, sixteen cases against vectors
 `scripts/notes_session.py --vectors` printed. The issuer exists so the
 verifier is never checked against itself: what the other implementation
 signs, this one must admit, and the CSRF derivation is in the table for
 the same reason — a derivation only ever checked against itself can drift
 until a form stops submitting.
 
-`poe sabotage-notes-login` (pre-release) reverts five rules one at a time
+`poe sabotage-notes-login` (pre-release) reverts six rules one at a time
 and insists the smoke goes red for each: the tag check, the expiry, the
-CSRF guard, the session guard on a private view, and the cookie's
-`HttpOnly`/`SameSite`. Four of the five leave every other assertion in
-the smoke passing, which is why each needs its own arm.
+CSRF guard, the session guard on a read view and on a write view, and the
+cookie's `HttpOnly`/`SameSite`. All but one leave every other assertion
+in the smoke passing, which is why each needs its own arm.
 
 `poe browser-notes-login` (pre-release) is the browser arm above. Both
 were checked against their own null case: every sabotage names the
