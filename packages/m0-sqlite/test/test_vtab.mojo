@@ -333,6 +333,8 @@ def test_borrow_is_dropped_after_the_call() raises:
     This is the guarantee that makes the shape safe rather than merely
     convenient: the helper unbinds before returning, so even a caller who
     re-steps the statement by hand sees an empty table instead of freed memory.
+
+    covers: O4
     """
     var db = _db()
     var q = db.prepare("SELECT count(*) FROM m0_array(?1)")

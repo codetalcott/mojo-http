@@ -10,6 +10,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **`m0-sqlite` gets its rows** (SPEC section O, O1–O5). The storage
+  packages had no capability rows at all, so nothing in the sheet noticed
+  the three invariants CLAUDE.md calls "look like bugs and are not": that
+  `open` raises rather than delivering less than the WAL concurrency it
+  promises, that a `Statement` outlives the `Connection` that prepared it
+  because every close path uses `sqlite3_close_v2`, and that error text is
+  trusted only when `sqlite3_errcode` corroborates the code being
+  described. Each is now a row against the test that already proved it,
+  beside `m0_array`'s borrow safety and the todo demo's persistence across
+  a kill and a restart. No behaviour changed; five gates that were running
+  are now recorded, and the sheet's own sabotage suite covers them.
+
 - **A Datastar form, end to end** (SPEC N12). The todo demo renames a todo
   in place: `Fragment[Datastar]` on the `<form>` emits
   `data-on:submit__prevent="@post('/edit/7', {contentType: 'form'})"`, the

@@ -307,6 +307,8 @@ def test_open_reports_wal_it_could_not_apply() raises:
     by accident too, since `MEMORY` is exported right next to `open`. The
     error must name the mode SQLite actually reported, or the next person
     debugs a concurrency problem instead of reading a message.
+
+    covers: O1
     """
     var message = String("")
     try:
