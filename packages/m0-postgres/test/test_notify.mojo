@@ -70,18 +70,23 @@ def test_the_notifying_backend_names_itself() raises:
 def test_a_payload_can_carry_json_and_survives_byte_for_byte() raises:
     """The envelope the listener will carry is JSON, quotes and all.
 
+    `data` is a JSON STRING holding serialized JSON, escapes included,
+    because that is the listener's contract: a `data` that is an object is
+    refused (`m0-wsgi`'s `pg_envelope.mojo`). This test used to carry
+    `"data":{"n":1}`, the very shape the listener delivered as an empty
+    event.
+
     covers: O15
     """
+    var envelope = String('{"channel":"room:1","event":"m0","data":"{\\"n\\":1}"}')
     var db = open(_url())
     db.listen("m0_test_json")
     var p = Params()
-    p.text('{"channel":"room:1","event":"m0","data":{"n":1}}')
+    p.text(envelope)
     _ = db.query("SELECT pg_notify('m0_test_json', $1)", p)
     var note = db.notifies()
     assert_true(Bool(note))
-    assert_equal(
-        note.value().payload, '{"channel":"room:1","event":"m0","data":{"n":1}}'
-    )
+    assert_equal(note.value().payload, envelope)
     db.unlisten("m0_test_json")
 
 

@@ -1293,7 +1293,12 @@ Properties of the design, not defects to fix in passing:
   tick-owner rule — every worker would deliver its own copy), **skip_worker
   is -1** (nothing has queued it locally, unlike an in-process publish), **a
   malformed payload is refused and counted rather than guessed at** (the
-  check that is uniquely the listener's; a reserved channel is refused here
+  check that is uniquely the listener's, in `pg_envelope.mojo`; an `event`
+  or `data` present as anything but a JSON STRING is malformed, because
+  `parse_json_field` reads an object as `""` and a trigger's
+  `'data', row_to_json(NEW)` reached every subscriber as an empty event,
+  counted as delivered — `parse_json_string` is the reader that can say
+  no; a reserved channel is refused here
   too, but `publish_to_channels` refuses the same names at the bus
   boundary, so that one is defence in depth and measured to be — removing
   it leaves the gate green), and **a reset re-`LISTEN`s** — a

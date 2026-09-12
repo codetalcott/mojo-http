@@ -15,7 +15,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   onto the broadcast bus, so a writer that cannot reach the datagram bus at
   all — a trigger, a cron job, a management command, `psql` — reaches every
   subscriber with an id, an event type and its data. The payload is three
-  JSON string fields; `m0pub.notify_sql` builds the statement for a caller
+  JSON string fields, and one present as anything else — the object
+  `'data', row_to_json(NEW)` makes — is refused and counted rather than
+  delivered as an empty event (m0-core gains `parse_json_string` and
+  `has_json_field`, which can tell a real `""` from a wrong type);
+  `m0pub.notify_sql` builds the statement for a caller
   that already has a database cursor, with no driver imported into a
   stdlib-only module. Refused without `--realtime`, which is what creates
   the bus, and `--doctor` reports both that refusal and which libpq it

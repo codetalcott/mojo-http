@@ -252,10 +252,15 @@ psql "$url" -Atc "select pg_notify('m0', json_build_object('channel', chr(1) || 
 notify 'not json at all'
 notify '{}'
 notify '{"channel":""}'
+# The shape a trigger writes first. `data` is an OBJECT, which a string
+# reader answers as "" -- so this reached room3 as a bare `data: ` and was
+# counted as delivered, until a present non-string field became a refusal.
+psql "$url" -Atc "select pg_notify('m0', json_build_object('channel', 'room3', 'event', 'rowdata', 'data', json_build_object('id', 7))::text)" > /dev/null \
+  || fail 'publishing the object-data probe failed'
 notify '{"channel":"room3","event":"survived","data":"the listener is still here"}'
 wait $guard
 
-# COUNTED, not looked for by name. Four of the five publishes above must
+# COUNTED, not looked for by name. Five of the six publishes above must
 # reach nobody, and a refusal that delivered them with an empty event would
 # satisfy any "is the evil one absent" check -- measured: both sabotages
 # below passed a by-name assertion.
@@ -263,7 +268,9 @@ events=$(grep -c '^id: ' "$out/reserved.txt" || true)
 [ "$events" = "1" ] \
   || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail "expected exactly one event on the guarded channel, got $events"; }
 grep -q 'event: survived' "$out/reserved.txt" \
-  || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'the listener did not survive a reserved name and three malformed payloads'; }
+  || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'the listener did not survive a reserved name and four malformed payloads'; }
+grep -q 'event: rowdata' "$out/reserved.txt" \
+  && { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'a NOTIFY whose data was an object was delivered as an empty event'; }
 grep -q 'event: evil' "$out/reserved.txt" \
   && { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'a reserved channel name from the database was honoured'; }
 
