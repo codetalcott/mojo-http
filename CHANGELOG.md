@@ -8,6 +8,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-12
+
+A stream the server holds against a grant, and a process for the
+application layer.
+
+A Django or Flask view that has decided who may read a channel can now
+hand the browser a signed URL into `--mount PREFIX=hold`, and a Mojo pool
+thread holds the stream without touching the interpreter, verifying the
+grant alone. That rests on the tree's first cryptographic primitive,
+HMAC-SHA256 in `m0-core` gated by published vectors, and on the piece
+under it: a view on a Mojo mount taking the same `M0-Hold` a Django view
+takes. Beside them, the application layer is tracked the way the server
+is — a milestone `poe milestones` computes, a ledger of standing
+decisions, and planned rows naming the application that pulls each.
+
+The served contract grows and does not break: one new mount kind
+(`--mount PREFIX=hold`) and three environment variables (`M0_GRANT_KEY`,
+`M0_GRANT_KEY_PREV`, `M0_GRANT_COOKIE`), all additive. No existing flag,
+header or default changed, so every current deployment upgrades by
+version alone.
+
 ### Added
 
 - **A grant-verified hold mount** (SPEC I21): `--mount PREFIX=hold`. The
@@ -36,8 +57,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `hmac` rather than transcribed. `wyhash64` was never a MAC (D15); this
   is what a signed grant for a Mojo-held stream, and later a signed session
   cookie, are built on.
-
-
 - **An SSE hold from a Mojo mount** (SPEC N11). A view on a Mojo mount
   returns the two instruction headers a Django view returns, `M0-Hold:
   stream` and `M0-Channel`, and its pool thread does what a WSGI pool
@@ -63,11 +82,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `docs/REAL_APP_VALIDATION.md`'s new application-layer section. It reads
   NOT MET, which is the honest state of a layer proven by demos. 1.0 now
   counts `planned` rows outside section N only, since it shipped before
-  the section existed. Three rows are `planned` (N11 streaming from a Mojo
+  the section existed. Three rows were `planned` (N11 streaming from a Mojo
   mount, N12 a Datastar form end to end, N13 a login), each with a ROADMAP
   heading naming the application that pulls it and the gate that will
-  verify it. `docs/DECISIONS.md` is the ledger of standing decisions,
-  D1–D21, each naming the note that argues it and what would retire it;
+  verify it; N11 was built in this same release, above. `docs/DECISIONS.md` is the ledger of standing decisions,
+  D1–D21 at first, D22 and D23 joining with the two hold pieces above, each
+  naming the note that argues it and what would retire it;
   `check-docs` fails when a row's note does not exist, its condition is
   empty, its id is repeated or out of order, or its `superseded by` names
   no row, and `--selftest` reverts each rule against the page.
@@ -83,6 +103,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   never routine on a `dependabot/` branch — not Dependabot's, or from a
   fork — exits 1. `check_dependabot_gate` in `scripts/check_docs.py` pins
   both, sabotaged four ways.
+
+- **The container gates carry a moved file.** `stress-pool` and
+  `bench-linux-conclusions` tar the tree into the `m0lin` container, and a
+  tar carries no deletion, so the hold module's move into the fork left a
+  copy behind that failed the source stamp on every container gate of this
+  release. The two `/src` copies now clear their source directories first
+  and `linux_sync.sh` mirrors removals into `/work`; and `core` is in the
+  sync's build list, because m0-core changed for the first time and the
+  stamp, which hashes sources, matched over an artifact built weeks
+  earlier.
 
 ## [1.1.0] — 2026-09-11
 
@@ -4000,6 +4030,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.2.0
 [1.1.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.1.0
 [1.0.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.0.0
 [0.19.0]: https://github.com/codetalcott/mojo-http/releases/tag/v0.19.0

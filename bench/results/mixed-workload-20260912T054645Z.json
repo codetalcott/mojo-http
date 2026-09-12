@@ -1,0 +1,641 @@
+{
+  "bench": "mixed_workload",
+  "recorded_utc": "2026-09-12T05:46:45+00:00",
+  "environment": {
+    "version": "1.2.0",
+    "git_sha": "bd686b2",
+    "source_stamp": "",
+    "git_dirty": false,
+    "os": "Darwin 25.6.0",
+    "machine": "arm64",
+    "python": "Python 3.14.7 free-threading build (main, Aug 14 2026, 15:24:39) [Clang 22.1.3 ]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "granian 2.8.2",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "cpu": "Apple M4",
+    "cores_physical": "10"
+  },
+  "parameters": {
+    "hold_ms": "200",
+    "connections": "16",
+    "duration": "10s",
+    "rounds": "3",
+    "accepted_drift": "mixed-workload-20260910T010349Z.json"
+  },
+  "rows": [
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 58840.78,
+      "p50_us": 229.0,
+      "p90_us": 478.0,
+      "p99_us": 827.0,
+      "max_us": 2150.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 53311.68,
+      "p50_us": 234.0,
+      "p90_us": 60890.0,
+      "p99_us": 188490.0,
+      "max_us": 203210.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 43832.58,
+      "p50_us": 267.0,
+      "p90_us": 120580.0,
+      "p99_us": 194330.0,
+      "max_us": 203250.0,
+      "round": 1
+    },
+    {
+      "name": "--threads 4 slow=0",
+      "rps": 59345.49,
+      "p50_us": 241.0,
+      "p90_us": 458.0,
+      "p99_us": 705.0,
+      "max_us": 2600.0,
+      "round": 1
+    },
+    {
+      "name": "--threads 4 slow=1",
+      "rps": 64283.47,
+      "p50_us": 191.0,
+      "p90_us": 79020.0,
+      "p99_us": 195320.0,
+      "max_us": 210870.0,
+      "round": 1
+    },
+    {
+      "name": "--threads 4 slow=2",
+      "rps": 45569.56,
+      "p50_us": 261.0,
+      "p90_us": 118930.0,
+      "p99_us": 199560.0,
+      "max_us": 410990.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 62399.42,
+      "p50_us": 186.0,
+      "p90_us": 778.0,
+      "p99_us": 1440.0,
+      "max_us": 4480.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 64407.41,
+      "p50_us": 185.0,
+      "p90_us": 708.0,
+      "p99_us": 1310.0,
+      "max_us": 5670.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 65355.68,
+      "p50_us": 185.0,
+      "p90_us": 676.0,
+      "p99_us": 1280.0,
+      "max_us": 4670.0,
+      "round": 1
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=0",
+      "rps": 47188.64,
+      "p50_us": 324.0,
+      "p90_us": 574.0,
+      "p99_us": 870.0,
+      "max_us": 3270.0,
+      "round": 1
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=1",
+      "rps": 46117.72,
+      "p50_us": 331.0,
+      "p90_us": 594.0,
+      "p99_us": 890.0,
+      "max_us": 5150.0,
+      "round": 1
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=2",
+      "rps": 45998.25,
+      "p50_us": 327.0,
+      "p90_us": 602.0,
+      "p99_us": 900.0,
+      "max_us": 2780.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=0",
+      "rps": 53732.92,
+      "p50_us": 279.0,
+      "p90_us": 387.0,
+      "p99_us": 531.0,
+      "max_us": 2470.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=1",
+      "rps": 57940.2,
+      "p50_us": 265.0,
+      "p90_us": 332.0,
+      "p99_us": 462.0,
+      "max_us": 2710.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=2",
+      "rps": 50525.15,
+      "p50_us": 309.0,
+      "p90_us": 343.0,
+      "p99_us": 548.0,
+      "max_us": 20360.0,
+      "round": 1
+    },
+    {
+      "name": "granian bt=4 slow=0",
+      "rps": 49846.2,
+      "p50_us": 304.0,
+      "p90_us": 415.0,
+      "p99_us": 549.0,
+      "max_us": 1690.0,
+      "round": 1
+    },
+    {
+      "name": "granian bt=4 slow=1",
+      "rps": 52998.35,
+      "p50_us": 291.0,
+      "p90_us": 370.0,
+      "p99_us": 503.0,
+      "max_us": 1200.0,
+      "round": 1
+    },
+    {
+      "name": "granian bt=4 slow=2",
+      "rps": 48975.81,
+      "p50_us": 314.0,
+      "p90_us": 365.0,
+      "p99_us": 537.0,
+      "max_us": 9950.0,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 58941.42,
+      "p50_us": 228.0,
+      "p90_us": 477.0,
+      "p99_us": 833.0,
+      "max_us": 3600.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 53414.65,
+      "p50_us": 229.0,
+      "p90_us": 76380.0,
+      "p99_us": 190000.0,
+      "max_us": 203220.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 43534.57,
+      "p50_us": 276.0,
+      "p90_us": 124880.0,
+      "p99_us": 195540.0,
+      "max_us": 404920.0,
+      "round": 2
+    },
+    {
+      "name": "--threads 4 slow=0",
+      "rps": 59445.18,
+      "p50_us": 241.0,
+      "p90_us": 459.0,
+      "p99_us": 711.0,
+      "max_us": 2850.0,
+      "round": 2
+    },
+    {
+      "name": "--threads 4 slow=1",
+      "rps": 63791.97,
+      "p50_us": 196.0,
+      "p90_us": 63850.0,
+      "p99_us": 193720.0,
+      "max_us": 210880.0,
+      "round": 2
+    },
+    {
+      "name": "--threads 4 slow=2",
+      "rps": 46515.04,
+      "p50_us": 252.0,
+      "p90_us": 112170.0,
+      "p99_us": 199900.0,
+      "max_us": 419120.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 63715.59,
+      "p50_us": 185.0,
+      "p90_us": 723.0,
+      "p99_us": 1310.0,
+      "max_us": 6570.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 63637.19,
+      "p50_us": 185.0,
+      "p90_us": 745.0,
+      "p99_us": 1520.0,
+      "max_us": 29640.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 65194.89,
+      "p50_us": 183.0,
+      "p90_us": 699.0,
+      "p99_us": 1360.0,
+      "max_us": 5850.0,
+      "round": 2
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=0",
+      "rps": 47853.64,
+      "p50_us": 313.0,
+      "p90_us": 589.0,
+      "p99_us": 950.0,
+      "max_us": 5090.0,
+      "round": 2
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=1",
+      "rps": 46582.29,
+      "p50_us": 327.0,
+      "p90_us": 589.0,
+      "p99_us": 870.0,
+      "max_us": 3790.0,
+      "round": 2
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=2",
+      "rps": 45657.17,
+      "p50_us": 330.0,
+      "p90_us": 614.0,
+      "p99_us": 920.0,
+      "max_us": 3290.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=0",
+      "rps": 54341.27,
+      "p50_us": 277.0,
+      "p90_us": 377.0,
+      "p99_us": 502.0,
+      "max_us": 2330.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=1",
+      "rps": 57130.72,
+      "p50_us": 268.0,
+      "p90_us": 336.0,
+      "p99_us": 491.0,
+      "max_us": 20360.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=2",
+      "rps": 49743.71,
+      "p50_us": 315.0,
+      "p90_us": 348.0,
+      "p99_us": 518.0,
+      "max_us": 2560.0,
+      "round": 2
+    },
+    {
+      "name": "granian bt=4 slow=0",
+      "rps": 49891.61,
+      "p50_us": 304.0,
+      "p90_us": 416.0,
+      "p99_us": 550.0,
+      "max_us": 1670.0,
+      "round": 2
+    },
+    {
+      "name": "granian bt=4 slow=1",
+      "rps": 52980.28,
+      "p50_us": 291.0,
+      "p90_us": 370.0,
+      "p99_us": 507.0,
+      "max_us": 1290.0,
+      "round": 2
+    },
+    {
+      "name": "granian bt=4 slow=2",
+      "rps": 49213.47,
+      "p50_us": 314.0,
+      "p90_us": 363.0,
+      "p99_us": 508.0,
+      "max_us": 1210.0,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 59304.75,
+      "p50_us": 228.0,
+      "p90_us": 474.0,
+      "p99_us": 813.0,
+      "max_us": 2020.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 53898.59,
+      "p50_us": 228.0,
+      "p90_us": 70670.0,
+      "p99_us": 189430.0,
+      "max_us": 203070.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 44023.59,
+      "p50_us": 287.0,
+      "p90_us": 88970.0,
+      "p99_us": 191200.0,
+      "max_us": 203060.0,
+      "round": 3
+    },
+    {
+      "name": "--threads 4 slow=0",
+      "rps": 59289.87,
+      "p50_us": 241.0,
+      "p90_us": 459.0,
+      "p99_us": 709.0,
+      "max_us": 2760.0,
+      "round": 3
+    },
+    {
+      "name": "--threads 4 slow=1",
+      "rps": 63826.49,
+      "p50_us": 197.0,
+      "p90_us": 49690.0,
+      "p99_us": 192050.0,
+      "max_us": 210780.0,
+      "round": 3
+    },
+    {
+      "name": "--threads 4 slow=2",
+      "rps": 45536.21,
+      "p50_us": 250.0,
+      "p90_us": 132610.0,
+      "p99_us": 200190.0,
+      "max_us": 211450.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 63257.32,
+      "p50_us": 186.0,
+      "p90_us": 732.0,
+      "p99_us": 1330.0,
+      "max_us": 4380.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 63685.02,
+      "p50_us": 185.0,
+      "p90_us": 730.0,
+      "p99_us": 1360.0,
+      "max_us": 4600.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 65180.61,
+      "p50_us": 184.0,
+      "p90_us": 695.0,
+      "p99_us": 1350.0,
+      "max_us": 4430.0,
+      "round": 3
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=0",
+      "rps": 48014.02,
+      "p50_us": 313.0,
+      "p90_us": 578.0,
+      "p99_us": 900.0,
+      "max_us": 3380.0,
+      "round": 3
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=1",
+      "rps": 46584.43,
+      "p50_us": 327.0,
+      "p90_us": 589.0,
+      "p99_us": 880.0,
+      "max_us": 5010.0,
+      "round": 3
+    },
+    {
+      "name": "--threads 4 +bt=4 slow=2",
+      "rps": 45692.68,
+      "p50_us": 329.0,
+      "p90_us": 621.0,
+      "p99_us": 920.0,
+      "max_us": 3050.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=0",
+      "rps": 54191.42,
+      "p50_us": 278.0,
+      "p90_us": 378.0,
+      "p99_us": 507.0,
+      "max_us": 2460.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=1",
+      "rps": 57461.43,
+      "p50_us": 267.0,
+      "p90_us": 334.0,
+      "p99_us": 465.0,
+      "max_us": 2670.0,
+      "round": 3
+    },
+    {
+      "name": "--workers 1 +bt=4 slow=2",
+      "rps": 49866.72,
+      "p50_us": 314.0,
+      "p90_us": 347.0,
+      "p99_us": 502.0,
+      "max_us": 2530.0,
+      "round": 3
+    },
+    {
+      "name": "granian bt=4 slow=0",
+      "rps": 49451.4,
+      "p50_us": 307.0,
+      "p90_us": 419.0,
+      "p99_us": 552.0,
+      "max_us": 1660.0,
+      "round": 3
+    },
+    {
+      "name": "granian bt=4 slow=1",
+      "rps": 52306.57,
+      "p50_us": 295.0,
+      "p90_us": 375.0,
+      "p99_us": 508.0,
+      "max_us": 1290.0,
+      "round": 3
+    },
+    {
+      "name": "granian bt=4 slow=2",
+      "rps": 48105.17,
+      "p50_us": 321.0,
+      "p90_us": 371.0,
+      "p99_us": 514.0,
+      "max_us": 1440.0,
+      "round": 3
+    }
+  ],
+  "medians": {
+    "--workers 4 slow=0": {
+      "rps": 58941.42,
+      "rounds": 3,
+      "p99_us": 827.0,
+      "p99_us_min": 813.0,
+      "p99_us_max": 833.0
+    },
+    "--workers 4 slow=1": {
+      "rps": 53414.65,
+      "rounds": 3,
+      "p99_us": 189430.0,
+      "p99_us_min": 188490.0,
+      "p99_us_max": 190000.0
+    },
+    "--workers 4 slow=2": {
+      "rps": 43832.58,
+      "rounds": 3,
+      "p99_us": 194330.0,
+      "p99_us_min": 191200.0,
+      "p99_us_max": 195540.0
+    },
+    "--threads 4 slow=0": {
+      "rps": 59345.49,
+      "rounds": 3,
+      "p99_us": 709.0,
+      "p99_us_min": 705.0,
+      "p99_us_max": 711.0
+    },
+    "--threads 4 slow=1": {
+      "rps": 63826.49,
+      "rounds": 3,
+      "p99_us": 193720.0,
+      "p99_us_min": 192050.0,
+      "p99_us_max": 195320.0
+    },
+    "--threads 4 slow=2": {
+      "rps": 45569.56,
+      "rounds": 3,
+      "p99_us": 199900.0,
+      "p99_us_min": 199560.0,
+      "p99_us_max": 200190.0
+    },
+    "--workers 4 +bt=4 slow=0": {
+      "rps": 63257.32,
+      "rounds": 3,
+      "p99_us": 1330.0,
+      "p99_us_min": 1310.0,
+      "p99_us_max": 1440.0
+    },
+    "--workers 4 +bt=4 slow=1": {
+      "rps": 63685.02,
+      "rounds": 3,
+      "p99_us": 1360.0,
+      "p99_us_min": 1310.0,
+      "p99_us_max": 1520.0
+    },
+    "--workers 4 +bt=4 slow=2": {
+      "rps": 65194.89,
+      "rounds": 3,
+      "p99_us": 1350.0,
+      "p99_us_min": 1280.0,
+      "p99_us_max": 1360.0
+    },
+    "--threads 4 +bt=4 slow=0": {
+      "rps": 47853.64,
+      "rounds": 3,
+      "p99_us": 900.0,
+      "p99_us_min": 870.0,
+      "p99_us_max": 950.0
+    },
+    "--threads 4 +bt=4 slow=1": {
+      "rps": 46582.29,
+      "rounds": 3,
+      "p99_us": 880.0,
+      "p99_us_min": 870.0,
+      "p99_us_max": 890.0
+    },
+    "--threads 4 +bt=4 slow=2": {
+      "rps": 45692.68,
+      "rounds": 3,
+      "p99_us": 920.0,
+      "p99_us_min": 900.0,
+      "p99_us_max": 920.0
+    },
+    "--workers 1 +bt=4 slow=0": {
+      "rps": 54191.42,
+      "rounds": 3,
+      "p99_us": 507.0,
+      "p99_us_min": 502.0,
+      "p99_us_max": 531.0
+    },
+    "--workers 1 +bt=4 slow=1": {
+      "rps": 57461.43,
+      "rounds": 3,
+      "p99_us": 465.0,
+      "p99_us_min": 462.0,
+      "p99_us_max": 491.0
+    },
+    "--workers 1 +bt=4 slow=2": {
+      "rps": 49866.72,
+      "rounds": 3,
+      "p99_us": 518.0,
+      "p99_us_min": 502.0,
+      "p99_us_max": 548.0
+    },
+    "granian bt=4 slow=0": {
+      "rps": 49846.2,
+      "rounds": 3,
+      "p99_us": 550.0,
+      "p99_us_min": 549.0,
+      "p99_us_max": 552.0
+    },
+    "granian bt=4 slow=1": {
+      "rps": 52980.28,
+      "rounds": 3,
+      "p99_us": 507.0,
+      "p99_us_min": 503.0,
+      "p99_us_max": 508.0
+    },
+    "granian bt=4 slow=2": {
+      "rps": 48975.81,
+      "rounds": 3,
+      "p99_us": 514.0,
+      "p99_us_min": 508.0,
+      "p99_us_max": 537.0
+    }
+  }
+}
