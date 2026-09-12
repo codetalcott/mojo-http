@@ -1257,6 +1257,26 @@ Properties of the design, not defects to fix in passing:
   + env exports are created unconditionally pre-fork — protocol
   detection is post-fork, and a single worker's own subscribers ride its
   own channel (there is deliberately no separate local-delivery path).
+- **`--pg-listen URL` is the bus's second door.** `m0pub` writes datagram
+  descriptors the server hands down at fork, so a management command, a
+  cron job, a database trigger or `psql` publishes to nobody — which
+  textshelf's own realtime module records as a known limitation. One
+  `LISTEN m0` on worker 0 turns `pg_notify` into a bus frame: the payload
+  is three JSON string fields (`channel`, `event`, `data`), so the
+  listener needs no value scanner, and the frame is built by the same
+  `format_sse_event` every other publisher uses, so a client cannot tell
+  which door an event came through. `m0pub.notify_sql` builds the
+  statement for a caller that already has a cursor, without importing a
+  driver into a stdlib-only module. Four rules: **worker 0 only** (the
+  tick-owner rule — every worker would deliver its own copy), **skip_worker
+  is -1** (nothing has queued it locally, unlike an in-process publish), **a
+  reserved channel is refused here** (a name from the database is as
+  untrusted as one from a form body), and **a reset re-`LISTEN`s** — a
+  reconnected connection is a new backend session listening to nothing, and
+  a listener that skipped that would deliver nothing forever while logging
+  no error. The thread never attaches to the interpreter. Refused without
+  `--realtime`, which is what creates the bus. SPEC I22,
+  `smoke-pg-notify`.
 - **A channel name opening with `\x01` is RESERVED, and every publish
   boundary refuses one.** That namespace is how the executor and pool
   threads address a connection SLOT on the loop (`\x01<kind>/<slot>[/<lane>]`

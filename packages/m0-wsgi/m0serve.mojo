@@ -64,6 +64,7 @@ from m0_http import Html, Mount, Views, reply
 from m0_http import GrantKeys, verify_grant, GRANT_KEY_ENV
 from lightbug_http.http.date import unix_now
 from lightbug_http.broadcast import BroadcastBus
+from m0_postgres import PgLib
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
 from lightbug_http.accept_share import AcceptShare, accept_share_slots
@@ -92,6 +93,7 @@ from m0_wsgi import (
     use_loop_inversion,
     asgi_free_threading_refusal,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
+    DEFAULT_CHANNEL, PgListener, PgListenSpec, listener_body,
 )
 
 
@@ -588,6 +590,11 @@ comptime _HOLD_MOUNT_NEEDS_KEY = (
     "--mount PREFIX=hold needs M0_GRANT_KEY: the mount verifies grants the"
     " application signed with it (32 random bytes; openssl rand -base64 32)"
 )
+comptime _PG_LISTEN_NEEDS_REALTIME = (
+    "--pg-listen needs --realtime: the flag is what creates the broadcast bus"
+    " and the subscriber registries, and a listener with nothing to publish"
+    " into can do nothing at all"
+)
 comptime _REALTIME_ASGI_CONFLICT = (
     "--realtime requires a WSGI application: the M0-Hold contract is a"
     " response-header protocol for buffered WSGI responses, and an ASGI"
@@ -939,6 +946,19 @@ def _prepare_accept_share(opts: ServeOptions) raises -> AcceptShare:
     return share^
 
 
+def _shared_id_addr() -> Int:
+    """The shared event-id slot's address, as `_prepare_realtime` exported it.
+
+    Read from the environment rather than threaded through, because that is
+    how it already reaches a spawned worker, and a single reader keeps the
+    two paths from disagreeing.
+    """
+    try:
+        return Int(getenv("M0_SHARED_ID_ADDR", "0"))
+    except:
+        return 0
+
+
 def _bind_accept_share(mut share: AcceptShare, worker: Int):
     """After the fork: this worker's index and the shared page's address,
     which `_prepare_realtime` exported (and a spawned worker re-derived)."""
@@ -1014,6 +1034,33 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
             String("drop --realtime; an ASGI app streams natively"),
             EXIT_USAGE,
         )
+    if opts.pg_listen:
+        if not opts.realtime:
+            report.fail_check(
+                String("pg-listen-vs-realtime"),
+                String(_PG_LISTEN_NEEDS_REALTIME),
+                String("add --realtime"),
+                EXIT_USAGE,
+            )
+        else:
+            # What the library resolution WOULD do, without starting a
+            # thread or opening a connection: a doctor that cannot say
+            # whether libpq is present leaves the operator to discover it
+            # from a worker's log line after the server is up.
+            try:
+                var probe = PgLib.open()
+                report.pass_check(
+                    String("pg-listen"),
+                    String("libpq ") + probe.version_text() + " at "
+                    + probe.path,
+                )
+            except e:
+                report.fail_check(
+                    String("pg-listen-libpq"),
+                    String(e),
+                    String("set M0_LIBPQ, or install a libpq where it can be found"),
+                    EXIT_USAGE,
+                )
     if len(opts.hold_mounts) > 0:
         if not opts.realtime:
             report.fail_check(
@@ -1545,6 +1592,10 @@ def main() raises:
         )
         return
 
+    if opts.pg_listen and not opts.realtime:
+        _fail(_PG_LISTEN_NEEDS_REALTIME, EXIT_USAGE)
+        return
+
     if len(opts.hold_mounts) > 0 and not opts.realtime:
         _fail(_HOLD_MOUNT_NEEDS_REALTIME, EXIT_USAGE)
         return
@@ -1616,6 +1667,31 @@ def main() raises:
     # After fork_all — each worker arms its own pipe.
     var shutdown_fd = install_shutdown_signals()
 
+    # The Postgres listener, worker 0 only: every worker running one would
+    # open its own connection and deliver its own copy of every
+    # notification. The same rule `apps/datastar_counter` follows for its
+    # tick. Started AFTER fork_all() returned, like every other thread here,
+    # and stopped on both serve paths below.
+    var pg = PgListener()
+    if opts.pg_listen and worker == 0:
+        try:
+            pg = PgListener.start(
+                opts.pg_listen,
+                String(DEFAULT_CHANNEL),
+                bus.write_fds.copy(),
+                # The shared id slot, so a NOTIFY's event id is monotonic
+                # across workers exactly as an in-process publish's is —
+                # `Last-Event-ID` means nothing otherwise. Exported by
+                # `_prepare_realtime` before the fork; 0 when there is none.
+                _shared_id_addr(),
+            )
+        except e:
+            # A listener that cannot start is not a reason to refuse to
+            # serve: the server's own job is unaffected, and the thread
+            # would retry a connection anyway. It is loud, and --doctor
+            # reports the same condition before anything starts.
+            print("m0serve: pg-listen did not start: " + String(e), flush=True)
+
     var mounted_mix = (
         len(opts.mount_prefixes) > 0 and len(opts.asgi_mounts) > 0
     )
@@ -1646,6 +1722,7 @@ def main() raises:
         # The loop's own handler serves the inline fallback; in executor
         # mode its lifespan never ran, and shutdown just closes its loop.
         handler.shutdown()
+        pg.stop()
         if supervised:
             exit_worker()
         return
@@ -1665,6 +1742,7 @@ def main() raises:
         accept_share=share,
     )
     handler.shutdown()
+    pg.stop()
     if supervised:
         exit_worker()
 

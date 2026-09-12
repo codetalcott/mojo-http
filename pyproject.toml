@@ -150,6 +150,162 @@ shell = "python3 scripts/shim_ownership.py --sabotage"
 # `--selftest` runs FIRST and is part of the gate: a bad token must read as
 # zero holds granted, and a publish to a channel nobody holds must read as
 # zero delivery. Both steer the real code path rather than a special one.
+# A Postgres NOTIFY reaching a held SSE stream (SPEC I22): the bus's second
+# door, for the writers that cannot reach the first one. `m0pub` writes
+# descriptors the server hands down at fork, so a management command, a cron
+# job, a trigger or `psql` publishes to nobody -- which textshelf's own
+# realtime module records as a known limitation.
+#
+# BOTH arms, because the positive one alone would pass against a server that
+# published every NOTIFY to every channel, and against one that answered the
+# stream from something else entirely:
+#
+#   1. a NOTIFY naming the held channel arrives, with its event and data;
+#   2. a NOTIFY naming a DIFFERENT channel does not;
+#   3. the same publish against a server started WITHOUT --pg-listen reaches
+#      nobody -- the null case, which is what proves the flag is what did it.
+#
+# Runs in the postgres job, not the smoke matrix: it needs a server, and
+# GitHub's service containers require a Linux runner.
+[tool.poe.tasks.smoke-pg-notify]
+help = "A Postgres NOTIFY reaches a held SSE stream, and does not without the flag"
+shell = """
+out=$(mktemp -d)
+pid=""
+# Both inside the guard: an unguarded `wait $pid` with $pid empty is a bare
+# `wait`, which waits for EVERY background job and hangs the gate rather
+# than ending it.
+cleanup() {
+  if [ -n "$pid" ]; then kill $pid 2>/dev/null; wait $pid 2>/dev/null; fi
+  rm -rf "$out"
+}
+trap cleanup EXIT
+fail() { echo "smoke-pg-notify: $1"; [ -f "$out/srv.log" ] && tail -25 "$out/srv.log"; exit 1; }
+
+url="${M0_PG_TEST_URL:-postgres:///postgres}"
+command -v psql > /dev/null || fail 'psql is not on PATH, and this gate publishes with it'
+psql "$url" -Atc 'select 1' > /dev/null 2>&1 \
+  || fail "no database answered at $url -- this gate needs one and does not skip"
+
+notify() {
+  psql "$url" -Atc "select pg_notify('m0', '$1')" > /dev/null \
+    || fail 'pg_notify failed'
+}
+
+# --- arm 1 and 2: the listener on ---------------------------------------
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port 8231 --realtime --blocking-threads 2 --health-path /health \
+  --pg-listen "$url" > "$out/srv.log" 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8231/health > /dev/null || fail 'the server never became healthy'
+# Waited for, not sampled: the listener connects on its own thread while the
+# loop is already answering, so /health can be up before the subscription is.
+# Sampling once here failed about as often as it passed.
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  grep -q 'pg-listen: listening on' "$out/srv.log" && break
+  sleep 0.5
+done
+grep -q 'pg-listen: listening on' "$out/srv.log" \
+  || fail 'the listener never reported a subscription -- the flag did nothing'
+
+curl -sN --max-time 6 'http://127.0.0.1:8231/events?channel=room1&token=letmein' \
+  > "$out/held.txt" &
+held=$!
+sleep 1
+notify '{"channel":"room1","event":"greeting","data":"hello from sql"}'
+notify '{"channel":"someone-else","event":"greeting","data":"not for room1"}'
+# By pid. A bare `wait` waits for every background job, the SERVER included,
+# and the server does not exit — which is a gate that hangs rather than one
+# that fails.
+wait $held
+
+grep -q 'event: greeting' "$out/held.txt" \
+  || { echo '--- held.txt ---'; cat "$out/held.txt"; fail 'the NOTIFY never reached the held stream'; }
+grep -q 'data: hello from sql' "$out/held.txt" \
+  || { echo '--- held.txt ---'; cat "$out/held.txt"; fail 'the payload did not survive the trip'; }
+grep -q '^id: ' "$out/held.txt" \
+  || fail 'the event carried no id -- Last-Event-ID would mean nothing'
+grep -q 'not for room1' "$out/held.txt" \
+  && { echo '--- held.txt ---'; cat "$out/held.txt"; fail 'a NOTIFY for another channel was delivered here'; }
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+
+# --- arm 3: the null case ------------------------------------------------
+# The same publish against a server with no --pg-listen. Without this the
+# gate would pass against anything that happened to deliver the event.
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port 8232 --realtime --blocking-threads 2 --health-path /health \
+  > "$out/null.log" 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8232/health > /dev/null || fail 'the no-listener server never became healthy'
+grep -q 'pg-listen' "$out/null.log" \
+  && fail 'a server without the flag started a listener anyway'
+
+curl -sN --max-time 4 'http://127.0.0.1:8232/events?channel=room1&token=letmein' \
+  > "$out/quiet.txt" &
+quiet=$!
+sleep 1
+notify '{"channel":"room1","event":"greeting","data":"hello from sql"}'
+wait $quiet
+
+grep -q 'event: greeting' "$out/quiet.txt" \
+  && { echo '--- quiet.txt ---'; cat "$out/quiet.txt"; fail 'an event arrived with no listener configured -- this gate cannot tell the flag apart from nothing'; }
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+
+# --- the Python half -----------------------------------------------------
+# `m0pub.notify_sql` is what a management command or a console publishes
+# with, and it is exercised rather than described: it builds the statement,
+# psql runs it, and the same held stream receives it. Without this the
+# function could drift from the listener's three-field contract and nothing
+# would notice until someone tried it in production.
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port 8234 --realtime --blocking-threads 2 --health-path /health \
+  --pg-listen "$url" > "$out/py.log" 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+  http://127.0.0.1:8234/health > /dev/null || fail 'the third server never became healthy'
+
+curl -sN --max-time 6 'http://127.0.0.1:8234/events?channel=room2&token=letmein' \
+  > "$out/py.txt" &
+pyclient=$!
+sleep 1
+payload=$(python3 -c "
+import sys
+sys.path.insert(0, 'apps/django_realtime')
+import m0pub
+stmt, params = m0pub.notify_sql('room2', 'from a management command', event='ops')
+assert stmt == 'SELECT pg_notify(%s, %s)', stmt
+print(params[1])
+") || fail 'm0pub.notify_sql did not build a statement'
+# Single-quoted in SQL, as `notify` above does: the payload is JSON, so it
+# carries double quotes and no single ones.
+psql "$url" -Atc "select pg_notify('m0', '$payload')" > /dev/null \
+  || fail 'publishing what m0pub.notify_sql built failed'
+wait $pyclient
+
+grep -q 'event: ops' "$out/py.txt" \
+  || { echo '--- py.txt ---'; cat "$out/py.txt"; fail 'what m0pub.notify_sql built never arrived'; }
+grep -q 'data: from a management command' "$out/py.txt" \
+  || { echo '--- py.txt ---'; cat "$out/py.txt"; fail 'the payload m0pub built did not survive'; }
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+
+# --- the refusal ---------------------------------------------------------
+bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port 8233 --pg-listen "$url" > "$out/refuse.log" 2>&1
+status=$?
+[ "$status" -eq 2 ] \
+  || { cat "$out/refuse.log"; fail "--pg-listen without --realtime exited $status, not 2"; }
+grep -q 'needs --realtime' "$out/refuse.log" \
+  || fail 'the refusal does not say what is missing'
+
+echo "smoke-pg-notify OK"
+python3 scripts/emit.py --covers I22 --task smoke-pg-notify
+"""
+
 [tool.poe.tasks.smoke-realtime-holds]
 help = "N concurrent --realtime holds from a pool, and a publish into all of them"
 shell = """
@@ -284,7 +440,7 @@ shell = "cd packages/m0-postgres && mojo precompile src -o m0_postgres.mojoc"
 # from landing on the link line of every other build in the repo.
 [tool.poe.tasks.build-wsgi]
 help = "Build m0-wsgi package (embeds CPython)"
-shell = "cd packages/m0-wsgi && mojo precompile src -I ../m0-http/ -I ../m0-core/ -o m0_wsgi.mojoc"
+shell = "cd packages/m0-wsgi && mojo precompile src -I ../m0-http/ -I ../m0-core/ -I ../m0-postgres/ -o m0_wsgi.mojoc"
 
 # build-ffi is in this sequence on purpose. ffi_exports.mojo lives at the
 # package root, outside src/, so `mojo precompile src` never sees it and
@@ -292,7 +448,7 @@ shell = "cd packages/m0-wsgi && mojo precompile src -I ../m0-http/ -I ../m0-core
 # while the C-ABI surface is broken, and only test-core and smoke-ffi fail.
 [tool.poe.tasks.build-all]
 help = "Build all packages in dependency order, then the C-ABI shared library"
-sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite", "build-postgres", "build-ffi"]
+sequence = ["build-core", "build-http", "build-datastar", "build-sqlite", "build-postgres", "build-wsgi", "build-ffi"]
 default_item_type = "ref"
 
 # The serve CLI. Its entry file sits at the package root, outside src/, for
@@ -334,7 +490,7 @@ esac
 # scripts/wheel_tag.py measures the result rather than trusting this.
 export MACOSX_DEPLOYMENT_TARGET=13.0
 mojo build --target-cpu "$tcpu" \
-  -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
+  -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ \
   packages/m0-wsgi/m0serve.mojo -o bin/m0serve || exit 1
 
 # Same post-link surgery build-ffi does, and for the same reason: `mojo
@@ -5862,7 +6018,7 @@ mkdir -p bin
 # tarball, never a second wheel. `--doctor` tells the two apart:
 # `build.apple_target` is m1 for the wheel on every Mac, and the host's
 # generation here (smoke-apple-silicon asserts both).
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-wsgi/ \
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ \
   packages/m0-wsgi/m0serve.mojo -o bin/m0serve-native || exit 1
 python3 scripts/relocate.py --no-id \
   --rpath '@loader_path' --rpath '@loader_path/../_lib' bin/m0serve-native || exit 1
@@ -6640,7 +6796,16 @@ got=$(refusal "$($ISSUE --key $KEY --subject notes --exp $((NOW - 1)))")
 [ "$got" = "signed out (expired)" ] || fail "an expired cookie was not refused as expired: $got"
 got=$(refusal "$($ISSUE --key other-key --subject notes --exp $((NOW + 600)))")
 [ "$got" = "signed out (unknown key)" ] || fail "a cookie under another key was not refused: $got"
-got=$(refusal "${GOOD%?}$(echo "$GOOD" | tail -c 2 | tr 'A-Za-z' 'B-ZAb-za')")
+# The tamper has to CHANGE the character, which `tr 'A-Za-z'` does not when
+# the tag ends in one of base64url's twelve non-letters (the ten digits, `-`
+# and `_`). That happened for 11% of tags measured, and a tamper that is a
+# no-op sends the server the GOOD cookie: it signs in, the grep finds no
+# refusal, and the gate fails reporting an empty reason. Swapping between two
+# fixed letters always differs and always stays in the alphabet, so the
+# request being made is the one the assertion names.
+last=${GOOD#"${GOOD%?}"}
+if [ "$last" = "A" ]; then swap=B; else swap=A; fi
+got=$(refusal "${GOOD%?}$swap")
 [ "$got" = "signed out (bad signature)" ] || fail "a tampered tag was not refused: $got"
 got=$(refusal 'not-a-session')
 [ "$got" = "signed out (malformed)" ] || fail "a malformed cookie was not refused as such: $got"

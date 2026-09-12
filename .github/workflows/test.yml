@@ -212,6 +212,10 @@ jobs:
       - run: uv run poe build-all
       - name: Test m0-postgres against a real server
         run: uv run poe test-postgres-server
+      - name: Build the serve CLI
+        run: uv run poe build-serve
+      - name: Smoke test a Postgres NOTIFY reaching a held stream
+        run: uv run poe smoke-pg-notify
       - name: Record the measurements
         if: always()
         run: python3 scripts/emit.py --render "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY"

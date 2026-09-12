@@ -10,6 +10,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **A Postgres `NOTIFY` reaches a held stream** (SPEC I22). `--pg-listen URL`
+  (`M0_PG_LISTEN`) holds one `LISTEN` on worker 0 and publishes what arrives
+  onto the broadcast bus, so a writer that cannot reach the datagram bus at
+  all — a trigger, a cron job, a management command, `psql` — reaches every
+  subscriber with an id, an event type and its data. The payload is three
+  JSON string fields; `m0pub.notify_sql` builds the statement for a caller
+  that already has a database cursor, with no driver imported into a
+  stdlib-only module. Refused without `--realtime`, which is what creates
+  the bus, and `--doctor` reports both that refusal and which libpq it
+  found. Nothing is resolved from libpq when the flag is absent.
+
 - **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
   sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else
   here and links nothing: libpq is opened with `dlopen` at run time, so no

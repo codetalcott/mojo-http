@@ -938,6 +938,14 @@
       "evidence": "`Smoke test the grant-verified hold mount` (every PR) \u2014 the verifier's unit form is `test_grant.mojo:test_a_grant_the_issuer_signed_admits_its_session`, against grants the same issuer signed with a fixed key and clock; the design is [grant-verified-holds](notes/grant-verified-holds.md)"
     },
     {
+      "id": "I22",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A Postgres `NOTIFY` reaches a held stream: `--pg-listen URL` holds one `LISTEN` on worker 0 and publishes what arrives onto the broadcast bus, so a writer that cannot reach the datagram bus at all \u2014 a trigger, a cron job, a management command, `psql` \u2014 reaches every subscriber with an id, an event type and its data; a notification naming another channel reaches nobody, and without the flag neither does one naming the held channel",
+      "status": "verified",
+      "evidence": "`Smoke test a Postgres NOTIFY reaching a held stream` (every PR) \u2014 three arms, because the positive one alone passes against a server that published everything to everyone: the held channel arrives, another channel does not, and the same publish against a server started without the flag reaches nobody. `--pg-listen` without `--realtime` exits 2 naming what is missing, since the flag creates the bus there would otherwise be nothing to publish into. In the Linux job with a service container, GitHub's service containers requiring a Linux runner"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",
