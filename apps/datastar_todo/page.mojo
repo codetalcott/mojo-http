@@ -22,7 +22,7 @@ this file types a `data-on` attribute.
 
 from m0_http import Datastar, Fragment, url_for
 
-from datastar_todo.routes import ADD, DELETE, EVENTS, TOGGLE
+from datastar_todo.routes import ADD, DELETE, EDIT, EVENTS, TOGGLE
 
 # Pinned deliberately: a floating CDN version would let an upstream release
 # break this example without a commit here. Matches the protocol version
@@ -50,7 +50,9 @@ def render_todos(
     Rendered into the initial page and broadcast verbatim after every
     mutation. Single line — see the module docstring. Each button's
     action is `swap`, generated from the route pattern; `Frag` decides
-    that it is spelled `data-on:click__prevent="@post('/toggle/7')"`.
+    that it is spelled `data-on:click__prevent="@post('/toggle/7')"`, and
+    that the rename form's is `data-on:submit__prevent` with
+    `{contentType: 'form'}`.
     """
     var remaining = 0
     for i in range(len(done)):
@@ -75,9 +77,19 @@ def render_todos(
             f.text(texts[i])
             f.close("s")
         else:
-            f.open("span")
-            f.text(texts[i])
-            f.close("span")
+            # A todo still open is renamed in place: its text is a form's
+            # one field, and `swap` on the form spells the submit action --
+            # `data-on:submit__prevent="@post('/edit/7', {contentType: 'form'})"`
+            # -- so Enter posts the field urlencoded, which `form(req)`
+            # reads on the other side. The browser run pins what travels.
+            f.open("form")
+            f.attr("class", "edit")
+            f.swap("post", url_for(EDIT, id))
+            f.open("input")
+            f.attr("name", "text")
+            f.attr("value", texts[i])
+            f.attr("aria-label", "Rename")
+            f.close("form")
         f.open("button")
         f.attr("class", "delete")
         f.swap("post", url_for(DELETE, id))
@@ -168,5 +180,7 @@ comptime _STYLE = """<style>
   .toggle, .delete { background: none; border: none; font-size: 1rem; }
   .delete { opacity: .5; }
   .delete:hover { opacity: 1; }
+  li form.edit { display: inline; }
+  li form.edit input { font: inherit; border: 0; border-bottom: 1px dotted currentColor; background: none; color: inherit; width: 14em; }
 </style>
 """

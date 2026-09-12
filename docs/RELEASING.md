@@ -142,6 +142,18 @@ driver takes a manifest with a `login` block and a capture recorded from a
 reference server (`--baseline`, gunicorn or uvicorn) — see
 `scripts/soak_manifests/bakerydemo.json` for the worked example.
 
+**And `uv run poe browser-datastar-form`** (SPEC N12) — the Datastar form
+arm in Chromium. `smoke-todo` proves the server's half on every pull
+request; only a browser can prove that the attribute `Fragment[Datastar]`
+emits on a `<form>` makes the pinned bundle send the form's fields when a
+person presses Enter, and a wrong modifier or option there fails silently
+— the page looks fine until someone types. The run renames a todo from the
+keyboard, prints the two request bodies the bundle made (the form's fields
+urlencoded; a bound field's action the signal store as JSON, D21) and
+checks a second tab morphed. Pre-release because it needs Chromium, and
+because the bundle is pinned (D20): what the run guards changes when the
+pin moves, and a release is where a moved pin ships. Ten seconds.
+
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
