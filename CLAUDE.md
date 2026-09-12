@@ -674,8 +674,8 @@ code depends on:
 
 `m0-postgres` imports nothing else here and links **nothing**: libpq is opened
 with `dlopen` at run time, so no binary in this repo carries a libpq dependency
-and a server that never names a database needs no library present. Two rules
-there were each found by crashing, and both are in `lib.mojo`'s docstring:
+and a server that never names a database needs no library present. Three rules
+there were each found by crashing, and all three are in `lib.mojo`'s docstring:
 
 - **The handle and the pointers loaded from it live in ONE struct.** A loaded
   `thin` pointer carries no borrow, so an `OwnedDLHandle` held anywhere else is
@@ -687,9 +687,18 @@ there were each found by crashing, and both are in `lib.mojo`'s docstring:
   method, and `test_lib.mojo` asserts that shape in the position the broken one
   failed in. A dangling call is a segmentation fault, not an exception, which is
   why the rule is written down as well as tested.
+- **libpq is never unloaded once opened.** `PgLib.__init__` re-opens its image
+  with `RTLD_NODELETE` (`pin_library`), so no `dlclose` unmaps it. Without the
+  pin, the last `Connection` going — at its last use, routinely the query
+  itself — unloaded the library, and `rows.text(0, 0)` on the result was a
+  segmentation fault three runs out of three. The pin is what makes it sound
+  for `Result` to hold COPIES of its entry points (`ResultLib`); reaching them
+  through the connection's address instead faulted even with the pin, because
+  a destroyed or moved connection leaves that address pointing at nothing.
 
 Also unlike m0-sqlite: a `Result` is a VALUE, not a cursor — libpq hands back a
-complete result that owns its memory, so it can outlive its query — and a
+complete result that owns its memory, so it can outlive its query and the
+`Connection` that ran it (SPEC O16) — and a
 `Prepared` is a name plus its parameter OIDs rather than a handle, because a
 server-side statement dies with its connection and a borrowing form is not
 spellable on this toolchain. Text results are the default and `binary=True` is

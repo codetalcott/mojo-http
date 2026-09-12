@@ -20,7 +20,14 @@ from std.testing import (
     assert_true,
 )
 
-from src.lib import MIN_LIBPQ_VERSION, PgLib, default_search_path, required_symbols
+from src.lib import (
+    MIN_LIBPQ_VERSION,
+    PGRES_FATAL_ERROR,
+    PgLib,
+    ResultLib,
+    default_search_path,
+    required_symbols,
+)
 
 
 def _moved_through_a_function() raises -> PgLib:
@@ -66,6 +73,38 @@ def test_the_table_still_works_after_being_moved() raises:
     # the second call rather than the first.
     for _ in range(3):
         assert_true(moved.libversion() >= MIN_LIBPQ_VERSION)
+
+
+def _result_table_of_a_dropped_library() raises -> ResultLib:
+    """Copy a `Result`'s entry points out, and let the `PgLib` go.
+
+    The `PgLib` is destroyed before this returns, which releases its
+    `dlopen` handle. When that was the only reference, the library was
+    unmapped here and every copied pointer pointed into nothing.
+    """
+    var lib = PgLib.open()
+    return lib.result_lib()
+
+
+def test_a_result_table_outlives_the_handle_it_was_copied_from() raises:
+    """The third rule, without a server: libpq stays mapped once opened.
+
+    `PQntuples(NULL)` is 0 and `PQresultStatus(NULL)` is
+    `PGRES_FATAL_ERROR` — libpq checks for NULL in both — so the calls need
+    no connection and answer something definite. Before the pin, the same
+    shape reached from a `Result` whose connection had gone was a
+    segmentation fault, not a wrong answer, which is why this asserts the
+    working shape in the position the broken one died in.
+
+    covers: O16
+    """
+    var pq = _result_table_of_a_dropped_library()
+    for _ in range(3):
+        var other = _result_table_of_a_dropped_library()
+        assert_equal(other.ntuples(0), 0)
+    assert_equal(pq.ntuples(0), 0)
+    assert_equal(pq.nfields(0), 0)
+    assert_equal(pq.result_status(0), PGRES_FATAL_ERROR)
 
 
 def test_every_symbol_the_table_loads_is_checked_first() raises:

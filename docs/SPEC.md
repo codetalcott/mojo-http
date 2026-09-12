@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**204 capabilities: 180 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 180 verified, 173 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**205 capabilities: 181 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 181 verified, 174 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -321,7 +321,7 @@ says. The performance study behind the SQLite package is
 [SQLite virtual tables](sqlite-vtab-feasibility.md).
 
 The Postgres rows split by what each needs. O6 to O8 are pure functions of
-bytes and text and run in `poe test-all` on every leg. O9 to O15 need a real
+bytes and text and run in `poe test-all` on every leg. O9 to O16 need a real
 server, so they cite a Linux-only job with a service container rather than a
 test function: GitHub's service containers require a Linux runner, which is
 a platform fact and not a preference, and the spec checker rightly refuses a
@@ -345,3 +345,4 @@ never skip.
 | O13 | A read-only connection refuses a write, whatever the role could do: the belt to a read-only role's braces, so a mistake in the grants is an error on the connection that should not be writing rather than a write that succeeds | verified | `Test m0-postgres against a real server` (every PR) — SQLSTATE 25006, distinguishable from the privilege error a role-level refusal gives |
 | O14 | An identifier put into SQL text is quoted by the SERVER, against the connection's own encoding, not by doubling quotes by hand — which is what `LISTEN` and `DEALLOCATE` need, taking no parameters | verified | `Test m0-postgres against a real server` (every PR) — a channel name is frequently application input |
 | O15 | `LISTEN`/`NOTIFY` delivers with its channel, payload and notifying backend, nothing is delivered before it is sent or twice after, and a reset restores every subscription | verified | `Test m0-postgres against a real server` (every PR) — the reset arm is the one that is invisible when wrong: `PQreset` opens a new backend session listening to nothing, so a listener that reconnects without re-`LISTEN`ing runs forever delivering nothing and logging no error, which looks exactly like nobody publishing |
+| O16 | A `Result` outlives the `Connection` that produced it: Mojo destroys a connection at its last use, so `var rows = db.query(...)` with no later mention of `db` finishes the connection on that line, and every read and the final `PQclear` still answer — because libpq, once opened, is pinned for the life of the process, and a result holds the entry points it calls by value rather than through its connection's address | verified | `Test m0-postgres against a real server` (every PR) — measured before the fix as a segmentation fault on the first read, three runs out of three, in both shapes the test holds: a connection whose last mention is the query, and a result returned out of the helper that opened its connection. Each half of the fix is necessary on its own: pinned but still reading through the address, the read faults in `Result.text`; unpinned but holding the pointers by value, it faults too, and `test_lib.mojo` asserts that half without a server by calling a copied table after its `PgLib` is gone |

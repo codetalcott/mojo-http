@@ -1632,6 +1632,14 @@
       "capability": "`LISTEN`/`NOTIFY` delivers with its channel, payload and notifying backend, nothing is delivered before it is sent or twice after, and a reset restores every subscription",
       "status": "verified",
       "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 the reset arm is the one that is invisible when wrong: `PQreset` opens a new backend session listening to nothing, so a listener that reconnects without re-`LISTEN`ing runs forever delivering nothing and logging no error, which looks exactly like nobody publishing"
+    },
+    {
+      "id": "O16",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "A `Result` outlives the `Connection` that produced it: Mojo destroys a connection at its last use, so `var rows = db.query(...)` with no later mention of `db` finishes the connection on that line, and every read and the final `PQclear` still answer \u2014 because libpq, once opened, is pinned for the life of the process, and a result holds the entry points it calls by value rather than through its connection's address",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 measured before the fix as a segmentation fault on the first read, three runs out of three, in both shapes the test holds: a connection whose last mention is the query, and a result returned out of the helper that opened its connection. Each half of the fix is necessary on its own: pinned but still reading through the address, the read faults in `Result.text`; unpinned but holding the pointers by value, it faults too, and `test_lib.mojo` asserts that half without a server by calling a copied table after its `PgLib` is gone"
     }
   ]
 }

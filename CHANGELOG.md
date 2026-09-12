@@ -31,7 +31,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the wheel's own binary, since its users have neither a toolchain nor a
   PostgreSQL client.
 
-- **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
+- **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O16). A
   sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else
   here and links nothing: libpq is opened with `dlopen` at run time, so no
   binary in this repo — `bin/m0serve` and the wheel included — carries a
@@ -48,11 +48,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   dates, intervals and arrays read as text — each a deliberate absence, with
   the reason in the README.
 
-  Two Mojo 1.0 findings are recorded in `lib.mojo` and pinned by
-  `test_lib.mojo`, both found by crashing: a `dlopen` handle held apart from
-  the pointers loaded from it is closed at its last mention, and a `thin`
+  Three Mojo 1.0 findings are recorded in `lib.mojo` and pinned by
+  `test_lib.mojo`, all found by crashing: a `dlopen` handle held apart from
+  the pointers loaded from it is closed at its last mention, a `thin`
   pointer field cannot be called as `table.field()` from outside the struct
-  that holds it even though its address is unchanged.
+  that holds it even though its address is unchanged, and a `Result` that
+  reached libpq through its connection's address faulted once that
+  connection was gone. libpq is now pinned with `RTLD_NODELETE` once opened
+  and a `Result` holds the entry points it calls by value, so
+  `var rows = db.query(...)` with no later use of `db` reads correctly
+  (SPEC O16) — before the fix it was a segmentation fault on the first
+  read.
 
 - **`m0-sqlite` gets its rows** (SPEC section O, O1–O5). The storage
   packages had no capability rows at all, so nothing in the sheet noticed

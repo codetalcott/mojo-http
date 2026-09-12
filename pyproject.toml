@@ -891,6 +891,7 @@ python3 scripts/emit.py --covers O12 --task test-postgres-server
 python3 scripts/emit.py --covers O13 --task test-postgres-server
 python3 scripts/emit.py --covers O14 --task test-postgres-server
 python3 scripts/emit.py --covers O15 --task test-postgres-server
+python3 scripts/emit.py --covers O16 --task test-postgres-server
 """
 
 [tool.poe.tasks.test-all]
