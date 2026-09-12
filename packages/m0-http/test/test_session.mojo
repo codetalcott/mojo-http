@@ -13,6 +13,7 @@ Regenerating is a diff, not a transcription: re-run the script and paste.
 
 from std.testing import assert_equal, assert_false, assert_not_equal, assert_true, TestSuite
 
+from src.grant import GrantKeys, verify_grant
 from src.session import (
     SessionKeys,
     SessionVerdict,
@@ -191,6 +192,40 @@ def test_a_subject_the_format_cannot_carry_is_refused_at_issue() raises:
     except:
         caught = True
     assert_true(caught, "a 65-byte subject was issued")
+
+
+def test_a_negative_expiry_is_refused_at_issue() raises:
+    """`String(-5)` would put a `-` where the verifier wants a digit: a
+    cookie that reads back as `malformed`, refused here instead."""
+    var caught = False
+    try:
+        _ = issue_session(_keys(), String("notes"), Int64(-1))
+    except:
+        caught = True
+    assert_true(caught, "a negative expiry was issued")
+
+
+def test_neither_format_verifies_as_the_other_under_one_key() raises:
+    """The two formats share a key ring, and what keeps a grant's tag from
+    ever being a session's is the dot count of the signed part: three for a
+    session, four for a grant, because a subject may not hold one. A
+    grant-shaped value presented as a session cookie is `malformed` (the
+    22-character binding lands in the tag slot), and a session cookie
+    presented as a grant is `malformed` too (five fields, not six) — both
+    before any key is consulted."""
+    var grant_shaped = String(
+        "v1.", KID, ".1800000600.notes.AAAAAAAAAAAAAAAAAAAAAA.", CSRF
+    )
+    var as_session = _verify(grant_shaped, _keys(), Int64(NOW))
+    assert_false(as_session[0])
+    assert_equal(as_session[3], "malformed")
+    var ring = GrantKeys()
+    ring.add(Span(String(KEY).as_bytes()))
+    var as_grant = verify_grant(
+        Span(String(OK).as_bytes()), ring, Int64(NOW), Optional[String](None)
+    )
+    assert_false(as_grant.ok)
+    assert_equal(as_grant.reason, "malformed")
 
 
 def test_issuing_without_a_key_raises_rather_than_signing_with_nothing() raises:
