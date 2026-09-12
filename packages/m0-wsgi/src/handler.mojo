@@ -49,7 +49,7 @@ from m0_http.sse.registry import MAX_PENDING_BYTES
 from m0_http.sse.format import NO_EVENT_ID
 
 from .app import WSGIApp
-from .cli import match_mount
+from .cli import match_mount, is_compiled_mount
 from .cli import ServeOptions
 from lightbug_http.hold import (
     take_hold, request_last_event_id, ws_message_request, send_hold_frame,
@@ -99,11 +99,10 @@ def _decline_direct(
 
 
 def _is_mojo_mount(opts: ServeOptions, i: Int) -> Bool:
-    """Whether mount `i` is answered by the compiled-in Mojo handler."""
-    for k in range(len(opts.mojo_mounts)):
-        if opts.mojo_mounts[k] == i:
-            return True
-    return False
+    """Whether mount `i` is compiled in (`mojo` or `hold`) rather than a
+    Python application this handler could build: `is_compiled_mount`, under
+    the name this file has always used."""
+    return is_compiled_mount(opts, i)
 
 
 def _first_python_mount(opts: ServeOptions) -> Int:

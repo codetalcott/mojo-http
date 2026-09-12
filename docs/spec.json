@@ -930,6 +930,14 @@
       "evidence": "`Smoke test the Flask realtime views` (every PR) \u2014 the headline names Flask, and K10 only proves plain WSGI. The file under test is extracted from docs/QUICKSTART_NEXT.md's own fenced block, so it is the one a reader types; the Django rows' RFC 6455 probe drives it unchanged (its gate phase off: the quickstart's views take no token), one stream and one socket pinned per worker under `--workers 2`, so a message sent on one worker's socket reaches a Flask view and comes back on the other worker's. The quickstart runs the same file from the wheel with curl alone (M10)"
     },
     {
+      "id": "I21",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A grant-verified hold mount: `--mount PREFIX=hold` holds an SSE stream on a Mojo pool thread against a grant the application signed into the stream URL (`m0serve.grant`: version, key id, expiry, channel, session binding, HMAC-SHA256 tag) \u2014 the signature checked in constant time, expiry against the host clock, the session cookie the browser sends against the binding, the previous key accepted while `M0_GRANT_KEY_PREV` lists it, a bound grant refused without its cookie and an unbound one admitted, every refusal a 401 naming `expired` or `invalid` and its reason; a hold mount refuses to start without `--realtime` or `M0_GRANT_KEY`, and `--doctor` agrees",
+      "status": "verified",
+      "evidence": "`Smoke test the grant-verified hold mount` (every PR) \u2014 the verifier's unit form is `test_grant.mojo:test_a_grant_the_issuer_signed_admits_its_session`, against grants the same issuer signed with a fixed key and clock; the design is [grant-verified-holds](notes/grant-verified-holds.md)"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",

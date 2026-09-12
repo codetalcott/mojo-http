@@ -521,25 +521,31 @@ def check_wheel_platform_claims():
 
 
 def check_m0pub_twins():
-    """The two copies of m0pub.py must stay byte-identical.
+    """The two copies of m0pub.py and of grant.py must stay byte-identical.
 
-    The module ships inside the wheel (`m0serve.m0pub`) and lives in the demo
-    app (`apps/django_realtime/m0pub.py`), because each must work where the
-    other cannot: pip users have no source tree, and the demo runs from a
-    source tree where the wheel is deliberately not installed. Two copies
-    with no guard is how they drift -- a fix landing in the demo and never
-    reaching users, invisible until someone diffs them.
+    Each module ships inside the wheel (`m0serve.m0pub`, `m0serve.grant`)
+    and lives in the demo app (`apps/django_realtime/`), because each must
+    work where the other cannot: pip users have no source tree, and the
+    demo runs from a source tree where the wheel is deliberately not
+    installed. Two copies with no guard is how they drift -- a fix landing
+    in the demo and never reaching users, invisible until someone diffs
+    them.
     """
-    demo = REPO / "apps" / "django_realtime" / "m0pub.py"
-    wheel = REPO / "packaging" / "m0serve" / "src" / "m0serve" / "m0pub.py"
-    if not wheel.exists():
-        fail("packaging/m0serve/src/m0serve/m0pub.py is missing — the wheel "
-             "would ship without the publish helper the quickstart imports")
-        return
-    if demo.read_bytes() != wheel.read_bytes():
-        fail("m0pub.py has drifted between apps/django_realtime and the wheel "
-             "package — edit one, copy to the other (they are byte-identical "
-             "on purpose; each runs where the other cannot)")
+    for name in ("m0pub.py", "grant.py"):
+        demo = REPO / "apps" / "django_realtime" / name
+        wheel = REPO / "packaging" / "m0serve" / "src" / "m0serve" / name
+        if not wheel.exists():
+            fail(f"packaging/m0serve/src/m0serve/{name} is missing — the wheel "
+                 "would ship without a helper the quickstart imports")
+            continue
+        if not demo.exists():
+            fail(f"apps/django_realtime/{name} is missing — the demo runs where "
+                 "the wheel is not installed and needs its own copy")
+            continue
+        if demo.read_bytes() != wheel.read_bytes():
+            fail(f"{name} has drifted between apps/django_realtime and the wheel "
+                 "package — edit one, copy to the other (they are byte-identical "
+                 "on purpose; each runs where the other cannot)")
 
 
 def check_target_cpu_pinned():

@@ -87,6 +87,9 @@ from .cli import (
     PROTOCOL_WSGI,
     PROTOCOL_ASGI,
     MAX_AUTO_BLOCKING_THREADS,
+    hold_lanes,
+    is_compiled_mount,
+    has_python_mount,
 )
 from lightbug_http.hold import (
     HoldResult,

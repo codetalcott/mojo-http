@@ -61,6 +61,8 @@ from lightbug_http import (
 )
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 from m0_http import Html, Mount, Views, reply
+from m0_http import GrantKeys, verify_grant, GRANT_KEY_ENV
+from lightbug_http.http.date import unix_now
 from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
@@ -85,6 +87,7 @@ from m0_wsgi import (
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
+    hold_lanes, is_compiled_mount, has_python_mount,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     use_loop_inversion,
     asgi_free_threading_refusal,
@@ -411,6 +414,109 @@ struct MojoMount(PoolHandler):
     def shutdown(mut self):
         pass
 
+comptime HOLD_STREAM = "/stream"
+"""The hold mount's one route: `GET <prefix>/stream?g=<grant>`."""
+
+
+struct GrantGate(Movable):
+    """The hold mount's per-thread state: the keys it verifies against."""
+
+    var keys: GrantKeys
+
+    def __init__(out self, var keys: GrantKeys):
+        self.keys = keys^
+
+    def __init__(out self, *, deinit move: Self):
+        self.keys = move.keys^
+
+
+def hold_stream(
+    req: HTTPRequest, params: List[String], st: GrantGate
+) raises -> HTTPResponse:
+    """The grant-verified hold: `GET <prefix>/stream?g=<grant>`.
+
+    The application decided, in its own view with its own session, whether
+    this browser may hold a stream and on which channel, and signed that
+    decision into the URL (`m0serve.grant`); this verifies it -- signature
+    in constant time, expiry against this host's clock, the session cookie
+    the browser sends against the binding the issuer put in -- and takes
+    the hold with the two headers a Django hold view returns, which the
+    pool thread turns into the same `h` frame. No Python is asked. A refusal
+    is a 401 whose body says `expired` (fetch a fresh URL) or `invalid`
+    (stop), and names the reason.
+    """
+    var g = String("")
+    try:
+        ref q = req.uri.queries
+        if "g" in q:
+            g = q["g"]
+    except:
+        pass
+    if g.byte_length() == 0:
+        return reply.json(
+            401, String("Unauthorized"),
+            String('{"error":"invalid","reason":"no grant"}'),
+        )
+    var verdict = verify_grant(
+        Span(g.as_bytes()), st.keys, unix_now(), req.cookies.get(st.keys.cookie)
+    )
+    if not verdict.ok:
+        var kind = String("expired") if verdict.reason == "expired" else String("invalid")
+        return reply.json(
+            401, String("Unauthorized"),
+            String('{"error":"', kind, '","reason":"', verdict.reason, '"}'),
+        )
+    return HTTPResponse(
+        body_bytes=String(": open\n\n").as_bytes(),
+        headers=Headers(
+            Header("M0-Hold", "stream"),
+            Header("M0-Channel", verdict.channel),
+        ),
+        status_code=200,
+        status_text="OK",
+    )
+
+
+def hold_urls(at: Mount) raises -> Views[GrantGate]:
+    var v = Views[GrantGate](at)
+    v.add_read("GET", HOLD_STREAM, hold_stream)
+    return v^
+
+
+struct HoldMount(PoolHandler):
+    """The handler behind `--mount PREFIX=hold`: a stream held against a grant.
+
+    The one built-in mount a Python application uses without a Mojo build
+    of its own: the application keeps every authorization decision in its
+    own views and hands the browser a signed URL into this mount
+    (`m0serve.grant.stream_url`), and the mount holds the stream on a
+    pool thread that never attaches to the interpreter. Needs `--realtime`
+    (what wires a pool thread's hold to the loop) and `M0_GRANT_KEY` (what
+    the application signed with); `main` refuses to start without either.
+    `smoke-hold-mount` is the gate; the design is
+    docs/notes/grant-verified-holds.md.
+    """
+
+    var views: Views[GrantGate]
+    var state: GrantGate
+
+    def __init__(out self, var views: Views[GrantGate], var state: GrantGate):
+        self.views = views^
+        self.state = state^
+
+    @staticmethod
+    def make(ctx: PoolContext) raises -> Self:
+        # The keys are prepared once per thread, here: an HMAC state each,
+        # so a verification costs the grant's bytes and nothing of the key's.
+        return Self(hold_urls(Mount(ctx.prefix)), GrantGate(GrantKeys.from_env()))
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return self.views.dispatch(req, self.state)
+
+    def shutdown(mut self):
+        pass
+
+
 def _realtime_without_wsgi(opts: ServeOptions, is_asgi: Bool) -> Bool:
     """Whether `--realtime` has no application that could ever take a hold.
 
@@ -474,6 +580,14 @@ def _discover_core_lib() -> String:
     return String("")
 
 
+comptime _HOLD_MOUNT_NEEDS_REALTIME = (
+    "--mount PREFIX=hold needs --realtime: the flag is what wires a pool"
+    " thread's hold to the event loop, and a hold mount can do nothing else"
+)
+comptime _HOLD_MOUNT_NEEDS_KEY = (
+    "--mount PREFIX=hold needs M0_GRANT_KEY: the mount verifies grants the"
+    " application signed with it (32 random bytes; openssl rand -base64 32)"
+)
 comptime _REALTIME_ASGI_CONFLICT = (
     "--realtime requires a WSGI application: the M0-Hold contract is a"
     " response-header protocol for buffered WSGI responses, and an ASGI"
@@ -665,12 +779,7 @@ def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
         # its handler is a type this binary was compiled with. Nothing to
         # resolve, and nothing to import: skip it entirely so a mounted
         # server of one Mojo mount starts no interpreter work for it.
-        var is_mojo = False
-        for k in range(len(opts.mojo_mounts)):
-            if opts.mojo_mounts[k] == i:
-                is_mojo = True
-                break
-        if is_mojo:
+        if is_compiled_mount(opts, i):
             continue
         var module = opts.mount_modules[i]
         var attribute = opts.mount_attributes[i]
@@ -905,6 +1014,26 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
             String("drop --realtime; an ASGI app streams natively"),
             EXIT_USAGE,
         )
+    if len(opts.hold_mounts) > 0:
+        if not opts.realtime:
+            report.fail_check(
+                String("hold-mount-vs-realtime"),
+                String(_HOLD_MOUNT_NEEDS_REALTIME),
+                String("add --realtime"),
+                EXIT_USAGE,
+            )
+        elif getenv(GRANT_KEY_ENV, "").byte_length() == 0:
+            report.fail_check(
+                String("hold-mount-key"),
+                String(_HOLD_MOUNT_NEEDS_KEY),
+                String("export M0_GRANT_KEY, the same value the application signs with"),
+                EXIT_USAGE,
+            )
+        else:
+            report.pass_check(
+                String("hold-mount"),
+                String("--realtime is on and M0_GRANT_KEY is set"),
+            )
 
 
 def _run_doctor(mut opts: ServeOptions) -> Int:
@@ -1401,19 +1530,26 @@ def main() raises:
         )
         return
 
-    if len(opts.mojo_mounts) > 0 and not has_wsgi_mount(opts) and len(
-        opts.asgi_mounts
-    ) == 0:
-        # Every mount is Mojo, so this binary is hosting no Python at all —
-        # and m0serve exists to host Python. Write a Mojo server binary
-        # instead; `apps/pool_spike` is the shape. Refused rather than
-        # served, because `WSGIHandler.build` has no application to build
-        # and the process would carry an interpreter for nothing.
+    if len(opts.mount_prefixes) > 0 and not has_python_mount(opts):
+        # Every mount is compiled in (`mojo`, `hold`), so this binary is
+        # hosting no Python at all — and m0serve exists to host Python.
+        # Write a Mojo server binary instead; `apps/pool_spike` is the
+        # shape. Refused rather than served, because `WSGIHandler.build`
+        # has no application to build and the process would carry an
+        # interpreter for nothing.
         _fail(
-            "every --mount is 'mojo', so there is no Python application to"
-            " host; write a Mojo server binary instead of using m0serve",
+            "every --mount is 'mojo' or 'hold', so there is no Python"
+            " application to host; write a Mojo server binary instead of"
+            " using m0serve",
             EXIT_USAGE,
         )
+        return
+
+    if len(opts.hold_mounts) > 0 and not opts.realtime:
+        _fail(_HOLD_MOUNT_NEEDS_REALTIME, EXIT_USAGE)
+        return
+    if len(opts.hold_mounts) > 0 and getenv(GRANT_KEY_ENV, "").byte_length() == 0:
+        _fail(_HOLD_MOUNT_NEEDS_KEY, EXIT_USAGE)
         return
 
     if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
@@ -1602,6 +1738,7 @@ def _serve_offloaded(
         for i in range(len(opts.mount_prefixes)):
             pool.add_lane(opts.mount_prefixes[i])
     var mojo_ln = mojo_lanes(opts)
+    var hold_ln = hold_lanes(opts)
     var pool_count = (
         opts.blocking_threads
         if (len(wsgi_lanes) > 0 or not executor) else 0
@@ -1696,6 +1833,16 @@ def _serve_offloaded(
         mojo_threads.start[MojoMount](
             pool.addr(), user=0, lanes=mojo_ln.copy()
         )
+    # The hold mount's workers: the same pool shape, a different handler
+    # type. Two `MojoPool`s rather than one because `start[T]` is generic
+    # over the handler, and each lane is dealt only its own kind.
+    var hold_threads = MojoPool(
+        opts.blocking_threads if len(hold_ln) > 0 else 0
+    )
+    if hold_threads.count > 0:
+        hold_threads.start[HoldMount](
+            pool.addr(), user=0, lanes=hold_ln.copy()
+        )
 
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
 
@@ -1745,6 +1892,9 @@ def _serve_offloaded(
         # by one sent to lane 0. `MojoPool.stop_and_join` sends its own.
         failed += mojo_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
         stuck += mojo_threads.stragglers
+    if hold_threads.count > 0:
+        failed += hold_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
+        stuck += hold_threads.stragglers
     if stuck > 0:
         # A thread still inside the application after the drain AND the join
         # budget is not coming back: a response that never ends (an SSE

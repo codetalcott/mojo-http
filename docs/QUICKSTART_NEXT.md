@@ -185,3 +185,101 @@ test "$code" = "200"
 curl -s -X POST -d channel=news -d msg="nobody is held" http://127.0.0.1:8000/publish | grep -q '"workers": 0'
 echo "under gunicorn: /events answered $(grep -c '' degraded.txt) lines and closed, /ws answered $code, publish reached 0 workers"
 ```
+
+## 4. A stream the server holds against a grant
+
+The hold views above run in Python, once per connection, and that is
+cheap. A `--mount PREFIX=hold` moves even that off the interpreter: your
+view still decides, with its session and its database, whether this
+browser may hold a stream and on which channel, but instead of holding it
+signs the decision into the stream URL, and a Mojo pool thread verifies
+the signature and holds. The key is one environment variable both sides
+read. `granted.py` is a plain WSGI application with the two views a real
+one has — one that issues a grant, one that publishes.
+
+```bash setup
+export M0_GRANT_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+cat > granted.py <<'PY'
+import json
+from urllib.parse import parse_qs
+from http.cookies import SimpleCookie
+
+from m0serve import grant, m0pub
+
+
+def application(environ, start_response):
+    path = environ["PATH_INFO"]
+    query = parse_qs(environ["QUERY_STRING"])
+    channel = query.get("channel", ["news"])[0]
+    if path == "/grant":
+        # Your authorization runs here, with everything the request
+        # carries. The grant is bound to the session cookie, so the URL is
+        # useless to anyone who copies it without the cookie.
+        cookies = SimpleCookie(environ.get("HTTP_COOKIE", ""))
+        session = cookies["sessionid"].value if "sessionid" in cookies else None
+        if session is None:
+            start_response("401 Unauthorized", [("Content-Type", "application/json")])
+            return [b'{"error":"sign in first"}']
+        url = grant.stream_url("/rt", channel, session=session, ttl=3600)
+        start_response("200 OK", [("Content-Type", "application/json")])
+        return [json.dumps({"url": url}).encode()]
+    if path == "/publish":
+        msg = query.get("msg", [""])[0]
+        workers, event_id = m0pub.publish_with_id(channel, msg, event="message")
+        start_response("200 OK", [("Content-Type", "application/json")])
+        return [json.dumps({"id": event_id}).encode()]
+    start_response("404 Not Found", [("Content-Type", "text/plain")])
+    return [b"not found\n"]
+PY
+```
+
+Serve it with the hold mount beside it. The mount needs `--realtime`, which
+is what wires a pool thread's hold to the event loop, and refuses to start
+without the key.
+
+```bash serve
+m0serve --mount /=granted:application --mount /rt=hold --realtime --health-path /health --port 8000
+```
+
+Ask for a grant as a signed-in browser would, open the URL it returns with
+the same cookie, and publish. Then try the URL without the cookie.
+
+```bash verify
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8000/health
+URL=$(curl -s -H 'Cookie: sessionid=demo-session' 'http://localhost:8000/grant?channel=news' \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["url"])')
+echo "$URL"
+curl -sN --max-time 6 -H 'Cookie: sessionid=demo-session' "http://localhost:8000$URL" > granted-stream.txt &
+sleep 1
+curl -s -X POST 'http://localhost:8000/publish?channel=news&msg=hello%20from%20python'
+for i in $(seq 1 25); do
+  grep -q "data: hello from python" granted-stream.txt 2>/dev/null && break
+  sleep 0.2
+done
+cat granted-stream.txt
+grep -q 'data: hello from python' granted-stream.txt
+curl -s "http://localhost:8000$URL"
+curl -s "http://localhost:8000$URL" | grep -q '"reason":"no session cookie"'
+```
+
+```text
+/rt/stream?g=v1.3f1c9a2b.1757700000.news.HsHCa1DV08WNlYMYGvgHZg.<43 characters>
+{"id": 1}
+: open
+
+id: 1
+event: message
+data: hello from python
+
+{"error":"invalid","reason":"no session cookie"}
+```
+
+The grant is `v1.<key id>.<expiry>.<channel>.<session binding>.<signature>`
+and the mount checks it in that order — the signature in constant time,
+the expiry against its own clock, the cookie against the binding — before
+it holds. A refusal is a 401 whose `error` is `expired`, meaning ask for a
+fresh URL, or `invalid`, meaning stop. Rotate the key by moving the old
+value to `M0_GRANT_KEY_PREV`; grants signed under either verify until you
+unset it. What the mount will not do is close a stream your application
+later decides against: revocation is bounded by the grant's `ttl`, one
+hour by default.

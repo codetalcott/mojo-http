@@ -104,6 +104,9 @@ struct ServeOptions(Copyable, Movable):
     kinds cannot be read off two booleans, and every place that tried is
     listed in `wsgi_lanes`.
     """
+    var hold_mounts: List[Int]
+    """Mount indexes whose spec was `hold`: the grant-verified hold mount,
+    compiled in like `mojo` and served by its own `MojoPool` threads."""
     var mount_explicit: List[Bool]
     """Per mount, whether the user wrote `:ATTR`. Discovery applies to a
     mount exactly as it does to a positional spec, and for the same reason:
@@ -229,6 +232,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_explicit = List[Bool]()
         self.asgi_mounts = List[Int]()
         self.mojo_mounts = List[Int]()
+        self.hold_mounts = List[Int]()
         self.protocol = String(PROTOCOL_AUTO)
         self.host = String("0.0.0.0")
         self.port = DEFAULT_PORT
@@ -269,6 +273,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_explicit = copy.mount_explicit.copy()
         self.asgi_mounts = copy.asgi_mounts.copy()
         self.mojo_mounts = copy.mojo_mounts.copy()
+        self.hold_mounts = copy.hold_mounts.copy()
         self.protocol = copy.protocol
         self.host = copy.host
         self.port = copy.port
@@ -309,6 +314,7 @@ struct ServeOptions(Copyable, Movable):
         self.mount_explicit = move.mount_explicit^
         self.asgi_mounts = move.asgi_mounts^
         self.mojo_mounts = move.mojo_mounts^
+        self.hold_mounts = move.hold_mounts^
         self.protocol = move.protocol^
         self.host = move.host^
         self.port = move.port
@@ -639,14 +645,34 @@ def wsgi_lanes(opts: ServeOptions) -> List[Int]:
     """
     var lanes = List[Int]()
     for i in range(len(opts.mount_prefixes)):
-        if not _in(opts.asgi_mounts, i) and not _in(opts.mojo_mounts, i):
+        if not _in(opts.asgi_mounts, i) and not is_compiled_mount(opts, i):
             lanes.append(i)
     return lanes^
 
 
 def mojo_lanes(opts: ServeOptions) -> List[Int]:
-    """The lanes a `MojoPool` serves. Its threads never touch Python."""
+    """The lanes the `MojoMount` pool serves. Its threads never touch Python."""
     return opts.mojo_mounts.copy()
+
+
+def hold_lanes(opts: ServeOptions) -> List[Int]:
+    """The lanes the `HoldMount` pool serves: `--mount PREFIX=hold`."""
+    return opts.hold_mounts.copy()
+
+
+def is_compiled_mount(opts: ServeOptions, i: Int) -> Bool:
+    """Whether mount `i` is a compiled-in handler (`mojo` or `hold`) rather
+    than an importable Python object -- nothing to detect, nothing to
+    import, and never dealt to a WSGI thread."""
+    return _in(opts.mojo_mounts, i) or _in(opts.hold_mounts, i)
+
+
+def has_python_mount(opts: ServeOptions) -> Bool:
+    """Whether any mount is a Python application at all (WSGI or ASGI)."""
+    for i in range(len(opts.mount_prefixes)):
+        if not is_compiled_mount(opts, i):
+            return True
+    return False
 
 
 def has_wsgi_mount(opts: ServeOptions) -> Bool:
@@ -1084,6 +1110,12 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         # here and skipped by `_resolve_mounts`.
         if spec == "mojo":
             opts.mojo_mounts.append(len(opts.mount_prefixes) - 1)
+            opts.mount_explicit.append(True)
+        elif spec == "hold":
+            # `=hold` is the other compiled-in kind: the grant-verified hold
+            # mount (`HoldMount` in m0serve.mojo), which needs `--realtime`
+            # and `M0_GRANT_KEY`; both are checked once the options are whole.
+            opts.hold_mounts.append(len(opts.mount_prefixes) - 1)
             opts.mount_explicit.append(True)
         else:
             opts.mount_explicit.append(spec.find(":") >= 0)
