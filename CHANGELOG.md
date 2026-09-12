@@ -45,8 +45,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and so can outlive its query, `Params` binds positionally with an explicit
   OID per value, and every error carries a SQLSTATE that `sqlstate()`
   recovers. `open()` applies a connect timeout, a statement timeout,
-  `client_encoding=UTF8` and an application name, merging rather than
-  appending so each stays overridable; `open_readonly()` adds a read-only
+  `client_encoding=UTF8`, an application name, and TCP keepalives of 30 s
+  idle, 10 s interval and 3 probes with a 60 s `tcp_user_timeout` — libpq's
+  own keepalives use the OS's timings, measured at 7200 s idle, so a
+  listener behind a NAT that dropped its idle connection went deaf for two
+  hours — merging rather than appending so each stays overridable; `open_readonly()` adds a read-only
   transaction default; every URL is redacted before it reaches an error, a
   log or the doctor, including the ones `redact` cannot parse — an
   unencoded `/`, `?` or `@` in a password, a key/value string with quoted

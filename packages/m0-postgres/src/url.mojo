@@ -35,6 +35,31 @@ connection, where every query inherits it, rather than at each call site,
 where it would be forgotten. It surfaces as SQLSTATE 57014.
 """
 
+comptime DEFAULT_KEEPALIVES_IDLE_S = "30"
+comptime DEFAULT_KEEPALIVES_INTERVAL_S = "10"
+comptime DEFAULT_KEEPALIVES_COUNT = "3"
+comptime DEFAULT_TCP_USER_TIMEOUT_MS = "60000"
+"""TCP keepalives, and a bound on unacknowledged data: a dead peer in ~a minute.
+
+Thirty idle seconds, then a probe every ten, three unanswered probes; and
+sixty seconds for data the peer never acknowledges. Both halves matter.
+Keepalives are what notice a connection that went quiet and then went away
+— a NAT or proxy forgetting an idle `LISTEN` connection. libpq already
+turns `SO_KEEPALIVE` on, but with the OS's timings: measured on macOS
+through the bare constructor, 7200 s idle, a probe every 75 s, 8 probes —
+over two hours of a listener parked in `poll` on a socket that is gone,
+and Linux's defaults are the same two hours. With these defaults the same
+connection reads 30, 10 and 3. `tcp_user_timeout`
+bounds the other shape: a query written into a half-open connection, which
+otherwise blocks in `recv` with no client-side bound at all (the statement
+timeout is enforced by the SERVER, which is the side that is gone).
+
+All four keywords predate libpq 12, this package's floor (`tcp_user_timeout`
+arrived in 12 itself). libpq ignores them on a Unix socket, and
+`tcp_user_timeout` where the platform has no `TCP_USER_TIMEOUT` (macOS),
+so none of them can fail a connection.
+"""
+
 comptime REDACTED = "***"
 
 
@@ -111,6 +136,10 @@ def with_defaults(url: String) raises -> String:
     - `application_name=m0serve` — so `pg_stat_activity` names this server
       rather than showing an anonymous connection beside the application's.
     - `options=-c statement_timeout=...` — see DEFAULT_STATEMENT_TIMEOUT_MS.
+    - `keepalives=1` with `keepalives_idle`, `keepalives_interval`,
+      `keepalives_count` and `tcp_user_timeout` — see
+      DEFAULT_TCP_USER_TIMEOUT_MS. Each is merged on its own, so a caller
+      who sets `keepalives=0` keeps it and the tuning beside it is inert.
 
     A key/value conninfo (`host=x dbname=y`) is extended with the same
     keywords space-separated; a URI gets them as query parameters. Both
@@ -128,6 +157,21 @@ def with_defaults(url: String) raises -> String:
         out += _sep(out, uri) + "client_encoding=UTF8"
     if not has_keyword(scope, "application_name"):
         out += _sep(out, uri) + "application_name=m0serve"
+    if not has_keyword(scope, "keepalives"):
+        out += _sep(out, uri) + "keepalives=1"
+    if not has_keyword(scope, "keepalives_idle"):
+        out += _sep(out, uri) + "keepalives_idle=" + DEFAULT_KEEPALIVES_IDLE_S
+    if not has_keyword(scope, "keepalives_interval"):
+        out += (
+            _sep(out, uri) + "keepalives_interval="
+            + DEFAULT_KEEPALIVES_INTERVAL_S
+        )
+    if not has_keyword(scope, "keepalives_count"):
+        out += _sep(out, uri) + "keepalives_count=" + DEFAULT_KEEPALIVES_COUNT
+    if not has_keyword(scope, "tcp_user_timeout"):
+        out += (
+            _sep(out, uri) + "tcp_user_timeout=" + DEFAULT_TCP_USER_TIMEOUT_MS
+        )
     # `options` is one keyword whose VALUE is a command line, so an
     # application that sets its own keeps them entire: this is
     # all-or-nothing rather than merged inside the value, which is the

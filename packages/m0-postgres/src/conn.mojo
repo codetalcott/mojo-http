@@ -515,8 +515,9 @@ struct Connection(Movable):
 def open(url: String) raises -> Connection:
     """Connect with this package's server defaults applied.
 
-    A connect timeout, `client_encoding=UTF8`, an application name and a
-    statement timeout — `url.mojo` says what each is for and merges rather
+    A connect timeout, `client_encoding=UTF8`, an application name, a
+    statement timeout, and TCP keepalive timings with `tcp_user_timeout`
+    so a dropped connection is noticed in about a minute — `url.mojo` says what each is for and merges rather
     than appends, so every one of them is overridable by naming it in the
     URL. The shape `m0-sqlite`'s `open` has: a constructor that makes
     promises a server wants, beside a bare one that makes none.

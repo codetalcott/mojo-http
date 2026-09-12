@@ -283,6 +283,71 @@ def test_a_key_value_conninfo_gets_key_value_defaults() raises:
     assert_true("options='-c statement_timeout=" in out)
 
 
+def _count(hay: String, needle: String) -> Int:
+    """Occurrences of `needle` in `hay`, by bytes."""
+    var h = hay.as_bytes()
+    var nb = needle.as_bytes()
+    var count = 0
+    for i in range(len(h) - len(nb) + 1):
+        var matched = True
+        for j in range(len(nb)):
+            if h[i + j] != nb[j]:
+                matched = False
+                break
+        if matched:
+            count += 1
+    return count
+
+
+def test_tcp_keepalives_are_on_by_default_in_both_spellings() raises:
+    """A dropped idle connection must be noticed in about a minute, not two hours.
+
+    libpq turns keepalives on by itself but with the OS's timings — 7200 s
+    idle, 75 s between probes, 8 probes, measured — so a NAT or proxy that
+    forgets an idle `LISTEN` connection leaves the listener parked in `poll`
+    for over two hours, and a query over a half-open connection blocks in
+    `recv` with no client-side bound at all.
+
+    covers: O7
+    """
+    for url in [String("postgres://db/app"), String("host=db dbname=app")]:
+        var out = with_defaults(url)
+        for key in [
+            "keepalives",
+            "keepalives_idle",
+            "keepalives_interval",
+            "keepalives_count",
+            "tcp_user_timeout",
+        ]:
+            assert_true(has_keyword(out, key))
+        assert_true("keepalives=1" in out)
+        assert_equal(_count(out, "keepalives="), 1)
+        assert_equal(_count(out, "tcp_user_timeout="), 1)
+
+
+def test_a_keepalive_the_caller_set_wins_and_is_not_repeated() raises:
+    """Merged like every other default: the caller's value, once.
+
+    covers: O7
+    """
+    var uri = with_defaults(
+        "postgres://db/app?keepalives=0&keepalives_idle=600&tcp_user_timeout=0"
+    )
+    assert_true("keepalives=0" in uri)
+    assert_false("keepalives=1" in uri)
+    assert_equal(_count(uri, "keepalives="), 1)
+    assert_true("keepalives_idle=600" in uri)
+    assert_equal(_count(uri, "keepalives_idle="), 1)
+    assert_true("tcp_user_timeout=0" in uri)
+    assert_equal(_count(uri, "tcp_user_timeout="), 1)
+    # The ones the caller left alone are still added.
+    assert_equal(_count(uri, "keepalives_interval="), 1)
+    var kv = with_defaults("host=db keepalives_count=9")
+    assert_true("keepalives_count=9" in kv)
+    assert_equal(_count(kv, "keepalives_count="), 1)
+    assert_true("keepalives=1" in kv)
+
+
 def test_the_statement_timeout_rides_the_options_keyword() raises:
     """A bound on one statement, applied at the connection.
 
