@@ -8,6 +8,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **A Datastar form, end to end** (SPEC N12). The todo demo renames a todo
+  in place: `Fragment[Datastar]` on the `<form>` emits
+  `data-on:submit__prevent="@post('/edit/7', {contentType: 'form'})"`, the
+  new `/edit/:id` route reads the field with `form(req)` and refuses any
+  other body with a 400, and the broadcast morphs the renamed todo into
+  every tab. `smoke-todo` posts the form and greps the frame and the page's
+  wire spelling on every pull request; `poe browser-datastar-form`, a
+  pre-release step, drives the same form in Chromium and records what the
+  pinned bundle sends — the form's fields urlencoded, and for a bound
+  field's own action the signal store as JSON, which confirms D21. The last
+  `planned` row on the layer is now N13.
+
 ## [1.2.0] — 2026-09-12
 
 A stream the server holds against a grant, and a process for the

@@ -17,3 +17,11 @@ comptime TOGGLE = "/toggle/:id"
 
 comptime DELETE = "/delete/:id"
 """POST: remove, broadcast."""
+
+comptime EDIT = "/edit/:id"
+"""POST: rename from the form's `text` field, broadcast.
+
+The one route a `<form>` posts to. Its request is what Datastar sends for
+`{contentType: 'form'}` -- the form's fields, urlencoded, no signals --
+which `form(req)` reads exactly as it reads an htmx form.
+"""

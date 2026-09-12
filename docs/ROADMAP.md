@@ -102,22 +102,10 @@ somebody else's Django projects inside the pull request that trips it.
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
-fails if it does not resolve. Two are planned, both on the application
-layer (SPEC section N); the server has none. Each names the application
-that pulls it, the gate that will verify it, and the
-[decision](DECISIONS.md) it retires, before it is built.
-
-### A Datastar form, end to end
-
-Row N12. An edit form on `apps/datastar_todo`, renaming a todo in place:
-`Fragment[Datastar]` on a `<form>` emits `submit__prevent` with
-`{contentType: 'form'}`, `form(req)` reads it, and the broadcast morphs the
-answer into every tab. The form arm is where a wrong spelling fails
-silently — a unit test spells it today and no browser has sent it. Gate:
-the smoke posts the form and greps the frame, and a Chromium run submits
-it for real; whether that run becomes a pre-release step in
-[RELEASING.md](RELEASING.md) is open, and it is not for CI. Confirms or
-corrects D21.
+fails if it does not resolve. One is planned, on the application layer
+(SPEC section N); the server has none. It names the application that
+pulls it, the gate that will verify it, and the [decision](DECISIONS.md)
+it retires, before it is built.
 
 ### Sessions and CSRF behind a login
 
@@ -130,8 +118,9 @@ below it: a login on a demo proves less than one real path in production.
 The HMAC is also what that path needs first, so the primitive may land
 ahead of the login — [the note](notes/hold-from-a-mojo-mount.md) says why.
 
-The last entries before these, all built:
+The last entries before this, all built:
 
+- [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md)
 - [An SSE hold from a Mojo mount — shipped 2026-09-11](notes/hold-from-a-mojo-mount.md)
 - [Accept sharing: workers sharing a listener share its connections](notes/accept-sharing.md)
 - [A conformance-suite tier](notes/conformance-suite-tier.md)
@@ -170,6 +159,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- **A Datastar form, end to end** (N12) — built 2026-09-12: the todo demo's rename form, `form(req)` on the other side, a smoke on the wire and a Chromium run that recorded what the pinned bundle sends; D21 confirmed. The write-up is [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md).
 - **Prefork workers did not share a listener's connections** (the same worker won 32 of 32 on macOS and 23–31 of 32 on Linux, so `--workers 2` served a keep-alive load at one worker's throughput) — resolved by E16, the accept-sharing hand-off; the write-up is [Accept sharing — shipped 2026-09-05](notes/accept-sharing.md).
 - **A request body still arriving at SIGTERM held the drain to its deadline** — resolved; the write-up is [A request body still arriving at SIGTERM held the drain to its deadline — resolved](notes/request-body-at-sigterm.md).
 - **The WebSocket close path RSTing instead of FINning** — resolved v0.15.1; the write-up is [The WebSocket close path RSTing instead of FINning — resolved v0.15.1](notes/websocket-close-rst.md).

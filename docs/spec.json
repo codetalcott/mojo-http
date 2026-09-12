@@ -1494,8 +1494,8 @@
       "section": "N",
       "category": "N. Writing an application in Mojo",
       "capability": "A Datastar form end to end: `Fragment[Datastar]` on a `<form>` emits the submit action with `{contentType: 'form'}`, `form(req)` reads what the browser sends, and the broadcast morphs the answer into every tab; gated by a smoke that posts the form and greps the frame, and a browser run that submits it for real, since the form arm is where a wrong spelling fails silently",
-      "status": "planned",
-      "evidence": "ROADMAP: A Datastar form, end to end"
+      "status": "verified",
+      "evidence": "`Smoke test the Datastar todo demo` (every PR) \u2014 posts the rename form urlencoded and greps the frame, greps the page for the form arm's wire spelling, and refuses a JSON body posted to the same route; the arm in a real browser is `browser-datastar-form` (pre-release): Chromium presses Enter in the rename form and the pinned bundle posts the fields urlencoded, a bound field's action posts the signal store as JSON (D21), and a second tab morphs"
     },
     {
       "id": "N13",

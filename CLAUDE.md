@@ -1183,9 +1183,10 @@ and the condition that would retire it: templates (D2), middleware (D3),
 named params (D4), routes as function values (D5), sessions and CSRF (D15;
 `wyhash64` is not a MAC), multipart (D16), `HX-*` header setters (D17),
 streaming from a Mojo mount other than as an `M0-Hold` (D22, which
-superseded D18 when the hold landed as N11). Two of those are also
-`planned` SPEC rows with a ROADMAP heading each — N12 a Datastar form end
-to end, N13 a login — and the ledger row stands until the row is built. Read the ledger and `poe milestones` before proposing a
+superseded D18 when the hold landed as N11). One of those is also a
+`planned` SPEC row with a ROADMAP heading — N13 a login — and the ledger
+row stands until the row is built; N12, the Datastar form, shipped
+2026-09-12 with `poe browser-datastar-form` as its pre-release browser run. Read the ledger and `poe milestones` before proposing a
 piece; the process is one pull request per round carrying the note, the
 rows, the ledger update and the milestone line, reviewed from a separate
 session before it merges.

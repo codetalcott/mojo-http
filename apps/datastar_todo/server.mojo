@@ -49,7 +49,7 @@ from lightbug_http.header import Headers, Header, HeaderKey
 from m0_core.json_parse import parse_json_field
 
 from m0_http import reply
-from m0_http import AppConfig, Router, install_shutdown_signals
+from m0_http import AppConfig, Router, form, install_shutdown_signals, url_for
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
@@ -57,7 +57,7 @@ from m0_datastar.signals import read_signals
 from m0_sqlite import Connection, open
 
 from datastar_todo.page import render_page, render_todos
-from datastar_todo.routes import ADD, DELETE, EVENTS, TOGGLE
+from datastar_todo.routes import ADD, DELETE, EDIT, EVENTS, TOGGLE
 
 
 comptime STREAM_URL = EVENTS
@@ -71,6 +71,7 @@ comptime JOURNAL_ENTRIES = 64
 comptime H_ADD = 0
 comptime H_TOGGLE = 1
 comptime H_DELETE = 2
+comptime H_EDIT = 3
 
 
 struct TodoHandler(HTTPService):
@@ -88,6 +89,7 @@ struct TodoHandler(HTTPService):
         self.router.add("POST", ADD, H_ADD)
         self.router.add("POST", TOGGLE, H_TOGGLE)
         self.router.add("POST", DELETE, H_DELETE)
+        self.router.add("POST", EDIT, H_EDIT)
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
         self.stream = DatastarStream(1024, journal_entries=JOURNAL_ENTRIES)
@@ -191,7 +193,25 @@ struct TodoHandler(HTTPService):
         if id >= 0:
             # A stale tab racing a delete makes these no-ops; the broadcast
             # below still runs and corrects that tab's view. 204 either way.
-            if m.handler_id == H_TOGGLE:
+            if m.handler_id == H_EDIT:
+                # The form's fields, or None for any other body: a JSON
+                # signal store posted here is refused, not read as a field
+                # named after itself.
+                var maybe = form(req)
+                if not maybe:
+                    return reply.problem(
+                        400, "Invalid Rename",
+                        "the request body must be application/x-www-form-urlencoded",
+                        url_for(EDIT, String(id)),
+                    )
+                var text = maybe.value().first("text")
+                if text.byte_length() == 0:
+                    return reply.no_content()
+                var ren = self.db.prepare("UPDATE todos SET text = ? WHERE id = ?")
+                ren.bind_text(1, text)
+                ren.bind_int(2, id)
+                _ = ren.step()
+            elif m.handler_id == H_TOGGLE:
                 var upd = self.db.prepare(
                     "UPDATE todos SET done = 1 - done WHERE id = ?"
                 )
