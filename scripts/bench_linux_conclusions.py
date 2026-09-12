@@ -116,7 +116,10 @@ def push_tree():
          # exited 2, and its `2>/dev/null` made the failure silent.
          "packages", "scripts", "apps", "pyproject.toml", "uv.lock", "bench"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    unpack = "mkdir -p /src && cd /src && tar -xf - && find /src -name '._*' -delete"
+    # `rm -rf` first: a tar carries no deletion, and a file the Mac moved or
+    # removed would otherwise linger in /src and fail the stamp (2026-09-12).
+    unpack = ("mkdir -p /src && cd /src && rm -rf packages scripts apps bench"
+              " && tar -xf - && find /src -name '._*' -delete")
     if REMOTE:
         sink = subprocess.Popen(["ssh"] + SSH + [REMOTE, f"bash -c {_shq(unpack)}"],
                                 stdin=tar.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
