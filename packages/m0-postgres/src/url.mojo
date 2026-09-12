@@ -97,7 +97,13 @@ def has_keyword(url: String, key: String) -> Bool:
     Matched at a boundary — the start, or after a separator — so that
     looking for `dbname` does not find `fallback_application_name`, and
     looking for `password` does not find a `password` that is part of a
-    longer word.
+    longer word. The separators are a URI query's `?` and `&`, and ANY
+    whitespace, because libpq's `conninfo_parse` separates key/value tokens
+    on `isspace` — the same set `_is_space` recognises, so a
+    tab-separated `host=db\tkeepalives=0` (a heredoc `DATABASE_URL`, say) is
+    detected. Checking only a literal space missed it, and `with_defaults`
+    then appended a second `keepalives=1` that libpq, taking the last
+    occurrence, honoured over the caller's own.
     """
     var hay = url.as_bytes()
     var needle = (key + "=").as_bytes()
@@ -116,7 +122,7 @@ def has_keyword(url: String, key: String) -> Bool:
         if (
             prev == UInt8(ord("?"))
             or prev == UInt8(ord("&"))
-            or prev == UInt8(ord(" "))
+            or _is_space(prev)
         ):
             return True
     return False

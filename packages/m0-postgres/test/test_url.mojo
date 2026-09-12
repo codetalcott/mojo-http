@@ -348,6 +348,45 @@ def test_a_keepalive_the_caller_set_wins_and_is_not_repeated() raises:
     assert_true("keepalives=1" in kv)
 
 
+def test_a_tab_separated_keyword_is_detected_as_already_set() raises:
+    """A conninfo token can be separated by any whitespace, not just a space.
+
+    A heredoc `DATABASE_URL` or a config generator can put a tab or a
+    newline between keywords. `has_keyword` checked only a literal space, so
+    `with_defaults` appended a second `keepalives=1`, and libpq — taking the
+    last occurrence — silently inverted the caller's explicit
+    `keepalives=0`. Both a tab and a newline are exercised.
+
+    covers: O7
+    """
+    var tabbed = with_defaults("host=db\tkeepalives=0")
+    assert_true("keepalives=0" in tabbed)
+    assert_false("keepalives=1" in tabbed)
+    assert_equal(_count(tabbed, "keepalives="), 1)
+    var newlined = with_defaults("host=db\nkeepalives=0\nuser=app")
+    assert_true("keepalives=0" in newlined)
+    assert_false("keepalives=1" in newlined)
+    assert_equal(_count(newlined, "keepalives="), 1)
+
+
+def test_read_only_refuses_a_tab_separated_options() raises:
+    """The same boundary gap made read_only miss a tab-separated `options`.
+
+    A missed `options` would add a SECOND, which libpq resolves to the last
+    — silently dropping the caller's command line — so the refusal must fire
+    whatever whitespace precedes the keyword.
+
+    covers: O7
+    """
+    var raised = False
+    try:
+        _ = read_only("host=db\toptions=-c work_mem=64MB")
+    except e:
+        raised = True
+        assert_true("already sets" in String(e))
+    assert_true(raised)
+
+
 def test_the_statement_timeout_rides_the_options_keyword() raises:
     """A bound on one statement, applied at the connection.
 
