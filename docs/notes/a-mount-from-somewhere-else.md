@@ -58,6 +58,14 @@ file, exactly as the struct was when it lived inside that file.
 module is the measurement, not an inference: both route real requests through
 the pool threads the conformance drives.
 
+The corollary: an application must **not** precompile its mount directory. A
+conformance behind a `.mojoc` emits no witness table, and the handler would
+build, start and answer nothing. Nothing in this repo triggers it —
+`mojo precompile src` never sees `mount/` — but an application that packaged
+its own mount as a precompiled module would hit the silent failure, and the
+missing-module guard would not catch it because the `.mojo` is still there.
+Keep the mount a source directory.
+
 ## The gate
 
 `smoke-mount-seam` (SPEC N14) builds a second binary against the fixture and

@@ -5782,19 +5782,6 @@ python3 scripts/outbox_cap_probe.py 8156 || fail 'outbox cap probe failed'
 python3 scripts/emit.py --covers I17 --task smoke-outbox-cap
 """
 
-# An SSE hold from a Mojo mount (SPEC N11). A view on the Mojo mount
-# returns the two instruction headers a Django view returns, the pool
-# thread rewrites the response into the stream's head and sends the loop
-# the `h` frame a WSGI pool thread sends, and a publish from Django reaches
-# the Mojo-held stream through the loop's registries. Each phase pins one
-# thing that was silent-wrong or absent before: the frame arriving before
-# the head (delivery at all), the reconnect cursor reaching the
-# subscription, the hold drained as a HOLD (comment heartbeats, no chunked
-# framing -- the smoke-django-realtime phase-6 shape), the slot released
-# when the client leaves, the Mojo lane answering while the Python pool is
-# busy, and the degrade without --realtime. The negative arm is the
-# refusal that still stands: mojo_pool.mojo's 409 for an unheld stream,
-# kept by test_mojo_pool and the pool sabotage.
 [tool.poe.tasks.smoke-mount-seam]
 help = "An application supplies its own Mojo mount by module, without copying m0serve.mojo"
 shell = """
@@ -5805,12 +5792,20 @@ srv=bin/m0serve-seam
 pid=
 fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat seam.log 2>/dev/null; rm -f seam.log seam_index.html; exit 1; }
 
-# A directory with no mount module is refused by the build, in seconds, not
-# compiled into something. Asserted on the task's own status, never a pipe's.
-M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture/absent M0SERVE_OUT=bin/m0serve-absent \
-  uv run poe build-serve > /dev/null 2>&1
+# A directory with no mount module is refused by the build BEFORE mojo build
+# runs (SPEC N14's "before anything compiles"). Asserting only a non-zero
+# status cannot tell that refusal from an ordinary compile error, so the
+# guard's own message is what is matched -- delete the `-f` check in
+# build-serve and this arm goes red rather than passing on the compiler's
+# "module m0serve_mount unresolvable". A stale binary from an earlier local
+# run would satisfy the produced-nothing check falsely, so clear it first.
+rm -f bin/m0serve-absent
+out=$(M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture/absent M0SERVE_OUT=bin/m0serve-absent \
+  uv run poe build-serve 2>&1)
 rc=$?
 [ $rc -ne 0 ] || fail "build-serve accepted a mount directory with no m0serve_mount.mojo"
+echo "$out" | grep -q 'no m0serve_mount.mojo in' \
+  || fail "a missing mount module was not refused before compiling; got: $out"
 [ ! -e bin/m0serve-absent ] || fail "a refused mount directory still produced a binary"
 
 # The seam: the same entry file, a different module on the path.
@@ -5854,6 +5849,19 @@ echo "smoke-mount-seam OK"
 python3 scripts/emit.py --covers N14 --task smoke-mount-seam
 """
 
+# An SSE hold from a Mojo mount (SPEC N11). A view on the Mojo mount
+# returns the two instruction headers a Django view returns, the pool
+# thread rewrites the response into the stream's head and sends the loop
+# the `h` frame a WSGI pool thread sends, and a publish from Django reaches
+# the Mojo-held stream through the loop's registries. Each phase pins one
+# thing that was silent-wrong or absent before: the frame arriving before
+# the head (delivery at all), the reconnect cursor reaching the
+# subscription, the hold drained as a HOLD (comment heartbeats, no chunked
+# framing -- the smoke-django-realtime phase-6 shape), the slot released
+# when the client leaves, the Mojo lane answering while the Python pool is
+# busy, and the degrade without --realtime. The negative arm is the
+# refusal that still stands: mojo_pool.mojo's 409 for an unheld stream,
+# kept by test_mojo_pool and the pool sabotage.
 [tool.poe.tasks.smoke-mojo-mount-hold]
 help = "An SSE hold taken on a Mojo mount's pool thread, fed by a publish from Django"
 deps = ["build-serve"]
@@ -6186,11 +6194,16 @@ mkdir -p bin
 # tarball, never a second wheel. `--doctor` tells the two apart:
 # `build.apple_target` is m1 for the wheel on every Mac, and the host's
 # generation here (smoke-apple-silicon asserts both).
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I packages/m0-wsgi/mount/ \
+# The mount module is a root like build-serve's, and honours the same
+# M0SERVE_MOUNT_DIR: an application building a native desktop binary wants
+# its OWN mount, not the demo. Replaces the default the same way.
+mount_dir="${M0SERVE_MOUNT_DIR:-packages/m0-wsgi/mount}"
+[ -f "$mount_dir/m0serve_mount.mojo" ] || { echo "build-serve-native: no m0serve_mount.mojo in $mount_dir"; exit 1; }
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
   packages/m0-wsgi/m0serve.mojo -o bin/m0serve-native || exit 1
 python3 scripts/relocate.py --no-id \
   --rpath '@loader_path' --rpath '@loader_path/../_lib' bin/m0serve-native || exit 1
-echo "built bin/m0serve-native (host CPU, host floor)"
+echo "built bin/m0serve-native (host CPU, host floor; mount: $mount_dir)"
 """
 
 [tool.poe.tasks.check-serve-portable]

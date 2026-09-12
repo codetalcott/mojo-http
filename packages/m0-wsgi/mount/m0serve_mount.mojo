@@ -5,10 +5,16 @@ type, not an importable object, so no command line can name one against a
 prebuilt binary. `m0serve.mojo` imports `MojoMount` from a module called
 `m0serve_mount`, and the build's `-I` roots decide which file that is:
 `poe build-serve` puts `packages/m0-wsgi/mount/` on the path, so the demo
-below is what ships, and an application builds its own binary with its
-own directory FIRST on the path, holding its own `m0serve_mount.mojo`.
-The entry file is never copied, so it cannot drift from the release the
-application builds against.
+below is what ships, and an application builds its own binary with
+`M0SERVE_MOUNT_DIR` naming its own directory, which REPLACES that root
+rather than joining it. Replaces, because the first `-I` root wins without
+a word: an application directory added BESIDE the default builds cleanly
+and serves the demo, so a wrong path has to be an error, not a silent
+fallback (SPEC N14). The entry file is never copied, so it cannot drift
+from the release the application builds against, and the module is
+resolved from SOURCE, never a `.mojoc` -- a `PoolHandler` conformance
+behind a precompiled package emits no witness table, so an application
+must not `precompile` its mount directory.
 
 The contract is one name: `struct MojoMount(PoolHandler)`. It is built on
 each pool thread by `make(ctx)`, answers `func`, and is told `shutdown`.
