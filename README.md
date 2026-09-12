@@ -757,6 +757,7 @@ so it is not worth the ownership complexity yet.
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
 uv run poe test-all         # 1180 unit tests, then compiles every example
+uv run poe test-all         # 1172 unit tests, then compiles every example
 uv run poe test-all         # 1157 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
