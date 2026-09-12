@@ -33,9 +33,16 @@ authority a database write already carries.
 
 Four rules:
 
-  - **Worker 0 only.** Every worker would otherwise open its own connection
-    and deliver its own copy of every notification. The tick-owner rule
-    `apps/datastar_counter` follows, for the same reason.
+  - **Worker 0 only, and once per process under `--threads`.** Every worker
+    would otherwise open its own connection and deliver its own copy of
+    every notification — the tick-owner rule `apps/datastar_counter`
+    follows, for the same reason. The threaded mode has one process, so it
+    needs no such gate: `bus.write_fds` is one channel per THREAD there,
+    each thread drains its own exactly as a worker does, and the listener
+    never learns which it is talking to — for the same reason `m0pub` does
+    not. Both paths start it, which is not decoration: `--threads` returns
+    from the worker path before the prefork start, so the flag was a silent
+    no-op there until it was wired in both.
   - **`skip_worker` is -1**, so the frame goes to every channel INCLUDING
     this worker's: unlike an in-process publish, nothing has already queued
     it locally.

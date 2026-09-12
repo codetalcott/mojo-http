@@ -19,7 +19,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   that already has a database cursor, with no driver imported into a
   stdlib-only module. Refused without `--realtime`, which is what creates
   the bus, and `--doctor` reports both that refusal and which libpq it
-  found. Nothing is resolved from libpq when the flag is absent.
+  found. Nothing is resolved from libpq when the flag is absent — the
+  server binary's dynamic dependencies are unchanged, which is what keeps
+  the wheel installable on a machine with no PostgreSQL client. Started in
+  both execution modes: worker 0 under `--workers`, and once per process
+  under `--threads`, where the bus is one channel per thread.
 
 - **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
   sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else

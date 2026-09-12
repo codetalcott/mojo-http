@@ -2025,6 +2025,24 @@ def _serve_threaded(
     it is talking to.
     """
     require_free_threading(opts.threads)
+    # The Postgres listener, once for the process — there is one here, where
+    # prefork has one per worker and starts it only on worker 0. It publishes
+    # to `bus.write_fds`, which in this mode is one channel per THREAD, and
+    # each thread drains its own exactly as a worker does; the listener never
+    # learns which it is talking to, for the same reason `m0pub` does not.
+    # Started before the interpreter is touched and stopped after the loops
+    # join, so it is outside every Python rule this function exists to keep.
+    var pg = PgListener()
+    if opts.pg_listen:
+        try:
+            pg = PgListener.start(
+                opts.pg_listen,
+                String(DEFAULT_CHANNEL),
+                bus.write_fds.copy(),
+                _shared_id_addr(),
+            )
+        except e:
+            print("m0serve: pg-listen did not start: " + String(e), flush=True)
     if opts.app_dir.byte_length() > 0:
         prepend_to_path(opts.app_dir)
     # Import once on main (so Django's setup() runs single-threaded) and
@@ -2095,5 +2113,9 @@ def _serve_threaded(
     var failed = server.serve[WSGIHandler](opts.threads, opts_addr, shutdown_fd)
     # `listener` must outlive `serve`; this use is what keeps it alive.
     _ = listener.socket.fd.value
+    # Stopped after the loops join and BEFORE the exit below, so a startup
+    # failure does not leave the listener holding a connection while the
+    # process ends.
+    pg.stop()
     if failed > 0:
         process_exit(EXIT_STARTUP)
