@@ -1304,7 +1304,11 @@ Properties of the design, not defects to fix in passing:
   it leaves the gate green), and **a reset re-`LISTEN`s** — a
   reconnected connection is a new backend session listening to nothing, and
   a listener that skipped that would deliver nothing forever while logging
-  no error. The thread never attaches to the interpreter. Refused without
+  no error — and it **drains once after connecting and after every reset**,
+  because a notification read during the `LISTEN` round trip sits in libpq's
+  queue where `poll` cannot see it (`test_notify.mojo` shows the mechanism;
+  the listener-level race is not reproducible on demand, so no gate fails
+  when that drain is removed). The thread never attaches to the interpreter. Refused without
   `--realtime`, which is what creates the bus. SPEC I22,
   `smoke-pg-notify`.
 - **A channel name opening with `\x01` is RESERVED, and every publish

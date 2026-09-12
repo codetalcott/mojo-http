@@ -11,6 +11,8 @@ error. That failure is indistinguishable from nobody publishing, which is
 why it is asserted here rather than trusted.
 """
 
+from std.ffi import c_int, external_call
+from std.memory.alloc import unsafe_alloc
 from std.os import getenv
 from std.testing import (
     TestSuite,
@@ -143,6 +145,56 @@ def test_a_reset_restores_every_subscription() raises:
     assert_equal(len(got), 1)
     assert_equal(got[0], "m0_test_reset|after the reset")
     db.unlisten("m0_test_reset")
+
+
+def _readable_within(fd: Int, timeout_ms: Int) -> Bool:
+    """`poll(2)`: whether the socket has bytes to read within the timeout."""
+    var buf = unsafe_alloc[UInt8](count=8)
+    for i in range(8):
+        buf[unsafe_offset=i] = 0
+    buf.unsafe_bitcast[Int32]()[unsafe_offset=0] = Int32(fd)
+    buf.unsafe_bitcast[Int16]()[unsafe_offset=2] = Int16(1)  # POLLIN
+    var rc = Int(
+        external_call["poll", c_int, Int, Int, c_int](
+            Int(buf), 1, c_int(timeout_ms)
+        )
+    )
+    var revents = Int(buf.unsafe_bitcast[Int16]()[unsafe_offset=3])
+    buf.unsafe_free()
+    return rc > 0 and (revents & 1) != 0
+
+
+def test_a_notification_read_during_a_statement_does_not_wake_poll() raises:
+    """Why a poll-driven listener drains after every statement it runs.
+
+    A notification that arrives while a statement's round trip is reading
+    the socket goes into libpq's own queue with the reply. The bytes are no
+    longer in the socket, so `poll` reports nothing, and a listener that
+    only drains when `poll` fires leaves it there until some LATER
+    notification wakes it. `LISTEN` in `reset` is such a round trip, which
+    is why `--pg-listen` drains once after connecting and after every
+    reset. A self-notification makes the timing deterministic: it is
+    delivered at the statement's own commit, inside the round trip.
+
+    covers: O15
+    """
+    var db = open(_url())
+    db.listen("m0_test_buffered")
+    db.execute("NOTIFY m0_test_buffered, 'during'")
+    assert_false(_readable_within(db.socket_fd(), 200))
+    var got = _drain(db)
+    assert_equal(len(got), 1)
+    assert_equal(got[0], "m0_test_buffered|during")
+    # The control: a notification from ANOTHER session, arriving while this
+    # one runs nothing, does wake `poll` — so the assertion above is about
+    # where the bytes went, not a helper that can never say yes.
+    var other = open(_url())
+    other.execute("NOTIFY m0_test_buffered, 'from elsewhere'")
+    assert_true(_readable_within(db.socket_fd(), 5000))
+    var later = _drain(db)
+    assert_equal(len(later), 1)
+    assert_equal(later[0], "m0_test_buffered|from elsewhere")
+    db.unlisten("m0_test_buffered")
 
 
 def test_a_channel_name_is_quoted_by_the_server() raises:

@@ -34,7 +34,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   escape, as it is for Core ML, and composes with `--reload`. The SSE line
   splitter and frame decoder a payload passes through slice by bytes now
   (SPEC G14): a `data` from a `SQL_ASCII` database with a continuation byte
-  after a newline trapped the listener's thread on worker 0. A host with no libpq exits 78
+  after a newline trapped the listener's thread on worker 0. The listener
+  drains once after connecting and after every reset, so a notification
+  libpq read during the `LISTEN` round trip is not left waiting for the
+  next one to wake `poll`. A host with no libpq exits 78
   naming every path tried, rather than serving with no listener — held on
   the wheel's own binary, since its users have neither a toolchain nor a
   PostgreSQL client.

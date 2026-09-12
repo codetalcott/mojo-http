@@ -274,18 +274,27 @@ def listener_body(arg: Int) -> Int:
         backoff_ms = RECONNECT_MIN_MS
 
         # --- serve, recovering in place while that works -----------------
+        # Drain once BEFORE the first wait, and again after every reset.
+        # `LISTEN` is a round trip, and libpq reads whatever the server
+        # sends during it — a notification included — into its own queue.
+        # Those bytes are gone from the socket, so `poll` never reports them,
+        # and without this they sat until the next NOTIFY happened to wake
+        # the listener (test_notify.mojo shows the mechanism).
+        var drain_now = True
         while True:
-            var ready = _poll_two(db.socket_fd(), stop_fd, POLL_TIMEOUT_MS)
-            if ready[1]:
-                db.close()
-                _say(
-                    "pg-listen: stopping after " + String(delivered)
-                    + " delivered, " + String(refused) + " refused"
-                )
-                block.set(BLK_STATUS, STATUS_OK)
-                return 0
-            if not ready[0]:
-                continue
+            if not drain_now:
+                var ready = _poll_two(db.socket_fd(), stop_fd, POLL_TIMEOUT_MS)
+                if ready[1]:
+                    db.close()
+                    _say(
+                        "pg-listen: stopping after " + String(delivered)
+                        + " delivered, " + String(refused) + " refused"
+                    )
+                    block.set(BLK_STATUS, STATUS_OK)
+                    return 0
+                if not ready[0]:
+                    continue
+            drain_now = False
 
             var lost = False
             while True:
@@ -312,6 +321,7 @@ def listener_body(arg: Int) -> Int:
             try:
                 db.reset()
                 _say("pg-listen: reconnected")
+                drain_now = True
                 continue
             except e:
                 _say("pg-listen: reconnect failed: " + String(e))
