@@ -72,6 +72,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   empty, its id is repeated or out of order, or its `superseded by` names
   no row, and `--selftest` reverts each rule against the page.
 
+### Fixed
+
+- **Dependabot PRs auto-merge again.** `dependabot-automerge.yml` compared
+  the author `gh pr list --json author` reports against `dependabot[bot]`,
+  and gh 2.98 on the runner renders a bot as `app/dependabot`, so from
+  2026-08-17 every Dependabot PR was refused by a green run. The gate now
+  reads the author from the REST API (`user.login` and `user.type`, the
+  API's contract rather than the CLI's rendering), and a refusal that is
+  never routine on a `dependabot/` branch — not Dependabot's, or from a
+  fork — exits 1. `check_dependabot_gate` in `scripts/check_docs.py` pins
+  both, sabotaged four ways.
+
 ## [1.1.0] — 2026-09-11
 
 A remote crash fix, and an application layer for programs written in Mojo.

@@ -857,6 +857,104 @@ def check_required_context_intact():
         )
 
 
+# The Dependabot auto-merge gate. Its failure mode is the required-context
+# check's -- nothing goes red -- with a twist: the gate keeps running and
+# keeps refusing, so the Actions tab shows a green run per Dependabot PR
+# while the PRs accumulate. That is how it refused every one for 26 days
+# (2026-08-17 to 2026-09-12): it compared `gh pr list --json author`'s login
+# to `dependabot[bot]`, and the runner's gh had begun rendering a bot as
+# `app/dependabot`. The login is a RENDERING there; the REST API's
+# `user.login` and `user.type` are the contract, and the gate reads those.
+DEPENDABOT_GATE = ".github/workflows/dependabot-automerge.yml"
+_GATE_AUTHOR_READ = re.compile(
+    r'^[ \t]*user=\$\(gh api "repos/\$REPO/pulls/\$number" --jq '
+    r"'\.user\.login \+ \" \" \+ \.user\.type'\)[ \t]*$",
+    re.M,
+)
+_GATE_AUTHOR_IF = 'if [ "$user" != "dependabot[bot] Bot" ]; then'
+_GATE_FORK_IF = 'if [ "$cross" != "false" ]; then'
+
+
+def _shell_block(text, head):
+    """The lines from the `if ...; then` HEAD through its closing `fi`.
+
+    None when HEAD is not in TEXT. The step nests no ifs, so the first `fi`
+    at HEAD's own indentation closes it.
+    """
+    start = text.find(head)
+    if start < 0:
+        return None
+    indent = text[text.rfind("\n", 0, start) + 1:start]
+    close = re.search(r"^" + re.escape(indent) + r"fi[ \t]*$", text[start:], re.M)
+    return text[start:start + close.end()] if close else None
+
+
+def dependabot_gate_problems(text):
+    """The rules the Dependabot gate keeps, as a pure function of its text.
+
+    - The author is resolved through the REST API (`user.login` and
+      `user.type`), never through `gh pr list --json author`: the CLI
+      renders a bot's login for display and moved it from `dependabot[bot]`
+      to `app/dependabot` between releases, which made the gate refuse
+      every Dependabot PR for 26 days, green.
+    - The author refusal and the fork refusal exit non-zero. On a
+      `dependabot/` branch neither is routine -- an impersonation, or the
+      gate no longer recognising Dependabot -- and a green refusal is how
+      the drift above went unnoticed.
+
+    Returns the problems found, one string each, so `--selftest` can revert
+    each rule against the committed workflow.
+    """
+    problems = []
+    if not _GATE_AUTHOR_READ.search(text):
+        problems.append(
+            f"{DEPENDABOT_GATE} no longer reads the PR author from the REST "
+            "API (`user=$(gh api \"repos/$REPO/pulls/$number\" --jq "
+            "'.user.login + \" \" + .user.type')`), the one source whose bot "
+            "login is a contract rather than the CLI's rendering"
+        )
+    if re.search(r"\.author\.(login|is_bot|name)", text):
+        problems.append(
+            f"{DEPENDABOT_GATE} reads `.author.*` from `gh pr list --json`, "
+            "the CLI's rendering of the author (`app/dependabot` on gh 2.98, "
+            "`dependabot[bot]` before) -- the comparison that refused every "
+            "Dependabot PR for 26 days"
+        )
+    for label, head in (("author", _GATE_AUTHOR_IF), ("fork", _GATE_FORK_IF)):
+        block = _shell_block(text, head)
+        if block is None:
+            problems.append(
+                f"{DEPENDABOT_GATE}: the {label} refusal's anchor line is "
+                f"missing ({head!r}); re-point this check with the new line "
+                "rather than leaving the refusal unchecked"
+            )
+        elif (re.search(r"^[ \t]*exit 0[ \t]*$", block, re.M)
+              or not re.search(r"^[ \t]*exit [1-9]\d*[ \t]*$", block, re.M)):
+            problems.append(
+                f"{DEPENDABOT_GATE}: the {label} refusal does not exit "
+                "non-zero, so a gate that refuses every Dependabot PR stays "
+                "green"
+            )
+    return problems
+
+
+def check_dependabot_gate():
+    """dependabot-automerge.yml reads the author from the API and refuses red.
+
+    Two rules, both pure functions of the workflow's text, both reverted in
+    `--selftest` against the committed file: the author source, and the exit
+    codes of the two refusals that are never routine. What this cannot tell
+    is whether the API's rendering has moved too; that is what the red
+    refusal is for.
+    """
+    path = REPO / DEPENDABOT_GATE
+    if not path.exists():
+        fail(f"{DEPENDABOT_GATE} is gone; Dependabot PRs will sit green and unmerged")
+        return
+    for problem in dependabot_gate_problems(path.read_text()):
+        fail(problem)
+
+
 def check_bench_kinds_do_not_shadow():
     """No bench artifact kind may be a dash-prefix of another.
 
@@ -1490,6 +1588,36 @@ def _ledger_cases():
     ]
 
 
+def _dependabot_gate_cases():
+    """The gate's rules reverted one at a time against the committed workflow.
+
+    Same discipline as the ledger's: each mutation is applied to the real
+    file in memory, so a case whose anchor no longer matches (NOT
+    APPLICABLE) fails the selftest instead of going quiet. Returns
+    (label, text, must_fire).
+    """
+    real = (REPO / DEPENDABOT_GATE).read_text()
+    author_block = _shell_block(real, _GATE_AUTHOR_IF) or ""
+    fork_block = _shell_block(real, _GATE_FORK_IF) or ""
+    read = _GATE_AUTHOR_READ.search(real)
+    read_line = read.group(0) if read else ""
+    indent = read_line[:len(read_line) - len(read_line.lstrip())]
+    rendering = indent + "user=$(printf '%s' \"$pr\" | jq -r '.author.login')"
+    return [
+        ("(control: the gate as committed)", real, False),
+        ("the author read back on the CLI's rendering",
+         real.replace(read_line, rendering, 1) if read_line else real, True),
+        ("the author refusal green again",
+         real.replace(author_block, author_block.replace("exit 1", "exit 0"), 1), True),
+        ("the fork refusal green again",
+         real.replace(fork_block, fork_block.replace("exit 1", "exit 0"), 1), True),
+        ("the author refusal deleted",
+         real.replace(author_block, "", 1) if author_block else real, True),
+        ("(control: a refusal reworded, its exit kept)",
+         real.replace("comes from a fork", "is from a fork", 1), False),
+    ]
+
+
 def selftest():
     """The citation rule must be able to fire: one doctored input per case."""
     tracked = {".claude/handoffs/soak-design.md", "scripts/probes/herd.c",
@@ -1649,6 +1777,19 @@ def selftest():
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # The Dependabot gate: each rule reverted against the committed workflow,
+    # with the ledger's NOT APPLICABLE discipline -- a mutation that leaves
+    # the file unchanged is an anchor that has drifted, and counts as MISSED.
+    real_gate = (REPO / DEPENDABOT_GATE).read_text()
+    for label, text, must_fire in _dependabot_gate_cases():
+        if must_fire and text == real_gate:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation left the workflow unchanged")
+            ok = False
+            continue
+        got = dependabot_gate_problems(text)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -1684,6 +1825,7 @@ def main():
     check_backend_seam()
     check_spec_sheet()
     check_required_context_intact()
+    check_dependabot_gate()
     check_ci_measurements_are_collected()
     check_site_corpus()
     check_rfc_citations()

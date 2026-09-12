@@ -988,6 +988,17 @@ so it errors — and it would not gate on CI even if enabled, because
 auto-merge waits only on required status checks and the ruleset declares
 none. The label is the mechanism.
 
+The Dependabot gate resolves the PR's author through the REST API
+(`user.login` and `user.type`), never through `gh pr list --json author`:
+the CLI renders a bot's login for display and moved it from
+`dependabot[bot]` to `app/dependabot` between gh releases, so a compare
+against one spelling refused every Dependabot PR from 2026-08-17 to
+2026-09-12 — a green run each time, the reason one log line nobody read.
+The two refusals that are never routine on a `dependabot/` branch, not
+Dependabot's or from a fork, exit 1 so the next drift is red;
+`check_dependabot_gate` in `scripts/check_docs.py` pins the source and the
+exit codes, sabotaged four ways in its selftest.
+
 ## Imports resolve two ways
 
 Inside a package's own `test/`, imports are `src.*` and compile the package's

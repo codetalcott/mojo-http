@@ -20,6 +20,19 @@ name: Dependabot auto-merge
 # named `dependabot/anything` could have it squash-merged to a protected
 # `main` with the base repo's token, no label and no review. The author,
 # the head repository, and the tested commit are all checked below instead.
+#
+# **Two of the refusals are red.** "No open PR" and "the PR moved on" are
+# routine — label-automerge.yml got there first, or a push landed while Tests
+# ran — and exit 0. A PR on a `dependabot/` branch that is not Dependabot's,
+# or that comes from a fork, is never routine, so those exit 1: it is either
+# someone impersonating the bot or this gate no longer recognising it. The
+# second is what happened for 26 days (2026-08-17 to 2026-09-12) when the
+# runner's gh began rendering the author as `app/dependabot` where it had
+# said `dependabot[bot]`: every run green, every Dependabot PR refused, the
+# reason one log line nobody read. The author is therefore resolved through
+# the REST API (`user.login` + `user.type`, the API's contract), never
+# through the CLI's `--json author` rendering, and `check_dependabot_gate`
+# in scripts/check_docs.py pins both the source and the exit codes.
 
 on:
   workflow_run:
@@ -50,7 +63,7 @@ jobs:
           # `--head` matches on the bare ref name, which a fork PR also
           # supplies — every check that matters is made on the PR object.
           pr=$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" --state open \
-                 --json number,author,headRefOid,headRepositoryOwner,isCrossRepository \
+                 --json number,headRefOid,isCrossRepository \
                  --jq '.[0]')
           if [ -z "$pr" ]; then
             echo "No open PR for $HEAD_BRANCH; nothing to merge."
@@ -59,24 +72,31 @@ jobs:
           fi
 
           number=$(printf '%s' "$pr" | jq -r '.number')
-          author=$(printf '%s' "$pr" | jq -r '.author.login')
           head=$(printf '%s' "$pr" | jq -r '.headRefOid')
           cross=$(printf '%s' "$pr" | jq -r '.isCrossRepository')
 
           # The authorization gate: Dependabot itself opened this, not
-          # someone who named a branch after it.
-          if [ "$author" != "dependabot[bot]" ]; then
-            echo "PR #$number was opened by '$author', not dependabot[bot]; refusing."
-            echo "merge=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # someone who named a branch after it. The author comes from the
+          # REST API, whose `user.login` and `user.type` are the contract —
+          # NOT from `gh pr list --json author`, whose login is a rendering:
+          # gh 2.98 prints a bot as `app/dependabot` where earlier versions
+          # printed `dependabot[bot]`, and a compare against one spelling
+          # refused every Dependabot PR for 26 days with a green run each
+          # time. Hence exit 1: on a `dependabot/` branch this refusal is
+          # never routine — an impersonation, or the gate no longer
+          # recognising Dependabot — and either must be red.
+          user=$(gh api "repos/$REPO/pulls/$number" --jq '.user.login + " " + .user.type')
+          if [ "$user" != "dependabot[bot] Bot" ]; then
+            echo "::error::PR #$number was opened by '$user', not 'dependabot[bot] Bot'; refusing."
+            exit 1
           fi
 
           # Dependabot pushes branches to this repository. A cross-repository
-          # PR claiming to be from it is not something to merge unattended.
+          # PR claiming to be from it is not something to merge unattended,
+          # and not something to be quiet about either.
           if [ "$cross" != "false" ]; then
-            echo "PR #$number comes from a fork; refusing to auto-merge."
-            echo "merge=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::PR #$number comes from a fork; refusing to auto-merge."
+            exit 1
           fi
 
           # The run that just passed must describe the PR's current head.
