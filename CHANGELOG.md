@@ -26,7 +26,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   under `--threads`, where the bus is one channel per thread. Refused with a
   forked `--workers N` on macOS, where libpq's connect reaches Kerberos
   through GSSAPI and Objective-C aborts a forked child; `--spawn-workers`
-  is the escape, as it is for Core ML.
+  is the escape, as it is for Core ML. A host with no libpq exits 78
+  naming every path tried, rather than serving with no listener — held on
+  the wheel's own binary, since its users have neither a toolchain nor a
+  PostgreSQL client.
 
 - **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
   sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else

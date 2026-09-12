@@ -6325,9 +6325,35 @@ if (cd "$work" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
 fi
 mv "$work/_lib_moved" "$site/_lib" || fail "could not restore _lib"
 
+# The listener ships in the wheel, and an absent libpq must be a REFUSAL
+# rather than a server that runs with no listener. It used to be the
+# latter -- one log line and then serving forever, which is an absent
+# library degrading into a listener that silently hears nothing, and the
+# one failure this flag exists to make impossible. Asserted on the WHEEL's
+# binary because that is the artifact whose users have no toolchain and no
+# libpq: 78 is sysexits' EX_CONFIG, and the message must name what was
+# tried so an operator can see where it looked.
+#
+# No database and no libpq needed, which is why it belongs here rather than
+# in the postgres job: M0_LIBPQ names a path that cannot exist.
+out=$(cd "$work" && env M0_LIBPQ=/nonexistent/libpq.so.5 "$work/venv/bin/m0serve" \
+  --realtime --pg-listen 'postgres:///x' nosuchmodule:application 2>&1)
+rc=$?
+[ "$rc" = "78" ] \
+  || { echo "$out"; fail "--pg-listen with no libpq exited $rc, want 78"; }
+case "$out" in
+  *"/nonexistent/libpq.so.5"*) ;;
+  *) echo "$out"; fail 'the refusal does not name the path it tried' ;;
+esac
+case "$out" in
+  *M0_LIBPQ*) ;;
+  *) echo "$out"; fail 'the refusal does not say how to point it at a library' ;;
+esac
+
 echo "smoke-wheel OK ($base)"
 python3 scripts/emit.py --covers M7 --task smoke-wheel
 python3 scripts/emit.py --covers M8 --task smoke-wheel
+python3 scripts/emit.py --covers I22 --task smoke-wheel
 """
 
 

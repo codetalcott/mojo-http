@@ -81,6 +81,7 @@ from .cli import (
     discovery_specs,
     M0SERVE_VERSION,
     DEFAULT_PORT,
+    EXIT_CONFIG,
     EXIT_USAGE,
     EXIT_STARTUP,
     PROTOCOL_AUTO,

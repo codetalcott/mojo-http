@@ -1275,7 +1275,9 @@ Properties of the design, not defects to fix in passing:
   `--spawn-workers` is the escape, as it is for Core ML. Both `--pg-listen`
   refusals run BEFORE the bind and the fork: placed after it they ran in
   every child and never in the supervisor, so a usage error read as a crash
-  loop. Four rules: **worker 0 only** (the
+  loop. A host with no libpq exits 78 rather than serving without a
+  listener, asserted on the wheel's own binary. Four rules: **worker 0
+  only** (the
   tick-owner rule — every worker would deliver its own copy), **skip_worker
   is -1** (nothing has queued it locally, unlike an in-process publish), **a
   malformed payload is refused and counted rather than guessed at** (the

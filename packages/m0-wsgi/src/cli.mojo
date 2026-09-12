@@ -39,6 +39,16 @@ comptime DEFAULT_ATTRIBUTE = "application"
 comptime DEFAULT_PORT = 8000
 """The port uvicorn and gunicorn default to; the in-repo rows always pass `--port`."""
 
+comptime EXIT_CONFIG = 78
+"""`EX_CONFIG` from sysexits: the configuration names something absent.
+
+The same number `EXIT_NOT_FREE_THREADED` uses, for the same reason — a
+server asked for something this machine cannot provide. Distinct from
+`EXIT_USAGE`, which is a flag combination that is wrong on any machine:
+`--pg-listen` without `--realtime` is usage, and `--pg-listen` on a host
+with no libpq is configuration.
+"""
+
 comptime EXIT_USAGE = 2
 """A bad command line — getopt's and click's convention."""
 

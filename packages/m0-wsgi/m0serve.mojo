@@ -92,7 +92,7 @@ from m0_wsgi import (
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     use_loop_inversion,
     asgi_free_threading_refusal,
-    M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
+    M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_CONFIG, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
     DEFAULT_CHANNEL, PgListener, PgListenSpec, listener_body,
 )
 
@@ -1102,7 +1102,7 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
                     String("pg-listen-libpq"),
                     String(e),
                     String("set M0_LIBPQ, or install a libpq where it can be found"),
-                    EXIT_USAGE,
+                    EXIT_CONFIG,
                 )
     if len(opts.hold_mounts) > 0:
         if not opts.realtime:
@@ -1535,6 +1535,23 @@ def main() raises:
     if _pg_listen_forked_on_macos(opts):
         _fail(_PG_LISTEN_FORKED_ON_MACOS, EXIT_USAGE)
         return
+    if opts.pg_listen:
+        # The library is resolved HERE, before anything starts, so an absent
+        # one is a refusal naming every path tried rather than a server that
+        # runs with no listener. It used to be the latter: the thread logged
+        # one line and the process served forever, which is an absent
+        # library degrading into a listener that silently hears nothing —
+        # the failure this flag exists to make impossible.
+        #
+        # Pre-fork on purpose. The workers would each report it otherwise,
+        # and the supervisor — the one process whose exit status anyone
+        # reads — would report nothing.
+        try:
+            var probe = PgLib.open()
+            _ = probe.libversion()
+        except e:
+            _fail(String(e), EXIT_CONFIG)
+            return
 
     # Bind before forking; every worker accepts from this one socket.
     var listener = _listen_or_fail(opts)
