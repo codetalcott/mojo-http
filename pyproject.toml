@@ -6517,6 +6517,20 @@ grep -q 'name="password"' frag.html || fail 'the 401 fragment carried no login f
 grep -qi "^vary: $VARY" headers.txt || fail 'the 401 carried no Vary naming every header read'
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'HX-Request: true' -d 'title=x' $B/notes)
 [ "$code" = "401" ] || fail "expected 401 for a write with no session, got $code"
+# The other two writes, with the token field present but EMPTY: a refused
+# session's own token is empty, and two empty strings compare equal, so
+# this is the body a write view that forgot its session guard would take.
+code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -d 'csrf=' $B/notes/1)
+[ "$code" = "303" ] || fail "expected 303 for a DELETE with no session, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -d 'csrf=' $B/logout)
+[ "$code" = "303" ] || fail "expected 303 for a logout with no session, got $code"
+# Everything the session decided says so to a cache: the redirect and the
+# 401 alike, or a shared cache hands the anonymous answer to a signed-in
+# user.
+curl -s -o /dev/null -D headers.txt $B/notes
+grep -qi '^cache-control: no-store' headers.txt || fail 'the unauthenticated redirect was cacheable'
+curl -s -o /dev/null -D headers.txt -H 'HX-Request: true' $B/notes
+grep -qi '^cache-control: no-store' headers.txt || fail 'the 401 fragment was cacheable'
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
 [ "$code" = "303" ] || fail "expected 303 for a note with no session, got $code"
 # A detail page must not say whether the note exists: 303 before the lookup.
@@ -6580,7 +6594,11 @@ got=$(refusal "$($ISSUE --key $KEY --subject notes --exp $((NOW - 1)))")
 [ "$got" = "signed out (expired)" ] || fail "an expired cookie was not refused as expired: $got"
 got=$(refusal "$($ISSUE --key other-key --subject notes --exp $((NOW + 600)))")
 [ "$got" = "signed out (unknown key)" ] || fail "a cookie under another key was not refused: $got"
-got=$(refusal "${GOOD%?}$(echo "$GOOD" | tail -c 2 | tr 'A-Za-z' 'B-ZAb-za')")
+# The last character is replaced, never rotated: a tag's final character
+# carries four bits and can be 0, 4 or 8, which a letter rotation leaves
+# alone — three runs in sixteen used to present the untampered cookie.
+case "${GOOD: -1}" in A) FLIP=B ;; *) FLIP=A ;; esac
+got=$(refusal "${GOOD%?}$FLIP")
 [ "$got" = "signed out (bad signature)" ] || fail "a tampered tag was not refused: $got"
 got=$(refusal 'not-a-session')
 [ "$got" = "signed out (malformed)" ] || fail "a malformed cookie was not refused as such: $got"
@@ -6601,6 +6619,7 @@ CSRF=$($ISSUE --key $KEY --csrf-for "$(grep m0_notes_session jar.txt | awk '{pri
 # One URL, two representations. Without the header: a whole document, and
 # the fragment inside it. With it: the bare fragment, no doctype, no <html>.
 curl -s -b jar.txt -D headers.txt $B/notes -o page.html
+grep -qi '^cache-control: no-store' headers.txt || fail 'the signed-in list, token and all, was cacheable'
 head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /notes without HX-Request was not a document'
 grep -q '<section id="notes">' page.html || fail 'the document did not contain the fragment'
 grep -qi "^vary: $VARY" headers.txt || fail 'the document carried no Vary naming every header read'

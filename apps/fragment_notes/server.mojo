@@ -93,6 +93,7 @@ Run it:  uv run poe serve-fragment-notes
 from std.os import getenv
 
 from lightbug_http import Server, HTTPRequest, HTTPResponse
+from lightbug_http.header import HeaderKey
 from lightbug_http.c.process import process_exit
 from lightbug_http.http.date import unix_now
 
@@ -516,6 +517,20 @@ def _session(req: HTTPRequest, store: NoteStore) -> SessionVerdict:
     )
 
 
+def _private(var resp: HTTPResponse) -> HTTPResponse:
+    """`Cache-Control: no-store` on an answer the session decided.
+
+    Every response below `_session` was chosen by the cookie — the list
+    with its token, the 303 to the login page, the 401 fragment — and
+    `Vary` names only the fragment headers. A shared cache in front would
+    otherwise hand the anonymous redirect to a signed-in user, or a
+    rendered token to anyone. `no-store` rather than `Vary: Cookie`,
+    because a private page is not one to keep at all.
+    """
+    resp.headers[HeaderKey.CACHE_CONTROL] = "no-store"
+    return resp^
+
+
 def _refuse(req: HTTPRequest, verdict: SessionVerdict) raises -> HTTPResponse:
     """What a request with no usable session gets: the login form.
 
@@ -525,15 +540,15 @@ def _refuse(req: HTTPRequest, verdict: SessionVerdict) raises -> HTTPResponse:
     inside the element the list was in with no way back.
     """
     if wants_fragment(req):
-        return page_or_fragment(
+        return _private(page_or_fragment(
             req,
             render_login(String("signed out (", verdict.reason, ")")),
             Site("sign in"),
             wrap,
             401,
             String("Unauthorized"),
-        )
-    return vary_on_fragment_headers(reply.redirect(303, LOGIN))
+        ))
+    return _private(vary_on_fragment_headers(reply.redirect(303, LOGIN)))
 
 
 def _csrf_refusal(
@@ -542,14 +557,25 @@ def _csrf_refusal(
     """403 unless the request carries THIS session's token, in the body.
 
     The guard, in the shape D3 leaves for one: an early return, not a
-    decorator. It takes `form(req)` rather than a `Form` so that a body
-    that is not a form and a form with no token are the same answer —
-    both are a write arriving without the token, and telling them apart
-    tells a forger which half they got wrong. `SameSite=Lax` already
-    keeps the cookie off a cross-site write, so what this catches is the
-    same-site forgery: another tab, another session's token, a form
-    replayed after a re-login.
+    decorator. It takes `form(req)` rather than a `Form` so a view that
+    has no other use for the body can pass the parse straight through;
+    `create`, which reads the form afterwards, checks the content type
+    first and answers 400 there, which tells a forger only what its own
+    request declared. `SameSite=Lax` already keeps the cookie off a
+    cross-site write, so what this catches is the same-site forgery:
+    another tab, another session's token, a form replayed after a
+    re-login.
+
+    Fails closed on a verdict that is not ok: a refused session carries an
+    empty token, and two empty strings compare equal, so without this
+    line a write view that forgot its session guard would accept `csrf=`
+    from anyone. Every write checks the session first; this is the layer
+    under that one.
     """
+    if not verdict.ok:
+        return reply.problem(
+            403, String("Forbidden"), String("no session to hold a token"), instance
+        )
     if body:
         var got = body.value().get(CSRF_FIELD)
         if got:
@@ -616,7 +642,7 @@ def login(
             SESSION_COOKIE, value, store.auth.ttl, store.auth.secure
         )
     )
-    return resp^
+    return _private(resp^)
 
 
 def logout(
@@ -637,7 +663,7 @@ def logout(
     resp.cookies.add_raw(
         session_cookie_line(SESSION_COOKIE, String(""), Int64(0), store.auth.secure)
     )
-    return resp^
+    return _private(resp^)
 
 
 def index(
@@ -647,9 +673,9 @@ def index(
     var session = _session(req, store)
     if not session.ok:
         return _refuse(req, session)
-    return page_or_fragment(
+    return _private(page_or_fragment(
         req, render_list(store, session.subject, session.csrf), Site("notes"), wrap
-    )
+    ))
 
 
 def create(
@@ -676,9 +702,9 @@ def create(
             400, "Invalid Note", 'the form must carry a non-empty "title"', NOTES
         )
     store.add(title, f.first("body"), f.all("tag"))
-    return page_or_fragment(
+    return _private(page_or_fragment(
         req, render_list(store, session.subject, session.csrf), Site("notes"), wrap
-    )
+    ))
 
 
 def detail(
@@ -691,7 +717,9 @@ def detail(
     var i = _index_of(store, params[0])
     if i < 0:
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
-    return page_or_fragment(req, render_note(store, i), Site(store.titles[i]), wrap)
+    return _private(
+        page_or_fragment(req, render_note(store, i), Site(store.titles[i]), wrap)
+    )
 
 
 def delete(
@@ -715,9 +743,9 @@ def delete(
     if i < 0:
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
     store.remove(i)
-    return page_or_fragment(
+    return _private(page_or_fragment(
         req, render_list(store, session.subject, session.csrf), Site("notes"), wrap
-    )
+    ))
 
 
 def root(req: HTTPRequest, params: List[String]) -> HTTPResponse:
