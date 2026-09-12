@@ -165,14 +165,24 @@ machine runs the 1.2.0 wheel's binary as
 --blocking-threads 8 ...` with `M0_GRANT_KEY` in its environment; the
 mount refuses a malformed grant as `{"error":"invalid","reason":"malformed"}`,
 the view answers 401 without a session, and `/_m0/health` answers.
-No account of ours exists in production, so the check with a real
-session — `scripts/production_stream_check.py --base-url
-https://textshelf.com --path /notifications/stream/ --session-cookie
-<sessionid>` from a signed-in browser — is the owner's step, and the
-line it prints (`held by the hold mount`, then the heartbeat) completes
-this record. Until then the production claim here is that the mount is
-up, keyed and refusing correctly, and that the same build held and
-heartbeated on staging.
+Then the check with a real session, run by the owner from a signed-in
+browser the same day:
+
+```
+GET https://textshelf.com/notifications/stream/?grant=1
+  status 200
+  stream url /_m0/rt/stream (the hold mount)
+  content-type 'text/event-stream'
+  hold headers stripped, so m0serve took the hold
+  `: open` from the mount
+  heartbeat at 15s: : heartbeat
+ok    stream is held
+```
+
+The view issued the grant, the mount took the hold, and the heartbeat
+only m0serve writes arrived on schedule through Fly's proxy: a stream
+held for a real user of a real application on a Mojo thread that never
+touched the interpreter.
 
 **Two things the pass found, neither in the server.** The check script
 read a stream's head and then nothing against staging over TLS, on the
