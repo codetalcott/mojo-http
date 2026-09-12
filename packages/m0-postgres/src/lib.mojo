@@ -232,15 +232,22 @@ comptime _PQescapeIdentifier = ExternalFunction[
 def _pin_flags() -> Int:
     """`OwnedDLHandle`'s own default flags, plus `RTLD_NODELETE`.
 
-    The default is `RTLD_NOW | RTLD_GLOBAL` — 2 | 256 on Linux, 2 | 8 on
-    macOS — and is repeated rather than changed, so the pin asks for the
-    image exactly as it was first opened. `RTLD_NODELETE` is 0x1000 in
-    glibc's `dlfcn.h` and 0x80 in macOS's.
+    The stdlib's default is `RTLD_GLOBAL` alone — 256 on Linux, 8 on macOS —
+    NOT `RTLD_NOW`: its default-flag expression is
+    `Int(256) if is_linux() else Int(8) or 2`, and `Int(8) or 2`
+    short-circuits to 8 (the `2` is dead). The first open of libpq therefore
+    binds LAZILY, and the pin must repeat that rather than add `RTLD_NOW`
+    (2) — a libpq whose transitive symbols only some platforms resolve
+    eagerly would then fail the pin and make `PgLib.open` raise on a host
+    where the library works. Confirmed against the pinned toolchain by
+    evaluating the expression: it is 8 on this macOS. `RTLD_NODELETE` is
+    0x1000 in glibc's `dlfcn.h` and 0x80 in macOS's, and both loaders
+    promote an already-loaded image to it on a re-open.
     """
     comptime if CompilationTarget.is_macos():
-        return 2 | 8 | 0x80
+        return 8 | 0x80
     else:
-        return 2 | 256 | 0x1000
+        return 256 | 0x1000
 
 
 def pin_library(path: String) raises:
