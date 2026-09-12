@@ -1204,6 +1204,13 @@ pieces, and the language fact each rests on:
   `PoolHandler` learns it: filled by the pool from its own lane table, the
   one the loop routes by. The state an app hands its views is the carrier
   (`st.at.url_for(...)`); `m0serve`'s `MojoMount` is the worked example.
+  **An application supplies its own mount as a module, never a copy of
+  the entry file**: `m0serve.mojo` imports `MojoMount` from
+  `m0serve_mount`, the demo lives in `packages/m0-wsgi/mount/`, and
+  `M0SERVE_MOUNT_DIR` on `build-serve` REPLACES that directory on the
+  include path. Never add a second mount root beside it: the first `-I`
+  root wins silently, which built cleanly and served the demo when
+  measured (SPEC N14, `smoke-mount-seam`).
 - **`session.mojo`** (beside `grant.mojo`): a stateless signed session
   cookie — `v1.<kid>.<exp>.<subject>.<tag>`, HMAC-SHA256 over the rest,
   refused in the order malformed / unknown key / bad signature / expired

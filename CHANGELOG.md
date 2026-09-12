@@ -10,6 +10,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **An application's own Mojo mount, without copying `m0serve.mojo`** (SPEC
+  N14). The demo mount moved out of the entry file into a module,
+  `m0serve_mount` (`packages/m0-wsgi/mount/`), and `poe build-serve` takes
+  `M0SERVE_MOUNT_DIR` to build the same entry file against an application's
+  own directory instead, plus `M0SERVE_OUT` to name the binary. The directory
+  replaces the default rather than joining it: with both on the include path
+  the first root wins silently, measured as a clean build serving the demo.
+
 - **A Postgres `NOTIFY` reaches a held stream** (SPEC I22). `--pg-listen URL`
   (`M0_PG_LISTEN`) holds one `LISTEN` on worker 0 and publishes what arrives
   onto the broadcast bus, so a writer that cannot reach the datagram bus at
