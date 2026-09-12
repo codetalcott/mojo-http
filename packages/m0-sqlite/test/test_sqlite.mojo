@@ -473,6 +473,8 @@ def test_step_error_stays_truthful_without_a_live_connection() raises:
     until its statements finalize, but the closed connection answers
     SQLITE_MISUSE to every question. The error must degrade to the generic
     text for the real code, never report the connection's misleading one.
+
+    covers: O3
     """
     var db = open_memory()
     db.execute("CREATE TABLE u (name TEXT UNIQUE)")
@@ -636,6 +638,8 @@ def test_statement_outlives_its_connection() raises:
     because every close path here uses `sqlite3_close_v2`, which leaves the
     connection alive until the last statement is finalized. Switching any of
     them to `sqlite3_close` would break this, silently, at run time.
+
+    covers: O2
     """
     var db = open_memory()
     db.execute("CREATE TABLE t (v INTEGER)")

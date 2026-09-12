@@ -6246,6 +6246,7 @@ rm -f todo_sse.txt todo_replay.txt todo_fresh.txt todo.log
 echo "smoke-todo OK"
 python3 scripts/emit.py --covers I10 --task smoke-todo
 python3 scripts/emit.py --covers N12 --task smoke-todo
+python3 scripts/emit.py --covers O5 --task smoke-todo
 """
 
 # Each assertion pins one framework feature the notes API exists to showcase:
