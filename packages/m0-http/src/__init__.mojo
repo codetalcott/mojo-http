@@ -9,12 +9,17 @@ SSE (Server-Sent Events) support, and multi-worker fork supervision.
 
 from .router import Mount, Router, MatchResult, reverse, url_for
 from .views import Views, ViewService
-from .fragment import page_or_fragment, wants_fragment
+from .fragment import page_or_fragment, vary_on_fragment_headers, wants_fragment
 from .html import Datastar, Fragment, Html, Htmx, Vocabulary, attr, el, flag, text, void
 from .form import Form, form, is_form, parse_form
 from .grant import (
     GrantKey, GrantKeys, GrantVerdict, verify_grant, grant_key_id, session_binding,
-    base64url, GRANT_KEY_ENV, GRANT_PREV_KEY_ENV, GRANT_COOKIE_ENV,
+    base64url, find_key, GRANT_KEY_ENV, GRANT_PREV_KEY_ENV, GRANT_COOKIE_ENV,
+)
+from .session import (
+    SessionKeys, SessionVerdict, csrf_token, issue_session, session_cookie_line,
+    session_refused, verify_session, CSRF_MESSAGE_PREFIX, SESSION_SIG_CHARS,
+    SESSION_SUBJECT_MAX, SESSION_VERSION,
 )
 from .content_negotiation import (
     AcceptResult,

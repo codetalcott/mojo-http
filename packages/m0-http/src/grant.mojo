@@ -87,6 +87,28 @@ struct GrantKey(Copyable, Movable):
         self.mac = move.mac^
 
 
+def find_key(keys: List[GrantKey], kid: Span[UInt8, _]) -> Int:
+    """The index of the key in `keys` whose id is `kid`, or -1.
+
+    A free function rather than a method because `session.mojo` asks the
+    same question of its own ring, and a second copy of this loop would be
+    a second place for the key-id rule to drift. Not constant time and
+    does not need to be: a key id is public, and the tag compare that
+    follows is what must not leak.
+    """
+    for i in range(len(keys)):
+        var have = keys[i].kid.as_bytes()
+        if len(have) == len(kid):
+            var same = True
+            for j in range(len(kid)):
+                if have[j] != kid[j]:
+                    same = False
+                    break
+            if same:
+                return i
+    return -1
+
+
 struct GrantKeys(Movable):
     """What a hold mount verifies against: its keys, and the cookie it binds to."""
 
@@ -123,17 +145,7 @@ struct GrantKeys(Movable):
         return out^
 
     def find(self, kid: Span[UInt8, _]) -> Int:
-        for i in range(len(self.keys)):
-            var have = self.keys[i].kid.as_bytes()
-            if len(have) == len(kid):
-                var same = True
-                for j in range(len(kid)):
-                    if have[j] != kid[j]:
-                        same = False
-                        break
-                if same:
-                    return i
-        return -1
+        return find_key(self.keys, kid)
 
 
 struct GrantVerdict(Movable):

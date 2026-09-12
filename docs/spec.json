@@ -1501,9 +1501,9 @@
       "id": "N13",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "Sessions and CSRF behind a login: an HMAC-SHA256 in `m0-core` gated by published test vectors, a signed session cookie emitted through `ResponseCookieJar.add_raw`, and a CSRF token on the form, on `apps/fragment_notes` with one user",
-      "status": "planned",
-      "evidence": "ROADMAP: Sessions and CSRF behind a login"
+      "capability": "Sessions and CSRF behind a login: a stateless signed cookie `v1.<kid>.<exp>.<subject>.<tag>` \u2014 HMAC-SHA256 over the rest, the tag checked in constant time, the expiry against the host clock, a retired key ending every session under it \u2014 emitted through `ResponseCookieJar.add_raw` with `HttpOnly; SameSite=Lax; Path=/`; a CSRF token derived from that tag, carried as a hidden field and read from the body alone; a guard that is an early return, answering 303 to a navigation and 401 carrying the login fragment to a swap; and a server that refuses to start (78) without its key or its password",
+      "status": "verified",
+      "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 every arm on the wire, with the forgeries signed by `scripts/notes_session.py` so the verifier is never checked against itself; the unit form is `test_session.mojo:test_a_cookie_the_issuer_signed_names_its_subject` against the same issuer's vectors, and `poe sabotage-notes-login` (pre-release) reverts the tag check, the expiry, the token, the guard and the cookie attributes one at a time. The arm curl cannot judge is `browser-notes-login` (pre-release): Chromium signs in, writes and deletes, and the delete carries its token in the BODY \u2014 htmx 2.0.4 would put it in the query string, which the shell's `htmx-config` meta narrows away. The design is [a-login-on-the-notes-app](notes/a-login-on-the-notes-app.md)"
     }
   ]
 }

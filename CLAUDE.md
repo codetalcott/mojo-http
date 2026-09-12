@@ -53,13 +53,15 @@ m0-wsgi                   WSGI/ASGI gateway — embeds CPython, layers on m0-htt
 m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 ```
 
-**Zero upward imports.** `m0-core` depends on nothing. `m0-http` uses exactly
-five functions from `m0-core`: `wyhash64` and `format_hash64` in `etag.mojo`,
+**Zero upward imports.** `m0-core` depends on nothing. `m0-http` reaches into
+it from six files: `wyhash64` and `format_hash64` in `etag.mojo`,
 `escape_json_string` in `health.mojo` and `reply.mojo`,
-`escape_json_string_into` in `log.mojo`, and `escape_html_into` in
-`html.mojo`. That list is an inventory, not the constraint: the constraint
-is the direction (m0-http importing m0-core is downward) and that no
-libpython reaches the link line. `m0-datastar` splits deliberately: `consts.mojo` and
+`escape_json_string_into` in `log.mojo`, `escape_html_into` in
+`html.mojo`, and the cryptography — `HmacSha256`, `sha256`, `hex_digest`,
+`constant_time_equal` — in `grant.mojo` and `session.mojo`. That list is
+an inventory, not the constraint: the constraint is the direction
+(m0-http importing m0-core is downward) and that no libpython reaches the
+link line. `m0-datastar` splits deliberately: `consts.mojo` and
 `sse.mojo` import nothing outside themselves so the wire format is usable
 without the framework — do not add an `m0_http` import to either — while
 `stream.mojo` and `signals.mojo` are the server glue and may.
@@ -1170,6 +1172,20 @@ pieces, and the language fact each rests on:
   `PoolHandler` learns it: filled by the pool from its own lane table, the
   one the loop routes by. The state an app hands its views is the carrier
   (`st.at.url_for(...)`); `m0serve`'s `MojoMount` is the worked example.
+- **`session.mojo`** (beside `grant.mojo`): a stateless signed session
+  cookie — `v1.<kid>.<exp>.<subject>.<tag>`, HMAC-SHA256 over the rest,
+  refused in the order malformed / unknown key / bad signature / expired
+  (the signature BEFORE the expiry, so an expired cookie nobody signed is
+  not reported as merely expired) — plus `csrf_token`, a MAC over the
+  session's own tag under the same key with a domain-separating prefix,
+  and `session_cookie_line`, which builds the `Set-Cookie` for
+  `ResponseCookieJar.add_raw` rather than going through the parsed path
+  that drops four attributes. It shares the grant's key ring (`find_key`),
+  because a session key and a grant key are the same thing. No store: a
+  session ends at its expiry or when its key leaves the ring (D24), and
+  the app supplies the identity (D25). `apps/fragment_notes` is the
+  worked application; the note is
+  `docs/notes/a-login-on-the-notes-app.md`.
 - **`form(req)`** (`form.mojo`): `Optional` — None unless the content
   type is the form's, compared whole, so "not a form" cannot be read as an
   empty one and the check cannot be forgotten — holding an ordered
@@ -1180,16 +1196,18 @@ pieces, and the language fact each rests on:
 
 Not built, each a row of `docs/DECISIONS.md` with the note that argues it
 and the condition that would retire it: templates (D2), middleware (D3),
-named params (D4), routes as function values (D5), sessions and CSRF (D15;
-`wyhash64` is not a MAC), multipart (D16), `HX-*` header setters (D17),
-streaming from a Mojo mount other than as an `M0-Hold` (D22, which
-superseded D18 when the hold landed as N11). One of those is also a
-`planned` SPEC row with a ROADMAP heading — N13 a login — and the ledger
-row stands until the row is built; N12, the Datastar form, shipped
-2026-09-12 with `poe browser-datastar-form` as its pre-release browser run. Read the ledger and `poe milestones` before proposing a
-piece; the process is one pull request per round carrying the note, the
-rows, the ledger update and the milestone line, reviewed from a separate
-session before it merges.
+named params (D4), routes as function values (D5), multipart (D16),
+`HX-*` header setters (D17), streaming from a Mojo mount other than as an
+`M0-Hold` (D22, which superseded D18 when the hold landed as N11), a
+session store (D24) and a password KDF (D25). Section N has **no
+`planned` rows left**: N12, the Datastar form, shipped 2026-09-12 with
+`poe browser-datastar-form` as its pre-release browser run, and N13, the
+login, the same day — which retired D15 and added D24 and D25 in its
+place. What stands between the layer and its milestone is the soak alone.
+Read the ledger and `poe milestones` before proposing a piece; the
+process is one pull request per round carrying the note, the rows, the
+ledger update and the milestone line, reviewed from a separate session
+before it merges.
 
 ## Runtime constraints
 

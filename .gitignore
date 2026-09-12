@@ -34,6 +34,15 @@ django.log
 django2.log
 notes.log
 fragment.log
+# smoke-fragment-notes: the refusal run's log and the binary it builds, plus
+# the curl scratch files. A smoke that FAILS never reaches its own `rm -f`,
+# so these are what a red gate leaves behind.
+refusal.log
+notes_app
+headers.txt
+page.html
+frag.html
+jar.txt
 todo.log
 ws.log
 chat.log
