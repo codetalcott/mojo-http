@@ -7,11 +7,11 @@ line back. What it answers is the only question that matters about a
 security gate -- not "does the suite pass", which it did before any of
 this existed, but "would it notice if the check were gone".
 
-The five rules are the five ways this login could be no login at all:
+The rules are the ways this login could be no login at all:
 a tag that is never checked (anyone may write a cookie), an expiry that
 never fires (a session is forever), a CSRF guard that always passes, a
 private view that forgot to ask, and a cookie that is readable by script
-and travels cross-site. Four of the five leave every other assertion in
+and travels cross-site. All but one leave every other assertion in
 the smoke passing, which is why each needs its own arm.
 
 Rebuilds `m0-http` whenever `session.mojo` has moved since the last build
@@ -87,6 +87,27 @@ SABOTAGES = [
         return _refuse(req, session)''',
     ),
 ]
+
+
+SABOTAGES.append(
+    (
+        "a write view forgets to ask for a session",
+        APP,
+        '''    var session = _session(req, store)
+    if not session.ok:
+        return _refuse(req, session)
+    var refused = _csrf_refusal(form(req), session, req.uri.path)''',
+        '''    var session = _session(req, store)
+    if False:
+        return _refuse(req, session)
+    var refused = _csrf_refusal(form(req), session, req.uri.path)''',
+    ),
+)
+"""The sixth arm: `delete` without its guard. Caught by the unauthenticated
+DELETE arm as a 403 where a 303 was owed -- a 403 and not a 200, because
+`_csrf_refusal` fails closed on a verdict that is not ok. That second
+layer is not sabotaged on its own: with every session guard in place it
+is unreachable, which is what a layer under another one means."""
 
 
 # What `m0_http.mojoc` was last built from. The app resolves `m0_http`

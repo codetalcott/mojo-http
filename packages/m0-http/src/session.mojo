@@ -127,7 +127,15 @@ def session_refused(var reason: String) -> SessionVerdict:
 
 def _is_subject_byte(b: UInt8) -> Bool:
     """What a subject may hold: not `.`, which is the field separator, and
-    nothing a `Set-Cookie` value may not carry (RFC 6265 §4.1.1)."""
+    nothing a `Set-Cookie` value may not carry (RFC 6265 §4.1.1).
+
+    Refusing `.` is also the domain separation from the grant, which this
+    format shares a key ring with: a session's signed part always holds
+    exactly three dots and a grant's (`v1.<kid>.<exp>.<channel>.<sb>`)
+    exactly four, so under one key neither tag can ever verify as the
+    other. Letting a subject carry a dot, escaped or otherwise, would
+    have to bring a version bump with it; `test_session.mojo` presents
+    each format to the other verifier."""
     return (
         (b >= UInt8(ord("A")) and b <= UInt8(ord("Z")))
         or (b >= UInt8(ord("a")) and b <= UInt8(ord("z")))
@@ -172,18 +180,22 @@ def issue_session(keys: SessionKeys, subject: String, exp: Int64) raises -> Stri
     Args:
         keys: The ring; the first key signs.
         subject: The identity, in the byte set a cookie value may carry.
-        exp: Unix seconds after which `verify_session` refuses it.
+        exp: Unix seconds; `verify_session` refuses the cookie from that
+            second on.
 
     Returns:
         The cookie VALUE, for `session_cookie_line`.
 
     Raises:
-        If the ring is empty, or the subject is empty, too long, or holds
-        a byte the format cannot carry — each of which would otherwise
-        produce a cookie that reads back as `malformed`.
+        If the ring is empty, the expiry is negative, or the subject is
+        empty, too long, or holds a byte the format cannot carry — each of
+        which would otherwise produce a cookie that reads back as
+        `malformed`.
     """
     if len(keys) == 0:
         raise Error("issue_session: no key")
+    if exp < 0:
+        raise Error("issue_session: negative expiry")
     var bytes = subject.as_bytes()
     if len(bytes) == 0 or len(bytes) > SESSION_SUBJECT_MAX:
         raise Error("issue_session: subject length")
