@@ -39,10 +39,21 @@ Four rules:
   - **`skip_worker` is -1**, so the frame goes to every channel INCLUDING
     this worker's: unlike an in-process publish, nothing has already queued
     it locally.
-  - **A reserved channel is refused**, and refused here rather than trusted
-    to `publish_to_channels`: a name arriving from the database is exactly as
-    untrusted as one arriving in a form body, and the reserved namespace
-    addresses connection slots directly.
+  - **A malformed payload is refused and counted, never guessed at.** No
+    channel, no JSON, an empty name: each is a quiet False and a bump of the
+    refused counter, because the payload came from whatever could reach the
+    database and one publisher's mistake must not end the listener. This is
+    the check that is uniquely this module's — verified by removing it and
+    watching the gate go red.
+  - **A reserved channel is refused here too, as defence in depth.** The
+    namespace `\x01<kind>/<slot>` addresses a connection SLOT on the loop,
+    and a name from the database is exactly as untrusted as one from a form
+    body. But `publish_to_channels` refuses the same names at the bus
+    boundary, so removing this check changes nothing observable — measured:
+    the gate stays green with it gone. It is kept because the check that
+    matters should be beside the untrusted input as well as at the
+    boundary, and it is described as redundant rather than load-bearing so
+    nobody mistakes it for the enforcement.
   - **A reset re-`LISTEN`s**, which `Connection.reset` does. A reconnected
     connection is a new backend session listening to nothing, and a listener
     that skipped that step would run forever delivering nothing and logging

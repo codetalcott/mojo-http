@@ -1270,8 +1270,11 @@ Properties of the design, not defects to fix in passing:
   driver into a stdlib-only module. Four rules: **worker 0 only** (the
   tick-owner rule — every worker would deliver its own copy), **skip_worker
   is -1** (nothing has queued it locally, unlike an in-process publish), **a
-  reserved channel is refused here** (a name from the database is as
-  untrusted as one from a form body), and **a reset re-`LISTEN`s** — a
+  malformed payload is refused and counted rather than guessed at** (the
+  check that is uniquely the listener's; a reserved channel is refused here
+  too, but `publish_to_channels` refuses the same names at the bus
+  boundary, so that one is defence in depth and measured to be — removing
+  it leaves the gate green), and **a reset re-`LISTEN`s** — a
   reconnected connection is a new backend session listening to nothing, and
   a listener that skipped that would deliver nothing forever while logging
   no error. The thread never attaches to the interpreter. Refused without

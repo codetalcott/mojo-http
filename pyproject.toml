@@ -229,6 +229,44 @@ grep -q '^id: ' "$out/held.txt" \
 grep -q 'not for room1' "$out/held.txt" \
   && { echo '--- held.txt ---'; cat "$out/held.txt"; fail 'a NOTIFY for another channel was delivered here'; }
 
+# The reserved namespace, from the database. A channel opening with the 0x01
+# byte addresses a connection SLOT on the loop, so a publisher who could name
+# one could queue bytes into someone else's stream or unsubscribe it. A
+# payload built with `chr(1)` arrives ESCAPED, because that is what JSON does
+# to a control byte -- and it is also how anyone would smuggle one through a
+# text field. The decoder turns it back into the byte before the check sees
+# it, so this exercises the path that matters. The listener refuses it AND so
+# does `publish_to_channels` at the bus boundary, which is why removing the
+# listener's own check leaves this arm green -- what this arm actually pins
+# is the malformed half, where the listener is the only thing standing
+# between a bad payload and a wrong delivery.
+#
+# Malformed payloads ride along: the listener must survive them, and the
+# proof that it did is the good event after them.
+curl -sN --max-time 8 'http://127.0.0.1:8231/events?channel=room3&token=letmein' \
+  > "$out/reserved.txt" &
+guard=$!
+sleep 1
+psql "$url" -Atc "select pg_notify('m0', json_build_object('channel', chr(1) || 's/0', 'event', 'evil', 'data', 'reserved')::text)" > /dev/null \
+  || fail 'publishing the reserved-channel probe failed'
+notify 'not json at all'
+notify '{}'
+notify '{"channel":""}'
+notify '{"channel":"room3","event":"survived","data":"the listener is still here"}'
+wait $guard
+
+# COUNTED, not looked for by name. Four of the five publishes above must
+# reach nobody, and a refusal that delivered them with an empty event would
+# satisfy any "is the evil one absent" check -- measured: both sabotages
+# below passed a by-name assertion.
+events=$(grep -c '^id: ' "$out/reserved.txt" || true)
+[ "$events" = "1" ] \
+  || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail "expected exactly one event on the guarded channel, got $events"; }
+grep -q 'event: survived' "$out/reserved.txt" \
+  || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'the listener did not survive a reserved name and three malformed payloads'; }
+grep -q 'event: evil' "$out/reserved.txt" \
+  && { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'a reserved channel name from the database was honoured'; }
+
 kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
 
 # --- arm 3: the null case ------------------------------------------------
@@ -254,6 +292,16 @@ grep -q 'event: greeting' "$out/quiet.txt" \
   && { echo '--- quiet.txt ---'; cat "$out/quiet.txt"; fail 'an event arrived with no listener configured -- this gate cannot tell the flag apart from nothing'; }
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+
+# The listener's own account, which it prints as it stops: five delivered
+# (two in arm 1, one guarded, plus the two it refused nothing about) and the
+# four it refused. Asserted here rather than above because the counts are a
+# shutdown line -- and asserted at all because a silent drop should be
+# visible in a log, not only in this gate.
+grep -q 'refused' "$out/srv.log" \
+  || { tail -5 "$out/srv.log"; fail 'the listener never reported its refusal count'; }
+grep -q 'stopping after .* refused' "$out/srv.log" \
+  || { tail -5 "$out/srv.log"; fail 'the listener did not report delivered and refused counts at shutdown'; }
 
 # --- the Python half -----------------------------------------------------
 # `m0pub.notify_sql` is what a management command or a console publishes
