@@ -1544,6 +1544,86 @@
       "capability": "An application persists in SQLite through a per-thread connection and comes back with its data after a kill and a restart, including the event log that makes SSE replay work across processes",
       "status": "verified",
       "evidence": "`Smoke test the Datastar todo demo` (every PR) \u2014 `apps/datastar_todo` is killed and restarted on the same database file, the struck-through todo is still in the list, and a client reconnecting with `Last-Event-ID` is caught up by the restarted process from the persisted log"
+    },
+    {
+      "id": "O6",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "Binary results decode to what the server means: integers big-endian and sign-extended from their OWN width, IEEE 754 floats at both widths, `jsonb`'s version byte read rather than skipped, `uuid` rendered canonically, and timestamps counted in microseconds from 2000-01-01 rather than from the Unix epoch",
+      "status": "verified",
+      "evidence": "`test_wire.mojo:test_negative_integers_are_sign_extended_from_their_own_width` (every PR) \u2014 the table is hand-built bytes, so it needs no server; `int2`'s -1 read as unsigned is 65535, and a timestamp read against the wrong epoch is thirty years early and entirely plausible"
+    },
+    {
+      "id": "O7",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "Connection defaults are merged, never appended, and every URL is redacted before it reaches an error, a log or the doctor: libpq takes the LAST occurrence of a repeated keyword, so appending a default silently overrides the caller's own",
+      "status": "verified",
+      "evidence": "`test_url.mojo:test_a_default_the_caller_set_is_not_overridden` (every PR) \u2014 the redaction arm is `test_url.mojo:test_a_password_in_the_authority_is_masked`, covering both places libpq lets a password hide, and the read-only helper refuses to half-apply its promise rather than adding a second `options` keyword that would replace the caller's"
+    },
+    {
+      "id": "O8",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "Every error carries its SQLSTATE in its message and `sqlstate()` recovers it, with the context before the code so appending can never make it unrecoverable; the two predicates an application branches on \u2014 retryable, connection lost \u2014 name their classes once",
+      "status": "verified",
+      "evidence": "`test_sqlstate.mojo:test_the_context_goes_before_the_code_not_after` (every PR) \u2014 the same ordering rule `m0-sqlite`'s `describe_in` keeps for its result code, and for the same reason: three call sites there once came to raise without one"
+    },
+    {
+      "id": "O9",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "libpq is opened at run time rather than linked, so no binary in this repo carries a libpq dependency, and an absent library is one error naming every path tried; the function table survives being moved, which is what the whole `PgLib` shape exists for",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 a `thin` pointer loaded from a handle is identical by address before and after a move, and calling it as `table.field()` from outside the struct that holds it jumps into unmapped memory while the same call from a method beside it answers correctly, so every entry point is private behind a wrapper; `test_lib.mojo` asserts the working shape in the position the broken one failed in, because a dangling call is a segmentation fault rather than an exception"
+    },
+    {
+      "id": "O10",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "Parameters are bound, not interpolated: a value carrying a quote and a semicolon arrives whole, every binding method round-trips through a real column, and NULL stays distinguishable from an empty value \u2014 which it is not once both have length zero",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `test_postgres.mojo`, in a schema named for the connection's own backend pid so parallel runs cannot collide"
+    },
+    {
+      "id": "O11",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "The same query in text and binary modes reads the same, so `binary` is a performance decision rather than a semantic one; a binary type with no decoder raises naming the way out instead of returning plausible bytes",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `numeric` is text-only on purpose: its binary form is a base-10000 digit vector with its own NaN encoding, and a wrong decoding of one is silently a different number"
+    },
+    {
+      "id": "O12",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "A failed statement carries its SQLSTATE and the SQL, and leaves the connection usable: a constraint violation is reportable as one rather than as a 500, and the connection answers the next query",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 a transaction left INERROR still reads as open, because it still holds its locks and only ROLLBACK ends it"
+    },
+    {
+      "id": "O13",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "A read-only connection refuses a write, whatever the role could do: the belt to a read-only role's braces, so a mistake in the grants is an error on the connection that should not be writing rather than a write that succeeds",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 SQLSTATE 25006, distinguishable from the privilege error a role-level refusal gives"
+    },
+    {
+      "id": "O14",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "An identifier put into SQL text is quoted by the SERVER, against the connection's own encoding, not by doubling quotes by hand \u2014 which is what `LISTEN` and `DEALLOCATE` need, taking no parameters",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 a channel name is frequently application input"
+    },
+    {
+      "id": "O15",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "`LISTEN`/`NOTIFY` delivers with its channel, payload and notifying backend, nothing is delivered before it is sent or twice after, and a reset restores every subscription",
+      "status": "verified",
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 the reset arm is the one that is invisible when wrong: `PQreset` opens a new backend session listening to nothing, so a listener that reconnects without re-`LISTEN`ing runs forever delivering nothing and logging no error, which looks exactly like nobody publishing"
     }
   ]
 }

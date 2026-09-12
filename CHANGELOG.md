@@ -10,6 +10,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
+  sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else
+  here and links nothing: libpq is opened with `dlopen` at run time, so no
+  binary in this repo — `bin/m0serve` and the wheel included — carries a
+  libpq dependency, and an absent library is one error naming every path
+  tried. `Connection` owns its handle, `Result` owns a complete `PGresult`
+  and so can outlive its query, `Params` binds positionally with an explicit
+  OID per value, and every error carries a SQLSTATE that `sqlstate()`
+  recovers. `open()` applies a connect timeout, a statement timeout,
+  `client_encoding=UTF8` and an application name, merging rather than
+  appending so each stays overridable; `open_readonly()` adds a read-only
+  transaction default; every URL is redacted before it reaches an error, a
+  log or the doctor. `LISTEN`/`NOTIFY` is supported, including restoring
+  subscriptions across a reset. No pool, no retry, no `COPY`, and `numeric`,
+  dates, intervals and arrays read as text — each a deliberate absence, with
+  the reason in the README.
+
+  Two Mojo 1.0 findings are recorded in `lib.mojo` and pinned by
+  `test_lib.mojo`, both found by crashing: a `dlopen` handle held apart from
+  the pointers loaded from it is closed at its last mention, and a `thin`
+  pointer field cannot be called as `table.field()` from outside the struct
+  that holds it even though its address is unchanged.
+
 - **`m0-sqlite` gets its rows** (SPEC section O, O1–O5). The storage
   packages had no capability rows at all, so nothing in the sheet noticed
   the three invariants CLAUDE.md calls "look like bugs and are not": that

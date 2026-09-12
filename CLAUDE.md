@@ -51,6 +51,7 @@ m0-core     (zero deps)   hashing, JSON escape, JSON parse
 m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
 m0-wsgi                   WSGI/ASGI gateway — embeds CPython, layers on m0-http
 m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
+m0-postgres (zero deps)   PostgreSQL bindings over libpq — a SIBLING too
 ```
 
 **Zero upward imports.** `m0-core` depends on nothing. `m0-http` reaches into
@@ -670,6 +671,37 @@ code depends on:
       `docker stop` sends SIGKILL.
     - Not refused on a GIL-enabled interpreter, unlike `--threads`: a waiting
       view releases the GIL, so the isolation is real there.
+
+`m0-postgres` imports nothing else here and links **nothing**: libpq is opened
+with `dlopen` at run time, so no binary in this repo carries a libpq dependency
+and a server that never names a database needs no library present. Two rules
+there were each found by crashing, and both are in `lib.mojo`'s docstring:
+
+- **The handle and the pointers loaded from it live in ONE struct.** A loaded
+  `thin` pointer carries no borrow, so an `OwnedDLHandle` held anywhere else is
+  `dlclose`d at its last mention and the next call jumps into unmapped memory.
+- **A `thin` pointer FIELD cannot be called as `table.field()` from outside the
+  struct that holds it.** The pointer is identical by address before and after a
+  move, and calling it that way faults while the same call from a method beside
+  it answers correctly — so every entry point is private behind a wrapper
+  method, and `test_lib.mojo` asserts that shape in the position the broken one
+  failed in. A dangling call is a segmentation fault, not an exception, which is
+  why the rule is written down as well as tested.
+
+Also unlike m0-sqlite: a `Result` is a VALUE, not a cursor — libpq hands back a
+complete result that owns its memory, so it can outlive its query — and a
+`Prepared` is a name plus its parameter OIDs rather than a handle, because a
+server-side statement dies with its connection and a borrowing form is not
+spellable on this toolchain. Text results are the default and `binary=True` is
+per-query, because libpq's result format is one choice for the whole query.
+
+Its tests split, and the split is the point: `test-postgres` is pure (wire
+formats, URL defaults and redaction, SQLSTATE) and runs inside `test-all` on
+every leg, while `test-postgres-server` needs a server and does not — `test-all`'s
+contract is what a checkout can run with the toolchain and the system libraries.
+CI runs the server half in a Linux-only job with a service container, because
+GitHub's service containers require a Linux runner; `docs/RELEASING.md` names
+the macOS arm. Those tests FAIL without a server and never skip.
 
 `m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
 flags on macOS, present-at-link on Linux. `Connection` and `Statement` are

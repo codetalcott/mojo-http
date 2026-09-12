@@ -45,6 +45,17 @@ quarter second, and the same run with the barrier disabled
 negative arm is what proves the probe can see the failure. Pre-release for
 the reason above: a p99 from a shared runner is the runner's.
 
+**And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
+(SPEC O9-O15). CI runs these on Linux every pull request, in a job with a
+service container, because GitHub's service containers require a Linux
+runner — a platform fact, not a preference, so there is no macOS arm to
+write in the workflow. The rules the job pins are toolchain behaviour
+rather than OS behaviour, so Linux is the coverage that matters; this is
+the arm that would catch a macOS-only difference in how the library is
+found, since the search path differs by platform and Homebrew's libpq is
+keg-only. Point it at a server with `M0_PG_TEST_URL`, or let it default to
+`postgres:///postgres`. It fails without a server; it never skips.
+
 **And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
 reproducers, in the `m0lin` Linux container — the only place a lost pool
 wake has ever been caught (`smoke-django-realtime` phase 5, 2 of 10 rounds

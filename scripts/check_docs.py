@@ -110,7 +110,7 @@ def check_smoke_coverage():
 
 
 def check_test_coverage():
-    """Every test-* poe task must be reachable from `test-all`.
+    """Every test-* poe task must be run by CI, one way or the other.
 
     `check_smoke_coverage`'s twin, for the other half of CI. Smokes are
     listed one by one in test.yml and so are checked against it; the Mojo
@@ -118,6 +118,16 @@ def check_test_coverage():
     task drops out of CI simply by leaving that sequence -- no ghost step,
     no red tick, nothing to notice. Sequences nest (`test-sqlite` refers to
     `test-sqlite-mojo`), so this follows them.
+
+    Reachable from `test-all` is the usual route and NAMED BY A STEP in
+    test.yml is the other, which carries the same guarantee by a different
+    path: a task that has its own step cannot drop out silently either,
+    because deleting the step is what this check would then catch. The
+    second route exists for a test that `test-all` must not run --
+    `test-postgres-server` needs a database server, and `test-all`'s
+    contract is what a checkout can run with the toolchain and the system
+    libraries. Without it the only way to keep such a test in CI is to
+    stop calling it `test-*`, which is dodging the rule by spelling.
     """
     toml = (REPO / "pyproject.toml").read_text()
     tasks = set(re.findall(r"^\[tool\.poe\.tasks\.(test-[a-z0-9-]+)\]", toml, re.M))
@@ -138,10 +148,19 @@ def check_test_coverage():
             continue
         reached.add(name)
         queue.extend(sequences.get(name, ()))
-    missing = sorted(tasks - reached)
+    # The other route: a task a named test.yml step runs by itself.
+    workflow = (REPO / ".github" / "workflows" / "test.yml").read_text()
+    stepped = set()
+    for name, body in re.findall(
+        r"^\s*- name: (.+?)\s*$(.*?)(?=^\s*- (?:name|uses|run):|\Z)",
+        workflow, re.M | re.S,
+    ):
+        stepped |= set(re.findall(r"poe (test-[a-z0-9-]+)", body))
+    missing = sorted(tasks - reached - stepped)
     if missing:
         fail(
-            "test task(s) defined but not reachable from `poe test-all`, "
+            "test task(s) defined but neither reachable from `poe test-all` "
+            "nor run by a named step in test.yml, "
             "which is what CI runs: " + ", ".join(missing)
         )
 

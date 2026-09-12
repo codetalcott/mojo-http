@@ -271,6 +271,14 @@ shell = "python3 scripts/phase_stamp_check.py --sabotage"
 help = "Build m0-sqlite package"
 shell = "cd packages/m0-sqlite && mojo precompile src -o m0_sqlite.mojoc"
 
+# m0-postgres is the other storage sibling: zero deps, never nested. It links
+# NOTHING — libpq is opened with dlopen at run time, not put on the link line —
+# so a binary that imports this package still carries no libpq dependency, and
+# a server that never names a database never needs the library present.
+[tool.poe.tasks.build-postgres]
+help = "Build m0-postgres package (libpq is dlopen'd, never linked)"
+shell = "cd packages/m0-postgres && mojo precompile src -o m0_postgres.mojoc"
+
 # m0-wsgi is the only package that embeds CPython. It layers on m0-http exactly
 # as m0-datastar does; keeping it a separate package is what stops libpython
 # from landing on the link line of every other build in the repo.
@@ -284,7 +292,7 @@ shell = "cd packages/m0-wsgi && mojo precompile src -I ../m0-http/ -I ../m0-core
 # while the C-ABI surface is broken, and only test-core and smoke-ffi fail.
 [tool.poe.tasks.build-all]
 help = "Build all packages in dependency order, then the C-ABI shared library"
-sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite", "build-ffi"]
+sequence = ["build-core", "build-http", "build-datastar", "build-wsgi", "build-sqlite", "build-postgres", "build-ffi"]
 default_item_type = "ref"
 
 # The serve CLI. Its entry file sits at the package root, outside src/, for
@@ -581,9 +589,60 @@ for f in packages/m0-sqlite/test/test_*.mojo; do
 done
 """
 
+# m0-postgres splits its tests in two, and the split is the point.
+#
+# `test-postgres` needs NEITHER a server NOR libpq: the wire formats, the
+# connection-string defaults and redaction, and the SQLSTATE handling are pure
+# functions of bytes and text. It runs inside test-all on every leg.
+#
+# `test-postgres-server` needs both, and is NOT in test-all, because test-all's
+# contract is what a checkout can run with the toolchain and the system
+# libraries — a database server is neither. CI runs it in a Linux job with a
+# service container (GitHub's service containers require a Linux runner), and
+# docs/RELEASING.md names it as the macOS arm.
+#
+# It FAILS without a server; it never skips. A gate that exits 0 when its
+# dependency is absent is green having tested nothing, which is the shape
+# scripts/spec_sheet.py refuses for a cited step.
+[tool.poe.tasks.test-postgres]
+help = "Test m0-postgres's pure half (no server, no libpq needed)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+for f in packages/m0-postgres/test/test_wire.mojo \
+         packages/m0-postgres/test/test_url.mojo \
+         packages/m0-postgres/test/test_sqlstate.mojo \
+         packages/m0-postgres/test/test_resolution.mojo; do
+  name=$(basename "$f" .mojo)
+  mojo build -I packages/m0-postgres "$f" -o "$out/$name" || exit 1
+  "$out/$name" || exit 1
+done
+"""
+
+[tool.poe.tasks.test-postgres-server]
+help = "Test m0-postgres against a real server (M0_PG_TEST_URL; fails if absent)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+for f in packages/m0-postgres/test/test_lib.mojo \
+         packages/m0-postgres/test/test_postgres.mojo \
+         packages/m0-postgres/test/test_notify.mojo; do
+  name=$(basename "$f" .mojo)
+  mojo build -I packages/m0-postgres "$f" -o "$out/$name" || exit 1
+  "$out/$name" || exit 1
+done
+python3 scripts/emit.py --covers O9 --task test-postgres-server
+python3 scripts/emit.py --covers O10 --task test-postgres-server
+python3 scripts/emit.py --covers O11 --task test-postgres-server
+python3 scripts/emit.py --covers O12 --task test-postgres-server
+python3 scripts/emit.py --covers O13 --task test-postgres-server
+python3 scripts/emit.py --covers O14 --task test-postgres-server
+python3 scripts/emit.py --covers O15 --task test-postgres-server
+"""
+
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "fuzz-request", "test-sqlite", "sabotage-vtab", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

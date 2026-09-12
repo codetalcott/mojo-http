@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**193 capabilities: 169 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 169 verified, 162 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**203 capabilities: 179 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 179 verified, 172 are gated on every pull request, 2 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -309,13 +309,22 @@ answers correctly, not that it is pleasant.
 
 ## O. Storage packages
 
-`m0-sqlite` is a sibling of `m0-core` and `m0-http`, not a layer on them: it
-binds the system SQLite and depends on nothing else here. These rows are the
-invariants that look like bugs and are not — the ones a well-meaning
-simplification removes — plus the wire-level claim that an application's data
-survives the process. The performance study behind the package is
+`m0-sqlite` and `m0-postgres` are siblings of `m0-core` and `m0-http`, not
+layers on them: each binds one database client and depends on nothing else
+here. These rows are the invariants that look like bugs and are not — the
+ones a well-meaning simplification removes — plus the wire-level claims that
+an application's data survives the process and that a query means what it
+says. The performance study behind the SQLite package is
 [SQLite performance](SQLITE_PERFORMANCE.md); the layout question is
 [SQLite virtual tables](sqlite-vtab-feasibility.md).
+
+The Postgres rows split by what each needs. O6 to O8 are pure functions of
+bytes and text and run in `poe test-all` on every leg. O9 to O15 need a real
+server, so they cite a Linux-only job with a service container rather than a
+test function: GitHub's service containers require a Linux runner, which is
+a platform fact and not a preference, and the spec checker rightly refuses a
+cited step that carries an `if:`. Those tests fail without a server and
+never skip.
 
 | id | capability | status | evidence |
 |---|---|---|---|
@@ -324,3 +333,13 @@ survives the process. The performance study behind the package is
 | O3 | Error text is only trusted when `sqlite3_errcode` corroborates the code being described: a closed connection answers SQLITE_MISUSE to every question, so a true "UNIQUE constraint failed" must not be replaced by a false "bad parameter or other API misuse" | verified | `test_sqlite.mojo:test_step_error_stays_truthful_without_a_live_connection` (every PR) — the corroboration holds only because nothing calls `sqlite3_extended_result_codes`; turning those on makes step return 2067 where errcode still answers 19, and every message would degrade to the generic text |
 | O4 | `m0_array(?)` streams a Mojo `List` into SQL without copying it, and the borrow cannot outlive the data: an array is bindable only through the helpers that take it as an argument and finish the statement before returning | verified | `test_vtab.mojo:test_borrow_is_dropped_after_the_call` (every PR) — the C struct offsets the module depends on are asserted against the real sqlite3.h by extraction before any Mojo test runs, and moving any one of them is caught, both inside `poe test-all` |
 | O5 | An application persists in SQLite through a per-thread connection and comes back with its data after a kill and a restart, including the event log that makes SSE replay work across processes | verified | `Smoke test the Datastar todo demo` (every PR) — `apps/datastar_todo` is killed and restarted on the same database file, the struck-through todo is still in the list, and a client reconnecting with `Last-Event-ID` is caught up by the restarted process from the persisted log |
+| O6 | Binary results decode to what the server means: integers big-endian and sign-extended from their OWN width, IEEE 754 floats at both widths, `jsonb`'s version byte read rather than skipped, `uuid` rendered canonically, and timestamps counted in microseconds from 2000-01-01 rather than from the Unix epoch | verified | `test_wire.mojo:test_negative_integers_are_sign_extended_from_their_own_width` (every PR) — the table is hand-built bytes, so it needs no server; `int2`'s -1 read as unsigned is 65535, and a timestamp read against the wrong epoch is thirty years early and entirely plausible |
+| O7 | Connection defaults are merged, never appended, and every URL is redacted before it reaches an error, a log or the doctor: libpq takes the LAST occurrence of a repeated keyword, so appending a default silently overrides the caller's own | verified | `test_url.mojo:test_a_default_the_caller_set_is_not_overridden` (every PR) — the redaction arm is `test_url.mojo:test_a_password_in_the_authority_is_masked`, covering both places libpq lets a password hide, and the read-only helper refuses to half-apply its promise rather than adding a second `options` keyword that would replace the caller's |
+| O8 | Every error carries its SQLSTATE in its message and `sqlstate()` recovers it, with the context before the code so appending can never make it unrecoverable; the two predicates an application branches on — retryable, connection lost — name their classes once | verified | `test_sqlstate.mojo:test_the_context_goes_before_the_code_not_after` (every PR) — the same ordering rule `m0-sqlite`'s `describe_in` keeps for its result code, and for the same reason: three call sites there once came to raise without one |
+| O9 | libpq is opened at run time rather than linked, so no binary in this repo carries a libpq dependency, and an absent library is one error naming every path tried; the function table survives being moved, which is what the whole `PgLib` shape exists for | verified | `Test m0-postgres against a real server` (every PR) — a `thin` pointer loaded from a handle is identical by address before and after a move, and calling it as `table.field()` from outside the struct that holds it jumps into unmapped memory while the same call from a method beside it answers correctly, so every entry point is private behind a wrapper; `test_lib.mojo` asserts the working shape in the position the broken one failed in, because a dangling call is a segmentation fault rather than an exception |
+| O10 | Parameters are bound, not interpolated: a value carrying a quote and a semicolon arrives whole, every binding method round-trips through a real column, and NULL stays distinguishable from an empty value — which it is not once both have length zero | verified | `Test m0-postgres against a real server` (every PR) — `test_postgres.mojo`, in a schema named for the connection's own backend pid so parallel runs cannot collide |
+| O11 | The same query in text and binary modes reads the same, so `binary` is a performance decision rather than a semantic one; a binary type with no decoder raises naming the way out instead of returning plausible bytes | verified | `Test m0-postgres against a real server` (every PR) — `numeric` is text-only on purpose: its binary form is a base-10000 digit vector with its own NaN encoding, and a wrong decoding of one is silently a different number |
+| O12 | A failed statement carries its SQLSTATE and the SQL, and leaves the connection usable: a constraint violation is reportable as one rather than as a 500, and the connection answers the next query | verified | `Test m0-postgres against a real server` (every PR) — a transaction left INERROR still reads as open, because it still holds its locks and only ROLLBACK ends it |
+| O13 | A read-only connection refuses a write, whatever the role could do: the belt to a read-only role's braces, so a mistake in the grants is an error on the connection that should not be writing rather than a write that succeeds | verified | `Test m0-postgres against a real server` (every PR) — SQLSTATE 25006, distinguishable from the privilege error a role-level refusal gives |
+| O14 | An identifier put into SQL text is quoted by the SERVER, against the connection's own encoding, not by doubling quotes by hand — which is what `LISTEN` and `DEALLOCATE` need, taking no parameters | verified | `Test m0-postgres against a real server` (every PR) — a channel name is frequently application input |
+| O15 | `LISTEN`/`NOTIFY` delivers with its channel, payload and notifying backend, nothing is delivered before it is sent or twice after, and a reset restores every subscription | verified | `Test m0-postgres against a real server` (every PR) — the reset arm is the one that is invisible when wrong: `PQreset` opens a new backend session listening to nothing, so a listener that reconnects without re-`LISTEN`ing runs forever delivering nothing and logging no error, which looks exactly like nobody publishing |
