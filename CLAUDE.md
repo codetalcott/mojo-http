@@ -829,6 +829,8 @@ uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers
 uv run poe smoke-blocking-threads  # a slow view must not stall what is behind it
 uv run poe test-sqlite      # needs libsqlite3 on the system
+uv run poe check-keepalive-barrier # the `_ = x` at an FFI site still pins the buffer
+uv run poe sabotage-keepalive      # revert each of the probe's rules; all must be caught
 uv run poe canary           # full suite against the Mojo nightly, then restore
 
 # The warning ratchet. mojo has no per-warning suppression, so the residual
@@ -1419,6 +1421,40 @@ Properties of the design, not defects to fix in passing:
   installed and the default signal behaviour stands, because a handler over a
   dead slot would swallow SIGTERM; `shutdown_signals_active()` reports which
   happened and `test_lifecycle.mojo` asserts it.
+- **A pointer handed to C does not keep its buffer alive; the bare `_ = x`
+  after the call does.** Mojo destroys a value at its last *tracked* use,
+  and an address laundered into a C argument is not one — `unsafe_ptr()`
+  and `Pointer(to=x).unsafe_bitcast[Int]()[]` both erase the origin tying
+  it back to the local. Measured on this toolchain: without the line the
+  allocator free is emitted BEFORE the call that reads through the
+  pointer. Roughly thirty sites end that way, `c/fdpass.mojo`'s `data`
+  and `control` (the `SCM_RIGHTS` hand-off under `--workers N`),
+  `c/process.mojo`'s `argv`/`bufs`/`path_c` (the `execv` behind
+  `--spawn-workers`) and `m0-wsgi/src/bridge.mojo`'s `body` among them;
+  deleting one is a use-after-free with no symptom at the call site.
+
+  **Only an OWNING value is at risk.** The release is Mojo's own
+  destructor call, placed by the frontend, which is why nothing
+  downstream moves it back. A plain stack local whose ADDRESS escapes —
+  `fdpass.mojo`'s `iov` — is kept alive by LLVM's escape analysis
+  without help, so those keep-alives are belt-and-braces; and
+  `signal.mojo`'s and `multiworker.mojo`'s
+  `Pointer(to=handler).unsafe_bitcast[Int]()[]` LOADS the function value
+  rather than taking the local's address, so nothing escapes there at
+  all. One level of indirection separates the three cases.
+
+  `poe check-keepalive-barrier` is the gate (inside `test-all`):
+  `scripts/keepalive_probe.mojo` is compiled to LLVM IR and the pinned
+  and bare forms are compared. The BARE arm is the load-bearing half —
+  without a counterfactual the gate would pass on a toolchain where the
+  line does nothing and would have stopped being evidence — and
+  `poe sabotage-keepalive` reverts each of the probe's own rules and
+  insists the check reports every one. A failure is a finding about the
+  toolchain, not gate noise; each outcome prints what it means for the
+  tree. The `_ = x^` transfer form is a different thing and is NOT this
+  idiom: the compiler warns it has no effect on a trivially
+  register-passable type, and the 16 such sites here are genuine
+  destroy-now uses on owning values.
 - **A request-derived `String` may hold bytes that are not UTF-8, and is
   never sliced with `[byte=a:b]`.** The request target, every header
   value (the parser passes obs-text, bytes above 0x7F, through) and the

@@ -115,6 +115,16 @@ jobs:
       - name: Sabotage the chunked trailer rules
         run: uv run poe sabotage-trailers
 
+      # `check-keepalive-barrier` runs inside test-all above and asserts that
+      # a bare `_ = x` after an FFI call still pins the buffer that call reads
+      # -- and that deleting it still frees EARLY, without which the gate
+      # would pass on a toolchain where the line does nothing. This is the
+      # half that matters when the gate is green, which is the normal result:
+      # it reverts each rule in the probe and insists the check reports it.
+      # Both runners, because the IR is per-target.
+      - name: Sabotage the keep-alive probe the barrier check reads
+        run: uv run poe sabotage-keepalive
+
       # SPEC G13. The request decoder is a pure function over bytes, so the
       # fuzz harness needs no socket: mutate a seed corpus, assert the
       # invariants, and stay replayable from --seed. `sabotage-fuzz` is the
