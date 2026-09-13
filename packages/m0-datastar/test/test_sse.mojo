@@ -302,7 +302,13 @@ def test_invalid_utf8_after_a_line_break_does_not_trap() raises:
 
     covers: G14
     """
-    # "a\n<0x80>b": the cut INSIDE the loop lands on a continuation byte.
+    # Which cut each case pins, because the assert fires only when an
+    # endpoint lands ON a continuation byte (0b10xxxxxx) — verified by
+    # walking the cuts: the two below cover both slices, so reverting
+    # either one is caught.
+    #
+    # "a\n<0x80>b" — cuts [0:1] and [2:4]. The trap is the cut AFTER the
+    # loop, whose START is the 0x80: the todo demo's exact shape.
     var parts = split_data_lines(_raw_text(0x61, 0x0A, 0x80, 0x62))
     assert_equal(len(parts), 2)
     assert_equal(parts[0], "a")
@@ -310,12 +316,17 @@ def test_invalid_utf8_after_a_line_break_does_not_trap() raises:
     assert_equal(len(second), 2)
     assert_equal(second[0], 0x80)
     assert_equal(second[1], 0x62)
-    # A continuation byte opening the payload: the START of a cut.
+    # "<0x80>\na" — cuts [0:1] and [2:3]. The trap is the cut INSIDE the
+    # loop, whose START is the 0x80. This is the other slice.
     var first = split_data_lines(_raw_text(0x80, 0x0A, 0x61))
     assert_equal(len(first), 2)
     assert_equal(_bytes_of(first[0])[0], 0x80)
     assert_equal(first[1], "a")
-    # A truncated two-byte sequence last: the cut AFTER the loop.
+    # "a\r\n<0xC3>" — a LEAD byte last, which the old code TOLERATED: the
+    # assert catches only continuation bytes, so this never trapped. Kept
+    # deliberately, because that boundary is what makes the rest of the
+    # tree's `[byte=` sites safe — they cut at ASCII — and because the
+    # output still has to be right either way.
     var tail = split_data_lines(_raw_text(0x61, 0x0D, 0x0A, 0xC3))
     assert_equal(len(tail), 2)
     assert_equal(len(_bytes_of(tail[1])), 1)

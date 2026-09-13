@@ -6721,15 +6721,26 @@ grep -q 'datastar-patch-elements' todo_fresh.txt \
 # unauthenticated POST killing the process, taking every connected tab with
 # it. `\\n` is the JSON escape (a real newline once parsed) and `\\200` is
 # the raw byte; printf spells both portably, curl sends the file unaltered.
-printf '{"draft":"bad\\\\n\\200tail"}' > todo_hostile.bin
+printf '{"draft":"bad\\\\n\\200tail"}' > todo_hostile.txt
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/add \
-  -H 'Content-Type: application/json' --data-binary @todo_hostile.bin)
+  -H 'Content-Type: application/json' --data-binary @todo_hostile.txt)
 [ "$code" = 204 ] || { echo "a todo carrying invalid UTF-8 answered $code, not 204"; cat todo.log; exit 1; }
 curl -s --fail --max-time 5 http://localhost:8080/health > /dev/null \
   || { echo 'the server died broadcasting a todo whose text is not UTF-8 (G14)'; cat todo.log; exit 1; }
-curl -s --fail --max-time 5 http://localhost:8080/ | grep -q '<s>buy milk</s>' \
+curl -s --fail --max-time 5 http://localhost:8080/ > todo_hostile_page.txt \
   || { echo 'the server survived but stopped rendering after the hostile todo'; exit 1; }
-rm -f todo_hostile.bin
+grep -q '<s>buy milk</s>' todo_hostile_page.txt \
+  || { echo 'the page stopped rendering earlier todos after the hostile one'; exit 1; }
+# Without this the phase would pass vacuously if the draft ever parsed
+# empty: nothing would be added, nothing broadcast, nothing to trap.
+# LC_ALL=C because the match sits on the line carrying the 0x80: in a UTF-8
+# locale grep silently does not match a line whose bytes are not valid
+# UTF-8 (measured both ways), so without it this assertion fails on a
+# server that is working perfectly -- and could differ by runner locale.
+LC_ALL=C grep -q 'tail' todo_hostile_page.txt \
+  || { echo 'the hostile todo never reached the list, so nothing exercised the splitter'; cat todo_hostile_page.txt; exit 1; }
+rm -f todo_hostile_page.txt
+rm -f todo_hostile.txt
 
 rm -f todo_sse.txt todo_replay.txt todo_fresh.txt todo.log
 echo "smoke-todo OK"

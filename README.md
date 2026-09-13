@@ -845,8 +845,6 @@ is silently a different number.
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
 uv run poe test-all         # 1278 unit tests, then compiles every example
-uv run poe test-all         # 1172 unit tests, then compiles every example
-uv run poe test-all         # 1157 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
