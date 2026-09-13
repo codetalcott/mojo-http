@@ -165,6 +165,18 @@ checks a second tab morphed. Pre-release because it needs Chromium, and
 because the bundle is pinned (D20): what the run guards changes when the
 pin moves, and a release is where a moved pin ships. Ten seconds.
 
+**And the login's two pre-release gates** (SPEC N13, new in 1.3.0):
+`uv run poe browser-notes-login` drives the notes app's login in Chromium
+and prints what the bundle actually sent — the point being that every write
+carries its CSRF token in the BODY, including the DELETE, which htmx 2.0.4
+would otherwise put in the query string (`methodsThatUseUrlParams` lists
+`delete`), landing a token in a URL that ends up in logs and referrers. Only
+a browser can prove where the token went. `uv run poe sabotage-notes-login`
+reverts each of the six session and CSRF rules and insists the gate catches
+every one. Both were missing from this page until the 1.3.0 run, which is
+how a pre-release gate becomes decorative: the row says `(pre-release)` and
+nothing here tells the person cutting the release to run it.
+
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.

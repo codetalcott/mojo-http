@@ -176,7 +176,9 @@ application brings itself.
   first round. The container's build list never gained `postgres` after
   `m0-wsgi` began importing `m0_postgres` for `--pg-listen`, and CI cannot
   see it because there is no such container there. Found by the 1.3.0
-  release run; fixed in the three places that name the list.
+  release run; fixed in the four places that name the list, including the
+  setup script that creates the container, without which a fresh one could
+  not be built at all.
 
 - **A todo whose text is not UTF-8 no longer kills the server** (SPEC G14).
   `m0-datastar`'s `split_data_lines` is a deliberate copy of `m0-http`'s SSE

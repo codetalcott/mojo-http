@@ -228,16 +228,21 @@ the scripts that drove it are in `bench/soak/2026-09-13/`.
 
 | app | mode | seconds | verified | failures | churn | RSS | fds / threads |
 |---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 29,989 | 0 | SIGTERM ×2, windows 685 ms max | 120.4 → 124.8 MB | 89 → 84 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions | 180 | 21,737 | 0 | SIGTERM ×2, 1219 ms | 186.8 → 194.3 MB | 85 → 84 / 13 → 13 |
-| color-separation | WSGI, pool 8, uploads | 120 | 46,934 | 0 | SIGTERM ×1, 833 ms | 985.8 MB → 1.43 GB (finding 6) | 141 → 156 / 18 → 18 |
+| transcripts | WSGI, pool 8 | 150 | 29,989 | 0 | SIGTERM ×2, drains 136 ms max (window 685 ms) | 120.4 → 124.8 MB | 89 → 84 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions | 180 | 21,737 | 0 | SIGTERM ×2, drains 150 ms max (window 1219 ms) | 186.8 → 194.3 MB | 85 → 84 / 13 → 13 |
+| color-separation | WSGI, pool 8, uploads | 120 | 46,934 | 0 | SIGTERM ×1, drains 148 ms max (window 833 ms) | 985.8 MB → 1.43 GB (finding 6) | 141 → 156 / 18 → 18 |
 | color-separation | ASGI executor vs uvicorn | 90 | 18,701 | 0 | — | 1.21 → 1.51 GB (finding 6) | 132 → 133 / 23 → 32 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 72,311 | 0 | SIGTERM ×1, 1103 ms | 174.6 → 169.8 MB | 103 → 87 / 16 → 17 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 72,311 | 0 | SIGTERM ×1, drains 82 ms max (window 1103 ms) | 174.6 → 169.8 MB | 103 → 87 / 16 → 17 |
 | textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,484 | 0 | — | 491.9 → 191.8 MB (the startup transient) | 99 → 98 / 13 → 13 |
 
 **214,156 responses verified byte for byte, zero failures**, every sample
-reporting `failures=0` throughout. Descriptors and threads flat in every
-row. The two color-separation rows carry the RSS the record has called the
+reporting `failures=0` throughout. Descriptors and threads flat in every row
+but one: color-separation's ASGI row runs 23 → 32 threads (max 33), which is
+asgiref's thread pool filling under the executor, as the 2026-09-10 record
+says of the same row. The churn column reports the DRAIN, with the whole
+restart window beside it — 2026-09-10 reported drains alone, so reading this
+pass's window (1219 ms) against that pass's drain (0.26 s) would look like a
+regression and is not one: the drains here are 82–150 ms. The two color-separation rows carry the RSS the record has called the
 application's since 2026-09-10 (finding 6): gunicorn's two workers sum
 1.5–1.8 GB on the same workload. textshelf's WSGI row again shows the
 startup transient falling away rather than growth.
@@ -248,9 +253,12 @@ container's build list never gained `postgres` after `m0-wsgi` began
 importing `m0_postgres` for `--pg-listen`, so `build-wsgi` could not build
 in the container at all and `stress-pool` failed before its first round.
 CI cannot see it — there is no such container there — which is the reason
-that tier exists. Fixed in the three places that name the list
-(`scripts/probes/linux_sync.sh`, the `stress-pool` task, and
-`scripts/bench_linux_conclusions.py`, which would have hit it next).
+that tier exists. Fixed in the FOUR places that name the list: `scripts/probes/linux_sync.sh`,
+the `stress-pool` task, `scripts/bench_linux_conclusions.py` (which would
+have hit it next), and `scripts/probes/linux_setup.sh` — the last found in
+review, and the one that matters most, because it is what CREATES the
+container. Without it a fresh `m0lin` could not be built at all; this run
+escaped only because its container already existed.
 
 ## Re-soak — 2026-09-10, against 1.0.0 as merged at `a4f0aa5`, all four applications
 
