@@ -15,6 +15,18 @@ application brings itself.
 
 ### Added
 
+- **A gate on the `_ = x` keep-alives at the FFI sites.** Roughly thirty
+  of them end a sequence that hands a buffer's address to C, and nothing
+  proved they still worked. `poe check-keepalive-barrier` (inside
+  `test-all`) compiles `scripts/keepalive_probe.mojo` to LLVM IR and reads
+  four exported bodies: with the line, the allocator free lands after the
+  call; without it, before — which is the measured hazard, and the half
+  that keeps the gate evidence rather than ceremony. The probe also
+  records what is NOT at risk, since only an owning value is: a stack
+  local whose address escapes is kept alive by LLVM without help.
+  `poe sabotage-keepalive` reverts each of the probe's own rules and
+  insists the check reports every one.
+
 - **An application's own Mojo mount, without copying `m0serve.mojo`** (SPEC
   N14). The demo mount moved out of the entry file into a module,
   `m0serve_mount` (`packages/m0-wsgi/mount/`), and `poe build-serve` takes
@@ -138,6 +150,24 @@ application brings itself.
   a `DELETE`'s fields in the query string, so the shell narrows
   `methodsThatUseUrlParams` to `get` and the run records that the token
   travels in the body. Section N has no `planned` rows left.
+
+### Changed
+
+- **m0-postgres checks each libpq symbol where it loads it**, so the two
+  cannot drift. `PgLib` walked a hand-written `required_symbols()` list
+  before loading anything, because `ExternalFunction.load` aborts the
+  process on a missing symbol — but that list was a third source of truth
+  beside the declarations and the fields, and nothing compared them.
+  `test_every_symbol_the_table_loads_is_checked_first` asserted the list
+  was plausible, never that it matched what is loaded, so a 33rd entry
+  point added without its list entry passed every gate and would have
+  aborted on the first host whose libpq lacked it — the one failure the
+  list existed to prevent. A `_checked[name, T]` helper now takes the
+  symbol from the declaration it loads, and the list is gone along with
+  its export from `m0_postgres`. The replacement test drives both arms of
+  the refusal, which `PgLib.open()` succeeding cannot show; reverting the
+  check makes it abort rather than fail, the same evidentiary shape as the
+  two crash regressions beside it.
 
 ### Fixed
 
