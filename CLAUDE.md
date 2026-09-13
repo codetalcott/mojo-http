@@ -1431,7 +1431,15 @@ Properties of the design, not defects to fix in passing:
   the static mount's path, the `Accept` negotiator and the ETag matcher.
   A sixth and seventh were not request bytes at all: `split_sse_lines` and
   `sse_data_payload`, which a `--pg-listen` NOTIFY payload reaches on worker
-  0's listener thread, and a `SQL_ASCII` database converts nothing.
+  0's listener thread, and a `SQL_ASCII` database converts nothing. An
+  eighth is `m0-datastar`'s `split_data_lines`, the deliberate COPY of
+  that splitter (the wire format stays dependency-free, so the fix had to
+  be made twice and the copy kept trapping for a release): what reaches it
+  is a rendered fragment, and an application renders request data — a todo
+  whose text is `a\n<0x80>b` put a non-boundary byte after a line break,
+  because HTML escaping touches neither, and one unauthenticated POST
+  killed the whole server on the loop thread. Duplicating a function
+  duplicates its traps: fix both, or import one.
   Every such slice is now `String(unsafe_from_utf8=s.as_bytes()[a:b])`,
   a byte-span slice with no boundary check; `unquote` is a single byte
   walk. SPEC G14 is the row, one test per site declares it, and both

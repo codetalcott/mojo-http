@@ -49,7 +49,20 @@ def split_data_lines(data: String) -> List[String]:
 
     Deliberately duplicated from `m0_http.sse.format.split_sse_lines` rather
     than imported: `consts.mojo` and `sse.mojo` stay dependency-free so the
-    Datastar wire format is usable without the rest of the framework.
+    Datastar wire format is usable without the rest of the framework. The
+    duplication is why this function needed the SAME fix twice: the one in
+    `m0_http` was corrected first and this one kept trapping.
+
+    Every cut is a BYTE-span slice, never `[byte=a:b]` (SPEC G14). What
+    reaches here is a RENDERED FRAGMENT, and an application builds that out
+    of request data — `apps/datastar_todo` renders a todo's text, which is
+    whatever the browser posted. HTML escaping does not make a string UTF-8:
+    it leaves bytes above 0x7F alone and does not touch newlines, so a todo
+    reading `a\\n<0x80>b` puts a non-boundary byte immediately after a line
+    break, which is exactly where this cuts. `[byte=a:b]` asserts a codepoint
+    boundary there and traps the LOOP thread — measured before this fix as
+    one unauthenticated `POST /add` killing the whole process, every tab with
+    it (`smoke-todo`'s hostile phase).
     """
     var lines = List[String]()
     var bytes = data.as_bytes()
@@ -59,13 +72,13 @@ def split_data_lines(data: String) -> List[String]:
     while i < n:
         var c = bytes[i]
         if c == UInt8(ord("\r")) or c == UInt8(ord("\n")):
-            lines.append(String(StringSpan(data)[byte=start:i]))
+            lines.append(String(unsafe_from_utf8=bytes[start:i]))
             if c == UInt8(ord("\r")):
                 if i + 1 < n and bytes[i + 1] == UInt8(ord("\n")):
                     i += 1
             start = i + 1
         i += 1
-    lines.append(String(StringSpan(data)[byte=start:n]))
+    lines.append(String(unsafe_from_utf8=bytes[start:n]))
     return lines^
 
 

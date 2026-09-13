@@ -136,6 +136,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A todo whose text is not UTF-8 no longer kills the server** (SPEC G14).
+  `m0-datastar`'s `split_data_lines` is a deliberate copy of `m0-http`'s SSE
+  line splitter — the wire format stays dependency-free — and kept the
+  `[byte=a:b]` slice after the original was fixed. What reaches it is a
+  rendered fragment, which is where an application puts request data, so a
+  todo reading `a\n<0x80>b` (HTML escaping touches neither the newline nor
+  the high byte) cut on a non-codepoint boundary and trapped the loop
+  thread: one unauthenticated POST took down the whole process and every
+  connected tab. Both cuts are byte-span slices now, pinned by a unit test
+  and by `smoke-todo` posting exactly those bytes over a socket.
+
 - `poe check-milestones` read the server soak's version as the first
   `m0serve X.Y.Z` anywhere in its half of the record. A later section's
   heading started carrying a version too, so the sabotage that blanks the
