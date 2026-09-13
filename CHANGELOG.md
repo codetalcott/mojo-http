@@ -10,6 +10,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **A gate on the `_ = x` keep-alives at the FFI sites.** Roughly thirty
+  of them end a sequence that hands a buffer's address to C, and nothing
+  proved they still worked. `poe check-keepalive-barrier` (inside
+  `test-all`) compiles `scripts/keepalive_probe.mojo` to LLVM IR and reads
+  four exported bodies: with the line, the allocator free lands after the
+  call; without it, before — which is the measured hazard, and the half
+  that keeps the gate evidence rather than ceremony. The probe also
+  records what is NOT at risk, since only an owning value is: a stack
+  local whose address escapes is kept alive by LLVM without help.
+  `poe sabotage-keepalive` reverts each of the probe's own rules and
+  insists the check reports every one.
+
 - **An application's own Mojo mount, without copying `m0serve.mojo`** (SPEC
   N14). The demo mount moved out of the entry file into a module,
   `m0serve_mount` (`packages/m0-wsgi/mount/`), and `poe build-serve` takes

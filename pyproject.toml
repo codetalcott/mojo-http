@@ -955,7 +955,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1027,6 +1027,14 @@ deps = ["build-core", "build-http"]
 # The toolchain claim behind page_or_fragment's shape -- an app cannot
 # conform to a trait defined in a .mojoc -- as a probe that flips the day
 # it stops being true, with a control that catches a stale .mojoc.
+[tool.poe.tasks.check-keepalive-barrier]
+help = "The `_ = x` after an FFI call still pins the buffer that call reads"
+cmd = "python3 scripts/keepalive_barrier_check.py"
+
+[tool.poe.tasks.sabotage-keepalive]
+help = "Revert each rule of the keep-alive probe; check-keepalive-barrier must catch every one"
+cmd = "python3 scripts/keepalive_barrier_check.py --sabotage"
+
 [tool.poe.tasks.check-mojoc-trait]
 help = "An app conformance to a .mojoc trait is still refused (the reason the shell is a thin function)"
 cmd = "python3 scripts/mojoc_trait_check.py"
