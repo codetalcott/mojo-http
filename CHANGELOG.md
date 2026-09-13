@@ -141,6 +141,13 @@ application brings itself.
 
 ### Fixed
 
+- **The Linux container could not build `m0-wsgi`**, so `stress-pool` and
+  `bench-linux-conclusions` — two pre-release gates — failed before their
+  first round. The container's build list never gained `postgres` after
+  `m0-wsgi` began importing `m0_postgres` for `--pg-listen`, and CI cannot
+  see it because there is no such container there. Found by the 1.3.0
+  release run; fixed in the three places that name the list.
+
 - **A todo whose text is not UTF-8 no longer kills the server** (SPEC G14).
   `m0-datastar`'s `split_data_lines` is a deliberate copy of `m0-http`'s SSE
   line splitter — the wire format stays dependency-free — and kept the
