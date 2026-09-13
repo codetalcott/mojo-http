@@ -230,24 +230,35 @@ comptime _PQescapeIdentifier = ExternalFunction[
 
 
 def _pin_flags() -> Int:
-    """`OwnedDLHandle`'s own default flags, plus `RTLD_NODELETE`.
+    """`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`, the mode the pin re-opens with.
 
-    The stdlib's default is `RTLD_GLOBAL` alone — 256 on Linux, 8 on macOS —
-    NOT `RTLD_NOW`: its default-flag expression is
-    `Int(256) if is_linux() else Int(8) or 2`, and `Int(8) or 2`
-    short-circuits to 8 (the `2` is dead). The first open of libpq therefore
-    binds LAZILY, and the pin must repeat that rather than add `RTLD_NOW`
-    (2) — a libpq whose transitive symbols only some platforms resolve
-    eagerly would then fail the pin and make `PgLib.open` raise on a host
-    where the library works. Confirmed against the pinned toolchain by
-    evaluating the expression: it is 8 on this macOS. `RTLD_NODELETE` is
-    0x1000 in glibc's `dlfcn.h` and 0x80 in macOS's, and both loaders
-    promote an already-loaded image to it on a re-open.
+    **A binding mode is not optional, and leaving it out broke Linux.**
+    glibc's `dlopen` refuses a mode carrying neither `RTLD_LAZY` (1) nor
+    `RTLD_NOW` (2): measured against `libpq.so.5` in a `bookworm` container,
+    `RTLD_GLOBAL | RTLD_NODELETE` (256 | 0x1000) fails with
+    `invalid mode for dlopen(): Invalid argument`, while both
+    `1 | 256 | 0x1000` and `2 | 256 | 0x1000` open and keep the image mapped
+    after every handle is closed. macOS is lenient where glibc is not, so a
+    mode missing it passes every local run and fails only the Linux job —
+    which is exactly what happened, and why the flags are written here as a
+    measurement rather than as a guess at another module's default.
+
+    `RTLD_LAZY` rather than `RTLD_NOW`, because this is a RE-open of an image
+    already loaded: `RTLD_NOW` would upgrade it to eager binding the first
+    open never asked for, so a libpq with a transitive symbol resolvable only
+    lazily would fail the pin and make `PgLib.open` raise on a host where the
+    library works. Lazy asks for nothing the first open did not.
+
+    The stdlib's own default is deliberately not named here. `std` ships as a
+    `.mojoc` with no source, so any claim about it is unverifiable from this
+    tree — and a wrong one was how the missing binding mode got in.
+    `RTLD_NODELETE` is 0x1000 in glibc's `dlfcn.h` and 0x80 in macOS's, and
+    both loaders promote an already-loaded image to it on a re-open.
     """
     comptime if CompilationTarget.is_macos():
-        return 8 | 0x80
+        return 1 | 8 | 0x80
     else:
-        return 256 | 0x1000
+        return 1 | 256 | 0x1000
 
 
 def pin_library(path: String) raises:
