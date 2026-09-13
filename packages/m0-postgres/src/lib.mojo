@@ -60,8 +60,10 @@ the honest representation. Only BUFFERS need the origin, because only
 buffers are ours to keep alive.
 
 `load` ABORTS the process on a missing symbol rather than raising, so every
-symbol is probed with `check_symbol` first and a libpq too old to carry one
-is an error naming the symbol.
+entry point goes through `_checked`, which asks `check_symbol` first and
+raises naming the symbol a libpq too old does not carry. Checking and
+loading in one place is deliberate: they were two, and nothing held the
+list of names in step with what was loaded.
 """
 
 from std.collections.span import Span
@@ -285,6 +287,59 @@ def pin_library(path: String) raises:
         )
 
 
+def _checked[
+    name: StaticString, T: TrivialRegisterPassable
+](ref handle: OwnedDLHandle, path: String) raises -> T:
+    """Resolve one entry point, or raise naming the symbol that is missing.
+
+    `ExternalFunction.load` ABORTS the process on a missing symbol -- it is
+    statically non-raising, so a `try` around it is dead code the compiler
+    says so about -- and a libpq too old, or a library that is not libpq at
+    all, must be an error naming the symbol rather than a stack trace with
+    no cause in it. `check_symbol` is the question that can be answered.
+
+    Checking and loading in ONE place is the point. They used to be two: a
+    `required_symbols()` list walked before any load, parallel to the
+    declarations and to `PgLib`'s fields. Nothing held them in step -- the
+    test that named that list asserted it was plausible, never that it
+    matched what is loaded -- so a 33rd entry point added without its list
+    entry passed every gate here and aborted on the first host whose libpq
+    lacked it, which is the one failure the list existed to prevent.
+    `test_a_symbol_the_library_lacks_is_an_error_naming_it` is what proves
+    the refusal now, and reverting the check below makes it abort rather
+    than fail.
+
+    The cost of the merge is that a library missing a symbol is refused
+    after the entry points before it have been loaded, where the list
+    refused before any of them. Nothing escapes either way: the constructor
+    raises, the pointers are register-passable with no destructors, and
+    `path` and `_lib` are assigned last, so there is no table to half-own.
+
+    Parameters:
+        name: The symbol, taken from the declaration as `_PQx.name`.
+        T: Its C signature, taken from the same declaration as `_PQx.type`.
+
+    Args:
+        handle: The open library. Borrowed; `load` takes no borrow of it,
+            which is why `PgLib` holds it (the module docstring's first
+            rule).
+        path: Which file was opened, for the error.
+
+    Returns:
+        The entry point, as a `thin abi("C")` pointer to store in a field.
+
+    Raises:
+        If the library has no such symbol.
+    """
+    if not handle.check_symbol(name):
+        raise Error(
+            "the library at " + path + " has no symbol `" + String(name)
+            + "` — this is either not libpq, or a libpq older than"
+            + " 12.0, the oldest this package supports"
+        )
+    return ExternalFunction[name, T].load(handle.borrow())
+
+
 def default_search_path() -> List[String]:
     """Where to look for libpq when `M0_LIBPQ` does not say.
 
@@ -382,53 +437,96 @@ struct PgLib(Movable):
         """Resolve every entry point from an already-open handle.
 
         Private in effect: `open` is the constructor callers use. Every
-        symbol is checked before it is loaded, because `load` aborts the
-        process on a missing one — a libpq too old, or a library that is not
-        libpq at all, must be an error naming the symbol rather than a
-        stack trace with no cause in it.
+        entry point goes through `_checked`, which asks `check_symbol`
+        before loading, because `load` aborts the process on a missing one
+        — a libpq too old, or a library that is not libpq at all, must be
+        an error naming the symbol rather than a stack trace with no cause
+        in it. One call per field, taking the symbol from the declaration
+        it loads, so an entry point cannot be loaded without being checked.
         """
         # First, so no path out of this constructor leaves a table whose
         # library can be unmapped under it (the third rule).
         pin_library(path)
-        for name in required_symbols():
-            if not handle.check_symbol(name):
-                raise Error(
-                    "the library at " + path + " has no symbol `" + name
-                    + "` — this is either not libpq, or a libpq older than"
-                    + " 12.0, the oldest this package supports"
-                )
-        self._libversion = _PQlibVersion.load(handle.borrow())
-        self._isthreadsafe = _PQisthreadsafe.load(handle.borrow())
-        self._connectdb = _PQconnectdb.load(handle.borrow())
-        self._finish = _PQfinish.load(handle.borrow())
-        self._reset = _PQreset.load(handle.borrow())
-        self._status = _PQstatus.load(handle.borrow())
-        self._transaction_status = _PQtransactionStatus.load(handle.borrow())
-        self._errmsg = _PQerrorMessage.load(handle.borrow())
-        self._server_version = _PQserverVersion.load(handle.borrow())
-        self._backend_pid = _PQbackendPID.load(handle.borrow())
-        self._socket = _PQsocket.load(handle.borrow())
-        self._exec = _PQexec.load(handle.borrow())
-        self._exec_params = _PQexecParams.load(handle.borrow())
-        self._prepare = _PQprepare.load(handle.borrow())
-        self._exec_prepared = _PQexecPrepared.load(handle.borrow())
-        self._result_status = _PQresultStatus.load(handle.borrow())
-        self._result_errmsg = _PQresultErrorMessage.load(handle.borrow())
-        self._result_errfield = _PQresultErrorField.load(handle.borrow())
-        self._ntuples = _PQntuples.load(handle.borrow())
-        self._nfields = _PQnfields.load(handle.borrow())
-        self._fname = _PQfname.load(handle.borrow())
-        self._ftype = _PQftype.load(handle.borrow())
-        self._fformat = _PQfformat.load(handle.borrow())
-        self._getvalue = _PQgetvalue.load(handle.borrow())
-        self._getlength = _PQgetlength.load(handle.borrow())
-        self._getisnull = _PQgetisnull.load(handle.borrow())
-        self._cmd_tuples = _PQcmdTuples.load(handle.borrow())
-        self._clear = _PQclear.load(handle.borrow())
-        self._consume_input = _PQconsumeInput.load(handle.borrow())
-        self._notifies = _PQnotifies.load(handle.borrow())
-        self._freemem = _PQfreemem.load(handle.borrow())
-        self._escape_identifier = _PQescapeIdentifier.load(handle.borrow())
+        self._libversion = _checked[
+            _PQlibVersion.name, _PQlibVersion.type
+        ](handle, path)
+        self._isthreadsafe = _checked[
+            _PQisthreadsafe.name, _PQisthreadsafe.type
+        ](handle, path)
+        self._connectdb = _checked[
+            _PQconnectdb.name, _PQconnectdb.type
+        ](handle, path)
+        self._finish = _checked[_PQfinish.name, _PQfinish.type](handle, path)
+        self._reset = _checked[_PQreset.name, _PQreset.type](handle, path)
+        self._status = _checked[_PQstatus.name, _PQstatus.type](handle, path)
+        self._transaction_status = _checked[
+            _PQtransactionStatus.name, _PQtransactionStatus.type
+        ](handle, path)
+        self._errmsg = _checked[
+            _PQerrorMessage.name, _PQerrorMessage.type
+        ](handle, path)
+        self._server_version = _checked[
+            _PQserverVersion.name, _PQserverVersion.type
+        ](handle, path)
+        self._backend_pid = _checked[
+            _PQbackendPID.name, _PQbackendPID.type
+        ](handle, path)
+        self._socket = _checked[_PQsocket.name, _PQsocket.type](handle, path)
+        self._exec = _checked[_PQexec.name, _PQexec.type](handle, path)
+        self._exec_params = _checked[
+            _PQexecParams.name, _PQexecParams.type
+        ](handle, path)
+        self._prepare = _checked[
+            _PQprepare.name, _PQprepare.type
+        ](handle, path)
+        self._exec_prepared = _checked[
+            _PQexecPrepared.name, _PQexecPrepared.type
+        ](handle, path)
+        self._result_status = _checked[
+            _PQresultStatus.name, _PQresultStatus.type
+        ](handle, path)
+        self._result_errmsg = _checked[
+            _PQresultErrorMessage.name, _PQresultErrorMessage.type
+        ](handle, path)
+        self._result_errfield = _checked[
+            _PQresultErrorField.name, _PQresultErrorField.type
+        ](handle, path)
+        self._ntuples = _checked[
+            _PQntuples.name, _PQntuples.type
+        ](handle, path)
+        self._nfields = _checked[
+            _PQnfields.name, _PQnfields.type
+        ](handle, path)
+        self._fname = _checked[_PQfname.name, _PQfname.type](handle, path)
+        self._ftype = _checked[_PQftype.name, _PQftype.type](handle, path)
+        self._fformat = _checked[
+            _PQfformat.name, _PQfformat.type
+        ](handle, path)
+        self._getvalue = _checked[
+            _PQgetvalue.name, _PQgetvalue.type
+        ](handle, path)
+        self._getlength = _checked[
+            _PQgetlength.name, _PQgetlength.type
+        ](handle, path)
+        self._getisnull = _checked[
+            _PQgetisnull.name, _PQgetisnull.type
+        ](handle, path)
+        self._cmd_tuples = _checked[
+            _PQcmdTuples.name, _PQcmdTuples.type
+        ](handle, path)
+        self._clear = _checked[_PQclear.name, _PQclear.type](handle, path)
+        self._consume_input = _checked[
+            _PQconsumeInput.name, _PQconsumeInput.type
+        ](handle, path)
+        self._notifies = _checked[
+            _PQnotifies.name, _PQnotifies.type
+        ](handle, path)
+        self._freemem = _checked[
+            _PQfreemem.name, _PQfreemem.type
+        ](handle, path)
+        self._escape_identifier = _checked[
+            _PQescapeIdentifier.name, _PQescapeIdentifier.type
+        ](handle, path)
         self.path = path^
         # Last, so the handle's own last mention is after every load above.
         self._lib = handle^
@@ -770,48 +868,6 @@ struct ResultLib(ImplicitlyCopyable, Movable):
         self._clear(res)
 
 
-def required_symbols() -> List[String]:
-    """Every symbol `PgLib` loads, checked before any of them is loaded.
-
-    A function rather than a `comptime` array because a comptime `Array`
-    does not materialize into a runtime loop on this toolchain; the point —
-    one place to edit, checked before the process can abort inside a
-    `load` — is unchanged.
-    """
-    return [
-        "PQlibVersion",
-        "PQisthreadsafe",
-        "PQconnectdb",
-        "PQfinish",
-        "PQreset",
-        "PQstatus",
-        "PQtransactionStatus",
-        "PQerrorMessage",
-        "PQserverVersion",
-        "PQbackendPID",
-        "PQsocket",
-        "PQexec",
-        "PQexecParams",
-        "PQprepare",
-        "PQexecPrepared",
-        "PQresultStatus",
-        "PQresultErrorMessage",
-        "PQresultErrorField",
-        "PQntuples",
-        "PQnfields",
-        "PQfname",
-        "PQftype",
-        "PQfformat",
-        "PQgetvalue",
-        "PQgetlength",
-        "PQgetisnull",
-        "PQcmdTuples",
-        "PQclear",
-        "PQconsumeInput",
-        "PQnotifies",
-        "PQfreemem",
-        "PQescapeIdentifier",
-    ]
 
 
 # --- C string helpers ------------------------------------------------------
