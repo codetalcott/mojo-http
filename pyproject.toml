@@ -6712,11 +6712,31 @@ curl -sN --max-time 4 -H 'Accept: text/event-stream' http://localhost:8080/event
 grep -q 'datastar-patch-elements' todo_fresh.txt \
   && { echo 'a new consumer was served history it never asked for'; cat todo_fresh.txt; exit 1; }
 
+# G14 on the BROADCAST path, over a socket. A todo's text is request data
+# and goes into the fragment every subscriber is sent; HTML escaping leaves
+# bytes above 0x7F alone and does not touch newlines, so this body puts a
+# lone 0x80 immediately after a line break -- where the Datastar line
+# splitter cuts. It sliced with `[byte=a:b]`, which asserts a codepoint
+# boundary and trapped the LOOP thread: measured before the fix as this one
+# unauthenticated POST killing the process, taking every connected tab with
+# it. `\\n` is the JSON escape (a real newline once parsed) and `\\200` is
+# the raw byte; printf spells both portably, curl sends the file unaltered.
+printf '{"draft":"bad\\\\n\\200tail"}' > todo_hostile.bin
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/add \
+  -H 'Content-Type: application/json' --data-binary @todo_hostile.bin)
+[ "$code" = 204 ] || { echo "a todo carrying invalid UTF-8 answered $code, not 204"; cat todo.log; exit 1; }
+curl -s --fail --max-time 5 http://localhost:8080/health > /dev/null \
+  || { echo 'the server died broadcasting a todo whose text is not UTF-8 (G14)'; cat todo.log; exit 1; }
+curl -s --fail --max-time 5 http://localhost:8080/ | grep -q '<s>buy milk</s>' \
+  || { echo 'the server survived but stopped rendering after the hostile todo'; exit 1; }
+rm -f todo_hostile.bin
+
 rm -f todo_sse.txt todo_replay.txt todo_fresh.txt todo.log
 echo "smoke-todo OK"
 python3 scripts/emit.py --covers I10 --task smoke-todo
 python3 scripts/emit.py --covers N12 --task smoke-todo
 python3 scripts/emit.py --covers O5 --task smoke-todo
+python3 scripts/emit.py --covers G14 --task smoke-todo
 """
 
 # Each assertion pins one framework feature the notes API exists to showcase:

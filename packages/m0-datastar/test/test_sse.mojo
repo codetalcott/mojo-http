@@ -272,5 +272,58 @@ def test_patch_elements_crlf_leaves_no_stray_cr() raises:
     assert_true(s.find("data: elements   <p>hi</p>\n") >= 0)
 
 
+def _raw_text(*bytes: Int) -> String:
+    """A String holding exactly these bytes, valid UTF-8 or not."""
+    var buf = List[UInt8]()
+    for b in bytes:
+        buf.append(UInt8(b))
+    return String(unsafe_from_utf8=Span(buf))
+
+
+def _bytes_of(s: String) -> List[Int]:
+    var out = List[Int]()
+    for b in s.as_bytes():
+        out.append(Int(b))
+    return out^
+
+
+def test_invalid_utf8_after_a_line_break_does_not_trap() raises:
+    """G14's trap class, reached through a RENDERED FRAGMENT.
+
+    The twin of `m0_http`'s `split_sse_lines`, fixed one release later
+    because the duplication hid it. What arrives here is what an
+    application rendered, and an application renders request data:
+    `apps/datastar_todo` puts a todo's text in the fragment it broadcasts.
+    HTML escaping leaves bytes above 0x7F alone and does not touch
+    newlines, so `a\\n<0x80>b` as a todo puts a continuation byte
+    immediately after a line break — the cut this makes. `[byte=a:b]`
+    asserts a codepoint boundary there and traps the LOOP thread, which
+    took the whole server down on one unauthenticated POST.
+
+    covers: G14
+    """
+    # "a\n<0x80>b": the cut INSIDE the loop lands on a continuation byte.
+    var parts = split_data_lines(_raw_text(0x61, 0x0A, 0x80, 0x62))
+    assert_equal(len(parts), 2)
+    assert_equal(parts[0], "a")
+    var second = _bytes_of(parts[1])
+    assert_equal(len(second), 2)
+    assert_equal(second[0], 0x80)
+    assert_equal(second[1], 0x62)
+    # A continuation byte opening the payload: the START of a cut.
+    var first = split_data_lines(_raw_text(0x80, 0x0A, 0x61))
+    assert_equal(len(first), 2)
+    assert_equal(_bytes_of(first[0])[0], 0x80)
+    assert_equal(first[1], "a")
+    # A truncated two-byte sequence last: the cut AFTER the loop.
+    var tail = split_data_lines(_raw_text(0x61, 0x0D, 0x0A, 0xC3))
+    assert_equal(len(tail), 2)
+    assert_equal(len(_bytes_of(tail[1])), 1)
+    assert_equal(_bytes_of(tail[1])[0], 0xC3)
+    # And through the frame an application actually broadcasts.
+    var frame = patch_elements(_raw_text(0x78, 0x0A, 0x80, 0x79))
+    assert_true(frame.find("data: elements x\n") >= 0)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
