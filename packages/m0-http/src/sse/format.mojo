@@ -19,6 +19,12 @@ def split_sse_lines(data: String) -> List[String]:
     would let a bare CR — routine in HTML from a Windows-authored template —
     pass through into a `data:` field, where the client reads it as a line
     break and the rest of the payload as a new, malformed field.
+
+    Every cut is a BYTE-span slice, never `[byte=a:b]` (SPEC G14): the data
+    can hold bytes that are not UTF-8 — a `--pg-listen` payload from a
+    `SQL_ASCII` database converts nothing — and a byte after a line break
+    need not start a codepoint, which `[byte=a:b]` asserts, trapping the
+    thread.
     """
     var lines = List[String]()
     var bytes = data.as_bytes()
@@ -28,13 +34,13 @@ def split_sse_lines(data: String) -> List[String]:
     while i < n:
         var c = bytes[i]
         if c == UInt8(ord("\r")) or c == UInt8(ord("\n")):
-            lines.append(String(StringSpan(data)[byte=start:i]))
+            lines.append(String(unsafe_from_utf8=bytes[start:i]))
             if c == UInt8(ord("\r")):
                 if i + 1 < n and bytes[i + 1] == UInt8(ord("\n")):
                     i += 1
             start = i + 1
         i += 1
-    lines.append(String(StringSpan(data)[byte=start:n]))
+    lines.append(String(unsafe_from_utf8=bytes[start:n]))
     return lines^
 
 
@@ -113,7 +119,9 @@ def sse_data_payload(frame: Span[Byte, _]) -> List[UInt8]:
         if line.as_bytes()[0] == UInt8(ord(":")):
             continue  # comment
         var colon = line.find(":")
-        var name = line if colon < 0 else String(StringSpan(line)[byte=0:colon])
+        # Byte-span slices, as in `split_sse_lines`: a field's name or value
+        # may hold bytes that are not UTF-8 (G14).
+        var name = line if colon < 0 else String(unsafe_from_utf8=line.as_bytes()[0:colon])
         if name != "data":
             continue
         var value = String("")
@@ -122,7 +130,7 @@ def sse_data_payload(frame: Span[Byte, _]) -> List[UInt8]:
             # Exactly one space after the colon is part of the framing.
             if start < line.byte_length() and line.as_bytes()[start] == UInt8(ord(" ")):
                 start += 1
-            value = String(StringSpan(line)[byte=start:line.byte_length()])
+            value = String(unsafe_from_utf8=line.as_bytes()[start:line.byte_length()])
         if not first:
             out.append(UInt8(ord("\n")))
         out.extend(value.as_bytes())

@@ -7,6 +7,13 @@ its own memory and needs no connection to read or free — so `Result` is a
 value: it can outlive the `Connection` that produced it, be moved into a
 renderer, and be read in any order.
 
+It holds the entry points it calls BY VALUE (`ResultLib`), never by the
+address of its connection's table. The address was what it held first, and
+`var rows = db.query(...)` with no later mention of `db` then read a
+destroyed connection's struct through a library that had been unloaded — a
+segmentation fault on the first `rows.text(0, 0)`. `lib.mojo`'s third rule,
+the pin, is what makes the copy sound.
+
 `Movable` and not `Copyable`, the rule every handle type in this repo
 follows: a copy would duplicate the `PGresult *` and the second destructor
 would `PQclear` an already-cleared result.
@@ -24,17 +31,9 @@ notice — the same defect `m0-sqlite`'s column readers exist to refuse.
 """
 
 from std.collections.span import Span
-from std.ffi import c_int
 from std.memory import Pointer
 
-from .lib import (
-    FORMAT_BINARY,
-    PGRES_COMMAND_OK,
-    PGRES_EMPTY_QUERY,
-    PGRES_TUPLES_OK,
-    PgLib,
-    read_cstr,
-)
+from .lib import ResultLib, read_cstr
 from .wire import (
     OID_BOOL,
     OID_FLOAT4,
@@ -61,23 +60,19 @@ struct Result(Movable):
     """One complete query result. Cleared when it goes out of scope."""
 
     var _handle: Int
-    var _lib_addr: Int
-    """The address of the table this result was produced through.
+    var _pq: ResultLib
+    """The entry points this result calls, copied rather than borrowed.
 
-    An address rather than a copy: `PgLib` owns the `OwnedDLHandle` and
-    must not be duplicated, and the connection that made this result holds
-    the real one for as long as the thread lives. An address rather than a
-    typed pointer because an origin is not spellable as a struct parameter
-    on this toolchain. Reading a result after its connection is gone is the
-    one way to misuse this, and it is the same shape as reading one after
-    `PQclear`.
+    Nothing here refers to the `Connection` that produced the result, so
+    that connection may be moved or destroyed — at its last use, which is
+    routinely the query itself — without this result noticing.
     """
 
     var rows: Int
     var cols: Int
     var binary: Bool
 
-    def __init__(out self, handle: Int, lib_addr: Int, binary: Bool) raises:
+    def __init__(out self, handle: Int, pq: ResultLib, binary: Bool) raises:
         """Take ownership of a `PGresult *`.
 
         Refuses NULL, which libpq returns only when it could not allocate
@@ -89,40 +84,25 @@ struct Result(Movable):
                 "libpq returned no result at all — out of memory, or the"
                 " connection was already broken"
             )
-        # The table is read through a local pointer here rather than
-        # `_pq()`, which cannot run until every field is initialized.
-        ref pq = Pointer[PgLib, MutUntrackedOrigin](
-            unsafe_from_address=lib_addr
-        )[]
         self._handle = handle
-        self._lib_addr = lib_addr
+        self._pq = pq
         self.binary = binary
         self.rows = pq.ntuples(handle)
         self.cols = pq.nfields(handle)
 
     def __init__(out self, *, deinit move: Self):
         self._handle = move._handle
-        self._lib_addr = move._lib_addr
+        self._pq = move._pq
         self.rows = move.rows
         self.cols = move.cols
         self.binary = move.binary
 
     def __deinit__(deinit self):
         if self._handle != 0:
-            self._pq().clear(self._handle)
-
-    def _pq(self) -> ref [MutUntrackedOrigin] PgLib:
-        """The function table, rebuilt from its address.
-
-        One place, so the unsafe step is named once rather than at every
-        call through it.
-        """
-        return Pointer[PgLib, MutUntrackedOrigin](
-            unsafe_from_address=self._lib_addr
-        )[]
+            self._pq.clear(self._handle)
 
     def status(self) -> Int:
-        return self._pq().result_status(self._handle)
+        return self._pq.result_status(self._handle)
 
     def command_rows(self) raises -> Int:
         """Rows affected by an INSERT, UPDATE or DELETE.
@@ -132,7 +112,7 @@ struct Result(Movable):
         reports 0 for the empty case rather than raising, which is what the
         empty string means.
         """
-        var text = read_cstr(self._pq().cmd_tuples(self._handle))
+        var text = read_cstr(self._pq.cmd_tuples(self._handle))
         if not text:
             return 0
         var n = 0
@@ -147,7 +127,7 @@ struct Result(Movable):
     def name(self, col: Int) raises -> String:
         """A column's name, as the query named it."""
         self._check(0, col, check_row=False)
-        return read_cstr(self._pq().fname(self._handle, col))
+        return read_cstr(self._pq.fname(self._handle, col))
 
     def column(self, name: String) raises -> Int:
         """The index of the column with this name.
@@ -167,7 +147,7 @@ struct Result(Movable):
     def oid(self, col: Int) raises -> Int:
         """A column's type OID."""
         self._check(0, col, check_row=False)
-        return self._pq().ftype(self._handle, col)
+        return self._pq.ftype(self._handle, col)
 
     def is_null(self, row: Int, col: Int) raises -> Bool:
         """Whether this cell is SQL NULL.
@@ -177,7 +157,7 @@ struct Result(Movable):
         reports both as the empty string.
         """
         self._check(row, col)
-        return self._pq().getisnull(self._handle, row, col) != 0
+        return self._pq.getisnull(self._handle, row, col) != 0
 
     def raw(self, row: Int, col: Int) raises -> Span[UInt8, MutUntrackedOrigin]:
         """The cell's bytes, exactly as the server sent them.
@@ -186,8 +166,8 @@ struct Result(Movable):
         the `PGresult` and `PQclear` frees them.
         """
         self._check(row, col)
-        var addr = self._pq().getvalue(self._handle, row, col)
-        var n = self._pq().getlength(self._handle, row, col)
+        var addr = self._pq.getvalue(self._handle, row, col)
+        var n = self._pq.getlength(self._handle, row, col)
         if addr == 0 or n <= 0:
             return Span[UInt8, MutUntrackedOrigin](
                 unsafe_ptr=Pointer[UInt8, MutUntrackedOrigin](

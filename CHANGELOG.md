@@ -23,7 +23,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   onto the broadcast bus, so a writer that cannot reach the datagram bus at
   all — a trigger, a cron job, a management command, `psql` — reaches every
   subscriber with an id, an event type and its data. The payload is three
-  JSON string fields; `m0pub.notify_sql` builds the statement for a caller
+  JSON string fields, and one present as anything else — the object
+  `'data', row_to_json(NEW)` makes — is refused and counted rather than
+  delivered as an empty event (m0-core gains `parse_json_string` and
+  `has_json_field`, which can tell a real `""` from a wrong type);
+  `m0pub.notify_sql` builds the statement for a caller
   that already has a database cursor, with no driver imported into a
   stdlib-only module. Refused without `--realtime`, which is what creates
   the bus, and `--doctor` reports both that refusal and which libpq it
@@ -31,15 +35,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server binary's dynamic dependencies are unchanged, which is what keeps
   the wheel installable on a machine with no PostgreSQL client. Started in
   both execution modes: worker 0 under `--workers`, and once per process
-  under `--threads`, where the bus is one channel per thread. Refused with a
-  forked `--workers N` on macOS, where libpq's connect reaches Kerberos
-  through GSSAPI and Objective-C aborts a forked child; `--spawn-workers`
-  is the escape, as it is for Core ML. A host with no libpq exits 78
+  under `--threads`, where the bus is one channel per thread. Refused on
+  macOS wherever a worker is forked — `--workers N`, and `--reload`, which
+  supervises even one — because libpq's connect reaches Kerberos through
+  GSSAPI and Objective-C aborts a forked child; `--spawn-workers` is the
+  escape, as it is for Core ML, and composes with `--reload`. The SSE line
+  splitter and frame decoder a payload passes through slice by bytes now
+  (SPEC G14): a `data` from a `SQL_ASCII` database with a continuation byte
+  after a newline trapped the listener's thread on worker 0. The listener
+  drains once after connecting and after every reset, so a notification
+  libpq read during the `LISTEN` round trip is not left waiting for the
+  next one to wake `poll`. A host with no libpq exits 78
   naming every path tried, rather than serving with no listener — held on
   the wheel's own binary, since its users have neither a toolchain nor a
   PostgreSQL client.
 
-- **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O15). A
+- **`m0-postgres`, a PostgreSQL binding over libpq** (SPEC O6–O16). A
   sibling of `m0-core`, `m0-http` and `m0-sqlite` that imports nothing else
   here and links nothing: libpq is opened with `dlopen` at run time, so no
   binary in this repo — `bin/m0serve` and the wheel included — carries a
@@ -48,19 +59,33 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and so can outlive its query, `Params` binds positionally with an explicit
   OID per value, and every error carries a SQLSTATE that `sqlstate()`
   recovers. `open()` applies a connect timeout, a statement timeout,
-  `client_encoding=UTF8` and an application name, merging rather than
-  appending so each stays overridable; `open_readonly()` adds a read-only
+  `client_encoding=UTF8`, an application name, and TCP keepalives of 30 s
+  idle, 10 s interval and 3 probes with a 60 s `tcp_user_timeout` — libpq's
+  own keepalives use the OS's timings, measured at 7200 s idle, so a
+  listener behind a NAT that dropped its idle connection went deaf for two
+  hours — merging rather than appending so each stays overridable; `open_readonly()` adds a read-only
   transaction default; every URL is redacted before it reaches an error, a
-  log or the doctor. `LISTEN`/`NOTIFY` is supported, including restoring
+  log or the doctor, including the ones `redact` cannot parse — an
+  unencoded `/`, `?` or `@` in a password, a key/value string with quoted
+  or spaced values, a keyword libpq does not know — which come back masked
+  whole, with libpq's own message beside them withheld, because libpq
+  quotes what it cannot parse. `sslpassword` and `oauth_client_secret` are
+  masked as `password` is. `LISTEN`/`NOTIFY` is supported, including restoring
   subscriptions across a reset. No pool, no retry, no `COPY`, and `numeric`,
   dates, intervals and arrays read as text — each a deliberate absence, with
   the reason in the README.
 
-  Two Mojo 1.0 findings are recorded in `lib.mojo` and pinned by
-  `test_lib.mojo`, both found by crashing: a `dlopen` handle held apart from
-  the pointers loaded from it is closed at its last mention, and a `thin`
+  Three Mojo 1.0 findings are recorded in `lib.mojo` and pinned by
+  `test_lib.mojo`, all found by crashing: a `dlopen` handle held apart from
+  the pointers loaded from it is closed at its last mention, a `thin`
   pointer field cannot be called as `table.field()` from outside the struct
-  that holds it even though its address is unchanged.
+  that holds it even though its address is unchanged, and a `Result` that
+  reached libpq through its connection's address faulted once that
+  connection was gone. libpq is now pinned with `RTLD_NODELETE` once opened
+  and a `Result` holds the entry points it calls by value, so
+  `var rows = db.query(...)` with no later use of `db` reads correctly
+  (SPEC O16) — before the fix it was a segmentation fault on the first
+  read.
 
 - **`m0-sqlite` gets its rows** (SPEC section O, O1–O5). The storage
   packages had no capability rows at all, so nothing in the sheet noticed

@@ -18,10 +18,12 @@ held stream — exactly as an in-process `publish()` would.
 
 **The payload is three string fields, and that is deliberate.** `channel` says
 where it goes, `event` is the SSE event type (optional), and `data` is the SSE
-data verbatim. All three are plain JSON strings, so the listener needs
-`parse_json_field` and no value-extent scanner: an application that wants
-structured data serializes it into `data` itself, which is what
-`m0pub.publish` already receives. The frame is built by the same
+data verbatim. All three are plain JSON strings, so the listener needs no
+value-extent scanner: an application that wants structured data serializes
+it into `data` itself, which is what `m0pub.publish` already receives. A
+field present with any other type is refused (`pg_envelope.mojo`), because
+reading an object as `""` delivered `json_build_object(..., 'data',
+row_to_json(NEW))` to every subscriber as an empty event. The frame is built by the same
 `format_sse_event` every other publisher here uses, so a client cannot tell
 which door an event came through.
 
@@ -47,8 +49,8 @@ Four rules:
     this worker's: unlike an in-process publish, nothing has already queued
     it locally.
   - **A malformed payload is refused and counted, never guessed at.** No
-    channel, no JSON, an empty name: each is a quiet False and a bump of the
-    refused counter, because the payload came from whatever could reach the
+    channel, no JSON, an empty name, an `event` or `data` that is not a
+    string: each is a quiet False and a bump of the refused counter, because the payload came from whatever could reach the
     database and one publisher's mistake must not end the listener. This is
     the check that is uniquely this module's — verified by removing it and
     watching the gate go red.
@@ -75,10 +77,10 @@ from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.broadcast import channel_is_reserved, publish_to_channels
+from lightbug_http.broadcast import publish_to_channels
 from lightbug_http.c.pipe import ShutdownHandle, create_shutdown_pipe
 from .blocking_pool import JOIN_TIMEOUT_NS
-from m0_core.json_parse import parse_json_field
+from .pg_envelope import parse_notify_payload
 from m0_http import format_sse_event
 from m0_http.multiworker import shared_fetch_add
 from m0_http.threads import (
@@ -214,23 +216,18 @@ def _deliver(ref spec: PgListenSpec, payload: String) -> Bool:
     count, which is what makes a systematically wrong publisher visible
     without a line per event.
     """
-    var channel = parse_json_field(payload, "channel")
-    if not channel:
+    var parsed = parse_notify_payload(payload)
+    if not parsed:
         return False
-    if channel_is_reserved(channel):
-        # The control namespace addresses connection slots on the loop. A
-        # name from the database is as untrusted as one from a form body.
-        return False
-    var event = parse_json_field(payload, "event")
-    var data = parse_json_field(payload, "data")
+    ref envelope = parsed.value()
     var event_id = 0
     if spec.shared_id_addr != 0:
         event_id = shared_fetch_add(spec.shared_id_addr, 1) + 1
-    var frame = format_sse_event(event_id, event, data)
+    var frame = format_sse_event(event_id, envelope.event, envelope.data)
     # skip_worker = -1: every channel, this worker's included. Nothing has
     # queued this locally, unlike an in-process publish.
     publish_to_channels(
-        spec.write_fds, -1, channel, event_id, frame.as_bytes()
+        spec.write_fds, -1, envelope.channel, event_id, frame.as_bytes()
     )
     return True
 
@@ -277,18 +274,27 @@ def listener_body(arg: Int) -> Int:
         backoff_ms = RECONNECT_MIN_MS
 
         # --- serve, recovering in place while that works -----------------
+        # Drain once BEFORE the first wait, and again after every reset.
+        # `LISTEN` is a round trip, and libpq reads whatever the server
+        # sends during it — a notification included — into its own queue.
+        # Those bytes are gone from the socket, so `poll` never reports them,
+        # and without this they sat until the next NOTIFY happened to wake
+        # the listener (test_notify.mojo shows the mechanism).
+        var drain_now = True
         while True:
-            var ready = _poll_two(db.socket_fd(), stop_fd, POLL_TIMEOUT_MS)
-            if ready[1]:
-                db.close()
-                _say(
-                    "pg-listen: stopping after " + String(delivered)
-                    + " delivered, " + String(refused) + " refused"
-                )
-                block.set(BLK_STATUS, STATUS_OK)
-                return 0
-            if not ready[0]:
-                continue
+            if not drain_now:
+                var ready = _poll_two(db.socket_fd(), stop_fd, POLL_TIMEOUT_MS)
+                if ready[1]:
+                    db.close()
+                    _say(
+                        "pg-listen: stopping after " + String(delivered)
+                        + " delivered, " + String(refused) + " refused"
+                    )
+                    block.set(BLK_STATUS, STATUS_OK)
+                    return 0
+                if not ready[0]:
+                    continue
+            drain_now = False
 
             var lost = False
             while True:
@@ -315,6 +321,7 @@ def listener_body(arg: Int) -> Int:
             try:
                 db.reset()
                 _say("pg-listen: reconnected")
+                drain_now = True
                 continue
             except e:
                 _say("pg-listen: reconnect failed: " + String(e))

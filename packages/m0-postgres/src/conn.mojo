@@ -58,7 +58,7 @@ from .params import ParamArrays, Params
 from .result import Result
 from .sqlstate import describe, describe_in, is_connection_lost
 from .url import read_only as _read_only_url
-from .url import redact, with_defaults
+from .url import redact, redact_message, with_defaults
 from .wire import OID_UNKNOWN
 
 
@@ -154,7 +154,12 @@ struct Connection(Movable):
                 + " (" + String(parsed_bytes) + " bytes of conninfo)"
 )
         if lib.status(handle) != CONNECTION_OK:
-            var detail = String(read_cstr(lib.errmsg(handle)).strip())
+            # libpq quotes pieces of a string it could not parse — half an
+            # unencoded password, measured — so its text goes through the
+            # same redaction as the URL it is printed beside.
+            var detail = redact_message(
+                String(read_cstr(lib.errmsg(handle)).strip()), url
+            )
             lib.finish(handle)
             raise Error(
                 "could not connect to " + safe + ": " + detail
@@ -220,25 +225,6 @@ struct Connection(Movable):
         """The most recent error on this connection, as libpq worded it."""
         return String(read_cstr(self._lib.errmsg(self._handle)).strip())
 
-    def lib_addr(self) -> Int:
-        """The address of this connection's function table.
-
-        For `Result`, which needs the table to read and clear itself and
-        must not copy it — `PgLib` owns the `dlopen` handle, and a copy
-        would be a second owner of it. An address rather than a typed
-        pointer because an origin is not spellable as a struct parameter on
-        this toolchain (the same limit D4 records for route params), and
-        every other place in this repo that stores a cross-struct reference
-        does the same.
-
-        The address is valid while this `Connection` lives. A `Result` that
-        outlives its connection may still be READ — its bytes are its own —
-        but not cleared, which is why `Result` holds a `Connection` alive
-        in every shape this package offers: `query` returns it directly to
-        a caller that still has the connection in scope.
-        """
-        return Int(Pointer(to=self._lib))
-
     # --- Statements --------------------------------------------------------
 
     def execute(mut self, sql: String) raises:
@@ -283,7 +269,7 @@ struct Connection(Movable):
         var held = len(text) + len(arrays.values)
         _ = held
         self._raise_on_error(res, sql)
-        return Result(res, self.lib_addr(), binary)
+        return Result(res, self._lib.result_lib(), binary)
 
     def prepare(mut self, sql: String, oids: List[Int]) raises -> Prepared:
         """Prepare a statement on the server under a generated name.
@@ -357,7 +343,7 @@ struct Connection(Movable):
         var held = len(cname) + len(arrays.values)
         _ = held
         self._raise_on_error(res, statement.sql)
-        return Result(res, self.lib_addr(), binary)
+        return Result(res, self._lib.result_lib(), binary)
 
     def close_prepared(mut self, statement: Prepared) raises:
         """Release a prepared statement on the server.
@@ -529,8 +515,9 @@ struct Connection(Movable):
 def open(url: String) raises -> Connection:
     """Connect with this package's server defaults applied.
 
-    A connect timeout, `client_encoding=UTF8`, an application name and a
-    statement timeout — `url.mojo` says what each is for and merges rather
+    A connect timeout, `client_encoding=UTF8`, an application name, a
+    statement timeout, and TCP keepalive timings with `tcp_user_timeout`
+    so a dropped connection is noticed in about a minute — `url.mojo` says what each is for and merges rather
     than appends, so every one of them is overridable by naming it in the
     URL. The shape `m0-sqlite`'s `open` has: a constructor that makes
     promises a server wants, beside a bare one that makes none.

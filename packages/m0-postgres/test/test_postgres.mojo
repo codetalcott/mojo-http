@@ -28,6 +28,7 @@ from src import (
     Connection,
     Params,
     Prepared,
+    Result,
     open,
     open_readonly,
 )
@@ -121,8 +122,74 @@ def test_a_bad_url_raises_with_the_password_masked() raises:
         assert_true("***" in String(e))
     assert_true(raised)
 
+    # A password with an unencoded `/`: libpq cannot parse it, and its own
+    # message quoted the part before the `/` ("invalid integer value "ab"
+    # for connection option "port"") beside a URL that was not masked at
+    # all. Through real libpq, because that message is libpq's to word.
+    raised = False
+    try:
+        var _db = open("postgres://m0_no_such_user:ab9x/cd7y@127.0.0.1:1/db")
+    except e:
+        raised = True
+        assert_false("ab9x" in String(e))
+        assert_false("cd7y" in String(e))
+        assert_true("could not be parsed" in String(e))
+    assert_true(raised)
+
 
 # --- Queries ----------------------------------------------------------------
+
+
+def _rows_whose_connection_is_gone() raises -> Result:
+    """A result handed out of the frame whose connection produced it.
+
+    `db` is destroyed before this returns — its last mention is the query —
+    so every read the caller makes, and the `PQclear` when the caller drops
+    the result, happen after `PQfinish` and after the connection's own
+    `dlopen` reference is released.
+    """
+    var db = open(_url())
+    return db.query(
+        "SELECT 'returned'::text AS word, 7::int8 AS n, NULL::text AS gone",
+        Params(),
+    )
+
+
+def test_a_result_outlives_its_connection() raises:
+    """A `Result` is a value: reading it needs nothing of the connection.
+
+    Mojo destroys a value at its last use, so `var rows = db.query(...)`
+    with no later mention of `db` finishes the connection on that line. The
+    two shapes that make that routine are both here: a connection whose
+    last mention is the query, and a result returned out of the helper that
+    opened its connection. Connections are opened and dropped between the
+    reads, so a result that still reached back into a dead connection's
+    memory would be reading whatever those left there.
+
+    covers: O16
+    """
+    var db = open(_url())
+    var rows = db.query(
+        "SELECT 'outlived'::text AS word, 42::int8 AS n", Params()
+    )
+    # `db` is gone from here on.
+    for _ in range(3):
+        var churn = open(_url())
+        _ = churn.query("SELECT repeat('x', 4096)", Params())
+    assert_equal(rows.rows, 1)
+    assert_equal(rows.text(0, 0), "outlived")
+    assert_equal(rows.int(0, 1), 42)
+    assert_equal(rows.name(0), "word")
+    assert_equal(rows.column("n"), 1)
+
+    var returned = _rows_whose_connection_is_gone()
+    for _ in range(3):
+        var churn = open(_url())
+        _ = churn.query("SELECT repeat('y', 4096)", Params())
+    assert_equal(returned.text(0, 0), "returned")
+    assert_equal(returned.int(0, 1), 7)
+    assert_true(returned.is_null(0, 2))
+    assert_equal(len(returned.fetch_texts(0)), 1)
 
 
 def test_a_parameter_is_bound_not_interpolated() raises:

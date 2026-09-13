@@ -180,13 +180,13 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 
 | Package | Description | Tests |
 | --- | --- | --- |
-| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 97 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 763 |
+| `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 98 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 764 |
 | `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 75 |
-| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 146 |
+| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 150 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
-| `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 64 |
-| **Total** | | **1260** |
+| `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 75 |
+| **Total** | | **1277** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -796,7 +796,9 @@ returning plausible bytes.
 **`open()` applies what a server wants** and merges rather than appends, so
 every default is overridable by naming it in the URL: a connect timeout, a
 statement timeout (the twin of SQLite's busy timeout — a pool thread stuck in a
-slow query is a thread gone), `client_encoding=UTF8`, and an application name.
+slow query is a thread gone), `client_encoding=UTF8`, an application name, and
+TCP keepalive timings plus `tcp_user_timeout` that notice a dropped connection
+in about a minute rather than the OS's two hours.
 `open_readonly()` adds a read-only transaction default, the belt to a read-only
 role's braces. Every URL is redacted before it reaches an error, a log or
 `--doctor`.
@@ -842,7 +844,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1260 unit tests, then compiles every example
+uv run poe test-all         # 1277 unit tests, then compiles every example
 uv run poe test-all         # 1172 unit tests, then compiles every example
 uv run poe test-all         # 1157 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
