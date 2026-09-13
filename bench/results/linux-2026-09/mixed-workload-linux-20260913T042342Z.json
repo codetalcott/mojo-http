@@ -1,0 +1,244 @@
+{
+  "bench": "mixed_workload",
+  "recorded_utc": "2026-09-13T04:23:42+00:00",
+  "environment": {
+    "version": "1.3.0",
+    "git_sha": "8c43979",
+    "source_stamp": "22e666b4a89c981b",
+    "git_dirty": null,
+    "os": "Linux 6.8.0-117-generic",
+    "machine": "aarch64",
+    "python": "Python 3.13.11 (main, Feb  3 2026, 05:52:03) [GCC 12.2.0]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "granian 2.8.2",
+    "wrk": "wrk debian/4.1.0-3+b2 [epoll] Copyright (C) 2012 Will Glozer",
+    "cpu": "aarch64 impl 0x61 part 0x000",
+    "cores_physical": "8"
+  },
+  "parameters": {
+    "client": "wrk -t2 -c16 -d10s, browser headers",
+    "hold_ms": "200",
+    "rounds": "3",
+    "note": "Linux arm of the conclusions pass, recorded in the m0lin container. NOT the benchmark page's row and not comparable to it in absolute terms -- a VM on a Mac, and server and client share its cpus. The RATIOS are the signal; every comparator was re-measured in every round and the per-arm spread is in the rows."
+  },
+  "rows": [
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 350537.74,
+      "p50_us": 34.0,
+      "p99_us": 124.0,
+      "cores": 3.532,
+      "rps_per_core": 99241,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 331652.69,
+      "p50_us": 35.0,
+      "p99_us": 1330000.0,
+      "cores": 2.759,
+      "rps_per_core": 120207,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 272721.58,
+      "p50_us": 37.0,
+      "p99_us": 1430000.0,
+      "cores": 2.209,
+      "rps_per_core": 123483,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 141213.08,
+      "p50_us": 102.0,
+      "p99_us": 205.0,
+      "cores": 3.54,
+      "rps_per_core": 39889,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 112369.68,
+      "p50_us": 101.0,
+      "p99_us": 1230.0,
+      "cores": 2.919,
+      "rps_per_core": 38502,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 112589.55,
+      "p50_us": 93.0,
+      "p99_us": 1360.0,
+      "cores": 2.533,
+      "rps_per_core": 44450,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 361288.47,
+      "p50_us": 33.0,
+      "p99_us": 121.0,
+      "cores": 3.551,
+      "rps_per_core": 101751,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 293059.86,
+      "p50_us": 39.0,
+      "p99_us": 1400000.0,
+      "cores": 2.595,
+      "rps_per_core": 112937,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 268403.29,
+      "p50_us": 40.0,
+      "p99_us": 1430000.0,
+      "cores": 2.111,
+      "rps_per_core": 127174,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 139685.85,
+      "p50_us": 103.0,
+      "p99_us": 210.0,
+      "cores": 3.538,
+      "rps_per_core": 39480,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 122185.73,
+      "p50_us": 98.0,
+      "p99_us": 1210.0,
+      "cores": 2.95,
+      "rps_per_core": 41413,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 109104.83,
+      "p50_us": 91.0,
+      "p99_us": 1390.0,
+      "cores": 2.413,
+      "rps_per_core": 45216,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 357543.6,
+      "p50_us": 33.0,
+      "p99_us": 126.0,
+      "cores": 3.541,
+      "rps_per_core": 100976,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 307861.67,
+      "p50_us": 39.0,
+      "p99_us": 1370000.0,
+      "cores": 2.703,
+      "rps_per_core": 113901,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 267104.0,
+      "p50_us": 49.0,
+      "p99_us": 1370000.0,
+      "cores": 2.099,
+      "rps_per_core": 127232,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 140977.77,
+      "p50_us": 102.0,
+      "p99_us": 204.0,
+      "cores": 3.525,
+      "rps_per_core": 39994,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 125531.74,
+      "p50_us": 98.0,
+      "p99_us": 1210.0,
+      "cores": 3.001,
+      "rps_per_core": 41828,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 100603.43,
+      "p50_us": 89.0,
+      "p99_us": 1440.0,
+      "cores": 2.252,
+      "rps_per_core": 44681,
+      "round": 3
+    }
+  ],
+  "medians": {
+    "--workers 4 slow=0": {
+      "rps": 357543.6,
+      "rounds": 3,
+      "cores": 3.541,
+      "rps_per_core": 100972,
+      "p99_us": 124.0,
+      "p99_us_min": 121.0,
+      "p99_us_max": 126.0
+    },
+    "--workers 4 slow=1": {
+      "rps": 307861.67,
+      "rounds": 3,
+      "cores": 2.703,
+      "rps_per_core": 113896,
+      "p99_us": 1370000.0,
+      "p99_us_min": 1330000.0,
+      "p99_us_max": 1400000.0
+    },
+    "--workers 4 slow=2": {
+      "rps": 268403.29,
+      "rounds": 3,
+      "cores": 2.111,
+      "rps_per_core": 127145,
+      "p99_us": 1430000.0,
+      "p99_us_min": 1370000.0,
+      "p99_us_max": 1430000.0
+    },
+    "--workers 4 +bt=4 slow=0": {
+      "rps": 140977.77,
+      "rounds": 3,
+      "cores": 3.538,
+      "rps_per_core": 39847,
+      "p99_us": 205.0,
+      "p99_us_min": 204.0,
+      "p99_us_max": 210.0
+    },
+    "--workers 4 +bt=4 slow=1": {
+      "rps": 122185.73,
+      "rounds": 3,
+      "cores": 2.95,
+      "rps_per_core": 41419,
+      "p99_us": 1210.0,
+      "p99_us_min": 1210.0,
+      "p99_us_max": 1230.0
+    },
+    "--workers 4 +bt=4 slow=2": {
+      "rps": 109104.83,
+      "rounds": 3,
+      "cores": 2.413,
+      "rps_per_core": 45215,
+      "p99_us": 1390.0,
+      "p99_us_min": 1360.0,
+      "p99_us_max": 1440.0
+    }
+  }
+}
