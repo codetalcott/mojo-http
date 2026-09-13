@@ -2,7 +2,14 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.json_parse import parse_json_field, parse_json_int, parse_json_number, parse_json_bool
+from src.json_parse import (
+    has_json_field,
+    parse_json_bool,
+    parse_json_field,
+    parse_json_int,
+    parse_json_number,
+    parse_json_string,
+)
 
 
 def test_parse_simple_field() raises:
@@ -187,6 +194,33 @@ def test_parse_bool_missing() raises:
     """Should return None for missing field."""
     var r = parse_json_bool('{"active":true}', "enabled")
     assert_false(Bool(r))
+
+
+def test_parse_string_tells_empty_from_absent_and_wrong_typed() raises:
+    """A real `""` is a value; absent, non-string and malformed are None.
+
+    `parse_json_field` answers `""` for all four, which is how a NOTIFY
+    whose `data` was an object reached every subscriber as an empty event.
+    """
+    var empty = parse_json_string('{"data":""}', "data")
+    assert_true(Bool(empty))
+    assert_equal(empty.value(), "")
+    assert_equal(parse_json_string('{"data":"x\\ny"}', "data").value(), "x\ny")
+    for body in [
+        '{"other":"x"}',
+        '{"data":{"n":1}}',
+        '{"data":[1,2]}',
+        '{"data":42}',
+        '{"data":true}',
+        '{"data":null}',
+        '{"data":"bad \\q escape"}',
+        '{"data":"unterminated',
+        "not json",
+    ]:
+        assert_false(Bool(parse_json_string(body, "data")))
+    assert_false(has_json_field('{"other":"x"}', "data"))
+    assert_true(has_json_field('{"data":{"n":1}}', "data"))
+    assert_true(has_json_field('{"data":null}', "data"))
 
 
 def main() raises:

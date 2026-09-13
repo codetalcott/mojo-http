@@ -19,6 +19,7 @@ from src.url import (
     is_uri,
     read_only,
     redact,
+    redact_message,
     with_defaults,
 )
 
@@ -41,6 +42,12 @@ def test_a_password_in_the_authority_is_masked() raises:
     assert_equal(
         redact("postgresql://app:pw@h:5432/db?sslmode=require"),
         "postgresql://app:***@h:5432/db?sslmode=require",
+    )
+    # A password holding `@` and `:` is masked whole and the host still
+    # shows: the userinfo ends at the authority's LAST `@`.
+    assert_equal(
+        redact("postgres://app:p@s:s@db.internal/textshelf"),
+        "postgres://app:***@db.internal/textshelf",
     )
 
 
@@ -80,6 +87,125 @@ def test_a_word_ending_in_password_is_not_a_password_keyword() raises:
     """
     var url = "host=db dbname=my_password_store"
     assert_equal(redact(url), url)
+
+
+def test_a_hostile_connection_string_never_shows_its_secret() raises:
+    """Every shape a password can hide in that a naive scan misses.
+
+    Each row is (input, the secret). The only assertion is that the secret
+    is absent from the output, because what matters is what gets printed:
+    a string `redact` cannot parse must come back fully masked, and one it
+    can parse must come back with the secret masked. The first row is the
+    one found in review — libpq cannot parse it either, and its own
+    "invalid integer value" message then quoted half the password on every
+    retry of the listener.
+
+    covers: O7
+    """
+    var rows = List[Tuple[String, String]]()
+    # A `/` in an unencoded password ends the authority before the `@`.
+    rows.append(("postgres://u:ab/cd@host/db", "ab/cd"))
+    rows.append(("postgres://u:12/34@host:5432/db", "12/34"))
+    rows.append(("postgresql://u:x/y/z@host", "x/y/z"))
+    # A `?` does the same, and can make the rest look like a query string.
+    rows.append(("postgres://u:pa?ss@host/db", "pa?ss"))
+    rows.append(("postgres://u:1?sslmode=x@host/db", "1?sslmode=x"))
+    # An `@` inside the password: the LAST one ends the userinfo.
+    rows.append(("postgres://u:p@ss@host/db", "ss"))
+    rows.append(("postgres://u:p@q/r@host/db", "q/r"))
+    # A `:` inside the password.
+    rows.append(("postgres://u:a:b:c@host/db", "a:b:c"))
+    # No `@` at all: libpq reads `u:n0host5ecret` as a host and a port, and
+    # its message quotes the "port". The host list is what refuses it.
+    rows.append(("postgres://u:n0host5ecret/db", "n0host5ecret"))
+    # Query-string secrets, including ones that break the query's shape.
+    rows.append(("postgres://h/db?password=hunter2", "hunter2"))
+    rows.append(("postgres://h/db?password=hun&ter2", "ter2"))
+    rows.append(("postgres://h/db?password=hun&xyzzy=ter2", "xyzzy=ter2"))
+    rows.append(("postgres://h/db?sslpassword=keyphrase9", "keyphrase9"))
+    rows.append(
+        ("postgres://h/db?oauth_client_secret=cl1ents3cret", "cl1ents3cret")
+    )
+    rows.append(("postgres://h/db?PASSWORD=shouty1", "shouty1"))
+    # Key/value conninfo: spaces around `=`, quoted values, escapes.
+    rows.append(("host=db password = spaced1 dbname=x", "spaced1"))
+    rows.append(("host=db password= host=nothost", "host=nothost"))
+    rows.append(("host=db password='a b c' dbname=x", "a b c"))
+    rows.append(("host=db password='it\\'s' dbname=x", "it\\'s"))
+    rows.append(("host=db password='unterminated dbname=x", "unterminated"))
+    rows.append(("host=db password=back\\ slash dbname=x", "back\\ slash"))
+    rows.append(("host=db sslpassword=keyphrase9", "keyphrase9"))
+    rows.append(("host=db\tpassword=tabbed1", "tabbed1"))
+    rows.append(("password=first1 host=db", "first1"))
+    # Neither spelling: not a URI libpq recognises, not a conninfo either.
+    rows.append(("postgre://u:typo5ecret@host/db", "typo5ecret"))
+    rows.append(("mysql://u:other5ecret@host/db", "other5ecret"))
+    rows.append(("u:bare5ecret@host", "bare5ecret"))
+    for row in rows:
+        var out = redact(row[0])
+        if row[1] in out:
+            raise Error(
+                "redact leaked `" + row[1] + "` from `" + row[0] + "` as `"
+                + out + "`"
+            )
+
+
+def test_every_string_this_package_builds_is_one_redact_can_read() raises:
+    """The defaults' own spelling must never read as unparseable.
+
+    Otherwise every connection this package opens would log as `***`, and
+    the redacted URL would stop being a diagnosis at all.
+
+    covers: O7
+    """
+    for url in [
+        "postgres://app@db:5432/x",
+        "postgres:///postgres",
+        "postgres://h1:5432,[::1]:5433/x?sslmode=require",
+        "host=db dbname=x",
+        "host=/tmp port=5432 user=app",
+    ]:
+        var built = with_defaults(url)
+        assert_equal(redact(built), built)
+        var readonly = read_only(url)
+        assert_equal(redact(readonly), readonly)
+
+
+def test_what_redact_cannot_parse_comes_back_whole_masked() raises:
+    """Masked entirely, not partly — but the spelling still shows.
+
+    covers: O7
+    """
+    assert_equal(redact("postgres://u:ab/cd@host/db"), "postgres://***")
+    assert_equal(redact("not a connection string"), "***")
+    # A keyword libpq does not know is a string libpq would refuse, and so
+    # one this cannot claim to understand.
+    assert_equal(redact("host=db nonsense=x password=p"), "***")
+
+
+def test_libpq_s_message_is_withheld_when_the_url_cannot_be_parsed() raises:
+    """The error text libpq writes can quote what it failed to parse.
+
+    Measured: `postgres://u:ab/cd@127.0.0.1:1/db` made libpq answer
+    `invalid integer value "ab" for connection option "port"`, printed by
+    the listener beside the URL on every retry.
+
+    covers: O7
+    """
+    var url = "postgres://u:ab/cd@127.0.0.1:1/db"
+    var message = redact_message(
+        'invalid integer value "ab" for connection option "port"', url
+    )
+    assert_false('"ab"' in message)
+    assert_true("could not be parsed" in message)
+    # A URL that parses keeps libpq's message, which is the diagnosis —
+    # with any secret value that somehow appears in it masked.
+    var kept = redact_message(
+        "connection refused, password hunter2 was wrong",
+        "postgres://u:hunter2@127.0.0.1:1/db",
+    )
+    assert_true("connection refused" in kept)
+    assert_false("hunter2" in kept)
 
 
 # --- Defaults ---------------------------------------------------------------
@@ -155,6 +281,110 @@ def test_a_key_value_conninfo_gets_key_value_defaults() raises:
     assert_true("connect_timeout=5" in out)
     # `options` carries spaces, so its value is quoted rather than encoded.
     assert_true("options='-c statement_timeout=" in out)
+
+
+def _count(hay: String, needle: String) -> Int:
+    """Occurrences of `needle` in `hay`, by bytes."""
+    var h = hay.as_bytes()
+    var nb = needle.as_bytes()
+    var count = 0
+    for i in range(len(h) - len(nb) + 1):
+        var matched = True
+        for j in range(len(nb)):
+            if h[i + j] != nb[j]:
+                matched = False
+                break
+        if matched:
+            count += 1
+    return count
+
+
+def test_tcp_keepalives_are_on_by_default_in_both_spellings() raises:
+    """A dropped idle connection must be noticed in about a minute, not two hours.
+
+    libpq turns keepalives on by itself but with the OS's timings — 7200 s
+    idle, 75 s between probes, 8 probes, measured — so a NAT or proxy that
+    forgets an idle `LISTEN` connection leaves the listener parked in `poll`
+    for over two hours, and a query over a half-open connection blocks in
+    `recv` with no client-side bound at all.
+
+    covers: O7
+    """
+    for url in [String("postgres://db/app"), String("host=db dbname=app")]:
+        var out = with_defaults(url)
+        for key in [
+            "keepalives",
+            "keepalives_idle",
+            "keepalives_interval",
+            "keepalives_count",
+            "tcp_user_timeout",
+        ]:
+            assert_true(has_keyword(out, key))
+        assert_true("keepalives=1" in out)
+        assert_equal(_count(out, "keepalives="), 1)
+        assert_equal(_count(out, "tcp_user_timeout="), 1)
+
+
+def test_a_keepalive_the_caller_set_wins_and_is_not_repeated() raises:
+    """Merged like every other default: the caller's value, once.
+
+    covers: O7
+    """
+    var uri = with_defaults(
+        "postgres://db/app?keepalives=0&keepalives_idle=600&tcp_user_timeout=0"
+    )
+    assert_true("keepalives=0" in uri)
+    assert_false("keepalives=1" in uri)
+    assert_equal(_count(uri, "keepalives="), 1)
+    assert_true("keepalives_idle=600" in uri)
+    assert_equal(_count(uri, "keepalives_idle="), 1)
+    assert_true("tcp_user_timeout=0" in uri)
+    assert_equal(_count(uri, "tcp_user_timeout="), 1)
+    # The ones the caller left alone are still added.
+    assert_equal(_count(uri, "keepalives_interval="), 1)
+    var kv = with_defaults("host=db keepalives_count=9")
+    assert_true("keepalives_count=9" in kv)
+    assert_equal(_count(kv, "keepalives_count="), 1)
+    assert_true("keepalives=1" in kv)
+
+
+def test_a_tab_separated_keyword_is_detected_as_already_set() raises:
+    """A conninfo token can be separated by any whitespace, not just a space.
+
+    A heredoc `DATABASE_URL` or a config generator can put a tab or a
+    newline between keywords. `has_keyword` checked only a literal space, so
+    `with_defaults` appended a second `keepalives=1`, and libpq — taking the
+    last occurrence — silently inverted the caller's explicit
+    `keepalives=0`. Both a tab and a newline are exercised.
+
+    covers: O7
+    """
+    var tabbed = with_defaults("host=db\tkeepalives=0")
+    assert_true("keepalives=0" in tabbed)
+    assert_false("keepalives=1" in tabbed)
+    assert_equal(_count(tabbed, "keepalives="), 1)
+    var newlined = with_defaults("host=db\nkeepalives=0\nuser=app")
+    assert_true("keepalives=0" in newlined)
+    assert_false("keepalives=1" in newlined)
+    assert_equal(_count(newlined, "keepalives="), 1)
+
+
+def test_read_only_refuses_a_tab_separated_options() raises:
+    """The same boundary gap made read_only miss a tab-separated `options`.
+
+    A missed `options` would add a SECOND, which libpq resolves to the last
+    — silently dropping the caller's command line — so the refusal must fire
+    whatever whitespace precedes the keyword.
+
+    covers: O7
+    """
+    var raised = False
+    try:
+        _ = read_only("host=db\toptions=-c work_mem=64MB")
+    except e:
+        raised = True
+        assert_true("already sets" in String(e))
+    assert_true(raised)
 
 
 def test_the_statement_timeout_rides_the_options_keyword() raises:

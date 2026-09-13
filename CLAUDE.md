@@ -674,8 +674,8 @@ code depends on:
 
 `m0-postgres` imports nothing else here and links **nothing**: libpq is opened
 with `dlopen` at run time, so no binary in this repo carries a libpq dependency
-and a server that never names a database needs no library present. Two rules
-there were each found by crashing, and both are in `lib.mojo`'s docstring:
+and a server that never names a database needs no library present. Three rules
+there were each found by crashing, and all three are in `lib.mojo`'s docstring:
 
 - **The handle and the pointers loaded from it live in ONE struct.** A loaded
   `thin` pointer carries no borrow, so an `OwnedDLHandle` held anywhere else is
@@ -687,9 +687,18 @@ there were each found by crashing, and both are in `lib.mojo`'s docstring:
   method, and `test_lib.mojo` asserts that shape in the position the broken one
   failed in. A dangling call is a segmentation fault, not an exception, which is
   why the rule is written down as well as tested.
+- **libpq is never unloaded once opened.** `PgLib.__init__` re-opens its image
+  with `RTLD_NODELETE` (`pin_library`), so no `dlclose` unmaps it. Without the
+  pin, the last `Connection` going — at its last use, routinely the query
+  itself — unloaded the library, and `rows.text(0, 0)` on the result was a
+  segmentation fault three runs out of three. The pin is what makes it sound
+  for `Result` to hold COPIES of its entry points (`ResultLib`); reaching them
+  through the connection's address instead faulted even with the pin, because
+  a destroyed or moved connection leaves that address pointing at nothing.
 
 Also unlike m0-sqlite: a `Result` is a VALUE, not a cursor — libpq hands back a
-complete result that owns its memory, so it can outlive its query — and a
+complete result that owns its memory, so it can outlive its query and the
+`Connection` that ran it (SPEC O16) — and a
 `Prepared` is a name plus its parameter OIDs rather than a handle, because a
 server-side statement dies with its connection and a borrowing form is not
 spellable on this toolchain. Text results are the default and `binary=True` is
@@ -1267,11 +1276,14 @@ Properties of the design, not defects to fix in passing:
   `format_sse_event` every other publisher uses, so a client cannot tell
   which door an event came through. `m0pub.notify_sql` builds the
   statement for a caller that already has a cursor, without importing a
-  driver into a stdlib-only module. **Refused with a FORKED `--workers N`
-  on macOS**, because libpq's connect reaches GSSAPI, then Kerberos, then
+  driver into a stdlib-only module. **Refused on macOS wherever a worker
+  is FORKED** — `--workers N`, and `--reload`, which supervises even one
+  worker — because libpq's connect reaches GSSAPI, then Kerberos, then
   CoreFoundation, and Objective-C aborts a forked child — measured as the
   worker killed by signal 9 and respawned until the supervisor gave up,
-  which is the same disguise the `_scproxy` entry above records.
+  which is the same disguise the `_scproxy` entry above records. The
+  predicate asks what `main` calls `supervised`, not the worker count:
+  testing `workers > 1` alone let `--reload` through, doctor included.
   `--spawn-workers` is the escape, as it is for Core ML. Both `--pg-listen`
   refusals run BEFORE the bind and the fork: placed after it they ran in
   every child and never in the supervisor, so a usage error read as a crash
@@ -1281,13 +1293,22 @@ Properties of the design, not defects to fix in passing:
   tick-owner rule — every worker would deliver its own copy), **skip_worker
   is -1** (nothing has queued it locally, unlike an in-process publish), **a
   malformed payload is refused and counted rather than guessed at** (the
-  check that is uniquely the listener's; a reserved channel is refused here
+  check that is uniquely the listener's, in `pg_envelope.mojo`; an `event`
+  or `data` present as anything but a JSON STRING is malformed, because
+  `parse_json_field` reads an object as `""` and a trigger's
+  `'data', row_to_json(NEW)` reached every subscriber as an empty event,
+  counted as delivered — `parse_json_string` is the reader that can say
+  no; a reserved channel is refused here
   too, but `publish_to_channels` refuses the same names at the bus
   boundary, so that one is defence in depth and measured to be — removing
   it leaves the gate green), and **a reset re-`LISTEN`s** — a
   reconnected connection is a new backend session listening to nothing, and
   a listener that skipped that would deliver nothing forever while logging
-  no error. The thread never attaches to the interpreter. Refused without
+  no error — and it **drains once after connecting and after every reset**,
+  because a notification read during the `LISTEN` round trip sits in libpq's
+  queue where `poll` cannot see it (`test_notify.mojo` shows the mechanism;
+  the listener-level race is not reproducible on demand, so no gate fails
+  when that drain is removed). The thread never attaches to the interpreter. Refused without
   `--realtime`, which is what creates the bus. SPEC I22,
   `smoke-pg-notify`.
 - **A channel name opening with `\x01` is RESERVED, and every publish
@@ -1401,6 +1422,9 @@ Properties of the design, not defects to fix in passing:
   before any handler, every app and the production WSGI deployment
   alike), the cookie jar (built for every request: `Cookie: a=<0x80>`),
   the static mount's path, the `Accept` negotiator and the ETag matcher.
+  A sixth and seventh were not request bytes at all: `split_sse_lines` and
+  `sse_data_payload`, which a `--pg-listen` NOTIFY payload reaches on worker
+  0's listener thread, and a `SQL_ASCII` database converts nothing.
   Every such slice is now `String(unsafe_from_utf8=s.as_bytes()[a:b])`,
   a byte-span slice with no boundary check; `unquote` is a single byte
   walk. SPEC G14 is the row, one test per site declares it, and both

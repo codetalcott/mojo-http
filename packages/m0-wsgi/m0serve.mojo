@@ -596,12 +596,14 @@ comptime _PG_LISTEN_NEEDS_REALTIME = (
     " into can do nothing at all"
 )
 comptime _PG_LISTEN_FORKED_ON_MACOS = (
-    "--pg-listen with forked --workers is refused on macOS: libpq's connect"
-    " reaches GSSAPI, which reaches Kerberos and CoreFoundation, and"
-    " Objective-C aborts a forked child rather than run in one. The worker"
-    " dies with SIGKILL and the supervisor respawns it, which reads as a"
-    " load problem and is not. Use --spawn-workers (the child execs, so the"
-    " rule does not apply), or --workers 1, or --threads, or put"
+    "--pg-listen with a forked worker is refused on macOS: --workers N forks"
+    " one, and so does --reload, which supervises even a single worker."
+    " libpq's connect reaches GSSAPI, which reaches Kerberos and"
+    " CoreFoundation, and Objective-C aborts a forked child rather than run"
+    " in one. The worker dies with SIGKILL and the supervisor respawns it,"
+    " which reads as a load problem and is not. Use --spawn-workers (the"
+    " child execs, so the rule does not apply; it composes with --reload),"
+    " or serve without --reload on one worker or --threads, or put"
     " gssencmode=disable in the connection string if you do not use GSSAPI"
     " encryption"
 )
@@ -973,11 +975,18 @@ def _pg_listen_forked_on_macos(opts: ServeOptions) -> Bool:
     this half of the fork rule, because the child execs.
 
     Linux has no such abort, so it is not refused there.
+
+    "Forked" is `main`'s own `supervised`, not the worker count: `--reload`
+    puts a supervisor over even one worker (and over the one child
+    `--threads` runs in), and `fork_all` forks without exec unless
+    `--spawn-workers` is given. Testing `workers > 1` alone let
+    `--reload --realtime --pg-listen` through, main and doctor alike, into
+    the crash loop this refusal exists to prevent.
     """
     return (
         CompilationTarget.is_macos()
         and len(opts.pg_listen.as_bytes()) > 0
-        and opts.workers > 1
+        and (opts.workers > 1 or opts.reload)
         and not opts.spawn_workers
     )
 
@@ -1082,7 +1091,9 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
             report.fail_check(
                 String("pg-listen-vs-fork"),
                 String(_PG_LISTEN_FORKED_ON_MACOS),
-                String("add --spawn-workers, or use --workers 1"),
+                String(
+                    "add --spawn-workers, or serve one worker without --reload"
+                ),
                 EXIT_USAGE,
             )
         else:

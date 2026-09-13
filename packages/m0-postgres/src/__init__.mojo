@@ -23,9 +23,10 @@ a second owner that would release it twice.
 libpq dependency on its link line, including `bin/m0serve` and the wheel, so
 a server that never names a database never needs the library present. An
 absent library is one raised error naming every path tried. `M0_LIBPQ` names
-the file outright. See `lib.mojo`, whose two rules — the handle lives with
-its function pointers, and every buffer argument is typed as a pointer —
-were each found by crashing.
+the file outright. See `lib.mojo`, whose three rules — the handle lives with
+its function pointers, every buffer argument is typed as a pointer, and the
+library is never unloaded once opened, which is what lets a `Result` outlive
+its `Connection` — were each found by crashing.
 
 **One connection per thread.** libpq permits concurrent use of distinct
 connections and nothing else. A mounted Mojo application builds its
@@ -82,7 +83,7 @@ from .sqlstate import (
     is_retryable,
     sqlstate,
 )
-from .url import redact, with_defaults
+from .url import redact, redact_message, with_defaults
 from .wire import (
     OID_BOOL,
     OID_BYTEA,

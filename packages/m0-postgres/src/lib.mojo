@@ -16,7 +16,7 @@ bindings and how `m0-wsgi/src/bridge.mojo` reaches the two `PyBytes_*`
 functions `CPython` leaves out. An absent library is then one raised error
 naming the paths tried, rather than a link failure or a load-time abort.
 
-**Two rules here are load-bearing, and both were found by crashing.**
+**Three rules here are load-bearing, and all three were found by crashing.**
 (`~/dev` probes, 2026-09-12; the write-ups are in this module's tests.)
 
   - **The handle and the pointers loaded from it live in ONE struct.** A
@@ -39,6 +39,20 @@ naming the paths tried, rather than a link failure or a load-time abort.
     `Pointer[UInt8, ImmutAnyOrigin]` and passed as
     `buf.unsafe_ptr().as_imm().as_unsafe_any_origin()` — bridge.mojo's own
     spelling — the buffer survived the call three times out of three.
+
+  - **libpq is never unloaded while the process lives.** `PgLib.__init__`
+    re-opens the image it was handed with `RTLD_NODELETE`, which marks it
+    so that no `dlclose` ever unmaps it (`pin_library`). Without it the library was unmapped when the LAST
+    `PgLib` went — which is when the last `Connection` went, at its last
+    use — and a `Result` read after that jumped into unloaded code:
+    `var rows = db.query(...)` with no later mention of `db`, then
+    `rows.text(0, 0)`, was a segmentation fault three runs out of three,
+    and the same program with a second `PgLib` held alive for the run read
+    the row correctly. The pin is what lets the entry points a `Result`
+    needs be COPIED out (`ResultLib`) rather than reached through the
+    connection's address, which a move or a destruction leaves dangling.
+    The cost is one library's pages kept mapped by a process that already
+    chose to load it; nothing here ever reloads it, so nothing is lost.
 
 Opaque handles (`PGconn *`, `PGresult *`, `PGnotify *`) travel as `Int`, as
 `sqlite3 *` does in `m0-sqlite`: they are opaque to us, and an integer is
@@ -215,6 +229,62 @@ comptime _PQescapeIdentifier = ExternalFunction[
 ]
 
 
+def _pin_flags() -> Int:
+    """`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`, the mode the pin re-opens with.
+
+    **A binding mode is not optional, and leaving it out broke Linux.**
+    glibc's `dlopen` refuses a mode carrying neither `RTLD_LAZY` (1) nor
+    `RTLD_NOW` (2): measured against `libpq.so.5` in a `bookworm` container,
+    `RTLD_GLOBAL | RTLD_NODELETE` (256 | 0x1000) fails with
+    `invalid mode for dlopen(): Invalid argument`, while both
+    `1 | 256 | 0x1000` and `2 | 256 | 0x1000` open and keep the image mapped
+    after every handle is closed. macOS is lenient where glibc is not, so a
+    mode missing it passes every local run and fails only the Linux job —
+    which is exactly what happened, and why the flags are written here as a
+    measurement rather than as a guess at another module's default.
+
+    `RTLD_LAZY` rather than `RTLD_NOW`, because this is a RE-open of an image
+    already loaded: `RTLD_NOW` would upgrade it to eager binding the first
+    open never asked for, so a libpq with a transitive symbol resolvable only
+    lazily would fail the pin and make `PgLib.open` raise on a host where the
+    library works. Lazy asks for nothing the first open did not.
+
+    The stdlib's own default is deliberately not named here. `std` ships as a
+    `.mojoc` with no source, so any claim about it is unverifiable from this
+    tree — and a wrong one was how the missing binding mode got in.
+    `RTLD_NODELETE` is 0x1000 in glibc's `dlfcn.h` and 0x80 in macOS's, and
+    both loaders promote an already-loaded image to it on a re-open.
+    """
+    comptime if CompilationTarget.is_macos():
+        return 1 | 8 | 0x80
+    else:
+        return 1 | 256 | 0x1000
+
+
+def pin_library(path: String) raises:
+    """Keep the library at `path` loaded for the life of the process.
+
+    A second `dlopen` of the image the caller already holds, flagged
+    `RTLD_NODELETE`, which both glibc and dyld apply to an image that is
+    already loaded: from then on no `dlclose` unmaps it, this handle's own
+    included — so the handle is let go at once, and what remains is the
+    flag. Through `OwnedDLHandle` rather than a hand-declared `dlopen`,
+    because the stdlib already declares that symbol and a second, different
+    declaration does not compile. The module docstring's third rule says
+    why this exists.
+    """
+    try:
+        var pin = OwnedDLHandle(path, _pin_flags())
+        _ = pin.check_symbol("PQlibVersion")
+    except e:
+        raise Error(
+            "the library at " + path + " opened once and could not be"
+            " pinned for the life of the process (" + String(e) + "); a"
+            " result read after its connection closed would call into"
+            " unloaded code"
+        )
+
+
 def default_search_path() -> List[String]:
     """Where to look for libpq when `M0_LIBPQ` does not say.
 
@@ -317,6 +387,9 @@ struct PgLib(Movable):
         libpq at all, must be an error naming the symbol rather than a
         stack trace with no cause in it.
         """
+        # First, so no path out of this constructor leaves a table whose
+        # library can be unmapped under it (the third rule).
+        pin_library(path)
         for name in required_symbols():
             if not handle.check_symbol(name):
                 raise Error(
@@ -524,6 +597,27 @@ struct PgLib(Movable):
         """`PQescapeIdentifier`."""
         return Int(self._escape_identifier(conn, text, length))
 
+    def result_lib(self) -> ResultLib:
+        """The entry points a `Result` calls, copied out of this table.
+
+        A copy is sound because of the third rule: the library these
+        pointers came from is pinned for the life of the process, so they
+        stay valid after this `PgLib` — and the `Connection` holding it —
+        is gone.
+        """
+        return ResultLib(
+            self._result_status,
+            self._ntuples,
+            self._nfields,
+            self._fname,
+            self._ftype,
+            self._getvalue,
+            self._getlength,
+            self._getisnull,
+            self._cmd_tuples,
+            self._clear,
+        )
+
     @staticmethod
     def open(path: String = "") raises -> Self:
         """Open libpq: `path`, else `M0_LIBPQ`, else the search path.
@@ -579,6 +673,101 @@ struct PgLib(Movable):
         """`libpq`'s version as `major.minor`, from its integer form."""
         var v = self.libversion()
         return String(v // 10000) + "." + String(v % 10000)
+
+
+struct ResultLib(ImplicitlyCopyable, Movable):
+    """The ten entry points a `Result` needs, held by value.
+
+    A `Result` used to reach them through the address of its connection's
+    `PgLib`, which dangles the moment that connection is moved or destroyed
+    — and Mojo destroys a connection at its last use, so
+    `var rows = db.query(...)` left `rows` reading a dead struct. A copy
+    of the pointers needs nothing of the connection; the pin (the module
+    docstring's third rule) is what keeps the code they point at mapped.
+
+    Implicitly copyable, unlike `PgLib`, because it owns nothing: no handle, no
+    buffer, only addresses into a library that is never unloaded.
+
+    The fields are private and every call goes through a method beside
+    them, for the same reason `PgLib`'s are: a `thin` pointer field called
+    as `value.field()` from outside its struct faults.
+    """
+
+    var _result_status: _PQresultStatus.type
+    var _ntuples: _PQntuples.type
+    var _nfields: _PQnfields.type
+    var _fname: _PQfname.type
+    var _ftype: _PQftype.type
+    var _getvalue: _PQgetvalue.type
+    var _getlength: _PQgetlength.type
+    var _getisnull: _PQgetisnull.type
+    var _cmd_tuples: _PQcmdTuples.type
+    var _clear: _PQclear.type
+
+    def __init__(
+        out self,
+        result_status: _PQresultStatus.type,
+        ntuples: _PQntuples.type,
+        nfields: _PQnfields.type,
+        fname: _PQfname.type,
+        ftype: _PQftype.type,
+        getvalue: _PQgetvalue.type,
+        getlength: _PQgetlength.type,
+        getisnull: _PQgetisnull.type,
+        cmd_tuples: _PQcmdTuples.type,
+        clear: _PQclear.type,
+    ):
+        """Built by `PgLib.result_lib`, which is where the pointers live."""
+        self._result_status = result_status
+        self._ntuples = ntuples
+        self._nfields = nfields
+        self._fname = fname
+        self._ftype = ftype
+        self._getvalue = getvalue
+        self._getlength = getlength
+        self._getisnull = getisnull
+        self._cmd_tuples = cmd_tuples
+        self._clear = clear
+
+    def result_status(self, res: Int) -> Int:
+        """`PQresultStatus`."""
+        return Int(self._result_status(res))
+
+    def ntuples(self, res: Int) -> Int:
+        """`PQntuples`."""
+        return Int(self._ntuples(res))
+
+    def nfields(self, res: Int) -> Int:
+        """`PQnfields`."""
+        return Int(self._nfields(res))
+
+    def fname(self, res: Int, col: Int) -> Int:
+        """`PQfname`."""
+        return Int(self._fname(res, c_int(col)))
+
+    def ftype(self, res: Int, col: Int) -> Int:
+        """`PQftype`."""
+        return Int(self._ftype(res, c_int(col)))
+
+    def getvalue(self, res: Int, row: Int, col: Int) -> Int:
+        """`PQgetvalue`."""
+        return Int(self._getvalue(res, c_int(row), c_int(col)))
+
+    def getlength(self, res: Int, row: Int, col: Int) -> Int:
+        """`PQgetlength`."""
+        return Int(self._getlength(res, c_int(row), c_int(col)))
+
+    def getisnull(self, res: Int, row: Int, col: Int) -> Int:
+        """`PQgetisnull`."""
+        return Int(self._getisnull(res, c_int(row), c_int(col)))
+
+    def cmd_tuples(self, res: Int) -> Int:
+        """`PQcmdTuples`."""
+        return Int(self._cmd_tuples(res))
+
+    def clear(self, res: Int):
+        """`PQclear`."""
+        self._clear(res)
 
 
 def required_symbols() -> List[String]:

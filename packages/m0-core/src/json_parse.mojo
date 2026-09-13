@@ -193,15 +193,37 @@ def parse_json_field(body: String, field: String) -> String:
     Handles the full JSON escape set: \\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX
     (with surrogate-pair support for non-BMP code points). Returns an empty
     string if the field is not found, the value is not a string, or the
-    value contains an unknown/malformed escape sequence.
+    value contains an unknown/malformed escape sequence — which is why
+    `parse_json_string` exists, for a caller that must tell those apart
+    from a real `""`.
+    """
+    var value = parse_json_string(body, field)
+    if value:
+        return value.value()
+    return String("")
+
+
+def has_json_field(body: String, field: String) -> Bool:
+    """Whether top-level `field` is present, whatever its value's type."""
+    return _find_value_start(body, field) != -1
+
+
+def parse_json_string(body: String, field: String) -> Optional[String]:
+    """Top-level `field` as a string, or None if it is not one.
+
+    None for a field that is absent, a value that is not a JSON string (an
+    object, an array, a number, `true`, `null`), and a string with an
+    unknown or malformed escape — every case `parse_json_field` reports as
+    `""`, which a caller refusing untrusted input cannot tell from a real
+    empty string. Ask `has_json_field` to tell absent from wrong-typed.
     """
     var i = _find_value_start(body, field)
     if i == -1:
-        return String("")
+        return None
     var bytes = body.as_bytes()
     var blen = body.byte_length()
     if bytes[i] != 0x22:  # '"'
-        return String("")
+        return None
     i += 1  # skip opening quote
 
     var result = List[UInt8](capacity=64)
@@ -211,7 +233,7 @@ def parse_json_field(body: String, field: String) -> String:
             return String(unsafe_from_utf8=Span(result))
         if b == 0x5C:
             if i + 1 >= blen:
-                return String("")
+                return None
             var nxt = bytes[i + 1]
             if nxt == 0x22:
                 result.append(0x22); i += 2
@@ -231,42 +253,42 @@ def parse_json_field(body: String, field: String) -> String:
                 result.append(0x09); i += 2
             elif nxt == 0x75:  # \uXXXX
                 if i + 6 > blen:
-                    return String("")
+                    return None
                 var d0 = _hex_digit(bytes[i + 2])
                 var d1 = _hex_digit(bytes[i + 3])
                 var d2 = _hex_digit(bytes[i + 4])
                 var d3 = _hex_digit(bytes[i + 5])
                 if d0 == -1 or d1 == -1 or d2 == -1 or d3 == -1:
-                    return String("")
+                    return None
                 var cp = (d0 << 12) | (d1 << 8) | (d2 << 4) | d3
                 if cp >= 0xD800 and cp <= 0xDBFF:
                     # High surrogate — expect a following \uDCxx low surrogate.
                     if i + 12 > blen or bytes[i + 6] != 0x5C or bytes[i + 7] != 0x75:
-                        return String("")
+                        return None
                     var e0 = _hex_digit(bytes[i + 8])
                     var e1 = _hex_digit(bytes[i + 9])
                     var e2 = _hex_digit(bytes[i + 10])
                     var e3 = _hex_digit(bytes[i + 11])
                     if e0 == -1 or e1 == -1 or e2 == -1 or e3 == -1:
-                        return String("")
+                        return None
                     var low = (e0 << 12) | (e1 << 8) | (e2 << 4) | e3
                     if low < 0xDC00 or low > 0xDFFF:
-                        return String("")
+                        return None
                     var combined = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00)
                     _append_utf8(result, combined)
                     i += 12
                 elif cp >= 0xDC00 and cp <= 0xDFFF:
-                    return String("")  # lone low surrogate
+                    return None  # lone low surrogate
                 else:
                     _append_utf8(result, cp)
                     i += 6
             else:
-                return String("")  # unknown escape — strict reject
+                return None  # unknown escape — strict reject
         else:
             result.append(b)
             i += 1
 
-    return String("")  # unterminated string
+    return None  # unterminated string
 
 
 def parse_json_int(body: String, field: String) -> Optional[Int]:

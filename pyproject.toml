@@ -252,10 +252,15 @@ psql "$url" -Atc "select pg_notify('m0', json_build_object('channel', chr(1) || 
 notify 'not json at all'
 notify '{}'
 notify '{"channel":""}'
+# The shape a trigger writes first. `data` is an OBJECT, which a string
+# reader answers as "" -- so this reached room3 as a bare `data: ` and was
+# counted as delivered, until a present non-string field became a refusal.
+psql "$url" -Atc "select pg_notify('m0', json_build_object('channel', 'room3', 'event', 'rowdata', 'data', json_build_object('id', 7))::text)" > /dev/null \
+  || fail 'publishing the object-data probe failed'
 notify '{"channel":"room3","event":"survived","data":"the listener is still here"}'
 wait $guard
 
-# COUNTED, not looked for by name. Four of the five publishes above must
+# COUNTED, not looked for by name. Five of the six publishes above must
 # reach nobody, and a refusal that delivered them with an empty event would
 # satisfy any "is the evil one absent" check -- measured: both sabotages
 # below passed a by-name assertion.
@@ -263,7 +268,9 @@ events=$(grep -c '^id: ' "$out/reserved.txt" || true)
 [ "$events" = "1" ] \
   || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail "expected exactly one event on the guarded channel, got $events"; }
 grep -q 'event: survived' "$out/reserved.txt" \
-  || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'the listener did not survive a reserved name and three malformed payloads'; }
+  || { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'the listener did not survive a reserved name and four malformed payloads'; }
+grep -q 'event: rowdata' "$out/reserved.txt" \
+  && { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'a NOTIFY whose data was an object was delivered as an empty event'; }
 grep -q 'event: evil' "$out/reserved.txt" \
   && { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'a reserved channel name from the database was honoured'; }
 
@@ -293,15 +300,17 @@ grep -q 'event: greeting' "$out/quiet.txt" \
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
 
-# The listener's own account, which it prints as it stops: five delivered
-# (two in arm 1, one guarded, plus the two it refused nothing about) and the
-# four it refused. Asserted here rather than above because the counts are a
+# The listener's own account, which it prints as it stops, asserted as the
+# exact COUNTS: three delivered (arm 1's two -- the one for someone-else
+# reaches the bus and simply has no subscriber here -- and `survived`) and
+# five refused (the reserved name, `not json at all`, `{}`, the empty
+# channel and the object `data`). Matching the line's shape alone passed
+# with `refused += 1` deleted, which printed "0 refused" beside a gate that
+# stayed green. Asserted here rather than above because the counts are a
 # shutdown line -- and asserted at all because a silent drop should be
 # visible in a log, not only in this gate.
-grep -q 'refused' "$out/srv.log" \
-  || { tail -5 "$out/srv.log"; fail 'the listener never reported its refusal count'; }
-grep -q 'stopping after .* refused' "$out/srv.log" \
-  || { tail -5 "$out/srv.log"; fail 'the listener did not report delivered and refused counts at shutdown'; }
+grep -q '^pg-listen: stopping after 3 delivered, 5 refused$' "$out/srv.log" \
+  || { grep 'stopping after' "$out/srv.log"; fail 'the listener did not report 3 delivered and 5 refused at shutdown'; }
 
 # --- the Python half -----------------------------------------------------
 # `m0pub.notify_sql` is what a management command or a console publishes
@@ -389,6 +398,44 @@ events=$(grep -c '^id: ' "$out/w2.txt" || true)
   || { echo '--- w2.txt ---'; cat "$out/w2.txt"; fail "one NOTIFY was delivered $events times -- the worker-0 rule is not holding"; }
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+
+# --- the forked-worker refusal, and --reload is a forked worker ----------
+# On macOS libpq's connect in a child forked without exec is killed, so the
+# server refuses every shape that forks one: `--workers N`, and `--reload`,
+# which puts a supervisor over even a single worker. The predicate first
+# tested the worker count alone, so `--reload` went through -- main and
+# doctor alike -- into the crash loop the refusal exists to prevent.
+# Linux refuses neither, and the doctor must say so there, because its
+# contract is m0serve's own exit code. The server itself is only run where
+# it refuses: a shape that serves would block this gate, so the run is
+# bounded and one still alive at the deadline is the failure.
+for shape in "--workers 2" "--reload"; do
+  if [ "$(uname -s)" = "Darwin" ]; then want=2; else want=0; fi
+  bin/m0serve --doctor djangoproj.wsgi:application --app-dir apps/django_realtime \
+    --realtime $shape --pg-listen "$url" > "$out/doctor.json" 2>/dev/null
+  doc=$?
+  [ "$doc" -eq "$want" ] \
+    || { cat "$out/doctor.json"; fail "--doctor for --pg-listen $shape exited $doc, want $want"; }
+  [ "$want" -eq 2 ] || continue
+  grep -q 'pg-listen-vs-fork' "$out/doctor.json" \
+    || { cat "$out/doctor.json"; fail "--doctor for --pg-listen $shape refused for some other reason"; }
+  bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+    --port 8236 --realtime $shape --pg-listen "$url" > "$out/fork.log" 2>&1 &
+  fpid=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    kill -0 $fpid 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 $fpid 2>/dev/null; then
+    kill $fpid 2>/dev/null; wait $fpid 2>/dev/null
+    cat "$out/fork.log"; fail "--pg-listen $shape was not refused on macOS -- it started serving"
+  fi
+  wait $fpid; st=$?
+  [ "$st" -eq 2 ] \
+    || { cat "$out/fork.log"; fail "--pg-listen $shape exited $st on macOS, not 2"; }
+  grep -q 'with a forked worker is refused on macOS' "$out/fork.log" \
+    || { cat "$out/fork.log"; fail "--pg-listen $shape was refused without saying why"; }
+done
 
 # --- the refusal ---------------------------------------------------------
 bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
@@ -891,6 +938,7 @@ python3 scripts/emit.py --covers O12 --task test-postgres-server
 python3 scripts/emit.py --covers O13 --task test-postgres-server
 python3 scripts/emit.py --covers O14 --task test-postgres-server
 python3 scripts/emit.py --covers O15 --task test-postgres-server
+python3 scripts/emit.py --covers O16 --task test-postgres-server
 """
 
 [tool.poe.tasks.test-all]
