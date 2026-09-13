@@ -1514,6 +1514,14 @@
       "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 every arm on the wire, with the forgeries signed by `scripts/notes_session.py` so the verifier is never checked against itself; the unit form is `test_session.mojo:test_a_cookie_the_issuer_signed_names_its_subject` against the same issuer's vectors, and `poe sabotage-notes-login` (pre-release) reverts the tag check, the expiry, the token, the guard and the cookie attributes one at a time. The arm curl cannot judge is `browser-notes-login` (pre-release): Chromium signs in, writes and deletes, and the delete carries its token in the BODY \u2014 htmx 2.0.4 would put it in the query string, which the shell's `htmx-config` meta narrows away. The design is [a-login-on-the-notes-app](notes/a-login-on-the-notes-app.md)"
     },
     {
+      "id": "N14",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A Mojo mount from somewhere else: an application supplies its own `MojoMount` as a module named `m0serve_mount` in a directory of its own, and `poe build-serve` with `M0SERVE_MOUNT_DIR` naming that directory builds the same `m0serve.mojo` into a binary that serves the application's routes \u2014 its path parameters, its per-thread state, its prefix-aware links \u2014 beside a Python mount, with the demo mount's routes gone rather than answering too; the directory REPLACES the default on the include path, because with both present the first root wins without a word, and a directory with no mount module is refused by the build before anything compiles",
+      "status": "verified",
+      "evidence": "`Smoke test a Mojo mount supplied by module` (every PR) \u2014 sabotaged by keeping the default mount directory on the path beside the fixture's, which built cleanly and served the demo, and failed the smoke's first assertion; that the conformance survives leaving the entry file is measured by `Smoke test a Mojo mount beside a Python one` passing with the demo mount in the module; the design is [a-mount-from-somewhere-else](notes/a-mount-from-somewhere-else.md)"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",

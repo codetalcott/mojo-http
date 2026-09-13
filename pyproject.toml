@@ -633,9 +633,21 @@ esac
 # run there. Modular's runtime dylibs are built for 11.0 and so satisfy it.
 # scripts/wheel_tag.py measures the result rather than trusting this.
 export MACOSX_DEPLOYMENT_TARGET=13.0
+# The Mojo mount is a module, `m0serve_mount`, and this directory is where
+# it is found (packages/m0-wsgi/mount/m0serve_mount.mojo says why). An
+# application building its own binary names its OWN directory here, which
+# REPLACES the default rather than joining it: with both on the path the
+# first -I root wins without a word (measured -- the application's mount
+# placed after the default built cleanly and served the demo), so a
+# replaced root is the only shape where a wrong path is a compile error
+# instead of a binary serving someone else's routes. M0SERVE_OUT names the
+# binary, so the smoke can build a second one beside bin/m0serve.
+mount_dir="${M0SERVE_MOUNT_DIR:-packages/m0-wsgi/mount}"
+out="${M0SERVE_OUT:-bin/m0serve}"
+[ -f "$mount_dir/m0serve_mount.mojo" ] || { echo "build-serve: no m0serve_mount.mojo in $mount_dir"; exit 1; }
 mojo build --target-cpu "$tcpu" \
-  -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ \
-  packages/m0-wsgi/m0serve.mojo -o bin/m0serve || exit 1
+  -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
+  packages/m0-wsgi/m0serve.mojo -o "$out" || exit 1
 
 # Same post-link surgery build-ffi does, and for the same reason: `mojo
 # build` records the build venv as a search path. It was missing here, so
@@ -645,7 +657,7 @@ mojo build --target-cpu "$tcpu" \
 # beside the binary) and wheel (_bin/ and _lib/ siblings). See
 # docs/FFI_DISTRIBUTION.md; `poe check-serve-portable` asserts the result.
 python3 scripts/relocate.py --no-id \
-  --rpath '@loader_path' --rpath '@loader_path/../_lib' bin/m0serve || exit 1
+  --rpath '@loader_path' --rpath '@loader_path/../_lib' "$out" || exit 1
 
 # Then complete the bundle in place, so `bin/` IS the shipped shape: the
 # binary plus the Mojo runtime it resolves through @loader_path. Without
@@ -653,8 +665,8 @@ python3 scripts/relocate.py --no-id \
 # venv -- which is the dependency we just removed, reintroduced by the
 # development workflow. Every serve-*/smoke-* task runs bin/m0serve
 # directly, so they now exercise the artifact a user actually gets.
-python3 scripts/bundle_artifact.py bin/m0serve bin || exit 1
-echo "built bin/m0serve"
+python3 scripts/bundle_artifact.py "$out" "$(dirname "$out")" || exit 1
+echo "built $out (mount: $mount_dir)"
 """
 
 # The C-ABI surface. ffi_exports.mojo sits at the package root because a
@@ -5818,6 +5830,73 @@ python3 scripts/outbox_cap_probe.py 8156 || fail 'outbox cap probe failed'
 python3 scripts/emit.py --covers I17 --task smoke-outbox-cap
 """
 
+[tool.poe.tasks.smoke-mount-seam]
+help = "An application supplies its own Mojo mount by module, without copying m0serve.mojo"
+shell = """
+set -u
+P=8795
+B=http://localhost:$P
+srv=bin/m0serve-seam
+pid=
+fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat seam.log 2>/dev/null; rm -f seam.log seam_index.html; exit 1; }
+
+# A directory with no mount module is refused by the build BEFORE mojo build
+# runs (SPEC N14's "before anything compiles"). Asserting only a non-zero
+# status cannot tell that refusal from an ordinary compile error, so the
+# guard's own message is what is matched -- delete the `-f` check in
+# build-serve and this arm goes red rather than passing on the compiler's
+# "module m0serve_mount unresolvable". A stale binary from an earlier local
+# run would satisfy the produced-nothing check falsely, so clear it first.
+rm -f bin/m0serve-absent
+out=$(M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture/absent M0SERVE_OUT=bin/m0serve-absent \
+  uv run poe build-serve 2>&1)
+rc=$?
+[ $rc -ne 0 ] || fail "build-serve accepted a mount directory with no m0serve_mount.mojo"
+echo "$out" | grep -q 'no m0serve_mount.mojo in' \
+  || fail "a missing mount module was not refused before compiling; got: $out"
+[ ! -e bin/m0serve-absent ] || fail "a refused mount directory still produced a binary"
+
+# The seam: the same entry file, a different module on the path.
+M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture M0SERVE_OUT=$srv \
+  uv run poe build-serve || fail "build-serve with the fixture mount did not build"
+
+"$srv" --mount /=bareapp.wsgi --mount /native=mojo \
+  --app-dir apps/wsgi_bare --port $P --blocking-threads 2 > seam.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail "server never became healthy"
+
+# The fixture's routes answer, from a pool thread, with its own state.
+body=$(curl -s $B/native/hello/ada)
+echo "$body" | grep -q '"mount":"fixture"' || fail "the fixture mount did not answer: $body"
+echo "$body" | grep -q '"name":"ada"' || fail "the fixture's path parameter did not arrive: $body"
+echo "$body" | grep -q '"greeted":' || fail "the fixture's per-thread state did not answer: $body"
+
+# REPLACED, not joined: the demo mount's routes are gone. With both modules
+# on the path the first root wins silently, so this is the assertion that
+# tells a replaced mount from a demo that happened to answer too.
+code=$(curl -s -o /dev/null -w '%{http_code}' $B/native/probe)
+[ "$code" = "404" ] || fail "the demo mount's /probe answered $code; the fixture did not replace it"
+
+# A link the fixture renders carries the prefix, and following it lands.
+curl -s -o seam_index.html $B/native/ || fail "the fixture's index did not answer"
+href=$(grep -o 'href="[^"]*"' seam_index.html | head -1 | cut -d'"' -f2)
+case "$href" in /native/hello/*) ;; *) fail "the fixture rendered $href, not a link under /native";; esac
+curl -s "$B$href" | grep -q '"mount":"fixture"' || fail "following $href did not reach the fixture"
+
+# The Python mount beside it is untouched.
+curl -s $B/ | grep -q 'bare wsgi app' || fail "the WSGI mount did not answer"
+
+kill -TERM $pid
+for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
+pid=
+
+rm -f seam.log seam_index.html "$srv"
+echo "smoke-mount-seam OK"
+python3 scripts/emit.py --covers N14 --task smoke-mount-seam
+"""
+
 # An SSE hold from a Mojo mount (SPEC N11). A view on the Mojo mount
 # returns the two instruction headers a Django view returns, the pool
 # thread rewrites the response into the stream's head and sends the loop
@@ -6163,11 +6242,16 @@ mkdir -p bin
 # tarball, never a second wheel. `--doctor` tells the two apart:
 # `build.apple_target` is m1 for the wheel on every Mac, and the host's
 # generation here (smoke-apple-silicon asserts both).
-mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ \
+# The mount module is a root like build-serve's, and honours the same
+# M0SERVE_MOUNT_DIR: an application building a native desktop binary wants
+# its OWN mount, not the demo. Replaces the default the same way.
+mount_dir="${M0SERVE_MOUNT_DIR:-packages/m0-wsgi/mount}"
+[ -f "$mount_dir/m0serve_mount.mojo" ] || { echo "build-serve-native: no m0serve_mount.mojo in $mount_dir"; exit 1; }
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
   packages/m0-wsgi/m0serve.mojo -o bin/m0serve-native || exit 1
 python3 scripts/relocate.py --no-id \
   --rpath '@loader_path' --rpath '@loader_path/../_lib' bin/m0serve-native || exit 1
-echo "built bin/m0serve-native (host CPU, host floor)"
+echo "built bin/m0serve-native (host CPU, host floor; mount: $mount_dir)"
 """
 
 [tool.poe.tasks.check-serve-portable]

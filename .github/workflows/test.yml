@@ -595,6 +595,11 @@ jobs:
       # a Django view uses, and a publish from Django reaches it (SPEC N11).
       - name: Smoke test an SSE hold from a Mojo mount
         run: uv run poe smoke-mojo-mount-hold
+      # An application's own Mojo mount, supplied as a module in its own
+      # directory and built into m0serve without copying the entry file;
+      # the demo's routes must be gone, not merely outnumbered (SPEC N14).
+      - name: Smoke test a Mojo mount supplied by module
+        run: uv run poe smoke-mount-seam
       # A stream held on a Mojo pool thread against a grant Django signed
       # into the URL: session-bound, expiring, rotatable (SPEC I21).
       - name: Smoke test the grant-verified hold mount
