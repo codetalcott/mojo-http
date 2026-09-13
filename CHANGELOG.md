@@ -8,6 +8,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **The weekly free-threaded canary hung on Linux in every run that reached
+  its last phase since 2026-08-23, and the hang was the gate's own shell.** Phase 2 of
+  `smoke-blocking-threads` (a handler pool behind each `--threads` loop,
+  run only on 3.14t) waited for its two slow requests with
+  `wait $(jobs -p | grep -v "^$pid$")`. poe runs shell tasks with `sh`,
+  which is dash on Linux, and dash gives a command substitution's subshell
+  no job table — so the list was empty, the `wait` was bare, and it waited
+  on the server until the phase watchdog fired. macOS's `sh` is bash, which
+  answers the list, so the macOS leg passed and the server was never at
+  fault: reproduced locally by running the task under `/bin/dash` against
+  3.14t (hung at the same line, SIGALRM at the deadline) and green in 20 s
+  with the pids recorded, as phase 1 already did. The phases proving SPEC
+  E5 and L18 passed, but the run both rows cite as their weekly evidence
+  was red for three weeks, which `poe milestones` cannot see. `check-docs`
+  now refuses `jobs` inside `$(...)` in any
+  task, with selftest cases that put the defect back into the committed
+  file, because `dash -n` parses the line without complaint.
+
 ## [1.3.0] — 2026-09-13
 
 A PostgreSQL binding, a second door onto the bus, and a mount an
