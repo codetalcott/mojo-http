@@ -3569,10 +3569,19 @@ curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.
 # that survives the worst placement -- both landing on the same loop still
 # leaves that loop two free threads -- so the row is not a coin flip on which
 # loop accepted what.
-for i in 1 2; do curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow & done
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+slow1=$!
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+slow2=$!
 sleep 0.4
 took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 http://127.0.0.1:8099/)
-wait $(jobs -p | grep -v "^$pid$") 2>/dev/null || true
+# By pid, as phase 1 does. This used to wait on `jobs -p` filtered of the
+# server's pid, read through a command substitution: that runs in a subshell,
+# which dash -- Linux's sh -- gives no job table, so the list came back empty
+# and the bare `wait` blocked on the server. Every Linux canary from 2026-08-23 to
+# 2026-09-13 hung here until the phase watchdog; bash's sh answers the list,
+# which is why macOS passed.
+wait $slow1 $slow2
 ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
 [ "$ms" -lt 400 ] || fail "under --threads, a fast request waited ${ms}ms behind two slow views"
 echo "threads+pool: fast request served in ${ms}ms with two 1.5s views in flight"

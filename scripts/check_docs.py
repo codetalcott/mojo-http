@@ -699,6 +699,50 @@ def check_pyproject_parses_for_consumers():
                     )
 
 
+# `jobs` as the first command of a `$(...)`. Backtick substitution is not
+# matched: this file's comments quote code in backticks constantly, and no
+# task uses backticks to substitute.
+_JOBS_IN_SUBSTITUTION = re.compile(r"\$\(\s*jobs\b")
+
+
+def jobs_in_substitutions(text):
+    """Every non-comment line of a triple-quoted string that reads `jobs` in `$(...)`.
+
+    Returns `line N: <text>` strings. A pure function of the file's text,
+    so the selftest can hand it the committed file with the defect put back.
+    """
+    found = []
+    for block in re.finditer(r'"""(.*?)"""', text, re.S):
+        first = text[: block.start()].count("\n") + 1
+        for offset, line in enumerate(block.group(1).split("\n")):
+            if line.lstrip().startswith("#"):
+                continue
+            if _JOBS_IN_SUBSTITUTION.search(line):
+                found.append(f"line {first + offset}: {line.strip()}")
+    return found
+
+
+def check_no_jobs_in_substitution():
+    """No poe shell task reads its job table through a command substitution.
+
+    poe runs `shell` tasks with `sh`, and on Linux that is dash. A command
+    substitution runs in a subshell, and dash gives that subshell no job
+    table, so `$(jobs -p)` is EMPTY there. bash, which macOS's sh is, answers
+    the list. `wait $(jobs -p | grep -v "^$pid$")` in smoke-blocking-threads
+    phase 2 was meant to wait for two curls; on Linux it became a bare
+    `wait` on the server and hung every free-threaded canary from 2026-08-23
+    until the phase watchdog killed it. `dash -n` parses the line happily,
+    so only a rule about the text can see it. Keep the pids: `x & p=$!`.
+    """
+    for hit in jobs_in_substitutions((REPO / "pyproject.toml").read_text()):
+        fail(
+            f"pyproject.toml {hit} -- `jobs` inside `$(...)` is empty under "
+            "dash (Linux's sh), so the list it feeds is empty too; a `wait` "
+            "given it waits for every background job, the server included. "
+            "Record each pid with `$!` and wait on those"
+        )
+
+
 def check_test_counts():
     """README's "What's in the box" table quotes a test count per package and a
     total, and the commands block quotes the total again; all of them are
@@ -1809,6 +1853,46 @@ def selftest():
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # The job-table rule: the line that hung the Linux canary, and the forms
+    # around it that must stay quiet. The last case puts the defect back into
+    # the committed file (phase 2's wait-by-pid is the LAST such wait in the
+    # task), with the NOT APPLICABLE discipline for a drifted anchor.
+    def task(body):
+        return f'[tool.poe.tasks.x]\nshell = """\n{body}\n"""\n'
+    jobs_cases = [
+        ("the wait that hung the Linux canary",
+         task('wait $(jobs -p | grep -v "^$pid$") 2>/dev/null || true'), True),
+        ("spaces inside the substitution",
+         task("for p in $( jobs -p ); do kill $p; done"), True),
+        ("(control: the job table read in the shell itself)",
+         task("jobs -p > pids.txt"), False),
+        ("(control: a comment inside the task quoting the form)",
+         task("# never `wait $(jobs -p)`: dash's subshell has no job table"), False),
+        ("(control: waiting on recorded pids)",
+         task("curl -s http://x/ &\nslow1=$!\nwait $slow1"), False),
+        ("(control: a command whose name only begins with jobs)",
+         task("n=$(jobstat --count)"), False),
+    ]
+    for label, text, must_fire in jobs_cases:
+        got = jobs_in_substitutions(text)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
+    real_pyproject = (REPO / "pyproject.toml").read_text()
+    good = not jobs_in_substitutions(real_pyproject)
+    print(f"  {'caught' if good else 'MISSED'}          (control: pyproject.toml as committed)")
+    ok &= good
+    anchor = "wait $slow1 $slow2"
+    if real_pyproject.count(anchor) < 2:
+        print("  MISSED          phase 2's wait reverted in pyproject.toml -- NOT APPLICABLE, "
+              f"expected two `{anchor}` lines")
+        ok = False
+    else:
+        head, _, tail = real_pyproject.rpartition(anchor)
+        reverted = head + 'wait $(jobs -p | grep -v "^$pid$") 2>/dev/null || true' + tail
+        good = bool(jobs_in_substitutions(reverted))
+        print(f"  {'caught' if good else 'MISSED'}          phase 2's wait reverted in pyproject.toml")
+        ok &= good
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -1840,6 +1924,7 @@ def main():
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
     check_pyproject_parses_for_consumers()
+    check_no_jobs_in_substitution()
     check_test_counts()
     check_backend_seam()
     check_spec_sheet()
