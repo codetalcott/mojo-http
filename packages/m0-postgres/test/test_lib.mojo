@@ -11,7 +11,9 @@ process die rather than the test fail, which is why the rules are written
 down in that module's docstring as well as here.
 """
 
+from std.ffi import OwnedDLHandle, c_int
 from std.os import getenv
+from std.python._cpython import ExternalFunction
 from std.testing import (
     TestSuite,
     assert_equal,
@@ -25,9 +27,14 @@ from src.lib import (
     PGRES_FATAL_ERROR,
     PgLib,
     ResultLib,
+    _checked,
     default_search_path,
-    required_symbols,
 )
+
+comptime _Getpid = ExternalFunction["getpid", def() thin abi("C") -> c_int]
+comptime _Absent = ExternalFunction[
+    "m0_pg_no_such_symbol", def() thin abi("C") -> c_int
+]
 
 
 def _moved_through_a_function() raises -> PgLib:
@@ -107,26 +114,51 @@ def test_a_result_table_outlives_the_handle_it_was_copied_from() raises:
     assert_equal(pq.result_status(0), PGRES_FATAL_ERROR)
 
 
-def test_every_symbol_the_table_loads_is_checked_first() raises:
-    """`load` aborts on a missing symbol, so the list is probed before use.
+def test_a_symbol_the_library_lacks_is_an_error_naming_it() raises:
+    """Every entry point is checked before it is loaded, in ONE place.
 
-    The list is what makes a libpq too old an error naming the symbol
-    rather than a stack trace with no cause in it. This asserts the list is
-    real and that the library actually has all of it — a drift between the
-    list and what `PgLib` loads would otherwise only show as an abort on
-    the machine missing that symbol.
+    `ExternalFunction.load` aborts the process on a missing symbol, and
+    statically so -- the compiler calls a `try` around it unreachable -- so
+    there is no recovering after the fact. `_checked` asks `check_symbol`
+    first and raises naming the symbol, which is what makes a libpq too old
+    an error a server operator can act on rather than a stack trace with no
+    cause in it. This drives both arms against the process image, because
+    the refusal is the half `PgLib.open()` succeeding cannot show.
+
+    It replaces a test that walked a `required_symbols()` list and asserted
+    the list was plausible. That list was a second source of truth beside
+    the declarations and the fields, nothing compared them, and an entry
+    point added without its list entry would have passed every gate here
+    and aborted on the first host whose libpq lacked it -- the one failure
+    the list existed to prevent. There is no list now: `_checked` takes the
+    name from the declaration it loads, so checked-but-not-loaded and
+    loaded-but-not-checked are both unspellable.
 
     covers: O9
     """
+    var image = OwnedDLHandle()
+
+    # The control, first: a symbol the process certainly has resolves and
+    # answers. Without it a `_checked` that raised unconditionally would
+    # pass the arm below.
+    var pid = _checked[_Getpid.name, _Getpid.type](image, String("<image>"))
+    assert_true(Int(pid()) > 0)
+
+    var raised = False
+    try:
+        var absent = _checked[_Absent.name, _Absent.type](
+            image, String("/some/where/libpq.so")
+        )
+        _ = absent
+    except e:
+        raised = True
+        var text = String(e)
+        assert_true("m0_pg_no_such_symbol" in text)
+        assert_true("/some/where/libpq.so" in text)
+    assert_true(raised)
+
+    # And the whole table still loads, which is the 32 checks passing.
     var lib = PgLib.open()
-    var names = required_symbols()
-    assert_true(len(names) >= 30)
-    assert_equal(names[0], "PQlibVersion")
-    # The handle is reopened rather than borrowed from `lib`, because
-    # `check_symbol` is the question this asks and `PgLib` does not expose
-    # its handle — deliberately, so nothing can outlive it.
-    for name in names:
-        assert_true(len(name.as_bytes()) > 2)
     assert_true(lib.libversion() > 0)
 
 

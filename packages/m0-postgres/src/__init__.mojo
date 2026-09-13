@@ -45,7 +45,6 @@ from .lib import (
     PGRES_TUPLES_OK,
     PgLib,
     default_search_path,
-    required_symbols,
 )
 from .conn import (
     Connection,

@@ -146,6 +146,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `methodsThatUseUrlParams` to `get` and the run records that the token
   travels in the body. Section N has no `planned` rows left.
 
+### Changed
+
+- **m0-postgres checks each libpq symbol where it loads it**, so the two
+  cannot drift. `PgLib` walked a hand-written `required_symbols()` list
+  before loading anything, because `ExternalFunction.load` aborts the
+  process on a missing symbol — but that list was a third source of truth
+  beside the declarations and the fields, and nothing compared them.
+  `test_every_symbol_the_table_loads_is_checked_first` asserted the list
+  was plausible, never that it matched what is loaded, so a 33rd entry
+  point added without its list entry passed every gate and would have
+  aborted on the first host whose libpq lacked it — the one failure the
+  list existed to prevent. A `_checked[name, T]` helper now takes the
+  symbol from the declaration it loads, and the list is gone along with
+  its export from `m0_postgres`. The replacement test drives both arms of
+  the refusal, which `PgLib.open()` succeeding cannot show; reverting the
+  check makes it abort rather than fail, the same evidentiary shape as the
+  two crash regressions beside it.
+
 ### Fixed
 
 - **A todo whose text is not UTF-8 no longer kills the server** (SPEC G14).
