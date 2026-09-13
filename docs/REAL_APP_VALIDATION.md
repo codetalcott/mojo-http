@@ -1,8 +1,8 @@
 # Exercising the server against real applications
 
-**A record. Last run 2026-09-10**, against m0serve 1.0.0 as merged at
-`a4f0aa5` — the 1.0.0 release — all four applications, six rows, in the
-newest section below. The full pass it re-runs was **2026-09-01 and
+**A record. Last run 2026-09-13**, against m0serve 1.3.0 on the release
+branch at `8c43979`, all four applications, six rows, in the newest section
+below. The full pass it re-runs was **2026-09-01 and
 2026-09-02**, against 0.16.0 (`bin/m0serve` from the tree at `c823198`),
 macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
 below and in the history of this file.
@@ -199,6 +199,66 @@ renews through the view when a grant expires — the browser side of that,
 gate yet. The application layer's own soak is unchanged and still NOT MET
 below: this is the server holding for textshelf, not textshelf on `Views`
 and `Fragment`.
+
+## Re-soak — 2026-09-13, against 1.3.0 on the release branch at `8c43979`, all four applications
+
+**The staleness rule is why this pass exists, and this time the code under
+it moved a great deal.** At 1.3.0 the 1.0.0 pass is three minors behind a
+limit of two, so `poe milestones` prints the soak STALE and the 1.0
+milestone stops being MET. Between the two passes the tree gained
+`m0-postgres` and a Postgres `NOTIFY` door onto the broadcast bus (O6–O16,
+I22), a Mojo mount an application supplies as a module (N14), sessions and
+CSRF behind a login (N13), the Datastar form (N12), and a fix for a
+splitter that a request could trap (G14). Only the last is on the request
+path of these four applications; the rest is reached by configuration none
+of them sets. So this pass asks the same question the others did — does
+somebody else's Django project still work, byte for byte, under churn —
+against a server whose surface grew rather than shifted.
+
+The checkouts under `/tmp/soak/` survived this time, which is unusual. Every
+reference capture was re-recorded first regardless: they dated from
+2026-09-10 and the rule is to re-baseline before each pass, because the
+soak's own traffic mutates the applications' databases and a stale capture
+fails on CONTENT, which reads as a server defect and is not one. textshelf
+ran against its scratch database `textshelf_soak`, never the adjacent dev
+database — the mistake a previous pass made, which put soak data into real
+developer data. `bin/m0serve` was built from the release branch and reports
+`m0serve 1.3.0`; CPython 3.13.6, macOS 26 on an M4. Raw driver outputs and
+the scripts that drove it are in `bench/soak/2026-09-13/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 29,989 | 0 | SIGTERM ×2, drains 136 ms max (window 685 ms) | 120.4 → 124.8 MB | 89 → 84 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions | 180 | 21,737 | 0 | SIGTERM ×2, drains 150 ms max (window 1219 ms) | 186.8 → 194.3 MB | 85 → 84 / 13 → 13 |
+| color-separation | WSGI, pool 8, uploads | 120 | 46,934 | 0 | SIGTERM ×1, drains 148 ms max (window 833 ms) | 985.8 MB → 1.43 GB (finding 6) | 141 → 156 / 18 → 18 |
+| color-separation | ASGI executor vs uvicorn | 90 | 18,701 | 0 | — | 1.21 → 1.51 GB (finding 6) | 132 → 133 / 23 → 32 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 72,311 | 0 | SIGTERM ×1, drains 82 ms max (window 1103 ms) | 174.6 → 169.8 MB | 103 → 87 / 16 → 17 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,484 | 0 | — | 491.9 → 191.8 MB (the startup transient) | 99 → 98 / 13 → 13 |
+
+**214,156 responses verified byte for byte, zero failures**, every sample
+reporting `failures=0` throughout. Descriptors and threads flat in every row
+but one: color-separation's ASGI row runs 23 → 32 threads (max 33), which is
+asgiref's thread pool filling under the executor, as the 2026-09-10 record
+says of the same row. The churn column reports the DRAIN, with the whole
+restart window beside it — 2026-09-10 reported drains alone, so reading this
+pass's window (1219 ms) against that pass's drain (0.26 s) would look like a
+regression and is not one: the drains here are 82–150 ms. The two color-separation rows carry the RSS the record has called the
+application's since 2026-09-10 (finding 6): gunicorn's two workers sum
+1.5–1.8 GB on the same workload. textshelf's WSGI row again shows the
+startup transient falling away rather than growth.
+
+**Nothing new was found on the wire.** The defect this release run did turn
+up was in the pre-release TOOLING rather than the server: the Linux
+container's build list never gained `postgres` after `m0-wsgi` began
+importing `m0_postgres` for `--pg-listen`, so `build-wsgi` could not build
+in the container at all and `stress-pool` failed before its first round.
+CI cannot see it — there is no such container there — which is the reason
+that tier exists. Fixed in the FOUR places that name the list: `scripts/probes/linux_sync.sh`,
+the `stress-pool` task, `scripts/bench_linux_conclusions.py` (which would
+have hit it next), and `scripts/probes/linux_setup.sh` — the last found in
+review, and the one that matters most, because it is what CREATES the
+container. Without it a fresh `m0lin` could not be built at all; this run
+escaped only because its container already existed.
 
 ## Re-soak — 2026-09-10, against 1.0.0 as merged at `a4f0aa5`, all four applications
 

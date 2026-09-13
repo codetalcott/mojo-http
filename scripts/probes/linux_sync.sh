@@ -73,7 +73,12 @@ echo "=== sources $got ${M0_SYNC_STAMP:+(matches the caller)} ==="
 # sources, and build-http then failed to resolve `HmacSha256` against an
 # m0_core.mojoc built weeks earlier. A stale artifact under a matching
 # stamp is the wrong answer this script exists to refuse.
-steps="${@:-core http datastar wsgi serve ffi}"
+# `postgres` sits before `wsgi` because m0-wsgi imports m0_postgres for
+# `--pg-listen` (SPEC I22): without it `build-wsgi` fails in the container
+# with "failed to parse" on `connect_with(PgLib.open(), ...)`, which is how
+# stress-pool broke the first time it ran after that landed. The order here
+# mirrors `build-all`.
+steps="${@:-core http datastar postgres wsgi serve ffi}"
 for s in $steps; do
   echo "=== build-$s ==="
   uv run poe "build-$s" 2>&1 | tail -3

@@ -8,6 +8,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-13
+
+A PostgreSQL binding, a second door onto the bus, and a mount an
+application brings itself.
+
 ### Added
 
 - **A gate on the `_ = x` keep-alives at the FFI sites.** Roughly thirty
@@ -165,6 +170,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   two crash regressions beside it.
 
 ### Fixed
+
+- **The Linux container could not build `m0-wsgi`**, so `stress-pool` and
+  `bench-linux-conclusions` — two pre-release gates — failed before their
+  first round. The container's build list never gained `postgres` after
+  `m0-wsgi` began importing `m0_postgres` for `--pg-listen`, and CI cannot
+  see it because there is no such container there. Found by the 1.3.0
+  release run; fixed in the four places that name the list, including the
+  setup script that creates the container, without which a fresh one could
+  not be built at all.
 
 - **A todo whose text is not UTF-8 no longer kills the server** (SPEC G14).
   `m0-datastar`'s `split_data_lines` is a deliberate copy of `m0-http`'s SSE
@@ -4208,6 +4222,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.3.0
 [1.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.2.0
 [1.1.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.1.0
 [1.0.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.0.0

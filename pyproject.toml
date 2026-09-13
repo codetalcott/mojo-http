@@ -1,6 +1,6 @@
 [project]
 name = "mojo-http"
-version = "1.2.0"
+version = "1.3.0"
 description = "HTTP server and web framework for Mojo — routing, content negotiation, SSE, and a maintained lightbug_http fork"
 authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.github.com" }]
 requires-python = ">=3.10"
@@ -5382,7 +5382,7 @@ tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin
 # container recipe -- rebuilds the wrong sources and this gate passes having
 # tested them.
 stamp=$(bash scripts/probes/source_stamp.sh) || exit 1
-docker exec -e M0_SYNC_STAMP="$stamp" "$c" bash /src/scripts/probes/linux_sync.sh core http datastar wsgi serve ffi || exit 1
+docker exec -e M0_SYNC_STAMP="$stamp" "$c" bash /src/scripts/probes/linux_sync.sh core http datastar postgres wsgi serve ffi || exit 1
 for mode in $modes; do
   case $mode in
     elastic)  envs="M0_POOL_ELASTIC=1" ;;

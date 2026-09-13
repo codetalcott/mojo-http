@@ -234,7 +234,10 @@ def main():
     # installs packages and nothing else, so on a remote host every m0_http
     # source failed with "unable to locate module 'm0_core'". Building it
     # always costs seconds and makes the two paths identical.
-    dexec("bash", "/src/scripts/probes/linux_sync.sh", "core", "http", "wsgi", "serve",
+    # `postgres` before `wsgi`: m0-wsgi imports m0_postgres for --pg-listen,
+    # so build-wsgi cannot resolve it otherwise (measured as a container
+    # build failure, 2026-09-13).
+    dexec("bash", "/src/scripts/probes/linux_sync.sh", "core", "http", "postgres", "wsgi", "serve",
           env={"M0_SYNC_STAMP": s})
     dexec("bash", "-c", "command -v wrk >/dev/null || (apt-get update -qq && apt-get install -y -qq wrk) >/dev/null 2>&1")
     dexec("bash", "-c", "cd /work && uv sync --group bench >/dev/null 2>&1 || true")

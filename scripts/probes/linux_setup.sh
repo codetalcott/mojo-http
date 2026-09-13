@@ -46,6 +46,12 @@ uv sync 2>&1 | tail -2
 echo "=== builds ==="
 uv run poe build-core
 uv run poe build-http
+# `postgres` before `wsgi`: m0-wsgi imports m0_postgres for --pg-listen, and
+# `build-wsgi` is a bare shell task with no poe deps, so nothing else builds
+# it. Without this a FRESH container cannot be created at all -- it fails on
+# `connect_with(PgLib.open(), ...)`, the same failure that stopped
+# stress-pool. `linux_sync.sh` keeps the same order for the same reason.
+uv run poe build-postgres
 uv run poe build-wsgi
 uv run poe build-serve
 echo "=== doctor ==="
