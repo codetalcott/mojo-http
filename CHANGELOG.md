@@ -8,6 +8,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-13
+
+A PostgreSQL binding, a second door onto the bus, and a mount an
+application brings itself.
+
 ### Added
 
 - **An application's own Mojo mount, without copying `m0serve.mojo`** (SPEC
@@ -4178,6 +4183,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.3.0
 [1.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.2.0
 [1.1.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.1.0
 [1.0.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.0.0
