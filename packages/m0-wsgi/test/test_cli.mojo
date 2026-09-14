@@ -30,6 +30,8 @@ from src.cli import (
     parse_cgroup_v1_quota,
     discovery_specs,
     match_mount,
+    compiled_mount_threads_needed,
+    wsgi_lanes_unserved,
     DEFAULT_PORT,
     M0SERVE_VERSION,
     MAX_AUTO_BLOCKING_THREADS,
@@ -901,6 +903,99 @@ def test_unmounted_asgi_still_takes_the_executor() raises:
     var opts = _parse([String("main:app")])
     opts.blocking_threads = 0
     assert_true(use_asgi_executor(opts, True))
+
+
+def _mounts(specs: List[String]) raises -> ServeOptions:
+    """`--mount` once per spec, in order: `/a=x.wsgi`, `/native=mojo`."""
+    var args = List[String]()
+    for i in range(len(specs)):
+        args.append(String("--mount"))
+        args.append(specs[i])
+    return _parse(args)
+
+
+def test_resolve_blocking_threads_never_deals_fewer_threads_than_mounts() raises:
+    """Each thread parks on ONE lane, so a zero-config pool smaller than its
+    lane count left a mount with no thread: two WSGI mounts on one core, or
+    ten on an eight-core host where the default caps at eight."""
+    var two = _mounts([String("/a=x.wsgi"), String("/b=y.wsgi")])
+    assert_equal(resolve_blocking_threads(two, False, 1), 2)
+    assert_equal(resolve_blocking_threads(two, False, 4), 4)
+    var specs = List[String]()
+    for i in range(10):
+        specs.append("/m" + String(i) + "=x.wsgi")
+    var ten = _mounts(specs)
+    assert_equal(resolve_blocking_threads(ten, False, 8), 10)
+
+
+def test_resolve_blocking_threads_gives_a_mojo_mount_beside_asgi_its_threads() raises:
+    """An ASGI mount beside a Mojo one answered 0 here, which started
+    `MojoPool(0)`: the ASGI mount served and every request to the Mojo mount
+    hung. The Mojo mount's threads are sized by this same number."""
+    var opts = _mounts([String("/=main:app"), String("/native=mojo")])
+    opts.asgi_mounts.append(0)
+    assert_equal(resolve_blocking_threads(opts, True, 4), 4)
+    var holds = _mounts(
+        [String("/=main:app"), String("/a=hold"), String("/b=hold")]
+    )
+    holds.asgi_mounts.append(0)
+    assert_equal(resolve_blocking_threads(holds, True, 1), 2)
+    # Nothing that needs a thread: ASGI mounts alone still get no pool.
+    var asgi = _mounts([String("/=main:app"), String("/b=other:app")])
+    asgi.asgi_mounts.append(0)
+    asgi.asgi_mounts.append(1)
+    assert_equal(resolve_blocking_threads(asgi, True, 4), 0)
+
+
+def test_explicit_topology_still_wins_over_the_mount_count() raises:
+    """The resolver decides DEFAULTS; an explicit value too small for the
+    mounts is refused by m0serve, never silently raised here."""
+    var args = List[String]()
+    args.append(String("--mount"))
+    args.append(String("/a=x.wsgi"))
+    args.append(String("--mount"))
+    args.append(String("/b=y.wsgi"))
+    args.append(String("--blocking-threads"))
+    args.append(String("1"))
+    assert_equal(resolve_blocking_threads(_parse(args), False, 4), 1)
+
+
+def test_compiled_mount_threads_needed_is_the_larger_kind() raises:
+    """One `MojoPool` per kind, each dealt over its own lanes."""
+    assert_equal(compiled_mount_threads_needed(_mounts([String("/=x.wsgi")])), 0)
+    var mixed = _mounts(
+        [
+            String("/=x.wsgi"),
+            String("/n=mojo"),
+            String("/s=hold"),
+            String("/t=hold"),
+        ]
+    )
+    assert_equal(compiled_mount_threads_needed(mixed), 2)
+
+
+def test_wsgi_lanes_unserved_only_on_the_offloaded_loop() raises:
+    """Inline, the loop's handler answers every WSGI mount itself and zero
+    threads is fine; on the offloaded loop -- an ASGI mount or a pool -- a
+    WSGI lane without a thread never answers."""
+    var unmounted = _parse([String("x.wsgi")])
+    assert_equal(wsgi_lanes_unserved(unmounted, False, 0), 0)
+    var two = _mounts([String("/a=x.wsgi"), String("/b=y.wsgi")])
+    assert_equal(wsgi_lanes_unserved(two, False, 0), 0)
+    assert_equal(wsgi_lanes_unserved(two, False, 1), 1)
+    assert_equal(wsgi_lanes_unserved(two, False, 2), 0)
+    # Beside an ASGI mount the loop always offloads, pool or not.
+    var mixed = _mounts([String("/=x.wsgi"), String("/live=main:app")])
+    mixed.asgi_mounts.append(1)
+    assert_equal(wsgi_lanes_unserved(mixed, True, 0), 1)
+    assert_equal(wsgi_lanes_unserved(mixed, True, 1), 0)
+    # A compiled lane is not a WSGI lane and is not counted.
+    var native = _mounts([String("/=x.wsgi"), String("/n=mojo")])
+    assert_equal(wsgi_lanes_unserved(native, False, 1), 0)
+    # No WSGI mount at all: nothing to leave unserved.
+    var asgi = _mounts([String("/=main:app")])
+    asgi.asgi_mounts.append(0)
+    assert_equal(wsgi_lanes_unserved(asgi, True, 0), 0)
 
 
 def test_served_names_every_mount() raises:

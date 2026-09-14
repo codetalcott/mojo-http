@@ -88,6 +88,7 @@ from m0_wsgi import (
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
     hold_lanes, is_compiled_mount, has_python_mount,
+    compiled_mount_threads_needed, wsgi_lanes_unserved,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     use_loop_inversion,
     asgi_free_threading_refusal,
@@ -274,6 +275,112 @@ comptime _HOLD_MOUNT_NEEDS_KEY = (
     "--mount PREFIX=hold needs M0_GRANT_KEY: the mount verifies grants the"
     " application signed with it (32 random bytes; openssl rand -base64 32)"
 )
+comptime _MOUNTS_WITHOUT_PYTHON = (
+    "every --mount is 'mojo' or 'hold', so there is no Python application to"
+    " host; write a Mojo server binary instead of using m0serve"
+)
+comptime _COMPILED_MOUNT_UNDER_THREADS = (
+    "--mount PREFIX=mojo and PREFIX=hold are not served under --threads: the"
+    " threaded loops start no Mojo pool, so the mount would never answer"
+)
+
+
+struct MountRefusal(Copyable, Movable):
+    """A mount configuration `main` refuses before it binds, and why.
+
+    One value for both callers, so `main` and `--doctor` cannot disagree
+    about which refusal a configuration hits first: `_mount_refusal` is the
+    order, and each of them only renders it.
+    """
+
+    var check: String
+    var message: String
+    var hint: String
+
+    def __init__(out self, check: String, message: String, hint: String):
+        self.check = check
+        self.message = message
+        self.hint = hint
+
+
+def _mount_refusal(opts: ServeOptions) -> Optional[MountRefusal]:
+    """The first mount refusal decidable from the flags alone, or None.
+
+    Every one of these runs BEFORE the bind and the fork. They used to run
+    after the resolve, inside each worker, so under `--workers N` every
+    child refused, the supervisor respawned them, and the process ended in
+    "5 rapid crashes" with exit 1 -- a usage error read as a crash loop, the
+    shape `--pg-listen`'s refusals had until they moved before the fork. None of
+    them needs an interpreter: a compiled mount's kind is in its spec.
+
+    The last two are new. A compiled mount under `--threads` was accepted
+    and never served, since the threaded loops start no `MojoPool`; and an
+    explicit topology that gives compiled mounts no thread (`--workers N`,
+    `--blocking-threads 0`) either served them inline, where the loop's
+    handler knows only the Python mounts and a request under `/native` fell
+    through to the root application, or started a `MojoPool` of fewer
+    threads than lanes, which leaves a lane nothing reads.
+    """
+    if len(opts.mount_prefixes) == 0:
+        return None
+    if not has_python_mount(opts):
+        # m0serve exists to host Python; `WSGIHandler.build` would have no
+        # application to build. `apps/pool_spike` is the Mojo server shape.
+        return MountRefusal(
+            String("mounts-without-python"),
+            String(_MOUNTS_WITHOUT_PYTHON),
+            String(
+                "mount a Python application beside it, or build a Mojo"
+                " server binary (apps/pool_spike is the shape)"
+            ),
+        )
+    if len(opts.hold_mounts) > 0 and not opts.realtime:
+        return MountRefusal(
+            String("hold-mount-vs-realtime"),
+            String(_HOLD_MOUNT_NEEDS_REALTIME),
+            String("add --realtime"),
+        )
+    if len(opts.hold_mounts) > 0 and getenv(GRANT_KEY_ENV, "").byte_length() == 0:
+        return MountRefusal(
+            String("hold-mount-key"),
+            String(_HOLD_MOUNT_NEEDS_KEY),
+            String("export M0_GRANT_KEY, the same value the application signs with"),
+        )
+    var needed = compiled_mount_threads_needed(opts)
+    if needed == 0:
+        return None
+    if opts.threads > 1:
+        return MountRefusal(
+            String("compiled-mount-vs-threads"),
+            String(_COMPILED_MOUNT_UNDER_THREADS),
+            String("serve with --workers N instead of --threads"),
+        )
+    if not zero_config_topology(opts) and opts.blocking_threads < needed:
+        return MountRefusal(
+            String("compiled-mount-threads"),
+            "--mount PREFIX=mojo and PREFIX=hold are served by handler threads,"
+            + " one per mount of a kind, and --blocking-threads is "
+            + String(opts.blocking_threads) + " where these mounts need "
+            + String(needed) + ": a lane with no thread never answers. An"
+            + " explicit --workers, --threads or --blocking-threads turns the"
+            + " zero-config pool off",
+            "add --blocking-threads " + String(needed) + " or more",
+        )
+    return None
+
+
+def _wsgi_lanes_unserved_message(unserved: Int, blocking_threads: Int) -> String:
+    """The 78 `main` exits with when detection leaves a WSGI mount no thread."""
+    return (
+        String(unserved) + " WSGI mount(s) would have no handler thread:"
+        + " beside an ASGI mount or a handler pool every mount is served from"
+        + " its own lane, and --blocking-threads " + String(blocking_threads)
+        + " deals too few threads to give each WSGI mount one, so its"
+        + " requests would never be answered. An explicit --workers, --threads"
+        + " or --blocking-threads turns the zero-config pool off"
+    )
+
+
 comptime _PG_LISTEN_NEEDS_REALTIME = (
     "--pg-listen needs --realtime: the flag is what creates the broadcast bus"
     " and the subscriber registries, and a listener with nothing to publish"
@@ -799,26 +906,18 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
                     String("set M0_LIBPQ, or install a libpq where it can be found"),
                     EXIT_CONFIG,
                 )
-    if len(opts.hold_mounts) > 0:
-        if not opts.realtime:
-            report.fail_check(
-                String("hold-mount-vs-realtime"),
-                String(_HOLD_MOUNT_NEEDS_REALTIME),
-                String("add --realtime"),
-                EXIT_USAGE,
-            )
-        elif getenv(GRANT_KEY_ENV, "").byte_length() == 0:
-            report.fail_check(
-                String("hold-mount-key"),
-                String(_HOLD_MOUNT_NEEDS_KEY),
-                String("export M0_GRANT_KEY, the same value the application signs with"),
-                EXIT_USAGE,
-            )
-        else:
-            report.pass_check(
-                String("hold-mount"),
-                String("--realtime is on and M0_GRANT_KEY is set"),
-            )
+    # The same function `main` refuses by, so the order cannot drift.
+    var mount_refusal = _mount_refusal(opts)
+    if mount_refusal:
+        ref refused = mount_refusal.value()
+        report.fail_check(
+            refused.check, refused.message, refused.hint, EXIT_USAGE
+        )
+    elif len(opts.hold_mounts) > 0:
+        report.pass_check(
+            String("hold-mount"),
+            String("--realtime is on and M0_GRANT_KEY is set"),
+        )
 
 
 def _run_doctor(mut opts: ServeOptions) -> Int:
@@ -1103,6 +1202,17 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
                     )
             except:
                 pass
+        # The refusal main makes next, also at 78: a WSGI mount the resolved
+        # pool leaves with no thread on its lane.
+        var unserved = wsgi_lanes_unserved(opts, executor, blocking)
+        if unserved > 0:
+            report.fail_check(
+                String("wsgi-mount-threads"),
+                _wsgi_lanes_unserved_message(unserved, blocking),
+                "add --blocking-threads "
+                + String(len(wsgi_lanes(opts))) + " or more",
+                EXIT_CONFIG,
+            )
         var mode: String
         if opts.threads > 1:
             mode = String("threads")
@@ -1248,6 +1358,14 @@ def main() raises:
             _fail(String(e), EXIT_CONFIG)
             return
 
+    # The mount refusals decidable from the flags, before the bind and the
+    # fork for the same reason as the pg-listen pair above. `--doctor` asks
+    # the same function at the same point in its order.
+    var mount_refusal = _mount_refusal(opts)
+    if mount_refusal:
+        _fail(mount_refusal.value().message, EXIT_USAGE)
+        return
+
     # Bind before forking; every worker accepts from this one socket.
     var listener = _listen_or_fail(opts)
 
@@ -1344,28 +1462,6 @@ def main() raises:
         )
         return
 
-    if len(opts.mount_prefixes) > 0 and not has_python_mount(opts):
-        # Every mount is compiled in (`mojo`, `hold`), so this binary is
-        # hosting no Python at all — and m0serve exists to host Python.
-        # Write a Mojo server binary instead; `apps/pool_spike` is the
-        # shape. Refused rather than served, because `WSGIHandler.build`
-        # has no application to build and the process would carry an
-        # interpreter for nothing.
-        _fail(
-            "every --mount is 'mojo' or 'hold', so there is no Python"
-            " application to host; write a Mojo server binary instead of"
-            " using m0serve",
-            EXIT_USAGE,
-        )
-        return
-
-    if len(opts.hold_mounts) > 0 and not opts.realtime:
-        _fail(_HOLD_MOUNT_NEEDS_REALTIME, EXIT_USAGE)
-        return
-    if len(opts.hold_mounts) > 0 and getenv(GRANT_KEY_ENV, "").byte_length() == 0:
-        _fail(_HOLD_MOUNT_NEEDS_KEY, EXIT_USAGE)
-        return
-
     if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
 
@@ -1380,6 +1476,15 @@ def main() raises:
     )
     var executor_mode = use_asgi_executor(opts, is_asgi)
     _refuse_executor_on_free_threaded(executor_mode)
+    # Needs detection, so it runs here, in the worker -- at 78, which the
+    # supervisor stops on rather than respawning (E10).
+    var unserved = wsgi_lanes_unserved(opts, executor_mode, opts.blocking_threads)
+    if unserved > 0:
+        _fail(
+            _wsgi_lanes_unserved_message(unserved, opts.blocking_threads),
+            EXIT_CONFIG,
+        )
+        return
     # In executor mode the loop's own handler is the queue-overflow
     # fallback: its bridge gets a loop but no lifespan, so the executor's
     # app owns the one lifespan this process runs. Its registries do size
@@ -1847,6 +1952,15 @@ def _serve_threaded(
     # run on one: an ASGI application under --threads is refused here on
     # this toolchain, whatever the thread count.
     _refuse_executor_on_free_threaded(executor_mode)
+    # Each loop deals its --blocking-threads over the WSGI lanes exactly as
+    # prefork's does, so the same shortfall leaves the same mount unserved.
+    var unserved = wsgi_lanes_unserved(opts, executor_mode, opts.blocking_threads)
+    if unserved > 0:
+        _fail(
+            _wsgi_lanes_unserved_message(unserved, opts.blocking_threads),
+            EXIT_CONFIG,
+        )
+        return
     # Each serving thread's own loop handler is only the fallback in
     # executor mode; the one lifespan per loop belongs to that loop's
     # executor. Registries size up for the chunk outboxes — the executor's

@@ -1415,7 +1415,15 @@
       "category": "M. Deployment and operations",
       "capability": "A mount answered by a compiled-in Mojo handler, with no Python in its request path: `--mount PREFIX=mojo`, served by `MojoPool` threads on the mount's own lane",
       "status": "verified",
-      "evidence": "`Smoke test a Mojo mount beside a Python one` (every PR) \u2014 both mounts answer and the Mojo one names the pool thread that served it; `/nativeapp` is not swallowed by `/native`; a mojo-only mounted server exits 2, because a Python host with no Python to host is asking for nothing; SIGTERM exits within 10 s with a Mojo lane live, asserted as an exit because the failure mode is a hung join rather than an error; and under eight GIL-bound connections `scripts/mojo_mount_probe.py` requires the Mojo mount's p99 to stay inside 25 ms AND to beat the Python route's by 3x, which a shared execution mode cannot do \u2014 pointing the probe's mojo-path option at a Python route is the negative arm and fails on both assertions"
+      "evidence": "`Smoke test a Mojo mount beside a Python one` (every PR) \u2014 both mounts answer and the Mojo one names the pool thread that served it; `/nativeapp` is not swallowed by `/native`; a mojo-only mounted server exits 2, because a Python host with no Python to host is asking for nothing; SIGTERM exits within 10 s with a Mojo lane live, asserted as an exit because the failure mode is a hung join rather than an error; and under eight GIL-bound connections `scripts/mojo_mount_probe.py` requires the Mojo mount's p99 to stay inside 25 ms AND to beat the Python route's by 3x, which a shared execution mode cannot do \u2014 pointing the probe's mojo-path option at a Python route is the negative arm and fails on both assertions; and beside an ASGI mount with no topology flags the Mojo mount answers within 5 s, which it never did before M20"
+    },
+    {
+      "id": "M20",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "A mount set that some mount could not be served in is refused, never started half-served. Refusals decidable from the flags exit 2 before the bind and the fork, identically in `--doctor`: only compiled mounts, a hold mount without `--realtime` or `M0_GRANT_KEY`, a compiled mount under `--threads`, and a compiled mount that an explicit topology leaves with fewer threads than mounts of its kind. A WSGI mount left with no handler thread on the offloaded loop exits 78 after detection, which the supervisor does not respawn. Zero config gives every mount a thread",
+      "status": "verified",
+      "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 eight mount rows, each required to agree with the doctor AND to exit a named code: five 2s (three under `--workers 2`, where the old placement crash-looped to exit 1), two 78s, and a pooled prefork Mojo mount that serves. Before: a Mojo mount with no pool served, misrouted to the root application; one thread for two WSGI mounts or an ASGI mount beside a Mojo one left a mount hanging; the zero-config half is `test_cli.mojo:test_resolve_blocking_threads_never_deals_fewer_threads_than_mounts`. Not covered: an unmatched path on a server whose first mount is ASGI still reaches that application rather than the server's 404"
     },
     {
       "id": "N1",

@@ -575,8 +575,29 @@ def resolve_blocking_threads(
         return 0
     if len(opts.mount_prefixes) > 0:
         # Counted, not inferred by subtraction: a Mojo mount is neither
-        # ASGI nor WSGI and must not conjure a pool of WSGI handler threads.
-        return default_blocking_threads(cpus) if has_wsgi_mount(opts) else 0
+        # ASGI nor WSGI and must not conjure a pool of WSGI handler threads
+        # -- `_serve_offloaded` starts none when no mount is WSGI. It does
+        # need threads of its own, though, and those are sized by this same
+        # number: an ASGI mount beside a Mojo one used to answer 0 here,
+        # start `MojoPool(0)`, and leave every request to the Mojo mount
+        # parked on a lane nothing reads.
+        #
+        # And never fewer threads than mounts of a kind. Each thread parks
+        # on ONE lane, dealt round-robin, so a pool smaller than its lane
+        # count leaves a mount with no thread at all -- ten WSGI mounts on
+        # an eight-core host, or two on one core. The cap on the default is
+        # about waiting parallelism; it cannot be allowed to decide that a
+        # mount is never served.
+        var wsgi = len(wsgi_lanes(opts))
+        var compiled = compiled_mount_threads_needed(opts)
+        if wsgi == 0 and compiled == 0:
+            return 0
+        var n = default_blocking_threads(cpus)
+        if wsgi > n:
+            n = wsgi
+        if compiled > n:
+            n = compiled
+        return n
     if is_asgi:
         return 0
     return default_blocking_threads(cpus)
@@ -712,6 +733,55 @@ def has_python_mount(opts: ServeOptions) -> Bool:
 def has_wsgi_mount(opts: ServeOptions) -> Bool:
     """Whether any mount is WSGI — asked positively, see `wsgi_lanes`."""
     return len(wsgi_lanes(opts)) > 0
+
+
+def compiled_mount_threads_needed(opts: ServeOptions) -> Int:
+    """The fewest `--blocking-threads` that leave no compiled mount unserved.
+
+    The `mojo` mounts get one `MojoPool` and the `hold` mounts another, each
+    of `--blocking-threads` threads dealt round-robin over its own lanes,
+    and a thread parks on exactly one lane. So a kind with K mounts needs K
+    threads, and the answer is the larger kind's count. Known from the
+    flags alone -- a compiled mount is never detected -- which is what lets
+    the refusal built on it run before the fork.
+    """
+    var n = len(opts.mojo_mounts)
+    if len(opts.hold_mounts) > n:
+        n = len(opts.hold_mounts)
+    return n
+
+
+def wsgi_lanes_unserved(
+    opts: ServeOptions, executor: Bool, blocking_threads: Int
+) -> Int:
+    """How many WSGI mounts would have no handler thread to serve them.
+
+    Only a mounted server on the offloaded loop has lanes to leave empty:
+    that is any mount set with an ASGI mount (`executor`) or a pool
+    (`blocking_threads > 0`). Without either, the loop's own handler
+    answers every WSGI mount inline through `app_for`, and zero threads is
+    the configuration rather than a hole in it.
+
+    On the offloaded loop the pool's threads are dealt round-robin over the
+    WSGI lanes and a job submitted to a lane with no thread is never taken:
+    the request hangs to the client's timeout, and the slot is never swept
+    because a job is in flight on it. Measured before this check existed
+    with `--blocking-threads 1` and two WSGI mounts (the second never
+    answered) and with an ASGI mount beside a WSGI one under `--workers 2`
+    (the WSGI mount never answered). Needs detection, since which mounts
+    are WSGI is decided by importing them, so `main` asks after the resolve
+    and refuses with `EXIT_CONFIG`, which the supervisor does not respawn.
+    """
+    if len(opts.mount_prefixes) == 0:
+        return 0
+    var wsgi = len(wsgi_lanes(opts))
+    if wsgi == 0:
+        return 0
+    if not executor and blocking_threads == 0:
+        return 0
+    if blocking_threads >= wsgi:
+        return 0
+    return wsgi - blocking_threads
 
 
 def asgi_mount_names(opts: ServeOptions) -> String:
