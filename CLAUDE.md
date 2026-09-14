@@ -1359,10 +1359,17 @@ Properties of the design, not defects to fix in passing:
 - **Server-initiated work goes through the `tick` hook** (`M0_APP_TICK_MS`,
   0 = off). It runs ON the event loop thread — a slow tick stalls every
   connection — and handlers with slower cadences sub-schedule off `now_ms`
-  (see the counter's uptime clock). Under `M0_WORKERS>1` every worker
-  ticks; an app that must act once per interval designates an owner (the
-  counter uses worker 0) and lets the bus carry the result. All loop
-  timers (tick, SSE heartbeat) are one-shot on both backends, so the
+  (see the counter's uptime clock). What costs is the DUTY CYCLE, work over
+  period: retention tracks `1 - duty` and the work transfers into p99 about
+  one for one, so under 5% is noise, 25% costs a fifth of the throughput
+  and 50% costs half; a rare expensive tick hides, leaving p50 and p99
+  healthy and showing only in the maximum. Schedule from the tick, do not
+  work in it — periodic work with a real budget goes on a thread of its
+  own, publishing through the `BroadcastBus` as `--pg-listen`'s listener
+  does, which the loop drains into `sse_peer_frame`. Under `M0_WORKERS>1`
+  every worker ticks; an app that must act once per interval designates an
+  owner (the counter uses worker 0) and lets the bus carry the result. All
+  loop timers (tick, SSE heartbeat) are one-shot on both backends, so the
   firing handler re-arms FIRST — on epoll the re-arm is also what clears
   the fired timerfd's readability, and skipping it is a level-triggered
   event storm.
