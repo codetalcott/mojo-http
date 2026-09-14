@@ -7,6 +7,7 @@ measurement in `scripts/pool_spike_probe.py` against a live server.
 """
 
 from std.ffi import c_int, external_call
+from std.os import setenv
 from std.testing import TestSuite, assert_equal, assert_true
 from std.time import perf_counter_ns
 
@@ -308,10 +309,35 @@ def test_a_hold_sends_the_loop_its_frame_and_completes_with_the_head() raises:
 
 
 def test_stop_and_join_ends_every_thread() raises:
-    """One pill per thread — a miscount is a hung join, not a slow one."""
+    """One pill per thread — a miscount is a hung join, not a slow one.
+
+    Stopped the instant it starts, which is what caught registration placed
+    in the thread body: a thread that registered after `stop` ran parked on
+    its own channel while its pill sat on the lane socket."""
     var pool = OffloadPool(8)
     var threads = MojoPool(4)
     threads.start[EchoHandler](pool.addr())
+    assert_equal(pool.thread_count(0), 4)
+    var failed = threads.stop_and_join(pool, 5_000_000_000)
+    assert_equal(failed, 0)
+    assert_equal(threads.stragglers, 0)
+
+
+def test_stop_and_join_ends_every_thread_that_could_not_register() raises:
+    """The same, for threads with no wake record of their own.
+
+    A registered thread is pilled BY NAME on its own channel, whatever count
+    `stop` is given, so the test above cannot see a pill count one short.
+    Threads without a record — the eager rules (`M0_POOL_ELASTIC=0`), or a
+    reservation exhausted — still park on the lane socket and still need
+    exactly one pill each there, and on Linux a thread short of one blocks
+    in `recv` forever. `sabotage-pool`'s "one pill too few" is caught here."""
+    _ = setenv("M0_POOL_ELASTIC", "0", True)
+    var pool = OffloadPool(8)
+    _ = setenv("M0_POOL_ELASTIC", "", True)
+    var threads = MojoPool(4)
+    threads.start[EchoHandler](pool.addr())
+    assert_equal(pool.registered_threads(), 0)
     var failed = threads.stop_and_join(pool, 5_000_000_000)
     assert_equal(failed, 0)
     assert_equal(threads.stragglers, 0)

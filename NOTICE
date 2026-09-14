@@ -515,6 +515,14 @@ lightbug_http
         <slot>[/<lane>]` builder the frame uses, beside the predicate that
         refuses that namespace at every publish boundary
         (docs/notes/hold-from-a-mojo-mount.md).
+      - mojo_pool.mojo (2026-09-14): `MojoPool` threads register on their
+        lane (`OffloadPool.register_thread`, on the spawning thread in
+        `start`, so a `stop` that races the start still pills each by name),
+        pass their id to `next_job` so they park on a wake channel of their
+        own, and unregister on exit; `start` reserves wake records for its
+        threads. Unregistered, the elastic wake rules read the lane as every
+        thread parked and woke a sibling on nearly every push: 202k wakes and
+        a fifth of the throughput at eight threads on a trivial route.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

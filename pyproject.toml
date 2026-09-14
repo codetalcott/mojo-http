@@ -4413,6 +4413,27 @@ for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
 pid=
 
+# The Mojo pool's threads count on their lane (SPEC M22). They did not: the
+# lane read as every thread parked whenever its one awake thread was busy, so
+# nearly every push woke a sibling -- 202k wakes at eight threads where one
+# thread took 65k, and 20 % fewer requests on more CPU. A count, not a
+# timing: `stop` prints each lane's registered threads under M0_POOL_DEBUG,
+# lane 1 is the Mojo mount, and before the fix it said 0.
+M0_POOL_DEBUG=1 "$srv" --mount /=bareapp.wsgi --mount /native=mojo \
+  --app-dir apps/wsgi_bare --port $P --blocking-threads 4 > mojomount.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/native/probe > /dev/null \
+  || fail "the pool-debug server never became healthy"
+for _ in 1 2 3 4 5 6 7 8; do curl -s --max-time 5 $B/native/probe > /dev/null; done
+kill -TERM $pid
+for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "the pool-debug server did not exit within 10s of SIGTERM"; fi
+pid=
+grep -q 'pool lane 1: .*threads 4$' mojomount.log \
+  || fail "the Mojo lane did not report its 4 threads registered: $(grep 'pool lane' mojomount.log)"
+grep -q 'pool lane 0: .*threads 4$' mojomount.log \
+  || fail "the WSGI lane did not report its 4 threads: $(grep 'pool lane' mojomount.log)"
+
 # Beside an ASGI mount, zero-config. The pool size used to come from "is any
 # mount WSGI", which answered no, so the Mojo mount got `MojoPool(0)`: the
 # ASGI mount served and every request to the Mojo one hung on a lane nothing
@@ -4455,6 +4476,7 @@ echo "smoke-mojo-mount OK"
 python3 scripts/emit.py --covers M19 --task smoke-mojo-mount
 python3 scripts/emit.py --covers N9 --task smoke-mojo-mount
 python3 scripts/emit.py --covers M20 --task smoke-mojo-mount
+python3 scripts/emit.py --covers M22 --task smoke-mojo-mount
 """
 
 [tool.poe.tasks.smoke-fasthtml]

@@ -39,7 +39,11 @@ IS_LINUX = platform.system() == "Linux"
 # lane 0's write end wakes a blocked `recv` on macOS and does not on Linux
 # (`OffloadPool.stop`'s docstring, which records the 20-minute CI timeout that
 # established it). So a missing pill strands a thread only on Linux, where CI
-# runs this file too.
+# runs this file too. Since Mojo pool threads register (SPEC M22) a
+# registered thread is pilled by name whatever count `stop` is given, so the
+# pill count is caught by `test_stop_and_join_ends_every_thread_that_could_not_register`,
+# which builds its pool under `M0_POOL_ELASTIC=0` to keep the threads on the
+# lane socket where the count is load-bearing.
 SABOTAGES = [
     (
         "completion never sent (the loop waits forever)",

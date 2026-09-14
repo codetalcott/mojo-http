@@ -10,6 +10,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A Mojo mount no longer slows down as its handler pool grows** (SPEC
+  M22). `MojoPool` threads never registered on their lane, so the pool's
+  elastic wake rules read the lane as "every thread parked" whenever its
+  one awake thread was busy, and `submit` woke a sibling on nearly every
+  request. The reservation of per-thread wake channels was also sized for
+  the WSGI pool alone. On `/native/probe` at 16 connections beside a WSGI
+  mount, the zero-config eight threads served 104k rps on 2.04 cores
+  (202k lane wakes); with one thread, 132k on 1.42. Mojo pool threads now
+  register, park on their own channels and unregister on exit, and
+  `_serve_offloaded` reserves records for every pool before starting any.
+  Eight threads now serve 133k rps on 1.35 cores with 61k wakes, which
+  beats the WSGI route beside it per core.
+
 - **A path no mount claims gets the server's own 404, whatever the first
   mount is** (SPEC M21). The loop sends a path that matches no mount to
   the first mount's lane, and only a WSGI pool thread checked the path

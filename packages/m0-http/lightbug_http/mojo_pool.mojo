@@ -83,6 +83,10 @@ comptime BLK_POOL = 7
 """Block slot holding the `OffloadPool`'s address. Same slot the WSGI pool
 uses, and for the same reason: `BLK_INTS` is 8, so 7 is the last one free."""
 
+comptime BLK_THREAD_ID = 10
+"""Block slot holding this thread's registered id (`register_thread`), or -1.
+The slot `m0_wsgi.blocking_pool` uses for the same value."""
+
 comptime JOB_BUFFER = 4096
 """Bytes a pool thread's receive buffer holds.
 
@@ -211,6 +215,16 @@ struct MojoPool(Movable):
         var body = _pool_body[T]
         var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
         self._lanes = List[Int]()
+        # A wake channel per thread, reserved on the spawning thread before
+        # any of them exists. A no-op when the caller reserved already --
+        # the reservation is made ONCE per pool, so a server running this
+        # beside a `BlockingPool` reserves for both before starting either
+        # (`m0serve._serve_offloaded`); a thread past the reservation still
+        # counts on its lane and parks on the lane socket.
+        ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+            unsafe_from_address=pool_addr
+        )[]
+        pool.reserve_threads(self.count)
         for i in range(self.count):
             var lane = -1 if len(lanes) == 0 else lanes[i % len(lanes)]
             self._lanes.append(lane)
@@ -218,6 +232,15 @@ struct MojoPool(Movable):
             block.set(BLK_USER, user)
             block.set(BLK_POOL, pool_addr)
             block.set(BLK_LANE, lane)
+            # Registered HERE, before the thread exists, never in its body:
+            # `stop` pills every registered thread on its own channel and
+            # sends the rest to the lane socket, so a thread that registered
+            # after a `stop` already ran would park on a channel with no pill
+            # in it while its pill sat on a socket it no longer reads -- a
+            # hung join, caught by `test_stop_and_join_ends_every_thread`,
+            # which stops the pool the instant it starts. Registered here,
+            # the pill is waiting for it whenever it gets there.
+            block.set(BLK_THREAD_ID, pool.register_thread(lane if lane > 0 else 0))
         for i in range(self.count):
             self._set.spawn(i, body_addr)
         self._started = True
@@ -303,6 +326,7 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
     )[]
     var lane = block.get(BLK_LANE)
     var index = block.get(BLK_INDEX)
+    var thread_id = block.get(BLK_THREAD_ID)
 
     # The lane's prefix, from the same table the loop routes by. Lane -1 is
     # the single-lane pool and lane 0 an unmounted server's only lane; both
@@ -318,7 +342,10 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
         buf.append(0)
 
     while True:
-        var job = pool.next_job(lane if lane > 0 else 0, buf)
+        # With the id, parked on this thread's own channel: `stop` pills a
+        # registered thread by name, so a thread that registered and then
+        # waited on the lane socket would never see its pill.
+        var job = pool.next_job(lane if lane > 0 else 0, buf, thread_id)
         if job.kind == JOB_STOP:
             break
         if job.kind == JOB_WS_MESSAGE:
@@ -407,6 +434,19 @@ def _pool_body[T: PoolHandler](arg: Int) -> Int:
     `blocking_pool._pool_body`.
     """
     var block = ThreadBlock(arg)
+    # Counted on its lane from `start` until it leaves, however it leaves --
+    # the WSGI pool's rule, which this pool skipped. Uncounted, the lane read as
+    # "every thread parked" to `_all_idle` whenever its one awake thread was
+    # busy, so `submit` poked a sibling on nearly every push: measured on
+    # `/native/probe` at 16 connections as 65k wakes with one thread and
+    # 202k with eight, the eight serving 20 % fewer requests on more CPU,
+    # while the WSGI lane beside it reported its threads and woke nobody.
+    # `start` registered it, on the spawning thread; see there for why.
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_POOL)
+    )[]
+    var lane = block.get(BLK_LANE)
+    lane = lane if lane > 0 else 0
     var status = STATUS_RAISED
     try:
         _pool_serve[T](block)
@@ -416,5 +456,6 @@ def _pool_body[T: PoolHandler](arg: Int) -> Int:
             "mojo-pool[" + String(block.get(BLK_INDEX)) + "] raised: " + String(e),
             flush=True,
         )
+    pool.unregister_thread(block.get(BLK_THREAD_ID), lane)
     block.set(BLK_STATUS, status)
     return 0
