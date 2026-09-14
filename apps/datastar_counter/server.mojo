@@ -17,7 +17,10 @@ That is the entire point, and it is what `DatastarStream` exists to make
 possible — the builders in `m0_datastar.sse` produce complete SSE frames, which
 `SSERegistry.notify` cannot carry without double-framing them.
 
-It is also the reference wiring for **cross-worker SSE fan-out**. With
+It is also the reference wiring for **cross-worker SSE fan-out** -- which is
+the only thing its bus is for, so the bus is joined only above one worker.
+`apps/sim_loop` is the other shape: a producer on its own thread, where the
+bus is the thread-to-loop channel and is needed in a single process. With
 `M0_WORKERS>1` this app creates, before the fork: the listener every worker
 accepts from, a `BroadcastBus` (one datagram channel per worker), and a
 `SharedAtomics` page (slot 0: SSE event ids, slot 1: the count, slot 2:
@@ -197,6 +200,14 @@ def main() raises:
         shared.addr(1), shared.addr(2), tick_owner=(worker == 0)
     )
     var bus_read_fd = -1
+    # The `workers > 1` guard is about what the bus does HERE, and is not the
+    # general rule. This app uses it for cross-worker fan-out, so one worker
+    # has no peer to reach and needs no channel. An application whose
+    # PRODUCER is another thread needs the bus at one worker too -- there it
+    # is the thread-to-loop channel, and `apps/sim_loop` joins it
+    # unconditionally for that reason (SPEC N15). Copying this conditional
+    # into an app of that shape publishes into a channel nothing drains,
+    # which fails silently.
     if config.workers > 1:
         # Joining the bus is three-sided: the stream publishes to peers and
         # takes ids from the shared slot; the server drains this worker's

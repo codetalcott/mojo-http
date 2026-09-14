@@ -49,6 +49,13 @@ the whole hypothesis rests on it:
    `mojo` alone rather than the full MAX package, so that is evidence about
    *our* install, not about Modular's support. Check the MAX documentation
    for Metal/Apple Silicon status before building anything on it.
+
+   **Correction, 2026-09-14.** The hedge in the last two sentences was
+   right; "this toolchain has no `gpu` module" was not. The module is
+   `std.gpu`, and its device-side intrinsics compile and run on this
+   pinned toolchain with no MAX. `DeviceContext` is the part that needs
+   `max` (at `max.gpu.host`). That does not answer the Metal question this
+   item asks — it only removes a wrong reason for pessimism about it.
 2. **The neural engine is probably not reachable.** Apple exposes the ANE
    through CoreML and publishes no low-level API; a language targeting it
    directly would be doing something Apple does not document. Treat "tap

@@ -49,6 +49,22 @@ that gap closed. The rest is recorded here.
   fact about the language's packaging rather than about our install. Linking
   MAX into an HTTP server to serve a request is a different product; the
   open question below is where that belongs if it belongs anywhere.
+
+  **Correction, 2026-09-14.** The second sentence is wrong, and the wrong
+  spelling is why. The module is `std.gpu`, not `gpu`, and on THIS pinned
+  toolchain with no MAX installed and no `-I`, `from std.gpu import
+  thread_idx, block_idx, block_dim, global_idx` compiles and runs;
+  `std.gpu.globals.WARP_SIZE` and `std.gpu.host.get_gpu_target` resolve
+  too. The accelerator APIs did not leave the stdlib. What DID move is the
+  host-side launch runtime: `DeviceContext` and `DeviceBuffer` are absent
+  from `std.gpu.host` and live at `max.gpu.host`, which needs the `max`
+  package. So the language ships the device-side kernel API and MAX ships
+  the runtime that launches it. Constructing a `DeviceContext()` with
+  `max` present then fails at COMPILE time inside `std/gpu/host/info.mojo`
+  for want of a target GPU, and `WARP_SIZE` reads `0` for the same
+  reason — hardware absence, not API absence. The decision above stands
+  unchanged (linking MAX into this server is still a different product);
+  only its premise about packaging is corrected.
 - **Native async Mojo handlers (an `async def` handler on a Mojo reactor).**
   Distinct from the coroutine entry above, and refused for a different
   reason than "the language cannot". It can, partly — measured 2026-08-28,
