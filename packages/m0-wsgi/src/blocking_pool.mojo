@@ -172,9 +172,10 @@ struct BlockingPool(Movable):
         self._lanes = List[Int]()
         # A wake channel per thread (offload.mojo, `_THREAD_STRIDE`),
         # reserved here on the spawning thread before any of them exists.
-        Pointer[OffloadPool, MutUntrackedOrigin](
+        ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
             unsafe_from_address=pool_addr
-        )[].reserve_threads(self.count)
+        )[]
+        pool.reserve_threads(self.count)
         # The hand-off barrier. With the loop thread holding no thread state
         # (docs/notes/detached-loop.md) nothing forces CPython's GIL hand-off
         # between pool threads: a thread that finishes a job re-takes the GIL
@@ -200,6 +201,16 @@ struct BlockingPool(Movable):
             block.set(BLK_LANE, lane)
             block.set(BLK_TURN_ADDR, self.turn_addr)
             block.set(BLK_QOS, 1 if qos else 0)
+            # Registered HERE, before the thread exists, never in its body:
+            # `stop` pills every registered thread on its own channel and
+            # sends the rest to the lane socket, so a thread that registered
+            # after a `stop` had already run parked on a channel with no pill
+            # in it while its pill sat on a socket it no longer reads -- a
+            # join that waited out its bound. `MojoPool.start` had the same
+            # body and the same fix; `test_blocking_pool.mojo` counts the
+            # threads the moment this returns.
+            var at = lane if lane > 0 else 0
+            block.set(BLK_THREAD_ID, pool.register_thread(at))
         for i in range(self.count):
             self._set.spawn(i, body_addr)
         self._started = True
@@ -588,17 +599,17 @@ def _yield_turn(addr: Int, attaches_before: Int) -> Bool:
 def _pool_body[T: ThreadHandler](arg: Int) -> Int:
     """pthread start routine: announce, attach, serve, release, report."""
     var block = ThreadBlock(arg)
-    # This thread counts on its lane from here until it leaves, however
+    # This thread counts on its lane from `start` until it leaves, however
     # it leaves: the elastic wake (`OffloadPool.note_thread`) reads the
     # count to tell "every thread is parked" from "one is busy in a view",
     # and a thread that died without un-announcing would be a busy thread
     # forever — every job on the lane then waiting out the age check.
+    # `start` registered it, on the spawning thread; see there for why.
     ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_POOL)
     )[]
     var lane = block.get(BLK_LANE)
     lane = lane if lane > 0 else 0
-    block.set(BLK_THREAD_ID, pool.register_thread(lane))
     ref cpy = Python().cpython()
     var gs = cpy.PyGILState_Ensure()
     var status = STATUS_RAISED
