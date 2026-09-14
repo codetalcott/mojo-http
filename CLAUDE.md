@@ -599,6 +599,13 @@ code depends on:
       for measurement, and `M0_POOL_DEBUG=1` prints each lane's wake
       counts by site at shutdown — the instrument that told a cascade of
       aged wakes (27 in 11 s) from the 132k idle wakes that were the cost.
+      **Every pool that serves a lane obeys these rules, not only the WSGI
+      one**: `MojoPool` threads register, pass their id to `next_job` and
+      unregister, and `_serve_offloaded` reserves records for every pool
+      before starting any (`reserve_threads` sizes on its first call). A
+      pool that skips registering reads as all-parked, wakes on nearly
+      every push, and gets slower as it grows — the Mojo mount's did, 202k
+      wakes and a fifth of its throughput at eight threads (SPEC M22).
     - **A slot with a job in flight is untouchable and unrecyclable.** The
       idle and header sweeps skip it, the read path refuses it (clearing
       `slot_read_armed` so a pipelined request is not stranded by the edge it

@@ -1732,6 +1732,14 @@ def _serve_offloaded(
         )
         return
     var pool_threads = BlockingPool(0 if (executor and not mounted) else pool_count)
+    # Every pool thread's wake record, reserved ONCE and before any pool
+    # starts: `reserve_threads` sizes the block on its first call and ignores
+    # the rest, and the WSGI pool used to be the only caller, so the Mojo and
+    # hold pools' threads found no record left. The counts are the ones the
+    # two `MojoPool`s below are constructed with.
+    var mojo_count = opts.blocking_threads if len(mojo_ln) > 0 else 0
+    var hold_count = opts.blocking_threads if len(hold_ln) > 0 else 0
+    pool.reserve_threads(pool_threads.count + mojo_count + hold_count)
     var exec_thread = AsgiExecutor(
         len(asgi_lanes) if len(asgi_lanes) > 0 else 1
     )
@@ -1786,9 +1794,7 @@ def _serve_offloaded(
     # attach/detach bracket, because there is nothing to attach to. A job on
     # one of these lanes never touches the interpreter, which is what lets
     # this mount answer while every Python thread is behind the GIL.
-    var mojo_threads = MojoPool(
-        opts.blocking_threads if len(mojo_ln) > 0 else 0
-    )
+    var mojo_threads = MojoPool(mojo_count)
     if mojo_threads.count > 0:
         mojo_threads.start[MojoMount](
             pool.addr(), user=0, lanes=mojo_ln.copy()
@@ -1796,9 +1802,7 @@ def _serve_offloaded(
     # The hold mount's workers: the same pool shape, a different handler
     # type. Two `MojoPool`s rather than one because `start[T]` is generic
     # over the handler, and each lane is dealt only its own kind.
-    var hold_threads = MojoPool(
-        opts.blocking_threads if len(hold_ln) > 0 else 0
-    )
+    var hold_threads = MojoPool(hold_count)
     if hold_threads.count > 0:
         hold_threads.start[HoldMount](
             pool.addr(), user=0, lanes=hold_ln.copy()

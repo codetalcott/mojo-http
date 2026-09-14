@@ -1434,6 +1434,14 @@
       "evidence": "`Serve two mounted applications from one process` (every PR) \u2014 phase 2b serves three shapes with no root mount (ASGI first, Mojo first, ASGI alone) and requires `/zzz` and a WebSocket upgrade to it to answer 404 with the server's `no application mounted` body. Before: the loop sent a miss to lane 0 and only a WSGI pool thread asked the table again, so the ASGI application at `/a` answered `/zzz` with its own 200 and an upgrade with 403, a lone ASGI mount the same, and a Mojo mount listed first with its router's own 404 body -- all three fail phase 2b on a build without the check, while phase 2, whose mounts are both WSGI, passed throughout"
     },
     {
+      "id": "M22",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "A Mojo mount's pool threads count on their lane and park on wake channels of their own, as the WSGI pool's do, so the elastic wake rules see a busy lane as busy: the Mojo route does not slow down as its pool grows",
+      "status": "verified",
+      "evidence": "`Smoke test a Mojo mount beside a Python one` (every PR) \u2014 under `M0_POOL_DEBUG=1` with four handler threads, shutdown must report four threads registered on the Mojo lane as on the WSGI one; before, the Mojo lane reported 0. Measured on `/native/probe` at 16 connections beside a WSGI mount (Apple M4): eight threads went from 202k lane wakes and 104k rps on 2.04 cores to 61k wakes and 133k rps on 1.35 cores, the one-thread figures, and the route now beats the WSGI route beside it per core"
+    },
+    {
       "id": "N1",
       "section": "N",
       "category": "N. Writing an application in Mojo",
