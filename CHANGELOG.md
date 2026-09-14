@@ -10,6 +10,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A thread a WSGI application starts runs while the server is idle, with
+  or without a handler pool** (#310, SPEC E20). With no pool — an unmounted
+  `--realtime`, `--blocking-threads 0`, or `--workers N` given explicitly —
+  the event loop calls the application itself, and it waited for I/O still
+  holding the GIL its thread has held since `Py_Initialize`. A
+  `threading.Thread` the app started, or an `asyncio.run` inside one, then
+  ran only when a request happened to run some Python: measured at 1 tick
+  in 1.5 s idle where 150 were due, and an agent turn publishing progress
+  with `m0pub.publish` never got past its first line. The loop now releases
+  the GIL around each wait and takes it back before touching the
+  application, the shape `--threads` already had. Throughput is unchanged
+  (hello-world at 16 and 256 connections, A/B within run-to-run noise).
+  On 1.3.0, `--blocking-threads N` with any N above 0 avoids it.
+  `poe smoke-app-threads` serves an app with a ticking thread in all three
+  shapes on both CI legs and counts its ticks over an idle window.
+
 - **The weekly free-threaded canary hung on Linux in every run that reached
   its last phase since 2026-08-23, and the hang was the gate's own shell.** Phase 2 of
   `smoke-blocking-threads` (a handler pool behind each `--threads` loop,

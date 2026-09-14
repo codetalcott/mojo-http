@@ -1498,12 +1498,24 @@ def main() raises:
     # delivery path to keep in sync with this one.
     if opts.qos:
         _ = request_qos_class(QOS_CLASS_USER_INTERACTIVE)
-    server.serve_nonblocking(
-        listener, handler,
-        shutdown_read_fd=shutdown_fd,
-        bus_read_fd=bus.read_fd(worker),
+    # The handler runs inline here, so the loop stays attached while it
+    # works -- but it must NOT stay attached while it waits. This thread has
+    # held the GIL since `Py_Initialize`, and a thread blocked in `kevent`
+    # never reaches the eval breaker that would hand it over: a thread the
+    # application starts ran only when a request happened to run Python
+    # (#310, SPEC E20).
+    # `DetachingBackend` releases the thread state around each wait and
+    # restores it after, the threaded mode's shape.
+    var backend = DetachingBackend[PlatformBackend](PlatformBackend())
+    run_event_loop(
+        listener.socket.fd, handler, backend, server.config,
+        server.address(), server.tcp_keep_alive,
+        shutdown_fd, bus.read_fd(worker),
         accept_share=share,
     )
+    # Only the fd number crossed; without this the listener is destroyed --
+    # and its socket closed -- before the loop's first `fcntl` on it.
+    _ = listener
     handler.shutdown()
     pg.stop()
     if supervised:

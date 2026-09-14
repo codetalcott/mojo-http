@@ -3531,6 +3531,28 @@ echo "smoke-pool-parallelism OK"
 python3 scripts/emit.py --covers E19 --task smoke-pool-parallelism
 """
 
+[tool.poe.tasks.smoke-app-threads]
+help = "A thread the application starts runs while a pool-less server is idle (SPEC E20)"
+deps = ["build-serve"]
+shell = """
+# #310: with no handler pool the loop calls the application itself, and it
+# used to wait for I/O still holding the GIL it has held since Py_Initialize.
+# A thread the app started then ran only when a request happened to run some
+# Python -- 1 tick in 1.5 s idle where 150 were due, under `--realtime`,
+# `--blocking-threads 0` and `--workers 2` alike. The probe serves
+# `bareapp.ticker` in each of those shapes, counts its thread's ticks over an
+# idle window on one keep-alive connection, and refuses a shape whose banner
+# names a pool, which would pass by a different route.
+out=$(python3 scripts/app_thread_probe.py --port 8641 2>&1) || { echo "$out"; exit 1; }
+echo "$out"
+for shape in realtime no-pool workers-2; do
+  n=$(echo "$out" | awk -v s="shape=$shape" '$1 == "TICKS" && $2 == s {split($3,a,"="); print a[2]}')
+  python3 scripts/emit.py "app_thread.idle_ticks.$shape" "$n" --task smoke-app-threads
+done
+echo "smoke-app-threads OK"
+python3 scripts/emit.py --covers E20 --task smoke-app-threads
+"""
+
 [tool.poe.tasks.smoke-blocking-threads]
 help = "Stage B: a slow view must not stall the connections pinned behind it"
 deps = ["build-serve"]
