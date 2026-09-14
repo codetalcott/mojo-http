@@ -4129,6 +4129,35 @@ code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' $B2/portal)
 
 kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
 
+# --- phase 2b: the miss when the FIRST mount is not WSGI (SPEC M21) -----
+# Phase 2 passed while the rule it names was broken: the loop sends a path
+# no mount claims to lane 0, and only a WSGI pool thread asks the mount
+# table again. With an ASGI app first, `/zzz` was that app's 200; with a
+# Mojo mount first, the Mojo pool's; and a WebSocket upgrade took the same
+# road into the application. The miss is now decided on the loop before a
+# lane is chosen, so every shape answers the server's own 404.
+unmatched() {  # label, then the server's arguments
+  label="$1"; shift
+  "$srv" "$@" $D --port 8100 --blocking-threads 2 > hybrid2b.log 2>&1 &
+  pid2=$!
+  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail -o /dev/null $B2/b/ \
+    || fail "$label: the server never answered its own mount"
+  body=$(curl -s --max-time 5 $B2/zzz)
+  code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' $B2/zzz)
+  [ "$code" = "404" ] || fail "$label: /zzz answered $code ($body), expected the server's 404"
+  echo "$body" | grep -q 'no application mounted' \
+    || fail "$label: /zzz was answered by an application, not the server: $body"
+  code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+    -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' $B2/zzz)
+  [ "$code" = "404" ] || fail "$label: a WebSocket upgrade to /zzz answered $code, expected 404"
+  kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
+}
+unmatched 'asgi first'  --mount /a=feed.asgi --mount /b=portal.wsgi:app
+unmatched 'mojo first'  --mount /native=mojo --mount /b=portal.wsgi:app
+unmatched 'asgi alone'  --mount /b=feed.asgi
+rm -f hybrid2b.log
+
 # --- phase 3: mixed protocols, each in its native mode ------------------
 # The stage-2 claim: Django (sync, on handler-pool threads) and FastHTML
 # (async, on the asyncio executor) in ONE process, each keeping its own
@@ -4301,6 +4330,7 @@ out=$("$srv" --mount /a=shop.wsgi --mount /a/=portal.wsgi:app $D --port 8101 2>&
 rm -f hybrid.log hybrid2.log hybrid3.log hybrid3t.log
 echo "smoke-hybrid OK"
 python3 scripts/emit.py --covers M1 --task smoke-hybrid
+python3 scripts/emit.py --covers M21 --task smoke-hybrid
 """
 
 # The flagship ASGI row: FastHTML is Starlette-based, served as `main:app`.

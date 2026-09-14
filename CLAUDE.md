@@ -111,7 +111,13 @@ that can run it — the asyncio executor for the ASGI mount, handler-pool
 threads for the sync ones, dealt round-robin. Rules: **one `ProvisionPool`
 per loop stays** (a slot indexes that loop's provisions); `lane i` is
 `mount i` and both the lane and the handler's `app_for` ask the SAME
-`match_path_prefix`, so they cannot disagree; each worker builds **only
+`match_path_prefix`, so they cannot disagree — except on a MISS, where
+`lane_for` answers lane 0 and nothing downstream of an executor or a Mojo
+pool asks again, so a path no mount claims is answered in `serve_local`
+(on the loop, through `before_request`, before a lane is chosen) against
+`route_prefixes`, the WHOLE mount table: `mount_prefixes` holds only the
+Python apps a handler built and would 404 every compiled mount (SPEC M21);
+each worker builds **only
 its own mount** (`only_mount`), or lifespans run once per mount per
 thread; and pills are sent per lane at shutdown, because a thread parked
 on lane 2 is not woken by a pill sent to lane 0. **Every lane needs a

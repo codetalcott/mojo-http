@@ -10,6 +10,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A path no mount claims gets the server's own 404, whatever the first
+  mount is** (SPEC M21). The loop sends a path that matches no mount to
+  the first mount's lane, and only a WSGI pool thread checked the path
+  again. So on a server with no root mount whose first mount was ASGI,
+  `GET /zzz` got that application's answer (a 200 from the fixture app,
+  and a 403 for a WebSocket upgrade), a lone ASGI mount did the same, and
+  a Mojo mount listed first answered with its own router's 404 rather
+  than the server's. The miss
+  is now decided on the loop, before a mount's lane is chosen, against
+  every mount's prefix including `mojo` and `hold` mounts. The check
+  covered WSGI-first servers all along, which is the only shape
+  `smoke-hybrid` tested; its new phase 2b tests the other three.
+
 - **A mount set that some mount cannot be served in is refused instead of
   started half-served, and one that needs handler threads gets them**
   (SPEC M20). Four configurations used to start and then answer wrongly or
