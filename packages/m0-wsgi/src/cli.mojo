@@ -548,8 +548,11 @@ def resolve_blocking_threads(
 ) -> Int:
     """The handler-pool size actually used, after zero-config kicks in.
 
-    Explicit topology always wins — any of the three flags or variables, at
-    any value, keeps `opts.blocking_threads` verbatim. An unmounted
+    Explicit topology wins — any of the three flags or variables, at any
+    value, keeps `opts.blocking_threads` verbatim — with ONE exception,
+    `pool_is_default`: a mount set that cannot be served without handler
+    threads gets the default pool unless `--blocking-threads` itself was
+    given. An unmounted
     `--realtime` keeps the single-loop shape *by default* — the demo and
     its smokes assume it — while an explicit `--blocking-threads N`
     composes with it (a hold taken on a pool thread is forwarded to the
@@ -569,7 +572,7 @@ def resolve_blocking_threads(
     question — which lane the executor takes — so it must not zero the pool
     here.
     """
-    if not zero_config_topology(opts):
+    if not pool_is_default(opts):
         return opts.blocking_threads
     if opts.realtime and len(opts.mount_prefixes) == 0:
         return 0
@@ -733,6 +736,43 @@ def has_python_mount(opts: ServeOptions) -> Bool:
 def has_wsgi_mount(opts: ServeOptions) -> Bool:
     """Whether any mount is WSGI — asked positively, see `wsgi_lanes`."""
     return len(wsgi_lanes(opts)) > 0
+
+
+def mounts_need_threads(opts: ServeOptions) -> Bool:
+    """Whether this mount set can only be served with handler threads.
+
+    A compiled mount (`mojo`, `hold`) is served by a `MojoPool` and by
+    nothing else, and an ASGI mount puts the loop on the offloaded path,
+    where a WSGI mount beside it is served from its lane and nowhere else.
+    Neither set has the inline shape -- the loop calling the application
+    itself -- that "no pool" otherwise means. The ASGI half is known only
+    after detection; the compiled half is in the flags.
+    """
+    if len(opts.mount_prefixes) == 0:
+        return False
+    if compiled_mount_threads_needed(opts) > 0:
+        return True
+    return len(opts.asgi_mounts) > 0 and has_wsgi_mount(opts)
+
+
+def pool_is_default(opts: ServeOptions) -> Bool:
+    """Whether the pool size is the server's to choose.
+
+    With no topology flag at all, always. With `--workers` or `--threads`
+    but no `--blocking-threads`, only for a mount set that cannot be served
+    without threads (`mounts_need_threads`). The rule that explicit
+    topology turns the zero-config pool off exists to keep one shape
+    reachable: `--workers N` with no pool, the loop calling the application
+    inline, which the mixed-workload benchmark measures. A mount set with a
+    compiled mount, or an ASGI mount beside a WSGI one, has no inline shape
+    to keep, so there the rule only turned `--workers 4 --mount /=django
+    --mount /native=mojo` into a refusal. `--blocking-threads` itself stays
+    authoritative at any value: too few for the mounts is refused, never
+    raised.
+    """
+    if zero_config_topology(opts):
+        return True
+    return not opts.blocking_threads_set and mounts_need_threads(opts)
 
 
 def compiled_mount_threads_needed(opts: ServeOptions) -> Int:

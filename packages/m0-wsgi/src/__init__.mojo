@@ -76,6 +76,8 @@ from .cli import (
     has_wsgi_mount,
     compiled_mount_threads_needed,
     wsgi_lanes_unserved,
+    mounts_need_threads,
+    pool_is_default,
     asgi_mount_names,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, clamp_cpus,
     parse_cpus_allowed, parse_cgroup_cpu_max, parse_cgroup_v1_quota,

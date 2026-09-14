@@ -121,8 +121,12 @@ taken and its slot is never swept, so the request hangs with a clean log.
 Threads are dealt round-robin, one lane each, from `--blocking-threads` —
 the WSGI pool over the WSGI lanes and one `MojoPool` per compiled kind
 (`mojo`, `hold`) over its own — so zero config never deals fewer than the
-lane count (`resolve_blocking_threads`), and an explicit topology that does
-is refused. The compiled half is decidable from the flags and goes in
+lane count (`resolve_blocking_threads`), and an explicit `--blocking-threads`
+that does is refused, never raised. A mount set with no inline shape — a
+compiled mount, or an ASGI mount beside a WSGI one — keeps the default pool
+under `--workers`/`--threads` when `--blocking-threads` is unset
+(`pool_is_default`): `--workers N` turns the pool off to keep the inline
+loop reachable, and those sets have no inline loop to keep. The compiled half is decidable from the flags and goes in
 `_mount_refusal`, which runs BEFORE the bind and the fork and is the same
 function `--doctor` renders (in a worker it crash-looped to exit 1 under
 `--workers N`); the WSGI half needs detection and exits 78 in the worker
@@ -170,7 +174,9 @@ mount needs a pool whatever the others are — those threads are the only
 workers parked on its lane. An explicitly-set variable, at any value, disables
 all of it (`ServeOptions`'s `*_set` fields carry the distinction, mirrored on
 `AppConfig`; `resolve_blocking_threads` in `src/cli.mojo` is the one place the
-default is decided). Three rules the Mojo 1.0 interop imposes and that the
+default is decided) — except that a mount set which cannot run inline keeps
+the default unless `--blocking-threads` itself is set (`pool_is_default`,
+SPEC M20). Three rules the Mojo 1.0 interop imposes and that the
 code depends on:
 
 - **`std.python` binds no `bytes` API and no latin-1 decoder — but the
