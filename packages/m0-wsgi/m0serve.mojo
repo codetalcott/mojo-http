@@ -88,7 +88,7 @@ from m0_wsgi import (
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
     hold_lanes, is_compiled_mount, has_python_mount,
-    compiled_mount_threads_needed, wsgi_lanes_unserved,
+    compiled_mount_threads_needed, wsgi_lanes_unserved, pool_is_default,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     use_loop_inversion,
     asgi_free_threading_refusal,
@@ -314,12 +314,13 @@ def _mount_refusal(opts: ServeOptions) -> Optional[MountRefusal]:
     them needs an interpreter: a compiled mount's kind is in its spec.
 
     The last two are new. A compiled mount under `--threads` was accepted
-    and never served, since the threaded loops start no `MojoPool`; and an
-    explicit topology that gives compiled mounts no thread (`--workers N`,
-    `--blocking-threads 0`) either served them inline, where the loop's
-    handler knows only the Python mounts and a request under `/native` fell
-    through to the root application, or started a `MojoPool` of fewer
-    threads than lanes, which leaves a lane nothing reads.
+    and never served, since the threaded loops start no `MojoPool`; and a
+    `--blocking-threads` below the compiled mount count either served them
+    inline (at 0, where the loop's handler knows only the Python mounts and
+    a request under `/native` fell through to the root application) or
+    started a `MojoPool` of fewer threads than lanes, which leaves a lane
+    nothing reads. `--workers N` alone is not refused: a compiled mount
+    makes the pool the server's to size (`pool_is_default`).
     """
     if len(opts.mount_prefixes) == 0:
         return None
@@ -355,15 +356,15 @@ def _mount_refusal(opts: ServeOptions) -> Optional[MountRefusal]:
             String(_COMPILED_MOUNT_UNDER_THREADS),
             String("serve with --workers N instead of --threads"),
         )
-    if not zero_config_topology(opts) and opts.blocking_threads < needed:
+    if opts.blocking_threads_set and opts.blocking_threads < needed:
         return MountRefusal(
             String("compiled-mount-threads"),
             "--mount PREFIX=mojo and PREFIX=hold are served by handler threads,"
             + " one per mount of a kind, and --blocking-threads is "
             + String(opts.blocking_threads) + " where these mounts need "
-            + String(needed) + ": a lane with no thread never answers. An"
-            + " explicit --workers, --threads or --blocking-threads turns the"
-            + " zero-config pool off",
+            + String(needed) + ": a lane with no thread never answers, and an"
+            + " explicit --blocking-threads is honoured as given, never raised."
+            + " Leave it unset and these mounts get the default pool",
             "add --blocking-threads " + String(needed) + " or more",
         )
     return None
@@ -376,8 +377,9 @@ def _wsgi_lanes_unserved_message(unserved: Int, blocking_threads: Int) -> String
         + " beside an ASGI mount or a handler pool every mount is served from"
         + " its own lane, and --blocking-threads " + String(blocking_threads)
         + " deals too few threads to give each WSGI mount one, so its"
-        + " requests would never be answered. An explicit --workers, --threads"
-        + " or --blocking-threads turns the zero-config pool off"
+        + " requests would never be answered. An explicit --blocking-threads is"
+        + " honoured as given, never raised; leave it unset and every mount"
+        + " gets a thread"
     )
 
 
@@ -1170,7 +1172,7 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     )
     report.add_int(String("topology"), String("threads"), opts.threads)
     if resolved:
-        var auto_pool = zero_config_topology(opts)
+        var auto_pool = pool_is_default(opts)
         var blocking = resolve_blocking_threads(opts, is_asgi, pool_cpus())
         var executor = use_asgi_executor(opts, is_asgi)
         report.add_int(
@@ -1470,7 +1472,7 @@ def main() raises:
     # executor for ASGI. Detection had to run first, which is why this
     # sits after the resolve (and, under prefork, inside each worker;
     # every worker resolves the same app to the same answer).
-    var auto_pool = zero_config_topology(opts)
+    var auto_pool = pool_is_default(opts)
     opts.blocking_threads = resolve_blocking_threads(
         opts, is_asgi, pool_cpus()
     )
@@ -1943,7 +1945,7 @@ def _serve_threaded(
         return
     if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
         _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
-    var auto_pool = zero_config_topology(opts)
+    var auto_pool = pool_is_default(opts)
     opts.blocking_threads = resolve_blocking_threads(
         opts, is_asgi, pool_cpus()
     )

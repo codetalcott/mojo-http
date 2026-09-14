@@ -32,6 +32,8 @@ from src.cli import (
     match_mount,
     compiled_mount_threads_needed,
     wsgi_lanes_unserved,
+    mounts_need_threads,
+    pool_is_default,
     DEFAULT_PORT,
     M0SERVE_VERSION,
     MAX_AUTO_BLOCKING_THREADS,
@@ -958,6 +960,58 @@ def test_explicit_topology_still_wins_over_the_mount_count() raises:
     args.append(String("--blocking-threads"))
     args.append(String("1"))
     assert_equal(resolve_blocking_threads(_parse(args), False, 4), 1)
+
+
+def _with(var args: List[String], flag: String, value: String) raises -> ServeOptions:
+    args.append(flag)
+    args.append(value)
+    return _parse(args)
+
+
+def test_pool_is_default_for_mount_sets_that_cannot_run_inline() raises:
+    """`--workers N` turns the zero-config pool off to keep the inline shape
+    reachable. A compiled mount, or an ASGI mount beside a WSGI one, has no
+    inline shape, so there the pool stays the server's to size -- while
+    `--blocking-threads` itself is still taken at its word."""
+    var native = List[String]()
+    native.append(String("--mount"))
+    native.append(String("/=x.wsgi"))
+    native.append(String("--mount"))
+    native.append(String("/native=mojo"))
+    var prefork = _with(native.copy(), String("--workers"), String("2"))
+    assert_true(mounts_need_threads(prefork))
+    assert_true(pool_is_default(prefork))
+    assert_equal(resolve_blocking_threads(prefork, False, 4), 4)
+    var explicit = _with(native.copy(), String("--blocking-threads"), String("0"))
+    assert_false(pool_is_default(explicit))
+    assert_equal(resolve_blocking_threads(explicit, False, 4), 0)
+
+    # Two WSGI mounts keep the inline shape, so --workers still means no pool.
+    var sync = List[String]()
+    sync.append(String("--mount"))
+    sync.append(String("/a=x.wsgi"))
+    sync.append(String("--mount"))
+    sync.append(String("/b=y.wsgi"))
+    var inline = _with(sync.copy(), String("--workers"), String("2"))
+    assert_false(mounts_need_threads(inline))
+    assert_false(pool_is_default(inline))
+    assert_equal(resolve_blocking_threads(inline, False, 4), 0)
+
+    # An ASGI mount beside a WSGI one is decided after detection.
+    var mixed = _with(sync.copy(), String("--workers"), String("2"))
+    mixed.asgi_mounts.append(1)
+    assert_true(mounts_need_threads(mixed))
+    assert_equal(resolve_blocking_threads(mixed, True, 4), 4)
+    # ASGI mounts alone need no threads: the executor serves them.
+    var asgi = _with(sync.copy(), String("--workers"), String("2"))
+    asgi.asgi_mounts.append(0)
+    asgi.asgi_mounts.append(1)
+    assert_false(mounts_need_threads(asgi))
+    assert_equal(resolve_blocking_threads(asgi, True, 4), 0)
+
+    # Unmounted, --workers keeps its meaning entirely.
+    var plain = _parse([String("x.wsgi"), String("--workers"), String("2")])
+    assert_false(pool_is_default(plain))
 
 
 def test_compiled_mount_threads_needed_is_the_larger_kind() raises:
