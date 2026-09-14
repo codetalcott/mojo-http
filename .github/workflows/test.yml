@@ -532,6 +532,16 @@ jobs:
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
         run: uv run poe smoke-counter
+      # Periodic work with a real budget does not belong on the event loop,
+      # and this is where that stops being an assertion. apps/sim_loop runs
+      # the identical step in two places behind one variable: off the loop a
+      # trivial request is unaffected, on it the same request waits out the
+      # step. The on-loop arm is the load-bearing half -- without it the gate
+      # would pass on a server doing no work at all. Also asserts the step
+      # ids arrive contiguous (the bus is best-effort; at this cadence it
+      # must not drop) and that SIGTERM with a step in flight still drains.
+      - name: Smoke test periodic work off the event loop
+        run: uv run poe smoke-sim-loop
       # The flagship: a mutation broadcasts the rendered fragment to a live
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo

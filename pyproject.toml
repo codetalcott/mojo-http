@@ -971,6 +971,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
 help = "Run the Datastar counter demo on :8080"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/datastar_counter/server.mojo"
 
+[tool.poe.tasks.serve-sim]
+help = "Run the off-loop simulation demo on :8080 (M0_SIM_ON_LOOP=1 for the other shape)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/sim_loop/server.mojo"
+
 # The three WSGI rows are Python-only projects; one binary serves them all.
 # M0_WORKERS=4 (and every other M0_ variable) still applies — flags override.
 [tool.poe.tasks.serve-django]
@@ -1505,6 +1509,98 @@ kill $pid $worker_pids 2>/dev/null
 rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt counter2.log
 echo "smoke-counter OK"
 python3 scripts/emit.py --covers I9 --task smoke-counter
+"""
+
+# Periodic work with a real budget does not belong on the event loop, and
+# this is where that stops being an assertion. The app runs the identical
+# step in two places behind one variable, so the gate measures both rather
+# than taking the claim on trust -- the on-loop arm is the load-bearing
+# half, exactly as the bare arm is in `check-keepalive-barrier`.
+[tool.poe.tasks.smoke-sim-loop]
+help = "Periodic work off the loop: the steps arrive, the loop stays free, and the on-loop arm proves the measurement"
+shell = """
+port=8321
+pid=
+cleanup() {
+  kill $pid 2>/dev/null
+  rm -f sim_off.log sim_on.log
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  for f in sim_off.log sim_on.log; do
+    [ -f "$f" ] && { echo "=== $f ==="; cat "$f"; }
+  done
+  exit 1
+}
+# 4Hz x 200ms is an 80% duty cycle. On the loop that holds every connection
+# for 200ms at a time; off it, the loop never sees the work at all. The
+# measured separation is ~200x, so the 100ms threshold below has margin on
+# both sides rather than being a hair's breadth either way -- which is what
+# keeps it from flaking on a shared runner.
+start() {
+  M0_PORT=$port M0_SIM_HZ=4 M0_SIM_COST_MS=200 M0_SIM_ON_LOOP=$1 \
+    mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
+    apps/sim_loop/server.mojo > "$2" 2>&1 &
+  pid=$!
+  curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail \
+    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($2)"
+}
+stop() {
+  kill $pid 2>/dev/null
+  wait $pid 2>/dev/null
+  pid=
+}
+
+# --- off the loop: the shape this app recommends --------------------------
+start 0 sim_off.log
+off=$(python3 scripts/sim_loop_probe.py $port 4) || fail "off the loop: $off"
+frames=${off#frames=}
+frames=${frames%% *}
+worst=${off##*worst_now_ms=}
+[ "$frames" -ge 8 ] \
+  || fail "off the loop: only $frames steps reached the client in 4s at 4Hz -- publishing with nothing draining is the quiet failure here"
+[ "$worst" -lt 100 ] \
+  || fail "off the loop: a trivial request waited ${worst}ms behind a 200ms step; the work is not off the loop"
+echo "off the loop: $frames steps, no gaps, worst /now ${worst}ms"
+stop
+
+# --- on the loop: the negative arm ---------------------------------------
+# Without this the gate would pass on a server doing no work at all and would
+# stop being evidence for anything. Both assertions matter: the frame count
+# proves the step actually RAN here, so the latency is the loop paying for it
+# rather than nothing having happened.
+start 1 sim_on.log
+on=$(python3 scripts/sim_loop_probe.py $port 4) || fail "on the loop: $on"
+frames_on=${on#frames=}
+frames_on=${frames_on%% *}
+worst_on=${on##*worst_now_ms=}
+[ "$frames_on" -ge 8 ] \
+  || fail "on the loop: only $frames_on steps ran, so the arm measured nothing and the comparison above is vacuous"
+[ "$worst_on" -ge 100 ] \
+  || fail "on the loop: a trivial request took only ${worst_on}ms behind a 200ms tick -- this gate can no longer tell the two shapes apart"
+echo "ON the loop: $frames_on steps, worst /now ${worst_on}ms"
+stop
+
+# --- SIGTERM with a step in flight ---------------------------------------
+# pthread_join has no timeout, so an unbounded join here is a SIGTERM that
+# does nothing until docker stop gives up and sends SIGKILL.
+start 0 sim_off.log
+t0=$(date +%s)
+kill -TERM $pid
+wait $pid
+rc=$?
+t1=$(date +%s)
+pid=
+[ "$rc" -eq 0 ] \
+  || fail "SIGTERM with a step in flight exited $rc, not 0"
+[ $(( t1 - t0 )) -lt 10 ] \
+  || fail "SIGTERM took $(( t1 - t0 ))s; the simulation thread is not joined within the drain"
+echo "SIGTERM with a step in flight: exit 0 in $(( t1 - t0 ))s"
+
+echo "smoke-sim-loop OK"
+python3 scripts/emit.py sim.off_loop_now_ms "$worst" --unit ms --limit 100 --task smoke-sim-loop
+python3 scripts/emit.py --covers N15 --task smoke-sim-loop
 """
 
 # Each assertion below pins down one part of the WSGI bridge. They are cheap to
