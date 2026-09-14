@@ -10,6 +10,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **Stopping the WSGI handler pool right after starting it no longer
+  hangs.** Each `BlockingPool` thread registered on its lane as the first
+  act of its own body. `stop` pills registered threads on their own wake
+  channels and sends the remainder to the lane socket, so a thread that
+  registered after a racing `stop` parked on its own channel while its
+  pill sat on the lane socket. Its join then waited out the 5 s bound and
+  the process left naming a thread it had abandoned. The Mojo pool had
+  the same body and the same fix earlier in this release. Threads are now
+  registered in `start`, on the spawning thread, before any exists. The
+  window in a server is small, since `stop` follows a loop that has
+  served and returned; SIGTERM during startup on a loaded host was the
+  way in. The new `test_blocking_pool.mojo` counts the threads the moment
+  `start` returns and stops at once: 0 counted and a 5,072 ms join
+  before, 4 and about 70 ms after, 10 runs of 10.
+
 - **`M0_POOL_SPIN_US` does what its documentation says.** It was
   documented from 0.19.0 (2026-09-07) as overriding the handler pool's
   10 µs idle spin (`POOL_SPIN_NS`), in CLAUDE.md, NOTICE, this changelog

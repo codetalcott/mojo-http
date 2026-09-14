@@ -602,7 +602,13 @@ code depends on:
       **Every pool that serves a lane obeys these rules, not only the WSGI
       one**: `MojoPool` threads register, pass their id to `next_job` and
       unregister, and `_serve_offloaded` reserves records for every pool
-      before starting any (`reserve_threads` sizes on its first call). A
+      before starting any (`reserve_threads` sizes on its first call).
+      **Both pools register in `start`, on the spawning thread, never in
+      the thread body**: `stop` pills registered threads by name and the
+      rest on the lane socket, so a thread that registered after a racing
+      `stop` parked on its own channel with its pill on a socket it no
+      longer reads, and the join waited out its 5 s bound
+      (`test_blocking_pool.mojo`, `test_mojo_pool.mojo`). A
       pool that skips registering reads as all-parked, wakes on nearly
       every push, and gets slower as it grows — the Mojo mount's did, 202k
       wakes and a fifth of its throughput at eight threads (SPEC M22).
