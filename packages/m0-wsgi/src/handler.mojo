@@ -218,6 +218,18 @@ struct WSGIHandler(ThreadHandler):
     no defensible answer. SSE holds have no inbound half and work on every
     mount."""
 
+    var route_prefixes: List[String]
+    """Every mount's prefix, compiled mounts included; empty when unmounted.
+
+    `serve_local` answers a path under none of them with the server's 404,
+    and it must be the WHOLE table, never `mount_prefixes`: that one holds
+    only the Python applications this handler built (a pool thread builds
+    just its own), so asking it would 404 every request to a `mojo` or
+    `hold` mount. The miss has to be decided before a lane is chosen,
+    because the loop's `lane_for` sends a path no mount claims to lane 0,
+    and when lane 0 is an executor or a Mojo pool nothing downstream asks
+    the question again -- an ASGI application at `/a` answered `/zzz`."""
+
     var lane: Int
     """Which mount this handler serves (`ThreadContext.lane`), or -1.
 
@@ -340,6 +352,7 @@ struct WSGIHandler(ThreadHandler):
         self.lane = -1
         self.ws_pool_fds = List[Int]()
         self.mounted = False
+        self.route_prefixes = List[String]()
         self.answers_local = True
         self.hold_notify_fd = -1
         self.abort_pool_addr = 0
@@ -462,6 +475,7 @@ struct WSGIHandler(ThreadHandler):
             root_prefix=opts.mount_prefixes[head],
         )
         handler.mounted = len(opts.mount_prefixes) > 1
+        handler.route_prefixes = opts.mount_prefixes.copy()
         if only_mount >= 0:
             return handler^
         for i in range(len(opts.mount_prefixes)):
@@ -732,6 +746,17 @@ struct WSGIHandler(ThreadHandler):
         # itself and this must not shadow it.
         if self.realtime and self._is_ws_message_path(req.uri.path):
             return _not_found_response()
+        # A path no mount claims, answered here because this is the last
+        # place that sees every request before a lane is chosen: the loop
+        # calls it through `before_request` ahead of `lane_for`, the
+        # executor's pump before it spawns a task, and `func` before it asks
+        # `app_for`. After the static files and the health path, which are
+        # the server's own and live outside every mount.
+        if (
+            len(self.route_prefixes) > 0
+            and match_mount(self.route_prefixes, req.uri.path) < 0
+        ):
+            return _unmounted()
         return None
 
     def _is_ws_message_path(self, path: String) -> Bool:
