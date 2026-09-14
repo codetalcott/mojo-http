@@ -34,8 +34,27 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Three shapes share one set of helpers, so an unhandled reset inside
+# `read_ticks` names the call and not the shape or the reading being taken.
+# Same stamp, same reason, as scripts/pipeline_probe.py.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("app_thread_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 # (name, flags). Each is a shape `main` serves inline on the loop thread.
 SHAPES = [
@@ -95,14 +114,18 @@ def read_ticks(conn):
 def probe(bin_path, app_dir, port, name, flags, idle, min_ticks):
     """One shape. Returns (idle ticks, failure message or None)."""
     with tempfile.TemporaryFile(mode="w+") as log:
+        phase(name + ": start")
         p = start(bin_path, app_dir, port, flags, log)
         try:
+            phase(name + ": the first reading")
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             pid0, before = read_ticks(conn)
             time.sleep(idle)
+            phase(name + ": the reading after the idle window")
             pid1, after = read_ticks(conn)
             conn.close()
         finally:
+            phase(name + ": stop")
             stop(p)
         log.seek(0)
         output = log.read()
@@ -136,11 +159,16 @@ def main():
 
     failures = []
     for i, (name, flags) in enumerate(SHAPES):
+        phase(name)
         try:
             ticks, failure = probe(args.bin, args.app_dir, args.port + i, name,
                                    flags, args.idle, args.min_ticks)
-        except RuntimeError as e:
-            ticks, failure = None, "%s: %s" % (name, e)
+        except (RuntimeError, OSError, ValueError, KeyError) as exc:
+            # A shape that errors must not stop the others being measured;
+            # the stamp names where in the shape it broke.
+            traceback.print_exc()
+            print("app_thread_probe: FAIL: %s: %r" % (PHASE, exc), flush=True)
+            ticks, failure = None, "%s: %r" % (PHASE, exc)
         if ticks is not None:
             print("TICKS shape=%s idle=%d" % (name, ticks), flush=True)
         if failure:
