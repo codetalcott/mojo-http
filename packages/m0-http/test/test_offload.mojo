@@ -20,7 +20,7 @@ from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
-    COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH,
+    COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
 )
 from lightbug_http.uri import URI
 
@@ -775,6 +775,25 @@ def test_on_a_free_threaded_interpreter_the_pool_wakes_eagerly_and_counts_from_t
     _ = setenv("M0_POOL_PARALLEL", "", True)
     forced.set_parallel(True)
     assert_false(forced.is_parallel())
+
+
+def test_the_idle_spin_follows_its_measurement_knob() raises:
+    """`M0_POOL_SPIN_US` overrides `POOL_SPIN_NS`, in microseconds, read once
+    when the pool is built. Four records described this knob for a week
+    while nothing read it; this is what keeps it read. A value that does not
+    parse, or a negative one, keeps the default rather than spinning for
+    nothing or forever."""
+    _ = setenv("M0_POOL_SPIN_US", "", True)
+    assert_equal(OffloadPool(4).spin_ns(), POOL_SPIN_NS)
+    _ = setenv("M0_POOL_SPIN_US", "0", True)
+    assert_equal(OffloadPool(4).spin_ns(), 0)
+    _ = setenv("M0_POOL_SPIN_US", "250", True)
+    assert_equal(OffloadPool(4).spin_ns(), 250_000)
+    _ = setenv("M0_POOL_SPIN_US", "ten", True)
+    assert_equal(OffloadPool(4).spin_ns(), POOL_SPIN_NS)
+    _ = setenv("M0_POOL_SPIN_US", "-5", True)
+    assert_equal(OffloadPool(4).spin_ns(), POOL_SPIN_NS)
+    _ = setenv("M0_POOL_SPIN_US", "", True)
 
 
 def test_the_wait_is_bounded_only_while_a_job_is_pending() raises:
