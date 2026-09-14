@@ -666,6 +666,13 @@ jobs:
       # threshold, so a loaded shared runner does not decide it.
       - name: Smoke test pool parallelism
         run: uv run poe smoke-pool-parallelism
+      # E20, the shapes WITHOUT a pool. The loop calls the application
+      # itself there, and it used to wait for I/O holding the GIL, so a
+      # thread the app started ran only when a request ran Python (#310).
+      # A count of an app thread's ticks over an idle window: 1 before the
+      # fix and ~120 after, against a bar of 20.
+      - name: Smoke test application threads without a pool
+        run: uv run poe smoke-app-threads
       # The Mojo handler pool, same claim without an interpreter: func on a
       # pool thread (the response names which), every thread dealt work, a
       # streaming response refused with 409, and SIGTERM a clean exit -- the

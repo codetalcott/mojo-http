@@ -212,7 +212,16 @@ code depends on:
   mutually exclusive (`threads_conflict`), and each keeps that true its own
   way — plus a handler pool that composes with either:
   - **Prefork (`M0_WORKERS`, the default).** One thread per process, attached
-    since `Py_Initialize` ran on it. `WorkerSupervisor` is wired in
+    since `Py_Initialize` ran on it. With no handler pool that thread calls
+    the application inline, so it stays attached while it works and
+    **detaches around every wait** (`DetachingBackend` without
+    `set_loop_detached`, in `main`'s inline branch): it used to block in
+    `kevent`/`epoll` holding the GIL, and a thread the application started
+    — an agent turn publishing progress, an `asyncio.run` in a
+    `threading.Thread` — ran only when a request happened to run Python
+    (#310; 1 tick in 1.5 s idle where 150 were due, under `--realtime`,
+    `--blocking-threads 0` and `--workers 2` alike). `poe
+    smoke-app-threads` (SPEC E20) is the gate. `WorkerSupervisor` is wired in
     (`packages/m0-wsgi/m0serve.mojo`) and the rule it obeys is load-bearing:
     **fork before the first Python call, never after.** Mojo initializes the
     interpreter lazily, so each worker's own `WSGIApp` construction after
