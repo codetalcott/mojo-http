@@ -187,6 +187,7 @@ The engineering record: long-form, dated, kept as written.
 - [Scheduling stickiness: which worker wins the accept race is CPU placement, not load](notes/accept-placement.md)
 - [Mojo language capabilities, surveyed 2026-08-28](notes/mojo-language-capabilities.md)
 - [Considered, not built: routes that carry a function](notes/routes-that-carry-a-function.md)
+- [Periodic work off the event loop — shipped 2026-09-14](notes/periodic-work-off-the-loop.md)
 
 **The gates and the evidence**
 

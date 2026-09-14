@@ -63,8 +63,20 @@ trait HTTPService:
         means never), with a monotonic timestamp for handlers running their
         own sub-schedules. This is the one place server-initiated work can
         happen: broadcast from here and the same loop pass delivers it, no
-        inbound request required. Keep it quick — the tick runs on the event
-        loop thread, and every connection waits while it does.
+        inbound request required.
+
+        Keep it quick — the tick runs on the event loop thread, and every
+        connection waits while it does. What costs is the DUTY CYCLE, work
+        over period: throughput retention tracks `1 - duty` and the work
+        transfers into p99 roughly one for one (measured at 60Hz). Under
+        about 5% it is noise; at 25% a fifth of the throughput is gone; at
+        50% half is. A rare expensive tick is the shape that hides — it
+        leaves p50 and p99 healthy and shows only in the maximum.
+
+        So SCHEDULE from the tick rather than working in it. Periodic work
+        with a real budget belongs on a thread of its own, publishing
+        through the `BroadcastBus` as `--pg-listen`'s listener does; the
+        loop picks it up through `sse_peer_frame` and pays only the drain.
         """
         pass
 

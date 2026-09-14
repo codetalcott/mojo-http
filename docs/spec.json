@@ -1522,6 +1522,14 @@
       "evidence": "`Smoke test a Mojo mount supplied by module` (every PR) \u2014 sabotaged by keeping the default mount directory on the path beside the fixture's, which built cleanly and served the demo, and failed the smoke's first assertion; that the conformance survives leaving the entry file is measured by `Smoke test a Mojo mount beside a Python one` passing with the demo mount in the module; the design is [a-mount-from-somewhere-else](notes/a-mount-from-somewhere-else.md)"
     },
     {
+      "id": "N15",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "Periodic work off the event loop: an application with a simulation cadence runs it on a thread of its own and publishes each step through the `BroadcastBus` with `skip_worker = -1`, the loop draining it into `sse_peer_frame` and paying only that; the bus is joined at ONE worker too, because here it is the thread-to-loop channel rather than only worker-to-worker, and publishing with nothing draining fails quietly; step ids arrive contiguous, so a cadence the best-effort bus cannot carry is a failure rather than a silence; a trivial request is unaffected while a 200ms step runs off the loop and waits out that step when the identical work is moved onto `tick` (`M0_SIM_ON_LOOP=1`, the negative arm, which also asserts the step ran there at all); and a step still running at SIGTERM is joined within the drain rather than hanging it",
+      "status": "verified",
+      "evidence": "`Smoke test periodic work off the event loop` (every PR) \u2014 `apps/sim_loop`, whose two arms are the same step function reached two ways; sabotaged by publishing with `skip_worker = 0` instead of `-1`, which delivers to nobody and fails the first assertion. The cost the row exists to avoid is the duty cycle: retention tracks `1 - duty` and the work transfers into p99 about one for one, which is what `HTTPService.tick`'s docstring now says"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",
