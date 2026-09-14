@@ -191,7 +191,8 @@ comptime POOL_SPIN_NS = 10_000
 parks. Longer than the gap between jobs at the rates the pool serves
 (1–2 µs at 130–180k rps). Measured against 30 µs on the same day: the
 same throughput at 16 and 256 connections, and ten points less CPU on
-the pool thread at 16 (docs/notes/pool-ring-handoff.md)."""
+the pool thread at 16 (docs/notes/pool-ring-handoff.md). The default of
+`OffloadPool.spin`, which `M0_POOL_SPIN_US` overrides for measurement."""
 
 comptime POOL_YIELD_AFTER_NS = 2_000
 """Into the spin, the point after which each look is followed by
@@ -696,6 +697,16 @@ struct OffloadPool(Movable):
     `M0_POOL_WAKE_AGE_US` in microseconds when set — the measurement
     knob the threshold was chosen with (docs/notes/elastic-pool.md)."""
 
+    var spin: Int
+    """How long a pool thread whose ring is empty spins before it parks:
+    `POOL_SPIN_NS`, or `M0_POOL_SPIN_US` in microseconds when set.
+
+    A measurement knob, the twin of `wake_age`. It was documented from
+    2026-09-07 (the pool-tail investigation measured the spin at 0, 1 and
+    10 µs with it, docs/notes/pool-tail.md) and read by nothing until
+    2026-09-14: the patch that read it was never committed, so every
+    record of the variable described a knob that did nothing."""
+
     var thread_base: Int
     """The block of `_THREAD_STRIDE` records `reserve_threads` made, or 0:
     then every pool thread parks on the lane socket, the shape before
@@ -769,6 +780,15 @@ struct OffloadPool(Movable):
                 self.wake_age = Int(age_us) * 1000
             except:
                 pass
+        self.spin = POOL_SPIN_NS
+        var spin_us = getenv("M0_POOL_SPIN_US", "")
+        if spin_us != "":
+            try:
+                var us = Int(spin_us)
+                if us >= 0:
+                    self.spin = us * 1000
+            except:
+                pass
         self.job_rings = List[Ring]()
         self.done_ring = Ring()
         self.wake_base = 0
@@ -839,6 +859,7 @@ struct OffloadPool(Movable):
         self.debug = move.debug
         self.submit_ns = move.submit_ns^
         self.wake_age = move.wake_age
+        self.spin = move.spin
         self.thread_base = move.thread_base
         self.thread_cap = move.thread_cap
         self.lane_pops = move.lane_pops^
@@ -1379,6 +1400,10 @@ struct OffloadPool(Movable):
     def wake_age_ns(self) -> Int:
         """See `wake_age`."""
         return self.wake_age
+
+    def spin_ns(self) -> Int:
+        """See `spin`."""
+        return self.spin
 
     def set_parallel(mut self, flag: Bool):
         """The wiring's answer to "is this interpreter free-threaded?"
@@ -2058,7 +2083,7 @@ struct OffloadPool(Movable):
                         park_now = True
                 if not park_now:
                     continue
-            if park_now or now - spin_start >= POOL_SPIN_NS:
+            if park_now or now - spin_start >= self.spin:
                 # Announce, re-check, block — in that order, or a push that
                 # lands between the last pop and the recv is a job nobody
                 # is woken for. The spin is given up BEFORE the park is

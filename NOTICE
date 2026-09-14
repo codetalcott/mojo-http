@@ -523,6 +523,11 @@ lightbug_http
         threads. Unregistered, the elastic wake rules read the lane as every
         thread parked and woke a sibling on nearly every push: 202k wakes and
         a fifth of the throughput at eight threads on a trivial route.
+        offload.mojo, the same day: `M0_POOL_SPIN_US` is read at last. The
+        2026-09-07 entry above records it as overriding `POOL_SPIN_NS`, and
+        docs/notes/pool-tail.md measured the spin at 0, 1 and 10 µs with it,
+        but the patch that read it was never committed; `OffloadPool.spin`
+        now holds the value, read once at construction like `wake_age`.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

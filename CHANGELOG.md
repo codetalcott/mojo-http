@@ -10,6 +10,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **`M0_POOL_SPIN_US` does what its documentation says.** It was
+  documented from 0.19.0 (2026-09-07) as overriding the handler pool's
+  10 µs idle spin (`POOL_SPIN_NS`), in CLAUDE.md, NOTICE, this changelog
+  and `docs/notes/pool-tail.md`, whose measurements used it. But the patch
+  that read it was never committed, so setting it changed nothing. It is
+  now read once when the pool is built, like `M0_POOL_WAKE_AGE_US`. A
+  value that does not parse, or a negative one, keeps the default. With
+  one handler thread at four connections, lane wakes went from 39k by
+  default to 93k at `0` and 4 at `1000`.
+
 - **Mounts under `--threads` are tested where they can run** (SPEC M23).
   `smoke-hybrid`'s `--threads` phase served ASGI mounts, which a
   free-threaded build refuses with exit 78 (modular/modular#5726). So it
