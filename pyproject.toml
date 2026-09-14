@@ -2871,6 +2871,28 @@ equiv 'mounted realtime'            --mount /=bareapp.wsgi --app-dir apps/wsgi_b
 # What still refuses: --realtime with nothing that could take a hold.
 equiv 'mounted realtime, no wsgi'   --mount /=bareapp.asgi --app-dir apps/asgi_bare --realtime
 
+# Mounts no worker could serve (SPEC M20). Agreement alone does not
+# discriminate these: a Mojo mount with no pool used to SERVE, misrouted
+# to the root application, and the doctor said 0 too. So each row also
+# names its code. Under --workers the flag-decidable refusals used to run
+# in every worker -- five rapid crashes and exit 1 -- which is what the
+# prefork rows are for; the 78s need detection and run in the worker,
+# where the supervisor stops on them (E10).
+W="--app-dir apps/wsgi_bare"
+refuses() {
+  code="$1"; shift
+  equiv "$@"
+  [ "$real" = "$code" ] || fail "$desc: server exits $real, want $code"
+}
+refuses 2  'only compiled mounts, prefork'      --mount /native=mojo $W --workers 2
+refuses 2  'hold mount, no realtime, prefork'   --mount /=bareapp.wsgi --mount /s=hold $W --workers 2
+refuses 2  'mojo mount, explicit no pool'       --mount /=bareapp.wsgi --mount /native=mojo $W --blocking-threads 0
+refuses 2  'mojo mount, explicit workers'       --mount /=bareapp.wsgi --mount /native=mojo $W --workers 2
+refuses 2  'mojo mount under threads'           --mount /=bareapp.wsgi --mount /native=mojo $W --threads 2
+refuses 78 'two wsgi mounts, one thread'        --mount /a=bareapp.wsgi --mount /b=bareapp.wsgi $W --workers 2 --blocking-threads 1
+refuses 78 'asgi beside wsgi, explicit no pool' --mount /=portal.wsgi:app --mount /feed=feed.asgi --app-dir apps/hybrid_mix --workers 2
+refuses 0  'mojo mount with a pool, prefork'    --mount /=bareapp.wsgi --mount /native=mojo $W --workers 2 --blocking-threads 2
+
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
 equiv 'threads and workers together' $SPEC --workers 2 --threads 2
@@ -2923,6 +2945,7 @@ echo 'smoke-doctor: --doctor agrees with the server on every refusal'
 python3 scripts/emit.py --covers E7 --task smoke-doctor
 python3 scripts/emit.py --covers F8 --task smoke-doctor
 python3 scripts/emit.py --covers M5 --task smoke-doctor
+python3 scripts/emit.py --covers M20 --task smoke-doctor
 """
 
 [tool.poe.tasks.smoke-serve]
@@ -4348,6 +4371,24 @@ python3 scripts/mojo_mount_probe.py --port $P || fail "the Mojo mount tracked th
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
+pid=
+
+# Beside an ASGI mount, zero-config. The pool size used to come from "is any
+# mount WSGI", which answered no, so the Mojo mount got `MojoPool(0)`: the
+# ASGI mount served and every request to the Mojo one hung on a lane nothing
+# read (SPEC M20). Every other phase passes an explicit pool, which is how
+# this went unseen.
+"$srv" --mount /=bareapp.asgi:application --mount /native=mojo \
+  --app-dir apps/asgi_bare --port $P > mojomount.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail "the ASGI + Mojo server never became healthy"
+grep -q 'asgi-loop@/' mojomount.log || fail "the ASGI mount did not get its executor"
+curl -s --max-time 5 $B/native/probe | grep -q '"mount":"mojo"' \
+  || fail "the Mojo mount beside an ASGI mount did not answer within 5 s"
+kill -TERM $pid
+for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "the ASGI + Mojo server did not exit within 10s of SIGTERM"; fi
 pid=
 
 rm -f mojomount.log

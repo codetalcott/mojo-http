@@ -114,7 +114,21 @@ per loop stays** (a slot indexes that loop's provisions); `lane i` is
 `match_path_prefix`, so they cannot disagree; each worker builds **only
 its own mount** (`only_mount`), or lifespans run once per mount per
 thread; and pills are sent per lane at shutdown, because a thread parked
-on lane 2 is not woken by a pill sent to lane 0. **Several ASGI mounts
+on lane 2 is not woken by a pill sent to lane 0. **Every lane needs a
+thread, and a mount set that leaves one without is refused, never
+served** (SPEC M20): a job submitted to a lane nobody parks on is never
+taken and its slot is never swept, so the request hangs with a clean log.
+Threads are dealt round-robin, one lane each, from `--blocking-threads` —
+the WSGI pool over the WSGI lanes and one `MojoPool` per compiled kind
+(`mojo`, `hold`) over its own — so zero config never deals fewer than the
+lane count (`resolve_blocking_threads`), and an explicit topology that does
+is refused. The compiled half is decidable from the flags and goes in
+`_mount_refusal`, which runs BEFORE the bind and the fork and is the same
+function `--doctor` renders (in a worker it crash-looped to exit 1 under
+`--workers N`); the WSGI half needs detection and exits 78 in the worker
+(`wsgi_lanes_unserved`). The inline loop is not a lane: with no pool and
+no ASGI mount the loop's handler answers every WSGI mount itself, and a
+compiled mount there used to fall through to the root application. **Several ASGI mounts
 each get their own executor**: they share the ONE slot-addressed chunk
 channel (a single `SOCK_DGRAM` queue is globally FIFO across writers, so
 the recycled-slot argument survives), but each has its own drain-ack pair

@@ -10,6 +10,31 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A mount set that some mount cannot be served in is refused instead of
+  started half-served** (SPEC M20). Four configurations used to start and
+  then answer wrongly or not at all:
+  - a `--mount PREFIX=mojo` with no handler pool (`--workers N`,
+    `--blocking-threads 0`) served inline, where the loop knows only the
+    Python mounts, so its requests were answered by the root application;
+  - an ASGI mount beside a Mojo mount on zero config gave the Mojo mount
+    no threads, and its requests hung;
+  - more WSGI mounts than handler threads (`--blocking-threads 1` with two,
+    or zero config on a one-core host) left a mount with no thread, and
+    its requests hung;
+  - an ASGI mount beside a WSGI mount under `--workers N` gave the WSGI
+    mount no thread, with the same result.
+
+  Zero config now deals at least one thread per mount. An explicit
+  topology that leaves a compiled mount without one exits 2, a compiled
+  mount under `--threads` (which never served it) exits 2, and a WSGI
+  mount without one exits 78 once detection has run. The three existing
+  mount refusals (only compiled mounts, a hold mount without `--realtime`
+  or `M0_GRANT_KEY`) moved before the fork: under `--workers N` they ran
+  in every worker and ended in "5 rapid crashes" and exit 1, and
+  `--doctor` answered 0 for the first of them. `main` and `--doctor` now
+  refuse through one function. `smoke-doctor` holds eight new mount rows
+  to both agreement and a named exit code.
+
 - **A thread a WSGI application starts runs while the server is idle, with
   or without a handler pool** (#310, SPEC E20). With no pool — an unmounted
   `--realtime`, `--blocking-threads 0`, or `--workers N` given explicitly —
