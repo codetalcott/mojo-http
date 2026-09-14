@@ -1442,6 +1442,22 @@
       "evidence": "`Smoke test a Mojo mount beside a Python one` (every PR) \u2014 under `M0_POOL_DEBUG=1` with four handler threads, shutdown must report four threads registered on the Mojo lane as on the WSGI one; before, the Mojo lane reported 0. Measured on `/native/probe` at 16 connections beside a WSGI mount (Apple M4): eight threads went from 202k lane wakes and 104k rps on 2.04 cores to 61k wakes and 133k rps on 1.35 cores, the one-thread figures, and the route now beats the WSGI route beside it per core"
     },
     {
+      "id": "M23",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "Mounts under `--threads` on free-threaded CPython: WSGI mounts serve from their own lanes in every loop with their prefixes intact, a slow mount does not stall another, and SIGTERM ends every loop; an ASGI mount is refused with 78 on this toolchain (modular/modular#5726) rather than served",
+      "status": "verified",
+      "evidence": "`py-canary` (weekly) \u2014 phase G runs `poe smoke-mounts-threads` on 3.14t: Django and Flask mounted under `--threads 2 --blocking-threads 4`, the Flask mount's `SCRIPT_NAME` and `url_for`, `scripts/hybrid_isolation.py` measuring the Flask mount while four blocking Django views hold the Django lane (50 ms budget, a shared lane lands near 2 s), two clean loop exits on SIGTERM, and the ASGI refusal with its message and `--doctor`'s 78. On a GIL-enabled interpreter the same task checks only that a mounted `--threads` server is refused. It replaces `smoke-hybrid`'s phase 3t, which served ASGI mounts under `--threads` and so could not pass on the only interpreter where it ran, and which no scheduled job ran"
+    },
+    {
+      "id": "M24",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "A mounted server under `--threads` on a GIL-enabled interpreter is refused with 78, never served, as an unmounted one is",
+      "status": "verified",
+      "evidence": "`Smoke test mounts under the threaded mode's guard` (every PR) \u2014 Django and Flask mounted under `--threads 2` must exit 78 on CI's GIL-enabled 3.13; the same task is M23's full check on 3.14t"
+    },
+    {
       "id": "N1",
       "section": "N",
       "category": "N. Writing an application in Mojo",

@@ -10,6 +10,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **Mounts under `--threads` are tested where they can run** (SPEC M23).
+  `smoke-hybrid`'s `--threads` phase served ASGI mounts, which a
+  free-threaded build refuses with exit 78 (modular/modular#5726). So it
+  could not pass on the only interpreter where it ran, and no scheduled
+  job ran it. It is now `poe smoke-mounts-threads`, phase G of the weekly
+  free-threaded canary. There, Django and Flask mounts serve with their
+  prefixes under `--threads 2`, a slow Django mount does not stall the
+  Flask one (`hybrid_isolation.py` takes `ISOLATION_FAST_PATH` to measure
+  a WSGI mount), SIGTERM ends both loops, and the ASGI refusal is pinned.
+  On a GIL-enabled interpreter the task checks only that a mounted
+  `--threads` server is refused.
+
 - **A Mojo mount no longer slows down as its handler pool grows** (SPEC
   M22). `MojoPool` threads never registered on their lane, so the pool's
   elastic wake rules read the lane as "every thread parked" whenever its
