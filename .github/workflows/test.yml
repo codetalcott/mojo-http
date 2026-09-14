@@ -652,6 +652,12 @@ jobs:
       # requirement. The mode itself is proven weekly by py-canary on 3.14t.
       - name: Smoke test the threaded mode's guard
         run: uv run poe smoke-threads
+      # The same guard for a MOUNTED server (SPEC M24): a mount set under
+      # --threads on these runners is refused with 78, never served. What
+      # the task proves on 3.14t -- WSGI mounts per lane, isolation, the
+      # pinned ASGI refusal -- is py-canary's weekly phase G (M23).
+      - name: Smoke test mounts under the threaded mode's guard
+        run: uv run poe smoke-mounts-threads
       # Stage B, the part that does NOT need free-threading: a pool under a
       # GIL-enabled interpreter still isolates a sleeping view, because a view
       # that waits releases the GIL. The measurement -- a fast request answered

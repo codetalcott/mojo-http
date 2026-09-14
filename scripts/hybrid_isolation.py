@@ -20,6 +20,16 @@ import urllib.request
 
 BASE = "http://127.0.0.1:" + os.environ.get("M0_PORT", "8110")
 
+FAST_PATH = os.environ.get("ISOLATION_FAST_PATH", "/app/")
+"""The mount measured while the sync mount's threads are held. The async
+mount by default; `smoke-mounts-threads` points it at a second WSGI mount,
+because under `--threads` on this toolchain there is no async mount to point
+at (an ASGI app is refused there) and the claim becomes lane isolation
+between two sync mounts: four blocking Django views hold the Django lane's
+threads, and the Flask lane's must not wait for them."""
+
+FAST_LABEL = os.environ.get("ISOLATION_FAST_LABEL", "asgi")
+
 HOLD_MS = 2000.0
 """How long each blocking sync view holds a pool thread. The failure this
 script exists to catch parks the async mount behind one, so a broken run
@@ -86,7 +96,7 @@ def timed(path, timeout, what):
 def main():
     # Warm both mounts: first-touch import and lifespan cost is not latency.
     timed("/", 30, "the sync mount's warm-up")
-    timed("/app/", 30, "the async mount's warm-up")
+    timed(FAST_PATH, 30, "the measured mount's warm-up")
 
     blockers = [
         threading.Thread(target=lambda: get("/slow?ms=%d" % HOLD_MS))
@@ -101,7 +111,7 @@ def main():
     # work still returns (~HOLD_MS) and is measured, so the ordinary failure
     # reports a number rather than an error. Only a total hang trips `timed`.
     samples = sorted(
-        timed("/app/", 15, "an async-mount sample") for _ in range(12)
+        timed(FAST_PATH, 15, "a measured-mount sample") for _ in range(12)
     )
     p50 = samples[len(samples) // 2]
     p99 = samples[-1]
@@ -113,10 +123,10 @@ def main():
     # number that quietly drifts from 12x to 2x is the warning that comes
     # before the failure.
     print(
-        "hybrid isolation: asgi p50=%.1fms p99=%.1fms under 4 blocking sync"
+        "hybrid isolation: %s p50=%.1fms p99=%.1fms under 4 blocking sync"
         " views (budget %.0fms, %.1fx headroom; a shared execution mode"
         " would land near %.0fms)"
-        % (p50, p99, BUDGET_MS, BUDGET_MS / max(p99, 0.001), HOLD_MS)
+        % (FAST_LABEL, p50, p99, BUDGET_MS, BUDGET_MS / max(p99, 0.001), HOLD_MS)
     )
     if p99 > BUDGET_MS:
         shared = p99 > HOLD_MS / 2

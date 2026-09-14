@@ -56,7 +56,10 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — an upstream fix to the `PyObject` layout retires
   it; the re-test is `smoke-django-realtime` phase 6 on 3.14t, with L18
-  keeping the refusal honest until then.
+  keeping the refusal honest until then. Retiring it also means turning
+  `smoke-mounts-threads`' pinned ASGI refusal back into a served ASGI mount
+  beside the WSGI ones (SPEC M23), the mixed phase `smoke-hybrid` carried
+  as phase 3t until 2026-09-14.
 
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It
   shells out for linking; a `python:*-slim` image fails with `unable to
