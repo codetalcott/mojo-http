@@ -258,10 +258,17 @@ code depends on:
     `M0_WORKER_INDEX`/`M0_WORKER_SPAWNED` set, and `main` runs again from
     the top as a worker that binds nothing — it adopts the listener
     (`M0_LISTEN_FD`), the bus socketpairs (`M0_BUS_READ_FDS`/
-    `M0_BUS_WRITE_FDS`) and the shared page (`M0_SHARED_ID_FD`, file-backed
-    only in this mode, because an anonymous mapping dies at exec) by fd
+    `M0_BUS_WRITE_FDS`) and the shared page (`M0_SHARED_ID_FD`; an
+    anonymous mapping dies at exec) by fd
     number, and re-exports `M0_SHARED_ID_ADDR` for its own address before
-    Python starts. Every inherited fd goes through `keep_across_exec`:
+    Python starts. The page is file-backed in EVERY mode since #322, and
+    carries a magic word in slot 2 (`SHARED_PAGE_MAGIC`): a child process
+    an application starts execs too, and `m0pub` numbers only from a page
+    it has verified -- mapped from `M0_SHARED_ID_FD`, or at an address the
+    kernel reports readable (a pipe `write`, never `mincore`, which
+    succeeds for unmapped addresses on macOS) -- because an inherited
+    address was a SIGSEGV on Linux and a silent write into the child's own
+    memory on macOS. `m0pub.child_fds()` is what a child is handed. Every inherited fd goes through `keep_across_exec`:
     macOS's `shm_open` sets `FD_CLOEXEC`, measured as EBADF in the worker.
     Core ML cannot run in a forked child at all
     (docs/notes/coreml-embeddings.md), which is what this exists for.
