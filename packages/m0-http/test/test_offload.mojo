@@ -21,6 +21,7 @@ from lightbug_http.offload import (
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
+    POOL_FREE_WAKE_AGE_NS,
 )
 from lightbug_http.uri import URI
 
@@ -775,6 +776,88 @@ def test_on_a_free_threaded_interpreter_the_pool_wakes_eagerly_and_counts_from_t
     _ = setenv("M0_POOL_PARALLEL", "", True)
     forced.set_parallel(True)
     assert_false(forced.is_parallel())
+
+
+def test_a_gil_free_lane_wakes_a_sibling_behind_a_draining_ring() raises:
+    """A Mojo mount's lane, beside a Python lane in one pool. Both get the
+    same history: two threads, one parked, three jobs pushed, one taken, so
+    each ring has MOVED since the loop's last look. The Python lane is left
+    alone (the progress rule: a sibling would queue for the GIL). The
+    GIL-free lane gets its parked sibling woken, because its head has waited
+    past `POOL_FREE_WAKE_AGE_NS` since its push -- at 50 ms on a clock whose
+    GIL threshold is 100 ms, so both halves are pinned: counting from the
+    push, and the lower threshold. Without them `/native/search` ran on one
+    of four threads. `submit` stays elastic on both lanes: a push beside a
+    busy thread wakes nobody, which is what keeps a trivial Mojo route at
+    one thread's rate. `M0_POOL_PARALLEL=0` puts the GIL rule back.
+
+    covers: M25
+    """
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    comptime T = 100_000_000
+    comptime MS = 1_000_000
+    pool.add_lane(String(""))
+    pool.add_lane(String("/native"))
+    pool.set_lane_gil_free(1)
+    assert_false(pool.is_lane_gil_free(0))
+    assert_true(pool.is_lane_gil_free(1))
+    assert_true(POOL_FREE_WAKE_AGE_NS < 50 * MS)
+    for lane in range(2):
+        pool.note_thread(lane, 2)
+        pool.note_parked(lane, 1)
+    var t0 = perf_counter_ns()
+    assert_equal(pool.wake_aged(t0, T), 0)
+    for slot in range(3):
+        pool.park_request(slot, _request("/q"))
+        assert_true(pool.submit(slot, String("/q")))
+        pool.park_request(slot + 3, _request("/native/q"))
+        assert_true(pool.submit(slot + 3, String("/native/q")))
+    # Elastic submit on both: a thread of each lane is busy.
+    assert_equal(pool.wakes_in_flight(0), 0)
+    assert_equal(pool.wakes_in_flight(1), 0)
+    # The busy threads take one job each: both rings moved.
+    assert_equal(_next_slot(pool, 0), 0)
+    assert_equal(_next_slot(pool, 1), 3)
+    assert_equal(pool.wake_aged(t0 + 50 * MS, T), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    assert_equal(pool.wakes_in_flight(1), 1)
+    # One wake per parked thread, however many passes find the head old.
+    assert_equal(pool.wake_aged(t0 + 60 * MS, T), 0)
+    # The woken sibling takes the rest; its socket poll retires the wake.
+    pool.note_parked(1, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool, 1), 4)
+    assert_equal(_next_slot(pool, 1), 5)
+    assert_equal(pool.wakes_in_flight(1), 0)
+    assert_equal(_next_slot(pool, 0), 1)
+    assert_equal(_next_slot(pool, 0), 2)
+    pool.note_parked(0, -1)
+    for lane in range(2):
+        pool.note_thread(lane, -2)
+
+    # The knob: forced to the GIL rule, a marked lane is an ordinary one.
+    _ = setenv("M0_POOL_PARALLEL", "0", True)
+    var forced = OffloadPool(8)
+    _ = setenv("M0_POOL_PARALLEL", "", True)
+    forced.add_lane(String(""))
+    forced.add_lane(String("/native"))
+    forced.set_lane_gil_free(1)
+    assert_false(forced.is_lane_gil_free(1))
+    forced.note_thread(1, 2)
+    forced.note_parked(1, 1)
+    var t1 = perf_counter_ns()
+    assert_equal(forced.wake_aged(t1, T), 0)
+    for slot in range(2):
+        forced.park_request(slot, _request("/native/q"))
+        assert_true(forced.submit(slot, String("/native/q")))
+    assert_equal(_next_slot(forced, 1), 0)
+    assert_equal(forced.wake_aged(t1 + 50 * MS, T), 0)
+    assert_equal(forced.wakes_in_flight(1), 0)
+    assert_equal(_next_slot(forced, 1), 1)
+    forced.note_parked(1, -1)
+    forced.note_thread(1, -2)
 
 
 def test_the_idle_spin_follows_its_measurement_knob() raises:

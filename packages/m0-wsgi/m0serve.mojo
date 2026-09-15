@@ -1699,6 +1699,15 @@ def _serve_offloaded(
             pool.add_lane(opts.mount_prefixes[i])
     var mojo_ln = mojo_lanes(opts)
     var hold_ln = hold_lanes(opts)
+    # A compiled mount's threads never attach, so its lane is not queueing
+    # for a GIL and a job that has waited past the spin gets a sibling woken
+    # whether or not the ring is moving (`OffloadPool.lane_gil_free`). Under
+    # the GIL lanes' progress rule the Mojo mount's search route ran on one
+    # of four threads. After `add_lane`, which declared these lanes.
+    for i in range(len(mojo_ln)):
+        pool.set_lane_gil_free(mojo_ln[i])
+    for i in range(len(hold_ln)):
+        pool.set_lane_gil_free(hold_ln[i])
     var pool_count = (
         opts.blocking_threads
         if (len(wsgi_lanes) > 0 or not executor) else 0
