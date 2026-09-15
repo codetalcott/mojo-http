@@ -574,7 +574,14 @@ code depends on:
       because a parked thread beside a queued job is an idle core there,
       not a GIL waiter — measured on 3.14t, where the GIL rules held the
       fast route's p99 at 8–10 ms under slow views against 2–4 with eager
-      wakes, and neither variant of the stall check moved it. The single
+      wakes, and neither variant of the stall check moved it. **A Mojo or
+      hold mount's lane is GIL-free on any interpreter**
+      (`set_lane_gil_free`, marked by `_serve_offloaded`): its stall check
+      counts from the push against the idle spin
+      (`POOL_FREE_WAKE_AGE_NS`, 10 µs), but its `submit` stays elastic —
+      the progress rule held a Mojo compute route to one of four threads
+      (15k rps against 42k), and eager wakes cost the trivial probe 21 %
+      (SPEC M25). The single
       spinner and the wake by name on each thread's own channel apply
       either way. That check replaced the chained wake (`_chain_wake`, a
       thread that took a job poking a sibling for the rest; kept for the

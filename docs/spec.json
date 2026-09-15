@@ -1458,6 +1458,14 @@
       "evidence": "`Smoke test mounts under the threaded mode's guard` (every PR) \u2014 Django and Flask mounted under `--threads 2` must exit 78 on CI's GIL-enabled 3.13; the same task is M23's full check on 3.14t"
     },
     {
+      "id": "M25",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "A Mojo or hold mount's lane is not held to one thread by the GIL lanes' progress rule: its threads never attach, so the loop wakes a parked sibling once the head of its ring has waited `POOL_FREE_WAKE_AGE_NS` since its push, whether or not the ring is moving, while `submit` keeps the elastic rule (`M0_POOL_PARALLEL=0` restores the GIL rule on every lane)",
+      "status": "verified",
+      "evidence": "`test_offload.mojo:test_a_gil_free_lane_wakes_a_sibling_behind_a_draining_ring` (every PR) \u2014 a GIL lane and a GIL-free lane in one pool with the same history (a busy thread, a parked one, a ring that moved): only the GIL-free lane's sibling is woken, at 50 ms on a clock whose GIL threshold is 100 ms, and neither push wakes anyone; reverting the count from the push, the lower threshold, the elastic submit, the knob or the mark each fails it. `smoke-mojo-mount`'s pool-debug phase asserts the wiring: the Mojo lane prints as GIL-free and the WSGI lane does not. Measured on `/native/search` beside a WSGI mount, four threads, eight connections (Apple M4): 15k rps on 1.2 cores at full selectivity and 36k on 1.4 at a quarter, where the eager wakes served 42k on 4.2 and 78k on 3.5 but cost the trivial `/native/probe` 21 %; with this rule 43k and 76k, and the price is paid by the lightest routes: the probe 195k on 1.57 cores against 199k on 1.51, the sel=5 search 111k against 115k"
+    },
+    {
       "id": "N1",
       "section": "N",
       "category": "N. Writing an application in Mojo",
