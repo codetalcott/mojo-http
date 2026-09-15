@@ -10,8 +10,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [1.4.0] — 2026-09-15
 
-Mounts that start are mounts that can be served, and a pool-less loop that
-lets an application's own threads run.
+Mounts that start are mounts that can be served, a Mojo mount that uses
+every thread it is given, a pool-less loop that lets an application's own
+threads run, and a child process that can publish without crashing.
 
 ### Added
 
@@ -33,8 +34,12 @@ lets an application's own threads run.
   does nothing until SIGKILL. `M0_SIM_ON_LOOP=1` moves the identical step
   onto `tick` — same work, same cadence, same publish, only the thread
   differs — and is both the A/B knob and the gate's negative arm: a trivial
-  request measured 0–1 ms off the loop against 199–200 ms on it, so the
-  100 ms threshold has margin on both sides. `poe smoke-sim-loop` also
+  request measured 0–1 ms off the loop against up to 200 ms on it. Only a
+  request that lands in a step's first half waits the gate's 100 ms, so the
+  on-loop arm's margin is the probe's sample count: it took three samples
+  and failed 19 of 60 local runs once their phases were random, as a slow
+  runner makes them (it failed a CI run at 98 ms); it takes 24 at random
+  gaps. `poe smoke-sim-loop` also
   asserts the step ids arrive contiguous (the bus is best-effort; at this
   cadence it must not drop) and that SIGTERM with a step in flight still
   exits 0. Building it found two defects of the class it exists to prevent:
