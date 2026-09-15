@@ -65,7 +65,7 @@ comfortably clean, and `apps/sim_loop` runs at 4Hz.
 
 ## The application
 
-`apps/sim_loop`, and three things in it are the point because each is easy
+`apps/sim_loop`, and four things in it are the point because each is easy
 to get wrong somewhere else:
 
 - **The bus is created unconditionally, at one worker too.**
@@ -75,6 +75,10 @@ to get wrong somewhere else:
   in a single process.
 - **`skip_worker = -1`, not this worker's index.** Nothing has queued the
   step locally. Passing the index publishes to nobody, and nothing says so.
+- **The thread holds every worker's write fd.** `publish_to_channels`
+  sends to the list it is given and no further, so a thread handed
+  `bus.write_fds[0]` reaches worker 0's subscribers alone — the third
+  defect below.
 - **The thread is joined within a bound.** `pthread_join` has no timeout,
   so `join_within` waits on the body's status slot instead — which is why
   the body writes `BLK_STATUS` as its very last act. A step that overruns
@@ -98,6 +102,22 @@ running it rather than by reading it:
 2. **The first probe never joined its thread**, relying on process exit.
    That is the unbounded-shutdown bug in miniature; the reference joins.
 
+A third was found later, by reading, and it is the one the reference's own
+comments denied:
+
+3. **Under `M0_WORKERS>1` only worker 0's streams got the steps.** The
+   thread published to `bus.write_fds[0]` alone, while the module docstring
+   and the comment above the spawn both said every worker's loop received
+   the frames. The gate ran one worker, where the first channel and every
+   channel are the same list, so nothing could see it. The thread now holds
+   every write fd, and the gate has a two-worker phase. That phase needed
+   the app to share accepts (SPEC E16): without it the first worker to wake
+   takes the connection — 32 of 32 in E16's macOS burst — and four held
+   streams opened one at a time all sat on worker 0 in 1 of 3 runs, passing
+   against the broken fan-out. With it they alternated in 5 of 5. `/events`
+   names its worker in `x-worker`, and the phase fails as vacuous if the
+   streams did not span both workers.
+
 ## The gate
 
 `smoke-sim-loop`, at 4Hz x 200ms — an 80% duty cycle, chosen so the
@@ -106,9 +126,15 @@ leaves the 100 ms threshold with margin on both sides rather than being a
 hair's breadth either way.
 
 It asserts the steps arrive, their ids are contiguous, the loop stays free,
-the on-loop arm is both slow AND productive, and SIGTERM with a step in
-flight still exits 0. Sabotaged by publishing with `skip_worker = 0`, which
-delivers to nobody and fails the first assertion.
+the on-loop arm is both slow AND productive, SIGTERM with a step in flight
+still exits 0, and under two workers four held streams span both workers
+and each carries the steps. Sabotaged by publishing with `skip_worker = 0`,
+which delivers to nobody and fails the first assertion; by handing the
+thread `bus.write_fds[0]` alone, which fails the two-worker phase's frame
+count (worker 1's streams carried 0 steps, worker 0's 17-18); and, over that
+broken fan-out, by turning accept sharing off: in 1 of 3 macOS runs the bare
+race put all four streams on worker 0, the frame count passed, and only the
+worker count failed the phase. That run is why the worker count is there.
 
 ## Not built
 
