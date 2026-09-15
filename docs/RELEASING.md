@@ -126,6 +126,12 @@ colima VM and stops that VM when the run ends, pass or fail — a daemon
 that was already up is used as found and left running, because only what
 the run started is the run's to reap (a forgotten 8 GiB VM reservation was
 half of a 16 GB machine, measured 2026-09-01). The
+Run it with docker otherwise idle, and that includes the gate before it:
+twice a section has come back thin ("a thin section proves nothing") while
+something else used the VM -- once a `docker exec` into `m0lin`, and in the
+1.4.0 run `bench-linux-conclusions` stopping that container as `autobahn`
+started, where the rerun alone passed 247 of 247. Run it first, or leave a
+gap after the other container gates. The
 runner drives the sections separately (a single pass wedges on the slot a
 cap-killed connection just released), skips 9 (performance: every case
 exceeds the cap) and 12/13 (`permessage-deflate`, I14), and compares in
