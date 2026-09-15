@@ -3599,6 +3599,25 @@ echo "smoke-app-threads OK"
 python3 scripts/emit.py --covers E20 --task smoke-app-threads
 """
 
+[tool.poe.tasks.smoke-child-publish]
+help = "A child process a view starts publishes onto the bus without crashing, numbered when handed the page (SPEC I23)"
+deps = ["build-serve"]
+shell = """
+# #322: the bus descriptors survive exec and the event-id page did not, so a
+# child that inherited M0_SHARED_ID_ADDR took an id at an address in its
+# parent's memory -- SIGSEGV on Linux, and on macOS eight bytes of its own
+# memory incremented and published as an event id. The probe serves
+# bareapp.childpub in three shapes; each non-handoff child must exit 0 and
+# publish unnumbered, and a child given m0pub.child_fds() must number from
+# the shared counter. It needs a libm0core a plain Python child can load.
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+[ -f "packages/m0-core/libm0core.$ext" ] || uv run poe build-ffi || exit 1
+out=$(python3 scripts/child_publish_probe.py --port 8671 2>&1) || { echo "$out"; exit 1; }
+echo "$out"
+echo "smoke-child-publish OK"
+python3 scripts/emit.py --covers I23 --task smoke-child-publish
+"""
+
 [tool.poe.tasks.smoke-blocking-threads]
 help = "Stage B: a slow view must not stall the connections pinned behind it"
 deps = ["build-serve"]
