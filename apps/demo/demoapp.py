@@ -23,12 +23,22 @@ not:
   in a dict: with two workers a visitor may get up to twice the nominal
   rate, which is fine for a demo and is said on the page.
 
+What the page shows is the claim itself: each line says which worker
+published it and which worker delivered it to this tab, and marks the ones
+that crossed the bus between them. The stream's worker comes from its
+`hello`; a socket has no hello (the server discards a websocket hold's
+body), so each tab tags what it sends with a random tab id, the view echoes
+it, and the tab learns its socket's worker from its OWN echo -- never from
+another tab's, which is on the same channel and names a different socket.
+
 Served by `m0serve demoapp:application --realtime --workers 2` (the deploy
 CMD is in deploy/demo/Dockerfile; `poe serve-demo` runs the same thing from
 the tree). Under gunicorn the same file serves, and the holds degrade to
 short plain responses.
 """
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -56,6 +66,11 @@ COOKIE = "m0demo"
 TOKEN = re.compile(r"^[0-9a-f]{32}$")
 CHANNEL_PREFIX = "demo/"
 
+# A tab's id: 8 hex digits the page picks for itself. It authenticates
+# nothing -- any tab on the channel can claim any id -- and only lets a tab
+# tell its own echo from its siblings'.
+TAB = re.compile(r"^[0-9a-f]{8}$")
+
 # The limits. A message is a line of chat, not a document; the rate is per
 # visitor per worker, and the app says so on the page.
 MAX_MESSAGE_BYTES = 280
@@ -64,11 +79,18 @@ RATE_WINDOW_S = 60.0
 
 # Nothing here is signed -- no sessions, no forms with CSRF tokens -- so the
 # key protects nothing and a constant is honest about it.
+#
+# SECURE_PROXY_SSL_HEADER: Fly's proxy terminates TLS and says so in
+# `X-Forwarded-Proto`, and the server never consults that header itself
+# (`wsgi.url_scheme` is config). Trusting it here decides one thing -- whether
+# the cookie is `Secure` -- and a client that forges it over plain HTTP only
+# gets a cookie its own browser will not store.
 settings.configure(
     DEBUG=False,
     ALLOWED_HOSTS=["*"],
     ROOT_URLCONF=__name__,
     SECRET_KEY="demo-not-a-secret-nothing-is-signed",
+    SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"),
 )
 django.setup()
 
@@ -163,12 +185,36 @@ def _channel(token):
     return CHANNEL_PREFIX + token
 
 
+def _tab(value):
+    """A tab id if `value` is one, else "" -- a malformed id is dropped, not refused."""
+    return value if isinstance(value, str) and TAB.match(value) else ""
+
+
 def _payload(kind, **fields):
     """One frame's data: a JSON object with a `type`, so both transports and
     every kind of event parse the same way in the page."""
     fields["type"] = kind
     fields["worker"] = os.getpid()
     return json.dumps(fields, separators=(",", ":"))
+
+
+def _socket_message(body):
+    """(text, tab) from one inbound WebSocket message.
+
+    The page sends `{"text": ..., "tab": ...}`; any other client -- `websocat`,
+    the probe's plain frames -- sends the text itself, and gets it back with
+    no tab. Only an object with a string `text` is read as the envelope, so a
+    person typing JSON into a raw client still has it broadcast verbatim.
+    """
+    raw = body.decode("utf-8", "replace")
+    if raw.startswith("{"):
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("text"), str):
+            return obj["text"], _tab(obj.get("tab"))
+    return raw, ""
 
 
 def _text_response(status, text):
@@ -190,13 +236,14 @@ def index(request):
         # A session cookie: the room lasts as long as the browser does, and
         # a returning visitor gets a fresh, empty one. SameSite=Lax is the
         # browser default and is what keeps a cross-site POST from carrying
-        # it. Not `Secure`, so the same file works on http://localhost.
-        response.set_cookie(COOKIE, token, samesite="Lax", httponly=False)
+        # it. HttpOnly because the page's script never reads it (the channel
+        # prefix in the footer is rendered here); `Secure` whenever the
+        # request arrived over HTTPS, so the same file still works on
+        # http://localhost.
+        response.set_cookie(COOKIE, token, samesite="Lax", httponly=True,
+                            secure=request.is_secure())
     response["Cache-Control"] = "no-store"
-    response["Content-Security-Policy"] = (
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'"
-    )
+    response["Content-Security-Policy"] = CSP
     return response
 
 
@@ -239,7 +286,9 @@ def ws(request):
     Same decision, other transport: WSGI cannot produce the 101, so the view
     does not try -- it answers `M0-Hold: websocket` and m0serve performs the
     RFC 6455 handshake. The body is discarded, so there is no `hello` here;
-    the page shows "connected" and learns the worker from the first echo.
+    the page shows "connected" and learns the worker from the echo of a
+    message it sent itself, which `ws_message` runs on the worker holding
+    the socket.
 
     The server makes no `Origin` check because it cannot know the policy,
     and this view authenticates with a cookie, which a page on any origin
@@ -277,7 +326,8 @@ def ws_message(request):
     token = channel[len(CHANNEL_PREFIX):]
     if request.headers.get("M0-Opcode") != "1":
         return _text_response(415, "text frames only")
-    if len(request.body) > MAX_MESSAGE_BYTES:
+    text, tab = _socket_message(request.body)
+    if len(text.encode("utf-8")) > MAX_MESSAGE_BYTES:
         if _notice_due(token):
             m0pub.publish(channel, _payload(
                 "notice", text="message dropped: over %d bytes" % MAX_MESSAGE_BYTES))
@@ -290,9 +340,8 @@ def ws_message(request):
         response = _text_response(429, "rate limited")
         response["Retry-After"] = str(retry_after)
         return response
-    text = request.body.decode("utf-8", "replace")
     workers, event_id = m0pub.publish_with_id(
-        channel, _payload("message", text=text, via="websocket",
+        channel, _payload("message", text=text, via="websocket", tab=tab,
                           slot=request.headers.get("M0-Slot", "")))
     return JsonResponse({"ok": True, "id": event_id, "workers": workers})
 
@@ -321,7 +370,8 @@ def publish(request):
         response["Retry-After"] = str(retry_after)
         return response
     workers, event_id = m0pub.publish_with_id(
-        _channel(token), _payload("message", text=text, via="http"))
+        _channel(token), _payload("message", text=text, via="http",
+                                  tab=_tab(request.POST.get("tab"))))
     return JsonResponse({"ok": True, "id": event_id, "workers": workers})
 
 
@@ -364,6 +414,9 @@ PAGE = """<!doctype html>
   li .meta { display: block; font-size: .75rem; color: var(--muted); font-family: var(--mono); }
   li.notice { color: var(--warn); }
   li.notice .meta { color: var(--warn); }
+  .crossed { color: var(--ok); font-weight: 600; white-space: nowrap; }
+  .tally { font-size: .85rem; color: var(--muted); margin: 1rem 0 0; }
+  .tally code, .lead code { font-family: var(--mono); font-size: .9em; }
   footer { margin-top: 1.5rem; font-size: .85rem; color: var(--muted); }
   footer p { margin: .35rem 0; }
   footer code { font-family: var(--mono); font-size: .85em; }
@@ -371,10 +424,10 @@ PAGE = """<!doctype html>
 </style>
 <main>
   <h1>m<span class="zero">0</span>serve live demo</h1>
-  <p class="lead"><b>Open this page in a second tab</b> and type in either pane, in either tab.
+  <p class="lead"><b><a href="/" target="_blank" rel="noopener">Open this page in a second tab</a></b> and type in either pane, in either tab.
     Every pane in every tab shows it within the second. The left pane is a held Server-Sent Events stream,
     the right a WebSocket. Both were approved by an ordinary synchronous Django view answering with two
-    response headers; the server holds the connection from there.</p>
+    response headers; the server holds the connection from there. This tab is <code id="tab-id">&hellip;</code>.</p>
   <div class="panes">
     <section class="pane" id="sse">
       <h2><span class="dot" id="sse-dot"></span>Server-Sent Events</h2>
@@ -387,14 +440,16 @@ PAGE = """<!doctype html>
       <h2><span class="dot" id="ws-dot"></span>WebSocket</h2>
       <p class="status" id="ws-status">connecting&hellip;</p>
       <form id="ws-form"><input id="ws-input" maxlength="__BYTES__" autocomplete="off" placeholder="say something (sent and received on the socket)"><button>send</button></form>
-      <p class="how">new WebSocket("/ws") &middot; ws.send(text)</p>
+      <p class="how">new WebSocket("/ws") &middot; ws.send(JSON.stringify({text, tab}))</p>
       <ul id="ws-log"></ul>
     </section>
   </div>
+  <p class="tally" id="tally">This tab: nothing delivered yet.</p>
   <footer>
     <p>Served by <b>m0serve __VERSION__</b> on one small Fly.io machine, two worker processes, from
       <a href="https://github.com/codetalcott/mojo-http/blob/main/apps/demo/demoapp.py">one Python file</a>.
-      A message published by one worker reaches tabs held by the other over the server's bus; each line says which worker published it.</p>
+      A message published by one worker reaches connections held by the other over the server's bus: each line says which
+      worker published it and which delivered it to this tab, and marks the ones that crossed.</p>
     <p>Your channel is <code>demo/__TOKEN__&hellip;</code>, from a cookie this browser was handed: tabs sharing it share the channel,
       and nobody else sees your messages. Limits: __LIMIT__ messages a minute per worker, __BYTES__ bytes each, nothing stored.</p>
     <p><a href="https://m0serve.dev/">Documentation</a> &middot; <a href="https://m0serve.dev/quickstart/">Quickstart</a> &middot;
@@ -405,20 +460,50 @@ PAGE = """<!doctype html>
 (() => {
   const $ = id => document.getElementById(id);
   const MAX = 50;
+  const TAB = Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, "0")).join("");
+  $("tab-id").textContent = TAB;
+
+  // The worker holding each of this tab's connections, or null until known:
+  // the stream's from its hello, the socket's from this tab's OWN echo. Any
+  // other tab's socket message arrives here too and names a different socket.
+  const held = { sse: null, ws: null };
+  let deliveries = 0, crossed = 0;
+
+  function tally() {
+    $("tally").textContent = "This tab: " + deliveries + (deliveries === 1 ? " delivery, " : " deliveries, ")
+      + crossed + " of them published by the other worker and carried across by the bus.";
+  }
 
   function line(pane, ev) {
     const log = $(pane + "-log");
     const li = document.createElement("li");
     const meta = document.createElement("span");
     meta.className = "meta";
+    li.textContent = ev.text;
     if (ev.type === "notice") {
       li.className = "notice";
-      li.textContent = ev.text;
       meta.textContent = "notice · worker " + ev.worker;
     } else {
-      li.textContent = ev.text;
-      meta.textContent = "via " + ev.via + " · published by worker " + ev.worker
-        + (ev.id ? " · #" + ev.id : "") + " · " + new Date().toLocaleTimeString();
+      const parts = ["via " + ev.via];
+      if (ev.tab) parts.push(ev.tab === TAB ? "from this tab" : "from tab " + ev.tab);
+      const by = typeof ev.worker === "number" ? held[pane] : null;
+      if (by === null) parts.push("published by worker " + ev.worker);
+      else if (by === ev.worker) parts.push("published and delivered by worker " + by);
+      else parts.push("published by worker " + ev.worker + ", delivered by worker " + by);
+      if (ev.id) parts.push("#" + ev.id);
+      parts.push(new Date().toLocaleTimeString());
+      meta.textContent = parts.join(" · ");
+      if (by !== null) {
+        deliveries++;
+        if (by !== ev.worker) {
+          crossed++;
+          const badge = document.createElement("span");
+          badge.className = "crossed";
+          badge.textContent = "crossed the bus";
+          meta.append(" · ", badge);
+        }
+        tally();
+      }
     }
     li.appendChild(meta);
     log.prepend(li);
@@ -434,22 +519,26 @@ PAGE = """<!doctype html>
     try { return JSON.parse(data); } catch (e) { return { type: "message", text: data, via: "?", worker: "?" }; }
   }
 
-  // --- Server-Sent Events: the browser reconnects on its own, sending
-  // Last-Event-ID, and the server never re-sends what this tab has seen.
+  // --- Server-Sent Events: the browser reconnects on its own. Nothing is
+  // stored, so what was published while a tab was away is not replayed.
   const es = new EventSource("/events");
   es.onmessage = e => {
     const ev = parse(e.data);
-    if (ev.type === "hello") { status("sse", true, "held by worker " + ev.worker + " · m0serve " + ev.version); return; }
+    if (ev.type === "hello") {
+      held.sse = ev.worker;
+      status("sse", true, "held by worker " + ev.worker + " · m0serve " + ev.version);
+      return;
+    }
     if (ev.id === undefined && e.lastEventId) ev.id = e.lastEventId;
     line("sse", ev);
   };
-  es.onerror = () => status("sse", false, "reconnecting…");
+  es.onerror = () => { held.sse = null; status("sse", false, "reconnecting…"); };
   $("sse-form").onsubmit = async e => {
     e.preventDefault();
     const input = $("sse-input"), text = input.value.trim();
     if (!text) return;
     input.value = "";
-    const r = await fetch("/publish", { method: "POST", body: new URLSearchParams({ text }) });
+    const r = await fetch("/publish", { method: "POST", body: new URLSearchParams({ text, tab: TAB }) });
     if (!r.ok) {
       const body = await r.json().catch(() => ({ error: r.status + " " + r.statusText }));
       line("sse", { type: "notice", text: body.error, worker: "—" });
@@ -457,19 +546,28 @@ PAGE = """<!doctype html>
   };
 
   // --- WebSocket: the socket is held by the server; what this tab sends
-  // reaches a Django view as a POST, which rebroadcasts it to every tab.
+  // reaches a Django view as a POST on the worker holding the socket, which
+  // rebroadcasts it to every tab. So this tab's own echo names that worker.
   let ws, backoff = 500;
   function connect() {
     const scheme = location.protocol === "https:" ? "wss://" : "ws://";
     ws = new WebSocket(scheme + location.host + "/ws");
-    ws.onopen = () => { backoff = 500; status("ws", true, "connected · the first echo names the worker holding it"); };
+    ws.onopen = () => { backoff = 500; status("ws", true, "connected · send a message to learn which worker holds it"); };
     ws.onmessage = e => {
       const ev = parse(e.data);
       if (ev.type === "hello") return;
-      if (ev.via === "websocket" && ev.slot !== undefined) status("ws", true, "connected · slot " + ev.slot + " on worker " + ev.worker + " answered a message");
+      if (ev.via === "websocket" && ev.tab === TAB && typeof ev.worker === "number") {
+        held.ws = ev.worker;
+        status("ws", true, "held by worker " + ev.worker + ", slot " + ev.slot + " · learned from this tab's own message");
+      }
       line("ws", ev);
     };
-    ws.onclose = () => { status("ws", false, "reconnecting…"); setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 8000); };
+    ws.onclose = () => {
+      held.ws = null;
+      status("ws", false, "reconnecting…");
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 8000);
+    };
     ws.onerror = () => ws.close();
   }
   connect();
@@ -478,13 +576,37 @@ PAGE = """<!doctype html>
     const input = $("ws-input"), text = input.value.trim();
     if (!text) return;
     input.value = "";
-    if (ws.readyState === WebSocket.OPEN) ws.send(text);
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ text, tab: TAB }));
     else line("ws", { type: "notice", text: "socket not open; reconnecting", worker: "—" });
   };
 })();
 </script>
 </html>
 """
+
+
+
+def _inline_hash(page, tag):
+    """The CSP source naming the page's one inline `<tag>` block by its sha256.
+
+    A browser hashes the element's text exactly as served, so the block may
+    carry no placeholder that `index` substitutes: that is refused here, at
+    import, rather than discovered as a page whose script silently never runs.
+    """
+    body = page.split("<%s>" % tag, 1)[1].split("</%s>" % tag, 1)[0]
+    if re.search(r"__[A-Z]+__", body):
+        raise RuntimeError("the inline <%s> carries a placeholder; its hash would not match" % tag)
+    return "'sha256-%s'" % base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
+
+
+# No 'unsafe-inline': the one script and the one stylesheet are allowed by
+# hash, so markup injected into the page -- there is no path for it today --
+# could not run.
+CSP = (
+    "default-src 'none'; script-src %s; style-src %s; connect-src 'self'; img-src data:; "
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    % (_inline_hash(PAGE, "script"), _inline_hash(PAGE, "style"))
+)
 
 urlpatterns = [
     path("", index),
