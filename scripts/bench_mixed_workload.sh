@@ -138,6 +138,17 @@ sweep() {   # $1 = label
 }
 
 GRANIAN=$(cd "${BENCH_VENV:-.venv}/bin" && pwd)/granian
+# Granian's row is the table's comparator: render_bench_docs.py's drift
+# check measures every other row's move against it. The loop below used to
+# skip it silently when granian was not installed -- which is the 3.14t
+# swap's venv, since granian is the `bench` group and py314t-try syncs only
+# the defaults -- and the 1.4.0 recording lost the row that way. Refuse
+# instead; BENCH_NO_GRANIAN=1 is for a run that knows it wants no reference.
+if [ ! -x "${BENCH_VENV:-.venv}/bin/granian" ] && [ "${BENCH_NO_GRANIAN:-}" != 1 ]; then
+  echo "bench_mixed_workload: ${BENCH_VENV:-.venv}/bin/granian is missing, so the comparator row would be skipped." >&2
+  echo "  uv sync --frozen --group bench   (under py314t-try: uv sync --frozen --python 3.14t --group bench)" >&2
+  exit 1
+fi
 SRVLOG=$(mktemp)
 quiet_or_die
 for round in $(seq 1 $ROUNDS); do

@@ -1,0 +1,164 @@
+{
+  "bench": "asgi_wrk_hello",
+  "recorded_utc": "2026-09-15T15:36:21+00:00",
+  "environment": {
+    "version": "1.4.0",
+    "git_sha": "d0608ed",
+    "source_stamp": "",
+    "git_dirty": false,
+    "os": "Darwin 25.6.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.0.0 (ed45d567)",
+    "granian": "granian 2.8.2",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "numpy": "2.5.3",
+    "cpu": "Apple M4",
+    "cores_physical": "10",
+    "os_build": "macOS 26.6.2 (25G83)",
+    "memory_bytes": "17179869184",
+    "cores_performance": "4",
+    "cores_efficiency": "6",
+    "power_source": "AC Power",
+    "low_power_mode": "0",
+    "thermal": "No thermal warning level has been recorded; No performance warning level has been recorded; No CPU power status has been recorded"
+  },
+  "parameters": {
+    "client": "wrk -t2 -c16 -d8s, browser headers",
+    "app": "apps/asgi_bare bareapp.asgi:application /",
+    "rounds": "3",
+    "server": "bin/m0serve",
+    "executor_python": "/Users/williamtalcott/projects/mojo-http/.venv/bin/python3",
+    "executor_loop": "uvloop",
+    "inverted": "0"
+  },
+  "definitions": {
+    "medians.rps_per_core": "median rps across rounds / median cores across rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured window"
+  },
+  "rows": [
+    {
+      "round": 1,
+      "name": "m0serve asgi-executor",
+      "rps": 129689.61,
+      "p50_us": 114.0,
+      "p90_us": 148.0,
+      "p99_us": 193.0,
+      "max_us": 5850.0,
+      "cores": 1.61
+    },
+    {
+      "round": 1,
+      "name": "uvicorn asyncio",
+      "rps": 59628.6,
+      "p50_us": 266.0,
+      "p90_us": 280.0,
+      "p99_us": 298.0,
+      "max_us": 6610.0,
+      "cores": 0.98
+    },
+    {
+      "round": 1,
+      "name": "uvicorn uvloop",
+      "rps": 84553.28,
+      "p50_us": 179.0,
+      "p90_us": 188.0,
+      "p99_us": 204.0,
+      "max_us": 5750.0,
+      "cores": 0.99
+    },
+    {
+      "round": 2,
+      "name": "m0serve asgi-executor",
+      "rps": 129919.7,
+      "p50_us": 114.0,
+      "p90_us": 148.0,
+      "p99_us": 192.0,
+      "max_us": 5850.0,
+      "cores": 1.6
+    },
+    {
+      "round": 2,
+      "name": "uvicorn asyncio",
+      "rps": 58609.31,
+      "p50_us": 271.0,
+      "p90_us": 284.0,
+      "p99_us": 307.0,
+      "max_us": 7050.0,
+      "cores": 0.99
+    },
+    {
+      "round": 2,
+      "name": "uvicorn uvloop",
+      "rps": 84400.04,
+      "p50_us": 179.0,
+      "p90_us": 188.0,
+      "p99_us": 205.0,
+      "max_us": 5680.0,
+      "cores": 0.99
+    },
+    {
+      "round": 3,
+      "name": "m0serve asgi-executor",
+      "rps": 130946.86,
+      "p50_us": 113.0,
+      "p90_us": 146.0,
+      "p99_us": 193.0,
+      "max_us": 3440.0,
+      "cores": 1.61
+    },
+    {
+      "round": 3,
+      "name": "uvicorn asyncio",
+      "rps": 54475.46,
+      "p50_us": 274.0,
+      "p90_us": 313.0,
+      "p99_us": 5610.0,
+      "max_us": 41500.0,
+      "cores": 0.98
+    },
+    {
+      "round": 3,
+      "name": "uvicorn uvloop",
+      "rps": 83598.75,
+      "p50_us": 180.0,
+      "p90_us": 190.0,
+      "p99_us": 229.0,
+      "max_us": 10230.0,
+      "cores": 0.98
+    }
+  ],
+  "medians": {
+    "m0serve asgi-executor": {
+      "rps": 129919.7,
+      "rounds": 3,
+      "cores": 1.61,
+      "rps_per_core": 80695,
+      "rps_per_core_rounds": 81200,
+      "p99_us": 193.0,
+      "p99_us_min": 192.0,
+      "p99_us_max": 193.0
+    },
+    "uvicorn asyncio": {
+      "rps": 58609.31,
+      "rounds": 3,
+      "cores": 0.98,
+      "rps_per_core": 59805,
+      "rps_per_core_rounds": 59201,
+      "p99_us": 307.0,
+      "p99_us_min": 298.0,
+      "p99_us_max": 5610.0
+    },
+    "uvicorn uvloop": {
+      "rps": 84400.04,
+      "rounds": 3,
+      "cores": 0.99,
+      "rps_per_core": 85253,
+      "rps_per_core_rounds": 85305,
+      "p99_us": 205.0,
+      "p99_us_min": 204.0,
+      "p99_us_max": 229.0
+    }
+  }
+}

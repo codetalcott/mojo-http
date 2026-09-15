@@ -54,7 +54,13 @@ rather than OS behaviour, so Linux is the coverage that matters; this is
 the arm that would catch a macOS-only difference in how the library is
 found, since the search path differs by platform and Homebrew's libpq is
 keg-only. Point it at a server with `M0_PG_TEST_URL`, or let it default to
-`postgres:///postgres`. It fails without a server; it never skips.
+`postgres:///postgres`. A role with a password needs a URL whose host
+matches its `~/.pgpass` line: the default connects over the Unix socket,
+which a `localhost` entry does not cover, and fails every test with
+`fe_sendauth: no password supplied` (the 1.4.0 run), where
+`M0_PG_TEST_URL=postgres://postgres@localhost:5432/postgres` passes. It
+fails without a server; it never skips. Budget half an hour: the three
+files took 26 minutes on the 1.4.0 run.
 
 **And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
 reproducers, in the `m0lin` Linux container — the only place a lost pool
@@ -120,6 +126,12 @@ colima VM and stops that VM when the run ends, pass or fail — a daemon
 that was already up is used as found and left running, because only what
 the run started is the run's to reap (a forgotten 8 GiB VM reservation was
 half of a 16 GB machine, measured 2026-09-01). The
+Run it with docker otherwise idle, and that includes the gate before it:
+twice a section has come back thin ("a thin section proves nothing") while
+something else used the VM -- once a `docker exec` into `m0lin`, and in the
+1.4.0 run `bench-linux-conclusions` stopping that container as `autobahn`
+started, where the rerun alone passed 247 of 247. Run it first, or leave a
+gap after the other container gates. The
 runner drives the sections separately (a single pass wedges on the slot a
 cap-killed connection just released), skips 9 (performance: every case
 exceeds the cap) and 12/13 (`permessage-deflate`, I14), and compares in
@@ -193,10 +205,18 @@ outside their own tree is above half a core across three samples
 (`scripts/bench_guard.py`), because three system daemons once depressed
 the pool rows 7 % with the comparators unmoved: build `apps/hello`
 to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,
-`poe bench-asgi-wrk`, `poe bench-asgi`, and `scripts/bench_mixed_workload.sh`
+`poe bench-asgi-wrk`, `poe bench-asgi`, `poe bench-mojo-mount` (the table in
+docs/SERVER_PERFORMANCE.md, its comparators the numpy rows), and
+`scripts/bench_mixed_workload.sh`
 under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
 Reproducing section; `.venv-pinned/` is ignored so the parked venv does not
-stamp the artifact dirty). Commit the artifacts and run
+stamp the artifact dirty). The swap builds its venv from the default groups
+only, and Granian — the mixed workload's comparator row — is the `bench`
+group, so run `uv sync --frozen --python 3.14t --group bench` after the swap
+and put `.venv/bin` first on `PATH` for the bench. The 1.4.0 run skipped
+that step and recorded a table with no Granian row; the bench now refuses to
+start without it, and `render_bench_docs.py --check` refuses an artifact of
+any kind that holds none of its comparator rows. Commit the artifacts and run
 `poe render-bench-docs`. Its `--check` refuses a new artifact whose
 non-comparator rows moved more than 5 % against the comparators' own
 move since the previous artifact of that kind — the contamination
