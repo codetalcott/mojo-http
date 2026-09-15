@@ -108,6 +108,21 @@ threads run, and a child process that can publish without crashing.
   `definitions`, `medians.*.rps_per_core_rounds` beside the existing figure,
   and this bench a `comparisons` block with both ratios per selectivity.
 
+- **A benchmark artifact without its comparator rows is refused, and the
+  Mojo mount's table is rendered.** The mixed workload recorded for this
+  release under the free-threaded swap had no Granian row: the swap's venv is
+  built from the default dependency groups, Granian is the `bench` group, and
+  `bench_mixed_workload.sh` skipped the row without a word. The drift check
+  then found no comparator in common with the previous artifact and passed,
+  a leniency meant for older artifacts, so a table would have lost its
+  reference row with its contamination check vacuous. `render_bench_docs.py`
+  now refuses a rendered kind's newest artifact that holds none of its
+  comparator rows, and the bench refuses to start without Granian
+  (`BENCH_NO_GRANIAN=1` to mean it). docs/SERVER_PERFORMANCE.md renders the
+  Mojo-mount table from `bench-mojo-mount`'s artifact, printing both
+  definitions of per core and naming them, and every rendered table's
+  environment line now carries the machine conditions the recorder stamps.
+
 - **Stopping the WSGI handler pool right after starting it no longer
   hangs.** Each `BlockingPool` thread registered on its lane as the first
   act of its own body. `stop` pills registered threads on their own wake
