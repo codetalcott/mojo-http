@@ -8,7 +8,82 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-15
+
+Mounts that start are mounts that can be served, and a pool-less loop that
+lets an application's own threads run.
+
+### Added
+
+- **A reference for periodic work that does not run on the event loop**
+  (SPEC N15, `apps/sim_loop`). `HTTPService.tick` fires on the loop thread,
+  so what it costs is its duty cycle — work over period — and that transfers
+  into p99 about one for one; the docstring now says so, and this is the
+  other half: where the work goes instead, as an application and a gate
+  rather than a paragraph. A 4 Hz simulation runs on a thread of its own and
+  publishes each step through the `BroadcastBus` with `skip_worker = -1`,
+  which the loop drains into `sse_peer_frame`. Three things in it are easy to
+  get wrong elsewhere: the bus is created unconditionally, at ONE worker too,
+  because here it is the thread-to-loop channel rather than only
+  worker-to-worker (`apps/datastar_counter` joins it only above one worker
+  and reads as though that were the rule); `skip_worker` is `-1`, since
+  nothing has queued the step locally and passing the worker index publishes
+  to nobody without saying so; and the thread is joined within a bound,
+  `pthread_join` having no timeout, so an unbounded join is a SIGTERM that
+  does nothing until SIGKILL. `M0_SIM_ON_LOOP=1` moves the identical step
+  onto `tick` — same work, same cadence, same publish, only the thread
+  differs — and is both the A/B knob and the gate's negative arm: a trivial
+  request measured 0–1 ms off the loop against 199–200 ms on it, so the
+  100 ms threshold has margin on both sides. `poe smoke-sim-loop` also
+  asserts the step ids arrive contiguous (the bus is best-effort; at this
+  cadence it must not drop) and that SIGTERM with a step in flight still
+  exits 0. Building it found two defects of the class it exists to prevent:
+  the on-loop arm silently did nothing, `tick` never firing unless
+  `M0_APP_TICK_MS` is set — zero steps and a fast `/now`, reading as "the
+  loop coped fine" — and the first probe never joined its thread at all.
+  D26 records the framework helper deliberately NOT built: one application
+  is not evidence of which cadence, shutdown and publish choices are right.
+
+- **A `SessionStart` hook, so a fresh container can build and test the
+  tree** (`.claude/hooks/session-start.sh`). Three things are missing from a
+  bare Linux container and each fails in a way that reads as a code problem
+  rather than a setup problem. Without patchelf, `poe build-serve` aborts the
+  whole sequence as the LAST step of `test-all`, after every test has passed,
+  and nothing earlier in the run hints that the tree is fine. Without
+  `uv sync` there is no `mojo` at all, since the toolchain comes from the
+  venv. And the `.mojoc` artifacts are gitignored, so a fresh clone has none
+  and every cross-package import fails to resolve until `build-all` runs —
+  which CLAUDE.md notes appears as unresolved imports in the editor, i.e.
+  indistinguishable from a broken checkout. The hook is best effort
+  throughout and always exits 0: a session that refuses to start because apt
+  could not reach the network is worse than one that starts with a loud note
+  saying what is missing, and the failure this exists to prevent is a silent
+  one. Remote-only (`CLAUDE_CODE_REMOTE`), so a developer's own machine, and
+  macOS, which needs none of it, are untouched.
+
 ### Fixed
+
+- **`bench-mojo-mount` runs on a fresh clone, and its artifact says what it
+  measured.** Four defects, each confirmed on `main` before being fixed.
+  `build-serve` linked four packages through `.mojoc` files a fresh clone
+  does not have, so that bench — and every smoke that depends on
+  `build-serve` — failed with `unable to locate module 'm0_http'` until
+  `build-all` ran by hand; CI never saw it because every job runs `build-all`
+  first. A MISSING artifact is now built in dependency order, the
+  `[ -f ] || uv run poe build-ffi` idiom the tree already uses, while a stale
+  one is not, so a smoke does not pay for the chain on every call. The bench
+  left `mojo_mount_bench.log` at the root unignored, so every run stamped
+  `git_dirty: true` — the 2026-09-10 artifact among them — and about thirty
+  other root logs written by tasks were missing from the per-name list too;
+  one `/*.log` replaces it. The recorder stamped no machine conditions: macOS
+  artifacts now carry power source, Low Power Mode, pmset's thermal report,
+  the performance / efficiency core split, memory and the OS build, every
+  artifact numpy's version, and Linux ones memory. And "per core" had two
+  definitions — the headline (1.65x / 1.41x) was the median of each round's
+  ratio while the artifact's medians block divides median rps by median cores
+  (1.61x / 1.39x), and one table mixed them — so artifacts now carry
+  `definitions`, `medians.*.rps_per_core_rounds` beside the existing figure,
+  and this bench a `comparisons` block with both ratios per selectivity.
 
 - **Stopping the WSGI handler pool right after starting it no longer
   hangs.** Each `BlockingPool` thread registered on its lane as the first
@@ -4355,6 +4430,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.4.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.4.0
 [1.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.3.0
 [1.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.2.0
 [1.1.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.1.0
