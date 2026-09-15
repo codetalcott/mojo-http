@@ -20,6 +20,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   learns its socket's worker only from its own echo. A client that sends
   plain text, or JSON that is not the envelope, still has it broadcast
   verbatim.
+- **`apps/sim_loop` delivered its steps to worker 0's streams only under
+  `M0_WORKERS>1`** (SPEC N15). The simulation thread published to
+  `bus.write_fds[0]` alone, while the app's own comments said every
+  worker's loop received the frames; its gate ran one worker, where the
+  first channel is every channel. The thread now holds every write fd. The
+  app also shares accepts (SPEC E16) — without it one worker takes nearly
+  every connection — and `/events` names its worker in `x-worker`.
+  `smoke-sim-loop` gains a two-worker phase: four held streams must span
+  both workers and each carry the steps, so a run that lands them all on
+  one worker fails as vacuous rather than passing. The reference for
+  periodic work off the loop is what a Mojo application copies, which is
+  why this is a fix and not a footnote.
 
 ### Changed
 

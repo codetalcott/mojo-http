@@ -1534,12 +1534,12 @@ port=8321
 pid=
 cleanup() {
   kill $pid 2>/dev/null
-  rm -f sim_off.log sim_on.log
+  rm -f sim_off.log sim_on.log sim_two.log
 }
 trap cleanup EXIT
 fail() {
   echo "$1"
-  for f in sim_off.log sim_on.log; do
+  for f in sim_off.log sim_on.log sim_two.log; do
     [ -f "$f" ] && { echo "=== $f ==="; cat "$f"; }
   done
   exit 1
@@ -1553,6 +1553,7 @@ fail() {
 # probe's fixed gap hid how few that was (scripts/sim_loop_probe.py).
 start() {
   M0_PORT=$port M0_SIM_HZ=4 M0_SIM_COST_MS=200 M0_SIM_ON_LOOP=$1 \
+    M0_WORKERS=${3:-1} \
     mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
     apps/sim_loop/server.mojo > "$2" 2>&1 &
   pid=$!
@@ -1610,6 +1611,29 @@ pid=
 [ $(( t1 - t0 )) -lt 10 ] \
   || fail "SIGTERM took $(( t1 - t0 ))s; the simulation thread is not joined within the drain"
 echo "SIGTERM with a step in flight: exit 0 in $(( t1 - t0 ))s"
+
+# --- two workers: every worker's streams get the steps --------------------
+# The simulation runs in worker 0 alone, so a stream held by worker 1 sees a
+# step only if the thread publishes to EVERY bus channel. At one worker the
+# first channel and all of them are the same list, which is how the app
+# shipped publishing to worker 0 alone under a comment saying otherwise.
+# Accept sharing spreads the held streams and each names its worker, so a
+# run that put every stream on one worker fails as vacuous rather than
+# passing on the broken fan-out. Its own port: a supervisor that has not
+# quite let go of 8321 must not answer this phase's health check.
+port=8322
+start 0 sim_two.log 2
+two=$(python3 scripts/sim_loop_probe.py $port 4 --streams 4) || fail "two workers: $two"
+two_workers=${two#*workers=}
+two_workers=${two_workers%% *}
+two_min=${two#*min_frames=}
+two_min=${two_min%% *}
+[ "$two_workers" -ge 2 ] \
+  || fail "two workers: every stream landed on one worker ($two) -- accept sharing did not spread them, so this phase proved nothing"
+[ "$two_min" -ge 8 ] \
+  || fail "two workers: a stream carried only $two_min steps in 4s at 4Hz ($two) -- the simulation publishes to fewer bus channels than there are workers"
+echo "two workers: $two"
+stop
 
 echo "smoke-sim-loop OK"
 python3 scripts/emit.py sim.off_loop_now_ms "$worst" --unit ms --limit 100 --task smoke-sim-loop

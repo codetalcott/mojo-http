@@ -19,7 +19,7 @@ So the cadence runs on a thread of its own and publishes each step through
 the `BroadcastBus`, exactly as `--pg-listen`'s listener thread does. The
 loop drains the channel and pays only `sse_peer_frame`.
 
-Three things here are the point, and each is a thing that is easy to get
+Four things here are the point, and each is a thing that is easy to get
 wrong somewhere else:
 
 1. **The bus is created unconditionally, at one worker too.** In
@@ -30,7 +30,13 @@ wrong somewhere else:
 2. **`skip_worker = -1`, not this worker's index.** Nothing has queued the
    step locally, so every channel wants it, this one's included. Passing
    the worker index is the same silent nothing.
-3. **The thread is joined within a bound at shutdown.** A step that
+3. **The thread holds EVERY worker's write fd, not the first.**
+   `publish_to_channels` sends to exactly the list it is given, so a list
+   of one reaches worker 0's subscribers and nobody else's. This app
+   shipped that way — `bus.write_fds[0]` — under a comment saying every
+   worker received the frames, and its gate ran one worker, where the two
+   are the same list. The gate's two-worker phase is the counterfactual.
+4. **The thread is joined within a bound at shutdown.** A step that
    overruns must not turn SIGTERM into a hang, and `pthread_join` has no
    timeout — `join_within` waits on the body's status slot instead, which
    is why the body writes `BLK_STATUS` as its very last act.
@@ -42,16 +48,24 @@ others) and the negative arm of `smoke-sim-loop`: without it the gate
 would pass on a server that does no work at all.
 
 Under `M0_WORKERS>1` only worker 0 runs the simulation — the tick-owner
-rule — and every worker's loop receives the frames over the same bus.
+rule — and every worker's loop receives the frames over the same bus. The
+workers share accepts (`AcceptShare`, SPEC E16), so held streams spread
+across them instead of all landing on whichever worker wakes first, and
+`/events` names its worker in `x-worker` so a client can tell. The on-loop
+arm queues each step locally with `notify`, so it reaches worker 0's
+subscribers only; it is the one-worker latency comparison, not a fan-out
+shape.
 
 Run it:  uv run poe serve-sim
 """
 
+from std.ffi import external_call
 from std.memory import Pointer
 from std.os import getenv
 from std.time import perf_counter_ns, sleep
 
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from lightbug_http.accept_share import AcceptShare, accept_share_slots
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.connection import ListenConfig
 
@@ -66,7 +80,6 @@ from m0_http import (
 )
 from m0_http.multiworker import SharedAtomics, shared_fetch_add
 from m0_http.threads import (
-    BLK_BUS_FD,
     BLK_STATUS,
     BLK_USER,
     STATUS_OK,
@@ -81,6 +94,12 @@ comptime BLK_COST = 10
 
 comptime BLK_STOP = 11
 """Set to 1 by the main thread to end the simulation."""
+
+comptime BLK_FDS = 12
+"""Address of the bus write fds, one Int per worker (process-lifetime)."""
+
+comptime BLK_NFDS = 13
+"""How many fds `BLK_FDS` holds: the worker count."""
 
 comptime JOIN_TIMEOUT_NS = 5_000_000_000
 """The drain's own 5s. A straggler is abandoned, not waited for."""
@@ -126,14 +145,18 @@ def sim_body(arg: Int) -> Int:
     """The simulation thread: cadence, work, publish. Never touches the loop.
 
     Runs beside an interpreter it has not attached to and holds no server
-    state — the only thing it shares with the loop is the bus socket.
+    state — the only thing it shares with the loops is the bus sockets, one
+    per worker.
     """
     var block = ThreadBlock(arg)
-    var write_fd = block.get(BLK_BUS_FD)
     var period_ns = block.get(BLK_USER)
     var cost_ns = block.get(BLK_COST)
+    var fds_addr = block.get(BLK_FDS)
     var fds = List[Int]()
-    fds.append(write_fd)
+    for i in range(block.get(BLK_NFDS)):
+        fds.append(
+            Pointer[Int, MutUntrackedOrigin](unsafe_from_address=fds_addr + i * 8)[]
+        )
 
     var step = 0
     var next_ns = perf_counter_ns()
@@ -166,6 +189,7 @@ struct SimHandler(HTTPService):
     var period_ms: Int
     var tick_owner: Bool
     var id_addr: Int
+    var worker: Int
     var _last_step_ms: Int
 
     def __init__(
@@ -176,6 +200,7 @@ struct SimHandler(HTTPService):
         period_ms: Int,
         tick_owner: Bool,
         id_addr: Int,
+        worker: Int,
     ):
         self.streams = SSERegistry(capacity)
         self.on_loop = on_loop
@@ -183,6 +208,7 @@ struct SimHandler(HTTPService):
         self.period_ms = period_ms
         self.tick_owner = tick_owner
         self.id_addr = id_addr
+        self.worker = worker
         self._last_step_ms = 0
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
@@ -195,7 +221,11 @@ struct SimHandler(HTTPService):
             return OK("now", "text/plain")
         if path == STREAM_URL:
             self.streams.subscribe(req.slot_id, STREAM_URL, 0)
-            return sse_response()
+            # Which worker holds this stream: the only way a client can tell
+            # that a frame crossed the bus rather than being produced beside it.
+            var resp = sse_response()
+            resp.headers["x-worker"] = String(self.worker)
+            return resp^
         return OK(PAGE, "text/html")
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
@@ -247,15 +277,25 @@ def main() raises:
     )
 
     var listener = ListenConfig().listen(config.address())
-    var shared = SharedAtomics(1)
+    # Slot 0 is the event id; accept sharing's per-worker lines follow it on
+    # the same page (`accept_share_slots`), which is m0serve's layout.
+    var shared = SharedAtomics(accept_share_slots(config.workers))
     # Unconditional, and at one worker too: this is the thread-to-loop
     # channel, not only worker-to-worker. See the module docstring.
     var bus = BroadcastBus(config.workers)
+    # Created pre-fork like the bus: one channel per worker, every worker
+    # holding every send end. Without it one worker takes nearly every
+    # connection (SPEC E16). `M0_ACCEPT_SHARE=0` is the bare race.
+    var share = AcceptShare()
+    if config.workers > 1 and getenv("M0_ACCEPT_SHARE", "") != "0":
+        share = AcceptShare(config.workers)
     var worker = 0
     if config.workers > 1:
         var supervisor = WorkerSupervisor(config.workers)
         supervisor.fork_all()
         worker = supervisor.worker_index
+    # Inactive with one worker or under the knob; `bind` is harmless there.
+    share.bind(worker, shared.addr(0))
 
     # The registry indexes slots directly, so its capacity must be at least
     # the server's max connections.
@@ -275,14 +315,26 @@ def main() raises:
         period_ms,
         tick_owner=(worker == 0),
         id_addr=shared.addr(0),
+        worker=worker,
     )
 
     # One simulation, in worker 0 — the tick-owner rule. Every worker's loop
-    # still receives its frames, because every channel gets the publish.
+    # still receives its frames, because every channel gets the publish: the
+    # thread is handed ALL the write fds. One of them reaches worker 0 alone.
     var threads = ThreadSet(1)
     var running = not on_loop and worker == 0 and period_ms > 0
     if running:
-        threads.block(0).set(BLK_BUS_FD, bus.write_fds[0])
+        # Process-lifetime, like the thread set's own blocks: the thread may
+        # outlive `main`'s last use of anything here (a straggler abandoned
+        # at the join), so nothing it reads may be a local Mojo destroys.
+        var nfds = len(bus.write_fds)
+        var fds_addr = external_call["malloc", Int, Int](nfds * 8)
+        for i in range(nfds):
+            Pointer[Int, MutUntrackedOrigin](
+                unsafe_from_address=fds_addr + i * 8
+            )[] = bus.write_fds[i]
+        threads.block(0).set(BLK_FDS, fds_addr)
+        threads.block(0).set(BLK_NFDS, nfds)
         threads.block(0).set(BLK_USER, period_ms * 1_000_000)
         threads.block(0).set(BLK_COST, cost_ms * 1_000_000)
         threads.block(0).set(BLK_STOP, 0)
@@ -296,6 +348,7 @@ def main() raises:
         handler,
         shutdown_read_fd=shutdown_fd,
         bus_read_fd=bus.read_fd(worker),
+        accept_share=share^,
     )
 
     # The loop has drained and returned. Tell the simulation to stop and
