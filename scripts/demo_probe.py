@@ -15,19 +15,28 @@ live site and how a developer checks `poe serve-demo`.
 What the HTTP phases assert, each the demo's own promise rather than the
 server's (those are I11, I12 and I20):
 
-  * the page answers 200, hands a first visitor a token cookie and names the
-    m0serve version that `/about` reports;
+  * the page answers 200, hands a first visitor a token cookie -- HttpOnly,
+    and Secure exactly when the target is HTTPS, which against the live site
+    is Fly's `X-Forwarded-Proto` reaching Django -- and names the m0serve
+    version that `/about` reports; its CSP carries no 'unsafe-inline' and
+    names the page's one inline script and one stylesheet by their sha256;
   * without the cookie, the hold views refuse (403) rather than hold an
     anonymous connection, and a WebSocket upgrade from a foreign Origin is
     refused too;
   * an SSE hold is subscribed: the head is the view's `hello` event naming
-    the worker that holds it;
-  * one HTTP publish reaches a SECOND stream on the same visitor's channel
-    and NOT a stranger's stream, which hears only heartbeat comments for a
-    measured silence -- the isolation check, and one of the two sabotages;
+    the worker that holds it -- the same worker the response's `X-Worker`
+    names, since the page labels every delivery with it;
+  * one HTTP publish reaches a SECOND stream on the same visitor's channel,
+    carrying the sending tab's id, and NOT a stranger's stream, which hears
+    only heartbeat comments for a measured silence -- the isolation check,
+    and one of the two sabotages;
   * a WebSocket upgrade is a real 101 (accept key verified), a text frame
     sent on it comes back to the socket AND to the visitor's streams marked
-    `via websocket`, and the stranger still hears nothing;
+    `via websocket`, and the stranger still hears nothing; the page's
+    `{"text", "tab"}` envelope comes back with its tab id and naming the
+    worker the 101's `X-Worker` names, which is what lets a tab learn its
+    socket's worker from its own echo; JSON that is not the envelope is
+    broadcast verbatim;
   * the limits: a message over the size cap is 413, and a burst of publishes
     meets a 429 with `Retry-After` inside the window the limit implies --
     none within the first LIMIT attempts (the limit is per worker, and no
@@ -352,6 +361,22 @@ def probe_http(t, silence=2.0, deliver=8.0):
     for needle in ('new EventSource("/events")', 'new WebSocket('):
         if needle not in text:
             fail(f"the page does not open {needle}")
+    flags = [f.strip().lower() for f in h.get("set-cookie", "").split(";")[1:]]
+    if "httponly" not in flags:
+        fail(f"the visitor cookie is not HttpOnly: {h.get('set-cookie')!r}")
+    if ("secure" in flags) != t.tls:
+        fail(f"the visitor cookie is {'not ' if t.tls else ''}Secure over "
+             f"{'https' if t.tls else 'http'}: {h.get('set-cookie')!r}")
+    csp = h.get("content-security-policy", "")
+    if "unsafe-inline" in csp:
+        fail(f"the CSP still allows 'unsafe-inline': {csp!r}")
+    for tag in ("script", "style"):
+        blocks = re.findall(rf"<{tag}>(.*?)</{tag}>", text, re.S)
+        if len(blocks) != 1:
+            fail(f"want exactly one inline <{tag}>, found {len(blocks)}")
+        digest = base64.b64encode(hashlib.sha256(blocks[0].encode("utf-8")).digest()).decode()
+        if f"'sha256-{digest}'" not in csp:
+            fail(f"the CSP does not name the page's inline <{tag}> by its hash -- the browser would refuse it")
     _, about_body = expect(t, "GET", "/about", 200)
     about = json.loads(about_body)
     version = about.get("m0serve", "")
@@ -391,6 +416,8 @@ def probe_http(t, silence=2.0, deliver=8.0):
     hello = s1.next_event(deliver)
     if not hello or hello.get("type") != "hello" or not hello.get("worker"):
         fail(f"the stream's head is not the view's hello event: {hello!r}")
+    if s1.worker is not None and str(hello["worker"]) != s1.worker:
+        fail(f"the hello names worker {hello['worker']} but X-Worker says {s1.worker}")
     print(f"stream 1 held by worker {s1.worker}, hello from {hello['worker']}")
 
     phase("one publish reaches a second tab on the same channel and not a stranger")
@@ -402,7 +429,7 @@ def probe_http(t, silence=2.0, deliver=8.0):
             fail("a second stream never received its hello")
     marker = "sse-" + uuid.uuid4().hex[:8]
     _, body = expect(t, "POST", "/publish", 200, cookie=token,
-                     body=urllib.parse.urlencode({"text": marker}),
+                     body=urllib.parse.urlencode({"text": marker, "tab": "5e5e0001"}),
                      headers={"Content-Type": "application/x-www-form-urlencoded"})
     published = json.loads(body)
     if not published.get("ok") or published.get("workers", 0) < 1:
@@ -411,6 +438,8 @@ def probe_http(t, silence=2.0, deliver=8.0):
         ev = s.next_event(deliver)
         if not ev or ev.get("text") != marker or ev.get("via") != "http":
             fail(f"the {name} stream heard {ev!r}, wanted {marker!r} via http")
+        if ev.get("tab") != "5e5e0001":
+            fail(f"the {name} stream heard the publish without its tab id: {ev!r}")
     leaked = s3.next_event(silence)
     if leaked is not None:
         fail(f"a STRANGER's stream heard {leaked!r} -- channels are not isolated")
@@ -432,6 +461,28 @@ def probe_http(t, silence=2.0, deliver=8.0):
             fail(f"the {name} stream heard {ev!r}, wanted the socket's {marker!r}")
     if s3.next_event(silence) is not None:
         fail("a stranger's stream heard a WebSocket message from another visitor's channel")
+    if echo.get("tab"):
+        fail(f"a plain-text frame came back claiming a tab: {echo!r}")
+    # The page's envelope: its echo must carry the tab id and name the worker
+    # holding THIS socket, or the page's "held by worker" line is wrong.
+    marker = "ws-" + uuid.uuid4().hex[:8]
+    ws_send(sock, 0x1, json.dumps({"text": marker, "tab": "5e5e0002"}).encode())
+    echo = ws_read_text(sock, deliver)
+    if not echo or echo.get("text") != marker or echo.get("tab") != "5e5e0002":
+        fail(f"the envelope came back as {echo!r}, wanted text {marker!r} from tab 5e5e0002")
+    if ws_worker is not None and str(echo.get("worker")) != ws_worker:
+        fail(f"the socket's own echo names worker {echo.get('worker')} but its 101 said X-Worker {ws_worker}")
+    for name, s in (("first", s1), ("second", s2)):
+        ev = s.next_event(deliver)
+        if not ev or ev.get("text") != marker or ev.get("tab") != "5e5e0002":
+            fail(f"the {name} stream heard {ev!r}, wanted the envelope's {marker!r} with its tab")
+    raw_json = '{"not": "the envelope"}'
+    ws_send(sock, 0x1, raw_json.encode())
+    echo = ws_read_text(sock, deliver)
+    if not echo or echo.get("text") != raw_json:
+        fail(f"JSON that is not the envelope came back as {echo!r}, wanted it verbatim")
+    for s in (s1, s2):
+        s.next_event(deliver)
     ws_send(sock, 0x2, b"\x00\x01")  # a binary frame: dropped by the view, heard by nobody
     if ws_read_text(sock, silence) is not None:
         fail("a binary frame was rebroadcast")

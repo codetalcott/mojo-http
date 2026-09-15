@@ -545,8 +545,8 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
      `demo.m0serve.dev` -- one machine, because the bus is per process --
      deployed by the same workflow as the site from the same pinned wheel
      and verified after each deploy by the probe that gates its image on
-     every pull request. It waits on the one-time Fly setup in
-     `deploy/demo/README.md` (app, certificate, DNS, token). Still open:
+     every pull request. It went live the same day, one machine, after
+     the one-time Fly setup in `deploy/demo/README.md`. Still open:
      the off-site half -- the homepage field on GitHub, djangopackages,
      the Modular forum.
 
