@@ -347,6 +347,33 @@ def drift_problems(kind, current, previous, current_name, previous_name,
     return out
 
 
+def comparator_problems(kind, current, current_name):
+    """An artifact of a kind with comparators must contain one. Pure.
+
+    `drift_problems` passes an artifact that shares no comparator with the
+    previous one -- right for a PREVIOUS artifact recorded before its kind
+    had them, and exactly wrong for the NEW one: an artifact with no
+    comparator rows cannot be checked for contamination at all, and the
+    check reads "no drift". The 1.4.0 mixed workload was recorded under the
+    3.14t swap, whose venv had no granian, and the bench skipped that row
+    without a word; the drift check then passed a table that had silently
+    lost its reference row.
+    """
+    comps = COMPARATORS.get(kind, set())
+    if not comps:
+        return []
+    names = folded(current)
+    if any(n in comps or any(n.startswith(c + " slow=") for c in comps) for n in names):
+        return []
+    return [
+        f"{kind}: {current_name} has none of its comparator rows "
+        f"({', '.join(sorted(comps))}), so its drift cannot be checked and the "
+        "table would lose its reference -- was the comparator installed? "
+        "(granian is the `bench` group: uv sync --group bench, and again "
+        "after py314t-try)"
+    ]
+
+
 def tree_version(pyproject_text):
     m = re.search(r'^version = "(\d+)\.(\d+)\.(\d+)"', pyproject_text, re.M)
     return tuple(int(x) for x in m.groups()) if m else None
@@ -445,6 +472,7 @@ def check_provenance():
             continue
         art = json.loads(path.read_text())
         problems += provenance_problems(kind, art, current)
+        problems += comparator_problems(kind, art, path.name)
         prev = previous(kind)
         problems += drift_problems(
             kind, art, json.loads(prev.read_text()) if prev else None,
@@ -1029,6 +1057,18 @@ def selftest():
     drift("no previous artifact", layer(196_000, 188_000, 165_600), None, previous=None, pname=None)
     no_comp = {"rows": [{"name": "m0serve+bare w1 bt1", "rps": 184_000}]}
     drift("no comparator in common", layer(196_000, 188_000, 165_600), None, previous=no_comp)
+    lost = mixed(3, prefixed=False)
+    got = comparator_problems("mixed-workload", lost, "mixed-workload-cur.json")
+    fine = any("none of its comparator rows" in g for g in got)
+    print(f"  {'caught' if fine else 'MISSED'}          a new artifact with no comparator rows (the swap's venv had no granian)")
+    ok &= fine
+    kept = mixed(3, prefixed=False); kept["rows"].append({"name": "granian bt=4 slow=0", "rps": 49_500.0, "round": 1})
+    got = comparator_problems("mixed-workload", kept, "mixed-workload-cur.json")
+    print(f"  {'caught' if not got else 'MISSED'}          (control: one comparator row, named with its slow level, is enough)")
+    ok &= not got
+    got = comparator_problems("layer-split", layer(196_000, 188_000, 184_000), "layer-split-cur.json")
+    print(f"  {'caught' if not got else 'MISSED'}          (control: a layer split with its comparators passes)")
+    ok &= not got
     mprev = mixed(2, prefixed=True); mprev["rows"] += [{"name": "r1 granian bt=4 slow=0", "rps": 50_000.0, "p99_us": 600.0}, {"name": "r2 granian bt=4 slow=0", "rps": 49_800.0, "p99_us": 600.0}]
     mcur = mixed(3, prefixed=False); mcur["rows"] += [{"name": "granian bt=4 slow=0", "rps": 49_500.0, "p99_us": 600.0, "round": 1}]
     for r in mcur["rows"]:

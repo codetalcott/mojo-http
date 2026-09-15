@@ -204,7 +204,13 @@ docs/SERVER_PERFORMANCE.md, its comparators the numpy rows), and
 `scripts/bench_mixed_workload.sh`
 under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
 Reproducing section; `.venv-pinned/` is ignored so the parked venv does not
-stamp the artifact dirty). Commit the artifacts and run
+stamp the artifact dirty). The swap builds its venv from the default groups
+only, and Granian — the mixed workload's comparator row — is the `bench`
+group, so run `uv sync --frozen --python 3.14t --group bench` after the swap
+and put `.venv/bin` first on `PATH` for the bench. The 1.4.0 run skipped
+that step and recorded a table with no Granian row; the bench now refuses to
+start without it, and `render_bench_docs.py --check` refuses an artifact of
+any kind that holds none of its comparator rows. Commit the artifacts and run
 `poe render-bench-docs`. Its `--check` refuses a new artifact whose
 non-comparator rows moved more than 5 % against the comparators' own
 move since the previous artifact of that kind — the contamination
