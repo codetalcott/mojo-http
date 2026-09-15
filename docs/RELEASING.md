@@ -193,7 +193,9 @@ outside their own tree is above half a core across three samples
 (`scripts/bench_guard.py`), because three system daemons once depressed
 the pool rows 7 % with the comparators unmoved: build `apps/hello`
 to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,
-`poe bench-asgi-wrk`, `poe bench-asgi`, and `scripts/bench_mixed_workload.sh`
+`poe bench-asgi-wrk`, `poe bench-asgi`, `poe bench-mojo-mount` (the table in
+docs/SERVER_PERFORMANCE.md, its comparators the numpy rows), and
+`scripts/bench_mixed_workload.sh`
 under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
 Reproducing section; `.venv-pinned/` is ignored so the parked venv does not
 stamp the artifact dirty). Commit the artifacts and run

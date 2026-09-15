@@ -18,12 +18,15 @@ cannot drift from the artifact it cites: ``--check`` runs in CI (via
 ``poe check-docs``) and fails the build when someone commits a new
 artifact without re-rendering, or edits a table by hand.
 
-Four kinds are rendered, across two documents. docs/WSGI_PERFORMANCE.md is
+Five kinds are rendered, across three documents. docs/WSGI_PERFORMANCE.md is
 the working record — narrative, dead ends, the measurements that inverted a
 conclusion. docs/BENCHMARKS.md is the public page, and the reason it renders
 from the same artifacts rather than quoting the working record is the whole
 premise of publishing numbers at all: a public claim and a private
-measurement that can disagree eventually do.
+measurement that can disagree eventually do. docs/SERVER_PERFORMANCE.md
+holds the fifth, `mojo-mount`: a Mojo mount against numpy in one process,
+which is not a comparison with another server and so is not on the public
+page.
 
 A kind with no artifact yet renders a stated absence rather than nothing.
 That is deliberate — ``mixed-workload`` is the strongest claim this project
@@ -268,6 +271,10 @@ COMPARATORS = {
     "asgi-wrk-hello": {"uvicorn asyncio", "uvicorn uvloop"},
     "asgi-executor": {"uvicorn"},
     "mixed-workload": {"granian bt=4"},
+    # The numpy arm moves with the machine and the interpreter, not with the
+    # Mojo mount's code -- #320 changed the Mojo lane's wakes and left these
+    # rows where they were.
+    "mojo-mount": {"python(sel=100)", "python(sel=25)", "python(sel=5)"},
 }
 DRIFT_TOLERANCE = 0.05
 
@@ -491,7 +498,11 @@ def provenance(path, d):
         envline += f"; {env['granian']}"
     envline += f"; {env.get('cpu', '?')}"
     if env.get("cores_physical"):
-        envline += f" ({env['cores_physical']} cores)"
+        split = ""
+        if env.get("cores_performance") and env.get("cores_efficiency"):
+            split = f": {env['cores_performance']}P+{env['cores_efficiency']}E"
+        envline += f" ({env['cores_physical']} cores{split})"
+    envline += _conditions(env)
     # `client` is the bench's own description of how it drove the server;
     # the wrk-shaped params are spelled as the command they came from,
     # because "wrk -c16 -d10s, 3 rounds, medians" is what a reader can
@@ -516,6 +527,30 @@ def provenance(path, d):
         envline += f"; executor loop: {p['executor_loop']}"
     bits.append(envline + ".")
     return bits
+
+
+def _conditions(env):
+    """The machine's own state, where the recorder stamped it (macOS, from
+    2026-09-15): memory, the OS build, power, and a thermal or Low Power Mode
+    warning only when there is one -- a clean run says nothing about either
+    rather than a sentence of pmset's "no warning" notes. Empty for an older
+    artifact, so a table rendered from one does not change."""
+    out = ""
+    if env.get("memory_bytes"):
+        try:
+            out += f"; {int(env['memory_bytes']) / 2**30:.0f} GB"
+        except ValueError:
+            pass
+    if env.get("os_build"):
+        out += f"; {env['os_build']}"
+    if env.get("power_source"):
+        out += f"; {env['power_source']}"
+    if env.get("low_power_mode") == "1":
+        out += "; LOW POWER MODE"
+    therm = env.get("thermal", "")
+    if therm and not all(part.strip().startswith("No ") for part in therm.split(";")):
+        out += f"; thermal: {therm}"
+    return out
 
 
 def ordered(kind, med):
@@ -646,6 +681,62 @@ def render_isolation_table(kind, path, d):
     return lines
 
 
+def render_mount_table(kind, path, d):
+    """The Mojo mount against numpy in one process, one row per selectivity.
+
+    Each arm's own figures, then Mojo over numpy twice: throughput, and per
+    core with the medians block's ratio in parentheses. The headline is the
+    artifact's `comparisons` block -- the median across rounds of the ratio
+    within each round, whose two arms run back to back -- and the
+    parenthesised figure is what a reader divides out of the columns to its
+    left. The two disagree by a few percent, and a reproduction compared
+    against the wrong one reads as a regression, which is why both are
+    printed and named.
+    """
+    med = d["medians"]
+    comp = d.get("comparisons", {}).get("by_sel", {})
+    sels = sorted(
+        {n[len("python(sel="):-1] for n in med if n.startswith("python(sel=")},
+        key=lambda s: -int(s),
+    )
+    lines = provenance(path, d) + [
+        "",
+        "| selected | numpy rps | cores | rps/core | Mojo rps | cores | rps/core | throughput | per core |",
+        "|---------:|----------:|------:|---------:|---------:|------:|---------:|-----------:|---------:|",
+    ]
+
+    def arm(name):
+        m = med.get(name)
+        if not m or "cores" not in m:
+            return ["—", "—", "—"]
+        return [f"{m['rps']:,.0f}", f"{m['cores']:.2f}", f"{m['rps_per_core']:,}"]
+
+    for sel in sels:
+        c = comp.get(sel, {})
+        thru = f"{c['throughput']:.2f}x" if c.get("throughput") is not None else "—"
+        per = f"{c['per_core']:.2f}x" if c.get("per_core") is not None else "—"
+        if c.get("per_core_of_medians") is not None:
+            per += f" ({c['per_core_of_medians']:.2f}x)"
+        lines.append(
+            f"| {sel} % | " + " | ".join(arm(f"python(sel={sel})"))
+            + " | " + " | ".join(arm(f"mojo(sel={sel})"))
+            + f" | {thru} | {per} |"
+        )
+    numpy = d["environment"].get("numpy")
+    lines += [
+        "",
+        "Throughput and per core are Mojo over numpy: the median across rounds"
+        " of the ratio within each round. In parentheses, the same per-core"
+        " ratio from the medians block — median rps over median cores for each"
+        " arm — which is what the columns to its left divide out to. Cores are"
+        " the server process's CPU seconds over wall seconds across the"
+        " measured window; both arms share one process, so the column is"
+        " each arm's own load, measured one at a time."
+        + (f" numpy {numpy}." if numpy else ""),
+    ]
+    return lines
+
+
 def render_absent(kind, note):
     return [
         f"_No `{kind}` artifact has been recorded yet._ {note}",
@@ -657,6 +748,7 @@ RENDERERS = {
     "asgi-wrk-hello": render_rps_table,
     "asgi-executor": render_tail_table,
     "mixed-workload": render_isolation_table,
+    "mojo-mount": render_mount_table,
 }
 
 ABSENT_NOTE = {
@@ -675,6 +767,7 @@ TARGETS = {
     REPO / "docs" / "BENCHMARKS.md": [
         "layer-split", "asgi-wrk-hello", "asgi-executor", "mixed-workload",
     ],
+    REPO / "docs" / "SERVER_PERFORMANCE.md": ["mojo-mount"],
 }
 
 
@@ -942,6 +1035,45 @@ def selftest():
         if r["name"].startswith("--workers"):
             r["rps"] = 79_000.0
     drift("the mixed kind folds both row shapes before comparing (55k -> 79k against a flat Granian)", mcur, "contamination signature", kind="mixed-workload", previous=mprev, pname="mixed-workload-prev.json")
+
+    # The mount table: both per-core definitions printed and named, and the
+    # machine conditions on the environment line only where they were stamped.
+    def mount(env_extra):
+        rows = []
+        for r in (1, 2, 3):
+            rows += [
+                {"round": r, "name": "python(sel=25)", "rps": 16_000.0 + r, "cores": 1.2, "rps_per_core": 13_300 + r},
+                {"round": r, "name": "mojo(sel=25)", "rps": 75_000.0 + r, "cores": 3.0, "rps_per_core": 25_000 + r},
+            ]
+        env = dict(art()["environment"], cpu="Apple M4", cores_physical="10", **env_extra)
+        return {"environment": env, "rows": rows, "recorded_utc": "2026-09-15T00:00:00+00:00",
+                "parameters": {"connections": "8", "duration": "5s", "rounds": "3"},
+                "medians": {"python(sel=25)": {"rps": 16_002.0, "cores": 1.2, "rps_per_core": 13_335},
+                            "mojo(sel=25)": {"rps": 75_002.0, "cores": 3.0, "rps_per_core": 25_001}},
+                "comparisons": {"by_sel": {"25": {"throughput": 4.687, "per_core": 1.88, "per_core_of_medians": 1.875}}}}
+
+    class _M:
+        name = "mojo-mount-20260915T000000Z.json"
+
+    stamped = "\n".join(render_mount_table("mojo-mount", _M(), mount({
+        "cores_performance": "4", "cores_efficiency": "6", "memory_bytes": str(16 * 2**30),
+        "os_build": "macOS 26.6.2 (25G83)", "power_source": "AC Power", "low_power_mode": "0",
+        "thermal": "No thermal warning level has been recorded; No performance warning level has been recorded"})))
+    both = "| 25 % |" in stamped and "4.69x" in stamped and "1.88x (1.88x)" in stamped and "medians block" in stamped
+    print(f"  {'caught' if both else 'MISSED'}          the mount table prints both per-core definitions and names them")
+    ok &= both
+    cond = "4P+6E" in stamped and "16 GB" in stamped and "25G83" in stamped and "AC Power" in stamped
+    quiet = "thermal" not in stamped.split("|")[0] and "LOW POWER" not in stamped
+    print(f"  {'caught' if cond and quiet else 'MISSED'}          the environment line carries the stamped conditions, and no clean-run warnings")
+    ok &= cond and quiet
+    hot = "\n".join(render_mount_table("mojo-mount", _M(), mount({"low_power_mode": "1", "thermal": "CPU_Speed_Limit = 60"})))
+    warned = "LOW POWER MODE" in hot and "thermal: CPU_Speed_Limit = 60" in hot
+    print(f"  {'caught' if warned else 'MISSED'}          a Low Power Mode or throttled run says so on the page")
+    ok &= warned
+    plain = "\n".join(provenance(_M(), mount({})))
+    unchanged = "(10 cores)" in plain and "GB" not in plain
+    print(f"  {'caught' if unchanged else 'MISSED'}          (control: an artifact without the fields renders as before)")
+    ok &= unchanged
 
     print("render_bench_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
