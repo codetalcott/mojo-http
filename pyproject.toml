@@ -1546,9 +1546,11 @@ fail() {
 }
 # 4Hz x 200ms is an 80% duty cycle. On the loop that holds every connection
 # for 200ms at a time; off it, the loop never sees the work at all. The
-# measured separation is ~200x, so the 100ms threshold below has margin on
-# both sides rather than being a hair's breadth either way -- which is what
-# keeps it from flaking on a shared runner.
+# separation is ~200x for a request that lands early in a step, but only a
+# request in a step's first half waits the 100ms threshold below -- 0.4 of
+# them -- so the on-loop arm's margin comes from the probe's sample count,
+# not from the threshold. It took three samples, and a phase lock with the
+# probe's fixed gap hid how few that was (scripts/sim_loop_probe.py).
 start() {
   M0_PORT=$port M0_SIM_HZ=4 M0_SIM_COST_MS=200 M0_SIM_ON_LOOP=$1 \
     mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ \

@@ -2,18 +2,35 @@
 
     sim_loop_probe.py PORT SECONDS
 
-Holds an SSE stream on /events for SECONDS while sampling /now three times,
-and prints one line:
+Holds an SSE stream on /events for SECONDS while sampling /now SAMPLES
+times, and prints one line:
 
     frames=16 gaps=0 worst_now_ms=0
 
 Exits 1 naming the problem if the stream carried no frames or its step ids
-are not contiguous. Three /now samples rather than one because a single
-sample can miss the step window entirely: at an 80% duty cycle one sample
-lands outside a step 1 time in 5, and worst-of-three cuts that to 1 in 125.
-The caller asserts on the numbers; this only refuses what is malformed.
+are not contiguous. The caller asserts on the numbers; this only refuses
+what is malformed.
+
+Why SAMPLES is 24. The smoke's on-the-loop arm requires the worst sample to
+wait at least 100 ms behind a 200 ms step that starts every 250 ms, and a
+request waits that long only if it lands in the step's first half. This used
+to take three samples 300 ms apart, argued from the chance of missing the
+step ENTIRELY (1 in 125 for all three). What actually carried it was a phase
+lock: a sample that waits out a step returns 50 ms before the next one
+starts, so a fixed 300 ms gap lands the next request at a step's start, and
+40 local runs saw 169-200 ms every time. A runner whose sleeps overshoot
+breaks the lock, and CI's macOS smoke failed at 98 ms on a change that did not
+touch the app. Three samples at RANDOM phases, which is what a broken lock
+approximates, failed 19 of 60 local runs: about 0.68 per sample of landing
+too late. At 24 samples that is 0.68^24, about 1 in 10,000 runs; 16 would
+have been 1 in 460, on a smoke every pull request runs on two runners.
+
+The gap between samples is drawn at random rather than fixed, so the
+arithmetic rests on independent draws rather than on a lock that a slow
+runner can break in either direction.
 """
 import http.client
+import random
 import sys
 import threading
 import time
@@ -27,6 +44,8 @@ import traceback
 # an http.client call a traceback names identically.
 # scripts/drain_idle_probe.py carries the shape of this stamp.
 PHASE = "startup"
+
+SAMPLES = 24
 
 
 def phase(name):
@@ -43,9 +62,9 @@ sys.excepthook = _stamped
 
 
 def sample_now(port, out):
-    """Worst of three /now round trips, in milliseconds."""
+    """Worst of SAMPLES /now round trips, in milliseconds."""
     worst = 0.0
-    for _ in range(3):
+    for _ in range(SAMPLES):
         phase("sampling /now")
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
         t0 = time.perf_counter()
@@ -55,7 +74,7 @@ def sample_now(port, out):
         finally:
             conn.close()
         worst = max(worst, (time.perf_counter() - t0) * 1000.0)
-        time.sleep(0.3)
+        time.sleep(random.uniform(0.05, 0.3))
     out.append(worst)
 
 
