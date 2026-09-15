@@ -506,6 +506,16 @@ cores column, which stays under a core and a half with four handler threads
 behind it, while the Mojo mount spreads across its threads (SPEC M25).
 
 <!-- generated: mojo-mount -- edit bench/results, not this table -->
+Source: [`mojo-mount-20260915T153917Z.json`](../bench/results/mojo-mount-20260915T153917Z.json) — 2026-09-15T15:39:17+00:00, commit `d0608ed`.
+Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 26.6.2 (25G83); AC Power; wrk -c8 -d5s, 3 rounds, medians.
+
+| selected | numpy rps | cores | rps/core | Mojo rps | cores | rps/core | throughput | per core |
+|---------:|----------:|------:|---------:|---------:|------:|---------:|-----------:|---------:|
+| 100 % | 35,844 | 1.44 | 24,892 | 42,481 | 4.06 | 10,463 | 1.18x | 0.42x (0.42x) |
+| 25 % | 16,462 | 1.21 | 13,605 | 76,511 | 3.07 | 24,922 | 4.66x | 1.85x (1.83x) |
+| 5 % | 43,773 | 1.49 | 29,378 | 111,799 | 2.27 | 49,251 | 2.56x | 1.68x (1.68x) |
+
+Throughput and per core are Mojo over numpy: the median across rounds of the ratio within each round. In parentheses, the same per-core ratio from the medians block — median rps over median cores for each arm — which is what the columns to its left divide out to. Cores are the server process's CPU seconds over wall seconds across the measured window; both arms share one process, so the column is each arm's own load, measured one at a time. numpy 2.5.3.
 <!-- /generated: mojo-mount -->
 
 ## Non-goals, considered and rejected

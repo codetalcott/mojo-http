@@ -64,12 +64,12 @@ multi-tab sync**, and CI executes every command in it on every pull request
   conformance is validated by `wsgiref`, ASGI by a validator written from
   the spec.
 - **Where it stands on throughput**, from [docs/BENCHMARKS.md](docs/BENCHMARKS.md):
-  <!-- num:asgi-vs-uvloop@2 -->1.53<!-- /num -->x uvicorn with uvloop on bare ASGI at 16 connections
-  (<!-- num:asgi-vs-uvicorn@2 -->2.20<!-- /num -->x `uvicorn --loop asyncio`), on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
+  <!-- num:asgi-vs-uvloop@2 -->1.54<!-- /num -->x uvicorn with uvloop on bare ASGI at 16 connections
+  (<!-- num:asgi-vs-uvicorn@2 -->2.22<!-- /num -->x `uvicorn --loop asyncio`), on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
   measured cores where uvicorn has one; the fast-request tail under mixed
-  load ahead of uvicorn in every recorded run; and <!-- num:m0-vs-granian-rps@2 -->1.00<!-- /num -->x
+  load ahead of uvicorn in every recorded run; and <!-- num:m0-vs-granian-rps@2 -->0.99<!-- /num -->x
   Granian on bare WSGI at one worker and one handler thread each
-  (<!-- num:m0-per-granian@2 -->1.01<!-- /num -->x per measured core). Every figure is rendered from a
+  (<!-- num:m0-per-granian@2 -->1.00<!-- /num -->x per measured core). Every figure is rendered from a
   dated artifact, and CI refuses one more than a minor version old.
 
 ### What it is not
@@ -583,12 +583,12 @@ values returns unchanged.
   Against **Granian**, whose own `--blocking-threads` is the architecture
   copied above, m0serve is **behind on raw WSGI throughput and the gap is
   located**: one worker and one handler thread each, <!-- num:m0-w1-rps-k@1 -->191.1<!-- /num -->k
-  against <!-- num:granian-w1-rps-k@1 -->191.9<!-- /num -->k rps on a bare callable, <!-- num:m0-wsgi-rps-k@1 -->108.6<!-- /num -->k
-  against <!-- num:granian-rps-k@1 -->107.8<!-- /num -->k per measured core — about <!-- num:m0-per-granian@2 -->1.01<!-- /num -->x. The
+  against <!-- num:granian-w1-rps-k@1 -->192.7<!-- /num -->k rps on a bare callable, <!-- num:m0-wsgi-rps-k@1 -->108.6<!-- /num -->k
+  against <!-- num:granian-rps-k@1 -->108.3<!-- /num -->k per measured core — about <!-- num:m0-per-granian@2 -->1.00<!-- /num -->x. The
   split prices each layer. `apps/hello`, the same server with no Python
-  in the path, runs at <!-- num:hello-rps-k@1 -->195.9<!-- /num -->k rps/core; the bare app run
+  in the path, runs at <!-- num:hello-rps-k@1 -->199.1<!-- /num -->k rps/core; the bare app run
   inline on that loop, one thread, runs at
-  <!-- num:m0-loop-rps-k@1 -->121.4<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.61<!-- /num -->x.
+  <!-- num:m0-loop-rps-k@1 -->122.6<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.62<!-- /num -->x.
   Which layer bounds the one-handler-thread row is a per-thread question,
   and measured per thread it was the event-loop thread, at about 7.2 µs of
   CPU per request against 5.3 for Granian's tokio thread

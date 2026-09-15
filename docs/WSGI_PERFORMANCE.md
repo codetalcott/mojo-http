@@ -755,10 +755,10 @@ artifact does support:
 
 **Re-recorded 2026-09-05** on CPython 3.13.6, with one worker measured in
 three shapes (docs/BENCHMARKS.md says why): `apps/hello`
-<!-- num:hello-rps-k@1 -->195.9<!-- /num -->k rps/core; the app inline on that loop <!-- num:m0-loop-rps-k@1 -->121.4<!-- /num -->k, the
-bridge <!-- num:bridge-tax@2 -->1.61<!-- /num -->x of a faster HTTP layer; one handler thread, Granian's
-shape, <!-- num:m0-wsgi-rps-k@1 -->108.6<!-- /num -->k against Granian's <!-- num:granian-rps-k@1 -->107.8<!-- /num -->k per core, the
-net <!-- num:m0-per-granian@2 -->1.01<!-- /num -->x, which is the table below.
+<!-- num:hello-rps-k@1 -->199.1<!-- /num -->k rps/core; the app inline on that loop <!-- num:m0-loop-rps-k@1 -->122.6<!-- /num -->k, the
+bridge <!-- num:bridge-tax@2 -->1.62<!-- /num -->x of a faster HTTP layer; one handler thread, Granian's
+shape, <!-- num:m0-wsgi-rps-k@1 -->108.6<!-- /num -->k against Granian's <!-- num:granian-rps-k@1 -->108.3<!-- /num -->k per core, the
+net <!-- num:m0-per-granian@2 -->1.00<!-- /num -->x, which is the table below.
 
 Granian's own bridge cost is unknown here, and a per-side split needs a
 `granian`-equivalent of the hello row. The figure had been propagated into
@@ -776,18 +776,18 @@ Within-run ratios are the signal; absolute rows are not comparable across
 dated sections of this file.
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
-Source: [`layer-split-20260912T052438Z.json`](../bench/results/layer-split-20260912T052438Z.json) — 2026-09-12T05:24:38+00:00, commit `bd686b2`.
-Environment: Python 3.13.6; granian 2.8.2; Apple M4 (10 cores); wrk -c16 -d10s, 3 rounds, medians.
+Source: [`layer-split-20260915T153353Z.json`](../bench/results/layer-split-20260915T153353Z.json) — 2026-09-15T15:33:53+00:00, commit `d0608ed`.
+Environment: Python 3.13.6; granian 2.8.2; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 26.6.2 (25G83); AC Power; wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `apps/hello` — mojo-http HTTP layer, zero Python | 193,969 | 0.99 | 195,929 |
-| `m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread) | 121,433 | 1.00 | 121,433 |
-| `m0serve` + bare WSGI, 1 worker, 1 handler thread | 191,092 | 1.76 | 108,575 |
-| `granian` + bare WSGI, 1 worker, 1 blocking thread | 191,903 | 1.78 | 107,810 |
-| `m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs) | 191,209 | 1.76 | 108,641 |
-| `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 149,683 | 4.49 | 33,337 |
-| `granian` + bare WSGI, 4 workers, 1 blocking thread each | 153,777 | 3.39 | 45,362 |
+| `apps/hello` — mojo-http HTTP layer, zero Python | 197,113 | 0.99 | 199,104 |
+| `m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread) | 121,326 | 0.99 | 122,551 |
+| `m0serve` + bare WSGI, 1 worker, 1 handler thread | 191,121 | 1.76 | 108,591 |
+| `granian` + bare WSGI, 1 worker, 1 blocking thread | 192,741 | 1.78 | 108,281 |
+| `m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs) | 185,873 | 1.75 | 106,213 |
+| `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 150,912 | 4.53 | 33,314 |
+| `granian` + bare WSGI, 4 workers, 1 blocking thread each | 157,440 | 3.71 | 42,437 |
 
 Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running well over one core. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
 <!-- /generated: layer-split -->
