@@ -83,6 +83,17 @@ worker. Inbound WebSocket messages arrive at the application as a `POST` to
 must be CSRF-exempt. Channel names beginning with a control byte are
 reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 
+Work that has to outlive its request can publish from a child process the
+view starts. Pass the bus and the event-id page by descriptor:
+`subprocess.Popen([...], pass_fds=m0pub.child_fds())`. The child's frames are
+then numbered from the same counter as every worker's, so `Last-Event-ID`
+replay covers them. With only `m0pub.bus_write_fds()` passed, the child still
+publishes, unnumbered. Up to 1.3.0 that second form was unsafe: a child that
+inherited the environment took an event id at an address in its parent's
+memory, and either died with SIGSEGV or published a wrong id that
+subscribers then dropped (#322). There, remove `M0_SHARED_ID_ADDR` from the
+child's environment.
+
 One framework-specific line: in Flask the socket route is declared
 `@app.route("/ws", websocket=True)`, because Werkzeug's router answers 400
 to a request carrying `Upgrade: websocket` on an ordinary rule before any

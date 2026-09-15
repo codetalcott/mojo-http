@@ -63,6 +63,24 @@ lets an application's own threads run.
 
 ### Fixed
 
+- **A child process can publish from a view without crashing** (#322, SPEC
+  I23). The bus descriptors survive `exec` but the event-id page did not:
+  `M0_SHARED_ID_ADDR` is an address in the parent's memory, and a child
+  that inherited the environment took an id there on its first publish. On
+  Linux that was SIGSEGV. On macOS the address was often mapped in the
+  child, which incremented eight bytes of its own memory and published the
+  result as an event id; a subscriber that had seen a higher id then
+  silently dropped the frame. The page is now file-backed in every mode and
+  exported as `M0_SHARED_ID_FD` too, and carries a magic word. `m0pub`
+  numbers only from a page it has verified: mapped from the descriptor, or
+  at an address the kernel reports readable. Anything else publishes
+  unnumbered, with one line on stderr saying why. The new
+  `m0pub.child_fds()` is what to pass as `pass_fds`, and a child given it
+  publishes numbered frames from the same counter, so `Last-Event-ID`
+  replay covers them. A server that cannot file-back the page (no
+  `/dev/shm`) starts anyway and says so, except under `--spawn-workers`,
+  where that was already fatal.
+
 - **`bench-mojo-mount` runs on a fresh clone, and its artifact says what it
   measured.** Four defects, each confirmed on `main` before being fixed.
   `build-serve` linked four packages through `.mojoc` files a fresh clone

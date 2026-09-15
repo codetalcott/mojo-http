@@ -679,6 +679,14 @@ jobs:
       # fix and ~120 after, against a bar of 20.
       - name: Smoke test application threads without a pool
         run: uv run poe smoke-app-threads
+      # I23 (#322): a child process a view starts publishes onto the bus.
+      # Inheriting the environment used to hand it an address in the
+      # parent's memory -- SIGSEGV on Linux, a write into its own memory on
+      # macOS -- so every non-handoff child must publish unnumbered and exit
+      # 0, and a child given m0pub.child_fds() must number from the shared
+      # counter, in three server shapes.
+      - name: Smoke test publishing from a child process
+        run: uv run poe smoke-child-publish
       # The Mojo handler pool, same claim without an interpreter: func on a
       # pool thread (the response names which), every thread dealt work, a
       # streaming response refused with 409, and SIGTERM a clean exit -- the

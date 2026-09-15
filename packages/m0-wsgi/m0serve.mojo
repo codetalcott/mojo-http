@@ -67,7 +67,9 @@ from lightbug_http.broadcast import BroadcastBus
 from m0_postgres import PgLib
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
-from lightbug_http.accept_share import AcceptShare, accept_share_slots
+from lightbug_http.accept_share import (
+    AcceptShare, accept_share_slots, SHARED_PAGE_MAGIC, SHARED_PAGE_MAGIC_SLOT,
+)
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType, TCPAddr, parse_address
 from lightbug_http.socket import Socket
@@ -693,15 +695,20 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
     _ = setenv("M0_BUS_READ_FDS", read_csv, True)
 
     # One MAP_SHARED page: slot 0 is the event id every publish takes a
-    # number from, and the rest is accept sharing's per-worker load words
-    # (`accept_share_slots`; one cache line each, so the per-pass stores
-    # contend with nothing). Shared memory across processes, and plain
-    # memory across threads. Under `--spawn-workers` the page is
-    # file-backed, because an anonymous mapping does not survive the
-    # worker's exec; its fd is exported and the worker maps it (above).
-    var shared = SharedAtomics(
-        accept_share_slots(opts.workers), file_backed=opts.spawn_workers
-    )
+    # number from, slot 2 the magic word that identifies the page, and the
+    # rest is accept sharing's per-worker load words (`accept_share_slots`;
+    # one cache line each, so the per-pass stores contend with nothing).
+    # Shared memory across processes, and plain memory across threads.
+    #
+    # File-backed and exported by fd, not only by address (#322). An
+    # anonymous mapping survives fork and nothing else, so a process that
+    # EXECs -- a spawned worker, and just as much a child an application
+    # starts to publish from -- can only reach the page through a
+    # descriptor. The address stays exported for what reads it in-process
+    # (the shim), and the magic word is what lets `m0pub` refuse an address
+    # or a descriptor number it inherited but that is not this page.
+    var shared = _shared_page(opts)
+    shared.store(SHARED_PAGE_MAGIC_SLOT, SHARED_PAGE_MAGIC)
     _ = setenv("M0_SHARED_ID_ADDR", String(shared.addr(0)), True)
     if shared.fd >= 0:
         _ = setenv("M0_SHARED_ID_FD", String(shared.fd), True)
@@ -712,6 +719,30 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
             _ = setenv("M0_CORE_LIB", lib, True)
 
     return bus^
+
+
+def _shared_page(opts: ServeOptions) raises -> SharedAtomics:
+    """The pre-fork page, file-backed where the host allows it.
+
+    `shm_open` needs a shared-memory filesystem (`/dev/shm` on Linux), which
+    a stripped container can lack. Under `--spawn-workers` that is fatal as
+    it always was -- the workers cannot reach an anonymous page at all --
+    but everywhere else the anonymous page serves every worker, and what is
+    lost is only a child process's numbered frames, so the server starts
+    and says so.
+    """
+    var slots = accept_share_slots(opts.workers)
+    try:
+        return SharedAtomics(slots, file_backed=True)
+    except e:
+        if opts.spawn_workers:
+            raise e^
+        print(
+            "m0serve: the shared page could not be file-backed (" + String(e)
+            + "); a child process will publish unnumbered frames",
+            flush=True,
+        )
+        return SharedAtomics(slots)
 
 
 def accept_sharing_wanted(opts: ServeOptions) -> Bool:

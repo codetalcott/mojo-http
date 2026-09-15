@@ -46,6 +46,24 @@ all. So `m0_shared_fetch_add` is exported from `m0-core`'s C ABI
 through `ctypes` — which never crosses the WSGI bridge, so the leak rule and
 the RSS guard are untouched.
 
+**Publishing from a child process.** The bus descriptors survive `exec`; the
+page does not, because a mapping dies at exec while `M0_SHARED_ID_ADDR` is
+only a number in the parent's address space. So a child a view starts
+publishes safely in either of two ways::
+
+    subprocess.Popen([...], pass_fds=m0pub.child_fds())
+
+hands it the bus AND the page by descriptor (`M0_SHARED_ID_FD`), and its
+frames are numbered from the same counter as every worker's -- which is what
+keeps `Last-Event-ID` replay covering them. Passing only `bus_write_fds()`
+still publishes, unnumbered. Before the page carried a magic word (#322) the
+second form was not safe: a child that inherited the environment took an id
+at the parent's address and died with SIGSEGV, or, where its own image had
+something mapped there, incremented it and published the result as an event
+id. `next_event_id` now numbers only through a page it has verified -- mapped
+from the descriptor and carrying `PAGE_MAGIC`, or at an address the kernel
+says is readable and that carries it -- and anything else is unnumbered.
+
 Everything degrades. No library, no address, no bus: `publish` falls back to
 `NO_EVENT_ID` (-1) frames, which always deliver and never advance a
 subscriber's last-seen id — the old behaviour, and the only behaviour
@@ -59,6 +77,7 @@ is best-effort, exactly as it is between workers.
 
 import ctypes
 import json
+import mmap
 import os
 import struct
 import sys
@@ -100,11 +119,24 @@ than a database error at COMMIT far from the call.
 
 BUS_FDS_ENV = "M0_BUS_WRITE_FDS"
 ID_ADDR_ENV = "M0_SHARED_ID_ADDR"
+ID_FD_ENV = "M0_SHARED_ID_FD"
 CORE_LIB_ENV = "M0_CORE_LIB"
+
+PAGE_MAGIC = 0x6D30706167650001
+"""`m0page` and a version byte, which the server writes into the page's slot 2.
+
+Spelled in `lightbug_http/accept_share.mojo` as `SHARED_PAGE_MAGIC`; the
+three copies must agree. A page without it is not numbered from."""
+
+PAGE_MAGIC_OFFSET = 16
 
 # Resolved once, then cached: (callable, address) when numbering is available,
 # False when it is not. None means "not looked yet".
 _counter = None
+
+# The mapping `_page_from_fd` made, held for the life of the process: the
+# address handed to the fetch-and-add points into it.
+_page = None
 
 
 def bus_write_fds():
@@ -124,18 +156,109 @@ def _core_lib_paths():
     return ["packages/m0-core/libm0core." + ext, "libm0core." + ext]
 
 
+def _page_fd():
+    """`M0_SHARED_ID_FD` if it names an open descriptor here, else None."""
+    try:
+        fd = int(os.environ.get(ID_FD_ENV, ""))
+        os.fstat(fd)
+    except (ValueError, OSError):
+        return None
+    return fd
+
+
+def child_fds():
+    """The descriptors a child process needs to publish numbered frames.
+
+    Pass them as `pass_fds`: the bus's write ends and, where the server
+    exported one, the shared page. The child keeps the same numbers, which
+    is what the inherited `M0_BUS_WRITE_FDS` and `M0_SHARED_ID_FD` name.
+    """
+    fds = bus_write_fds()
+    page = _page_fd()
+    if page is not None:
+        fds.append(page)
+    return fds
+
+
+def _page_from_fd():
+    """The page's address, mapped here from its descriptor, or 0.
+
+    Refused unless the file is big enough and carries `PAGE_MAGIC`, read
+    through the `mmap` object, which is bounds-checked: a descriptor number
+    inherited without the page may name any file at all, and nothing is
+    written to one that is not the page.
+    """
+    global _page
+    fd = _page_fd()
+    if fd is None:
+        return 0
+    try:
+        size = os.fstat(fd).st_size
+        if size < PAGE_MAGIC_OFFSET + 8:
+            return 0
+        page = mmap.mmap(fd, size)
+    except (OSError, ValueError):
+        return 0
+    if struct.unpack_from("<q", page, PAGE_MAGIC_OFFSET)[0] != PAGE_MAGIC:
+        page.close()
+        return 0
+    _page = page
+    return ctypes.addressof(ctypes.c_char.from_buffer(page))
+
+
+def _readable(addr, length):
+    """Whether `length` bytes at `addr` can be read, without reading them here.
+
+    The kernel copies them into a pipe, so an unmapped address is `EFAULT`
+    from `write` rather than SIGSEGV in this process. (`mincore` looked like
+    the answer and is not: on macOS it succeeds for unmapped addresses.)
+    """
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        write = libc.write
+        write.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+        write.restype = ctypes.c_ssize_t
+        r, w = os.pipe()
+    except (OSError, AttributeError):
+        return False
+    try:
+        return write(w, ctypes.c_void_p(addr), length) == length
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+def _page_at_address():
+    """`M0_SHARED_ID_ADDR` if it is readable here and carries `PAGE_MAGIC`, else 0."""
+    try:
+        addr = int(os.environ.get(ID_ADDR_ENV, ""))
+    except ValueError:
+        return 0
+    if addr <= 0 or not _readable(addr, PAGE_MAGIC_OFFSET + 8):
+        return 0
+    if ctypes.c_int64.from_address(addr + PAGE_MAGIC_OFFSET).value != PAGE_MAGIC:
+        return 0
+    return addr
+
+
 def _resolve_counter():
     """Bind `m0_shared_fetch_add` to the server's shared slot, or give up."""
-    raw_addr = os.environ.get(ID_ADDR_ENV, "")
-    if not raw_addr:
+    if not os.environ.get(ID_ADDR_ENV, "") and not os.environ.get(ID_FD_ENV, ""):
         # No server-side counter at all — running under gunicorn, or under a
         # build that predates it. Unnumbered frames are the correct answer.
         return False
-    try:
-        addr = int(raw_addr)
-    except ValueError:
-        return False
-    if addr <= 0:
+    addr = _page_from_fd() or _page_at_address()
+    if not addr:
+        # Offered a page that is not one here: a child process that inherited
+        # the environment without `child_fds()`, or a server older than the
+        # magic word. Taking an id at that address is the crash (or worse)
+        # #322 reported, so the frames go unnumbered and this says why once.
+        print(
+            "m0pub: %s/%s do not name the server's page in this process (a child "
+            "process not given m0pub.child_fds()?); publishing unnumbered frames."
+            % (ID_FD_ENV, ID_ADDR_ENV),
+            file=sys.stderr,
+        )
         return False
 
     for path in _core_lib_paths():

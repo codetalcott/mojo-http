@@ -1546,9 +1546,11 @@ fail() {
 }
 # 4Hz x 200ms is an 80% duty cycle. On the loop that holds every connection
 # for 200ms at a time; off it, the loop never sees the work at all. The
-# measured separation is ~200x, so the 100ms threshold below has margin on
-# both sides rather than being a hair's breadth either way -- which is what
-# keeps it from flaking on a shared runner.
+# separation is ~200x for a request that lands early in a step, but only a
+# request in a step's first half waits the 100ms threshold below -- 0.4 of
+# them -- so the on-loop arm's margin comes from the probe's sample count,
+# not from the threshold. It took three samples, and a phase lock with the
+# probe's fixed gap hid how few that was (scripts/sim_loop_probe.py).
 start() {
   M0_PORT=$port M0_SIM_HZ=4 M0_SIM_COST_MS=200 M0_SIM_ON_LOOP=$1 \
     mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
@@ -3595,6 +3597,25 @@ for shape in realtime no-pool workers-2; do
 done
 echo "smoke-app-threads OK"
 python3 scripts/emit.py --covers E20 --task smoke-app-threads
+"""
+
+[tool.poe.tasks.smoke-child-publish]
+help = "A child process a view starts publishes onto the bus without crashing, numbered when handed the page (SPEC I23)"
+deps = ["build-serve"]
+shell = """
+# #322: the bus descriptors survive exec and the event-id page did not, so a
+# child that inherited M0_SHARED_ID_ADDR took an id at an address in its
+# parent's memory -- SIGSEGV on Linux, and on macOS eight bytes of its own
+# memory incremented and published as an event id. The probe serves
+# bareapp.childpub in three shapes; each non-handoff child must exit 0 and
+# publish unnumbered, and a child given m0pub.child_fds() must number from
+# the shared counter. It needs a libm0core a plain Python child can load.
+ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
+[ -f "packages/m0-core/libm0core.$ext" ] || uv run poe build-ffi || exit 1
+out=$(python3 scripts/child_publish_probe.py --port 8671 2>&1) || { echo "$out"; exit 1; }
+echo "$out"
+echo "smoke-child-publish OK"
+python3 scripts/emit.py --covers I23 --task smoke-child-publish
 """
 
 [tool.poe.tasks.smoke-blocking-threads]

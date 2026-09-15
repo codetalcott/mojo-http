@@ -49,7 +49,8 @@ channel once more as its shutdown begins.
 
 Page layout, in Int64 slots of the `SharedAtomics` page `m0serve` creates
 pre-fork: slot 0 is the SSE event id (not ours), slot 1 the rotation
-counter, and worker `i`'s line starts at slot `8 + 8 * i`. A spawned
+counter, slot 2 the page's magic word (`SHARED_PAGE_MAGIC`, not ours
+either), and worker `i`'s line starts at slot `8 + 8 * i`. A spawned
 worker maps the page by fd with the same slot count.
 """
 
@@ -65,6 +66,21 @@ from lightbug_http.c.socketpair import socketpair_dgram
 comptime ACCEPT_SHARE_RR_SLOT = 1
 """The rotation counter: where `pick` starts its scan, so equal loads take
 turns rather than the lowest index taking every tie."""
+comptime SHARED_PAGE_MAGIC_SLOT = 2
+"""Where `m0serve` writes `SHARED_PAGE_MAGIC` on the page it creates."""
+comptime SHARED_PAGE_MAGIC: Int = 0x6D30706167650001
+"""`m0page` and a version byte, in slot `SHARED_PAGE_MAGIC_SLOT`.
+
+How a process that was handed the page -- as `M0_SHARED_ID_FD` or as the
+raw `M0_SHARED_ID_ADDR` -- tells it from whatever else it could be (#322).
+Both names survive `exec` as text while the mapping does not, so a child
+process that inherited the environment held an address in its parent's
+memory and a descriptor number anything may since have reused: `m0pub`
+took an id at that address, and the child either died with SIGSEGV or
+incremented eight bytes of its own memory and published the result as an
+event id. `m0pub` (both copies) checks this word before its first
+fetch-and-add and spells the same constant; change one, change all
+three."""
 comptime ACCEPT_SHARE_FIRST_WORKER_SLOT = 8
 """Worker 0's line begins here — the second 64-byte line of the page."""
 comptime ACCEPT_SHARE_WORKER_STRIDE = 8
