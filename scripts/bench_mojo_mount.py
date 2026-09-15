@@ -180,12 +180,77 @@ def main():
             srv.kill()
 
     phase("writing the artifact")
+    comparisons = compare(rows, sels)
+    print("\nmojo / python, median of within-round ratios "
+          "[ratio of the medians block]:")
+    for sel in sels:
+        c = comparisons["by_sel"][str(sel)]
+        print(f"  sel={sel:<3}  thru {c['throughput']:.2f}x "
+              f"[{c['throughput_of_medians']:.2f}x]  per core "
+              f"{c['per_core']:.2f}x [{c['per_core_of_medians']:.2f}x]")
     write_artifact("mojo_mount", rows, {
         "duration": f"{args.secs}s", "connections": str(args.conns),
         "rounds": str(args.rounds), "blocking_threads": str(args.threads),
         "corpus": "4096x256 f32, LCG seed 20260910",
-    })
+    }, extra={"comparisons": comparisons})
     return 0
+
+
+def compare(rows, sels):
+    """Mojo over Python per selectivity, with the method written down.
+
+    The headline is a within-round ratio -- the two arms of a round run back
+    to back on the same machine state, which is the stable signal
+    bench_record.py's docstring describes -- and its median across rounds.
+    `per_core_of_medians` divides the artifact's own `medians` block
+    instead (median rps over median cores, per arm), which is what a reader
+    computes from that block; the 2026-09-10 run gave 1.65x one way and 1.61x
+    the other at sel=25, so both are carried. Its commit message mixed them --
+    throughput as a ratio of medians (4.43x), per core by round (1.65x) -- so
+    throughput is carried both ways too (4.52x by round).
+    """
+    import statistics
+    by = {(r["round"], r["name"]): r for r in rows}
+    out = {}
+    for sel in sels:
+        thru, per, py_pc, mo_pc = [], [], [], []
+        for rnd in sorted({r["round"] for r in rows}):
+            py = by.get((rnd, f"python(sel={sel})"))
+            mo = by.get((rnd, f"mojo(sel={sel})"))
+            if not py or not mo:
+                continue
+            if py["rps"] and mo["rps"]:
+                thru.append(mo["rps"] / py["rps"])
+            if py["rps_per_core"] and mo["rps_per_core"]:
+                per.append(mo["rps_per_core"] / py["rps_per_core"])
+            if py["rps"] and py["cores"]:
+                py_pc.append((py["rps"], py["cores"]))
+            if mo["rps"] and mo["cores"]:
+                mo_pc.append((mo["rps"], mo["cores"]))
+
+        def of_medians(pairs):
+            return (statistics.median(p[0] for p in pairs)
+                    / statistics.median(p[1] for p in pairs))
+
+        out[str(sel)] = {
+            "throughput": round(statistics.median(thru), 3) if thru else None,
+            "throughput_of_medians": round(
+                statistics.median(p[0] for p in mo_pc)
+                / statistics.median(p[0] for p in py_pc), 3)
+            if py_pc and mo_pc else None,
+            "per_core": round(statistics.median(per), 3) if per else None,
+            "per_core_of_medians": round(of_medians(mo_pc) / of_medians(py_pc), 3)
+            if py_pc and mo_pc else None,
+            "rounds": len(per),
+        }
+    return {
+        "definition": "by_sel[sel].throughput and .per_core: median across "
+        "rounds of mojo / python within the round (the headline); "
+        ".throughput_of_medians and .per_core_of_medians: mojo's median rps "
+        "(over its median cores) against python's, the ratios the medians "
+        "block gives",
+        "by_sel": out,
+    }
 
 
 if __name__ == "__main__":

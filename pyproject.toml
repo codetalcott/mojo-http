@@ -645,6 +645,17 @@ export MACOSX_DEPLOYMENT_TARGET=13.0
 mount_dir="${M0SERVE_MOUNT_DIR:-packages/m0-wsgi/mount}"
 out="${M0SERVE_OUT:-bin/m0serve}"
 [ -f "$mount_dir/m0serve_mount.mojo" ] || { echo "build-serve: no m0serve_mount.mojo in $mount_dir"; exit 1; }
+# The binary reaches four packages through their .mojoc, which are build
+# output, so a fresh clone has none -- and every task that depends on this
+# one (bench-mojo-mount and most of the smokes) failed there on an unresolved import until someone
+# ran build-all by hand. CI never saw it, because each job runs build-all
+# first. A MISSING artifact is built here, in dependency order; a STALE one
+# is not, because rebuilding the chain on every call would put minutes in
+# front of every smoke. After editing a package's src/, run build-all (or
+# that package's build and every one above it) before this, as before.
+for pkg in core http postgres wsgi; do
+  [ -f "packages/m0-$pkg/m0_$pkg.mojoc" ] || uv run poe "build-$pkg" || exit 1
+done
 mojo build --target-cpu "$tcpu" \
   -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
   packages/m0-wsgi/m0serve.mojo -o "$out" || exit 1

@@ -248,9 +248,15 @@ def environment():
         if _cmd("wrk", "--version") or _cmd("wrk", "-v")
         else "",
     }
+    # Stamped for every bench, like granian: empty where the venv has none.
+    # bench-mojo-mount's Python arm IS numpy, and its BLAS call is half of
+    # what that table measures.
+    env["numpy"] = _cmd(str(venv / "python3"), "-c",
+                        "import numpy; print(numpy.__version__)")
     if platform.system() == "Darwin":
         env["cpu"] = _cmd("sysctl", "-n", "machdep.cpu.brand_string")
         env["cores_physical"] = _cmd("sysctl", "-n", "hw.physicalcpu")
+        env.update(_darwin_conditions())
     else:
         # `model name` is an x86 field. aarch64 `/proc/cpuinfo` has no such
         # line -- it carries `CPU implementer`/`CPU part` instead -- so on an
@@ -280,7 +286,49 @@ def environment():
         # Never set on this branch before, so every Linux artifact recorded a
         # missing core count beside a table whose whole point is per-core.
         env["cores_physical"] = str(os.cpu_count() or "")
+        try:
+            for line in open("/proc/meminfo"):
+                if line.startswith("MemTotal:"):
+                    env["memory_bytes"] = str(int(line.split()[1]) * 1024)
+                    break
+        except (OSError, ValueError, IndexError):
+            pass
     return env
+
+
+def _darwin_conditions():
+    """What a laptop's own state does to a measurement, stamped beside it.
+
+    A pre-registered comparison asks for these, and each has moved a result
+    here before it was recorded: a run on battery or in Low Power Mode is
+    capped, a throttled machine is slower by a factor no comparator row
+    fully cancels, and a core count that does not say how many are
+    efficiency cores cannot say what "4 handler threads" landed on. An
+    empty value means the command did not answer, never "fine".
+    """
+    batt = _cmd("pmset", "-g", "batt")
+    source = re.search(r"drawing from '([^']+)'", batt)
+    low = re.search(r"^\s*lowpowermode\s+(\d+)", _cmd("pmset", "-g"), re.M)
+    therm = [
+        line.strip().removeprefix("Note: ").strip()
+        for line in _cmd("pmset", "-g", "therm").splitlines()
+        if line.strip()
+    ]
+    sw = _cmd("sw_vers", "-productVersion")
+    build = _cmd("sw_vers", "-buildVersion")
+    return {
+        "os_build": f"macOS {sw} ({build})" if sw and build else "",
+        "memory_bytes": _cmd("sysctl", "-n", "hw.memsize"),
+        # perflevel0 is the fastest cluster; a machine with one cluster has
+        # no perflevel1 and reports it empty.
+        "cores_performance": _cmd("sysctl", "-n", "hw.perflevel0.physicalcpu"),
+        "cores_efficiency": _cmd("sysctl", "-n", "hw.perflevel1.physicalcpu"),
+        "power_source": source.group(1) if source else "",
+        "low_power_mode": low.group(1) if low else "",
+        # pmset's own words: "No thermal warning level has been recorded"
+        # when nothing throttled, a level otherwise.
+        "thermal": "; ".join(therm),
+    }
 
 
 def medians(rows):
@@ -300,6 +348,19 @@ def medians(rows):
         if cores:
             med["cores"] = statistics.median(cores)
             med["rps_per_core"] = round(med["rps"] / max(med["cores"], 0.01))
+            # The other definition, and the one a round-by-round table
+            # quotes: each round's own rps per core, THEN the median. The two
+            # disagree whenever the round with the median rps is not the
+            # round with the median cores -- bench-mojo-mount's 2026-09-10
+            # headline said 1.65x per core where this block's rps_per_core
+            # gave 1.61 -- so both are recorded and DEFINITIONS names them.
+            per = [
+                r["rps_per_core"] if r.get("rps_per_core") is not None
+                else r["rps"] / max(r["cores"], 0.01)
+                for r in rs if r.get("rps") and "cores" in r
+            ]
+            if per:
+                med["rps_per_core_rounds"] = round(statistics.median(per))
         p99 = [r["p99_us"] for r in rs if "p99_us" in r]
         if p99:
             med["p99_us"] = statistics.median(p99)
@@ -309,9 +370,23 @@ def medians(rows):
     return out
 
 
-def write_artifact(bench, rows, meta):
+# Written into every artifact, so a reproduction compared against the file
+# cannot pick the wrong figure: the file says what each one is.
+DEFINITIONS = {
+    "medians.rps_per_core": "median rps across rounds / median cores across "
+    "rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own "
+    "rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured "
+    "window",
+}
+
+
+def write_artifact(bench, rows, meta, extra=None):
     """Write one artifact and print its path. Importable for Python benches
     (bench_asgi.py builds its rows in memory and skips the text round trip).
+    `extra` adds top-level blocks a bench computes for itself, such as
+    bench_mojo_mount.py's `comparisons`; it may not replace a standard one.
     """
     RESULTS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -321,9 +396,16 @@ def write_artifact(bench, rows, meta):
         "recorded_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "environment": environment(),
         "parameters": meta,
+        "definitions": dict(DEFINITIONS),
         "rows": rows,
         "medians": medians(rows),
     }
+    for key, block in (extra or {}).items():
+        if key in artifact:
+            raise ValueError(f"extra block {key!r} would replace a standard one")
+        artifact[key] = block
+        if isinstance(block, dict) and "definition" in block:
+            artifact["definitions"][key] = block["definition"]
     path.write_text(json.dumps(artifact, indent=2) + "\n")
     print(f"bench artifact: {path.relative_to(REPO)}")
     return path

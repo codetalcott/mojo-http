@@ -23,72 +23,28 @@ apps/hello/hello
 # The serve CLI (rebuild with `uv run poe build-serve`)
 bin/
 
-# warning ratchet input (CI tees build output here; see scripts/warning_ratchet.py)
-compile.log
+# Every log at the repo root: CI's warning-ratchet input (compile.log), the
+# server logs smokes, benches, probes and soak.py write beside the tree, and
+# what a failing round of stress-asgi keeps for the next investigator. One
+# pattern rather than a name per task, because the names went stale -- about
+# thirty were missing, and `bench-mojo-mount` leaving an unignored log behind
+# is what stamped its artifact `git_dirty: true`.
+/*.log
 
-# smoke test output
-hello.log
-counter.log
-counter2.log
-django.log
-django2.log
-notes.log
-fragment.log
 # smoke-fragment-notes: the refusal run's log and the binary it builds, plus
 # the curl scratch files. A smoke that FAILS never reaches its own `rm -f`,
 # so these are what a red gate leaves behind.
-refusal.log
 notes_app
 headers.txt
 page.html
 frag.html
 jar.txt
-todo.log
-ws.log
-chat.log
-chat2.log
 sse.txt
 expected.bin
 got.bin
-rt.log
-rt2.log
-rt3.log
-ws1.log
-ws2.log
-flask.log
-wsgi.log
-serve.log
-site.log
 # A wheel staged for the docs site's image probe (scripts/site_image_probe.py)
 deploy/site/wheelhouse/*.whl
-threads.log
-asgi.log
-fasthtml.log
-hybrid.log
-hybrid2.log
-django3.log
-shutdown1.log
-shutdown2.log
-shutdown3.log
-pool.log
-reload.log
-rt4.log
-rt5.log
-rt6.log
 rt6.doctor
-stream.log
-ht.log
-canary.log
-# soak-apps' two server logs (scripts/soak.py --log)
-drain-upload.log
-soak-hybrid.log
-soak-reload.log
-soak-bare.log
-
-# stress-asgi keeps its per-mode server log when a round fails; the
-# failure dumps it and leaves it for the next investigator.
-stress-plain.log
-stress-inverted.log
 # Per-connection probe output from the multi-worker and realtime smokes:
 # the index is a loop variable, so these are globs rather than names.
 mw_hdr_*.txt
@@ -98,11 +54,8 @@ slow*.txt
 serve_*.txt
 big_app.bin
 big_live.bin
-fanout.log
-djasgi.log
 dj.jar
 .venv-pinned/
-py-canary.log
 probe.out
 dist/
 .sesskey
