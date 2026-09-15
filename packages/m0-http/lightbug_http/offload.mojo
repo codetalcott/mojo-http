@@ -107,7 +107,12 @@ rules of 2026-09-05):
   loop looks within a millisecond. On a free-threaded interpreter
   (`parallel`) `submit` wakes a parked thread whenever there is one and
   the wait counts from the push whatever the progress: a parked thread
-  beside a queued job is an idle core there. This
+  beside a queued job is an idle core there. A lane whose threads never
+  attach — a Mojo or hold mount (`lane_gil_free`) — takes that count on
+  any interpreter, against the spin (`POOL_FREE_WAKE_AGE_NS`) rather than
+  the GIL threshold, and keeps the elastic `submit`: the progress rule held
+  a compute route there to one thread, and eager wakes cost a trivial one
+  a fifth of its rate. This
   replaced the chained wake (a thread that took a job poking a sibling
   for the rest — `_chain_wake`, kept for the knob-off arm): the hole
   the chain filled, a woken thread's socket poll consuming a sibling's
@@ -236,6 +241,29 @@ loop last looked, the ring is being drained, however deep; if it did
 not, the head has waited since the later of its push and the last look
 that saw progress, and past `T` of that a thread is not coming back —
 the case a sibling is for. Chosen by measurement, recorded in the note."""
+
+comptime POOL_FREE_WAKE_AGE_NS = 10_000
+"""`POOL_WAKE_AGE_NS` for a lane whose threads never attach to the
+interpreter (`OffloadPool.lane_gil_free`), counted from the head's push
+whether or not the ring is moving.
+
+The progress rule exists because a sibling woken beside a draining GIL
+lane only queues for the GIL. A Mojo mount's lane has no GIL, and the rule
+held it to one thread: `/native/search` on four threads served 15k rps at
+1.2 cores where the eager wakes served 42k at 4.2 (Apple M4, 8
+connections, 2026-09-14). The eager wakes are not the answer either: they
+cost the trivial `/native/probe` 21 % (197k to 156k rps, on 50 % more
+CPU), because a push beside a busy thread wakes a sibling for a job the
+busy thread takes in microseconds. So `submit` keeps the elastic rule and
+only the stall check changes. Its threshold is the idle spin
+(`POOL_SPIN_NS`): a job that has waited longer than a sibling would have
+spun for it is waiting for nothing a wake could not fix. Measured around
+it -- 5 µs and 20 µs bracket the spin: sel=100 at 42.2k and 41.7k, sel=25 at
+76.8k and 72.5k (78k eager), the probe at 197k either way, where 200 µs
+left sel=25 at 36k. Against the progress rule on the built lane, two runs
+each: sel=100 42.9k against 15.7k (p50 175 µs against 508), sel=25 75.7k
+against 36.6k; the price is on the lightest routes, the probe 195k on 1.57
+cores against 199k on 1.51 and sel=5 111k against 115k."""
 
 comptime POOL_WAKE_WAIT_MS = 1
 """The loop's longest `wait` while a job sits on a lane's ring.
@@ -692,6 +720,16 @@ struct OffloadPool(Movable):
     var _parallel_forced: Int
     """-1 when the knob is unset, else what it said."""
 
+    var lane_gil_free: List[Bool]
+    """Per lane: its threads never attach to the interpreter -- a Mojo or
+    hold mount's `MojoPool` (`set_lane_gil_free`). The GIL argument behind
+    the progress rule does not hold there, so `wake_aged` counts such a
+    lane's head from its PUSH, the free-threaded rule, against
+    `POOL_FREE_WAKE_AGE_NS` rather than the GIL threshold; `submit` keeps
+    the elastic rule. `M0_POOL_PARALLEL`, when set, overrides this as it
+    overrides `parallel`, so `=0` is the arm with the GIL rule on every
+    lane."""
+
     var wake_age: Int
     """The age threshold the loop's check uses: `POOL_WAKE_AGE_NS`, or
     `M0_POOL_WAKE_AGE_US` in microseconds when set — the measurement
@@ -767,6 +805,8 @@ struct OffloadPool(Movable):
         self.lane_progress = List[Int]()
         self.lane_pops.append(0)
         self.lane_progress.append(0)
+        self.lane_gil_free = List[Bool]()
+        self.lane_gil_free.append(False)
         self.parallel = False
         self._parallel_forced = -1
         var par = getenv("M0_POOL_PARALLEL", "")
@@ -866,6 +906,7 @@ struct OffloadPool(Movable):
         self.lane_progress = move.lane_progress^
         self.parallel = move.parallel
         self._parallel_forced = move._parallel_forced
+        self.lane_gil_free = move.lane_gil_free^
 
     def set_hold_notify(mut self, fd: Int):
         """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
@@ -1416,6 +1457,22 @@ struct OffloadPool(Movable):
         """See `parallel`."""
         return self.parallel
 
+    def set_lane_gil_free(mut self, lane: Int):
+        """The wiring's answer to "do this lane's threads ever attach?" --
+        no, for a lane a `MojoPool` serves. Call after `add_lane` has
+        declared it. See `lane_gil_free`."""
+        var at = lane if lane > 0 else 0
+        if at < len(self.lane_gil_free):
+            self.lane_gil_free[at] = True
+
+    def is_lane_gil_free(self, lane: Int) -> Bool:
+        """Whether `lane` takes the GIL-free stall rule: marked, and the
+        knob unset. Test surface, and what `M0_POOL_DEBUG` prints."""
+        if self._parallel_forced >= 0:
+            return False
+        var at = lane if lane > 0 else 0
+        return at < len(self.lane_gil_free) and self.lane_gil_free[at]
+
     def wake_counts(self, lane: Int) -> Tuple[Int, Int]:
         """`(aged, idle)`: wakes `wake_aged` sent, and wakes `submit` sent
         into an all-parked lane, since the pool was built. A measurement
@@ -1537,7 +1594,14 @@ struct OffloadPool(Movable):
         question: the head's wait counts from its push, and a ring that
         one thread is draining with a sibling parked beside it gets the
         sibling once the head has waited `age_ns` — two threads on two
-        cores is twice the rate there, not twice the GIL waiters."""
+        cores is twice the rate there, not twice the GIL waiters.
+
+        A lane whose threads never attach (`lane_gil_free`: a Mojo or hold
+        mount) takes the free-threaded count on any interpreter, against
+        `POOL_FREE_WAKE_AGE_NS` when that is lower than `age_ns`. Under the
+        progress rule a compute route of 40–100 µs a job was served by ONE
+        of four threads, because the thread draining it moved the pop
+        counter every job."""
         if not self.elastic:
             return 0
         var woken = 0
@@ -1549,15 +1613,20 @@ struct OffloadPool(Movable):
                 self.lane_pops[lane] = pops
                 self.lane_progress[lane] = now
                 continue
+            var free = self.is_lane_gil_free(lane)
+            var from_push = self.parallel or free
             if pops != self.lane_pops[lane]:
                 self.lane_pops[lane] = pops
                 self.lane_progress[lane] = now
-                if not self.parallel:
+                if not from_push:
                     continue
-            var since = 0 if self.parallel else self.lane_progress[lane]
+            var since = 0 if from_push else self.lane_progress[lane]
             if slot >= 0 and slot < len(self.submit_ns) and self.submit_ns[slot] > since:
                 since = self.submit_ns[slot]
-            if now - since < age_ns:
+            var threshold = age_ns
+            if free and POOL_FREE_WAKE_AGE_NS < threshold:
+                threshold = POOL_FREE_WAKE_AGE_NS
+            if now - since < threshold:
                 continue
             if self._wake_one(lane):
                 _ = atomic_at(self._aged_wakes_addr(lane))[].fetch_add(1)
@@ -1736,6 +1805,7 @@ struct OffloadPool(Movable):
         self.job_rings.append(self._new_lane_ring())
         self.lane_pops.append(0)
         self.lane_progress.append(0)
+        self.lane_gil_free.append(False)
 
     def submit_read_fd(self, lane: Int) -> Int:
         """The read end a worker for `lane` blocks on."""
@@ -1942,7 +2012,9 @@ struct OffloadPool(Movable):
         if getenv("M0_POOL_DEBUG", "") != "":
             var counts = self.wake_counts(lane)
             print(
-                "pool lane " + String(lane) + ": aged wakes "
+                "pool lane " + String(lane) + ": "
+                + ("gil-free, " if self.is_lane_gil_free(lane) else "")
+                + "aged wakes "
                 + String(counts[0]) + ", idle wakes " + String(counts[1])
                 + ", threads " + String(self.thread_count(lane)),
                 flush=True,

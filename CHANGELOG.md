@@ -135,6 +135,22 @@ lets an application's own threads run.
   Eight threads now serve 133k rps on 1.35 cores with 61k wakes, which
   beats the WSGI route beside it per core.
 
+- **A Mojo mount's compute route runs on all its threads again** (SPEC
+  M25). Registering the Mojo pool's threads (M22, above) put its lane under
+  the elastic rule's stall check, which leaves a ring alone while its pop
+  count moves: a sibling woken beside a draining lane only queues for the
+  GIL. A Mojo mount's threads never take the GIL, and the check held its
+  lane to one of four threads — `bench-mojo-mount`'s search served 15k rps
+  on 1.2 cores where the unregistered pool served 42k on 4.2. Waking eagerly
+  on every push restores that and costs the trivial `/native/probe` 21 %, so
+  only the stall check changes: on a lane whose threads never attach, a job
+  that has waited past the idle spin (10 µs) since its push gets a parked
+  sibling, moving ring or not. The search serves 43k rps again, and 76k at
+  a quarter selectivity where it had fallen to 37k. The lightest routes pay
+  for it: the probe gives up about 2 % (195k against 199k) and the lightest
+  search about 4 %, each on more CPU. `M0_POOL_PARALLEL=0` restores the GIL
+  rule on every lane.
+
 - **A path no mount claims gets the server's own 404, whatever the first
   mount is** (SPEC M21). The loop sends a path that matches no mount to
   the first mount's lane, and only a WSGI pool thread checked the path

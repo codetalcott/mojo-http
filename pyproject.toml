@@ -4463,6 +4463,16 @@ grep -q 'pool lane 1: .*threads 4$' mojomount.log \
   || fail "the Mojo lane did not report its 4 threads registered: $(grep 'pool lane' mojomount.log)"
 grep -q 'pool lane 0: .*threads 4$' mojomount.log \
   || fail "the WSGI lane did not report its 4 threads: $(grep 'pool lane' mojomount.log)"
+# And the Mojo lane takes the GIL-free stall rule while the WSGI lane does
+# not (SPEC M25). The rule is test_offload's; this is the wiring that gives
+# it a lane. Unmarked, the lane was held to the progress rule and its search
+# route ran on one of four threads -- which no trivial route here can show,
+# so the mark is what this asserts.
+grep -q 'pool lane 1: gil-free, ' mojomount.log \
+  || fail "the Mojo lane is not marked GIL-free: $(grep 'pool lane' mojomount.log)"
+if grep -q 'pool lane 0: gil-free' mojomount.log; then
+  fail "the WSGI lane was marked GIL-free: $(grep 'pool lane' mojomount.log)"
+fi
 
 # Beside an ASGI mount, zero-config. The pool size used to come from "is any
 # mount WSGI", which answered no, so the Mojo mount got `MojoPool(0)`: the
