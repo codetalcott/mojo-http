@@ -54,7 +54,13 @@ rather than OS behaviour, so Linux is the coverage that matters; this is
 the arm that would catch a macOS-only difference in how the library is
 found, since the search path differs by platform and Homebrew's libpq is
 keg-only. Point it at a server with `M0_PG_TEST_URL`, or let it default to
-`postgres:///postgres`. It fails without a server; it never skips.
+`postgres:///postgres`. A role with a password needs a URL whose host
+matches its `~/.pgpass` line: the default connects over the Unix socket,
+which a `localhost` entry does not cover, and fails every test with
+`fe_sendauth: no password supplied` (the 1.4.0 run), where
+`M0_PG_TEST_URL=postgres://postgres@localhost:5432/postgres` passes. It
+fails without a server; it never skips. Budget half an hour: the three
+files took 26 minutes on the 1.4.0 run.
 
 **And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
 reproducers, in the `m0lin` Linux container — the only place a lost pool
