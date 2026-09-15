@@ -8,6 +8,32 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **The live demo's WebSocket status line described another tab's socket**
+  (`apps/demo`, SPEC M17). It updated on any message that arrived over a
+  WebSocket, and every tab's socket messages reach every tab on the
+  visitor's channel, so after tab A sent one, both tabs said "slot 1 on
+  worker 647 answered a message" -- tab A's socket, measured in Chromium and
+  WebKit against demo.m0serve.dev on 1.4.0. Each tab now sends
+  `{"text", "tab"}` with a random tab id, the view echoes the id, and a tab
+  learns its socket's worker only from its own echo. A client that sends
+  plain text, or JSON that is not the envelope, still has it broadcast
+  verbatim.
+
+### Changed
+
+- **The live demo shows the bus crossing it exists to demonstrate.** Each
+  line names the worker that published it and the worker that delivered it
+  to this tab, marks the ones that crossed between them, and the page counts
+  them; before, a visitor had to compare two numbers in different places,
+  and a tab whose connections and publishes all landed on one worker looked
+  the same as one they had crossed. The page links to a second tab of
+  itself, the visitor cookie is `HttpOnly` and `Secure` over HTTPS, and the
+  CSP allows the inline script and stylesheet by sha256 instead of
+  `'unsafe-inline'`. `scripts/demo_probe.py` asserts each, sabotaged eight
+  ways against a local server on the 1.4.0 wheel.
+
 ## [1.4.0] — 2026-09-15
 
 Mounts that start are mounts that can be served, a Mojo mount that uses
