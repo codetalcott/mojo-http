@@ -802,12 +802,17 @@ import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
 them — and two fork files import back: `lightbug_http/event_loop.mojo` imports
 `m0_http.log`, and `lightbug_http/mojo_pool.mojo` imports `m0_http.threads`.
 Both sides live inside `packages/m0-http/`, so the cycle never crosses a
-package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` out of
-necessity, not style: an app-facing trait must be source-visible on the same
-resolution path as the types its methods name, or conformance is accepted and
-the witness table silently never emitted — behind the `.mojoc`,
-`PoolHandler`'s inherited methods would name `m0_http`'s `HTTPRequest` while
-an app's conformance names `lightbug_http`'s. `build-apps` compiling
+package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` because an app
+conforming to `PoolHandler` behind the `.mojoc` got no witness table. **The
+cause is not the package boundary** (probed 2026-09-15): a package compiled
+from a directory named other than the package records its traits under the
+DIRECTORY's name — `trait 'src::fragment::PageShell'` — while a consumer
+resolves them under the package's, and every package here runs `mojo
+precompile src -o <name>.mojoc`. The same source from a directory named
+`m0_http` compiles an app conformance on this toolchain, and the Mojo
+nightly fixes the mismatch outright. `poe check-mojoc-trait` is the probe,
+and renaming is NOT a quick fix: a source directory beside a `.mojoc` of the
+same name shadows it, so every consumer would silently compile from source. `build-apps` compiling
 `apps/pool_spike` is the guard against moving it back. `scripts/pool_sabotage.py`
 reverts six of that file's rules by matching EXACT source lines (the
 `T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
@@ -1251,16 +1256,18 @@ pieces, and the language fact each rests on:
   APPENDS (`vary_accept` used to overwrite, unnoticed while nothing set
   `Vary` twice) and keeps `*` alone. A `status` parameter makes a styled
   404 a 404. The shell is
-  a `thin` function over a generic context, not a trait: an app's
-  conformance to a trait defined in a `.mojoc` package gets no witness
-  table — observed twice on this toolchain (`PoolHandler`, `PageShell`),
-  both with the generic consumer inside the same `.mojoc`, while
-  `Views[S]` over an app type works, so the exact discriminant is not
-  established. `poe check-mojoc-trait` compiles an app conformance
-  against the built package and insists it is refused, with a control;
-  the day it flips, `PageShell` (kept in `fragment.mojo` for that probe)
-  is the API to prefer. `HTTPService` and `PoolHandler` live in the
-  source-resolved fork for the same reason.
+  a `thin` function over a generic context, not a trait, because an app's
+  conformance to `PageShell` got no witness table (D12). **The discriminant
+  is now established and it is a NAME**: a package compiled from a
+  directory named other than the package loses its traits' witness tables,
+  and every package here builds `src` into `<name>.mojoc`. `poe
+  check-mojoc-trait` proves it four ways — the `m0_http` case refused, the
+  same synthetic source compiled from a matching directory ACCEPTED, from a
+  mismatched one refused, and `Views[S]` over an app type compiled — and
+  exits 1 the day the mismatch stops costing anything, which the Mojo
+  nightly already does. Then `PageShell` (kept in `fragment.mojo` for that
+  probe) is the API to prefer, and `HTTPService`/`PoolHandler` no longer
+  need the source-resolved fork for this reason.
 - **`url_for(PATTERN, params...)`** (`router.mojo`): the pattern is a
   `comptime` constant given to both `add` and `url_for`, so a misspelled
   route is a compile error; it raises on an arity mismatch and
