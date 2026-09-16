@@ -13,10 +13,10 @@ than through anything `malloc`'d:
 
 A shared page because it is the channel that survives `fork()`.
 `lightbug_http/ring.mojo` would carry a drop between threads just as well,
-but its memory is `malloc`'d, and the Mojo host's normal case is a click
-landing on worker 1 while the producer runs in worker 0. Phase 1 serves
-from one process; the layout is already per worker so that the host only
-has to size it.
+but its memory is `malloc`'d, and under the Mojo host a click routinely
+lands on worker 1 while the producer runs in worker 0. The host creates the
+page before the fork, sized by `board_slots` for its worker count
+(`BlobsHandler.page_slots`).
 
 The drop box is a ring of `DROP_SLOTS` words and a head counter. A writer
 claims a sequence number with `fetch_add` and then stores the drop, packed
@@ -57,11 +57,7 @@ comptime B_HOLES = B_STEPS + 13
 """Holes the kernel dropped, summed over every step."""
 comptime B_POLYGONS = B_STEPS + 14
 """Polygons the last step drew."""
-comptime B_ACTIVE_NS = B_STEPS + 15
-"""Configuration, written once by `main` before the producer starts."""
-comptime B_IDLE_NS = B_STEPS + 16
-comptime B_IDLE_AFTER_NS = B_STEPS + 17
-comptime B_VIEWERS_BASE = B_STEPS + 18
+comptime B_VIEWERS_BASE = B_STEPS + 15
 """One word per worker from here: that worker's subscriber count."""
 
 comptime COORD_SCALE = Float64(10.0)

@@ -1018,6 +1018,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/sim_loop
 help = "Run the blobs demo on :8080 (one shared world, stepped in Mojo, pushed over SSE)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/blobs/server.mojo"
 
+[tool.poe.tasks.serve-host-check]
+help = "Run the Mojo host's gate app on :8080 (a beat every 100 ms to every worker's streams)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/host_check/server.mojo"
+
 # The three WSGI rows are Python-only projects; one binary serves them all.
 # M0_WORKERS=4 (and every other M0_ variable) still applies — flags override.
 [tool.poe.tasks.serve-django]
@@ -7037,11 +7041,11 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ \
 uv run --no-project --with playwright python3 scripts/notes_login_browser.py --bin "$out/notes"
 """
 
-# apps/blobs, driven on the wire (SPEC N16). One binary, four servers, each
+# apps/blobs, driven on the wire (SPEC N16). One binary, three servers, each
 # on its own port -- SO_REUSEPORT lets a stray blobs share a port and answer
 # for it, which is how a same-port restart fakes a pass or a failure.
 [tool.poe.tasks.smoke-blobs]
-help = "Blobs demo: frames at cadence and well-formed, drops reach every stream clamped and capped, the newest state at open, a pause with nobody watching, the idle slow-down, a bounded drain"
+help = "Blobs demo: frames at cadence and well-formed, drops reach every stream clamped and capped, the newest state at open, a pause with nobody watching, the idle slow-down, a bounded drain, two workers"
 shell = """
 out=$(mktemp -d)
 pid=
@@ -7049,6 +7053,7 @@ hold=
 cleanup() {
   [ -n "$pid" ] && kill $pid 2>/dev/null
   [ -n "$hold" ] && kill $hold 2>/dev/null
+  pkill -KILL -f "$out/" 2>/dev/null
   rm -rf "$out"
 }
 trap cleanup EXIT
@@ -7112,23 +7117,22 @@ res=$(python3 scripts/blobs_probe.py idle 8352) || fail "idle: $res"
 echo "idle: $res"
 kill $pid; wait $pid 2>/dev/null; pid=
 
-# --- more than one worker is refused, not half-served ---------------------
-# In the background with a deadline: a binary that accepted the setting
-# would serve, and this phase would wait on it forever.
-M0_PORT=8353 M0_WORKERS=2 "$out/blobs" > "$out/workers.log" 2>&1 &
-pid=$!
-i=0
-while kill -0 $pid 2>/dev/null; do
-  i=$((i + 1))
-  [ $i -le 100 ] || fail "M0_WORKERS=2 was still running after 10s -- it was served, not refused"
-  sleep 0.1
-done
+# --- two workers: the host's half (streams on both, a click crossing) -----
+# Its own port. The probe fails as vacuous unless the streams land on both
+# workers, so a producer publishing to one worker's channel cannot pass on
+# a run that happened to put every stream there.
+start 8353 two M0_WORKERS=2
+two=$(python3 scripts/blobs_probe.py two 8353 2>&1) || fail "two workers: $two"
+echo "two workers: $two"
+t0=$(date +%s)
+kill -TERM $pid
 wait $pid
 rc=$?
 pid=
-[ "$rc" -eq 78 ] || fail "M0_WORKERS=2 exited $rc, not 78"
-grep -q 'serves from one process' "$out/workers.log" || fail "M0_WORKERS=2 did not say why it refused"
-echo "M0_WORKERS=2: refused with 78"
+[ "$rc" -eq 0 ] || fail "two workers: SIGTERM to the supervisor exited $rc, not 0"
+[ $(($(date +%s) - t0)) -lt 10 ] || fail "two workers: the drain took too long"
+grep -q 'abandoned' "$out/two.log" && fail "two workers: the drain abandoned the producer"
+[ "$(grep -c 'exited cleanly' "$out/two.log")" -eq 2 ] || fail "two workers: both workers did not exit cleanly"
 
 echo "smoke-blobs OK"
 python3 scripts/emit.py blobs.worst_now_ms "$(field "$serve" worst_now_ms)" --unit ms --limit 100 --task smoke-blobs
@@ -7140,12 +7144,184 @@ python3 scripts/emit.py blobs.shapes_max "$(field "$serve" shapes_max)" --task s
 python3 scripts/emit.py --covers N16 --task smoke-blobs
 """
 
-# Each apps/blobs rule, broken on purpose (SPEC N16): sixteen against
+# Each apps/blobs rule, broken on purpose (SPEC N16): fifteen against
 # smoke-blobs, the kernel's eight against its unit tests. Pre-release:
-# twenty-four rebuilds, about nine minutes; `--only unit` is about one.
+# twenty-three rebuilds, about nine minutes; `--only unit` is about one.
 [tool.poe.tasks.sabotage-blobs]
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
+
+# Each Mojo host rule, broken on purpose (SPEC E21-E23): thirteen against
+# smoke-host, three against test_host.mojo. Pre-release: sixteen runs,
+# about twelve minutes; `--only unit` is about one.
+[tool.poe.tasks.sabotage-host]
+help = "PRE-RELEASE: revert each lightbug_http/host.mojo rule and insist smoke-host or test_host fails for every one (SPEC E21-E23)"
+cmd = "python3 scripts/host_sabotage.py"
+
+# The Mojo host, on the smallest application that uses all of it (SPEC
+# E21-E23): apps/host_check is a handler and a producer and nothing else,
+# so every assertion here is about `lightbug_http.host.serve`. One binary,
+# every server on its own port: SO_REUSEPORT lets a stray one answer for a
+# port, which fakes a pass or a failure.
+[tool.poe.tasks.smoke-host]
+help = "The Mojo host: the bus at one worker, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals"
+shell = """
+out=$(mktemp -d)
+pid=
+hold=
+# Everything this run started runs from, or names, its own temp directory,
+# so that path finds every process to reap: a supervisor that outlives its
+# SIGTERM leaves workers holding the port for the next run to talk to.
+cleanup() {
+  [ -n "$pid" ] && kill $pid 2>/dev/null
+  [ -n "$hold" ] && kill $hold 2>/dev/null
+  pkill -KILL -f "$out/" 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  for f in "$out"/*.log "$out"/*.out; do
+    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
+  done
+  exit 1
+}
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
+  apps/host_check/server.mojo -o "$out/host_check" || exit 1
+# start PORT NAME [VAR=value...] -- through env(1): an assignment in front
+# of a shell FUNCTION is unspecified in sh.
+start() {
+  port=$1
+  name=$2
+  shift 2
+  env M0_PORT=$port "$@" "$out/host_check" > "$out/$name.log" 2>&1 &
+  pid=$!
+  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($name)"
+}
+# stop NAME: SIGTERM to $pid alone (the supervisor, under workers), then wait
+# with a deadline, so a host that never exits fails here instead of hanging
+# the job. Sets rc and took.
+stop() {
+  t0=$(date +%s)
+  kill -TERM $pid
+  i=0
+  while kill -0 $pid 2>/dev/null; do
+    i=$((i + 1))
+    [ $i -le 200 ] || fail "$1: still running 20 s after SIGTERM"
+    sleep 0.1
+  done
+  wait $pid
+  rc=$?
+  took=$(($(date +%s) - t0))
+  pid=
+}
+
+# --- one worker: the bus is drained there too ------------------------------
+# The producer's only way to a stream is the bus, so a host that joined it
+# only above one worker serves streams that never beat.
+start 8781 one
+res=$(python3 scripts/host_probe.py streams 8781 2 2 1 2>&1) || fail "one worker: $res"
+grep -q '^\\[worker' "$out/one.log" && fail "one worker: the host forked"
+stop "one worker"
+[ "$rc" -eq 0 ] || fail "one worker: SIGTERM exited $rc, not 0"
+grep -q 'abandoned' "$out/one.log" && fail "one worker: the drain abandoned the producer instead of stopping it"
+echo "one worker: $res; exit 0 in ${took}s"
+
+# --- two workers: every worker's streams get every beat, once --------------
+start 8782 two M0_WORKERS=2
+res=$(python3 scripts/host_probe.py streams 8782 4 2 2 2>&1) || fail "two workers: $res"
+echo "two workers: $res"
+
+# --- a drain under held streams, signalled to the supervisor alone ---------
+# What `docker stop` does. The workers must drain -- streams ended by the
+# server, each worker reporting a clean exit -- not die of the signal.
+python3 scripts/host_probe.py hold 8782 "$out/holding" 4 2 > "$out/hold.out" 2>&1 &
+hold=$!
+i=0
+while [ ! -f "$out/holding" ]; do
+  i=$((i + 1))
+  [ $i -le 100 ] || fail "the held streams never beat"
+  sleep 0.1
+done
+stop "the drain"
+[ "$rc" -eq 0 ] || fail "the drain: the supervisor exited $rc, not 0"
+[ "$took" -lt 10 ] || fail "the drain took ${took}s"
+wait $hold || fail "the drain: $(cat "$out/hold.out")"
+hold=
+[ "$(grep -c 'exited cleanly' "$out/two.log")" -eq 2 ] \
+  || fail "the drain: both workers did not report a clean exit"
+grep -q 'killed by signal' "$out/two.log" && fail "the drain: a worker died of the signal instead of draining"
+grep -q 'abandoned' "$out/two.log" && fail "the drain: the producer was abandoned"
+pgrep -f "$out/host_check" > /dev/null && fail "the drain: a worker outlived its supervisor"
+echo "the drain: exit 0 in ${took}s; $(cat "$out/hold.out")"
+
+# --- accept sharing ---------------------------------------------------------
+# E16's measurement on a host application: two rounds of a 32-connection
+# burst within 2:1, with connections actually passed between workers.
+python3 scripts/accept_spread.py --app-bin "$out/host_check" --modes fork \
+  --assert --expect-handoffs --rounds 2 --port 8783 > "$out/spread.out" 2>&1 \
+  || fail "accept sharing: bursts did not spread"
+echo "accept sharing: $(tail -1 "$out/spread.out")"
+# The negative arm where the bare race is deterministic (E16's reasoning):
+# with the knob off the same probe must see the skew.
+if [ "$(uname)" = Darwin ]; then
+  if env M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --app-bin "$out/host_check" \
+      --modes fork --assert --rounds 1 --port 8784 > "$out/spread-off.out" 2>&1; then
+    fail "accept sharing: M0_ACCEPT_SHARE=0 spread within 2:1 -- the negative arm no longer discriminates"
+  fi
+  echo "accept sharing: M0_ACCEPT_SHARE=0 skews (macOS negative arm)"
+fi
+
+# --- a producer step that overruns the bound -------------------------------
+# A 60 s step: the host waits the drain's own 5 s, names what it abandons
+# and leaves -- in one process and in a forked worker alike.
+for workers in 1 2; do
+  start $((8784 + workers)) "overrun$workers" M0_WORKERS=$workers M0_HOSTCHECK_STEP_MS=60000
+  sleep 0.5
+  stop "overrun, $workers worker(s)"
+  [ "$rc" -eq 0 ] || fail "overrun, $workers worker(s): exited $rc, not 0"
+  [ "$took" -le 12 ] || fail "overrun, $workers worker(s): took ${took}s to leave"
+  grep -q 'abandoned a producer step' "$out/overrun$workers.log" \
+    || fail "overrun, $workers worker(s): the abandoned producer was not named"
+  echo "overrun, $workers worker(s): exit 0 in ${took}s, the producer named"
+done
+overrun_s=$took
+
+# --- a long period does not hold up the drain ------------------------------
+start 8787 long M0_HOSTCHECK_PERIOD_MS=60000
+sleep 0.5
+stop "a long period"
+[ "$rc" -eq 0 ] || fail "a long period: exited $rc, not 0"
+[ "$took" -lt 3 ] || fail "a long period: the drain waited ${took}s on a sleeping producer"
+grep -q 'abandoned' "$out/long.log" && fail "a long period: the producer was abandoned instead of stopped"
+echo "a long period: exit 0 in ${took}s"
+
+# --- what the host does not serve is refused, before it binds --------------
+for v in M0_THREADS=2 M0_BLOCKING_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0; do
+  env M0_PORT=8788 $v "$out/host_check" > "$out/refused.log" 2>&1 &
+  pid=$!
+  i=0
+  while kill -0 $pid 2>/dev/null; do
+    i=$((i + 1))
+    [ $i -le 100 ] || fail "$v was still running after 10s -- served, not refused"
+    sleep 0.1
+  done
+  wait $pid
+  rc=$?
+  pid=
+  [ "$rc" -eq 78 ] || fail "$v exited $rc, not 78"
+  grep -q "${v%%=*}" "$out/refused.log" || fail "$v was refused without naming it"
+  grep -q 'listening' "$out/refused.log" && fail "$v was refused after the host bound its port"
+done
+echo "refused before binding, with 78: M0_THREADS, M0_BLOCKING_THREADS, M0_SPAWN_WORKERS, M0_WORKERS=0"
+
+echo "smoke-host OK"
+python3 scripts/emit.py host.overrun_exit_s "$overrun_s" --unit s --limit 12 --task smoke-host
+python3 scripts/emit.py --covers E21 --task smoke-host
+python3 scripts/emit.py --covers E22 --task smoke-host
+python3 scripts/emit.py --covers E23 --task smoke-host
+"""
 
 [tool.poe.tasks.smoke-todo]
 help = "Todo demo: assert a broadcast patches a live client, the list survives a restart, and Last-Event-ID replays across it"

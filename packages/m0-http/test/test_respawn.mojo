@@ -27,10 +27,14 @@ caller.
 
 from std.os import path, remove
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
+from std.time import sleep
 
 from src.multiworker import WorkerSupervisor
+from src.signal import install_shutdown_signals
+from src.threads import read_one_byte_blocking
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, was_signaled, exit_code,
+    kill_process, SIGTERM,
 )
 
 
@@ -168,6 +172,67 @@ def test_a_worker_refusing_its_configuration_is_not_respawned() raises:
     assert_true(path.exists(first), "the worker never ran")
     assert_false(path.exists(again), "the refusing worker was respawned")
     for m in [first, again]:
+        if path.exists(m):
+            remove(m)
+
+
+def _stopping_scenario(ready_marker: String, again_marker: String):
+    """One worker that drains badly: on the forwarded SIGTERM it exits 9.
+
+    A second incarnation would be a respawn during the shutdown; it leaves a
+    marker and exits 0, so the supervisor would then exit 0 as well.
+    """
+    try:
+        var supervisor = WorkerSupervisor(1)
+        supervisor.fork_all()
+        if path.exists(ready_marker):
+            with open(again_marker, "w") as f:
+                f.write(String("respawned while the supervisor was stopping"))
+            process_exit(0)
+        var fd = install_shutdown_signals()
+        with open(ready_marker, "w") as f:
+            f.write(String("armed"))
+        _ = read_one_byte_blocking(fd)
+        process_exit(9)
+    except:
+        process_exit(7)
+
+
+def test_a_worker_that_fails_while_stopping_is_not_respawned() raises:
+    """SIGTERM to the supervisor alone, and the worker fails its drain.
+
+    The supervisor forwards the signal (what `docker stop` relies on), the
+    worker exits 9 instead of 0, and the supervisor must let it go and exit
+    1 -- not respawn it. A respawned worker is sent no signal, so the
+    supervisor served it for good and SIGTERM ended only in SIGKILL; found
+    when a sabotaged Mojo host worker crashed on its way out.
+
+    covers: D10
+    """
+    var ready = "/tmp/m0_stopping_ready_" + String(getpid())
+    var again = "/tmp/m0_stopping_again_" + String(getpid())
+    for m in [ready, again]:
+        if path.exists(m):
+            remove(m)
+    var pid = fork()
+    if pid == 0:
+        _stopping_scenario(ready, again)
+        process_exit(99)  # unreachable
+    var waited = 0
+    while not path.exists(ready) and waited < 500:
+        sleep(0.01)
+        waited += 1
+    assert_true(path.exists(ready), "the worker never armed its shutdown")
+    # The supervisor arms its forwarding handler once every child is forked;
+    # give it that moment before signalling it.
+    sleep(0.3)
+    _ = kill_process(pid, SIGTERM)
+    var result = waitpid_blocking(pid)
+    var status = result[1]
+    assert_false(was_signaled(status), "supervisor process died on the signal")
+    assert_false(path.exists(again), "the worker was respawned during the shutdown")
+    assert_equal(exit_code(status), 1)
+    for m in [ready, again]:
         if path.exists(m):
             remove(m)
 

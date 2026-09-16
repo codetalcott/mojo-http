@@ -549,6 +549,20 @@ lightbug_http
         whose frames outgrew the bus could not tell that from having stopped
         (docs/notes/a-world-the-page-cannot-hold.md).
 
+      - host.mojo (new, 2026-09-16): the Mojo host. `serve[H, P]` owns a
+        Mojo application's startup -- listener, pre-fork pages and bus,
+        fork, accept sharing, signals, per-worker handler construction, a
+        producer thread on worker 0 publishing to every worker, the
+        bounded join, `exit_worker` -- behind two traits, `AppHandler` and
+        `Producer` (docs/notes/the-mojo-host.md). It imports
+        `m0_http.config`, `m0_http.multiworker`, `m0_http.signal` and
+        `m0_http.threads`: four more fork -> framework edges inside
+        packages/m0-http/, for the reason `mojo_pool.mojo` gives.
+
+      - accept_share.mojo (2026-09-16): `accept_sharing_wanted(workers)`,
+        the one place the `M0_ACCEPT_SHARE=0` knob is read for a worker
+        count.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -30,6 +30,7 @@ from lightbug_http.c.process import (
 
 from .global_slot import (
     publish_child_pids, child_pid_count, child_pid_at, MAX_TRACKED_CHILDREN,
+    set_supervisor_stopping, supervisor_stopping,
 )
 from .reload import MtimeScanner
 
@@ -188,7 +189,14 @@ def _on_supervisor_signal(sig: c_int):
     A PID of 0 means a vacant index, and is skipped: `kill(0, sig)` signals the
     caller's whole process group, which from inside the parent would mean
     signalling itself.
+
+    It records the stop FIRST (one word store, also safe): a worker that
+    dies of anything but a clean exit while it drains is then not respawned
+    (`_try_respawn`). A respawned worker is sent no signal, so the
+    supervisor would serve it forever and `docker stop` would end in
+    SIGKILL -- found when a sabotaged Mojo host worker crashed on exit.
     """
+    set_supervisor_stopping(True)
     var count = child_pid_count()
     for i in range(count):
         var pid = child_pid_at(i)
@@ -227,6 +235,7 @@ def _forget_supervisor_signals():
     _ = install_signal_handler(SIGTERM, 0)
     _ = install_signal_handler(SIGINT, 0)
     publish_child_pids(List[Int]())
+    set_supervisor_stopping(False)
 
 
 # _try_respawn outcomes. A plain Bool cannot express the case that matters:
@@ -289,6 +298,10 @@ struct WorkerSupervisor:
     """Under `--spawn-workers`, the binary every worker execs; empty means fork."""
     var _spawn_args: List[String]
     """The argv the spawned worker re-runs, `argv[0]` included."""
+    var _failed_stopping: Bool
+    """Whether a worker failed -- crashed, or died of a signal other than the
+    one forwarded -- after the supervisor was told to stop. Not respawned;
+    the supervisor exits 1 once the rest are gone."""
     var _gave_up: Bool
     """Whether the respawn budget ran out with a worker still dead.
 
@@ -314,6 +327,7 @@ struct WorkerSupervisor:
         self._spawn_path = String("")
         self._spawn_args = List[String]()
         self._gave_up = False
+        self._failed_stopping = False
         self._config_refused = False
 
     def enable_spawn(mut self, var path: String, var args: List[String]):
@@ -420,7 +434,7 @@ struct WorkerSupervisor:
             return
         if self._config_refused:
             process_exit(EX_CONFIG)
-        process_exit(1 if self._gave_up else 0)
+        process_exit(1 if self._gave_up or self._failed_stopping else 0)
 
     def _supervise(mut self) raises -> Bool:
         """Parent supervision loop: respawn crashes, propagate signals.
@@ -634,6 +648,10 @@ struct WorkerSupervisor:
         the freshly forked child (which must unwind out to `fork_all`'s
         caller), and `_RESPAWN_FAILED` when the respawn budget is spent.
         """
+        if supervisor_stopping():
+            print("[parent] stopping: a worker that failed during the drain is not respawned")
+            self._failed_stopping = True
+            return _RESPAWN_FAILED
         if self.respawn_count >= self.max_respawns:
             print("[parent] max respawns ({}) reached, not respawning".format(self.max_respawns))
             self._gave_up = True

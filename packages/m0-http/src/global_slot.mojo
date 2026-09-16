@@ -104,6 +104,39 @@ def _child_pid_slot() -> Pointer[Int, MutUntrackedOrigin]:
     }
 
 
+@no_inline
+def _supervisor_stopping_slot() -> Pointer[Int, MutUntrackedOrigin]:
+    """Return the one-word slot the supervisor's handler sets on SIGTERM/SIGINT.
+
+    `@no_inline` is required for the address to be stable — see this file's
+    header.
+
+    Returns:
+        A pointer to this module image's supervisor-stopping slot.
+    """
+    return {
+        _mlir_value = __mlir_op.`pop.global_alloc`[
+            name = _get_kgen_string["m0_http_supervisor_stopping"](),
+            count = Int(1).__mlir_index__(),
+            _type = Pointer[Int, MutUntrackedOrigin]._mlir_type,
+            alignment = Int(8).__mlir_index__(),
+        ]()
+    }
+
+
+def set_supervisor_stopping(stopping: Bool):
+    """Record that the supervisor has been told to stop, or clear it.
+
+    Async-signal-safe: one aligned word store.
+    """
+    _supervisor_stopping_slot()[] = 1 if stopping else 0
+
+
+def supervisor_stopping() -> Bool:
+    """Whether the supervisor has been told to stop (SIGTERM or SIGINT)."""
+    return _supervisor_stopping_slot()[] != 0
+
+
 def set_shutdown_write_fd(fd: Int):
     """Publish the shutdown pipe's write fd for the signal handler to find.
 

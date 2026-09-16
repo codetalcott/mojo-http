@@ -27,6 +27,13 @@ pass by construction — the probe demands N >= 2.
 
 `--bin` defaults to `bin/m0serve` relative to the repository, `--app-dir`
 to `apps/wsgi_bare`. Ports are taken from `--port` upward, one per mode.
+
+`--app-bin PATH` measures a Mojo application on the Mojo host instead
+(SPEC E22): the binary is started with `M0_PORT` and `M0_WORKERS`, must
+answer `/pid` the same way, and has one worker mode, `fork` — the host
+refuses `M0_SPAWN_WORKERS`.
+
+    python3 scripts/accept_spread.py --app-bin /tmp/host_check --modes fork
 """
 import argparse
 import collections
@@ -40,22 +47,27 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def start(bin_path, app_dir, port, workers, extra, log):
-    cmd = [bin_path, "bareapp.wsgi", "--app-dir", app_dir, "--port", str(port),
-           "--workers", str(workers)] + extra
+def start(bin_path, app_dir, port, workers, extra, log, app_bin=None):
+    env = None
+    if app_bin:
+        cmd = [app_bin]
+        env = dict(os.environ, M0_PORT=str(port), M0_WORKERS=str(workers))
+    else:
+        cmd = [bin_path, "bareapp.wsgi", "--app-dir", app_dir, "--port", str(port),
+               "--workers", str(workers)] + extra
     p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
-                         start_new_session=True)
+                         start_new_session=True, env=env)
     t0 = time.time()
     while time.time() - t0 < 60:
         if p.poll() is not None:
-            raise SystemExit("m0serve exited %d before it listened" % p.returncode)
+            raise SystemExit("the server exited %d before it listened" % p.returncode)
         try:
             socket.create_connection(("127.0.0.1", port), 1).close()
             break
         except OSError:
             time.sleep(0.02)
     else:
-        raise SystemExit("m0serve did not listen on %d within 60 s" % port)
+        raise SystemExit("the server did not listen on %d within 60 s" % port)
     time.sleep(0.3)  # every worker up, not just the first to accept
     return p
 
@@ -114,6 +126,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--bin", default=os.path.join(REPO, "bin", "m0serve"))
     ap.add_argument("--app-dir", default=os.path.join(REPO, "apps", "wsgi_bare"))
+    ap.add_argument("--app-bin", default=None,
+                    help="a Mojo host application to measure instead of m0serve")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--modes", default="fork,spawn",
                     help="comma-separated: fork, spawn")
@@ -136,6 +150,8 @@ def main():
         raise SystemExit("--workers must be >= 2: one worker has nothing to share")
     extra_common = args.extra.split() if args.extra else []
     modes = {"fork": [], "spawn": ["--spawn-workers"]}
+    if args.app_bin:
+        modes = {"fork": []}
     failed = []
     port = args.port
     for mode in [m.strip() for m in args.modes.split(",") if m.strip()]:
@@ -144,7 +160,7 @@ def main():
         log_path = "accept-spread-%s.log" % mode
         with open(log_path, "w") as log:
             p = start(args.bin, args.app_dir, port, args.workers,
-                      modes[mode] + extra_common, log)
+                      modes[mode] + extra_common, log, args.app_bin)
         try:
             for r in range(args.rounds):
                 burst = spread(port, args.n, 0)

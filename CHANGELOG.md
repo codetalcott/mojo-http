@@ -10,6 +10,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **The Mojo host** (SPEC E21–E23). `lightbug_http.host.serve[H, P]` is
+  everything in a Mojo application's `main` that is not the application:
+  the listener, the pre-fork shared pages and bus, `M0_WORKERS` processes
+  sharing their accepts, signals armed after the fork, a handler built in
+  each worker by `AppHandler.make`, and one `Producer` on worker 0 whose
+  frames go to every worker's channel, stopped and joined within the
+  drain's 5 s. An application writes two conformances and
+  `serve[MyHandler, MyProducer](AppConfig())`. `M0_THREADS`,
+  `M0_BLOCKING_THREADS` and `M0_SPAWN_WORKERS` are m0serve's and are refused
+  with 78 before anything is bound. Gated by `smoke-host` on
+  `apps/host_check` and by `test_host.mojo`; `sabotage-host` (16 rules)
+  before a release. DECISIONS D26 is retired: the `Producer` trait is the
+  helper it deferred, and D27 records its choices.
 - **A Mojo application ships as an image with nothing under it** (SPEC M26).
   `deploy/mojo-hello/Dockerfile` compiles `apps/hello` with the pinned
   toolchain in a builder stage; the runtime stage carries the binary and the
@@ -30,12 +43,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   in the slot it held last step — and publishes each step as one
   full-state Datastar frame of `polygon()` clip-paths; a click drops a
   blob for every open tab. A step costs ~0.2–0.4 ms on an M4. It is the
-  first app that is both a `Views` table and a streaming handler, and its
-  `main` marks which lines the coming Mojo host will own. One worker only,
-  with `M0_WORKERS` above 1 refused. Sixteen separate blobs make a 9.6 KB
-  frame, ~96 KB/s per viewer; merged ones make less. `uv run poe
-  serve-blobs`; gated by `smoke-blobs` and the kernel's unit tests, with
-  `browser-blobs` and `sabotage-blobs` (24 rules) before a release.
+  first app that is both a `Views` table and a streaming handler, and the
+  first on the Mojo host: its `main` is fifteen lines, and `M0_WORKERS=2`
+  serves from two processes, a click on either reaching the one producer.
+  Sixteen separate blobs make a 9.6 KB frame, ~96 KB/s per viewer; merged
+  ones make less. `uv run poe serve-blobs`; gated by `smoke-blobs` and the
+  kernel's unit tests, with `browser-blobs` and `sabotage-blobs` (23 rules)
+  before a release.
 - **`DatastarStream(send_latest=True)`: a stream of states** (SPEC I24).
   Every subscriber, new or reconnecting, is sent the newest frame for its
   url at open and then the live feed, never a replay. Without it a page
@@ -48,6 +62,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `apps/<app>/test/`, inside `test-all`; `apps/blobs` is the first.
 
 ### Fixed
+
+- **A supervisor told to stop no longer respawns a worker that fails its
+  drain** (SPEC D10). After a SIGTERM to the supervisor alone — what
+  `docker stop` sends — a worker that exited non-zero, or died of any
+  signal but the one forwarded, was replaced. Nothing ever signalled the
+  replacement, so the supervisor served it until SIGKILL. The supervisor now
+  lets it go and exits 1 once the rest are gone. `m0serve --workers N` and
+  every Mojo app that forks share the supervisor. Found while gating the
+  Mojo host.
 
 - **A JSON number read from a request body could kill the server** (SPEC
   G14). `m0_core.json_parse.parse_json_number` cut the number out with a
