@@ -26,7 +26,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   case refused, one synthetic source ACCEPTED from a matching directory and
   refused from a mismatched one, `Views[S]` still compiling) and says what
   retires D12 and D14. [notes/a-trait-and-a-directory-name](docs/notes/a-trait-and-a-directory-name.md).
-
+- **Ten unchecked bodies in the lightbug fork, one of them a stack write
+  past the end.** Mojo type-checks method bodies lazily and `build-http`
+  precompiles `src` only, so the fork's 56 files were checked only where an
+  app instantiated them — and nothing compiled them whole. `poe
+  check-fork-package` now does, inside `test-all`: `Int` where `Int32` was
+  wanted at `_getsockopt`, `_recvfrom` and `_writev`, a `socklen_t` from
+  `size_of`, an origin mismatch in the dead `ProvisionPool.get_ptr` (removed),
+  four hand-written copy/move dunders in the cookie types (removed, the
+  compiler derives them), and `getsockopt` landing the kernel's reply in a
+  one-byte allocation it had described as `size_of[Int]()` bytes. All ten
+  sat in paths nothing instantiates, so no shipped behaviour changes; the
+  gate is what stops the next one.
 - **The live demo's WebSocket status line described another tab's socket**
   (`apps/demo`, SPEC M17). It updated on any message that arrived over a
   WebSocket, and every tab's socket messages reach every tab on the

@@ -17,7 +17,7 @@ def http_date_now() -> String:
 
     Returns:
         Current time in HTTP date format (IMF-fixdate).
-        Format: Day, DD Mon YYYY HH:MM:SS GMT
+        Format: `Day, DD Mon YYYY HH:MM:SS GMT`
     """
     return http_date_from_unix(unix_now())
 

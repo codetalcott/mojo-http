@@ -1,4 +1,4 @@
-"""macOS kqueue implementation of EventLoopBackend.
+"""`kqueue` implementation of `EventLoopBackend`, for macOS.
 
 Wraps c/kqueue.mojo FFI into the EventLoopBackend trait so run_event_loop
 can be parameterized over the backend type.
@@ -18,7 +18,7 @@ comptime _MAX_EVENTS = 64
 
 
 struct KqueueBackend(ConstructibleBackend):
-    """kqueue-based IO backend for macOS."""
+    """`kqueue`-based IO backend for macOS."""
 
     var kq: FileDescriptor
     var _events: Pointer[kevent_t, MutUntrackedOrigin]

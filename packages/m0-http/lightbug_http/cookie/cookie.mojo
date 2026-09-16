@@ -102,30 +102,6 @@ struct Cookie(Copyable):
     def __str__(self) -> String:
         return String("Name: ", self.name, " Value: ", self.value)
 
-    def __copyinit__(out self: Cookie, copy: Cookie):
-        self.name = copy.name
-        self.value = copy.value
-        self.max_age = copy.max_age
-        self.expires = copy.expires.copy()
-        self.domain = copy.domain
-        self.path = copy.path
-        self.secure = copy.secure
-        self.http_only = copy.http_only
-        self.same_site = copy.same_site
-        self.partitioned = copy.partitioned
-
-    def __moveinit__(out self: Cookie, deinit take: Cookie):
-        self.name = take.name^
-        self.value = take.value^
-        self.max_age = take.max_age^
-        self.expires = take.expires.copy()
-        self.domain = take.domain^
-        self.path = take.path^
-        self.secure = take.secure
-        self.http_only = take.http_only
-        self.same_site = take.same_site^
-        self.partitioned = take.partitioned
-
     def clear_cookie(mut self):
         self.max_age = Optional[Duration](None)
         self.expires = Expiration.invalidate()

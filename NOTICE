@@ -529,6 +529,19 @@ lightbug_http
         but the patch that read it was never committed; `OffloadPool.spin`
         now holds the value, read once at construction like `wake_age`.
 
+      - c/socket.mojo, socket.mojo, server.mojo, cookie/ (2026-09-15): the
+        fork type-checks as a whole package for the first time
+        (`poe check-fork-package`). Mojo checks method bodies lazily and
+        `build-http` precompiles `src` only, so ten errors had accumulated in
+        bodies nothing instantiates: `Int` where `Int32` was wanted at
+        `_getsockopt`, `_recvfrom` and `_writev`, a `socklen_t` from
+        `size_of`, an origin mismatch in `ProvisionPool.get_ptr` (deleted,
+        no call sites), and four hand-written `__copyinit__`/`__moveinit__`
+        in the cookie types (deleted; the compiler derives them). One was a
+        latent defect rather than a spelling: `getsockopt` landed the
+        kernel's reply in a one-byte `c_void` allocation while telling it the
+        buffer was `size_of[Int]()`, and read `Int` back out.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

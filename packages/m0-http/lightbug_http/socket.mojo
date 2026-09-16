@@ -596,7 +596,7 @@ struct Socket[
         Raises:
             GetsockoptError: If getting the socket option fails.
         """
-        return getsockopt(self.fd, SOL_SOCKET, option_name.value)
+        return getsockopt(self.fd, Int32(SOL_SOCKET), option_name.value)
 
     def set_socket_option(self, option_name: SocketOption, var option_value: Int = 1) raises SetsockoptError:
         """Return the value of the given socket option.
@@ -736,8 +736,8 @@ struct Socket[
             EOF: If 0 bytes are received.
         """
         var buffer = Bytes(capacity=size)
-        _, host, port = self._receive_from(buffer)
-        return buffer^, host, port
+        var received = self._receive_from(buffer)
+        return buffer^, received[1], received[2]
 
     def receive_from(self, mut dest: List[Byte]) raises -> Tuple[UInt, String, UInt16]:
         """Receive data from the socket into the buffer dest.

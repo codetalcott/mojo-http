@@ -423,9 +423,19 @@ def getsockopt(
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/getsockopt.3p.html .
     """
-    var option_value = stack_allocation[1, c_void]()
-    var option_len: socklen_t = size_of[Int]()
-    var result = _getsockopt(socket.value, level, option_name, option_value, Pointer(to=option_len))
+    # An `Int`-sized landing area, because `option_len` tells the kernel it
+    # has that much room and the return below reads that much back. The
+    # allocation used to be one `c_void`, which made every call a write past
+    # the end of it -- latent only because nothing instantiated this body.
+    var option_value = stack_allocation[1, Int]()
+    var option_len = socklen_t(size_of[Int]())
+    var result = _getsockopt(
+        Int32(socket.value),
+        level,
+        option_name,
+        option_value.unsafe_bitcast[c_void](),
+        Pointer(to=option_len),
+    )
     if result == -1:
         var errno = get_errno()
         if errno == errno.EBADF:
@@ -444,7 +454,7 @@ def getsockopt(
                 errno,
             )
 
-    return option_value.unsafe_bitcast[Int]().unsafe_take_pointee()
+    return option_value.unsafe_take_pointee()
 
 
 def _getsockname[
@@ -1136,7 +1146,7 @@ def recvfrom[
     """
     var address_buffer_size = address.SIZE
     var result = _recvfrom(
-        socket.value,
+        Int32(socket.value),
         buffer.unsafe_ptr().unsafe_bitcast[c_void](),
         length,
         flags,
@@ -1347,7 +1357,7 @@ def try_writev(
     Returns bytes written on success, -1 for EAGAIN/EWOULDBLOCK,
     -2 for fatal errors (connection reset, bad fd, etc.).
     """
-    var result = _writev(fd.value, iov, c_int(iovcnt))
+    var result = _writev(Int32(fd.value), iov, c_int(iovcnt))
     if result == -1:
         var errno = get_errno()
         if errno in [errno.EAGAIN, errno.EWOULDBLOCK]:

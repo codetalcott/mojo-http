@@ -41,16 +41,6 @@ struct ResponseCookieKey(ImplicitlyCopyable, KeyElement):
     def __eq__(self: Self, other: Self) -> Bool:
         return self.name == other.name and self.domain == other.domain and self.path == other.path
 
-    def __moveinit__(out self: Self, deinit take: Self):
-        self.name = take.name
-        self.domain = take.domain
-        self.path = take.path
-
-    def __copyinit__(out self: Self, copy: Self):
-        self.name = copy.name
-        self.domain = copy.domain
-        self.path = copy.path
-
     def __hash__[H: Hasher](self: Self, mut hasher: H):
         hasher.update(self.name + "~" + self.domain + "~" + self.path)
 
