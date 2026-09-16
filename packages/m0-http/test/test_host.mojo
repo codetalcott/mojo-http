@@ -184,19 +184,29 @@ def test_producer_publishes_to_every_worker_in_order() raises:
 def test_an_overrun_does_not_catch_up() raises:
     """One 200 ms step on a 20 ms period, then free steps.
 
-    Rescheduled from now, the next 200 ms hold about ten steps. Caught up,
-    the nine steps the overrun missed run back to back first, and the same
-    window holds about twenty. (Every step slow would not tell the two
-    apart: both run the steps back to back.)
+    Rescheduled from now, the window holds the overrun plus one step per
+    period left in it. Caught up, the nine steps the overrun missed run back
+    to back first, on top of that. (Every step slow would not tell the two
+    apart: both run the steps back to back.) The bound comes from the
+    window as measured, because a loaded runner oversleeps both the test's
+    wait and the producer's periods; the nine caught-up steps take no sleep
+    at all, so oversleeping cannot hide them.
     """
     var page = _page(20_000_000, cost_ns=200_000_000, slow_step=1)
     var p = ProducerThread()
+    var t0 = perf_counter_ns()
     p.start[Ticker](_ctx(1, page))
     sleep(0.4)
     _ = p.stop_and_join(5_000_000_000)
+    var window_ms = Int((perf_counter_ns() - t0) // 1_000_000)
     var steps = page.load(P_STEPS)
-    assert_true(steps <= 15, String(steps, " steps in 400 ms: the overrun was caught up"))
-    assert_true(steps >= 5, String("only ", steps, " steps in 400 ms"))
+    var most = 1 + (window_ms - 200) // 20 + 1
+    assert_true(
+        steps <= most + 3,
+        String(steps, " steps in ", window_ms, " ms, where rescheduling allows ", most,
+               ": the overrun was caught up"),
+    )
+    assert_true(steps >= 2, String("only ", steps, " steps: nothing ran after the overrun"))
 
 
 def test_a_long_period_does_not_delay_the_stop() raises:
