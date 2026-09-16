@@ -301,11 +301,12 @@ into the `DatastarStream` journal at boot, so a tab reconnecting with
 `Last-Event-ID` is caught up by the new process instead of waiting for the
 next mutation. `poe smoke-todo` asserts both. `uv run poe serve-todo`.
 [apps/blobs/](apps/blobs/) is a stream of *states* rather than changes: a
-producer thread steps a shared world of up to sixteen blobs at 10 Hz and
-publishes each step as one full-state frame of `polygon()` clip-paths, a
-click drops a blob in every tab, and `DatastarStream(send_latest=True)` sends
-a new tab the current world instead of a replay. Its kernel is a stand-in
-for now. `uv run poe serve-blobs`; `poe smoke-blobs` gates it.
+producer thread steps a shared world of up to sixteen metaballs at 10 Hz,
+traces the outlines where they merge, and publishes each step as one
+full-state frame of `polygon()` clip-paths; a click drops a blob in every
+tab, and `DatastarStream(send_latest=True)` sends a new tab the current
+world instead of a replay. `uv run poe serve-blobs`; `poe smoke-blobs`
+gates it.
 
 A note on Datastar v1.0.x attribute syntax, learned the hard way in a real
 browser: the stream opens from `data-init` (there is no `on-load` plugin), and

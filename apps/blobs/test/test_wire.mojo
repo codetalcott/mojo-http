@@ -7,20 +7,27 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.broadcast import BUS_MAX_FRAME
 
-from blobs.kernel import NVERT, SLOTS, Shapes, trace
+from blobs.kernel import NVERT, SLOTS, Shapes, Tracer
 from blobs.wire import fits_the_bus, polygon, signals_json, state_frame
 from blobs.world import MAX_BLOBS, STAGE, World
 
 
 def _full_world() -> World:
+    """Sixteen blobs on a 4 x 4 lattice, too far apart to merge."""
     var world = World()
     for i in range(MAX_BLOBS):
-        world.drop(STAGE * Float64(i) / Float64(MAX_BLOBS), STAGE / 3.0)
+        world.alive[i] = True
+        world.x[i] = 35.0 + 40.0 * Float64(i % 4)
+        world.y[i] = 35.0 + 40.0 * Float64(i // 4)
+        world.strength[i] = 100.0
     return world^
 
 
 def test_a_full_stage_fits_the_bus_with_room() raises:
     """Sixteen polygons of 48 vertices: under a fifth of `BUS_MAX_FRAME`.
+
+    Sixteen blobs far enough apart not to merge draw sixteen polygons, the
+    largest frame the kernel can make.
 
     The bus refuses a larger frame without a word, and the per-slot
     outbox holds 64 KB, so the headroom is what lets a slow viewer miss
@@ -28,8 +35,10 @@ def test_a_full_stage_fits_the_bus_with_room() raises:
     """
     var world = _full_world()
     var shapes = Shapes()
-    trace(world, shapes)
+    var tracer = Tracer()
+    tracer.trace(world, shapes)
     var frame = state_frame(shapes, 7, 123, 2, world.count(), 100)
+    assert_equal(shapes.filled_count(), SLOTS)
     assert_true(fits_the_bus(frame))
     assert_true(frame.byte_length() * 5 < BUS_MAX_FRAME)
     assert_true(frame.startswith("event: datastar-patch-signals\nid: 7\n"))
@@ -41,7 +50,8 @@ def test_every_slot_is_in_every_frame() raises:
     """Full state: an empty slot is `""`, never absent."""
     var world = World()
     var shapes = Shapes()
-    trace(world, shapes)
+    var tracer = Tracer()
+    tracer.trace(world, shapes)
     var json = signals_json(shapes, 5, 1, world.count(), 100)
     for k in range(SLOTS):
         assert_true(json.find(String('"_b', k, '":"')) >= 0)
@@ -52,7 +62,8 @@ def test_every_slot_is_in_every_frame() raises:
 def test_a_polygon_is_nvert_percent_pairs() raises:
     var world = World()
     var shapes = Shapes()
-    trace(world, shapes)
+    var tracer = Tracer()
+    tracer.trace(world, shapes)
     var p = polygon(shapes, 0)
     assert_true(p.startswith("polygon(") and p.endswith(")"))
     assert_equal(p.count(","), NVERT - 1)

@@ -7132,14 +7132,17 @@ echo "M0_WORKERS=2: refused with 78"
 
 echo "smoke-blobs OK"
 python3 scripts/emit.py blobs.worst_now_ms "$(field "$serve" worst_now_ms)" --unit ms --limit 100 --task smoke-blobs
-python3 scripts/emit.py blobs.frame_bytes_full "$(field "$serve" frame_max)" --unit B --limit 65536 --task smoke-blobs
+python3 scripts/emit.py blobs.frame_bytes_max "$(field "$serve" frame_max)" --unit B --limit 65536 --task smoke-blobs
 python3 scripts/emit.py blobs.per_viewer_bytes_per_s "$(field "$serve" per_viewer_bps)" --unit B/s --task smoke-blobs
+python3 scripts/emit.py blobs.step_us "$(field "$serve" step_us)" --unit us --limit 2000 --task smoke-blobs
 python3 scripts/emit.py blobs.step_us_max "$(field "$serve" step_us_max)" --unit us --limit 2000 --task smoke-blobs
+python3 scripts/emit.py blobs.shapes_max "$(field "$serve" shapes_max)" --task smoke-blobs
 python3 scripts/emit.py --covers N16 --task smoke-blobs
 """
 
-# Each smoke-blobs assertion, broken on purpose (SPEC N16). Pre-release:
-# fourteen rebuilds of the app and fourteen smoke runs, ~6 minutes.
+# Each apps/blobs rule, broken on purpose (SPEC N16): sixteen against
+# smoke-blobs, the kernel's eight against its unit tests. Pre-release:
+# twenty-four rebuilds, about nine minutes; `--only unit` is about one.
 [tool.poe.tasks.sabotage-blobs]
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
