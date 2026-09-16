@@ -18,6 +18,15 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
+    # The repository's default token is read-only, so "Create issue on
+    # failure" below had never been able to file anything: every run since at
+    # least 2026-08-18 failed, and each one died a second time on
+    # `GraphQL: Resource not accessible by integration (createIssue)`. The
+    # free-threaded canary was given these permissions on 2026-09-02; this
+    # workflow has the same step and was missed.
+    permissions:
+      contents: read
+      issues: write
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -47,27 +56,114 @@ jobs:
 
       # --no-sync on every step below: a plain `uv run` would re-sync the venv
       # to uv.lock and silently revert the nightly, making this job a no-op.
-      - name: Build all packages
-        run: uv run --no-sync poe build-all
+      # `build-all` is a poe sequence, so the first broken package ended the
+      # run: the 2026-09-15 canary reported `Atomic[DType...]` and
+      # `_CTimeSpec.tv_subsec` and stopped, leaving m0-wsgi, the apps and the
+      # whole test suite unprobed and the real size of the break unknown. This
+      # builds each package itself and carries on. A package whose dependency
+      # broke is SKIPPED rather than run, because it would fail against a
+      # missing `.mojoc` for a reason that is not the nightly's.
+      - name: Build packages (survey)
+        id: build
+        continue-on-error: true
+        env:
+          OS_NAME: ${{ matrix.os }}
+        run: |
+          set -u
+          deps_for() {
+            case "$1" in
+              build-http|build-ffi) echo "build-core" ;;
+              build-datastar|build-wsgi) echo "build-core build-http" ;;
+              *) echo "" ;;
+            esac
+          }
+          built=" "
+          rc=0
+          {
+            echo "### Build survey — $OS_NAME"
+            echo ""
+            echo "| package | result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for t in build-core build-http build-datastar build-sqlite build-postgres build-wsgi build-ffi; do
+            blocked=""
+            for d in $(deps_for "$t"); do
+              case "$built" in *" $d "*) ;; *) blocked="$d" ;; esac
+            done
+            if [ -n "$blocked" ]; then
+              echo "SKIPPED $t -- $blocked did not build"
+              echo "| \`$t\` | skipped (\`$blocked\` broke) |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            echo "::group::$t"
+            if uv run --no-sync poe "$t"; then
+              built="$built$t "
+              echo "| \`$t\` | ok |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              rc=1
+              echo "| \`$t\` | **FAILED** |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "::endgroup::"
+          done
+          exit $rc
 
+      # Only worth running if everything built: against a missing or stale
+      # `.mojoc` the suite fails for its own reasons and says nothing about
+      # the nightly.
       - name: Run all tests
+        if: steps.build.outcome == 'success'
         run: uv run --no-sync poe test-all
+
+      - name: Fail the job when the survey found a break
+        if: steps.build.outcome != 'success'
+        run: |
+          echo "the nightly broke at least one package -- see the build survey" >&2
+          exit 1
 
       - name: Get Mojo version on failure
         if: failure()
         id: mojo-version
         run: echo "version=$(uv run --no-sync mojo --version 2>/dev/null || echo 'unknown')" >> "$GITHUB_OUTPUT"
 
-      - name: Create issue on failure
+      # One open issue per break, not one per Tuesday. The canary is weekly
+      # and a nightly break lasts until someone acts on it, so filing afresh
+      # each run would bury the thread that holds the history -- and the two
+      # matrix legs would file twice for the same break. An open
+      # `nightly-breakage` issue gets a comment instead. (Both legs can race
+      # to create; a duplicate is cheap and visible, which a missed break is
+      # not.)
+      - name: Report the failure
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
+          MOJO_VERSION: ${{ steps.mojo-version.outputs.version }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          OS_NAME: ${{ matrix.os }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue create \
-            --title "Nightly canary failed (${{ matrix.os }}) — Mojo ${{ steps.mojo-version.outputs.version }}" \
-            --label "nightly-breakage" \
-            --body "The nightly canary build failed with Mojo **${{ steps.mojo-version.outputs.version }}**.
-
-          [View failed run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-
-          This likely means a Mojo nightly introduced a breaking change. Check the build/test logs and update mojo-http accordingly."
+          set -u
+          if [ "$BUILD_OUTCOME" = "success" ]; then
+            what="every package built; \`test-all\` failed"
+          else
+            what="one or more packages did not build (see the run summary for the per-package survey)"
+          fi
+          body="$RUNNER_TEMP/canary-report.md"
+          {
+            printf '**%s** on **%s**, against Mojo `%s`.\n\n' "$what" "$OS_NAME" "$MOJO_VERSION"
+            printf '[View the run](%s) — the job summary carries the build survey.\n\n' "$RUN_URL"
+            printf 'A nightly break today is a stable break in a few weeks. It is not\n'
+            printf 'something to fix on the nightly: the spellings usually differ between\n'
+            printf 'the pinned toolchain and the nightly, so this is a record for the pin\n'
+            printf 'bump, not a migration to make now.\n'
+          } > "$body"
+          existing=$(gh issue list --label nightly-breakage --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "commenting on the open nightly-breakage issue #$existing"
+            gh issue comment "$existing" --body-file "$body"
+          else
+            echo "no open nightly-breakage issue; filing one"
+            gh issue create \
+              --title "Nightly canary failed ($OS_NAME) — Mojo $MOJO_VERSION" \
+              --label "nightly-breakage" \
+              --body-file "$body"
+          fi
