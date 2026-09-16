@@ -112,6 +112,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **The nightly canary could not alert, and one break hid the rest.**
+  The 2026-09-02 fix created the missing `nightly-breakage` label, which was
+  one of two causes: the job declares no `permissions`, so the repository's
+  read-only token failed again on `GraphQL: Resource not accessible by
+  integration (createIssue)` — every run from 2026-08-18 to 2026-09-15 failed
+  and none of them said so, while the free-threaded canary next door had been
+  given `issues: write` on 2026-09-02 and its sibling was missed. It has them
+  now. The build step was also a `build-all` sequence, so the first broken
+  package ended the run: the 2026-09-15 canary reported `Atomic[DType...]`
+  and `_CTimeSpec.tv_subsec` and stopped, leaving m0-wsgi, the apps and the
+  whole suite unprobed. It now builds each package itself, carries on past a
+  failure, marks as skipped anything whose dependency broke, and renders a
+  per-package table into the run summary. An open `nightly-breakage` issue
+  gets a comment rather than a fresh issue every Tuesday.
+
 - **`page_or_fragment(..., status=422)` answered `422 OK`.** `text`
   defaulted to the literal `"OK"`, so a styled error carried the wrong
   reason phrase unless the caller passed one. `text` left alone is now the
