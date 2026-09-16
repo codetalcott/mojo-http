@@ -13,10 +13,13 @@ assertion that failed. Stdlib only.
 What a frame must be, every time: a `datastar-patch-signals` event whose
 signals carry EVERY slot `_b0`..`_b15` (full state, never a delta), each
 either empty or `polygon(...)` with exactly 48 vertices, every coordinate
-inside 1–99 % (a contour that touches the stage edge is an open path the
-page cannot draw), vertex 0 at the smallest y, and a negative shoelace
-area in page coordinates — one winding for every loop. The frame is under
+inside 0–100 %, vertex 0 at the smallest y, and a negative shoelace area
+in page coordinates — one winding for every shape. The frame is under
 the bus's 64 KB, and the ids of one stream are contiguous.
+
+Merged blobs may reach a wall (the kernel's border closes them there), so
+"clear of the edge" is asserted only for a LONE blob: the corner drop,
+which the drop view clamps a margin inside the stage.
 
 Vertex 0 is checked as "no vertex above it", not as the kernel's exact
 rule (smallest y, ties by smallest x): coordinates are rounded to 0.1 %
@@ -200,8 +203,7 @@ def parse_block(block: bytes) -> dict | None:
 # --- What every frame must be ---------------------------------------------------
 
 
-def check_polygon(value: str, where: str) -> tuple[float, float]:
-    """Assert the polygon contract; return its (min x, min y)."""
+def polygon_points(value: str, where: str) -> list[tuple[float, float]]:
     m = POLY.match(value)
     if not m:
         fail(f"{where}: not a polygon(): {value[:60]!r}")
@@ -211,14 +213,25 @@ def check_polygon(value: str, where: str) -> tuple[float, float]:
         if not (xs.endswith("%") and ys.endswith("%")):
             fail(f"{where}: a vertex is not in percent: {pair!r}")
         pts.append((float(xs[:-1]), float(ys[:-1])))
+    return pts
+
+
+def check_polygon(value: str, where: str, clear: bool = False) -> tuple[float, float, float, float]:
+    """Assert the polygon contract; return its (min x, min y, max x, max y).
+
+    `clear` also requires every vertex inside 1–99 %: a lone blob the
+    drop view clamped is never drawn against a wall.
+    """
+    pts = polygon_points(value, where)
     if len(pts) != NVERT:
         fail(f"{where}: {len(pts)} vertices, not {NVERT}")
+    lo, hi = (1.0, 99.0) if clear else (0.0, 100.0)
     for x, y in pts:
-        if not (1.0 <= x <= 99.0 and 1.0 <= y <= 99.0):
+        if not (lo <= x <= hi and lo <= y <= hi):
             fail(
-                f"{where}: vertex ({x}, {y}) touches the stage edge -- a "
-                "contour there is an open path, and the drop clamp exists "
-                "to keep blobs clear of it"
+                f"{where}: vertex ({x}, {y}) is outside {lo}-{hi} %"
+                + (" -- a lone blob against the wall: the drop clamp is not"
+                   " keeping it a margin inside" if clear else "")
             )
     y0 = pts[0][1]
     if min(y for _, y in pts) < y0:
@@ -229,7 +242,9 @@ def check_polygon(value: str, where: str) -> tuple[float, float]:
     )
     if not area < 0:
         fail(f"{where}: winding is {'positive' if area > 0 else 'degenerate'}, not negative")
-    return min(x for x, _ in pts), min(y for _, y in pts)
+    xs = [x for x, _ in pts]
+    ys = [y for _, y in pts]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def check_frame(frame: dict, where: str) -> None:
@@ -259,6 +274,18 @@ def check_contiguous(frames: list[dict], where: str) -> None:
 
 def filled(frame: dict) -> int:
     return sum(1 for k in range(SLOTS) if frame["signals"][f"_b{k}"])
+
+
+def in_bottom_right(frame: dict, where: str) -> list[str]:
+    """The shapes reaching past 80 % on both axes: the corner drop's region."""
+    out = []
+    for k in range(SLOTS):
+        v = frame["signals"][f"_b{k}"]
+        if v:
+            _, _, maxx, maxy = check_polygon(v, where)
+            if maxx > 80 and maxy > 80:
+                out.append(v)
+    return out
 
 
 # --- serve ------------------------------------------------------------------
@@ -318,14 +345,21 @@ def serve(port: int) -> None:
     if len(first) < 3:
         fail(f"only {len(first)} frames in 5 s at {hz} Hz -- the producer is not reaching the stream")
     before = first[-1]
-    if filled(before) != 5 or before["signals"]["_b5"] != "":
-        fail(f"expected five seeded blobs in slots 0-4, got {filled(before)} filled")
+    if before["signals"]["_blobs"] != 5 or not (1 <= filled(before) <= 5):
+        fail(
+            f"expected five seeded blobs drawn as one to five shapes, got "
+            f"{before['signals']['_blobs']} blobs in {filled(before)} shapes"
+        )
+    # The seeds are deterministic and none starts near the bottom-right.
+    if in_bottom_right(before, "before the drop"):
+        fail("a seeded blob is already in the bottom-right corner; the corner check below would prove nothing")
 
-    # One drop at the very corner: it must land clamped, in slot 5, on
-    # BOTH streams. Then two more connections fill the world past its cap.
+    # One drop at the very corner: it must land clamped, a margin inside
+    # the stage, on BOTH streams. Then two more connections fill the world
+    # past its cap.
     phase("a corner drop reaching both streams")
     a = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-    status, _ = post_drop(a, drop_json(0, 0))
+    status, _ = post_drop(a, drop_json(100, 100))
     if status != 204:
         fail(f"a valid drop answered {status}")
     t_drop = time.perf_counter()
@@ -333,14 +367,15 @@ def serve(port: int) -> None:
     while time.perf_counter() - t_drop < 3.0 and len(seen) < 2:
         for name, s in (("s1", s1), ("s2", s2)):
             for f in s.snapshot():
-                if name not in seen and f["signals"]["_b5"]:
+                if name not in seen and f["signals"]["_blobs"] == 6:
                     seen[name] = f
         time.sleep(0.02)
     if len(seen) < 2:
         fail(f"a drop reached {sorted(seen)} of the two open streams within 3 s")
-    minx, miny = check_polygon(seen["s1"]["signals"]["_b5"], "the corner drop")
-    if minx > 20 or miny > 20:
-        fail(f"a drop at (0, 0) landed with its top-left at ({minx}, {miny}), not near the corner")
+    corner = in_bottom_right(seen["s1"], "after the drop")
+    if len(corner) != 1:
+        fail(f"a drop at (100, 100) drew {len(corner)} shapes in the bottom-right corner, not one")
+    check_polygon(corner[0], "the corner drop", clear=True)
 
     phase("filling the world past its cap")
     extra = [a] + [http.client.HTTPConnection("127.0.0.1", port, timeout=10) for _ in range(2)]
@@ -375,7 +410,7 @@ def serve(port: int) -> None:
             full = got[-1]
             break
         time.sleep(0.02)
-    if full is None or filled(full) != 16:
+    if full is None or filled(full) < 1:
         fail("the world never reached 16 blobs after 17 drops and seeds -- eviction or the cap is off")
 
     time.sleep(0.8)
@@ -457,13 +492,17 @@ def serve(port: int) -> None:
         fail(f"the bus refused {st['refused']} frames")
     if st["lost"] != 0:
         fail(f"{st['lost']} drops were lost")
-    if not (9000 <= st["frame_max"] < BUS_MAX_FRAME):
-        fail(f"the largest frame was {st['frame_max']} bytes; a full stage should be ~9.7 KB")
+    if not (500 <= st["frame_max"] < BUS_MAX_FRAME):
+        fail(f"the largest frame was {st['frame_max']} bytes")
+    if st["open_paths"] != 0:
+        fail(f"the kernel left {st['open_paths']} contours open")
+    shapes_max = max(filled(f) for f in f1)
     print(
-        "frames=%d held_s=%.1f worst_now_ms=%d frame_max=%d per_viewer_bps=%d step_us_max=%d drops=%d"
+        "frames=%d held_s=%.1f worst_now_ms=%d frame_max=%d per_viewer_bps=%d"
+        " step_us=%d step_us_max=%d shapes_max=%d holes=%d drops=%d"
         % (
             len(f1), held_for, worst_now, st["frame_max"], st["frame_max"] * hz,
-            st["step_us_max"], st["drops"],
+            st["step_us"], st["step_us_max"], shapes_max, st["holes"], st["drops"],
         )
     )
 

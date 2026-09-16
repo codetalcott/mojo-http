@@ -67,6 +67,8 @@ def stop(proc: subprocess.Popen) -> int:
         return proc.wait()
 
 
+BLOBS = "() => document.querySelectorAll('.meta span')[1].textContent"
+
 VISIBLE = (
     "() => Array.from(document.querySelectorAll('#stage .blob'))"
     ".filter(b => getComputedStyle(b).display !== 'none'"
@@ -110,9 +112,10 @@ def run(binary: str, port: int) -> list[str]:
             watcher.goto(url)
             actor.goto(url)
 
-            # 1. The patched underscore signals draw the seeded blobs.
+            # 1. The patched underscore signals draw the seeded blobs (as
+            # one shape or several: blobs that touch merge).
             try:
-                watcher.wait_for_function(f"() => ({VISIBLE})() >= 5", timeout=8000)
+                watcher.wait_for_function(f"() => ({VISIBLE})() >= 1", timeout=8000)
             except Exception:
                 failures.append(
                     "no slot took a polygon clip-path: a patched `_b` signal "
@@ -131,14 +134,16 @@ def run(binary: str, port: int) -> list[str]:
             if not step.strip().isdigit():
                 failures.append(f"the step readout shows {step!r}, not a number")
 
-            # 2. A click posts x and y alone, where it landed; the other tab gains it.
-            shown = watcher.evaluate(VISIBLE)
+            # 2. A click posts x and y alone, where it landed; the other tab
+            # counts one more blob. Counted from the readout, not the shapes:
+            # a drop beside another blob merges into its shape.
+            shown = int(watcher.evaluate(BLOBS))
             box = actor.locator("#stage").bounding_box()
             actor.mouse.click(box["x"] + box["width"] * 0.30, box["y"] + box["height"] * 0.70)
             try:
-                watcher.wait_for_function(f"() => ({VISIBLE})() > {shown}", timeout=5000)
+                watcher.wait_for_function(f"() => Number(({BLOBS})()) === {shown + 1}", timeout=5000)
             except Exception:
-                failures.append("the other tab did not gain the dropped blob")
+                failures.append("the other tab did not count the dropped blob")
             if not drops:
                 failures.append("the click made no POST /drop")
             else:

@@ -1,12 +1,10 @@
 """The blobs world: where every blob is, and how it moves.
 
 This is the state the producer thread owns and nothing else touches. It
-knows nothing about contours or the wire: `kernel.trace` turns it into
-shapes, `wire.state_frame` turns those into a frame. Both kernels — the
-stand-in in this tree and the metaball kernel that replaces it — read the
-same world, which is why a blob carries a field STRENGTH rather than a
-radius: the metaball field is `strength / (d^2 + 1)`, and a lone blob's
-contour at `ISO = 1` sits at `d = sqrt(strength - 1)`.
+knows nothing about contours or the wire: `Tracer.trace` turns it into
+shapes, `wire.state_frame` turns those into a frame. A blob carries a field
+STRENGTH rather than a radius: the metaball field is `strength / (d^2 + 1)`,
+and a lone blob's contour at `ISO = 1` sits at `d = sqrt(strength - 1)`.
 
 Coordinates are grid units on a `STAGE x STAGE` square, the kernel's
 sampling grid, with y increasing downward as on the page.
@@ -46,12 +44,12 @@ def contour_radius(strength: Float64) -> Float64:
 def keep_out() -> Float64:
     """How close a blob's CENTRE may come to any edge.
 
-    A contour the stage edge clips is an open path, and an open path cannot
-    be a `polygon()`, so centres stay a contour radius plus a gap inside the
-    stage. This is a demo rule, not a kernel one: the drop view clamps to
-    it, and motion bounces off it. Merged blobs reach further than one
-    alone — the metaball kernel's round re-measures this against its own
-    field.
+    A lone blob stays a contour radius plus a gap inside the stage, so it is
+    never drawn flattened against a wall. This is a look, not a safety
+    rule: the kernel's zero border closes every contour whatever the
+    centres do, and merged blobs do reach a wall — sixteen at one point
+    reach ~45 grid units, twice this. The drop view clamps to it, and
+    motion bounces off it.
     """
     return contour_radius(MAX_STRENGTH) + EDGE_GAP
 

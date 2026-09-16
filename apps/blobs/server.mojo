@@ -42,8 +42,9 @@ worker already.
 writes and the host will own, `[blobs]` what is this app's. That split is
 the host's first specification.
 
-THE KERNEL IS A STAND-IN (`kernel.mojo`): circles, no merging. The
-metaball kernel replaces `trace` behind the same contract.
+The kernel (`kernel.mojo`) samples the metaball field on the stage's
+192 x 192 grid and traces its outlines, so blobs that meet merge into one
+shape. That is the work the step time reports.
 
 Run it:  uv run poe serve-blobs
 """
@@ -71,14 +72,17 @@ from blobs.board import (
     B_ACTIVE_NS,
     B_FRAME_BYTES,
     B_FRAME_MAX,
+    B_HOLES,
     B_IDLE_AFTER_NS,
     B_IDLE_NS,
     B_LAST_ID,
     B_LOST,
     B_APPLIED,
+    B_OPEN_PATHS,
     B_OVER_BUDGET,
     B_PAUSED,
     B_PERIOD_MS,
+    B_POLYGONS,
     B_REFUSED,
     B_STEPS,
     B_STEP_NS,
@@ -87,7 +91,7 @@ from blobs.board import (
     DropReader,
     board_slots,
 )
-from blobs.kernel import Shapes, trace
+from blobs.kernel import Shapes, Tracer
 from blobs.page import render_page
 from blobs.routes import DROP, EVENTS, HEALTH, NOW, PAGE, STATS
 from blobs.wire import state_frame
@@ -101,7 +105,7 @@ comptime STEP_BUDGET_NS = 2_000_000
 
 A fraction of what a Fly shared vCPU earns per 100 ms (6.25% of a core,
 6.25 ms), because the loop, the writes and the frame all spend from the
-same allowance. The metaball kernel measured ~0.3 ms on an M4.
+same allowance. The kernel measures ~0.2 ms on an M4 at sixteen blobs.
 """
 
 comptime DROPS_PER_SECOND = 4
@@ -164,6 +168,7 @@ def producer_body(arg: Int) -> Int:
     var idle_after_ns = board.load(B_IDLE_AFTER_NS)
 
     var world = World()
+    var tracer = Tracer()
     var shapes = Shapes()
     var drops = DropReader()
     var step = 0
@@ -190,7 +195,7 @@ def producer_body(arg: Int) -> Int:
 
         var t0 = perf_counter_ns()
         world.advance(Float64(period_ns) / 1_000_000_000.0)
-        trace(world, shapes)
+        tracer.trace(world, shapes)
         var step_ns = perf_counter_ns() - t0
         step += 1
         var frame = state_frame(
@@ -206,6 +211,11 @@ def producer_body(arg: Int) -> Int:
 
         board.store(B_STEPS, step)
         board.store(B_LAST_ID, step)
+        board.store(B_POLYGONS, tracer.kept)
+        if tracer.open_paths > 0:
+            board.add(B_OPEN_PATHS, tracer.open_paths)
+        if tracer.holes > 0:
+            board.add(B_HOLES, tracer.holes)
         board.store(B_STEP_NS, step_ns)
         if step_ns > board.load(B_STEP_NS_MAX):
             board.store(B_STEP_NS_MAX, step_ns)
@@ -331,6 +341,9 @@ def stats(req: HTTPRequest, params: List[String], st: BlobState) raises -> HTTPR
         ',"step_us":', b.load(B_STEP_NS) // 1000,
         ',"step_us_max":', b.load(B_STEP_NS_MAX) // 1000,
         ',"over_budget":', b.load(B_OVER_BUDGET),
+        ',"polygons":', b.load(B_POLYGONS),
+        ',"open_paths":', b.load(B_OPEN_PATHS),
+        ',"holes":', b.load(B_HOLES),
         ',"frame_bytes":', b.load(B_FRAME_BYTES),
         ',"frame_max":', b.load(B_FRAME_MAX),
         ',"refused":', b.load(B_REFUSED),

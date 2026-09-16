@@ -51,11 +51,17 @@ comptime B_LOST = B_STEPS + 8
 comptime B_PAUSED = B_STEPS + 9
 comptime B_PERIOD_MS = B_STEPS + 10
 comptime B_OVER_BUDGET = B_STEPS + 11
-comptime B_ACTIVE_NS = B_STEPS + 12
+comptime B_OPEN_PATHS = B_STEPS + 12
+"""Contours the kernel could not close, summed over every step: a fault."""
+comptime B_HOLES = B_STEPS + 13
+"""Holes the kernel dropped, summed over every step."""
+comptime B_POLYGONS = B_STEPS + 14
+"""Polygons the last step drew."""
+comptime B_ACTIVE_NS = B_STEPS + 15
 """Configuration, written once by `main` before the producer starts."""
-comptime B_IDLE_NS = B_STEPS + 13
-comptime B_IDLE_AFTER_NS = B_STEPS + 14
-comptime B_VIEWERS_BASE = B_STEPS + 15
+comptime B_IDLE_NS = B_STEPS + 16
+comptime B_IDLE_AFTER_NS = B_STEPS + 17
+comptime B_VIEWERS_BASE = B_STEPS + 18
 """One word per worker from here: that worker's subscriber count."""
 
 comptime COORD_SCALE = Float64(10.0)

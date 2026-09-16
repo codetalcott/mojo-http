@@ -25,15 +25,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 - **`apps/blobs`: a live world the page cannot hold** (SPEC N16). The first
   application written for the Mojo-native stack. A producer thread steps up
-  to sixteen blobs at 10 Hz and publishes each step as one full-state
-  Datastar frame of `polygon()` clip-paths; a click drops a blob for every
-  open tab. It is the first app that is both a `Views` table and a
-  streaming handler, and its `main` marks which lines the coming Mojo host
-  will own. The kernel is a stand-in (circles) behind the contract the
-  metaball kernel must meet; one worker only, with `M0_WORKERS` above 1
-  refused. A full stage is 9.6 KB a frame, ~96 KB/s per viewer.
-  `uv run poe serve-blobs`; gated by `smoke-blobs`, with `browser-blobs`
-  and `sabotage-blobs` before a release.
+  to sixteen metaballs at 10 Hz — samples their field on a 192 × 192 grid,
+  traces the outlines where blobs merge, and resamples each to 48 vertices
+  in the slot it held last step — and publishes each step as one
+  full-state Datastar frame of `polygon()` clip-paths; a click drops a
+  blob for every open tab. A step costs ~0.2–0.4 ms on an M4. It is the
+  first app that is both a `Views` table and a streaming handler, and its
+  `main` marks which lines the coming Mojo host will own. One worker only,
+  with `M0_WORKERS` above 1 refused. Sixteen separate blobs make a 9.6 KB
+  frame, ~96 KB/s per viewer; merged ones make less. `uv run poe
+  serve-blobs`; gated by `smoke-blobs` and the kernel's unit tests, with
+  `browser-blobs` and `sabotage-blobs` (24 rules) before a release.
 - **`DatastarStream(send_latest=True)`: a stream of states** (SPEC I24).
   Every subscriber, new or reconnecting, is sent the newest frame for its
   url at open and then the live feed, never a replay. Without it a page
