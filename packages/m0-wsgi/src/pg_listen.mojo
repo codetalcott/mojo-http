@@ -226,7 +226,7 @@ def _deliver(ref spec: PgListenSpec, payload: String) -> Bool:
     var frame = format_sse_event(event_id, envelope.event, envelope.data)
     # skip_worker = -1: every channel, this worker's included. Nothing has
     # queued this locally, unlike an in-process publish.
-    publish_to_channels(
+    _ = publish_to_channels(
         spec.write_fds, -1, envelope.channel, event_id, frame.as_bytes()
     )
     return True

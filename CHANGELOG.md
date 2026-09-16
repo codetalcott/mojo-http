@@ -23,8 +23,35 @@ in a minor release: `m0serve`'s flags and environment variables, the
   toolchain publishes a manylinux x86-64 wheel, but QEMU is not evidence and
   it has to run on a real x86 host.
 
+- **`apps/blobs`: a live world the page cannot hold** (SPEC N16). The first
+  application written for the Mojo-native stack. A producer thread steps up
+  to sixteen blobs at 10 Hz and publishes each step as one full-state
+  Datastar frame of `polygon()` clip-paths; a click drops a blob for every
+  open tab. It is the first app that is both a `Views` table and a
+  streaming handler, and its `main` marks which lines the coming Mojo host
+  will own. The kernel is a stand-in (circles) behind the contract the
+  metaball kernel must meet; one worker only, with `M0_WORKERS` above 1
+  refused. A full stage is 9.6 KB a frame, ~96 KB/s per viewer.
+  `uv run poe serve-blobs`; gated by `smoke-blobs`, with `browser-blobs`
+  and `sabotage-blobs` before a release.
+- **`DatastarStream(send_latest=True)`: a stream of states** (SPEC I24).
+  Every subscriber, new or reconnecting, is sent the newest frame for its
+  url at open and then the live feed, never a replay. Without it a page
+  fed by a paused or slow producer stays blank until the next frame.
+- **A bus publish reports what it delivered** (SPEC I25).
+  `publish_to_channels` and `BroadcastBus.publish` return how many channels
+  took the frame, 0 for a frame over `BUS_MAX_FRAME`, a reserved channel or
+  an over-long name. Each of those was dropped without a word.
+- **`poe test-apps`** runs an application's own tests from
+  `apps/<app>/test/`, inside `test-all`; `apps/blobs` is the first.
+
 ### Fixed
 
+- **A JSON number read from a request body could kill the server** (SPEC
+  G14). `m0_core.json_parse.parse_json_number` cut the number out with a
+  `String` slice, which asserts a codepoint boundary, so a body such as
+  `{"x":1<0x80>}` trapped the thread that read it. Nothing in the tree
+  called it until `apps/blobs`' drop view; the cut is now a byte-span slice.
 - **A language limitation this repo had believed for three weeks does not
   exist.** An app conforming to a trait in a `.mojoc` was recorded as
   impossible (`PoolHandler` 2026-08-28, `PageShell` 2026-09-10), and

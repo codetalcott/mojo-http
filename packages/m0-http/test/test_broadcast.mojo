@@ -82,7 +82,7 @@ def test_codec_rejects_truncation() raises:
 
 def test_publish_reaches_every_peer_but_not_self() raises:
     var bus = BroadcastBus(3)
-    bus.publish(0, "/events", 1, Span(_bytes("f\n\n")))
+    _ = bus.publish(0, "/events", 1, Span(_bytes("f\n\n")))
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 1)
     assert_equal(len(drain_bus_channel(bus.read_fd(2))), 1)
     assert_equal(len(drain_bus_channel(bus.read_fd(0))), 0)
@@ -91,8 +91,8 @@ def test_publish_reaches_every_peer_but_not_self() raises:
 def test_drain_preserves_order_and_boundaries() raises:
     """Two publishes arrive as two frames, in order, bytes intact."""
     var bus = BroadcastBus(2)
-    bus.publish(0, "/a", 1, Span(_bytes("one\n\n")))
-    bus.publish(0, "/b", 2, Span(_bytes("two\n\n")))
+    _ = bus.publish(0, "/a", 1, Span(_bytes("one\n\n")))
+    _ = bus.publish(0, "/b", 2, Span(_bytes("two\n\n")))
     var got = drain_bus_channel(bus.read_fd(1))
     assert_equal(len(got), 2)
     assert_equal(got[0].url, "/a")
@@ -116,20 +116,68 @@ def test_max_size_frame_crosses_the_bus() raises:
     var big = List[UInt8](capacity=BUS_MAX_FRAME)
     for _ in range(BUS_MAX_FRAME):
         big.append(UInt8(ord("x")))
-    bus.publish(0, "/e", 1, Span(big))
+    assert_equal(bus.publish(0, "/e", 1, Span(big)), 1)
     var got = drain_bus_channel(bus.read_fd(1))
     assert_equal(len(got), 1)
     assert_equal(len(got[0].frame), BUS_MAX_FRAME)
 
     big.append(UInt8(ord("x")))
-    bus.publish(0, "/e", 2, Span(big))
+    assert_equal(bus.publish(0, "/e", 2, Span(big)), 0)
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
+
+
+def test_publish_reports_what_it_delivered() raises:
+    """The count a publish returns is what reached a channel, never more.
+
+    Every refusal is a 0 — a frame one byte past `BUS_MAX_FRAME`, a
+    reserved channel, a name longer than the wire's two-byte length — and
+    a delivered frame counts each channel it reached, skipped worker
+    excluded. A full channel is the partial case: with one of three
+    channels stuffed until it refuses, the same frame counts two.
+
+    covers: I25
+    """
+    var bus = BroadcastBus(3)
+    var frame = _bytes("f\n\n")
+    assert_equal(publish_to_channels(bus.write_fds, -1, "/e", 1, Span(frame)), 3)
+    assert_equal(publish_to_channels(bus.write_fds, 0, "/e", 2, Span(frame)), 2)
+    for w in range(3):
+        _ = drain_bus_channel(bus.read_fd(w))
+
+    var big = List[UInt8](capacity=BUS_MAX_FRAME + 1)
+    for _ in range(BUS_MAX_FRAME + 1):
+        big.append(UInt8(ord("x")))
+    assert_equal(publish_to_channels(bus.write_fds, -1, "/e", 3, Span(big)), 0)
+    assert_equal(
+        publish_to_channels(
+            bus.write_fds, -1, asgi_stream_url_like("s", 0), 4, Span(frame)
+        ),
+        0,
+    )
+    var long_name = String("/")
+    for _ in range(65535):
+        long_name += "x"
+    assert_equal(publish_to_channels(bus.write_fds, -1, long_name, 5, Span(frame)), 0)
+    for w in range(3):
+        assert_equal(len(drain_bus_channel(bus.read_fd(w))), 0)
+
+    # Fill channel 1 until it refuses; the others still take the next frame.
+    var one = List[Int]()
+    one.append(bus.write_fds[1])
+    var stuffed = 0
+    while publish_to_channels(one, -1, "/e", 6, Span(frame)) == 1:
+        stuffed += 1
+        assert_true(stuffed < 100_000)
+    assert_true(stuffed > 0)
+    assert_equal(publish_to_channels(bus.write_fds, -1, "/e", 7, Span(frame)), 2)
 
 
 def test_publish_to_channels_skips_named_worker() raises:
     """The free-function form (what DatastarStream holds) behaves like the bus."""
     var bus = BroadcastBus(2)
-    publish_to_channels(bus.write_fds, 1, "/e", 5, Span(_bytes("f\n\n")))
+    assert_equal(
+        publish_to_channels(bus.write_fds, 1, "/e", 5, Span(_bytes("f\n\n"))), 1
+    )
     assert_equal(len(drain_bus_channel(bus.read_fd(0))), 1)
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
 
@@ -173,7 +221,7 @@ def test_publish_rejects_reserved_channel() raises:
         String("P"),
     ]
     for kind in kinds:
-        publish_to_channels(
+        _ = publish_to_channels(
             bus.write_fds, 1, asgi_stream_url_like(kind, 0), 1,
             Span(_bytes("event: message\ndata: injected\n\n")),
         )
@@ -181,7 +229,7 @@ def test_publish_rejects_reserved_channel() raises:
 
     # The control: an ordinary channel still goes through, so the guard is
     # rejecting the namespace and not simply breaking publish.
-    publish_to_channels(bus.write_fds, 1, "news", 1, Span(_bytes("f\n\n")))
+    _ = publish_to_channels(bus.write_fds, 1, "news", 1, Span(_bytes("f\n\n")))
     var got = drain_bus_channel(bus.read_fd(0))
     assert_equal(len(got), 1)
     assert_equal(got[0].url, "news")
@@ -193,7 +241,7 @@ def test_bus_publish_method_rejects_reserved_channel() raises:
     covers: G8
     """
     var bus = BroadcastBus(2)
-    bus.publish(0, asgi_stream_url_like("s", 7), 1, Span(_bytes("x\n\n")))
+    _ = bus.publish(0, asgi_stream_url_like("s", 7), 1, Span(_bytes("x\n\n")))
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
 
 

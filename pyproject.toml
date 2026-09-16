@@ -127,6 +127,15 @@ echo "all apps built"
 # now carries the marker, every task below still lists its package first as
 # a second layer, and each package's `test_resolution.mojo` fails loudly if
 # either protection erodes.
+# Tests of an APPLICATION's own modules, as opposed to a package's: an app
+# under apps/ keeps them in apps/<app>/test/ and imports its modules the way
+# its server does (`from blobs.board import ...`), through -I apps/. No
+# `__init__.mojo` in test/: nothing there is a package, and the app's own
+# modules are only ever reached by that name. apps/blobs is the first.
+[tool.poe.tasks.test-apps]
+help = "Test the example apps' own modules (apps/*/test/test_*.mojo)"
+shell = "for f in apps/*/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar -I apps/ \"$f\" || exit 1; done"
+
 [tool.poe.tasks.test-wsgi]
 help = "Test m0-wsgi (mapping logic only; needs no interpreter)"
 shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
@@ -985,7 +994,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "check-fork-package", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "check-fork-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1004,6 +1013,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datasta
 [tool.poe.tasks.serve-sim]
 help = "Run the off-loop simulation demo on :8080 (M0_SIM_ON_LOOP=1 for the other shape)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/sim_loop/server.mojo"
+
+[tool.poe.tasks.serve-blobs]
+help = "Run the blobs demo on :8080 (one shared world, stepped in Mojo, pushed over SSE)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ apps/blobs/server.mojo"
 
 # The three WSGI rows are Python-only projects; one binary serves them all.
 # M0_WORKERS=4 (and every other M0_ variable) still applies — flags override.
@@ -6993,6 +7006,18 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
 uv run --no-project --with playwright python3 scripts/datastar_form_check.py --bin "$out/todo"
 """
 
+[tool.poe.tasks.browser-blobs]
+help = "PRE-RELEASE: the blobs page driven by Chromium — underscored signals draw the slots, a click posts x and y alone, both tabs survive a restart (SPEC N16; not in CI)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
+  -I apps/ apps/blobs/server.mojo -o "$out/blobs" || exit 1
+# playwright is not a dependency of this project; `--with` borrows it for
+# one process (see browser-datastar-form).
+uv run --no-project --with playwright python3 scripts/blobs_browser_check.py --bin "$out/blobs"
+"""
+
 # The delete button's request is the one thing about this app that curl
 # cannot judge: htmx 2.0.4 would put a DELETE's fields in the query string,
 # and the app's `htmx-config` meta narrows that so the CSRF token stays in
@@ -7011,6 +7036,113 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ \
 # once, if this says the browser is missing).
 uv run --no-project --with playwright python3 scripts/notes_login_browser.py --bin "$out/notes"
 """
+
+# apps/blobs, driven on the wire (SPEC N16). One binary, four servers, each
+# on its own port -- SO_REUSEPORT lets a stray blobs share a port and answer
+# for it, which is how a same-port restart fakes a pass or a failure.
+[tool.poe.tasks.smoke-blobs]
+help = "Blobs demo: frames at cadence and well-formed, drops reach every stream clamped and capped, the newest state at open, a pause with nobody watching, the idle slow-down, a bounded drain"
+shell = """
+out=$(mktemp -d)
+pid=
+hold=
+cleanup() {
+  [ -n "$pid" ] && kill $pid 2>/dev/null
+  [ -n "$hold" ] && kill $hold 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  for f in "$out"/*.log; do
+    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
+  done
+  exit 1
+}
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
+  -I apps/ apps/blobs/server.mojo -o "$out/blobs" || exit 1
+# start PORT NAME [VAR=value...] -- the extra variables go through env(1),
+# because an assignment in front of a shell FUNCTION is unspecified in sh.
+start() {
+  port=$1
+  name=$2
+  shift 2
+  env M0_PORT=$port "$@" "$out/blobs" > "$out/$name.log" 2>&1 &
+  pid=$!
+  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($name)"
+}
+field() {
+  v=${1#*$2=}
+  echo "${v%% *}"
+}
+
+# --- the main run ---------------------------------------------------------
+start 8351 serve
+serve=$(python3 scripts/blobs_probe.py serve 8351) || fail "serve: $serve"
+echo "serve: $serve"
+
+# --- a drain with a stream held: the server ends it, and exits 0 in bound --
+python3 scripts/blobs_probe.py hold 8351 "$out/holding" > "$out/hold.out" 2>&1 &
+hold=$!
+i=0
+while [ ! -f "$out/holding" ]; do
+  i=$((i + 1))
+  [ $i -le 100 ] || fail "the held stream never got a frame: $(cat "$out/hold.out")"
+  sleep 0.1
+done
+t0=$(date +%s)
+kill -TERM $pid
+wait $pid
+rc=$?
+t1=$(date +%s)
+pid=
+[ "$rc" -eq 0 ] || fail "SIGTERM with a stream held and the producer running exited $rc, not 0"
+[ $((t1 - t0)) -lt 10 ] || fail "the drain took $((t1 - t0))s; the producer is not joined within its bound"
+# A producer never told to stop is abandoned at the 5 s join bound, which
+# the timing above lets through; the app names what it abandoned.
+grep -q 'abandoned' "$out/serve.log" && fail "the drain abandoned the producer instead of stopping it"
+wait $hold || fail "hold: $(cat "$out/hold.out")"
+hold=
+echo "drain: exit 0 in $((t1 - t0))s; $(cat "$out/hold.out")"
+
+# --- the idle slow-down, on a fresh process -------------------------------
+start 8352 idle M0_BLOBS_IDLE_MS=1500
+res=$(python3 scripts/blobs_probe.py idle 8352) || fail "idle: $res"
+echo "idle: $res"
+kill $pid; wait $pid 2>/dev/null; pid=
+
+# --- more than one worker is refused, not half-served ---------------------
+# In the background with a deadline: a binary that accepted the setting
+# would serve, and this phase would wait on it forever.
+M0_PORT=8353 M0_WORKERS=2 "$out/blobs" > "$out/workers.log" 2>&1 &
+pid=$!
+i=0
+while kill -0 $pid 2>/dev/null; do
+  i=$((i + 1))
+  [ $i -le 100 ] || fail "M0_WORKERS=2 was still running after 10s -- it was served, not refused"
+  sleep 0.1
+done
+wait $pid
+rc=$?
+pid=
+[ "$rc" -eq 78 ] || fail "M0_WORKERS=2 exited $rc, not 78"
+grep -q 'serves from one process' "$out/workers.log" || fail "M0_WORKERS=2 did not say why it refused"
+echo "M0_WORKERS=2: refused with 78"
+
+echo "smoke-blobs OK"
+python3 scripts/emit.py blobs.worst_now_ms "$(field "$serve" worst_now_ms)" --unit ms --limit 100 --task smoke-blobs
+python3 scripts/emit.py blobs.frame_bytes_full "$(field "$serve" frame_max)" --unit B --limit 65536 --task smoke-blobs
+python3 scripts/emit.py blobs.per_viewer_bytes_per_s "$(field "$serve" per_viewer_bps)" --unit B/s --task smoke-blobs
+python3 scripts/emit.py blobs.step_us_max "$(field "$serve" step_us_max)" --unit us --limit 2000 --task smoke-blobs
+python3 scripts/emit.py --covers N16 --task smoke-blobs
+"""
+
+# Each smoke-blobs assertion, broken on purpose (SPEC N16). Pre-release:
+# fourteen rebuilds of the app and fourteen smoke runs, ~6 minutes.
+[tool.poe.tasks.sabotage-blobs]
+help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
+cmd = "python3 scripts/blobs_sabotage.py"
 
 [tool.poe.tasks.smoke-todo]
 help = "Todo demo: assert a broadcast patches a live client, the list survives a restart, and Last-Event-ID replays across it"
