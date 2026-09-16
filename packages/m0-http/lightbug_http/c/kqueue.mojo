@@ -1,4 +1,4 @@
-"""macOS kqueue FFI wrappers for non-blocking IO multiplexing.
+"""`kqueue` FFI wrappers for non-blocking IO multiplexing on macOS.
 
 Provides kqueue(), kevent(), and fcntl() wrappers following the same
 FFI pattern as socket.mojo. Used by event_loop.mojo to implement a
@@ -36,7 +36,7 @@ comptime F_SETFL: c_int = 4
 
 @fieldwise_init
 struct kevent_t(TrivialRegisterPassable):
-    """macOS struct kevent (32 bytes on ARM64).
+    """`struct kevent` on macOS (32 bytes on ARM64).
 
     ```c
     struct kevent {

@@ -74,7 +74,7 @@ def _timer_slot(ident: UInt) -> Int:
 
 
 struct EpollBackend(ConstructibleBackend):
-    """epoll-based IO backend for Linux."""
+    """`epoll`-based IO backend for Linux."""
 
     var epfd: FileDescriptor
     # Flat word buffer of _MAX_EVENTS structs; stride is EPOLL_EVENT_WORDS,

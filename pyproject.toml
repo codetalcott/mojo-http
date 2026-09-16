@@ -70,6 +70,25 @@ shell = "cd packages/m0-core && mojo precompile src -o m0_core.mojoc"
 help = "Build m0-http package (includes the lightbug_http fork)"
 shell = "cd packages/m0-http && mojo precompile src -I ../m0-core/ -o m0_http.mojoc"
 
+# `build-http` precompiles `src` only, and Mojo checks method bodies lazily,
+# so the fork's 56 files are type-checked only where an app instantiates
+# them. Nothing compiled them whole until this task did, and ten errors had
+# accumulated in bodies nothing instantiates -- `Int`/`Int32` at three libc
+# call sites, a `socklen_t`, an origin mismatch in a dead helper, and four
+# hand-written copy/move dunders the compiler now derives. The artifact is
+# thrown away: this asks whether the fork COMPILES, and changes nothing about
+# how an app resolves `lightbug_http` (still from source).
+[tool.poe.tasks.check-fork-package]
+help = "The lightbug fork type-checks as a whole package, lazy bodies included"
+deps = ["build-http"]
+shell = """
+set -e
+out="${TMPDIR:-/tmp}/lightbug_http_typecheck.mojoc"
+cd packages/m0-http
+mojo precompile lightbug_http -I ../m0-core -I . -o "$out"
+rm -f "$out"
+"""
+
 # consts.mojo and sse.mojo import nothing outside themselves, so the wire
 # format stays usable standalone. stream.mojo and signals.mojo are the server
 # glue and do depend on m0-http (which transitively needs m0-core), hence both
@@ -966,7 +985,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "check-fork-package", "test-core", "test-http", "test-datastar", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

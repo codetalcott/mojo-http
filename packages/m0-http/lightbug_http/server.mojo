@@ -479,9 +479,6 @@ struct ProvisionPool(Movable):
         var bit_pos = index % 64
         self.bitmask[w] |= UInt64(1) << UInt64(63 - bit_pos)
 
-    def get_ptr(mut self, index: Int) -> Pointer[ConnectionProvision, origin_of(self.provisions)]:
-        return Pointer(to=self.provisions[index])
-
     def available_count(self) -> Int:
         """Count free slots via popcount across all bitmask words."""
         var count = 0
@@ -1138,7 +1135,6 @@ struct Server(Movable):
         Args:
             ln: TCP server that listens for incoming connections.
             handler: An object that handles incoming HTTP requests.
-
             shutdown_read_fd: Read end of the graceful-shutdown pipe, or -1.
             bus_read_fd: This worker's `BroadcastBus` channel, or -1.
             offload_addr: A caller-owned `OffloadPool`'s address, or 0. See

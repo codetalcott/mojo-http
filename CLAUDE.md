@@ -881,6 +881,13 @@ send patches. Changes there are ordinary changes to this repo.
 - Record anything materially new in [NOTICE](NOTICE) — that file is a licensing
   record, not documentation.
 - Do not "fix" the `m0_http.log` back-edge by inverting it.
+- **`poe check-fork-package` compiles it whole, and is in `test-all`.**
+  `build-http` precompiles `src` only and Mojo checks method bodies lazily,
+  so a body no app instantiates is never type-checked — ten errors had
+  collected that way, one of them a write past the end of a stack
+  allocation. The task throws its artifact away; nothing about how an app
+  resolves `lightbug_http` changes (still from source, for the reason the
+  trait rule above gives).
 
 ## Commands
 
@@ -888,6 +895,7 @@ send patches. Changes there are ordinary changes to this repo.
 uv run poe                  # list every task
 uv run poe build-all        # each package -> .mojoc, in dependency order
 uv run poe test-all         # builds first, then runs all tests
+uv run poe check-fork-package  # the fork type-checks whole (lazy bodies too)
 uv run poe test-shim        # the executor shim's ownership rules, sabotage-proven
 uv run poe stress-asgi      # PRE-RELEASE: N streamed + WebSocket rounds, both loop modes
 uv run poe stress-pool      # PRE-RELEASE: the pool's lost-wake reproducers, per wake mode, in the Linux container
