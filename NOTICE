@@ -542,6 +542,13 @@ lightbug_http
         kernel's reply in a one-byte `c_void` allocation while telling it the
         buffer was `size_of[Int]()`, and read `Int` back out.
 
+      - broadcast.mojo (2026-09-16): `publish_to_channels` and
+        `BroadcastBus.publish` return how many channels took the datagram,
+        and 0 for each refusal (a frame over `BUS_MAX_FRAME`, a reserved
+        channel, an over-long name). The refusals were silent, so a producer
+        whose frames outgrew the bus could not tell that from having stopped
+        (docs/notes/a-world-the-page-cannot-hold.md).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

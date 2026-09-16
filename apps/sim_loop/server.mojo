@@ -167,7 +167,7 @@ def sim_body(arg: Int) -> Int:
         var frame = format_sse_event(step, "sim", state)
         # skip_worker = -1: every channel, this worker's included. Nothing
         # has queued this locally, unlike an in-process publish.
-        publish_to_channels(fds, -1, STREAM_URL, step, frame.as_bytes())
+        _ = publish_to_channels(fds, -1, STREAM_URL, step, frame.as_bytes())
         var now = perf_counter_ns()
         if next_ns > now:
             sleep(Float64(next_ns - now) / 1_000_000_000.0)

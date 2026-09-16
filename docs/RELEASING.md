@@ -189,6 +189,17 @@ every one. Both were missing from this page until the 1.3.0 run, which is
 how a pre-release gate becomes decorative: the row says `(pre-release)` and
 nothing here tells the person cutting the release to run it.
 
+**And the blobs demo's two pre-release gates** (SPEC N16). `uv run poe
+browser-blobs` drives `apps/blobs` in Chromium: a patched `_`-signal must
+draw a slot's `clip-path`, a click must post exactly `x` and `y`, and two
+tabs must reopen the stream after the server restarts, which Datastar's
+default retry does not do after a clean close. It prints the body the
+bundle sent. Pre-release for the reason `browser-datastar-form` is: it
+needs Chromium, and the bundle is pinned (D20). Ten seconds. `uv run poe
+sabotage-blobs` breaks each of sixteen rules in `apps/blobs/` and requires
+`smoke-blobs` to fail for every one. It rebuilds the app and reruns the
+smoke for each rule, which takes about seven minutes.
+
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.

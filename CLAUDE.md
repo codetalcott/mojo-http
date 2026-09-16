@@ -1321,6 +1321,20 @@ pieces, and the language fact each rests on:
   `Dict` by contract; `test_form.mojo`'s encoding table is the anti-drift
   device, and it stays a test rather than a shared loop.
 
+- **A table that streams** (`apps/blobs`, SPEC N16; the note is
+  `docs/notes/a-world-the-page-cannot-hold.md`): `ViewService` forwards
+  two hooks, so an app that also owns the SSE hooks writes its own
+  handler over `Views.dispatch` and keeps its `DatastarStream` in the
+  state. A producer thread that publishes whole states opens its stream
+  with `DatastarStream(send_latest=True)` (a new subscriber gets the
+  newest frame, never a replay), counts what `publish_to_channels`
+  returns (a frame over `BUS_MAX_FRAME` is refused, not sent), and
+  reaches the loop's clicks and viewer counts through the pre-fork
+  `SharedAtomics` page, never `malloc`'d memory. Its `main` is annotated
+  `[host]`/`[blobs]`: the Mojo host's first specification. One worker
+  until that host exists. An app's own tests live in `apps/<app>/test/`
+  (no `__init__.mojo`) and run in `poe test-apps`.
+
 Not built, each a row of `docs/DECISIONS.md` with the note that argues it
 and the condition that would retire it: templates (D2), middleware (D3),
 named params (D4), routes as function values (D5), multipart (D16),

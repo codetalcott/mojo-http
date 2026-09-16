@@ -148,15 +148,20 @@ struct BroadcastBus(Copyable, Movable):
             return -1
         return self.read_fds[worker]
 
-    def publish(self, from_worker: Int, url: String, event_id: Int, frame: Span[Byte, _]):
-        """Send one frame to every worker except `from_worker`."""
-        publish_to_channels(self.write_fds, from_worker, url, event_id, frame)
+    def publish(
+        self, from_worker: Int, url: String, event_id: Int, frame: Span[Byte, _]
+    ) -> Int:
+        """Send one frame to every worker except `from_worker`.
+
+        Returns how many channels took it — `publish_to_channels`' count.
+        """
+        return publish_to_channels(self.write_fds, from_worker, url, event_id, frame)
 
 
 def publish_to_channels(
     write_fds: List[Int], skip_worker: Int,
     url: String, event_id: Int, frame: Span[Byte, _],
-):
+) -> Int:
     """Send one frame to every channel except `skip_worker`'s.
 
     The free-function form exists so a consumer can hold just the write fds
@@ -166,6 +171,14 @@ def publish_to_channels(
     over BUS_MAX_FRAME are not sent at all — no subscriber could accept them
     anyway.
 
+    Returns how many channels took the datagram. Best-effort is not the same
+    as silent: 0 for a frame over `BUS_MAX_FRAME`, a reserved channel or an
+    over-long name, and fewer than the channels addressed when some were
+    full. A producer that builds every frame whole (`apps/blobs`) counts the
+    shortfall, because the refusal is otherwise invisible — the frame is
+    simply never seen, and a frame that grew past the limit with the
+    application's state looks exactly like a producer that stopped.
+
     A RESERVED channel name is refused outright (`channel_is_reserved`):
     this is the application fan-out path, so its `url` may be user input,
     and the control namespace addresses connection slots directly. Internal
@@ -173,17 +186,18 @@ def publish_to_channels(
     `encode_bus_frame` and send them themselves.
     """
     if len(frame) > BUS_MAX_FRAME:
-        return
+        return 0
     if channel_is_reserved(url):
-        return
+        return 0
     # `encode_bus_frame` writes the channel length into two bytes, so a
     # longer name would be truncated modulo 65536 and the receiver would
     # split the datagram in the wrong place — a frame delivered to the
     # wrong channel with part of the name prepended to its payload. The
     # two Python publishers refuse the same length; this is the third.
     if url.byte_length() > MAX_CHANNEL:
-        return
+        return 0
     var datagram = encode_bus_frame(url, event_id, frame)
+    var sent = 0
     for w in range(len(write_fds)):
         if w == skip_worker:
             continue
@@ -194,8 +208,10 @@ def publish_to_channels(
                 UInt(len(datagram)),
                 MSG_DONTWAIT,
             )
+            sent += 1
         except:
             pass  # full or gone: drop for that peer alone
+    return sent
 
 
 def reserved_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:

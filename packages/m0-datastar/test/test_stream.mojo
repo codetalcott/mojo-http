@@ -311,6 +311,110 @@ def test_zero_journal_disables_replay() raises:
     assert_equal(len(s.drain(0)), 0)
 
 
+# --- A stream of states: the newest frame at open, never a replay ------------
+
+def _frame(name: String, id: Int) -> List[UInt8]:
+    return List[UInt8](
+        String("event: datastar-patch-signals\nid: ", id, "\ndata: signals {\"", name, "\":1}\n\n").as_bytes()
+    )
+
+
+def test_state_stream_sends_the_newest_frame_at_open() raises:
+    """A subscriber arriving mid-stream gets the newest state, and only it.
+
+    Frames reach this stream the way a producer thread's do: over the bus,
+    through `deliver_peer`, with nobody subscribed. A new client — no
+    `Last-Event-ID` — is sent frame 3 at open, not 1 and 2, and not
+    nothing. The control is the default stream fed the same frames, which
+    sends nothing at open: that blank is what `send_latest` exists to fill.
+
+    covers: I24
+    """
+    var s = DatastarStream(4, journal_entries=0, send_latest=True)
+    var plain = DatastarStream(4, journal_entries=0)
+    for i in range(1, 4):
+        s.deliver_peer("/e", i, _frame(String("s", i), i))
+        plain.deliver_peer("/e", i, _frame(String("s", i), i))
+    _ = s.open(_get("/e"), "/e")
+    var out = _text(s.drain(0))
+    assert_true(out.find('"s3"') >= 0)
+    assert_false(out.find('"s1"') >= 0)
+    assert_false(out.find('"s2"') >= 0)
+    assert_equal(out.count("event: "), 1)
+
+    _ = plain.open(_get("/e"), "/e")
+    assert_equal(len(plain.drain(0)), 0)
+
+    # Then the live feed, from the next frame on.
+    s.deliver_peer("/e", 4, _frame("s4", 4))
+    assert_true(_text(s.drain(0)).find('"s4"') >= 0)
+
+
+def test_state_stream_ignores_the_presented_id() raises:
+    """A reconnect gets the newest state whatever id it presents.
+
+    Behind (1), level with the newest (3), and from an earlier incarnation
+    far ahead (5000): each is sent frame 3 exactly once and nothing older.
+    The last is the case that matters — a producer's ids restart with its
+    process, and comparing would park the tab until the new ids passed the
+    old ones.
+
+    covers: I24
+    """
+    var s = DatastarStream(4, journal_entries=16, send_latest=True)
+    for i in range(1, 4):
+        s.deliver_peer("/e", i, _frame(String("s", i), i))
+    for presented in [String("1"), String("3"), String("5000"), String("junk")]:
+        _ = s.open(_reconnect("/e", presented), "/e")
+        var out = _text(s.drain(0))
+        assert_true(out.find('"s3"') >= 0)
+        assert_equal(out.count("event: "), 1)
+        s.closed(0)
+
+
+def test_state_stream_keeps_the_newest_by_id() raises:
+    """A frame older than the one kept neither replaces it nor goes out.
+
+    Across workers the bus is best-effort about order, so frame 2 can land
+    after frame 3. The kept state stays 3, and a live subscriber who has 3
+    is not sent 2. Local broadcasts are kept too, and per url.
+
+    covers: I24
+    """
+    var s = DatastarStream(4, journal_entries=0, send_latest=True)
+    s.deliver_peer("/e", 3, _frame("s3", 3))
+    s.deliver_peer("/e", 2, _frame("s2", 2))
+    _ = s.open(_get("/e"), "/e")
+    var out = _text(s.drain(0))
+    assert_true(out.find('"s3"') >= 0)
+    assert_false(out.find('"s2"') >= 0)
+    s.deliver_peer("/e", 1, _frame("s1", 1))
+    assert_equal(len(s.drain(0)), 0)
+
+    var eid = s.patch_signals("/other", '{"o":1}')
+    var r = _get("/other")
+    r.slot_id = 1
+    _ = s.open(r, "/other")
+    var other = _text(s.drain(1))
+    assert_true(other.find('{"o":1}') >= 0)
+    assert_true(other.find(String("id: ", eid)) >= 0)
+    assert_false(other.find('"s3"') >= 0)
+
+
+def test_state_stream_never_replays_the_journal() raises:
+    """With a journal kept for `frame_for`, open still sends one frame."""
+    var s = DatastarStream(4, journal_entries=16, send_latest=True)
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.patch_signals("/e", '{"b":2}')
+    _ = s.open(_reconnect("/e", "0"), "/e")
+    var out = _text(s.drain(0))
+    assert_false(out.find('{"a":1}') >= 0)
+    assert_true(out.find('{"b":2}') >= 0)
+    assert_equal(out.count("event: "), 1)
+    # The journal still recorded both, for `frame_for`.
+    assert_true(_text(s.frame_for(1)).find('{"a":1}') >= 0)
+
+
 def test_frame_for_returns_journaled_bytes() raises:
     """`frame_for` hands back exactly what went out — the persistence hook."""
     var s = DatastarStream(4)

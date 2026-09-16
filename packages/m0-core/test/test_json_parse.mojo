@@ -174,6 +174,36 @@ def test_parse_number_missing() raises:
     assert_false(Bool(r))
 
 
+def test_parse_number_before_a_non_utf8_byte_does_not_trap() raises:
+    """A number followed by a byte that is not UTF-8 is read, not trapped.
+
+    The value is cut out of a request body, and the byte after its last
+    digit is whatever the client sent. The cut used to be
+    `body[byte=start:i]`, which asserts a codepoint boundary at `i`: a
+    POST of `{"x":1<0x80>}` killed the process on the loop thread. No app
+    in the tree called this until `apps/blobs`' drop view, which is how
+    it was found. The other extractors pass the same fuzz; this one alone
+    trapped.
+
+    covers: G14
+    """
+    var b = List[UInt8]()
+    for c in String('{"x":1').as_bytes():
+        b.append(c)
+    b.append(UInt8(0x80))
+    b.append(UInt8(ord("}")))
+    var body = String(unsafe_from_utf8=Span(b))
+    var r = parse_json_number(body, "x")
+    assert_true(Bool(r))
+    assert_true(r.value() > 0.9 and r.value() < 1.1)
+    # A continuation byte right after the sign: nothing to read, no trap.
+    var c = List[UInt8]()
+    for ch in String('{"x":-').as_bytes():
+        c.append(ch)
+    c.append(UInt8(0xBF))
+    assert_false(Bool(parse_json_number(String(unsafe_from_utf8=Span(c)), "x")))
+
+
 # --- Boolean extraction ---
 
 def test_parse_bool_true() raises:

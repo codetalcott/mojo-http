@@ -149,7 +149,7 @@ struct WSHub(Movable):
                 # Ids keep bus datagrams well-formed and debuggable; the hub
                 # itself has no redelivery filter to feed.
                 event_id = shared_fetch_add(self.shared_id_addr, 1) + 1
-            publish_to_channels(
+            _ = publish_to_channels(
                 self.bus_write_fds, self.bus_worker, url, event_id, Span(frame)
             )
 

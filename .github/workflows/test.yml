@@ -542,6 +542,13 @@ jobs:
       # must not drop) and that SIGTERM with a step in flight still drains.
       - name: Smoke test periodic work off the event loop
         run: uv run poe smoke-sim-loop
+      # The first application written for the Mojo-native stack: a Views
+      # table that also streams, a producer thread publishing full-state
+      # frames, the newest state sent at open, clicks crossing to the
+      # producer over the shared page. Asserts every frame's shape, the
+      # pause with nobody watching and a drain that stops the producer.
+      - name: Smoke test the blobs demo
+        run: uv run poe smoke-blobs
       # The flagship: a mutation broadcasts the rendered fragment to a live
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo

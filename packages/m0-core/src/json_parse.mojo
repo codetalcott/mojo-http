@@ -353,7 +353,11 @@ def parse_json_number(body: String, field: String) -> Optional[Float64]:
     if i == start:
         return None
 
-    var num_str = String(body[byte=start:i])
+    # A byte-span slice, never `body[byte=start:i]` (SPEC G14): the body is
+    # request bytes, and the byte after a number may be anything, including
+    # a UTF-8 continuation byte, where the String slice asserts a codepoint
+    # boundary and kills the process. The span itself is ASCII digits.
+    var num_str = String(unsafe_from_utf8=body.as_bytes()[start:i])
     try:
         return Optional[Float64](Float64(num_str))
     except:

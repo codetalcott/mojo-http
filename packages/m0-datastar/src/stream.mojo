@@ -63,6 +63,21 @@ struct DatastarStream:
       that can be `HTTPService.tick` on the loop's own timer — a clock is
       expressible now (the counter demo runs one). Without a tick, every
       broadcast is caused by an inbound request.
+
+    Two ways to meet a subscriber who arrives mid-stream, chosen at
+    construction:
+
+    - **Replay** (the default): a stream of changes, where a reconnecting
+      client presents `Last-Event-ID` and is caught up from the journal
+      with what it missed. A new client starts from the live feed.
+    - **Latest** (`send_latest=True`): a stream of STATES, where every frame
+      is the whole state and an old one is wrong rather than merely late —
+      a simulation, a dashboard, a scoreboard. Every subscriber, new or
+      reconnecting, is sent the newest frame for its url at `open` and then
+      the live feed; nothing older is ever replayed. Without it a new
+      subscriber sees nothing until the next broadcast, which for a slow
+      cadence, or a producer paused while nobody watched, is a blank page
+      (`apps/blobs` is the worked example).
     """
 
     var registry: SSERegistry
@@ -85,8 +100,21 @@ struct DatastarStream:
     var bus_write_fds: List[Int]
     var bus_worker: Int
     var shared_id_addr: Int
+    # The newest frame per url, kept only under `send_latest`: parallel
+    # lists like the journal's, scanned, because a stream has a handful of
+    # urls at most. Newest by event id, so a peer frame that arrives behind
+    # one already kept does not replace it.
+    var send_latest: Bool
+    var latest_urls: List[String]
+    var latest_ids: List[Int]
+    var latest_frames: List[List[UInt8]]
 
-    def __init__(out self, capacity: Int = 1024, journal_entries: Int = 64):
+    def __init__(
+        out self,
+        capacity: Int = 1024,
+        journal_entries: Int = 64,
+        send_latest: Bool = False,
+    ):
         """Create a stream sized for `capacity` connection slots.
 
         `capacity` must be at least the server's max connections, since slots
@@ -94,6 +122,11 @@ struct DatastarStream:
 
         `journal_entries` bounds the replay journal; 0 disables replay
         entirely (reconnecting clients simply resume from the live feed).
+
+        `send_latest` makes this a stream of states: `open` sends the newest
+        frame for the url and never replays (see the struct docstring). The
+        journal still records under it, for `frame_for`; pass
+        `journal_entries=0` when nothing reads it.
         """
         self.registry = SSERegistry(capacity)
         self.next_event_id = 0
@@ -104,6 +137,10 @@ struct DatastarStream:
         self.bus_write_fds = List[Int]()
         self.bus_worker = -1
         self.shared_id_addr = 0
+        self.send_latest = send_latest
+        self.latest_urls = List[String]()
+        self.latest_ids = List[Int]()
+        self.latest_frames = List[List[UInt8]]()
 
     # --- Lifecycle: drive these from the HTTPService SSE hooks -------------
 
@@ -127,6 +164,14 @@ struct DatastarStream:
         taking it literally would suppress every subsequent event. Processes
         that restore a persisted journal at boot (`restore`) seed the counter
         past this clamp, which is what makes replay work across restarts.
+
+        Under `send_latest` none of that applies: the subscriber is sent the
+        newest frame for `url`, whatever id it presents, and then the live
+        feed. Its id is ignored rather than compared, because a state
+        stream's ids restart with the process that numbers them — a tab
+        that saw frame 5000 from the last incarnation would otherwise wait
+        out 5000 steps of this one — and because re-sending a state the
+        client already holds costs one frame and changes nothing.
         """
         if req.slot_id < 0:
             return HTTPResponse(
@@ -138,6 +183,17 @@ struct DatastarStream:
                 status_code=409,
                 status_text="Conflict",
             )
+        if self.send_latest:
+            self.registry.subscribe(req.slot_id, url, 0)
+            for i in range(len(self.latest_urls)):
+                if self.latest_urls[i] == url:
+                    _ = self.registry.queue_frame(
+                        req.slot_id,
+                        self.latest_ids[i],
+                        self.latest_frames[i].copy(),
+                    )
+                    break
+            return sse_response()
         var last_id = 0
         var reconnecting = False
         var header = req.headers.get("last-event-id")
@@ -225,11 +281,13 @@ struct DatastarStream:
         self._record(url, event_id, bytes)
         _ = self.registry.notify_frame(url, event_id, bytes)
         if self.bus_worker >= 0:
-            publish_to_channels(
+            _ = publish_to_channels(
                 self.bus_write_fds, self.bus_worker, url, event_id, Span(bytes)
             )
 
     def _record(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        if self.send_latest:
+            self._remember(url, event_id, frame)
         if self.journal_cap <= 0:
             return
         # Insert in id order. Local broadcasts always append; a frame from
@@ -247,6 +305,18 @@ struct DatastarStream:
             _ = self.journal_urls.pop(0)
             _ = self.journal_ids.pop(0)
             _ = self.journal_frames.pop(0)
+
+    def _remember(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        """Keep `frame` as `url`'s newest unless a newer one is already kept."""
+        for i in range(len(self.latest_urls)):
+            if self.latest_urls[i] == url:
+                if event_id >= self.latest_ids[i]:
+                    self.latest_ids[i] = event_id
+                    self.latest_frames[i] = frame.copy()
+                return
+        self.latest_urls.append(url)
+        self.latest_ids.append(event_id)
+        self.latest_frames.append(frame.copy())
 
     def restore(mut self, url: String, event_id: Int, frame: List[UInt8]):
         """Reload one persisted frame into the journal — the boot-time path.
