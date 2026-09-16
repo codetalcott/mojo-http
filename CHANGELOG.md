@@ -10,6 +10,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A language limitation this repo had believed for three weeks does not
+  exist.** An app conforming to a trait in a `.mojoc` was recorded as
+  impossible (`PoolHandler` 2026-08-28, `PageShell` 2026-09-10), and
+  `HTTPService`/`PoolHandler` living in the source-resolved fork, D12's
+  thin-function page shell and D14 were all decided on it. The discriminant
+  is the package's NAME against the SOURCE DIRECTORY it was compiled from:
+  `src/pkg/ -> pkg.mojoc` compiles, `src/pkg_src/ -> pkg.mojoc` loses the
+  witness table, and every package here builds `src` into `<name>.mojoc` —
+  which the error said all along (`trait 'src::fragment::PageShell'`). Fixed
+  on the Mojo nightly, so the workarounds have an end date rather than a
+  rename: a source directory beside a `.mojoc` of the same name shadows it,
+  so renaming would silently stop every consumer using the artifact.
+  `poe check-mojoc-trait` now proves the cause four ways (the `m0_http`
+  case refused, one synthetic source ACCEPTED from a matching directory and
+  refused from a mismatched one, `Views[S]` still compiling) and says what
+  retires D12 and D14. [notes/a-trait-and-a-directory-name](docs/notes/a-trait-and-a-directory-name.md).
+
 - **The live demo's WebSocket status line described another tab's socket**
   (`apps/demo`, SPEC M17). It updated on any message that arrived over a
   WebSocket, and every tab's socket messages reach every tab on the
