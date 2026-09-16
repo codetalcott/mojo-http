@@ -11,12 +11,14 @@ which workers hold streams, whether every one of them gets every beat,
 where accepted connections land, how a drain ends, and what happens to a
 producer that will not stop.
 
-Two knobs, both for the gate:
+Three knobs, all for the gate:
 
     M0_HOSTCHECK_PERIOD_MS   the beat's period (default 100)
     M0_HOSTCHECK_STEP_MS     how long each beat sleeps before it publishes
                              (default 0; the overrun arm sets it past the
                              host's join bound)
+    M0_HOSTCHECK_MAX_WORKERS what `max_workers` answers (default 0, any),
+                             so the gate can prove the host asks
 
 Run it:  uv run poe serve-host-check
 """
@@ -89,6 +91,10 @@ struct Check(AppHandler):
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
         return Check(ctx.capacity, ctx.worker)
+
+    @staticmethod
+    def max_workers() -> Int:
+        return _env_ms("M0_HOSTCHECK_MAX_WORKERS", 0)
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var path = req.uri.path

@@ -3,9 +3,10 @@
 
 `blobs_sabotage.py`'s shape: each entry replaces one EXACT source block in
 `packages/m0-http/lightbug_http/host.mojo`, runs its gate, and restores the
-file. The gate is `smoke-host` for what the wire shows, or `test_host.mojo`
-for what only a thread-level test can see precisely (a producer that
-catches up still publishes). The fork is resolved from source by both, so
+file. The gate is `smoke-host` for what the wire shows,
+`smoke-fragment-notes` for `ViewsApp` (the host's own app does not use
+it), or `test_host.mojo` for what only a thread-level test can see
+precisely (a producer that catches up still publishes). The fork is resolved from source by both, so
 nothing else needs rebuilding. An anchor that no longer matches is a
 failure -- re-point it with the line.
 
@@ -45,6 +46,7 @@ _MOJO = Path(sys.executable).with_name("mojo")
 MOJO = str(_MOJO) if _MOJO.exists() else (shutil.which("mojo") or "mojo")
 
 SMOKE = "smoke"
+NOTES = "notes"
 UNIT = "unit"
 
 HOST = Path("packages/m0-http/lightbug_http/host.mojo")
@@ -133,11 +135,23 @@ SABOTAGES = [
         "    if False:\n",
     ),
     (
+        "the host never asks how many workers the app serves",
+        SMOKE,
+        "    var refusal = host_refusal(config, H.max_workers())\n",
+        "    var refusal = host_refusal(config)\n",
+    ),
+    (
+        "ViewsApp drops its state's worker limit",
+        NOTES,
+        "        return Self.S.max_workers()\n",
+        "        return 0\n",
+    ),
+    (
         "the refusal comes after the bind",
         SMOKE,
-        "    var refusal = host_refusal(config)\n",
+        "    var refusal = host_refusal(config, H.max_workers())\n",
         "    var early_listener = ListenConfig().listen(config.address())\n"
-        "    var refusal = host_refusal(config)\n",
+        "    var refusal = host_refusal(config, H.max_workers())\n",
     ),
     # --- the thread's own rules, against test_host.mojo -----------------------
     (
@@ -151,6 +165,12 @@ SABOTAGES = [
         UNIT,
         "    except e:\n        print(\"host: the producer raised",
         "    except e:\n        status = STATUS_OK\n        print(\"host: the producer raised",
+    ),
+    (
+        "more workers than the app serves are not refused",
+        UNIT,
+        "    if max_workers > 0 and config.workers > max_workers:\n",
+        "    if False:\n",
     ),
     (
         "the publisher does not count a refusal",
@@ -169,6 +189,14 @@ def run_smoke() -> tuple[bool, str]:
     return (p.returncode == 0 and "smoke-host OK" in out), out
 
 
+def run_notes() -> tuple[bool, str]:
+    p = subprocess.run(
+        [POE, "smoke-fragment-notes"], capture_output=True, text=True, timeout=600
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and "smoke-fragment-notes OK" in out), out
+
+
 def run_unit() -> tuple[bool, str]:
     p = subprocess.run(
         [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
@@ -179,7 +207,7 @@ def run_unit() -> tuple[bool, str]:
     return (p.returncode == 0 and " 0 failed" in out), out
 
 
-GATES = {SMOKE: run_smoke, UNIT: run_unit}
+GATES = {SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit}
 
 
 def why(out: str) -> str:

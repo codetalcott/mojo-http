@@ -7151,9 +7151,10 @@ python3 scripts/emit.py --covers N16 --task smoke-blobs
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E23): thirteen against
-# smoke-host, three against test_host.mojo. Pre-release: sixteen runs,
-# about twelve minutes; `--only unit` is about one.
+# Each Mojo host rule, broken on purpose (SPEC E21-E23, N18): fourteen
+# against smoke-host, one against smoke-fragment-notes, four against
+# test_host.mojo. Pre-release: nineteen runs, about fifteen minutes;
+# `--only unit` is about one.
 [tool.poe.tasks.sabotage-host]
 help = "PRE-RELEASE: revert each lightbug_http/host.mojo rule and insist smoke-host or test_host fails for every one (SPEC E21-E23)"
 cmd = "python3 scripts/host_sabotage.py"
@@ -7298,8 +7299,9 @@ grep -q 'abandoned' "$out/long.log" && fail "a long period: the producer was aba
 echo "a long period: exit 0 in ${took}s"
 
 # --- what the host does not serve is refused, before it binds --------------
-for v in M0_THREADS=2 M0_BLOCKING_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0; do
-  env M0_PORT=8788 $v "$out/host_check" > "$out/refused.log" 2>&1 &
+for v in M0_THREADS=2 M0_BLOCKING_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_WORKERS=2; do
+  # The last is refused only because the app says it serves one process.
+  env M0_PORT=8788 M0_HOSTCHECK_MAX_WORKERS=1 $v "$out/host_check" > "$out/refused.log" 2>&1 &
   pid=$!
   i=0
   while kill -0 $pid 2>/dev/null; do
@@ -7314,7 +7316,7 @@ for v in M0_THREADS=2 M0_BLOCKING_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0; do
   grep -q "${v%%=*}" "$out/refused.log" || fail "$v was refused without naming it"
   grep -q 'listening' "$out/refused.log" && fail "$v was refused after the host bound its port"
 done
-echo "refused before binding, with 78: M0_THREADS, M0_BLOCKING_THREADS, M0_SPAWN_WORKERS, M0_WORKERS=0"
+echo "refused before binding, with 78: M0_THREADS, M0_BLOCKING_THREADS, M0_SPAWN_WORKERS, M0_WORKERS=0, M0_WORKERS above max_workers"
 
 echo "smoke-host OK"
 python3 scripts/emit.py host.overrun_exit_s "$overrun_s" --unit s --limit 12 --task smoke-host
@@ -7324,10 +7326,10 @@ python3 scripts/emit.py --covers E23 --task smoke-host
 """
 
 [tool.poe.tasks.smoke-todo]
-help = "Todo demo: assert a broadcast patches a live client, the list survives a restart, and Last-Event-ID replays across it"
+help = "Todo demo: assert a broadcast patches a live client, the list survives a restart, Last-Event-ID replays across it, and two workers share one list"
 shell = """
 out=$(mktemp -d)
-trap 'kill $pid 2>/dev/null; rm -rf "$out"' EXIT
+trap 'kill $pid 2>/dev/null; pkill -KILL -f "$out/" 2>/dev/null; rm -rf "$out"' EXIT
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
   -I packages/m0-sqlite/ -I apps/ -Xlinker -lsqlite3 \
   apps/datastar_todo/server.mojo -o "$out/todo" || exit 1
@@ -7432,12 +7434,39 @@ LC_ALL=C grep -q 'tail' todo_hostile_page.txt \
 rm -f todo_hostile_page.txt
 rm -f todo_hostile.txt
 
+# Two workers over one database (the Mojo host). Streams must land on both
+# workers or the phase is vacuous; adds from a connection on each worker at
+# once must reach every stream; and the persisted broadcast log must be
+# monotone -- each frame holding every todo the frame before it held. A
+# mutation holds SQLite's write lock until its frame is published, and that
+# is what the last check is about: without the lock a render can take a
+# newer id than a later change. That race lasts microseconds, so the app
+# widens it (M0_TODO_RENDER_PAUSE_MS): with 5 ms, a build without the lock
+# failed 5 of 5 rounds, and this one passed 5 of 5. Its own port and
+# database.
+kill $pid 2>/dev/null
+wait $pid 2>/dev/null
+env M0_PORT=8086 M0_WORKERS=2 M0_TODO_RENDER_PAUSE_MS=5 M0_DB="$out/two.db" \
+  "$out/todo" > "$out/two.log" 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8086/health > /dev/null \
+  || { echo '=== two.log ==='; cat "$out/two.log"; exit 1; }
+two=$(python3 scripts/todo_probe.py two 8086 "$out/two.db" 2>&1) \
+  || { echo "two workers: $two"; cat "$out/two.log"; exit 1; }
+echo "two workers: $two"
+kill -TERM $pid
+wait $pid
+rc=$?
+pid=
+[ "$rc" = 0 ] || { echo "two workers: SIGTERM to the supervisor exited $rc"; cat "$out/two.log"; exit 1; }
+
 rm -f todo_sse.txt todo_replay.txt todo_fresh.txt todo.log
 echo "smoke-todo OK"
 python3 scripts/emit.py --covers I10 --task smoke-todo
 python3 scripts/emit.py --covers N12 --task smoke-todo
 python3 scripts/emit.py --covers O5 --task smoke-todo
 python3 scripts/emit.py --covers G14 --task smoke-todo
+python3 scripts/emit.py --covers N17 --task smoke-todo
 """
 
 # Each assertion pins one framework feature the notes API exists to showcase:
@@ -7679,6 +7708,23 @@ M0_PORT=8095 M0_NOTES_KEY=$KEY ./notes_app > refusal.log 2>&1
 code=$?
 [ "$code" = "78" ] || fail "expected exit 78 with no M0_NOTES_PASSWORD, got $code"
 grep -q 'M0_NOTES_PASSWORD is not set' refusal.log || fail 'the refusal did not name the missing password'
+# One process: the notes are a list in memory, so a second worker would hold
+# a different one. The app says so (max_workers) and the Mojo host refuses
+# the count before it binds. In the background with a deadline: a binary
+# that served instead would never exit.
+M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+rpid=$!
+i=0
+while kill -0 $rpid 2>/dev/null; do
+  i=$((i + 1))
+  [ $i -le 100 ] || { kill $rpid; fail 'M0_WORKERS=2 was still running after 10s -- served, not refused'; }
+  sleep 0.1
+done
+wait $rpid
+code=$?
+[ "$code" = "78" ] || fail "expected exit 78 for M0_WORKERS=2, got $code"
+grep -q 'M0_WORKERS=2' refusal.log || fail 'the worker-count refusal did not name M0_WORKERS'
+grep -q 'listening' refusal.log && fail 'M0_WORKERS=2 was refused after the port was bound'
 
 M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > fragment.log 2>&1 &
 pid=$!
@@ -8012,6 +8058,7 @@ python3 scripts/emit.py --covers N1 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N8 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N13 --task smoke-fragment-notes
 python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N18 --task smoke-fragment-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------

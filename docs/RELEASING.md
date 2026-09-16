@@ -203,11 +203,12 @@ reruns its gate, about nine minutes in all (`--only unit` runs the kernel's
 eight in about a minute).
 
 **And `uv run poe sabotage-host`** (SPEC E21–E23) — breaks each of
-sixteen rules in `lightbug_http/host.mojo` and requires a gate to fail
-for every one: thirteen against `smoke-host`, three against
+nineteen rules in `lightbug_http/host.mojo` and requires a gate to fail
+for every one: fourteen against `smoke-host`, one against
+`smoke-fragment-notes` (the `ViewsApp` adapter), four against
 `test_host.mojo`. A sabotage that does not compile is reported as BROKEN
 and counted as a miss, not a catch. Pre-release because each rule reruns
-the whole smoke, about twelve minutes; `--only unit` is about a minute.
+the whole smoke, about fifteen minutes; `--only unit` is about a minute.
 
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds

@@ -17,33 +17,28 @@ That is the entire point, and it is what `DatastarStream` exists to make
 possible — the builders in `m0_datastar.sse` produce complete SSE frames, which
 `SSERegistry.notify` cannot carry without double-framing them.
 
-It is also the reference wiring for **cross-worker SSE fan-out** -- which is
-the only thing its bus is for, so the bus is joined only above one worker.
-`apps/sim_loop` is the other shape: a producer on its own thread, where the
-bus is the thread-to-loop channel and is needed in a single process. With
-`M0_WORKERS>1` this app creates, before the fork: the listener every worker
-accepts from, a `BroadcastBus` (one datagram channel per worker), and a
-`SharedAtomics` page (slot 0: SSE event ids, slot 1: the count, slot 2:
-uptime seconds). Each
-worker then joins the bus with `enable_bus`, hands its channel to the server,
-and wires `sse_peer_frame` → `deliver_peer` — after which a button press
-handled by any worker updates tabs connected to every worker. The count lives
-in shared memory so all workers agree on it without a database.
+It is also the reference for **cross-worker SSE fan-out**, on the Mojo host
+(`lightbug_http.host`). With `M0_WORKERS>1` the host creates, before the
+fork, the listener every worker accepts from, a `BroadcastBus` (one datagram
+channel per worker) and two shared pages: its own, whose slot 0 numbers SSE
+events across workers, and this app's (`page_slots`: the count, then uptime
+seconds). Each worker's `make` joins the stream to the bus with
+`enable_bus`; the host drains the worker's channel into `sse_peer_frame`,
+which hands the frame to `deliver_peer` — after which a button press handled
+by any worker updates tabs connected to every worker. The count lives in
+shared memory so all workers agree on it without a database. The join is
+unconditional: at one worker the stream simply has no peer to send to.
 
 Run it:  uv run poe serve-counter        (M0_WORKERS=2 for the fan-out shape)
 """
 
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.broadcast import BroadcastBus
+from lightbug_http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
-from lightbug_http.connection import ListenConfig
 from lightbug_http.header import Headers, Header, HeaderKey
+from lightbug_http.host import AppHandler, HostContext, serve
 
-from m0_http import reply
-from m0_http import (
-    AppConfig, WorkerSupervisor, install_shutdown_signals, exit_worker,
-)
-from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
+from m0_http import AppConfig, reply
+from m0_http.multiworker import shared_fetch_add, shared_load
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
@@ -54,7 +49,7 @@ from datastar_counter.page import render_page
 comptime STREAM_URL = "/events"
 
 
-struct CounterHandler(HTTPService):
+struct CounterHandler(AppHandler):
     """One counter, shared by every connected client."""
 
     # The count is a shared atomic (a `SharedAtomics` slot), not a field:
@@ -72,14 +67,33 @@ struct CounterHandler(HTTPService):
     var _last_bump_ms: Int
     var stream: DatastarStream
 
-    def __init__(out self, count_addr: Int, uptime_addr: Int, tick_owner: Bool):
+    def __init__(
+        out self, count_addr: Int, uptime_addr: Int, tick_owner: Bool, capacity: Int
+    ):
         self.count_addr = count_addr
         self.uptime_addr = uptime_addr
         self.tick_owner = tick_owner
         self._last_bump_ms = 0
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
-        self.stream = DatastarStream(1024)
+        self.stream = DatastarStream(capacity)
+
+    @staticmethod
+    def page_slots(workers: Int) -> Int:
+        # The count, then uptime seconds.
+        return 2
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        var handler = CounterHandler(
+            ctx.page, ctx.page + 8, ctx.tick_owner(), ctx.capacity
+        )
+        # Joining the bus is three-sided, and the host does two sides: it
+        # drains this worker's channel and hands what arrives to
+        # sse_peer_frame (below). This is the third: the stream publishes to
+        # its peers and numbers events from the shared slot.
+        handler.stream.enable_bus(ctx.bus, ctx.worker, ctx.id_addr)
+        return handler^
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var path = req.uri.path
@@ -181,56 +195,7 @@ struct CounterHandler(HTTPService):
 def main() raises:
     var config = AppConfig()
     print("Datastar counter on " + config.base_url + " — open it in two tabs")
-
-    # Everything workers must share is created BEFORE the fork, so every
-    # process inherits it: the listener (all workers accept from this one
-    # socket), the broadcast bus channels, and the shared atomics — slot 0
-    # numbers SSE events across workers, slot 1 is the count. In
-    # single-worker mode the same objects simply serve one process.
-    var listener = ListenConfig().listen(config.address())
-    var shared = SharedAtomics(3)
-    var bus = BroadcastBus(config.workers)
-    var worker = 0
-    if config.workers > 1:
-        var supervisor = WorkerSupervisor(config.workers)
-        supervisor.fork_all()
-        worker = supervisor.worker_index
-
-    var handler = CounterHandler(
-        shared.addr(1), shared.addr(2), tick_owner=(worker == 0)
-    )
-    var bus_read_fd = -1
-    # The `workers > 1` guard is about what the bus does HERE, and is not the
-    # general rule. This app uses it for cross-worker fan-out, so one worker
-    # has no peer to reach and needs no channel. An application whose
-    # PRODUCER is another thread needs the bus at one worker too -- there it
-    # is the thread-to-loop channel, and `apps/sim_loop` joins it
-    # unconditionally for that reason (SPEC N15). Copying this conditional
-    # into an app of that shape publishes into a channel nothing drains,
-    # which fails silently.
-    if config.workers > 1:
-        # Joining the bus is three-sided: the stream publishes to peers and
-        # takes ids from the shared slot; the server drains this worker's
-        # channel; sse_peer_frame (above) delivers what arrives.
-        handler.stream.enable_bus(bus, worker, shared.addr(0))
-        bus_read_fd = bus.read_fd(worker)
-
     # Heartbeats keep idle streams alive through proxies and NATs, and let the
     # loop discover dead subscribers; M0_SSE_HEARTBEAT_MS tunes the cadence
     # (the smoke sets it low to assert heartbeats actually arrive).
-    var server = Server(config.server_config(), config.address())
-    # SSE requires the non-blocking event loop: only it assigns `req.slot_id`
-    # and drains the outbox; the plain accept loop answers every stream open
-    # with the server's own 409 (`gate_streaming_response`; DatastarStream
-    # also guards `slot_id < 0` itself, for hosts that bypass that gate).
-    # After fork_all, so each worker arms its own pipe: dispositions and fds
-    # are inherited, and a pre-fork install would point every worker at the
-    # supervisor's pipe, which nothing is watching. The supervisor arms itself
-    # separately, so signalling it alone still reaps the workers.
-    var shutdown_fd = install_shutdown_signals()
-    server.serve_nonblocking(
-        listener, handler, shutdown_read_fd=shutdown_fd, bus_read_fd=bus_read_fd
-    )
-    if config.workers > 1:
-        # A drained worker must not fall off the end of main — see exit_worker.
-        exit_worker()
+    serve[CounterHandler](config)

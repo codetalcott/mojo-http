@@ -21,10 +21,13 @@ from lightbug_http.host import (
     Producer,
     ProducerThread,
     Publisher,
+    ViewState,
+    ViewsApp,
     host_refusal,
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from m0_http.config import AppConfig
+from m0_http.views import Views
 from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
 from m0_http.threads import STATUS_NEVER_RAN, STATUS_OK, STATUS_RAISED
 
@@ -96,6 +99,31 @@ struct Plain(AppHandler):
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         return OK("plain")
+
+
+struct OneProcess(ViewState):
+    """State that lives in one process, served through `ViewsApp`."""
+
+    var worker: Int
+
+    def __init__(out self, worker: Int):
+        self.worker = worker
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return OneProcess(ctx.worker)
+
+    @staticmethod
+    def urls() raises -> Views[Self]:
+        return Views[OneProcess]()
+
+    @staticmethod
+    def page_slots(workers: Int) -> Int:
+        return 3 * workers
+
+    @staticmethod
+    def max_workers() -> Int:
+        return 1
 
 
 def _ids(fd: Int) raises -> List[Int]:
@@ -230,6 +258,32 @@ def test_what_wants_a_producer() raises:
 
 def test_page_slots_default_to_none() raises:
     assert_equal(Plain.page_slots(4), 0)
+    assert_equal(Plain.max_workers(), 0)
+
+
+def test_a_views_app_answers_for_its_state() raises:
+    """`ViewsApp` forwards the state's page and worker limit, and builds it."""
+    assert_equal(ViewsApp[OneProcess].page_slots(2), 6)
+    assert_equal(ViewsApp[OneProcess].max_workers(), 1)
+    var page = _page(1)
+    var app = ViewsApp[OneProcess].make(_ctx(1, page))
+    assert_equal(app.state.worker, 0)
+
+
+def test_the_host_refuses_more_workers_than_the_app_serves() raises:
+    """An application whose state is per process is not served twice.
+
+    covers: E21
+    """
+    _ = setenv("M0_WORKERS", "2", True)
+    var config = AppConfig()
+    _ = unsetenv("M0_WORKERS")
+    var why = host_refusal(config, 1)
+    assert_true(Bool(why), "two workers were served for a one-process app")
+    assert_true("M0_WORKERS=2" in why.value(), "the refusal does not name M0_WORKERS")
+    assert_false(Bool(host_refusal(config, 2)))
+    assert_false(Bool(host_refusal(config, 0)))
+    assert_false(Bool(host_refusal(AppConfig(), 1)))
 
 
 def _refusal_for(name: String, value: String) raises -> Optional[String]:
