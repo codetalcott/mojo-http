@@ -4755,6 +4755,23 @@ PYTHONPATH="$out" M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=25000 bin/m0serve 
 # and the 429 -- plus m0serve as PID 1 and `docker stop` as the drain with
 # held connections open. In CI it runs in the pid1 job (the one with docker
 # and a Linux wheel); the same probe with --url verifies the live deploy.
+# The pure-Mojo image: the pinned toolchain compiles `apps/hello` in a builder
+# stage and the runtime stage carries the binary and the Mojo runtime
+# libraries and nothing else -- no interpreter, no toolchain. Pre-release
+# rather than every-PR because the builder stage installs the toolchain
+# wheel (48 MB for linux x86-64) and compiles the packages from source, which
+# is minutes and a large download on a shared runner; `smoke-demo` next door
+# builds an image from a wheel and is cheap by comparison.
+[tool.poe.tasks.probe-mojo-image]
+help = "PRE-RELEASE: build the pure-Mojo image and probe it from outside"
+shell = """
+set -e
+tcpu="${M0_TARGET_CPU:-generic}"
+docker build -f deploy/mojo-hello/Dockerfile --build-arg TARGET_CPU="$tcpu" \
+  -t m0-hello-spike:local .
+scripts/mojo_image_probe.sh m0-hello-spike:local
+"""
+
 [tool.poe.tasks.smoke-demo]
 help = "Build the live demo's deploy image from the tree's wheel and probe it from outside the container"
 deps = ["build-wheel"]

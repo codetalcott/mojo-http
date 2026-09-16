@@ -8,6 +8,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **A Mojo application ships as an image with nothing under it** (SPEC M26).
+  `deploy/mojo-hello/Dockerfile` compiles `apps/hello` with the pinned
+  toolchain in a builder stage; the runtime stage carries the binary and the
+  three Mojo runtime libraries beside it, and no interpreter. Measured on
+  `linux/arm64`: 29.2 MB image, 12.1 MB RSS idle and 13.5 MB holding 100
+  keep-alive connections, against the Django demo's 74 MiB and 52 MB per
+  worker. `docker stop` is the drain, and `/proc/1/cmdline` — read inside the
+  container — is the binary itself. `uv run poe probe-mojo-image` builds and
+  probes it; pre-release, because the builder installs the toolchain wheel
+  and compiles from source. The x86-64 arm is deliberately not claimed: the
+  toolchain publishes a manylinux x86-64 wheel, but QEMU is not evidence and
+  it has to run on a real x86 host.
+
 ### Fixed
 
 - **The live demo's WebSocket status line described another tab's socket**
