@@ -9,4 +9,19 @@
 !dist/site/
 !deploy/demo/wheelhouse/
 !apps/demo/demoapp.py
+
+# The Mojo image (deploy/mojo-hello/Dockerfile) compiles in its builder
+# stage, so its context is source: the toolchain pin, the packages, the one
+# app, and the three scripts that make a linked artifact redistributable.
+# Built `.mojoc` artifacts are excluded even under those paths -- the builder
+# precompiles its own, and a stale one from the host would be a silent
+# mismatch with the toolchain in the image.
+!pyproject.toml
+!uv.lock
+!packages/
+!apps/hello/
+!scripts/relocate.py
+!scripts/bundle_artifact.py
+!scripts/binfmt.py
+**/*.mojoc
 **/__pycache__/

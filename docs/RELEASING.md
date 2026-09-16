@@ -193,6 +193,17 @@ nothing here tells the person cutting the release to run it.
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
 
+**And `uv run poe probe-mojo-image`** (SPEC M26) — builds
+`deploy/mojo-hello/Dockerfile` and probes it from outside: a Mojo binary as
+PID 1 in an image with no interpreter and no toolchain, `docker stop` its
+drain. Pre-release because the builder stage installs the toolchain wheel
+and compiles the packages from source, which is minutes and a large
+download CI does not spend on every pull request. Needs docker (colima
+locally) — and per the Autobahn note above, do not touch docker while
+another container gate is running. `M0_TARGET_CPU=x86-64-v2` on an x86
+host; the figures in `deploy/mojo-hello/README.md` were taken on arm64,
+which the page says plainly.
+
 **And the benchmarks, when `check-docs` says so.** Every table in
 docs/BENCHMARKS.md renders from the newest committed artifact, and
 `render_bench_docs.py --check` (inside `poe check-docs`) refuses one that
