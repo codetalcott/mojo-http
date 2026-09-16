@@ -799,9 +799,11 @@ a `List[Struct]` anyway.
 
 There is one cycle, and it is intentional: files throughout `m0-http/src/`
 import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
-them — and two fork files import back: `lightbug_http/event_loop.mojo` imports
-`m0_http.log`, and `lightbug_http/mojo_pool.mojo` imports `m0_http.threads`.
-Both sides live inside `packages/m0-http/`, so the cycle never crosses a
+them — and three fork files import back: `lightbug_http/event_loop.mojo`
+imports `m0_http.log`, `lightbug_http/mojo_pool.mojo` imports
+`m0_http.threads`, and `lightbug_http/host.mojo` imports `m0_http.config`,
+`m0_http.multiworker`, `m0_http.signal` and `m0_http.threads` (DECISIONS
+D28). Both sides live inside `packages/m0-http/`, so the cycle never crosses a
 package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` because an app
 conforming to `PoolHandler` behind the `.mojoc` got no witness table. **The
 cause is not the package boundary** (probed 2026-09-15): a package compiled
@@ -1192,6 +1194,24 @@ and refactored onto each piece under that green gate — do the same for any
 new piece of this layer: an app that asks, a wire gate, then the lift. The
 pieces, and the language fact each rests on:
 
+- **The Mojo host** (`lightbug_http/host.mojo`, SPEC E21–E23; the note is
+  `docs/notes/the-mojo-host.md`): `serve[H, P](AppConfig())` is a Mojo
+  app's whole `main` below its own configuration checks. `H: AppHandler`
+  is an `HTTPService` with a static `make(ctx)` (and `page_slots(workers)`
+  for a pre-fork page of its own at `ctx.page`); `P: Producer` has
+  `make(ctx)` and `step(mut self, mut out: Publisher) -> Int`, the
+  nanoseconds to the next step, and runs on worker 0 alone; `NoProducer`
+  is the default. The host owns the order the runtime constraints below
+  demand — listen, pages and bus pre-fork (the bus at one worker too),
+  fork, accept sharing bound, signals after the fork, `H.make` per worker,
+  the producer handed every channel through a `Publisher` that hides the
+  descriptors, the drain, the 5 s join with `_exit` for a straggler,
+  `exit_worker` — so an app cannot spell them wrong (D27 is what it
+  decides for every producer). It lives in the fork for the witness-table
+  reason (D28) and refuses `M0_THREADS`, `M0_BLOCKING_THREADS` and
+  `M0_SPAWN_WORKERS` with 78 (D29). `apps/host_check` is its gate app;
+  `apps/blobs` is the first real one. Run `poe sabotage-host` after
+  touching `host.mojo`: its anchors are exact source lines.
 - **`Views[S]`** (`m0-http/src/views.mojo`): a view is a free function
   `(req, params, state) raises -> HTTPResponse`; `add_read` hands the state
   borrowed, `add_write` hands it `mut` (`poe sabotage-views` compiles the
@@ -1498,7 +1518,10 @@ Properties of the design, not defects to fix in passing:
   must end with `exit_worker()`, never by returning from `main`**: the
   runtime's teardown calls into libdispatch, which is unusable after a fork
   without exec, and the worker dies with a SIGTRAP the supervisor reads as a
-  crash.
+  crash. **Once told to stop, the supervisor respawns nothing** (SPEC D10):
+  its handler records the stop before forwarding the signal, and a worker
+  that then fails its drain is let go (exit 1), because a replacement would
+  never be signalled and `docker stop` would end in SIGKILL.
 - **After `fork()` without `exec`, platform runtimes are off limits — including
   from application code.** The `exit_worker()` rule above is one instance; the
   general form bites WSGI apps directly. On macOS `urlopen` consults the system

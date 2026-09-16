@@ -55,6 +55,7 @@ worker maps the page by fd with the same slot count.
 """
 
 from std.atomic import Atomic
+from std.os import getenv
 from std.time import perf_counter_ns
 
 from lightbug_http.c.fdpass import send_fd, recv_fd
@@ -103,6 +104,12 @@ in flight to one worker; past that the acceptor keeps them."""
 def accept_share_slots(workers: Int) -> Int:
     """How many Int64 slots the shared page needs for `workers` workers."""
     return ACCEPT_SHARE_FIRST_WORKER_SLOT + ACCEPT_SHARE_WORKER_STRIDE * workers
+
+
+def accept_sharing_wanted(workers: Int) -> Bool:
+    """Whether `workers` workers share accepts: two or more, unless
+    `M0_ACCEPT_SHARE=0` asks for the bare race (the A/B knob)."""
+    return workers > 1 and getenv("M0_ACCEPT_SHARE", "") != "0"
 
 
 def _atomic(addr: Int) -> Pointer[Atomic[DType.int64], MutUntrackedOrigin]:

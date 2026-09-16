@@ -18,29 +18,27 @@ handler. `ViewService` forwards only `func` and `before_request`, so
 the table dispatches, the struct holds the state and wires the four hooks
 to the state's `DatastarStream`.
 
-The step runs on a thread of its own (`apps/sim_loop` is the reference and
-says why the tick is the wrong home), publishing every step as a whole
-state frame through the `BroadcastBus` to every worker's channel with
-`skip_worker = -1`. The loop drains it into `sse_peer_frame`, where the
-stream keeps it as the newest state (`send_latest`), so a tab that opens
-the stream — first visit, reconnect or a restarted server — is sent the
-current world at once instead of a replay or a blank.
+It runs on the Mojo host (`lightbug_http.host`): `main` reads the cadence
+and calls `serve[BlobsHandler, BlobsProducer]`, and the host does the rest
+-- the listener, the pre-fork board and bus, the workers and their shared
+accepts, the signals, and the producer on worker 0, stopped and joined
+within the drain's bound. `M0_WORKERS=2` serves from two processes.
 
-The producer pauses while nobody watches and slows to `M0_BLOBS_IDLE_HZ`
-after `M0_BLOBS_IDLE_MS` without a drop. Clicks and viewer counts reach it
-through the shared page in `board.mojo`, never through `malloc`'d memory,
-because a fork is where the Mojo host takes this next.
+The step runs on the host's producer thread (`apps/sim_loop` says why the
+tick is the wrong home), and every step is published as a whole state
+frame to every worker's bus channel. Each worker's loop drains its channel
+into `sse_peer_frame`, where the stream keeps it as the newest state
+(`send_latest`), so a tab that opens the stream on any worker -- first
+visit, reconnect or a restarted server -- is sent the current world at once
+instead of a replay or a blank.
 
-**One process, on purpose, for now.** Serving from several workers means
-accept sharing, clicks landing on a worker other than the producer's and a
-viewer count summed across workers — all of it the Mojo host's job, and
-written here by hand it would be written once to be deleted. `M0_WORKERS`
-above 1 is refused rather than half-served. The board is laid out per
-worker already.
-
-`main` is annotated: `[host]` marks what every Mojo app with a producer
-writes and the host will own, `[blobs]` what is this app's. That split is
-the host's first specification.
+The producer pauses while nobody watches, on any worker, and slows to
+`M0_BLOBS_IDLE_HZ` after `M0_BLOBS_IDLE_MS` without a drop. Clicks and
+viewer counts reach it through the shared page in `board.mojo`, never
+through `malloc`'d memory: a click on worker 1 crosses a process boundary
+to reach the producer in worker 0. `/events` names its worker in
+`x-worker`, and `/stats` names the worker that answered, so a client can
+tell which process it is talking to.
 
 The kernel (`kernel.mojo`) samples the metaball field on the stage's
 192 x 192 grid and traces its outlines, so blobs that meet merge into one
@@ -49,32 +47,24 @@ shape. That is the work the step time reports.
 Run it:  uv run poe serve-blobs
 """
 
-from std.ffi import external_call
-from std.memory import Pointer
 from std.os import getenv
-from std.time import perf_counter_ns, sleep
+from std.time import perf_counter_ns
 
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse
-from lightbug_http.broadcast import BroadcastBus, publish_to_channels
+from lightbug_http import HTTPRequest, HTTPResponse
 from lightbug_http.c.process import process_exit
-from lightbug_http.connection import ListenConfig
+from lightbug_http.host import AppHandler, HostContext, Producer, Publisher, serve
 
 from m0_core.json_parse import parse_json_number
 
-from m0_http import AppConfig, Views, install_shutdown_signals, reply
-from m0_http.multiworker import SharedAtomics
-from m0_http.threads import BLK_STATUS, BLK_USER, STATUS_OK, ThreadBlock, ThreadSet
+from m0_http import AppConfig, Views, reply
 
 from m0_datastar.signals import read_signals
 from m0_datastar.stream import DatastarStream
 
 from blobs.board import (
-    B_ACTIVE_NS,
     B_FRAME_BYTES,
     B_FRAME_MAX,
     B_HOLES,
-    B_IDLE_AFTER_NS,
-    B_IDLE_NS,
     B_LAST_ID,
     B_LOST,
     B_APPLIED,
@@ -97,9 +87,6 @@ from blobs.routes import DROP, EVENTS, HEALTH, NOW, PAGE, STATS
 from blobs.wire import state_frame
 from blobs.world import STAGE, World
 
-comptime WORKERS = 1
-"""Phase 1 serves from one process; see the module docstring."""
-
 comptime STEP_BUDGET_NS = 2_000_000
 """What a step may cost before `/stats` counts it over budget.
 
@@ -111,20 +98,8 @@ same allowance. The kernel measures ~0.2 ms on an M4 at sixteen blobs.
 comptime DROPS_PER_SECOND = 4
 """Drops one connection may make per second; the rest are answered 429."""
 
-comptime PAUSE_POLL_S = Float64(0.02)
+comptime PAUSE_POLL_NS = 20_000_000
 """How often a paused producer looks for a viewer."""
-
-comptime BLK_STOP = 10
-"""Set to 1 by the main thread to end the producer."""
-
-comptime BLK_FDS = 11
-"""Address of the bus write fds, one Int per worker (process-lifetime)."""
-
-comptime BLK_NFDS = 12
-"""How many fds `BLK_FDS` holds."""
-
-comptime JOIN_TIMEOUT_NS = 5_000_000_000
-"""The drain's own 5 s; a producer still stepping after that is abandoned."""
 
 
 def _env_int(name: String, default: Int) -> Int:
@@ -146,96 +121,112 @@ def _now_ms() -> Int:
     return Int(perf_counter_ns() // 1_000_000)
 
 
-# --- The producer thread ------------------------------------------------------
+struct Cadence(Copyable, Movable):
+    """How fast the stage steps, and when an untouched stage slows down."""
+
+    var hz: Int
+    var idle_hz: Int
+    var idle_after_ms: Int
+
+    def __init__(out self):
+        """Read from the environment: `M0_BLOBS_HZ`, `M0_BLOBS_IDLE_HZ`,
+        `M0_BLOBS_IDLE_MS`."""
+        self.hz = _env_int("M0_BLOBS_HZ", 10)
+        self.idle_hz = _env_int("M0_BLOBS_IDLE_HZ", 2)
+        self.idle_after_ms = _env_int("M0_BLOBS_IDLE_MS", 60_000)
+
+    def valid(self) -> Bool:
+        return self.hz > 0 and self.idle_hz > 0
 
 
-def producer_body(arg: Int) -> Int:
-    """Step, trace, publish, sleep — and pause while nobody watches.
+# --- The producer -------------------------------------------------------------
+
+
+struct BlobsProducer(Producer):
+    """Step, trace, publish -- and pause while nobody watches.
 
     Holds the world and nothing of the server's. What it shares with the
-    loop is the bus sockets (one per worker) and the board page.
+    workers is the board page; the host's publisher carries each frame to
+    every worker's channel.
     """
-    var block = ThreadBlock(arg)
-    var board = Board(block.get(BLK_USER))
-    var fds_addr = block.get(BLK_FDS)
-    var fds = List[Int]()
-    for i in range(block.get(BLK_NFDS)):
-        fds.append(
-            Pointer[Int, MutUntrackedOrigin](unsafe_from_address=fds_addr + i * 8)[]
-        )
-    var active_ns = board.load(B_ACTIVE_NS)
-    var idle_ns = board.load(B_IDLE_NS)
-    var idle_after_ns = board.load(B_IDLE_AFTER_NS)
 
-    var world = World()
-    var tracer = Tracer()
-    var shapes = Shapes()
-    var drops = DropReader()
-    var step = 0
-    var last_drop_ns = perf_counter_ns()
-    var next_ns = perf_counter_ns()
-    while block.get(BLK_STOP) == 0:
-        var viewers = board.viewers(WORKERS)
+    var board: Board
+    var workers: Int
+    var active_ns: Int
+    var idle_ns: Int
+    var idle_after_ns: Int
+    var world: World
+    var tracer: Tracer
+    var shapes: Shapes
+    var drops: DropReader
+    var step_no: Int
+    var last_drop_ns: Int
+
+    def __init__(out self, board: Board, workers: Int, cadence: Cadence):
+        self.board = board
+        self.workers = workers
+        self.active_ns = 1_000_000_000 // cadence.hz
+        self.idle_ns = 1_000_000_000 // cadence.idle_hz
+        self.idle_after_ns = cadence.idle_after_ms * 1_000_000
+        self.world = World()
+        self.tracer = Tracer()
+        self.shapes = Shapes()
+        self.drops = DropReader()
+        self.step_no = 0
+        self.last_drop_ns = perf_counter_ns()
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return BlobsProducer(Board(ctx.page), ctx.workers, Cadence())
+
+    def step(mut self, mut out: Publisher) raises -> Int:
+        var viewers = self.board.viewers(self.workers)
         if viewers == 0:
             # Nobody to draw for: no step, no frame. The world waits where
             # it is, and the next viewer is sent that state at open.
-            board.store(B_PAUSED, 1)
-            sleep(PAUSE_POLL_S)
-            next_ns = perf_counter_ns()
-            continue
-        board.store(B_PAUSED, 0)
+            self.board.store(B_PAUSED, 1)
+            return PAUSE_POLL_NS
+        self.board.store(B_PAUSED, 0)
 
         var now = perf_counter_ns()
-        if drops.take(board, world) > 0:
-            last_drop_ns = now
-        var period_ns = active_ns
-        if idle_after_ns > 0 and now - last_drop_ns >= idle_after_ns:
-            period_ns = idle_ns
-        board.store(B_PERIOD_MS, period_ns // 1_000_000)
+        if self.drops.take(self.board, self.world) > 0:
+            self.last_drop_ns = now
+        var period_ns = self.active_ns
+        if self.idle_after_ns > 0 and now - self.last_drop_ns >= self.idle_after_ns:
+            period_ns = self.idle_ns
+        self.board.store(B_PERIOD_MS, period_ns // 1_000_000)
 
         var t0 = perf_counter_ns()
-        world.advance(Float64(period_ns) / 1_000_000_000.0)
-        tracer.trace(world, shapes)
+        self.world.advance(Float64(period_ns) / 1_000_000_000.0)
+        self.tracer.trace(self.world, self.shapes)
         var step_ns = perf_counter_ns() - t0
-        step += 1
+        self.step_no += 1
         var frame = state_frame(
-            shapes, step, step_ns // 1000, viewers, world.count(),
-            Int(period_ns // 1_000_000),
+            self.shapes, self.step_no, step_ns // 1000, viewers,
+            self.world.count(), Int(period_ns // 1_000_000),
         )
-        # skip_worker = -1: every channel, this worker's included — nothing
-        # has queued the frame locally. A shortfall is counted: a frame the
-        # bus refuses is otherwise indistinguishable from no step at all.
-        var sent = publish_to_channels(fds, -1, EVENTS, step, frame.as_bytes())
-        if sent < len(fds):
-            board.add(B_REFUSED, 1)
+        # Every worker's channel. A shortfall is counted: a frame the bus
+        # refuses is otherwise indistinguishable from no step at all.
+        if not out.publish(EVENTS, self.step_no, frame.as_bytes()):
+            self.board.add(B_REFUSED, 1)
 
-        board.store(B_STEPS, step)
-        board.store(B_LAST_ID, step)
-        board.store(B_POLYGONS, tracer.kept)
-        if tracer.open_paths > 0:
-            board.add(B_OPEN_PATHS, tracer.open_paths)
-        if tracer.holes > 0:
-            board.add(B_HOLES, tracer.holes)
-        board.store(B_STEP_NS, step_ns)
-        if step_ns > board.load(B_STEP_NS_MAX):
-            board.store(B_STEP_NS_MAX, step_ns)
+        var b = self.board
+        b.store(B_STEPS, self.step_no)
+        b.store(B_LAST_ID, self.step_no)
+        b.store(B_POLYGONS, self.tracer.kept)
+        if self.tracer.open_paths > 0:
+            b.add(B_OPEN_PATHS, self.tracer.open_paths)
+        if self.tracer.holes > 0:
+            b.add(B_HOLES, self.tracer.holes)
+        b.store(B_STEP_NS, step_ns)
+        if step_ns > b.load(B_STEP_NS_MAX):
+            b.store(B_STEP_NS_MAX, step_ns)
         if step_ns > STEP_BUDGET_NS:
-            board.add(B_OVER_BUDGET, 1)
-        board.store(B_FRAME_BYTES, frame.byte_length())
-        if frame.byte_length() > board.load(B_FRAME_MAX):
-            board.store(B_FRAME_MAX, frame.byte_length())
-
-        next_ns += period_ns
-        var after = perf_counter_ns()
-        if next_ns > after:
-            sleep(Float64(next_ns - after) / 1_000_000_000.0)
-        else:
-            # Behind: do not catch up, or an overrun compounds into a loop
-            # that never sleeps.
-            next_ns = after
-    # Last act, and load-bearing: `join_within` waits on this slot.
-    block.set(BLK_STATUS, STATUS_OK)
-    return 0
+            b.add(B_OVER_BUDGET, 1)
+        b.store(B_FRAME_BYTES, frame.byte_length())
+        if frame.byte_length() > b.load(B_FRAME_MAX):
+            b.store(B_FRAME_MAX, frame.byte_length())
+        return period_ns
 
 
 # --- The views ----------------------------------------------------------------
@@ -247,16 +238,18 @@ struct BlobState(Movable):
     var stream: DatastarStream
     var board: Board
     var worker: Int
+    var workers: Int
     var capacity: Int
     var _window_ms: List[Int]
     var _window_drops: List[Int]
 
-    def __init__(out self, capacity: Int, board: Board, worker: Int):
+    def __init__(out self, capacity: Int, board: Board, worker: Int, workers: Int):
         # A stream of states: the newest frame at open, never a replay, and
         # no journal, since nothing here reads one.
         self.stream = DatastarStream(capacity, journal_entries=0, send_latest=True)
         self.board = board
         self.worker = worker
+        self.workers = workers
         self.capacity = capacity
         self._window_ms = List[Int](length=capacity, fill=0)
         self._window_drops = List[Int](length=capacity, fill=0)
@@ -303,6 +296,9 @@ def events(
 ) raises -> HTTPResponse:
     var resp = st.stream.open(req, EVENTS)
     st.publish_viewers()
+    # Which worker holds this stream: how a client tells that a frame
+    # crossed the bus rather than being produced beside it.
+    resp.headers["x-worker"] = String(st.worker)
     return resp^
 
 
@@ -351,7 +347,8 @@ def stats(req: HTTPRequest, params: List[String], st: BlobState) raises -> HTTPR
         ',"lost":', b.load(B_LOST),
         ',"paused":', b.load(B_PAUSED),
         ',"period_ms":', b.load(B_PERIOD_MS),
-        ',"viewers":', b.viewers(WORKERS),
+        ',"viewers":', b.viewers(st.workers),
+        ',"worker":', st.worker,
         "}",
     )
     return reply.json(200, "OK", body)
@@ -369,7 +366,7 @@ def urls() raises -> Views[BlobState]:
     return v^
 
 
-struct BlobsHandler(HTTPService):
+struct BlobsHandler(AppHandler):
     """A `Views` table that also owns the four SSE hooks."""
 
     var views: Views[BlobState]
@@ -378,6 +375,19 @@ struct BlobsHandler(HTTPService):
     def __init__(out self, var views: Views[BlobState], var state: BlobState):
         self.views = views^
         self.state = state^
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        # The stream's capacity is the server's connection count, since
+        # slots index it.
+        return BlobsHandler(
+            urls(),
+            BlobState(ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers),
+        )
+
+    @staticmethod
+    def page_slots(workers: Int) -> Int:
+        return board_slots(workers)
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
         return self.views.answer_on_loop(req)
@@ -402,79 +412,17 @@ struct BlobsHandler(HTTPService):
 
 
 def main() raises:
-    var config = AppConfig()  # [host]
-    # [blobs] The cadence, and when an untouched stage slows down.
-    var hz = _env_int("M0_BLOBS_HZ", 10)
-    var idle_hz = _env_int("M0_BLOBS_IDLE_HZ", 2)
-    var idle_after_ms = _env_int("M0_BLOBS_IDLE_MS", 60_000)
-    if hz <= 0 or idle_hz <= 0:
+    var cadence = Cadence()
+    if not cadence.valid():
         print("blobs: M0_BLOBS_HZ and M0_BLOBS_IDLE_HZ must be positive", flush=True)
         process_exit(78)
-    # [host, not yet] Several workers is the host's to wire; refuse, never
-    # half-serve (see the module docstring).
-    if config.workers != WORKERS:
-        print(
-            "blobs: serves from one process until the Mojo host exists;"
-            " unset M0_WORKERS",
-            flush=True,
-        )
-        process_exit(78)
+    var config = AppConfig()
     print(
         String(
-            "blobs on ", config.base_url, " — ", hz, " Hz, ", idle_hz,
-            " Hz after ", idle_after_ms, " ms without a drop",
+            "blobs on ", config.base_url, " -- ", cadence.hz, " Hz, ",
+            cadence.idle_hz, " Hz after ", cadence.idle_after_ms,
+            " ms without a drop, ", config.workers, " worker(s)",
         ),
         flush=True,
     )
-
-    var listener = ListenConfig().listen(config.address())  # [host]
-    # [host] Shared state and the bus exist before any fork, at one worker
-    # too: the bus is the thread-to-loop channel here.
-    var shared = SharedAtomics(board_slots(WORKERS))
-    var bus = BroadcastBus(WORKERS)
-    var worker = 0
-    # [blobs] The board's layout and configuration.
-    var board = Board(shared.addr(0))
-    board.store(B_ACTIVE_NS, 1_000_000_000 // hz)
-    board.store(B_IDLE_NS, 1_000_000_000 // idle_hz)
-    board.store(B_IDLE_AFTER_NS, idle_after_ms * 1_000_000)
-
-    # [host] The handler is built after the fork, per worker; its stream's
-    # capacity is the server's connection count, since slots index it.
-    var server_config = config.server_config()
-    var handler = BlobsHandler(
-        urls(), BlobState(server_config.max_connections, board, worker)
-    )
-
-    # [host] One producer, on the tick owner (worker 0), handed EVERY
-    # worker's bus write fd. Process-lifetime memory: a producer abandoned
-    # at the join may outlive `main`'s locals.
-    var threads = ThreadSet(1)
-    var nfds = len(bus.write_fds)
-    var fds_addr = external_call["malloc", Int, Int](nfds * 8)
-    for i in range(nfds):
-        Pointer[Int, MutUntrackedOrigin](unsafe_from_address=fds_addr + i * 8)[] = (
-            bus.write_fds[i]
-        )
-    threads.block(0).set(BLK_FDS, fds_addr)
-    threads.block(0).set(BLK_NFDS, nfds)
-    threads.block(0).set(BLK_USER, board.base)  # [blobs] what the producer reads
-    threads.block(0).set(BLK_STOP, 0)
-    var body = producer_body  # [blobs] the producer itself
-    threads.spawn(0, Pointer(to=body).unsafe_bitcast[Int]()[])
-
-    # [host] Serve: signals armed after any fork, the bus channel drained.
-    var server = Server(server_config^, config.address())
-    var shutdown_fd = install_shutdown_signals()
-    server.serve_nonblocking(
-        listener,
-        handler,
-        shutdown_read_fd=shutdown_fd,
-        bus_read_fd=bus.read_fd(worker),
-    )
-
-    # [host] Drained: stop the producer and give it the drain's own bound.
-    threads.block(0).set(BLK_STOP, 1)
-    var stragglers = threads.join_within(JOIN_TIMEOUT_NS)
-    if stragglers > 0:
-        print("blobs: abandoned a producer step still running", flush=True)
+    serve[BlobsHandler, BlobsProducer](config)

@@ -546,9 +546,16 @@ jobs:
       # table that also streams, a producer thread publishing full-state
       # frames, the newest state sent at open, clicks crossing to the
       # producer over the shared page. Asserts every frame's shape, the
-      # pause with nobody watching and a drain that stops the producer.
+      # pause with nobody watching, a drain that stops the producer, and
+      # the same on two workers, a click crossing from worker 1.
       - name: Smoke test the blobs demo
         run: uv run poe smoke-blobs
+      # The Mojo host (lightbug_http.host.serve) on the smallest app that
+      # uses all of it: the bus at one worker, every worker's streams get
+      # every beat once, accept sharing, a drain signalled to the supervisor
+      # alone, the producer's join bound, and the refusals before binding.
+      - name: Smoke test the Mojo host
+        run: uv run poe smoke-host
       # The flagship: a mutation broadcasts the rendered fragment to a live
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo

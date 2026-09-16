@@ -6,6 +6,10 @@
                                   server runs with M0_BLOBS_IDLE_MS=1500)
     blobs_probe.py hold PORT FLAG hold one stream; touch FLAG once a frame
                                   has arrived; exit 0 when the server ends it
+    blobs_probe.py two PORT       two workers (M0_WORKERS=2): streams on both
+                                  get every step, a click on worker 1 reaches
+                                  worker 0's producer, the pause counts
+                                  viewers on every worker
 
 Each prints one summary line and exits 0, or exits 1 naming the first
 assertion that failed. Stdlib only.
@@ -122,6 +126,7 @@ class Stream:
         self.resp = self.conn.getresponse()
         if self.resp.status != 200:
             fail(f"the stream did not open: HTTP {self.resp.status}")
+        self.worker = self.resp.getheader("x-worker")
         self.frames: list[dict] = []
         self.ended = False
         self.lock = threading.Lock()
@@ -561,11 +566,129 @@ def hold(port: int, flag: str) -> None:
     print("held stream ended by the server after %d frames" % len(s.snapshot()))
 
 
+# --- two workers ---------------------------------------------------------------
+
+
+def stats_over(conn: http.client.HTTPConnection) -> dict:
+    """`/stats` on a connection the caller keeps: it stays on its worker."""
+    conn.request("GET", "/stats")
+    resp = conn.getresponse()
+    body = resp.read()
+    if resp.status != 200:
+        fail(f"GET /stats answered {resp.status}")
+    return json.loads(body)
+
+
+def latest(frames: list[dict]) -> dict | None:
+    return frames[-1] if frames else None
+
+
+def two(port: int) -> None:
+    """The host's two-worker half, on the app (SPEC N16).
+
+    Every assertion needs BOTH workers in play, so the first thing proven is
+    that they are: a run whose streams all landed on one worker would pass
+    the frame count on a producer that publishes to that worker alone.
+    """
+    hz = 10
+    phase("streams on both workers")
+    streams: list[Stream] = []
+    for _ in range(8):
+        streams.append(Stream(port))
+        if len(streams) >= 4 and len({s.worker for s in streams}) == 2:
+            break
+    workers = sorted({s.worker for s in streams})
+    if workers != ["0", "1"]:
+        fail(
+            f"{len(streams)} streams landed on workers {workers} -- accept sharing"
+            " did not spread them, so this phase would prove nothing"
+        )
+
+    phase("every stream gets every step")
+    time.sleep(1.5)
+    for s in streams:
+        frames = s.snapshot()
+        check_contiguous(frames, f"worker {s.worker}")
+        if len(frames) < 1.5 * hz * 0.5:
+            fail(
+                f"a stream on worker {s.worker} carried {len(frames)} frames in 1.5 s"
+                f" at {hz} Hz -- the producer is not publishing to every worker"
+            )
+        for f in frames:
+            check_frame(f, f"worker {s.worker}")
+    tops = {s.worker: latest(s.snapshot())["id"] for s in streams}
+    if max(tops.values()) - min(tops.values()) > 3:
+        fail(f"the workers' streams are at different steps: {tops}")
+    min_frames = min(len(s.snapshot()) for s in streams)
+
+    phase("a click on worker 1 reaches worker 0's producer")
+    held = []
+    on_one = None
+    for _ in range(16):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        st = stats_over(c)
+        if st["worker"] == 1:
+            on_one = c
+            break
+        held.append(c)
+    if on_one is None:
+        fail("sixteen connections and none was answered by worker 1")
+    before = get_json(port, "/stats")["drops"]
+    blobs_now = latest(streams[0].snapshot())["signals"]["_blobs"]
+    if post_drop(on_one, drop_json(30, 30))[0] != 204:
+        fail("a drop on worker 1 was refused")
+    if stats_over(on_one)["worker"] != 1:
+        fail("the connection that dropped moved off worker 1")
+    for c in held + [on_one]:
+        c.close()
+    end = time.perf_counter() + 3.0
+    reached = set()
+    while time.perf_counter() < end and len(reached) < 2:
+        for s in streams:
+            if any(f["signals"]["_blobs"] == blobs_now + 1 for f in s.snapshot()):
+                reached.add(s.worker)
+        time.sleep(0.02)
+    if reached != {"0", "1"}:
+        fail(
+            f"a drop posted to worker 1 reached the streams on workers {sorted(reached)}"
+            " -- it never crossed to the producer in worker 0"
+        )
+    after = get_json(port, "/stats")["drops"]
+    if after != before + 1:
+        fail(f"the producer applied {after - before} drops for one click on worker 1")
+
+    phase("the pause counts viewers on every worker")
+    ones = [s for s in streams if s.worker == "1"]
+    for s in streams:
+        if s.worker == "0":
+            s.close()
+    time.sleep(0.5)
+    st = get_json(port, "/stats")
+    if st["viewers"] != len(ones):
+        fail(f"/stats counts {st['viewers']} viewers with {len(ones)} streams held on worker 1 alone")
+    if st["paused"] != 0:
+        fail("the producer paused with viewers on worker 1 -- it counts worker 0's alone")
+    steps = st["steps"]
+    got = len(ones[0].snapshot())
+    time.sleep(1.0)
+    if get_json(port, "/stats")["steps"] <= steps or len(ones[0].snapshot()) <= got:
+        fail("no steps with a viewer on worker 1 alone")
+    for s in ones:
+        s.close()
+    wait_paused(port)
+    print(
+        "workers=2 streams=%d min_frames=%d crossed=%s viewers_on_1=%d"
+        % (len(streams), min_frames, "yes", len(ones))
+    )
+
+
 def main() -> None:
     if len(sys.argv) >= 3 and sys.argv[1] == "serve":
         serve(int(sys.argv[2]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "idle":
         idle(int(sys.argv[2]))
+    elif len(sys.argv) >= 3 and sys.argv[1] == "two":
+        two(int(sys.argv[2]))
     elif len(sys.argv) == 4 and sys.argv[1] == "hold":
         hold(int(sys.argv[2]), sys.argv[3])
     else:

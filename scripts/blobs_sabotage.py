@@ -15,6 +15,10 @@ chain rebuilt and is sabotaged by its own unit test; `send_latest`'s rules
 live in m0-datastar and are sabotaged against `test_stream.mojo`. Both are
 reached here through the app's use of them (the `send_latest=True`
 argument and the non-UTF-8 drop).
+The Mojo host's own rules -- every worker's channel, the tick owner, the
+bounded join -- moved into `lightbug_http.host` when this app did, and are
+`sabotage-host`'s; what stays here is the two-worker half that is the
+app's: the viewer sum and a board every worker shares.
 
     uv run poe sabotage-blobs
     uv run poe sabotage-blobs --only "keep-out"    one rule, by label substring
@@ -23,6 +27,7 @@ argument and the non-UTF-8 drop).
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -44,30 +49,24 @@ WORLD = Path("apps/blobs/world.mojo")
 KERNEL = Path("apps/blobs/kernel.mojo")
 WIRE = Path("apps/blobs/wire.mojo")
 
-# (label, gate, file, old, new)
+# (label, gate, file, old, new); `old` and `new` may be tuples of the same
+# length for a rule that takes more than one edit to break.
 SABOTAGES = [
     (
         "the producer never publishes (cadence)",
         SMOKE,
         SERVER,
-        "        var sent = publish_to_channels(fds, -1, EVENTS, step, frame.as_bytes())\n",
-        "        var sent = len(fds)\n",
-    ),
-    (
-        "publishes with skip_worker = 0, reaching nobody (cadence)",
-        SMOKE,
-        SERVER,
-        "publish_to_channels(fds, -1, EVENTS,",
-        "publish_to_channels(fds, 0, EVENTS,",
+        "        if not out.publish(EVENTS, self.step_no, frame.as_bytes()):\n",
+        "        if False:\n",
     ),
     (
         "a frame too big for the bus (refused, and no frames)",
         SMOKE,
         SERVER,
-        "        # skip_worker = -1: every channel, this worker's included",
+        "        # Every worker's channel. A shortfall is counted",
         "        while frame.byte_length() <= 65536:\n"
         "            frame += \"xxxxxxxxxxxxxxxx\"\n"
-        "        # skip_worker = -1: every channel, this worker's included",
+        "        # Every worker's channel. A shortfall is counted",
     ),
     (
         "no current state at open (the live feed only)",
@@ -127,22 +126,39 @@ SABOTAGES = [
         "an idle stage never slows down",
         SMOKE,
         SERVER,
-        "            period_ns = idle_ns\n",
-        "            period_ns = active_ns\n",
+        "            period_ns = self.idle_ns\n",
+        "            period_ns = self.active_ns\n",
     ),
+    # The two-worker half. The host's own rules (every channel, the tick
+    # owner, the bounded join) are `sabotage-host`'s; these are the app's.
     (
-        "M0_WORKERS=2 is served instead of refused",
+        "the pause counts worker 0's viewers alone",
         SMOKE,
         SERVER,
-        "    if config.workers != WORKERS:\n",
-        "    if False:\n",
+        "        var viewers = self.board.viewers(self.workers)\n",
+        "        var viewers = self.board.viewers(1)\n",
     ),
     (
-        "the producer is never told to stop (abandoned at the join)",
+        "worker 1's board is its own memory, so its clicks never cross",
         SMOKE,
         SERVER,
-        "    threads.block(0).set(BLK_STOP, 1)\n",
-        "",
+        (
+            "from m0_http import AppConfig, Views, reply\n",
+            "            BlobState(ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers),\n",
+        ),
+        (
+            "from m0_http import AppConfig, Views, reply\n"
+            "from m0_http.multiworker import SharedAtomics\n",
+            "            BlobState(\n"
+            "                ctx.capacity,\n"
+            "                Board(\n"
+            "                    ctx.page if ctx.worker == 0\n"
+            "                    else SharedAtomics(board_slots(ctx.workers)).addr(0)\n"
+            "                ),\n"
+            "                ctx.worker,\n"
+            "                ctx.workers,\n"
+            "            ),\n",
+        ),
     ),
     (
         "a frame carries only the filled slots (a delta, not full state)",
@@ -252,11 +268,20 @@ GATES = {SMOKE: run_smoke, UNIT: run_unit}
 
 def why(out: str) -> str:
     """The line the gate failed on, for the report."""
+    # A sabotage that does not compile is caught for the wrong reason. A
+    # compiler diagnostic names its file, line and column; `mojo run`'s own
+    # "error: execution exited with a non-zero result" is a failing test.
+    errors = [
+        ln.strip() for ln in out.splitlines()
+        if re.search(r"\.mojo:\d+:\d+: error:", ln)
+    ]
+    if errors:
+        return "COMPILE ERROR (wrong reason): " + errors[0][-120:]
     fails = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("FAIL [")]
     if fails:
         return ", ".join(f.split("] ", 1)[-1] for f in fails)[:140]
     for line in out.splitlines():
-        if line.startswith(("blobs_probe: FAIL", "serve:", "idle:", "M0_WORKERS", "the drain", "SIGTERM")) and (
+        if line.startswith(("blobs_probe: FAIL", "serve:", "idle:", "two workers", "the drain", "SIGTERM")) and (
             "FAIL" in line or "not" in line or "abandoned" in line or "exited" in line
         ):
             return line.strip()[:140]
@@ -289,22 +314,31 @@ def main() -> int:
     try:
         for label, gate, path, old, new in chosen:
             original = originals[path]
-            if original.count(old) != 1:
+            olds = old if isinstance(old, tuple) else (old,)
+            news = new if isinstance(new, tuple) else (new,)
+            if any(original.count(o) != 1 for o in olds):
                 print(f"  FAIL  anchor missing or ambiguous: {label}")
                 missed.append(label)
                 continue
-            path.write_text(original.replace(old, new, 1))
+            broken = original
+            for o, n in zip(olds, news):
+                broken = broken.replace(o, n, 1)
+            path.write_text(broken)
             try:
                 ok, out = GATES[gate]()
             except subprocess.TimeoutExpired:
                 ok, out = False, "(timed out -- itself a failure)"
             finally:
                 path.write_text(original)
+            reason = why(out)
             if ok:
                 print(f"  MISSED  [{gate}] {label}")
                 missed.append(label)
+            elif reason.startswith("COMPILE ERROR"):
+                print(f"  BROKEN  [{gate}] {label}\n          {reason}")
+                missed.append(label + " (the sabotage does not compile)")
             else:
-                print(f"  CAUGHT  [{gate}] {label}\n          {why(out)}")
+                print(f"  CAUGHT  [{gate}] {label}\n          {reason}")
     finally:
         for f in files:
             shutil.copy(backup_dir / f.name, f)
