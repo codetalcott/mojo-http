@@ -54,7 +54,7 @@ Everything else is opt-in:
 | `--workers N` | you want N processes on a multi-core host | prefork; a supervisor respawns crashes and drains on SIGTERM |
 | `--spawn-workers` | a worker uses Core ML, Objective-C or anything else a forked child cannot | each worker execs the binary afresh after the fork; same supervisor, one extra process start per worker |
 | `--blocking-threads N` | you want more or fewer handler threads per loop | more threads overlap only work that releases the GIL — a database driver, a codec, numpy — never pure Python ([which yours is](WSGI_VS_ASGI.md)); `0` turns the pool off; for ASGI, `N>0` selects the buffered path instead of the executor |
-| `--realtime` | sync views hold SSE streams or WebSockets with `M0-Hold` | WSGI only; the [Quickstart](../QUICKSTART.md) is the contract |
+| `--realtime` | sync views hold SSE streams or WebSockets with `M0-Hold` | WSGI only; the [Quickstart](../QUICKSTART.md) is the contract. Keeps the default pool: a view holds its stream from a pool thread and the loop keeps every held connection, so one slow view stalls nothing. Through 1.4.0 the flag turned the pool off, so every view ran on the loop; `--blocking-threads 0` is that shape by name |
 | `--mount PREFIX=SPEC` | several applications in one process | repeatable; each mount detects its own protocol and runs in its own mode, longest prefix wins |
 | `--mount PREFIX=hold` | a stream held against a grant the application signed | needs `--realtime` and `M0_GRANT_KEY`; the application renders `m0serve.grant.stream_url(PREFIX, channel, session=...)` into an `EventSource` and the mount holds on a Mojo pool thread, never asking Python; `M0_GRANT_KEY_PREV` rotates the key, `M0_GRANT_COOKIE` names the session cookie (`sessionid`); [the note](notes/grant-verified-holds.md) |
 | `--threads N` | free-threaded CPython (3.13t+), N loops in one process | WSGI only on this toolchain: an ASGI app is refused with exit 78 ([why](ROADMAP.md#known-issues)) |
@@ -83,12 +83,23 @@ worker. Inbound WebSocket messages arrive at the application as a `POST` to
 must be CSRF-exempt. Channel names beginning with a control byte are
 reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 
+**A hold replays nothing.** Event ids are numbered from one counter across
+every worker, and a client that reconnects with `Last-Event-ID` is not
+re-sent an event it already has — that is all the id buys. A plain
+`M0-Hold: stream` subscribes to the loop's registry, which keeps no journal,
+so an event published while a client was disconnected (a phone asleep, a
+proxy that dropped the stream) is not delivered when it reconnects. An
+application whose clients must not miss events keeps its own catch-up — a
+fetch on reconnect, or a poll beside the stream — and the stream is the
+fast path, not the record. Only `DatastarStream`, the Mojo-side fan-out,
+journals frames for replay (README, "SSE replay is journal-deep").
+
 Work that has to outlive its request can publish from a child process the
 view starts. Pass the bus and the event-id page by descriptor:
 `subprocess.Popen([...], pass_fds=m0pub.child_fds())`. The child's frames are
-then numbered from the same counter as every worker's, so `Last-Event-ID`
-replay covers them. With only `m0pub.bus_write_fds()` passed, the child still
-publishes, unnumbered. Up to 1.3.0 that second form was unsafe: a child that
+then numbered from the same counter as every worker's, so a client that
+reconnects with `Last-Event-ID` is not re-sent one it already has. With only
+`m0pub.bus_write_fds()` passed, the child still publishes, unnumbered. Up to 1.3.0 that second form was unsafe: a child that
 inherited the environment took an event id at an address in its parent's
 memory, and either died with SIGSEGV or published a wrong id that
 subscribers then dropped (#322). There, remove `M0_SHARED_ID_ADDR` from the
@@ -105,10 +116,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
 - **Terminate TLS at a proxy.** There is no TLS and no HTTP/2 here, by
   design. Fly, nginx, Caddy and a cloud load balancer all speak HTTP/1.1 to
   the app.
-- **Keep held connections alive through the proxy.** `M0_SSE_HEARTBEAT_MS`
-  sends a comment on idle SSE streams and a ping on idle WebSockets at that
-  cadence; set it below the proxy's idle timeout (25000 for a proxy that
-  closes at 60 s).
+- **Held connections are kept alive through the proxy by default.** Every
+  15 s an idle SSE stream gets a comment and an idle WebSocket a ping
+  (`M0_SSE_HEARTBEAT_MS`, default `15000`). Set the variable only to change
+  the cadence, and keep it below the proxy's idle timeout: a proxy that
+  closes at 60 s is fine with the default, and `25000` would be too.
 - **Static files.** `--static PREFIX=DIR` serves a directory from the server
   with `sendfile`, ETags and byte ranges, never entering Python; a miss falls
   through to the application. `--static-cache-control V` sets the header.

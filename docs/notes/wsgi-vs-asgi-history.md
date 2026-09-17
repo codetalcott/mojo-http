@@ -417,8 +417,9 @@ that watchdog instead of returning accidentally-truncated 200s.
 Zero-config also landed here: when no topology flag or `M0_*` topology
 variable is given at all, `m0serve` starts `--blocking-threads
 min(cores, 8)` by default (either protocol), so one slow view no longer
-stalls the out-of-box server; `--realtime` keeps the single-loop shape, and
-any explicit topology value — including `M0_BLOCKING_THREADS=0` — wins.
+stalls the out-of-box server; `--realtime` kept the single-loop shape through
+1.4.0 and takes the same default after it, and any explicit topology value —
+including `M0_BLOCKING_THREADS=0` — wins.
 
 **Phase 2 — shipped: the per-loop asyncio executor.** Real
 await-concurrency (uvicorn's shape) without a coexisting-loop architecture:

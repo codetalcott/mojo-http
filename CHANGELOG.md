@@ -73,6 +73,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **The docs promised `Last-Event-ID` replay on a WSGI hold, which keeps no
+  journal.** RUNNING.md and the `m0pub` docstring said a numbered frame was
+  "covered by replay"; the plain `SSERegistry` a hold subscribes to only
+  suppresses an event a reconnecting client already has, and events
+  published while it was gone are not delivered — an application that
+  trusted the sentence and dropped its own catch-up lost messages every
+  time a phone slept. Both now say suppression only, README's "journal-deep"
+  limit names the hold, the Quickstart says to keep a catch-up path, and a
+  Known issue records what a journal would take. Two more from the same
+  notes: RUNNING.md read as if SSE heartbeats were off until
+  `M0_SSE_HEARTBEAT_MS` was set (they default to 15 s, so its 25000 example
+  made them rarer), and `m0pub.publish` did not say that `data` is a payload
+  rather than a frame, so pre-framed text was framed again and reached the
+  client as `data: data: ...` with nothing logged; its docstring now says
+  so and points at `publish_frame`. Not detected at run time, because a
+  payload may legitimately begin with `data:`. Found running desk on
+  m0serve 1.4.0.
 - **A supervisor told to stop no longer respawns a worker that fails its
   drain** (SPEC D10). After a SIGTERM to the supervisor alone — what
   `docker stop` sends — a worker that exited non-zero, or died of any
@@ -152,6 +169,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   (the old `m0serve` path skipped the adoption silently and would have
   bound accept sharing to its parent's address). `sabotage-host` grows
   to 25 rules, six of them against `test_prefork.mojo`.
+- **An unmounted `--realtime` gets the zero-config handler pool.** It
+  used to turn the pool off, so `m0serve app:application --realtime` — the
+  Quickstart's own command — ran every view on the event loop, and one slow
+  view stalled every held stream (measured on textshelf at 0.12.0: a
+  1 543 ms fast-path p50 against 0.3 ms with a pool). `--doctor` reported
+  `blocking_threads: 0` with `blocking_threads_source: default` and nothing
+  else said so. The reason was the demo's smokes, which were written
+  against the single loop; holds have been taken on pool threads since
+  0.12.0 for SSE and since 2026-08-26 for WebSockets, and the mounted
+  `--realtime` already took the pool. Now the flag composes with the same
+  `min(cores, 8)` default every WSGI app gets, the smokes that ran the
+  single loop run pooled, and `--blocking-threads 0` (or
+  `M0_BLOCKING_THREADS=0`) is that shape by name — which is how SPEC E20's
+  gate serves it. Found running desk on m0serve 1.4.0.
 - **The live demo shows the bus crossing it exists to demonstrate.** Each
   line names the worker that published it and the worker that delivered it
   to this tab, marks the ones that crossed between them, and the page counts

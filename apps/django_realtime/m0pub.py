@@ -1,4 +1,7 @@
-"""Publish SSE frames from Python onto the server's broadcast bus.
+"""Publish SSE events from Python onto the server's broadcast bus.
+
+`publish(channel, data)` frames a PAYLOAD as one event and numbers it;
+`publish_frame(channel, frame)` sends text that is already an SSE frame.
 
 The server creates its `BroadcastBus` — one AF_UNIX SOCK_DGRAM channel per
 worker — before forking, so every worker process inherits every descriptor,
@@ -29,7 +32,10 @@ names the shared library holding the fetch-and-add. Ids therefore increase
 globally across every worker, and the number goes in two places: the bus
 datagram's id field, and an `id:` line on the SSE frame. That is what
 engages the registry's redelivery filter (`event_id > last_event_ids[slot]`)
-and what lets a reconnecting client's `Last-Event-ID` mean something.
+and what lets a reconnecting client's `Last-Event-ID` suppress an event it
+already has. Suppression is all it buys: a plain `M0-Hold: stream` keeps no
+journal, so an event published while a client was disconnected is not
+replayed when it reconnects, and catch-up stays the application's.
 
 This file exists in two places — here, and shipped inside the m0serve wheel
 as `m0serve.m0pub` — and check-docs holds the copies byte-identical. Two
@@ -54,8 +60,8 @@ publishes safely in either of two ways::
     subprocess.Popen([...], pass_fds=m0pub.child_fds())
 
 hands it the bus AND the page by descriptor (`M0_SHARED_ID_FD`), and its
-frames are numbered from the same counter as every worker's -- which is what
-keeps `Last-Event-ID` replay covering them. Passing only `bus_write_fds()`
+frames are numbered from the same counter as every worker's -- so a client
+that reconnects is not re-sent one it already has. Passing only `bus_write_fds()`
 still publishes, unnumbered. Before the page carried a magic word (#322) the
 second form was not safe: a child that inherited the environment took an id
 at the parent's address and died with SIGSEGV, or, where its own image had
@@ -357,7 +363,20 @@ def publish_with_id(channel, data, event=None):
 
 
 def publish(channel, data, event=None):
-    """Frame `data` and publish it to `channel`. Returns channels written."""
+    """Publish `data` as ONE SSE event on `channel`. Returns channels written.
+
+    `data` is the payload, not a frame: it becomes the event's `data:` field
+    (one field per line), numbered and framed here. Text that is already an
+    SSE frame -- `"data: tick\n\n"`, or anything carrying `id:`, `event:` or
+    `data:` lines -- goes through `publish_frame`; passed here it is framed
+    again, and the client reads `data: data: tick` followed by an empty
+    `data:` field, with nothing logged. Not detected, because a payload may
+    legitimately begin with `data:` (a data URL) and a guess would drop it.
+
+    0 means not sent -- the frame over `MAX_FRAME`, a refused channel, or no
+    bus -- and a caller that must not lose the event checks it and falls
+    back to a fetch. `publish_with_id` returns the id too.
+    """
     return publish_with_id(channel, data, event)[0]
 
 def notify_sql(channel, data, event=None):
