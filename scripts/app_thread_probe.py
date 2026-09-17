@@ -9,11 +9,17 @@ The difference is how many times the application's thread woke from a
 10 ms sleep and got the GIL back while the loop waited for I/O.
 
 Before #310's fix the loop held the GIL through its wait, and the thread
-ran only when a request happened to run Python: 0 to 2 ticks over the
-window, in every shape below. After it, the window's nominal 150. The bar
-is `--min-ticks` (default 20), a tick per 75 ms, which a loaded shared
-runner clears many times over and the broken server cannot reach at all
--- a count, never a latency.
+ran only when a request happened to run Python: 0 to 2 ticks over a 1.5 s
+window, in every shape below. After it, that window's nominal was 150 --
+on a quiet machine. GitHub's shared macOS runner is not one: six runs
+there measured 19, 22, 23, 25, 27, 29, 32, 33, 34, 35 and 41 across the
+three shapes, about a fifth of nominal at the floor, and the 19 turned a
+pull request red that never touched the loop's wait. So the window is
+`--idle` 3 s (nominal 300) and the bar `--min-ticks` 20, a tick per
+150 ms: a loaded runner's measured floor clears it about twice over, and
+the broken server, which manages a tick or two a window, cannot reach it
+-- a count, never a latency. The bar is set from that floor, not from
+nominal; lowering it further would only weaken the null case.
 
 Each shape's banner must NOT name a handler pool. A pool detaches the loop
 by a different route (`_serve_offloaded`), so a default that grew one would
@@ -157,7 +163,7 @@ def main():
     ap.add_argument("--bin", default=os.path.join(REPO, "bin", "m0serve"))
     ap.add_argument("--app-dir", default=os.path.join(REPO, "apps", "wsgi_bare"))
     ap.add_argument("--port", type=int, default=8641)
-    ap.add_argument("--idle", type=float, default=1.5)
+    ap.add_argument("--idle", type=float, default=3.0)
     ap.add_argument("--min-ticks", type=int, default=20)
     args = ap.parse_args()
 
