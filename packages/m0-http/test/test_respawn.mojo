@@ -237,6 +237,50 @@ def test_a_worker_that_fails_while_stopping_is_not_respawned() raises:
             remove(m)
 
 
+def _refusing_sibling_scenario(outlived_marker: String):
+    """Two workers: worker 0 refuses at once with 78, worker 1 serves with the
+    default signal disposition, and leaves a marker if it is still alive
+    three seconds later -- the supervisor having let it serve a host missing
+    the worker that refused."""
+    try:
+        var supervisor = WorkerSupervisor(2)
+        supervisor.fork_all()
+        if supervisor.worker_index == 0:
+            process_exit(78)
+        sleep(3.0)
+        with open(outlived_marker, "w") as f:
+            f.write(String("the sibling outlived the refusal"))
+        process_exit(5)
+    except:
+        process_exit(7)
+
+
+def test_a_refusal_by_one_worker_ends_its_siblings() raises:
+    """One worker's exit 78 ends supervision for all of them: the siblings
+    are sent SIGTERM and the supervisor exits 78 once they are gone. Left
+    serving, they were a server missing the worker that refused -- the
+    Mojo host's producer runs on worker 0 alone, and a producer whose
+    `make` raised left worker 1 answering requests with no producer
+    anywhere, for good.
+
+    covers: E25
+    """
+    var outlived = "/tmp/m0_refuse_sibling_" + String(getpid())
+    if path.exists(outlived):
+        remove(outlived)
+    var pid = fork()
+    if pid == 0:
+        _refusing_sibling_scenario(outlived)
+        process_exit(99)  # unreachable
+    var result = waitpid_blocking(pid)
+    var status = result[1]
+    assert_false(was_signaled(status), "supervisor process died on a signal")
+    assert_equal(exit_code(status), 78)
+    assert_false(path.exists(outlived), "the sibling was left serving after the refusal")
+    if path.exists(outlived):
+        remove(outlived)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
 

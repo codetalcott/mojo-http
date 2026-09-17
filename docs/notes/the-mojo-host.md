@@ -368,6 +368,95 @@ and a second mapping in the same process is exactly that. SPEC E24 is
 the row; the exec itself stays E15's. `sabotage-host` grew six rules
 against that file, twenty-five in all.
 
+## Round 4: the host's contract
+
+A review of the host end to end, after round 3, found two defects that
+all twenty-five sabotages had survived. Both are the host's own contract
+rather than an application's, and both were measured on 2026-09-17 before
+being fixed.
+
+**The host hid the bus descriptors but not the id space.**
+`Publisher.publish` took an id the application chose, and every producer
+chose one from a counter of its own: `host_check`'s `Beat.n`, blobs'
+`step_no`, `sim_loop`'s `step_no` in its producer arm, while its on-loop
+arm numbered from the shared word, so one application disagreed with
+itself. The handlers' publishes were already right: `DatastarStream`
+takes the shared word under `enable_bus`. What it costs is the loop's
+redelivery filter, which delivers a frame only if its id is above the
+slot's last-seen id. When the supervisor respawns worker 0, a producer
+numbering from its own counter restarts at 1, and every stream held on a
+sibling is silent until the new counter passes the old one:
+
+| observation | value |
+|---|---|
+| beats on worker 1's held stream before the kill | 41 over 4 s |
+| silence on that stream after the respawn | 4.21 s, the pre-kill uptime |
+| a stream opened fresh on worker 1 after the respawn | beats at once |
+| the same held stream, fixed | a beat 12 ms after the kill |
+
+For blobs at 10 Hz after an hour of uptime, that is an hour of dark tabs
+with a clean log. The fix is `Publisher.next_id()`, `fetch_add` on
+`HostContext.id_addr`, and the three producers take their ids from it.
+The id is handed out rather than stamped inside `publish`, which would be
+the stronger shape: it sits inside the frame body, and the framing is the
+application's (`format_sse_event` puts `id:` first, Datastar `event:`
+first), so the publisher cannot write it. Nor can `publish` check it: an
+id at or below the word's current value is true of every correctly
+numbered frame too, a handler having taken the next one meanwhile.
+D27's publish shape now names the id space. Blobs' `/stats` keeps
+`steps` as its own count and `last_id` as the id it last published.
+
+**A raising `make` crash-looped instead of refusing.** With a probe
+handler whose `make` raised, `M0_WORKERS=2` logged five rapid crashes
+and exited 1, printing Mojo's unhandled-exception trace five times; one
+worker printed the listening banner and then the trace. `serve` now
+catches a raising `H.make`, prints it under `host:` and exits 78, which
+`WorkerSupervisor` reads as a configuration it must not respawn.
+
+The producer's `make` gets the same, and one judgement call came with
+it. D27's first form built the producer on its own thread, which starts
+just before the serve, so a refusal from there was "before it serves" in
+practice and not by construction. It is now built on the spawning
+thread, inside `ProducerThread.start`, and moved into memory the thread
+takes as its first act; a raise propagates out of `start` with no thread
+spawned, and `serve` exits 78 before the server listens. The thread owns
+the producer from its first step to the last and destroys it, as before.
+`test_host.mojo` tells the two apart: a raising step ends the thread with
+`STATUS_RAISED`, a raising `make` leaves it at `STATUS_NEVER_RAN`.
+
+A third thing followed from the second. Only worker 0 builds a producer,
+so under `M0_WORKERS=2` its refusal left worker 1 serving: the
+supervisor's rule was to let the others finish and exit 78 once they
+had, which for m0serve, where every worker refuses the same thing, was
+the same as ending them. For the host it was a server with no worker 0
+and no producer, indefinitely. The supervisor now forwards SIGTERM to the
+siblings on an `EX_CONFIG` exit and exits 78 once they are gone;
+`test_respawn.mojo` pins it and D30 records the three together.
+
+**Gates.** `smoke-host` gained two phases (SPEC E25). The respawn phase
+holds four streams spanning both workers for 4 s, SIGKILLs the pid the
+beats name, and requires the streams still held on worker 1 to beat
+again within 2 s, from the respawned producer, with an id above their
+last; the hold is longer than the bound on purpose, since the broken
+host's silence is the hold plus the respawn. A fresh stream beating is
+not the assertion, because that passes on the broken host. The refusal
+phase runs `M0_HOSTCHECK_MAKE_RAISES=1` and
+`M0_HOSTCHECK_PRODUCER_RAISES=1` at one worker and two, each of which
+must exit 78 naming the knob with no respawn or crash line and no worker
+left. Six sabotages join the list, thirty-one in all: the id word made
+after the fork, `next_id` not advancing it, the handler's raise left to
+propagate, the producer's exiting 1, `start` swallowing it, and the
+siblings left serving; the last runs against `test_respawn.mojo`, a
+gate of its own.
+
+**Recorded, not fixed.** The drain and the producer join run in
+sequence, 5 s of `DRAIN_TIMEOUT_NS` and then 5 s of `JOIN_TIMEOUT_NS`,
+so a held stream beside an overrunning step can reach `docker stop`'s
+10 s default grace. The smoke measures 5 s today only because nothing is
+held during the overrun arm. It is a ROADMAP known issue, retired by
+signalling the producer to stop when the drain begins so the two bounds
+overlap.
+
 ## Next
 
 The host has nothing left to take from m0serve that both can use. What

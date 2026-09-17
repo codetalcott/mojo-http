@@ -11,7 +11,7 @@ which workers hold streams, whether every one of them gets every beat,
 where accepted connections land, how a drain ends, and what happens to a
 producer that will not stop.
 
-Three knobs, all for the gate:
+Five knobs, all for the gate:
 
     M0_HOSTCHECK_PERIOD_MS   the beat's period (default 100)
     M0_HOSTCHECK_STEP_MS     how long each beat sleeps before it publishes
@@ -19,6 +19,19 @@ Three knobs, all for the gate:
                              host's join bound)
     M0_HOSTCHECK_MAX_WORKERS what `max_workers` answers (default 0, any),
                              so the gate can prove the host asks
+    M0_HOSTCHECK_MAKE_RAISES=1
+                             the handler's `make` raises, naming the knob:
+                             the host must refuse with 78, not crash-loop
+    M0_HOSTCHECK_PRODUCER_RAISES=1
+                             the producer's `make` raises the same way; at
+                             two workers only worker 0 builds one, and the
+                             supervisor must end worker 1 with it
+
+Each beat's id comes from the host's shared word (`Publisher.next_id`),
+never from a counter of this process's own: the gate's respawn phase kills
+worker 0 and requires a stream already held on worker 1 to beat again,
+which the loop's redelivery filter forbids for a producer that restarted
+its numbering below what the stream has seen.
 
 Run it:  uv run poe serve-host-check
 """
@@ -63,6 +76,8 @@ struct Beat(Producer):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
+        if getenv("M0_HOSTCHECK_PRODUCER_RAISES", "") == "1":
+            raise Error("M0_HOSTCHECK_PRODUCER_RAISES: the producer refuses to be built")
         return Beat(
             _env_ms("M0_HOSTCHECK_PERIOD_MS", 100), _env_ms("M0_HOSTCHECK_STEP_MS", 0)
         )
@@ -70,11 +85,14 @@ struct Beat(Producer):
     def step(mut self, mut out: Publisher) raises -> Int:
         if self.cost_s > 0:
             sleep(self.cost_s)
+        # The id is the host's, so a respawned producer continues the
+        # numbering; `n` counts this process's own beats for the payload.
         self.n += 1
+        var id = out.next_id()
         var frame = format_sse_event(
-            self.n, "beat", String('{"beat":', self.n, ',"pid":', getpid(), "}")
+            id, "beat", String('{"beat":', self.n, ',"pid":', getpid(), "}")
         )
-        _ = out.publish(STREAM, self.n, frame.as_bytes())
+        _ = out.publish(STREAM, id, frame.as_bytes())
         return self.period_ns
 
 
@@ -90,6 +108,8 @@ struct Check(AppHandler):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
+        if getenv("M0_HOSTCHECK_MAKE_RAISES", "") == "1":
+            raise Error("M0_HOSTCHECK_MAKE_RAISES: the handler refuses to be built")
         return Check(ctx.capacity, ctx.worker)
 
     @staticmethod

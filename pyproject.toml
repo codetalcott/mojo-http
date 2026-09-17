@@ -7151,13 +7151,15 @@ python3 scripts/emit.py --covers N16 --task smoke-blobs
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E24, N18): fourteen
-# against smoke-host, one against smoke-fragment-notes, four against
+# Each Mojo host rule, broken on purpose (SPEC E21-E25, N18): seventeen
+# against smoke-host, one against smoke-fragment-notes, six against
 # test_host.mojo, six against test_prefork.mojo (the pre-fork pieces both
-# hosts share). Pre-release: twenty-five runs, about fifteen minutes;
-# `--only unit` and `--only prefork` are about one each.
+# hosts share), one against test_respawn.mojo (the supervisor ending the
+# siblings on a refusal). Pre-release: thirty-one runs, about twenty
+# minutes; `--only unit`, `--only prefork` and `--only respawn` are about
+# one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host and prefork rule and insist smoke-host, test_host or test_prefork fails for every one (SPEC E21-E24)"
+help = "PRE-RELEASE: revert each host, prefork and supervisor rule and insist smoke-host, test_host, test_prefork or test_respawn fails for every one (SPEC E21-E25)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC
@@ -7166,7 +7168,7 @@ cmd = "python3 scripts/host_sabotage.py"
 # every server on its own port: SO_REUSEPORT lets a stray one answer for a
 # port, which fakes a pass or a failure.
 [tool.poe.tasks.smoke-host]
-help = "The Mojo host: the bus at one worker, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals"
+help = "The Mojo host: the bus at one worker, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused"
 shell = """
 out=$(mktemp -d)
 pid=
@@ -7258,6 +7260,22 @@ grep -q 'abandoned' "$out/two.log" && fail "the drain: the producer was abandone
 pgrep -f "$out/host_check" > /dev/null && fail "the drain: a worker outlived its supervisor"
 echo "the drain: exit 0 in ${took}s; $(cat "$out/hold.out")"
 
+# --- a respawned producer continues the id space (SPEC E25) ----------------
+# Its own server, after the drain phase has stopped the two-worker one: the
+# kill leaves a `killed by signal` line that phase refuses, and `start`
+# keeps one pid. Streams held on worker 1 through a SIGKILL of worker
+# 0 must beat again within a bound, from the respawned producer, with ids
+# above what they saw: a producer numbering from its own counter restarts
+# at 1 and the loop's redelivery filter keeps those streams silent for the
+# pre-crash uptime (measured 4.21 s after 41 beats). A FRESH stream beating
+# is not the assertion; that passes on the broken host.
+start 8789 respawn M0_WORKERS=2
+res=$(python3 scripts/host_probe.py respawn 8789 4 2 2>&1) || fail "respawn: $res"
+grep -q 'respawned worker 0' "$out/respawn.log" || fail "respawn: the supervisor never respawned worker 0"
+stop "respawn"
+[ "$rc" -eq 0 ] || fail "respawn: exited $rc, not 0 after the respawn"
+echo "respawn: $res; exit 0 in ${took}s"
+
 # --- accept sharing ---------------------------------------------------------
 # E16's measurement on a host application: two rounds of a 32-connection
 # burst within 2:1, with connections actually passed between workers.
@@ -7319,11 +7337,44 @@ for v in M0_THREADS=2 M0_BLOCKING_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_W
 done
 echo "refused before binding, with 78: M0_THREADS, M0_BLOCKING_THREADS, M0_SPAWN_WORKERS, M0_WORKERS=0, M0_WORKERS above max_workers"
 
+# --- a raising make is a refusal, not a crash loop (SPEC E25) --------------
+# The handler's `make` runs after the fork, the producer's on worker 0
+# alone. Either raising must exit 78 naming the knob, with no respawn and no
+# crash-loop line: a handler that cannot be built was respawned five times
+# and exited 1 before. At two workers the producer's refusal must end worker
+# 1 with it, or the supervisor serves a host with no worker 0 and no
+# producer indefinitely.
+for v in M0_HOSTCHECK_MAKE_RAISES=1 M0_HOSTCHECK_PRODUCER_RAISES=1; do
+  for workers in 1 2; do
+    env M0_PORT=8790 M0_WORKERS=$workers $v "$out/host_check" > "$out/make-refused.log" 2>&1 &
+    pid=$!
+    i=0
+    while kill -0 $pid 2>/dev/null; do
+      i=$((i + 1))
+      [ $i -le 100 ] || fail "$v at $workers worker(s) was still running after 10s -- served, not refused"
+      sleep 0.1
+    done
+    wait $pid
+    rc=$?
+    pid=
+    [ "$rc" -eq 78 ] || fail "$v at $workers worker(s) exited $rc, not 78"
+    grep -q "host: .*${v%%=*}" "$out/make-refused.log" || fail "$v at $workers worker(s) was refused without the host naming the error"
+    grep -Eq 'respawned worker|rapid crashes|crashed [(]exit_code' "$out/make-refused.log" \
+      && fail "$v at $workers worker(s) was treated as a crash: $(grep -E 'respawned|rapid|crashed' "$out/make-refused.log" | head -1)"
+    if [ "$workers" -eq 2 ]; then
+      grep -q 'refused its configuration' "$out/make-refused.log" || fail "$v at 2 workers: the supervisor did not read the 78 as a refusal"
+    fi
+    pgrep -f "$out/host_check" > /dev/null && fail "$v at $workers worker(s): a worker outlived the refusal"
+  done
+done
+echo "a raising make is refused with 78, one worker and two, handler and producer"
+
 echo "smoke-host OK"
 python3 scripts/emit.py host.overrun_exit_s "$overrun_s" --unit s --limit 12 --task smoke-host
 python3 scripts/emit.py --covers E21 --task smoke-host
 python3 scripts/emit.py --covers E22 --task smoke-host
 python3 scripts/emit.py --covers E23 --task smoke-host
+python3 scripts/emit.py --covers E25 --task smoke-host
 """
 
 [tool.poe.tasks.smoke-todo]

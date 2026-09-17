@@ -6,7 +6,9 @@ publisher, and the refusals.
 only see as a symptom: that a producer's frames reach EVERY channel, that
 its cadence never catches up, that a stop is prompt however long the period,
 that an overrunning step is abandoned inside the bound rather than waited
-for, and that a raising step ends the thread with a status.
+for, that a raising step ends the thread with a status while a raising
+`make` never starts one, and that every publisher numbers from the one
+shared word.
 """
 
 from std.os import setenv, unsetenv
@@ -37,12 +39,18 @@ comptime P_RAISE = 2
 comptime P_STEPS = 3
 comptime P_SLOW_STEP = 4
 """The one step that costs `P_COST_NS`; 0 makes every step cost it."""
-comptime P_SLOTS = 5
+comptime P_MAKE_RAISES = 5
+"""1 makes `Ticker.make` raise, the shape of a producer that cannot be built."""
+comptime P_ID = 6
+"""The shared event-id word, what `HostContext.id_addr` names in `serve`."""
+comptime P_SLOTS = 7
 
 
 def _ctx(workers: Int, page: SharedAtomics) raises -> HostContext:
     var bus = BroadcastBus(workers)
-    return HostContext(0, workers, 64, page.addr(0), 0, bus^, AppConfig())
+    return HostContext(
+        0, workers, 64, page.addr(0), page.addr(P_ID), bus^, AppConfig()
+    )
 
 
 def _page(
@@ -68,6 +76,8 @@ struct Ticker(Producer):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
+        if shared_load(ctx.page + P_MAKE_RAISES * 8) == 1:
+            raise Error("this producer cannot be built")
         return Ticker(ctx.page)
 
     def load(self, slot: Int) -> Int:
@@ -82,7 +92,7 @@ struct Ticker(Producer):
         if cost > 0 and (slow == 0 or slow == self.step_no):
             sleep(Float64(cost) / 1_000_000_000.0)
         var frame = String("step ", self.step_no)
-        _ = out.publish("/t", self.step_no, frame.as_bytes())
+        _ = out.publish("/t", out.next_id(), frame.as_bytes())
         _ = shared_fetch_add(self.page + P_STEPS * 8, 1)
         return self.load(P_PERIOD_NS)
 
@@ -133,9 +143,15 @@ def _ids(fd: Int) raises -> List[Int]:
     return ids^
 
 
+def _word() raises -> SharedAtomics:
+    """A shared event-id word of its own, at 0."""
+    return SharedAtomics(1)
+
+
 def test_publisher_reaches_every_channel() raises:
     var bus = BroadcastBus(3)
-    var out = Publisher(bus.write_fds.copy())
+    var word = _word()
+    var out = Publisher(bus.write_fds.copy(), word.addr(0))
     assert_equal(out.channels(), 3)
     var frame = String("hello")
     assert_true(out.publish("/c", 7, frame.as_bytes()))
@@ -149,7 +165,8 @@ def test_publisher_reaches_every_channel() raises:
 
 def test_publisher_counts_a_refusal() raises:
     var bus = BroadcastBus(2)
-    var out = Publisher(bus.write_fds.copy())
+    var word = _word()
+    var out = Publisher(bus.write_fds.copy(), word.addr(0))
     var big = List[UInt8](length=BUS_MAX_FRAME + 1, fill=UInt8(120))
     assert_false(out.publish("/c", 1, Span(big)))
     # A reserved channel is refused too, not delivered.
@@ -158,6 +175,52 @@ def test_publisher_counts_a_refusal() raises:
     assert_equal(out.refused, 2)
     assert_equal(len(drain_bus_channel(bus.read_fd(0))), 0)
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
+
+
+def test_publishers_number_from_the_one_shared_word() raises:
+    """Every id a producer publishes comes from `HostContext.id_addr`, so a
+    publisher built later -- a respawned worker 0's -- continues above what
+    the earlier one handed out, and two of them never hand out one id twice.
+
+    The loop delivers a frame only if its id is above the slot's last-seen
+    id, so a producer that numbered from a counter of its own restarted at
+    1 after a respawn and every stream held on a sibling went silent for
+    the pre-crash uptime (`smoke-host`'s respawn phase is the wire half).
+
+    covers: E25
+    """
+    var bus = BroadcastBus(1)
+    var word = _word()
+    var first = Publisher(bus.write_fds.copy(), word.addr(0))
+    var ids = List[Int]()
+    for _ in range(5):
+        ids.append(first.next_id())
+    # The respawn shape: a second publisher over the same word, after the
+    # first has numbered five frames.
+    var second = Publisher(bus.write_fds.copy(), word.addr(0))
+    for _ in range(3):
+        ids.append(second.next_id())
+    ids.append(first.next_id())
+    for i in range(len(ids)):
+        assert_equal(ids[i], i + 1, String("id ", i, " was ", ids[i]))
+    assert_equal(word.load(0), 9)
+    # A handler's own publish numbers from the same word (`DatastarStream`
+    # under `enable_bus`), and the next producer id follows it.
+    _ = shared_fetch_add(word.addr(0), 1)
+    assert_equal(second.next_id(), 11)
+
+
+def test_a_publisher_refuses_a_missing_word() raises:
+    """`shared_fetch_add(0, 1)` answers 0, and an id of 0 is below every
+    slot's last-seen id: a publisher over no word would number nothing
+    deliverable, so it is refused at construction."""
+    var bus = BroadcastBus(1)
+    var refused = False
+    try:
+        _ = Publisher(bus.write_fds.copy(), 0)
+    except:
+        refused = True
+    assert_true(refused, "a publisher was built over address 0")
 
 
 def test_producer_publishes_to_every_worker_in_order() raises:
@@ -239,6 +302,12 @@ def test_an_overrunning_step_is_abandoned_within_the_bound() raises:
 
 
 def test_a_raising_step_ends_the_producer() raises:
+    """A step that raises ends the thread with `STATUS_RAISED`: the server
+    keeps serving, the producer is named in the log. Distinct from a
+    raising `make`, below, which starts no thread at all.
+
+    covers: E23
+    """
     var page = _page(1_000_000, raises_at=3)
     var p = ProducerThread()
     p.start[Ticker](_ctx(1, page))
@@ -248,6 +317,31 @@ def test_a_raising_step_ends_the_producer() raises:
     assert_false(p.running())
     assert_equal(p.status(), STATUS_RAISED)
     assert_equal(page.load(P_STEPS), 2)
+    assert_equal(p.stop_and_join(1_000_000_000), 0)
+
+
+def test_a_raising_make_starts_no_thread() raises:
+    """`Producer.make` runs on the spawning thread, inside `start`, and a
+    raise there propagates to the caller with the thread never spawned --
+    the status stays `STATUS_NEVER_RAN`, not `STATUS_RAISED`, and no step
+    runs. That is what lets `serve` refuse the configuration with 78
+    before the server listens, rather than a thread reporting a failure
+    the loop has already started serving behind.
+
+    covers: E25
+    """
+    var page = _page(1_000_000)
+    page.store(P_MAKE_RAISES, 1)
+    var p = ProducerThread()
+    var raised = String("")
+    try:
+        p.start[Ticker](_ctx(1, page))
+    except e:
+        raised = String(e)
+    assert_true("cannot be built" in raised, "start did not raise the make's error: " + raised)
+    assert_false(p.running())
+    assert_equal(p.status(), STATUS_NEVER_RAN)
+    assert_equal(page.load(P_STEPS), 0)
     assert_equal(p.stop_and_join(1_000_000_000), 0)
 
 
