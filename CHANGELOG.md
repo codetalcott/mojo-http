@@ -20,7 +20,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `serve[MyHandler, MyProducer](AppConfig())`. `M0_THREADS`,
   `M0_BLOCKING_THREADS` and `M0_SPAWN_WORKERS` are m0serve's and are refused
   with 78 before anything is bound. Gated by `smoke-host` on
-  `apps/host_check` and by `test_host.mojo`; `sabotage-host` (19 rules)
+  `apps/host_check` and by `test_host.mojo`; `sabotage-host` (25 rules)
   before a release. DECISIONS D26 is retired: the `Producer` trait is the
   helper it deferred, and D27 records its choices.
 - **Every Mojo app that forked or streamed now runs on the host.**
@@ -140,6 +140,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **One pre-fork preparation for both hosts** (SPEC E24). `m0_http.prefork`
+  makes the shared page, the bus and the accept-share channels, exports
+  each by descriptor, and adopts all three in a spawned worker; `m0serve`
+  and the Mojo host both call it, where `m0serve` used to keep its own
+  copy and the host a second one. Nothing served changes: the flags, the
+  `M0_*` names `m0pub` reads and an exec'd worker's environment are as
+  they were. The Mojo host's page is now file-backed and exported, as
+  `m0serve`'s already was, and a spawned worker handed no page descriptor
+  is refused rather than served from an address that is not its own
+  (the old `m0serve` path skipped the adoption silently and would have
+  bound accept sharing to its parent's address). `sabotage-host` grows
+  to 25 rules, six of them against `test_prefork.mojo`.
 - **The live demo shows the bus crossing it exists to demonstrate.** Each
   line names the worker that published it and the worker that delivered it
   to this tab, marks the ones that crossed between them, and the page counts

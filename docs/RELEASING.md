@@ -202,11 +202,12 @@ the kernel's eight against its unit tests. Each rule rebuilds the app and
 reruns its gate, about nine minutes in all (`--only unit` runs the kernel's
 eight in about a minute).
 
-**And `uv run poe sabotage-host`** (SPEC E21–E23) — breaks each of
-nineteen rules in `lightbug_http/host.mojo` and requires a gate to fail
-for every one: fourteen against `smoke-host`, one against
-`smoke-fragment-notes` (the `ViewsApp` adapter), four against
-`test_host.mojo`. A sabotage that does not compile is reported as BROKEN
+**And `uv run poe sabotage-host`** (SPEC E21–E24) — breaks each of
+twenty-five rules in `lightbug_http/host.mojo`, `src/prefork.mojo` and
+`accept_share.mojo` and requires a gate to fail for every one: fourteen
+against `smoke-host`, one against `smoke-fragment-notes` (the `ViewsApp`
+adapter), four against `test_host.mojo`, six against `test_prefork.mojo`
+(the pre-fork pieces both hosts share). A sabotage that does not compile is reported as BROKEN
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
 

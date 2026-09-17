@@ -261,7 +261,9 @@ code depends on:
     `M0_BUS_WRITE_FDS`) and the shared page (`M0_SHARED_ID_FD`; an
     anonymous mapping dies at exec) by fd
     number, and re-exports `M0_SHARED_ID_ADDR` for its own address before
-    Python starts. The page is file-backed in EVERY mode since #322, and
+    Python starts -- `m0_http.prefork` makes, exports and adopts all three,
+    for the Mojo host as much as for `m0serve` (SPEC E24). The page is
+    file-backed in EVERY mode since #322, and
     carries a magic word in slot 2 (`SHARED_PAGE_MAGIC`): a child process
     an application starts execs too, and `m0pub` numbers only from a page
     it has verified -- mapped from `M0_SHARED_ID_FD`, or at an address the
@@ -802,8 +804,8 @@ import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
 them — and three fork files import back: `lightbug_http/event_loop.mojo`
 imports `m0_http.log`, `lightbug_http/mojo_pool.mojo` imports
 `m0_http.threads`, and `lightbug_http/host.mojo` imports `m0_http.config`,
-`m0_http.multiworker`, `m0_http.signal`, `m0_http.threads` and
-`m0_http.views` (DECISIONS D28). Both sides live inside `packages/m0-http/`, so the cycle never crosses a
+`m0_http.multiworker`, `m0_http.prefork`, `m0_http.signal`, `m0_http.threads`
+and `m0_http.views` (DECISIONS D28). Both sides live inside `packages/m0-http/`, so the cycle never crosses a
 package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` because an app
 conforming to `PoolHandler` behind the `.mojoc` got no witness table. **The
 cause is not the package boundary** (probed 2026-09-15): a package compiled

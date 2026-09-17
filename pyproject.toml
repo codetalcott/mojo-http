@@ -7151,12 +7151,13 @@ python3 scripts/emit.py --covers N16 --task smoke-blobs
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E23, N18): fourteen
+# Each Mojo host rule, broken on purpose (SPEC E21-E24, N18): fourteen
 # against smoke-host, one against smoke-fragment-notes, four against
-# test_host.mojo. Pre-release: nineteen runs, about fifteen minutes;
-# `--only unit` is about one.
+# test_host.mojo, six against test_prefork.mojo (the pre-fork pieces both
+# hosts share). Pre-release: twenty-five runs, about fifteen minutes;
+# `--only unit` and `--only prefork` are about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each lightbug_http/host.mojo rule and insist smoke-host or test_host fails for every one (SPEC E21-E23)"
+help = "PRE-RELEASE: revert each host and prefork rule and insist smoke-host, test_host or test_prefork fails for every one (SPEC E21-E24)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC
