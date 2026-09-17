@@ -517,7 +517,7 @@
       "id": "E20",
       "section": "E",
       "category": "E. Process and worker model",
-      "capability": "With no handler pool \u2014 the loop calling a WSGI application itself, as an unmounted `--realtime`, `--blocking-threads 0` and every `--workers N` without a pool do \u2014 the loop releases the GIL around each wait for I/O, so a thread the application starts runs while the server is idle, as it does under a pool, gunicorn or uvicorn",
+      "capability": "With no handler pool \u2014 the loop calling a WSGI application itself, as `--blocking-threads 0` (with or without `--realtime`) and every `--workers N` without a pool do \u2014 the loop releases the GIL around each wait for I/O, so a thread the application starts runs while the server is idle, as it does under a pool, gunicorn or uvicorn",
       "status": "verified",
       "evidence": "`Smoke test application threads without a pool` (every PR) \u2014 `bareapp.ticker`'s thread sleeps 10 ms a tick; over 1.5 s idle on one keep-alive connection it must tick 20 times in each of the three shapes, whose banners must name no pool. The loop used to wait holding the GIL it has held since `Py_Initialize`, and the thread ran only when a request ran Python: 1 tick where 150 were due, in all three (#310). E11 is the pooled shape, which detaches by a different route"
     },

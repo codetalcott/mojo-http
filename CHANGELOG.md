@@ -140,6 +140,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **An unmounted `--realtime` gets the zero-config handler pool.** It
+  used to turn the pool off, so `m0serve app:application --realtime` — the
+  Quickstart's own command — ran every view on the event loop, and one slow
+  view stalled every held stream (measured on textshelf at 0.12.0: a
+  1 543 ms fast-path p50 against 0.3 ms with a pool). `--doctor` reported
+  `blocking_threads: 0` with `blocking_threads_source: default` and nothing
+  else said so. The reason was the demo's smokes, which were written
+  against the single loop; holds have been taken on pool threads since
+  0.12.0 for SSE and since 2026-08-26 for WebSockets, and the mounted
+  `--realtime` already took the pool. Now the flag composes with the same
+  `min(cores, 8)` default every WSGI app gets, the smokes that ran the
+  single loop run pooled, and `--blocking-threads 0` (or
+  `M0_BLOCKING_THREADS=0`) is that shape by name — which is how SPEC E20's
+  gate serves it. Found running desk on m0serve 1.4.0.
 - **The live demo shows the bus crossing it exists to demonstrate.** Each
   line names the worker that published it and the worker that delivered it
   to this tab, marks the ones that crossed between them, and the page counts

@@ -16,9 +16,12 @@ runner clears many times over and the broken server cannot reach at all
 -- a count, never a latency.
 
 Each shape's banner must NOT name a handler pool. A pool detaches the loop
-by a different route (`_serve_offloaded`), so a default that grew one --
-`--realtime` getting a zero-config pool, say -- would pass this probe while
-the path it exists for went untested.
+by a different route (`_serve_offloaded`), so a default that grew one would
+pass this probe while the path it exists for went untested -- which is
+exactly what happened when an unmounted `--realtime` took the zero-config
+pool: its shape here is now `--realtime --blocking-threads 0`, and the
+banner check is what turned that default change into a failure here rather
+than a silently narrower gate.
 
     python3 scripts/app_thread_probe.py                 # the gate
     python3 scripts/app_thread_probe.py --bin ./bin/m0serve --port 8641
@@ -58,9 +61,10 @@ sys.excepthook = _stamped
 
 # (name, flags). Each is a shape `main` serves inline on the loop thread.
 SHAPES = [
-    # The report's shape: an unmounted `--realtime` keeps the single loop
-    # by default (`resolve_blocking_threads`).
-    ("realtime", ["--realtime"]),
+    # The report's shape. `--realtime` used to keep the single loop by
+    # default; it takes the zero-config pool now, so the pool is turned off
+    # by name (`resolve_blocking_threads`).
+    ("realtime", ["--realtime", "--blocking-threads", "0"]),
     # No `--realtime` at all: an explicit zero pool.
     ("no-pool", ["--blocking-threads", "0"]),
     # A forked worker: explicit topology disables the zero-config pool, and

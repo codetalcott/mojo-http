@@ -452,8 +452,8 @@ handler threads behind each event loop so a slow view stops holding the
 connections pinned behind it — and when no topology flag or variable is
 given at all, the protocol picks the default: WSGI gets a pool of
 `min(cores, 8)`, ASGI gets the asyncio executor (any explicit value wins,
-`M0_BLOCKING_THREADS=0` restores the WSGI single loop, `--realtime` keeps
-the single loop); and `--reload [--reload-dir DIR]` re-forks the
+`M0_BLOCKING_THREADS=0` restores the WSGI single loop, and `--realtime`
+takes the same default); and `--reload [--reload-dir DIR]` re-forks the
 workers onto changed Python in ~300 ms without re-exec'ing the binary.
 `--help` has the rest; exit codes are
 2 for a bad command line and 1 for an application that would not load —
