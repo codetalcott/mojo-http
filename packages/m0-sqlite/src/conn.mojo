@@ -14,8 +14,10 @@ library's compiled default is (macOS ships `THREADSAFE=2`, multi-thread).
 
 from std.ffi import external_call, c_int
 from std.memory import Pointer, stack_allocation
+from std.time import perf_counter_ns, sleep
 
 from .ffi import (
+    SQLITE_BUSY,
     SQLITE_OK,
     SQLITE_OPEN_READONLY,
     SQLITE_OPEN_READWRITE,
@@ -29,6 +31,7 @@ from .ffi import (
     libversion_number,
     db_errmsg,
     check_c_int_length,
+    error_code,
 )
 from .stmt import Statement
 from .vtab import _register, SQLITE_MIN_VTAB_VERSION
@@ -382,6 +385,19 @@ def open(path: String) raises -> Connection:
     return db^
 
 
+def _switch_to_wal(mut db: Connection) raises -> String:
+    """`PRAGMA journal_mode=WAL`'s answer, retried on SQLITE_BUSY within
+    `DEFAULT_BUSY_TIMEOUT_MS`. See `_set_wal` for why the retry exists."""
+    var deadline = perf_counter_ns() + DEFAULT_BUSY_TIMEOUT_MS * 1_000_000
+    while True:
+        try:
+            return db.query_scalar("PRAGMA journal_mode=WAL")
+        except e:
+            if error_code(String(e)) != SQLITE_BUSY or perf_counter_ns() >= deadline:
+                raise e
+            sleep(0.002)
+
+
 def _set_wal(mut db: Connection, path: String) raises:
     """Switch to WAL and confirm SQLite agreed.
 
@@ -392,8 +408,19 @@ def _set_wal(mut db: Connection, path: String) raises:
     reader/writer concurrency while delivering a lock that serializes them,
     which surfaces later as inexplicable contention rather than as an error
     here.
+
+    **Retried on SQLITE_BUSY, because the busy handler does not cover this
+    pragma.** Two processes opening one FRESH file at the same moment — two
+    forked workers building their handlers, the normal case under
+    `M0_WORKERS>1` — race on the switch out of the rollback journal, and
+    the loser's pragma answers "database is locked" at once, the 5 s
+    `busy_timeout` set the line before notwithstanding (measured: 29 of 30
+    two-worker starts of `apps/datastar_todo`, and about one fork pair in
+    two in `test_file.mojo`'s reproduction). So the switch is retried for
+    the same budget the handler would have waited, in short sleeps; a
+    database that is genuinely still locked after that raises as before.
     """
-    var mode = db.query_scalar("PRAGMA journal_mode=WAL").lower()
+    var mode = _switch_to_wal(db).lower()
     if mode != "wal":
         raise Error(
             "journal_mode=WAL was not applied to "

@@ -1214,9 +1214,16 @@ pieces, and the language fact each rests on:
   demand — listen, pages and bus pre-fork (the bus at one worker too),
   fork, accept sharing bound, signals after the fork, `H.make` per worker,
   the producer handed every channel through a `Publisher` that hides the
-  descriptors, the drain, the 5 s join with `_exit` for a straggler,
+  descriptors and the shared id word through `Publisher.next_id` (a
+  producer numbering from its own counter restarts at 1 when worker 0 is
+  respawned, and every stream held on a sibling goes silent for the
+  pre-crash uptime, the loop dropping ids at or below what a slot has
+  seen — SPEC E25), the drain, the 5 s join with `_exit` for a straggler,
   `exit_worker` — so an app cannot spell them wrong (D27 is what it
-  decides for every producer). It lives in the fork for the witness-table
+  decides for every producer). A `make` that raises, handler or producer,
+  is refused with 78 rather than crash-looped, the producer being built on
+  the spawning thread before the listen, and one worker's refusal ends its
+  siblings (D30). It lives in the fork for the witness-table
   reason (D28) and refuses `M0_THREADS`, `M0_BLOCKING_THREADS` and
   `M0_SPAWN_WORKERS` with 78 (D29). `apps/host_check` is its gate app;
   `apps/blobs`, `sim_loop`, `datastar_counter`, `datastar_todo` and

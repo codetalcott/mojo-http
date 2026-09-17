@@ -554,6 +554,14 @@
       "evidence": "`test_prefork.mojo:test_a_spawned_worker_adopts_the_page` (every PR) \u2014 a page made with `required=True` and stored through, then adopted under the spawn marker, must sit at a new address, be the address `shared_id_addr()` reports, carry the store and the magic word, and a store through the adopted mapping must reach the original; its neighbours cover the bus and the share adopted by descriptor, the one-worker and `M0_ACCEPT_SHARE=0` cases, and the missing-descriptor refusal. The exec itself is E15, which runs on the same functions. `sabotage-host` (pre-release) breaks six of its rules against that file \u2014 the adopt paths replaced by fresh pages and channels, the address not re-exported, the magic word and the send ends not stored, the knob ignored"
     },
     {
+      "id": "E25",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "The host's contract holds through its own supervisor: a producer's event ids come from the pre-fork shared word (`Publisher.next_id`), the one the handlers' own publishes number from, so a respawned worker 0's producer continues above what every held stream has seen rather than restarting at 1 below it and leaving those streams silent for the pre-crash uptime; and a `make` that raises \u2014 the handler's in any worker, the producer's on worker 0, built on the spawning thread before the server listens \u2014 is a refusal, exit 78 with the error named under `host:`, never a crash loop, and one worker's refusal ends its siblings rather than leaving them serving a host missing the worker that refused",
+      "status": "verified",
+      "evidence": "`Smoke test the Mojo host` (every PR) \u2014 four streams spanning two workers are held through a SIGKILL of worker 0, and those on worker 1 must beat again within 2 s of the kill, from the respawned producer, with an id above their last (12 ms measured; before the fix no beat arrived inside the bound after 41 beats over 4 s, the silence being the pre-kill uptime) \u2014 a fresh stream beating is no evidence, since that passes on the broken host; and `M0_HOSTCHECK_MAKE_RAISES=1` and `M0_HOSTCHECK_PRODUCER_RAISES=1`, at one worker and two, must each exit 78 naming the knob, with no respawn or crash line and no worker left. The thread halves are `test_host.mojo:test_publishers_number_from_the_one_shared_word` (two publishers over one word, a handler's take between them) and `test_a_raising_make_starts_no_thread` (`STATUS_NEVER_RAN`, distinct from a raising step's `STATUS_RAISED`); the supervisor's half is `test_respawn.mojo:test_a_refusal_by_one_worker_ends_its_siblings`. `sabotage-host` (pre-release) creates the id word after the fork, stops `next_id` advancing it, lets the handler's raise propagate, exits 1 for the producer's, swallows it inside `start`, and leaves the siblings serving"
+    },
+    {
       "id": "F1",
       "section": "F",
       "category": "F. Observability",
@@ -1685,9 +1693,9 @@
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",
-      "capability": "`open` promises WAL and raises when it cannot deliver it: `PRAGMA journal_mode` answers with the mode actually in force, and a database that stays on a rollback journal \u2014 a temp or in-memory database, some network filesystems \u2014 is an error at open rather than reader/writer concurrency that silently is not there",
+      "capability": "`open` promises WAL and raises when it cannot deliver it: `PRAGMA journal_mode` answers with the mode actually in force, and a database that stays on a rollback journal \u2014 a temp or in-memory database, some network filesystems \u2014 is an error at open rather than reader/writer concurrency that silently is not there; and two processes opening one fresh file at the same moment both get it, because the switch is retried on `SQLITE_BUSY` within the busy timeout, which SQLite does not consult for that pragma",
       "status": "verified",
-      "evidence": "`test_file.mojo:test_open_reports_wal_it_could_not_apply` (every PR) \u2014 the discarded row is the defect: `open` would promise WAL while delivering a lock that serializes, which surfaces later as inexplicable contention rather than as an error here"
+      "evidence": "`test_file.mojo:test_open_reports_wal_it_could_not_apply` (every PR) \u2014 the discarded row is the defect: `open` would promise WAL while delivering a lock that serializes, which surfaces later as inexplicable contention rather than as an error here; `test_two_processes_open_one_fresh_database` beside it forks twelve pairs that open one fresh file at once, and about one pair in two lost the race on an M4 before the retry (29 of 30 two-worker starts of `apps/datastar_todo` refused, seen the day the Mojo host stopped hiding a raising `make` behind a respawn, E25)"
     },
     {
       "id": "O2",

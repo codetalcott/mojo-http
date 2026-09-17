@@ -201,18 +201,22 @@ struct BlobsProducer(Producer):
         self.tracer.trace(self.world, self.shapes)
         var step_ns = perf_counter_ns() - t0
         self.step_no += 1
+        # The frame's id is the host's, from the shared word every worker
+        # numbers from, so a respawned producer's first frame is above what
+        # every held stream has seen; `step_no` counts this process's steps.
+        var id = out.next_id()
         var frame = state_frame(
-            self.shapes, self.step_no, step_ns // 1000, viewers,
+            self.shapes, id, step_ns // 1000, viewers,
             self.world.count(), Int(period_ns // 1_000_000),
         )
         # Every worker's channel. A shortfall is counted: a frame the bus
         # refuses is otherwise indistinguishable from no step at all.
-        if not out.publish(EVENTS, self.step_no, frame.as_bytes()):
+        if not out.publish(EVENTS, id, frame.as_bytes()):
             self.board.add(B_REFUSED, 1)
 
         var b = self.board
         b.store(B_STEPS, self.step_no)
-        b.store(B_LAST_ID, self.step_no)
+        b.store(B_LAST_ID, id)
         b.store(B_POLYGONS, self.tracer.kept)
         if self.tracer.open_paths > 0:
             b.add(B_OPEN_PATHS, self.tracer.open_paths)

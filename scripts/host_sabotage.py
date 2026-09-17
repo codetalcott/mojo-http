@@ -6,12 +6,16 @@
 file. The gate is `smoke-host` for what the wire shows,
 `smoke-fragment-notes` for `ViewsApp` (the host's own app does not use
 it), `test_host.mojo` for what only a thread-level test can see precisely
-(a producer that catches up still publishes), or `test_prefork.mojo` for
+(a producer that catches up still publishes), `test_prefork.mojo` for
 the pre-fork pieces both hosts share (`m0_http.prefork`; a src edit the
 apps would only see after a `.mojoc` rebuild, which a test run of `src.*`
-does not need). The fork is resolved from source by both, so
-nothing else needs rebuilding. An anchor that no longer matches is a
-failure -- re-point it with the line.
+does not need), or `test_respawn.mojo` for the supervisor's part of the
+host's contract (a refusal ending the siblings, in `multiworker.mojo`).
+The fork is resolved from source by the smokes, and the unit gates
+compile `src.*` directly, so nothing needs rebuilding -- with one
+exception: a rule against `src/` gated on a SMOKE would need `build-http`
+first, and none is written that way. An anchor that no longer matches is
+a failure -- re-point it with the line.
 
 Not here, and why: the handler built BEFORE the fork, and the pages and the
 bus created AFTER it, are not one-line edits in `serve` -- each needs the
@@ -30,6 +34,7 @@ tell, so it is not claimed as a guarded rule.
     uv run poe sabotage-host
     uv run poe sabotage-host --only "tick-owner"   one rule, by label substring
     uv run poe sabotage-host --only unit           the thread rules alone
+    uv run poe sabotage-host --only respawn        the supervisor's rule
 """
 
 from __future__ import annotations
@@ -52,10 +57,12 @@ SMOKE = "smoke"
 NOTES = "notes"
 UNIT = "unit"
 PREFORK = "prefork"
+RESPAWN = "respawn"
 
 HOST = Path("packages/m0-http/lightbug_http/host.mojo")
 PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
 ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
+MULTIWORKER_SRC = Path("packages/m0-http/src/multiworker.mojo")
 
 # (label, gate, old, new); `old` and `new` may be tuples of the same
 # length for a rule that takes more than one edit to break.
@@ -71,8 +78,8 @@ SABOTAGES = [
         "the producer is handed worker 0's channel alone",
         SMOKE,
         HOST,
-        "    var out = Publisher(ctx.bus.write_fds.copy())\n",
-        "    var out = Publisher([ctx.bus.write_fds[0]])\n",
+        "    var out = Publisher(ctx.bus.write_fds.copy(), ctx.id_addr)\n",
+        "    var out = Publisher([ctx.bus.write_fds[0]], ctx.id_addr)\n",
     ),
     (
         "the bus is drained only above one worker",
@@ -173,6 +180,57 @@ SABOTAGES = [
         "    var refusal = host_refusal(config, H.max_workers())\n",
         "    var early_listener = ListenConfig().listen(config.address())\n"
         "    var refusal = host_refusal(config, H.max_workers())\n",
+    ),
+    # --- round 4: the id space and a raising make (SPEC E25) -------------------
+    (
+        "the shared id word is created after the fork, one per worker",
+        SMOKE,
+        HOST,
+        (
+            "    var host_page = prefork_page(workers)\n",
+            "    bind_accept_share(share, worker, host_page.addr(0))\n",
+        ),
+        (
+            "",
+            "    var host_page = prefork_page(workers)\n"
+            "    bind_accept_share(share, worker, host_page.addr(0))\n",
+        ),
+    ),
+    (
+        "next_id never advances the shared word",
+        UNIT,
+        HOST,
+        "        return shared_fetch_add(self._id_addr, 1) + 1\n",
+        "        return shared_fetch_add(self._id_addr, 0) + 1\n",
+    ),
+    (
+        "a raising handler make propagates instead of refusing",
+        SMOKE,
+        HOST,
+        "        process_exit(EX_CONFIG)\n        raise e  # never reached: the process has left\n",
+        "        raise e\n",
+    ),
+    (
+        "a raising producer make exits 1, a crash the supervisor respawns",
+        SMOKE,
+        HOST,
+        "            process_exit(EX_CONFIG)\n\n    var server = Server(",
+        "            process_exit(1)\n\n    var server = Server(",
+    ),
+    (
+        "start swallows the producer make's error and spawns nothing",
+        UNIT,
+        HOST,
+        "        var producer = P.make(ctx)\n        var built = unsafe_alloc[P](count=1)\n",
+        "        var producer: P\n        try:\n            producer = P.make(ctx)\n"
+        "        except:\n            return\n        var built = unsafe_alloc[P](count=1)\n",
+    ),
+    (
+        "one worker's refusal leaves its siblings serving",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        "                        self._kill_all(SIGTERM)\n                        while remaining > 0:\n",
+        "                        while remaining > 0:\n",
     ),
     # --- the thread's own rules, against test_host.mojo -----------------------
     (
@@ -286,7 +344,20 @@ def run_prefork() -> tuple[bool, str]:
     return (p.returncode == 0 and " 0 failed" in out), out
 
 
-GATES = {SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork}
+def run_respawn() -> tuple[bool, str]:
+    p = subprocess.run(
+        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
+         "packages/m0-http/test/test_respawn.mojo"],
+        capture_output=True, text=True, timeout=600,
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and " 0 failed" in out), out
+
+
+GATES = {
+    SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork,
+    RESPAWN: run_respawn,
+}
 
 
 def why(out: str) -> str:

@@ -476,10 +476,22 @@ struct WorkerSupervisor:
                 var code = exit_code(status)
                 if code == EX_CONFIG:
                     # A refusal, not a crash: the same configuration would be
-                    # refused by every respawn. Let the others finish and
-                    # exit 78 ourselves (fork_all).
+                    # refused by every respawn, so the siblings are ended
+                    # too and the exit is 78 (fork_all). Left serving, they
+                    # were a server missing the worker that refused -- the
+                    # Mojo host's producer runs on worker 0 alone, and a
+                    # producer whose `make` raised left worker 1 answering
+                    # requests with no producer anywhere, indefinitely.
                     print("[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid))
                     self._config_refused = True
+                    remaining -= 1
+                    if remaining > 0:
+                        print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
+                        self._kill_all(SIGTERM)
+                        while remaining > 0:
+                            _ = waitpid_blocking(-1)
+                            remaining -= 1
+                    return False
                 elif code != 0:
                     print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
                     var outcome = self._try_respawn()
@@ -553,7 +565,11 @@ struct WorkerSupervisor:
         if code == EX_CONFIG:
             print("[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid))
             self._config_refused = True
-            return _RESPAWN_FAILED
+            # As in `_supervise`: the siblings are ended with the refusal.
+            print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
+            self._kill_all(SIGTERM)
+            self._drain_children()
+            return _EXIT_SHUTDOWN
         if code != 0:
             print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
             return self._try_respawn()

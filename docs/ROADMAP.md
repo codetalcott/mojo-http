@@ -104,6 +104,19 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — outside the server's own behaviour.
 
+- <!-- observed: the bounds `host.mojo` and `event_loop.mojo` set, and smoke-host's overrun arm, 2026-09-17 -->**The Mojo host's drain and its producer join run in sequence.** On
+  SIGTERM the loop drains held streams for up to `DRAIN_TIMEOUT_NS`
+  (5 s) and only then tells the producer to stop and waits
+  `JOIN_TIMEOUT_NS` (another 5 s) for a step still running, so a held
+  stream beside an overrunning step can take the whole of `docker stop`'s
+  default 10 s grace and end in SIGKILL. `smoke-host`'s overrun arm
+  measures 5 s only because nothing is held during it.
+
+  **Closed by:** none — signalling the producer to stop when the drain
+  BEGINS, so the two bounds overlap and the worst case is the longer of
+  them, retires it; the re-test is the overrun arm with streams held
+  through it, asserting an exit inside the longer bound alone.
+
 - **Under `--workers`, which worker wins an accept is CPU placement, not
   load.** Two workers sharing one listener: the worker on the client's own
   CPU loses every accept race, measured 80 of 80 with the probe pinned

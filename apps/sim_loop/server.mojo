@@ -147,8 +147,12 @@ struct SimProducer(Producer):
     def step(mut self, mut out: Publisher) raises -> Int:
         self.step_no += 1
         var state = simulate(self.step_no, self.cost_ns)
-        var frame = format_sse_event(self.step_no, "sim", state)
-        _ = out.publish(STREAM_URL, self.step_no, frame.as_bytes())
+        # The id is the host's shared word -- the same one the on-loop arm's
+        # `tick` numbers from -- so both arms, and a respawned producer,
+        # number one stream in one space.
+        var id = out.next_id()
+        var frame = format_sse_event(id, "sim", state)
+        _ = out.publish(STREAM_URL, id, frame.as_bytes())
         return self.period_ns
 
 

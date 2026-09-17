@@ -35,10 +35,20 @@ wrong. In this order:
 8. **Arm the signals**, after the fork: a pre-fork install points every
    worker at the supervisor's pipe, which nothing watches.
 9. **Build the handler** with `H.make(ctx)`, after the fork, per worker.
+    A `make` that raises is a REFUSAL, not a crash: the error is printed
+    under `host:` and the worker exits 78, which the supervisor reads as a
+    configuration it must not respawn (`EX_CONFIG`). It used to crash-loop
+    five times and exit 1 under `M0_WORKERS=2`, and print the listening
+    banner before the trace at one worker.
 10. **Start the producer** on the tick owner (worker 0) alone, handed EVERY
     worker's bus channel through a `Publisher` that always sends to all of
     them — the application never sees a descriptor, so it cannot publish to
-    a subset.
+    a subset — and the shared event-id word through `Publisher.next_id`,
+    so a respawned producer continues the numbering its siblings' streams
+    have seen rather than restarting at 1 below it. The producer is BUILT
+    here, on the spawning thread, before the server listens, so a raising
+    `Producer.make` is refused with 78 as the handler's is, by construction
+    rather than by racing the banner; the thread takes it from there.
 11. **Serve** with this worker's bus channel drained and its share bound.
 12. **Stop and join the producer** within `JOIN_TIMEOUT_NS`, the drain's own
     bound. A producer still inside a step after that is abandoned by name
@@ -69,8 +79,16 @@ retires):
   process leaves without the producer and says so.
 - *Publish shape*: every worker's channel, `skip_worker = -1` (nothing has
   queued the frame locally), with each shortfall counted on the publisher
-  and reported to the step as `False`. A step that raises ends the producer,
-  named in the log; the server keeps serving what it has.
+  and reported to the step as `False`, and every id from the ONE shared
+  word (`Publisher.next_id`, `fetch_add` on `HostContext.id_addr`) that
+  the handlers' own publishes number from. The id is handed out rather
+  than stamped inside `publish`, because it sits inside the frame body
+  and the framing is the application's (`format_sse_event` puts `id:`
+  first, Datastar puts `event:` first), so the publisher cannot write it;
+  what `publish` could check instead — an id at or below the word's
+  current value — is true of every correctly numbered frame too, a
+  handler having taken the next one meanwhile. A step that raises ends the
+  producer, named in the log; the server keeps serving what it has.
 
 **A table and its state need no handler of their own.** `ViewsApp[S]` is
 the host's `ViewService`: a state type conforming to `ViewState` (`make`,
@@ -103,7 +121,13 @@ from lightbug_http.service import HTTPService
 # `m0_http.threads`: framework code on both sides of `packages/m0-http/`,
 # so the cycle never crosses a package boundary. See the module docstring.
 from m0_http.config import AppConfig
-from m0_http.multiworker import EX_CONFIG, SharedAtomics, WorkerSupervisor, exit_worker
+from m0_http.multiworker import (
+    EX_CONFIG,
+    SharedAtomics,
+    WorkerSupervisor,
+    exit_worker,
+    shared_fetch_add,
+)
 from m0_http.prefork import (
     bind_accept_share,
     prefork_accept_share,
@@ -127,6 +151,10 @@ from m0_http.threads import (
 comptime BLK_STOP = 10
 """Producer block slot: set to 1 to end the producer. `ThreadSet` names
 slots 0-9; 10 upward are the spawner's."""
+
+comptime BLK_PRODUCER = 11
+"""Producer block slot: the address of the producer `start` built, which
+the thread takes as its first act."""
 
 comptime SLEEP_SLICE_NS = 50_000_000
 """The longest a producer sleeps before it looks at `BLK_STOP` again."""
@@ -266,19 +294,40 @@ struct ViewsApp[S: ViewState](AppHandler):
 
 
 struct Publisher(Movable):
-    """A producer's only way out: one frame to every worker's channel."""
+    """A producer's only way out: one frame to every worker's channel, and
+    the one id space every stream is numbered in."""
 
     var _fds: List[Int]
+    var _id_addr: Int
     var refused: Int
     """Frames at least one channel did not take: over `BUS_MAX_FRAME`, a
     reserved name, or a full channel."""
 
-    def __init__(out self, var write_fds: List[Int]):
+    def __init__(out self, var write_fds: List[Int], id_addr: Int) raises:
+        """`id_addr` is `HostContext.id_addr`, the pre-fork word. 0 is
+        refused: `shared_fetch_add` answers 0 for it, and an id of 0 is
+        below every slot's last-seen id, so nothing would be delivered."""
+        if id_addr == 0:
+            raise Error("Publisher: the shared event-id word's address is 0")
         self._fds = write_fds^
+        self._id_addr = id_addr
         self.refused = 0
 
     def channels(self) -> Int:
         return len(self._fds)
+
+    def next_id(self) -> Int:
+        """The next event id, from the word every worker numbers from.
+
+        `SSERegistry` delivers a frame only if its id is above the slot's
+        last-seen id. A producer numbering from its own counter restarts at
+        1 when the supervisor respawns worker 0, and every stream held on a
+        sibling then goes silent for exactly the pre-crash uptime; numbered
+        here, the respawned producer's first id is above whatever the
+        streams have seen. Take it BEFORE formatting the frame, since the
+        frame carries it.
+        """
+        return shared_fetch_add(self._id_addr, 1) + 1
 
     def publish(mut self, url: String, event_id: Int, frame: Span[Byte, _]) -> Bool:
         """Send `frame` on `url` to every worker; False if any channel refused it.
@@ -336,12 +385,21 @@ struct NoProducer(Producer):
 
 def _producer_run[P: Producer](block: ThreadBlock) raises:
     """The producer's whole life. Separate from `_producer_body` so the
-    producer is destroyed before the body reports its status."""
+    producer is destroyed before the body reports its status.
+
+    The producer itself was built by `start`, on the spawning thread; this
+    thread takes it out of the memory `start` left it in and owns it from
+    the first step to the last.
+    """
     ref ctx = Pointer[HostContext, MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_USER)
     )[]
-    var out = Publisher(ctx.bus.write_fds.copy())
-    var producer = P.make(ctx)
+    var out = Publisher(ctx.bus.write_fds.copy(), ctx.id_addr)
+    var built = Pointer[P, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_PRODUCER)
+    )
+    var producer = built.unsafe_take_pointee()
+    built.unsafe_free()
     var next_ns = perf_counter_ns()
     while block.get(BLK_STOP) == 0:
         var wait_ns = producer.step(out)
@@ -397,12 +455,24 @@ struct ProducerThread(Movable):
         self.stragglers = move.stragglers
 
     def start[P: Producer](mut self, ctx: HostContext) raises:
-        """Spawn the producer. `ctx` is copied to memory that outlives the
-        caller: a producer abandoned at the join may outlive `main`."""
+        """Build the producer, then spawn its thread.
+
+        `P.make` runs HERE, on the calling thread, and a raise propagates
+        to the caller with no thread started: `serve` turns it into the
+        same exit 78 a raising `AppHandler.make` gets, before the server
+        listens. Built on its own thread instead, the refusal would race
+        the listening banner, since the thread starts just before the
+        serve. The producer and `ctx` are copied to memory that outlives
+        the caller: a producer abandoned at the join may outlive `main`.
+        """
+        var producer = P.make(ctx)
+        var built = unsafe_alloc[P](count=1)
+        built.unsafe_write(producer^)
         var owned = unsafe_alloc[HostContext](count=1)
         owned.unsafe_write(ctx.copy())
         var block = self._set.block(0)
         block.set(BLK_USER, Int(owned))
+        block.set(BLK_PRODUCER, Int(built))
         block.set(BLK_STOP, 0)
         var body = _producer_body[P]
         self._set.spawn(0, Pointer(to=body).unsafe_bitcast[Int]()[])
@@ -473,6 +543,27 @@ def serve[H: AppHandler, P: Producer = NoProducer](config: AppConfig) raises:
     serve[H, P](config, config.server_config())
 
 
+def _make_handler[H: AppHandler](ctx: HostContext) raises -> H:
+    """`H.make`, or the refusal a raise means.
+
+    A handler that cannot be built would not be built by the next
+    incarnation either, so the worker leaves with `EX_CONFIG` and the
+    supervisor stops rather than respawning it five times. Named under
+    `host:` with the application's own error, because that error is the
+    whole diagnosis.
+    """
+    try:
+        return H.make(ctx)
+    except e:
+        print(
+            "host: the handler's make raised, so this configuration is refused: "
+            + String(e),
+            flush=True,
+        )
+        process_exit(EX_CONFIG)
+        raise e  # never reached: the process has left
+
+
 def serve[H: AppHandler, P: Producer = NoProducer](
     config: AppConfig, var server_config: ServerConfig
 ) raises:
@@ -508,10 +599,22 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         worker, workers, server_config.max_connections, app_page,
         host_page.addr(0), bus.copy(), config.copy(),
     )
-    var handler = H.make(ctx)
+    var handler = _make_handler[H](ctx)
     var producer = ProducerThread()
     if ctx.tick_owner() and P.wanted(ctx):
-        producer.start[P](ctx)
+        # Built on this thread, before the serve: a raise here is the same
+        # refusal as the handler's, and the supervisor ends the siblings
+        # for it, since a server with no worker 0 and no producer is not
+        # the configuration that was written down.
+        try:
+            producer.start[P](ctx)
+        except e:
+            print(
+                "host: the producer's make raised, so this configuration is refused: "
+                + String(e),
+                flush=True,
+            )
+            process_exit(EX_CONFIG)
 
     var server = Server(server_config^, config.address())
     server.serve_nonblocking(
