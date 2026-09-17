@@ -552,13 +552,19 @@ def resolve_blocking_threads(
     value, keeps `opts.blocking_threads` verbatim — with ONE exception,
     `pool_is_default`: a mount set that cannot be served without handler
     threads gets the default pool unless `--blocking-threads` itself was
-    given. An unmounted
-    `--realtime` keeps the single-loop shape *by default* — the demo and
-    its smokes assume it — while an explicit `--blocking-threads N`
-    composes with it (a hold taken on a pool thread is forwarded to the
-    loop's registries). A **mounted** `--realtime` follows the mount rule
-    below instead: its WSGI mounts need pool threads whatever the flag,
-    because those threads are the only workers parked on their lanes. A zero-config WSGI app gets a small pool: one slow view
+    given. An unmounted `--realtime` is a WSGI app like any other here and
+    gets the same pool: a hold taken on a pool thread is forwarded to the
+    loop's registries, for SSE and WebSockets alike
+    (docs/notes/hold-on-a-pool-thread.md), and a realtime app is where one
+    slow view costs the most, because the connections it stalls are held
+    streams. It used to answer 0 -- the single loop the demo's smokes were
+    written against -- so the Quickstart's own command ran every view on
+    the loop, measured on textshelf as a 1 543 ms fast-path p50 against
+    0.3 ms with a pool; `--blocking-threads 0` is the explicit way back to
+    that shape (SPEC E20 serves it). A **mounted** `--realtime` follows the
+    mount rule below instead: its WSGI mounts need pool threads whatever
+    the flag, because those threads are the only workers parked on their
+    lanes. A zero-config WSGI app gets a small pool: one slow view
     must not stall every connection out of the box. A zero-config ASGI app
     gets NO pool, because it gets the asyncio executor instead
     (`use_asgi_executor`) — its concurrency is the application's own
@@ -574,8 +580,6 @@ def resolve_blocking_threads(
     """
     if not pool_is_default(opts):
         return opts.blocking_threads
-    if opts.realtime and len(opts.mount_prefixes) == 0:
-        return 0
     if len(opts.mount_prefixes) > 0:
         # Counted, not inferred by subtraction: a Mojo mount is neither
         # ASGI nor WSGI and must not conjure a pool of WSGI handler threads

@@ -172,18 +172,22 @@ generic `_serve_one` body can only call what the trait names.
 Zero-config: with no topology flag or `M0_*` topology variable, a WSGI
 `m0serve` defaults to `--blocking-threads min(cores,8)`, so one slow view does
 not stall every connection out of the box. It is **not** a blanket default: a
-zero-config ASGI app gets NO pool, because it gets the asyncio executor
-instead and its concurrency is the application's own awaits; an unmounted
-`--realtime` gets none either, because the single-loop shape is what the demo
-and its smokes assume. A mounted server is decided per mount, and any WSGI
-mount needs a pool whatever the others are — those threads are the only
-workers parked on its lane. An explicitly-set variable, at any value, disables
-all of it (`ServeOptions`'s `*_set` fields carry the distinction, mirrored on
+zero-config ASGI app gets NO pool, because it gets the asyncio executor instead
+and its concurrency is the application's own awaits. An unmounted `--realtime`
+is NOT an exception any more: it gets the WSGI pool, because a hold taken on a
+pool thread is forwarded to the loop's registries for SSE and WebSockets alike,
+and a realtime app is where one slow view costs the most. It answered 0 through
+1.4.0 — the single loop the demo's smokes were written against — which put the
+Quickstart's every view on the loop; the smokes that ran that shape now run
+pooled, and `smoke-app-threads` spells the single loop as `--realtime
+--blocking-threads 0`. A mounted server is decided per mount, and any WSGI
+mount needs a pool whatever the others are — those threads are the only workers
+parked on its lane. An explicitly-set variable, at any value, disables all of
+it (`ServeOptions`'s `*_set` fields carry the distinction, mirrored on
 `AppConfig`; `resolve_blocking_threads` in `src/cli.mojo` is the one place the
-default is decided) — except that a mount set which cannot run inline keeps
-the default unless `--blocking-threads` itself is set (`pool_is_default`,
-SPEC M20). Three rules the Mojo 1.0 interop imposes and that the
-code depends on:
+default is decided) — except that a mount set which cannot run inline keeps the
+default unless `--blocking-threads` itself is set (`pool_is_default`, SPEC
+M20). Three rules the Mojo 1.0 interop imposes and that the code depends on:
 
 - **`std.python` binds no `bytes` API and no latin-1 decoder — but the
   unbound C API is still reachable.** `Python().cpython()` has no

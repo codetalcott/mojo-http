@@ -611,9 +611,19 @@ def test_resolve_blocking_threads_explicit_wins() raises:
     assert_equal(resolve_blocking_threads(opts3, False, 4), 3)
 
 
-def test_resolve_blocking_threads_realtime_keeps_the_single_loop() raises:
+def test_resolve_blocking_threads_realtime_gets_the_default_pool() raises:
+    """An unmounted `--realtime` is a WSGI app and gets the zero-config
+    pool; it used to answer 0, which put the Quickstart's every view on the
+    loop. `--blocking-threads 0` is the explicit single loop (SPEC E20)."""
     var opts = _parse([String("x.wsgi"), String("--realtime")])
-    assert_equal(resolve_blocking_threads(opts, False, 4), 0)
+    assert_equal(resolve_blocking_threads(opts, False, 4), 4)
+    var single = _parse(
+        [String("x.wsgi"), String("--realtime"), String("--blocking-threads"), String("0")]
+    )
+    assert_equal(resolve_blocking_threads(single, False, 4), 0)
+    # Explicit topology still turns the default off, realtime or not.
+    var forked = _parse([String("x.wsgi"), String("--realtime"), String("--workers"), String("2")])
+    assert_equal(resolve_blocking_threads(forked, False, 4), 0)
 
 
 def test_loop_inversion_topology_is_the_shapes_serve_inverted_implements() raises:
