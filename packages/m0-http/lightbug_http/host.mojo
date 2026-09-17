@@ -14,7 +14,9 @@ wrong. In this order:
 1. **Refuse what it does not serve** (`host_refusal`): `M0_THREADS`,
    `M0_BLOCKING_THREADS` and `M0_SPAWN_WORKERS` are m0serve's, and a
    variable the host silently ignored would be a configuration that reads as
-   applied. Exit 78, before anything is bound.
+   applied; and more workers than `AppHandler.max_workers()` allows, for an
+   application whose state lives in one process. Exit 78, before anything
+   is bound.
 2. **Listen**, once, in the process that will fork.
 3. **The shared pages**, before the fork. The host's own page has
    `accept_share_slots` words (slot 0 the SSE event id, slot 2
@@ -49,7 +51,7 @@ the same reason: an application must CONFORM to `AppHandler` and
 precompiled package gets no witness table (the package's name and its
 source directory disagree; `poe check-mojoc-trait`). A source-resolved
 module has no such mismatch. It costs five more fork -> `m0_http` edges
-(`config`, `multiworker`, `signal`, `threads`, and `log` already), inside
+(`config`, `multiworker`, `signal`, `threads` and `views`), inside
 `packages/m0-http/` as the existing two are; CLAUDE.md's cycle paragraph and
 NOTICE list them. When the pin moves, this can move to `m0_http`.
 
@@ -68,6 +70,14 @@ retires):
   queued the frame locally), with each shortfall counted on the publisher
   and reported to the step as `False`. A step that raises ends the producer,
   named in the log; the server keeps serving what it has.
+
+**A table and its state need no handler of their own.** `ViewsApp[S]` is
+the host's `ViewService`: a state type conforming to `ViewState` (`make`,
+`urls`, optionally `max_workers` and `page_slots`) is served as
+`serve[ViewsApp[MyState]](config)`, with `func` dispatching the table and
+`before_request` answering its loop routes. An application that also owns
+the SSE hooks writes its own `AppHandler` over `Views.dispatch`, as
+`apps/blobs` does.
 
 **What it does not do (v1).** No pool lanes (`MojoPool`), no `--threads`
 loops, no `--spawn-workers`, no CLI flags or `--doctor`: `AppConfig`'s
@@ -92,6 +102,7 @@ from lightbug_http.connection import ListenConfig
 from lightbug_http.mojo_pool import JOIN_TIMEOUT_NS
 from lightbug_http.server import Server
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.service import HTTPService
 
 # Fork -> m0_http, like `event_loop` -> `m0_http.log` and `mojo_pool` ->
@@ -100,6 +111,7 @@ from lightbug_http.service import HTTPService
 from m0_http.config import AppConfig
 from m0_http.multiworker import EX_CONFIG, SharedAtomics, WorkerSupervisor, exit_worker
 from m0_http.signal import install_shutdown_signals
+from m0_http.views import Views
 from m0_http.threads import (
     BLK_STATUS,
     BLK_USER,
@@ -181,6 +193,75 @@ trait AppHandler(HTTPService, Movable, Deinitable):
         no page.
         """
         return 0
+
+    @staticmethod
+    def max_workers() -> Int:
+        """The most workers this application can be served from; 0, the
+        default, is any number.
+
+        An application whose state lives in one process's memory (a list in
+        a struct, not a database or the shared page) answers 1, and the host
+        refuses `M0_WORKERS` above it with 78 rather than serving workers
+        that each hold a different copy.
+        """
+        return 0
+
+
+trait ViewState(Movable, Deinitable):
+    """The state a `Views` table dispatches to, served by `ViewsApp`."""
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        """Build this worker's state. Called once, in the worker."""
+        ...
+
+    @staticmethod
+    def urls() raises -> Views[Self]:
+        """The table. Built once per worker, beside the state."""
+        ...
+
+    @staticmethod
+    def page_slots(workers: Int) -> Int:
+        """As `AppHandler.page_slots`."""
+        return 0
+
+    @staticmethod
+    def max_workers() -> Int:
+        """As `AppHandler.max_workers`."""
+        return 0
+
+
+struct ViewsApp[S: ViewState](AppHandler):
+    """A `Views` table and its state as the host's handler.
+
+    `m0_http.ViewService` with a `make`: it forwards `func` to `dispatch`
+    and `before_request` to `answer_on_loop`, and nothing else.
+    """
+
+    var views: Views[Self.S]
+    var state: Self.S
+
+    def __init__(out self, var views: Views[Self.S], var state: Self.S):
+        self.views = views^
+        self.state = state^
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return Self(Self.S.urls(), Self.S.make(ctx))
+
+    @staticmethod
+    def page_slots(workers: Int) -> Int:
+        return Self.S.page_slots(workers)
+
+    @staticmethod
+    def max_workers() -> Int:
+        return Self.S.max_workers()
+
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        return self.views.answer_on_loop(req)
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return self.views.dispatch(req, self.state)
 
 
 struct Publisher(Movable):
@@ -346,14 +427,21 @@ struct ProducerThread(Movable):
         return self.stragglers
 
 
-def host_refusal(config: AppConfig) -> Optional[String]:
+def host_refusal(config: AppConfig, max_workers: Int = 0) -> Optional[String]:
     """Why the host will not serve `config`, or None.
 
-    Each is a variable another server honours; ignoring it would serve a
+    Each is a variable another server honours, or a count the application
+    cannot keep one state across; ignoring either would serve a
     configuration other than the one written down.
     """
     if config.workers < 1:
         return String("M0_WORKERS must be at least 1, not ", config.workers)
+    if max_workers > 0 and config.workers > max_workers:
+        return String(
+            "M0_WORKERS=", config.workers, ", but this application serves from"
+            " at most ", max_workers, " process(es): its state lives in one"
+            " process's memory",
+        )
     if config.threads > 1:
         return String(
             "M0_THREADS is m0serve's threaded mode; the Mojo host serves one"
@@ -381,7 +469,7 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     config: AppConfig, var server_config: ServerConfig
 ) raises:
     """`serve`, with server tuning the environment does not reach."""
-    var refusal = host_refusal(config)
+    var refusal = host_refusal(config, H.max_workers())
     if refusal:
         print("host: " + refusal.value(), flush=True)
         process_exit(EX_CONFIG)

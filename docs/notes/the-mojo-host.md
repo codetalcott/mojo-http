@@ -110,8 +110,9 @@ package here builds a directory named `src` into `<name>.mojoc`, so
 traits are recorded under the directory's name and looked up under the
 package's (`poe check-mojoc-trait`; fixed on the nightly). A
 source-resolved module has no such mismatch, and `mojo_pool.mojo` is the
-precedent. The cost is four more fork-to-framework imports (`config`,
-`multiworker`, `signal`, `threads`), all inside `packages/m0-http/`.
+precedent. The cost is five more fork-to-framework imports (`config`,
+`multiworker`, `signal`, `threads`, and `views` since round 2), all inside
+`packages/m0-http/`.
 CLAUDE.md's cycle paragraph lists them, and `poe check-fork-package`
 still compiles the fork whole. The second decision, the toolchain pin,
 stays at 1.0.0: no stable release carries the fix, and pinning a product
@@ -186,7 +187,7 @@ skipped channel, the stop that is never sent, and the refusal itself.
   every channel in order, no catch-up, a prompt stop, the bounded join, a
   raising step's status, the refusals, and a counted refusal on the
   publisher.
-- **`poe sabotage-host`** (pre-release) breaks sixteen rules. A
+- **`poe sabotage-host`** (pre-release) breaks nineteen rules (sixteen in round 1). A
   sabotage that does not compile is reported as BROKEN and counted as a
   miss. Its first run missed two rules, and both misses taught something:
   - **A producer in every worker was invisible.** Each stream still saw
@@ -250,11 +251,76 @@ reverted. The smokes now reap whatever runs from their own temporary
 directory on exit, so a supervisor that does outlive its signal cannot
 serve the next run.
 
+## Round 2: the other four
+
+The plan's port list was `sim_loop`, `datastar_counter`, `datastar_todo`
+and `fragment_notes`, with each smoke kept green without touching its
+assertions.
+
+| app | `main` before | after | what it gained |
+|---|---:|---:|---|
+| `sim_loop` | 105 | 19 | nothing new; its four hand-kept rules became the host's |
+| `datastar_counter` | 56 | 7 | shared accepts; the bus joined at any worker count |
+| `datastar_todo` | 18 | 7 | two workers over one database (N17) |
+| `fragment_notes` | 15 | 10 | `M0_WORKERS=2` refused instead of ignored (N18) |
+
+`sim_loop` needed one thing from the host: a server config it could
+adjust, because its on-loop arm sets `app_tick_ms`. `serve` takes one as an
+optional second argument. The on-loop arm's `Producer.wanted` answers
+False, so no thread starts. The docstring's four numbered rules are the
+host's now, and the note says which of them the app once broke.
+
+`datastar_counter`'s page moved from three words on a hand-made page to two
+words on its own page (`page_slots`); the event id is the host's. It joins
+the bus unconditionally. The old guard (`workers > 1`) was right for that
+app and wrong for any app with a producer, and a comment was all that
+warned against copying it. At one worker the stream has no peer, and
+publishing reaches nobody.
+
+**`datastar_todo` was the one that needed thought.** Its `sse_peer_frame`
+existed but never ran. Joining the bus made it live, and serving two
+workers over one SQLite file turned out to be two lines — plus one race.
+A mutation renders the whole list and then numbers the frame, and a tab
+keeps the frame with the newest number. Consider two workers:
+
+1. Worker A renders the list.
+2. Worker B commits a change and renders a list that includes it.
+3. B numbers its frame 5.
+4. A numbers its frame 6.
+
+Frame 6 lacks B's change, and every tab keeps frame 6 until the next
+mutation. The fix is SQLite's write lock (`BEGIN IMMEDIATE`), held from
+the change until the frame is published. The next writer waits on it, so
+renders are serialized across processes in the same order as their ids.
+The gate reads the broadcast log straight from the database file, and
+under an add-only load every frame must hold every todo its predecessor
+held.
+
+The race is real and very short. Without the lock, fifty concurrent adds
+passed that check 10 of 10 rounds. With a 5 ms pause between rendering and
+numbering (`M0_TODO_RENDER_PAUSE_MS`, the app's gate knob, like
+`M0_SIM_ON_LOOP`), the unlocked build failed 5 of 5 rounds and the locked
+one passed 5 of 5. So the gate runs with the pause. A gate that could not
+tell the two builds apart would be evidence of nothing.
+
+`fragment_notes` keeps its notes in a struct, so a second worker would
+serve a second, different list. It had silently ignored `M0_WORKERS`. The
+host gained two small things for it:
+- `AppHandler.max_workers()`, where the app says it serves from one
+  process and the host refuses a larger count with 78 before binding;
+- `ViewsApp[S]`, the host's `ViewService`, so a `Views` table and its state
+  (`ViewState`: `make`, `urls`) are served with no handler struct.
+
+The table function was renamed `note_urls` so the state's static `urls`
+does not shadow it. `ViewsApp` is also the piece Phase 3 needs: one views
+module, served under a mount and under the host.
+
+None of these needed an escape hatch in the host. The two additions are
+declarations (`max_workers`) and a convenience (`ViewsApp`), and neither
+lets an app reach around `serve`.
+
 ## Next
 
-R2 ports `sim_loop`, `datastar_counter`, `datastar_todo` and
-`fragment_notes`. The two single-process apps gain workers, accept
-sharing and a bus at no extra length. `datastar_todo`'s `sse_peer_frame`
-becomes live once the bus is always joined. R3 moves m0serve's
-Python-free startup pieces (the accept-share preparation, the shared page,
-the bus half of `--realtime`) down to where both hosts call them.
+R3 moves m0serve's Python-free startup pieces down to where both hosts call
+them: the accept-share preparation, the shared page and the bus half of
+`--realtime`.

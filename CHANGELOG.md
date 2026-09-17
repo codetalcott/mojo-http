@@ -20,9 +20,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `serve[MyHandler, MyProducer](AppConfig())`. `M0_THREADS`,
   `M0_BLOCKING_THREADS` and `M0_SPAWN_WORKERS` are m0serve's and are refused
   with 78 before anything is bound. Gated by `smoke-host` on
-  `apps/host_check` and by `test_host.mojo`; `sabotage-host` (16 rules)
+  `apps/host_check` and by `test_host.mojo`; `sabotage-host` (19 rules)
   before a release. DECISIONS D26 is retired: the `Producer` trait is the
   helper it deferred, and D27 records its choices.
+- **Every Mojo app that forked or streamed now runs on the host.**
+  `sim_loop` (`main` 105 → 19 lines), `datastar_counter` (56 → 7),
+  `datastar_todo` (18 → 7) and `fragment_notes` (15 → 10). The counter
+  now shares its accepts across workers. The todo list now serves
+  `M0_WORKERS=2` over one SQLite file (SPEC N17), holding the write lock
+  from a change until its frame is published, so a tab's newest frame
+  never misses an older one's change. `ViewsApp[S]` serves a `Views` table
+  with no handler struct (SPEC N18), and an application whose state is
+  per process declares `max_workers`: `fragment_notes`, which used to
+  ignore `M0_WORKERS=2`, now refuses it with 78.
 - **A Mojo application ships as an image with nothing under it** (SPEC M26).
   `deploy/mojo-hello/Dockerfile` compiles `apps/hello` with the pinned
   toolchain in a builder stage; the runtime stage carries the binary and the

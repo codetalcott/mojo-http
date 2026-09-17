@@ -29,9 +29,23 @@ The list fragment is a `Fragment[Datastar]` (page.mojo): the same
 renderer whose output is the page's initial list is what every broadcast
 carries, and `smoke-todo` greps it out of a live stream's frame.
 
-One process only: SSE fan-out is per-process, so `M0_WORKERS>1` would split
-tabs across workers that cannot see each other's broadcasts. (SQLite itself
-would cope — WAL mode — but the streams would not.)
+It runs on the Mojo host (`lightbug_http.host`), so `M0_WORKERS=2` serves it
+from two processes over one SQLite file (WAL mode). Each worker opens its own
+connection, restores the same journal and joins the stream to the bus, and a
+mutation on either reaches every tab. One rule makes that correct rather than
+merely working: **a mutation holds SQLite's write lock from its change until
+its frame is published** (`BEGIN IMMEDIATE` ... `COMMIT`). A frame is the
+whole list, rendered and then numbered, and the tab keeps the newest number.
+Without the lock, a worker could render before another worker's change
+committed and still take the newer number, and every tab would show a list
+missing that change until the next mutation. With it, the renders are
+serialized across processes in the same order as their ids. `/events` and
+`/health` name their worker in `x-worker`.
+
+`M0_TODO_RENDER_PAUSE_MS` sleeps that long between rendering the list and
+numbering its frame. It is the gate's knob, as `M0_SIM_ON_LOOP` is
+`sim_loop`'s: the race the lock closes lasts microseconds, so without a
+wider window no run can show that the lock is what closes it.
 
 Because this app links libsqlite3, it is built and run, never `mojo run`:
 the JIT resolves symbols only from libraries already in its process, which
@@ -42,14 +56,16 @@ Run it:  uv run poe serve-todo
 """
 
 from std.os import getenv
+from std.time import sleep
 
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from lightbug_http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.header import Headers, Header, HeaderKey
+from lightbug_http.host import AppHandler, HostContext, serve
 
 from m0_core.json_parse import parse_json_field
 
 from m0_http import reply
-from m0_http import AppConfig, Router, form, install_shutdown_signals, url_for
+from m0_http import AppConfig, Router, form, url_for
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
@@ -74,17 +90,19 @@ comptime H_DELETE = 2
 comptime H_EDIT = 3
 
 
-struct TodoHandler(HTTPService):
+struct TodoHandler(AppHandler):
     """One shared todo list, every connected tab in sync, rows in SQLite."""
 
     var router: Router
     var stream: DatastarStream
+    var worker: Int
+    var render_pause_s: Float64
     # The store is the database; every render loads fresh rows. Statements
     # are prepared per use — a statement cache was measured within noise for
     # this repo (docs/SQLITE_PERFORMANCE.md) and is deliberately absent.
     var db: Connection
 
-    def __init__(out self, var db: Connection) raises:
+    def __init__(out self, var db: Connection, capacity: Int, worker: Int) raises:
         self.router = Router()
         self.router.add("POST", ADD, H_ADD)
         self.router.add("POST", TOGGLE, H_TOGGLE)
@@ -92,7 +110,12 @@ struct TodoHandler(HTTPService):
         self.router.add("POST", EDIT, H_EDIT)
         # Must be at least the server's max connections: slots are indexed
         # directly by req.slot_id.
-        self.stream = DatastarStream(1024, journal_entries=JOURNAL_ENTRIES)
+        self.stream = DatastarStream(capacity, journal_entries=JOURNAL_ENTRIES)
+        self.worker = worker
+        self.render_pause_s = 0.0
+        var pause = getenv("M0_TODO_RENDER_PAUSE_MS", "")
+        if pause.byte_length() > 0:
+            self.render_pause_s = Float64(atol(pause)) / 1000.0
         # AUTOINCREMENT keeps ids never-reused across deletes and restarts,
         # matching what the in-memory version promised. `ORDER BY id` below
         # is what preserves insertion order — the visible order of the list.
@@ -120,6 +143,33 @@ struct TodoHandler(HTTPService):
             )
         self.db = db^
 
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        var handler = TodoHandler(
+            open(getenv("M0_DB", "todos.db")), ctx.capacity, ctx.worker
+        )
+        # After the restore above: joining seeds the shared id counter from
+        # the journal, so every worker numbers on from the last persisted id.
+        handler.stream.enable_bus(ctx.bus, ctx.worker, ctx.id_addr)
+        return handler^
+
+    def _commit(mut self) raises:
+        """Broadcast the list as it now stands, then release the write lock.
+
+        In that order: the next writer, in this process or another, waits on
+        the lock, so its render sees this change and its frame takes a newer
+        id than this one.
+        """
+        self._broadcast()
+        self.db.commit()
+
+    def _abandon(mut self):
+        """Roll back a mutation that raised, so the lock is not held on."""
+        try:
+            self.db.rollback()
+        except:
+            pass
+
     def _load(
         self,
     ) raises -> Tuple[List[Int], List[String], List[Bool]]:
@@ -143,6 +193,8 @@ struct TodoHandler(HTTPService):
         try:
             var rows = self._load()
             var fragment = render_todos(rows[0], rows[1], rows[2])
+            if self.render_pause_s > 0:
+                sleep(self.render_pause_s)
             var eid = self.stream.patch_elements(STREAM_URL, fragment)
             var ins = self.db.prepare(
                 "INSERT OR REPLACE INTO events (id, url, frame)"
@@ -162,14 +214,18 @@ struct TodoHandler(HTTPService):
         var path = req.uri.path
 
         if path == "/health":
-            return OK('{"status":"ok"}', "application/json")
+            var ok = OK('{"status":"ok"}', "application/json")
+            ok.headers["x-worker"] = String(self.worker)
+            return ok^
 
         if path == "/":
             var rows = self._load()
             return reply.html(render_page(rows[0], rows[1], rows[2]))
 
         if path == STREAM_URL:
-            return self.stream.open(req, STREAM_URL)
+            var resp = self.stream.open(req, STREAM_URL)
+            resp.headers["x-worker"] = String(self.worker)
+            return resp^
 
         var m = self.router.match(req.method, path)
         if not m.matched:
@@ -179,20 +235,24 @@ struct TodoHandler(HTTPService):
             # The browser posts its signal store; the draft is all we want.
             var draft = parse_json_field(read_signals(req), "draft")
             if draft.byte_length() > 0:
-                var ins = self.db.prepare(
-                    "INSERT INTO todos (text) VALUES (?)"
-                )
-                ins.bind_text(1, draft)
-                _ = ins.step()
-                self._broadcast()
+                self.db.begin_immediate()
+                try:
+                    var ins = self.db.prepare(
+                        "INSERT INTO todos (text) VALUES (?)"
+                    )
+                    ins.bind_text(1, draft)
+                    _ = ins.step()
+                    self._commit()
+                except e:
+                    self._abandon()
+                    raise e^
             # Empty drafts are ignored, not an error: the Add button is
             # always clickable and a 4xx would surface nothing useful.
             return reply.no_content()
 
         var id = reply.param_int(m.params[0])
         if id >= 0:
-            # A stale tab racing a delete makes these no-ops; the broadcast
-            # below still runs and corrects that tab's view. 204 either way.
+            var text = String("")
             if m.handler_id == H_EDIT:
                 # The form's fields, or None for any other body: a JSON
                 # signal store posted here is refused, not read as a field
@@ -204,24 +264,32 @@ struct TodoHandler(HTTPService):
                         "the request body must be application/x-www-form-urlencoded",
                         url_for(EDIT, String(id)),
                     )
-                var text = maybe.value().first("text")
+                text = maybe.value().first("text")
                 if text.byte_length() == 0:
                     return reply.no_content()
-                var ren = self.db.prepare("UPDATE todos SET text = ? WHERE id = ?")
-                ren.bind_text(1, text)
-                ren.bind_int(2, id)
-                _ = ren.step()
-            elif m.handler_id == H_TOGGLE:
-                var upd = self.db.prepare(
-                    "UPDATE todos SET done = 1 - done WHERE id = ?"
-                )
-                upd.bind_int(1, id)
-                _ = upd.step()
-            else:
-                var rm = self.db.prepare("DELETE FROM todos WHERE id = ?")
-                rm.bind_int(1, id)
-                _ = rm.step()
-            self._broadcast()
+            # A stale tab racing a delete makes these no-ops; the broadcast
+            # below still runs and corrects that tab's view. 204 either way.
+            self.db.begin_immediate()
+            try:
+                if m.handler_id == H_EDIT:
+                    var ren = self.db.prepare("UPDATE todos SET text = ? WHERE id = ?")
+                    ren.bind_text(1, text)
+                    ren.bind_int(2, id)
+                    _ = ren.step()
+                elif m.handler_id == H_TOGGLE:
+                    var upd = self.db.prepare(
+                        "UPDATE todos SET done = 1 - done WHERE id = ?"
+                    )
+                    upd.bind_int(1, id)
+                    _ = upd.step()
+                else:
+                    var rm = self.db.prepare("DELETE FROM todos WHERE id = ?")
+                    rm.bind_int(1, id)
+                    _ = rm.step()
+                self._commit()
+            except e:
+                self._abandon()
+                raise e^
         return reply.no_content()
 
     # --- The three SSE hooks, wired straight through to the stream ----------
@@ -241,24 +309,10 @@ struct TodoHandler(HTTPService):
         self.stream.deliver_peer(url, event_id, frame)
 
 
-
-
-
 def main() raises:
     var config = AppConfig()
-    var db_path = getenv("M0_DB", "todos.db")
     print(
         "Datastar todos on " + config.base_url
-        + " — open it in two tabs (db: " + db_path + ")"
+        + " — open it in two tabs (db: " + getenv("M0_DB", "todos.db") + ")"
     )
-    var server = Server(config.server_config())
-    var handler = TodoHandler(open(db_path))
-    # SSE requires `listen_and_serve_nonblocking`, not `listen_and_serve`:
-    # only the non-blocking event loop assigns `req.slot_id` and drains the
-    # outbox; the plain accept loop answers every stream open with the server's
-    # own 409 (`gate_streaming_response`; DatastarStream.open also guards
-    # `slot_id < 0` itself, for hosts that bypass that gate).
-    var shutdown_fd = install_shutdown_signals()
-    server.listen_and_serve_nonblocking(
-        config.address(), handler, shutdown_read_fd=shutdown_fd
-    )
+    serve[TodoHandler](config)

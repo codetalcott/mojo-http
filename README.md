@@ -181,12 +181,12 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 99 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 781 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 783 |
 | `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 80 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 157 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 115 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 75 |
-| **Total** | | **1307** |
+| **Total** | | **1309** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -287,10 +287,11 @@ struct CounterHandler(HTTPService):
 
 Run [apps/datastar_counter/](apps/datastar_counter/) with `uv run poe serve-counter` and open
 it in two tabs; pressing a button in one updates the other. It is also the
-reference wiring for **cross-worker fan-out**: with `M0_WORKERS=2` it creates a
-`BroadcastBus` and a shared-memory counter before the fork, and a button press
-handled by any worker updates tabs connected to every worker (`poe
-smoke-counter` proves its streams span workers before asserting exactly that).
+reference for **cross-worker fan-out** on the Mojo host: with `M0_WORKERS=2` the
+host creates the `BroadcastBus` and a shared-memory counter before the fork,
+the stream joins the bus in each worker, and a button press handled by any
+worker updates tabs connected to every worker (`poe smoke-counter` proves its
+streams span workers before asserting exactly that).
 [apps/datastar_todo/](apps/datastar_todo/) is the same idea grown up: mutations
 broadcast rendered *HTML* (`patch_elements` morphs `<section id="todos">` by id
 in every tab), the per-item actions are `Router` routes with `:id`, todo
@@ -299,7 +300,9 @@ text is HTML-escaped before it is broadcast, and the list is rows in SQLite
 back. So does the *stream*: broadcast frames are logged to SQLite and restored
 into the `DatastarStream` journal at boot, so a tab reconnecting with
 `Last-Event-ID` is caught up by the new process instead of waiting for the
-next mutation. `poe smoke-todo` asserts both. `uv run poe serve-todo`.
+next mutation. `poe smoke-todo` asserts both, and a third thing: with
+`M0_WORKERS=2` two processes share the list, each mutation holding SQLite's
+write lock until its frame is published. `uv run poe serve-todo`.
 [apps/blobs/](apps/blobs/) is a stream of *states* rather than changes: a
 producer thread steps a shared world of up to sixteen metaballs at 10 Hz,
 traces the outlines where they merge, and publishes each step as one
@@ -857,7 +860,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1307 unit tests, then compiles every example
+uv run poe test-all         # 1309 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

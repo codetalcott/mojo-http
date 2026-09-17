@@ -21,10 +21,13 @@ from lightbug_http.host import (
     Producer,
     ProducerThread,
     Publisher,
+    ViewState,
+    ViewsApp,
     host_refusal,
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from m0_http.config import AppConfig
+from m0_http.views import Views
 from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
 from m0_http.threads import STATUS_NEVER_RAN, STATUS_OK, STATUS_RAISED
 
@@ -98,6 +101,31 @@ struct Plain(AppHandler):
         return OK("plain")
 
 
+struct OneProcess(ViewState):
+    """State that lives in one process, served through `ViewsApp`."""
+
+    var worker: Int
+
+    def __init__(out self, worker: Int):
+        self.worker = worker
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return OneProcess(ctx.worker)
+
+    @staticmethod
+    def urls() raises -> Views[Self]:
+        return Views[OneProcess]()
+
+    @staticmethod
+    def page_slots(workers: Int) -> Int:
+        return 3 * workers
+
+    @staticmethod
+    def max_workers() -> Int:
+        return 1
+
+
 def _ids(fd: Int) raises -> List[Int]:
     var ids = List[Int]()
     for f in drain_bus_channel(fd):
@@ -156,19 +184,29 @@ def test_producer_publishes_to_every_worker_in_order() raises:
 def test_an_overrun_does_not_catch_up() raises:
     """One 200 ms step on a 20 ms period, then free steps.
 
-    Rescheduled from now, the next 200 ms hold about ten steps. Caught up,
-    the nine steps the overrun missed run back to back first, and the same
-    window holds about twenty. (Every step slow would not tell the two
-    apart: both run the steps back to back.)
+    Rescheduled from now, the window holds the overrun plus one step per
+    period left in it. Caught up, the nine steps the overrun missed run back
+    to back first, on top of that. (Every step slow would not tell the two
+    apart: both run the steps back to back.) The bound comes from the
+    window as measured, because a loaded runner oversleeps both the test's
+    wait and the producer's periods; the nine caught-up steps take no sleep
+    at all, so oversleeping cannot hide them.
     """
     var page = _page(20_000_000, cost_ns=200_000_000, slow_step=1)
     var p = ProducerThread()
+    var t0 = perf_counter_ns()
     p.start[Ticker](_ctx(1, page))
     sleep(0.4)
     _ = p.stop_and_join(5_000_000_000)
+    var window_ms = Int((perf_counter_ns() - t0) // 1_000_000)
     var steps = page.load(P_STEPS)
-    assert_true(steps <= 15, String(steps, " steps in 400 ms: the overrun was caught up"))
-    assert_true(steps >= 5, String("only ", steps, " steps in 400 ms"))
+    var most = 1 + (window_ms - 200) // 20 + 1
+    assert_true(
+        steps <= most + 3,
+        String(steps, " steps in ", window_ms, " ms, where rescheduling allows ", most,
+               ": the overrun was caught up"),
+    )
+    assert_true(steps >= 2, String("only ", steps, " steps: nothing ran after the overrun"))
 
 
 def test_a_long_period_does_not_delay_the_stop() raises:
@@ -230,6 +268,32 @@ def test_what_wants_a_producer() raises:
 
 def test_page_slots_default_to_none() raises:
     assert_equal(Plain.page_slots(4), 0)
+    assert_equal(Plain.max_workers(), 0)
+
+
+def test_a_views_app_answers_for_its_state() raises:
+    """`ViewsApp` forwards the state's page and worker limit, and builds it."""
+    assert_equal(ViewsApp[OneProcess].page_slots(2), 6)
+    assert_equal(ViewsApp[OneProcess].max_workers(), 1)
+    var page = _page(1)
+    var app = ViewsApp[OneProcess].make(_ctx(1, page))
+    assert_equal(app.state.worker, 0)
+
+
+def test_the_host_refuses_more_workers_than_the_app_serves() raises:
+    """An application whose state is per process is not served twice.
+
+    covers: E21
+    """
+    _ = setenv("M0_WORKERS", "2", True)
+    var config = AppConfig()
+    _ = unsetenv("M0_WORKERS")
+    var why = host_refusal(config, 1)
+    assert_true(Bool(why), "two workers were served for a one-process app")
+    assert_true("M0_WORKERS=2" in why.value(), "the refusal does not name M0_WORKERS")
+    assert_false(Bool(host_refusal(config, 2)))
+    assert_false(Bool(host_refusal(config, 0)))
+    assert_false(Bool(host_refusal(AppConfig(), 1)))
 
 
 def _refusal_for(name: String, value: String) raises -> Optional[String]:

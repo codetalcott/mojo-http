@@ -11,7 +11,7 @@ on WIRE OUTPUT only (`poe smoke-fragment-notes`), so each of those could be
 lifted into the framework under a green gate. This is the app after five
 of those lifts, and the smoke has not changed:
 
-- **the URL table names the view.** `urls()` is the whole mapping; a view
+- **the URL table names the view.** `note_urls()` is the whole mapping; a view
   is a function, `add_read` hands it the store borrowed and `add_write`
   hands it `mut`, and there is no dispatch chain to fall through.
 - **the fragment names itself.** `Frag("notes")` writes `id="notes"`
@@ -85,17 +85,21 @@ The attribute vocabulary is htmx 2 (`hx-*`), pinned to one CDN version;
 `Htmx.swap` in m0-http is the only place it is spelled, and `Frag` below
 is the only place this app names it.
 
-The store is in-memory, parallel lists, one process — see `notes_api`.
+The store is in-memory, parallel lists, one process — see `notes_api`. It
+runs on the Mojo host as `ViewsApp[NoteStore]`, and `NoteStore` says it
+serves from one process (`max_workers`), so `M0_WORKERS=2` is refused with
+78 instead of serving two workers that each hold a different list.
 
 Run it:  uv run poe serve-fragment-notes
 """
 
 from std.os import getenv
 
-from lightbug_http import Server, HTTPRequest, HTTPResponse
+from lightbug_http import HTTPRequest, HTTPResponse
 from lightbug_http.header import HeaderKey
 from lightbug_http.c.process import process_exit
 from lightbug_http.http.date import unix_now
+from lightbug_http.host import HostContext, ViewState, ViewsApp, serve
 
 from m0_core import constant_time_equal, sha256
 
@@ -109,12 +113,10 @@ from m0_http import (
     SessionKeys,
     SessionVerdict,
     Views,
-    ViewService,
     attr,
     el,
     flag,
     form,
-    install_shutdown_signals,
     issue_session,
     page_or_fragment,
     session_cookie_line,
@@ -271,7 +273,7 @@ struct NotesAuth(Movable):
         )
 
 
-struct NoteStore(Movable):
+struct NoteStore(ViewState):
     """The notes, as parallel lists, and the one user they belong to.
     Handed to every view as its third argument."""
 
@@ -289,6 +291,20 @@ struct NoteStore(Movable):
         self.tags = List[List[String]]()
         self.next_id = 1
         self.auth = auth^
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return NoteStore(NotesAuth.from_env())
+
+    @staticmethod
+    def urls() raises -> Views[Self]:
+        return note_urls()
+
+    @staticmethod
+    def max_workers() -> Int:
+        # The notes are lists in this struct: a second worker would hold a
+        # second, different set.
+        return 1
 
     def find(self, id: Int) -> Int:
         for i in range(len(self.ids)):
@@ -770,7 +786,7 @@ def _index_of(store: NoteStore, param: String) -> Int:
 # --- the table -----------------------------------------------------------------
 
 
-def urls() raises -> Views[NoteStore]:
+def note_urls() raises -> Views[NoteStore]:
     """The whole URL-to-view mapping. Each line names the function that
     answers it and says whether it writes; there is no id to keep in step
     and no dispatch chain to fall through.
@@ -812,9 +828,4 @@ def main() raises:
             " — one user (", auth.user, "), sessions for ", auth.ttl, "s",
         )
     )
-    var server = Server(config.server_config())
-    var handler = ViewService(urls(), NoteStore(auth^))
-    var shutdown_fd = install_shutdown_signals()
-    server.listen_and_serve_nonblocking(
-        config.address(), handler, shutdown_read_fd=shutdown_fd
-    )
+    serve[ViewsApp[NoteStore]](config)

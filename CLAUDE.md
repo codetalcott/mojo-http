@@ -802,8 +802,8 @@ import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
 them — and three fork files import back: `lightbug_http/event_loop.mojo`
 imports `m0_http.log`, `lightbug_http/mojo_pool.mojo` imports
 `m0_http.threads`, and `lightbug_http/host.mojo` imports `m0_http.config`,
-`m0_http.multiworker`, `m0_http.signal` and `m0_http.threads` (DECISIONS
-D28). Both sides live inside `packages/m0-http/`, so the cycle never crosses a
+`m0_http.multiworker`, `m0_http.signal`, `m0_http.threads` and
+`m0_http.views` (DECISIONS D28). Both sides live inside `packages/m0-http/`, so the cycle never crosses a
 package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` because an app
 conforming to `PoolHandler` behind the `.mojoc` got no witness table. **The
 cause is not the package boundary** (probed 2026-09-15): a package compiled
@@ -1201,7 +1201,10 @@ pieces, and the language fact each rests on:
   for a pre-fork page of its own at `ctx.page`); `P: Producer` has
   `make(ctx)` and `step(mut self, mut out: Publisher) -> Int`, the
   nanoseconds to the next step, and runs on worker 0 alone; `NoProducer`
-  is the default. The host owns the order the runtime constraints below
+  is the default. A `Views` table needs no handler: `ViewsApp[S]` serves a
+  `ViewState` (`make`, `urls`), as `apps/fragment_notes` does. State that
+  lives in one process answers `max_workers() -> 1`, and `M0_WORKERS`
+  above it is refused (SPEC N18). The host owns the order the runtime constraints below
   demand — listen, pages and bus pre-fork (the bus at one worker too),
   fork, accept sharing bound, signals after the fork, `H.make` per worker,
   the producer handed every channel through a `Publisher` that hides the
@@ -1210,7 +1213,11 @@ pieces, and the language fact each rests on:
   decides for every producer). It lives in the fork for the witness-table
   reason (D28) and refuses `M0_THREADS`, `M0_BLOCKING_THREADS` and
   `M0_SPAWN_WORKERS` with 78 (D29). `apps/host_check` is its gate app;
-  `apps/blobs` is the first real one. Run `poe sabotage-host` after
+  `apps/blobs`, `sim_loop`, `datastar_counter`, `datastar_todo` and
+  `fragment_notes` run on it. An app that broadcasts a whole rendered state
+  from several workers holds a lock from the change until the frame is
+  numbered and published, or a stale render can take the newer id
+  (`datastar_todo`, SPEC N17). Run `poe sabotage-host` after
   touching `host.mojo`: its anchors are exact source lines.
 - **`Views[S]`** (`m0-http/src/views.mojo`): a view is a free function
   `(req, params, state) raises -> HTTPResponse`; `add_read` hands the state
