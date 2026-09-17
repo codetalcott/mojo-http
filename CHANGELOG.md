@@ -73,6 +73,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **The docs promised `Last-Event-ID` replay on a WSGI hold, which keeps no
+  journal.** RUNNING.md and the `m0pub` docstring said a numbered frame was
+  "covered by replay"; the plain `SSERegistry` a hold subscribes to only
+  suppresses an event a reconnecting client already has, and events
+  published while it was gone are not delivered — an application that
+  trusted the sentence and dropped its own catch-up lost messages every
+  time a phone slept. Both now say suppression only, README's "journal-deep"
+  limit names the hold, the Quickstart says to keep a catch-up path, and a
+  Known issue records what a journal would take. Two more from the same
+  notes: RUNNING.md read as if SSE heartbeats were off until
+  `M0_SSE_HEARTBEAT_MS` was set (they default to 15 s, so its 25000 example
+  made them rarer), and `m0pub.publish` did not say that `data` is a payload
+  rather than a frame, so pre-framed text was framed again and reached the
+  client as `data: data: ...` with nothing logged; its docstring now says
+  so and points at `publish_frame`. Not detected at run time, because a
+  payload may legitimately begin with `data:`. Found running desk on
+  m0serve 1.4.0.
 - **A supervisor told to stop no longer respawns a worker that fails its
   drain** (SPEC D10). After a SIGTERM to the supervisor alone — what
   `docker stop` sends — a worker that exited non-zero, or died of any

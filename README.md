@@ -522,8 +522,10 @@ there: the 101 handshake Django cannot emit, the heartbeats, the disconnect
 cleanup, the fan-out. Inbound WebSocket messages come back to Django as
 ordinary `POST`s. Publishing is `os.write` from pure Python onto the
 server's broadcast bus, so one line in a sync view reaches SSE clients *and*
-WebSocket clients on every worker, with numbered event ids that make
-`Last-Event-ID` work. No ASGI, no Channels, no async. The pattern is
+WebSocket clients on every worker, with numbered event ids that let a
+reconnecting client's `Last-Event-ID` suppress what it already has (a hold
+keeps no journal, so it replays nothing; catch-up stays the application's).
+No ASGI, no Channels, no async. The pattern is
 Pushpin's GRIP collapsed into one process; the reasoning, the measurements,
 and the remaining limits are in
 [docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md). Like the other WSGI rows it is
@@ -853,7 +855,7 @@ is silently a different number.
 - **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
 - **Server-initiated pushes go through `tick`.** The `tick(now_ms)` hook fires every `M0_APP_TICK_MS` milliseconds (0, the default, disables it) on the event loop's own timer — broadcast from it and the same loop pass delivers, no inbound request involved; the counter demo's live uptime clock is the reference. It runs on the event loop thread, so keep it quick; handlers with slower cadences sub-schedule off `now_ms`. (Idle-stream `: heartbeat` comments are separate and automatic, every `M0_SSE_HEARTBEAT_MS`.)
 - `m0-sqlite` has no statement cache and no connection pool; see above.
-- SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that resumes live instead of being caught up. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines).
+- SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that resumes live instead of being caught up. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines). A WSGI hold (`M0-Hold: stream`) has no journal at all: its ids suppress a duplicate on reconnect and replay nothing, so an application whose clients must not miss an event keeps its own catch-up.
 
 ## Development
 
