@@ -311,6 +311,16 @@ def test_the_host_refuses_what_it_does_not_serve() raises:
         assert_true(Bool(why), name + " was not refused")
         assert_true(name in why.value(), "the refusal does not name " + name)
     assert_true(Bool(_refusal_for("M0_WORKERS", "0")))
+    # An exec'd m0serve worker's marker, inherited by a Mojo host. Read by
+    # `host_refusal` itself, not through the config, so it is set around
+    # the call.
+    _ = setenv("M0_WORKER_INDEX", "0", True)
+    _ = setenv("M0_WORKER_SPAWNED", "1", True)
+    var spawned = host_refusal(AppConfig())
+    _ = unsetenv("M0_WORKER_SPAWNED")
+    _ = unsetenv("M0_WORKER_INDEX")
+    assert_true(Bool(spawned), "an inherited spawn marker was served")
+    assert_true("M0_WORKER_SPAWNED" in spawned.value())
 
 
 def test_the_host_serves_what_it_does() raises:

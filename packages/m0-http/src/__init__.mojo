@@ -59,6 +59,10 @@ from .sse import (
     SSE_CONTENT_TYPE,
 )
 from .multiworker import WorkerSupervisor, exit_worker, shared_fetch_add, shared_load
+from .prefork import (
+    bind_accept_share, int_list_env, prefork_accept_share, prefork_bus,
+    prefork_page, shared_id_addr, spawned_worker_index,
+)
 from .threads import (
     ThreadSet, ThreadBlock, ShutdownFanout, dup_fd, read_one_byte_blocking,
     BLK_INDEX, BLK_LISTEN_FD, BLK_SHUTDOWN_FD, BLK_BUS_FD, BLK_USER, BLK_STATUS,

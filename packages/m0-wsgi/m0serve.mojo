@@ -67,9 +67,7 @@ from lightbug_http.broadcast import BroadcastBus
 from m0_postgres import PgLib
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
-from lightbug_http.accept_share import (
-    AcceptShare, accept_share_slots, SHARED_PAGE_MAGIC, SHARED_PAGE_MAGIC_SLOT,
-)
+from lightbug_http.accept_share import AcceptShare, accept_sharing_wanted
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType, TCPAddr, parse_address
 from lightbug_http.socket import Socket
@@ -83,7 +81,14 @@ from m0_http import (
     threads_conflict,
 )
 from m0_http.config import AppConfig
-from m0_http.multiworker import SharedAtomics
+from m0_http.prefork import (
+    bind_accept_share,
+    prefork_accept_share,
+    prefork_bus,
+    prefork_page,
+    shared_id_addr,
+    spawned_worker_index,
+)
 from m0_wsgi import (
     WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
@@ -441,41 +446,6 @@ def _specs_tried(specs: List[String]) -> String:
     return joined^
 
 
-def spawned_worker_index() -> Int:
-    """This process's worker index when it was `exec`'d by the supervisor
-    under `--spawn-workers`, else -1.
-
-    `M0_WORKER_SPAWNED=1` and `M0_WORKER_INDEX` are set by the supervisor in
-    the forked child just before its `execv` (`WorkerSupervisor.enable_spawn`),
-    so they are only ever seen by a fresh image whose parent is supervising
-    it. Such a process binds nothing: it inherits the listener, the bus
-    channels and the shared page by fd number and rebuilds each from the
-    environment, then serves exactly as a forked worker of the same index.
-    """
-    if getenv("M0_WORKER_SPAWNED", "") != "1":
-        return -1
-    var raw = getenv("M0_WORKER_INDEX", "")
-    if raw.byte_length() == 0:
-        return -1
-    try:
-        return Int(raw)
-    except:
-        return -1
-
-
-def _int_list_env(name: String) -> List[Int]:
-    var out = List[Int]()
-    var raw = getenv(name, "")
-    if raw.byte_length() == 0:
-        return out^
-    for part in raw.split(","):
-        try:
-            out.append(Int(String(part)))
-        except:
-            pass
-    return out^
-
-
 def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
     """The listener a spawned worker inherited, by fd number (`M0_LISTEN_FD`)."""
     var raw = getenv("M0_LISTEN_FD", "")
@@ -641,145 +611,45 @@ def _reload_dirs(opts: ServeOptions) -> List[String]:
 
 
 def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
-    """Everything `--realtime` must create BEFORE the fork and before Python.
+    """Everything a worker shares that must exist BEFORE the fork and before Python.
 
-    Returns the bus (size 0, and therefore inert, when the mode is off).
+    Returns the bus. The page, the bus and their exports are
+    `m0_http.prefork`'s -- the same code the Mojo host runs -- and what is
+    left here is m0serve's own: `channels` (`--workers` under prefork,
+    `--threads` under the threaded mode; a `SOCK_DGRAM` socketpair delivers
+    the same whether the peer draining it is another process or another
+    thread), a file-backed page REQUIRED under `--spawn-workers` (the
+    workers cannot reach an anonymous one at all), and `M0_CORE_LIB` for
+    `m0pub`.
 
-    Three exports, and the ordering rule is the same for all of them: they
-    must precede the fork so every worker's environment agrees, and they must
-    precede any Python touch because CPython snapshots the C environ at
-    interpreter init. Under `--threads` there is no fork, but the second half
-    still binds — the interpreter comes up inside `require_free_threading`.
+    The ordering rule is the same for all of it: before the fork, so every
+    worker's environment agrees, and before any Python touch, because
+    CPython snapshots the C environ at interpreter init. Under `--threads`
+    there is no fork, but the second half still binds -- the interpreter
+    comes up inside `require_free_threading`.
 
-    `channels` is `--workers` under prefork and `--threads` under the threaded
-    mode. The bus does not care which: a `SOCK_DGRAM` socketpair delivers the
-    same whether the peer draining it is another process or another thread.
+    The bus is created UNCONDITIONALLY, `--realtime` or not, one worker or
+    many: an ASGI application's pub/sub (`state["m0"]`) rides it, the
+    decision must be made here -- pre-fork and pre-Python, while protocol
+    detection can only happen after the fork -- and a single-worker app
+    publishing to its own subscribers still needs its own loop's channel
+    (there is no separate local-delivery path to keep in sync, by design).
+
+    The page is file-backed and exported by fd, not only by address (#322):
+    an anonymous mapping survives fork and nothing else, so a process that
+    EXECs -- a spawned worker, and just as much a child an application
+    starts to publish from -- can only reach it through a descriptor, and
+    the magic word is what lets `m0pub` refuse an address or a descriptor
+    number it inherited that is not this page. A spawned worker adopts all
+    of it by fd and re-exports the page's address in its own image.
     """
-    # The bus is created UNCONDITIONALLY now, --realtime or not, one
-    # worker or many: an ASGI application's pub/sub (`state["m0"]`) rides
-    # it, the decision must be made here -- pre-fork and pre-Python, while
-    # protocol detection can only happen after the fork -- and a
-    # single-worker app publishing to its own subscribers still needs its
-    # own loop's channel (there is no separate local-delivery path to keep
-    # in sync, by design). The cost when nothing uses it is one socketpair
-    # per worker plus three env vars.
-    if spawned_worker_index() >= 0:
-        # A spawned worker: the parent created all of this before the fork
-        # and the fd numbers came through the exec. The shared page's
-        # ADDRESS did not — mappings die at exec — so it is mapped again
-        # here and the exported address replaced before Python starts.
-        var inherited = BroadcastBus(
-            read_fds=_int_list_env("M0_BUS_READ_FDS"),
-            write_fds=_int_list_env("M0_BUS_WRITE_FDS"),
-        )
-        var shared_fd = _int_list_env("M0_SHARED_ID_FD")
-        if len(shared_fd) == 1:
-            var mapped = SharedAtomics(
-                from_fd=shared_fd[0], count=accept_share_slots(opts.workers)
-            )
-            _ = setenv("M0_SHARED_ID_ADDR", String(mapped.addr(0)), True)
-        return inherited^
-
-    var bus = BroadcastBus(channels if channels > 0 else 1)
-    var fds_csv = String("")
-    var read_csv = String("")
-    for i in range(len(bus.write_fds)):
-        if i > 0:
-            fds_csv += ","
-            read_csv += ","
-        fds_csv += String(bus.write_fds[i])
-        read_csv += String(bus.read_fds[i])
-        _ = keep_across_exec(bus.write_fds[i])
-        _ = keep_across_exec(bus.read_fds[i])
-    _ = setenv("M0_BUS_WRITE_FDS", fds_csv, True)
-    _ = setenv("M0_BUS_READ_FDS", read_csv, True)
-
-    # One MAP_SHARED page: slot 0 is the event id every publish takes a
-    # number from, slot 2 the magic word that identifies the page, and the
-    # rest is accept sharing's per-worker load words (`accept_share_slots`;
-    # one cache line each, so the per-pass stores contend with nothing).
-    # Shared memory across processes, and plain memory across threads.
-    #
-    # File-backed and exported by fd, not only by address (#322). An
-    # anonymous mapping survives fork and nothing else, so a process that
-    # EXECs -- a spawned worker, and just as much a child an application
-    # starts to publish from -- can only reach the page through a
-    # descriptor. The address stays exported for what reads it in-process
-    # (the shim), and the magic word is what lets `m0pub` refuse an address
-    # or a descriptor number it inherited but that is not this page.
-    var shared = _shared_page(opts)
-    shared.store(SHARED_PAGE_MAGIC_SLOT, SHARED_PAGE_MAGIC)
-    _ = setenv("M0_SHARED_ID_ADDR", String(shared.addr(0)), True)
-    if shared.fd >= 0:
-        _ = setenv("M0_SHARED_ID_FD", String(shared.fd), True)
-
-    if getenv("M0_CORE_LIB", "").byte_length() == 0:
+    _ = prefork_page(opts.workers, required=opts.spawn_workers)
+    var bus = prefork_bus(channels)
+    if spawned_worker_index() < 0 and getenv("M0_CORE_LIB", "").byte_length() == 0:
         var lib = _discover_core_lib()
         if lib.byte_length() > 0:
             _ = setenv("M0_CORE_LIB", lib, True)
-
     return bus^
-
-
-def _shared_page(opts: ServeOptions) raises -> SharedAtomics:
-    """The pre-fork page, file-backed where the host allows it.
-
-    `shm_open` needs a shared-memory filesystem (`/dev/shm` on Linux), which
-    a stripped container can lack. Under `--spawn-workers` that is fatal as
-    it always was -- the workers cannot reach an anonymous page at all --
-    but everywhere else the anonymous page serves every worker, and what is
-    lost is only a child process's numbered frames, so the server starts
-    and says so.
-    """
-    var slots = accept_share_slots(opts.workers)
-    try:
-        return SharedAtomics(slots, file_backed=True)
-    except e:
-        if opts.spawn_workers:
-            raise e^
-        print(
-            "m0serve: the shared page could not be file-backed (" + String(e)
-            + "); a child process will publish unnumbered frames",
-            flush=True,
-        )
-        return SharedAtomics(slots)
-
-
-def accept_sharing_wanted(opts: ServeOptions) -> Bool:
-    """Whether this configuration shares accepts: two or more workers,
-    unless `M0_ACCEPT_SHARE=0` asks for the bare race (the A/B knob)."""
-    return opts.workers > 1 and getenv("M0_ACCEPT_SHARE", "") != "0"
-
-
-def _prepare_accept_share(opts: ServeOptions) raises -> AcceptShare:
-    """The channels accept sharing passes connections over (SPEC E16).
-
-    Created pre-fork like the bus, one datagram pair per worker, every
-    worker holding every send end; exported by fd number for a spawned
-    worker, which adopts rather than creates. Inactive — a value with no
-    channels — with one worker, under `--threads`, and under the knob.
-    """
-    if not accept_sharing_wanted(opts):
-        return AcceptShare()
-    if spawned_worker_index() >= 0:
-        return AcceptShare(
-            read_fds=_int_list_env("M0_ACCEPT_READ_FDS"),
-            write_fds=_int_list_env("M0_ACCEPT_WRITE_FDS"),
-        )
-    var share = AcceptShare(opts.workers)
-    var read_csv = String("")
-    var write_csv = String("")
-    for i in range(share.workers()):
-        if i > 0:
-            read_csv += ","
-            write_csv += ","
-        read_csv += String(share.read_fds[i])
-        write_csv += String(share.write_fds[i])
-        _ = keep_across_exec(share.read_fds[i])
-        _ = keep_across_exec(share.write_fds[i])
-    _ = setenv("M0_ACCEPT_READ_FDS", read_csv, True)
-    _ = setenv("M0_ACCEPT_WRITE_FDS", write_csv, True)
-    return share^
 
 
 def _pg_listen_forked_on_macos(opts: ServeOptions) -> Bool:
@@ -813,32 +683,6 @@ def _pg_listen_forked_on_macos(opts: ServeOptions) -> Bool:
         and (opts.workers > 1 or opts.reload)
         and not opts.spawn_workers
     )
-
-
-def _shared_id_addr() -> Int:
-    """The shared event-id slot's address, as `_prepare_realtime` exported it.
-
-    Read from the environment rather than threaded through, because that is
-    how it already reaches a spawned worker, and a single reader keeps the
-    two paths from disagreeing.
-    """
-    try:
-        return Int(getenv("M0_SHARED_ID_ADDR", "0"))
-    except:
-        return 0
-
-
-def _bind_accept_share(mut share: AcceptShare, worker: Int):
-    """After the fork: this worker's index and the shared page's address,
-    which `_prepare_realtime` exported (and a spawned worker re-derived)."""
-    if share.workers() <= 1:
-        return
-    var page: Int
-    try:
-        page = Int(getenv("M0_SHARED_ID_ADDR", "0"))
-    except:
-        page = 0
-    share.bind(worker, page)
 
 
 comptime _DOCTOR_PROBE = """
@@ -1199,7 +1043,7 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         String("spawn") if opts.spawn_workers else String("fork"),
     )
     report.add_bool(
-        String("topology"), String("accept_sharing"), accept_sharing_wanted(opts)
+        String("topology"), String("accept_sharing"), accept_sharing_wanted(opts.workers)
     )
     report.add_int(String("topology"), String("threads"), opts.threads)
     if resolved:
@@ -1406,7 +1250,7 @@ def main() raises:
     # before the first Python call. Inert without the flag.
     var channels = opts.threads if opts.threads > 1 else opts.workers
     var bus = _prepare_realtime(opts, channels)
-    var share = _prepare_accept_share(opts)
+    var share = prefork_accept_share(opts.workers)
 
     # Fork before touching Python — see the module docstring. The parent
     # stays inside fork_all() supervising; only workers return here.
@@ -1460,7 +1304,7 @@ def main() raises:
         worker = supervisor.worker_index
     # Accept sharing binds to this worker's index; inert with one worker
     # (`--threads` included), so a single-worker server pays nothing.
-    _bind_accept_share(share, worker)
+    bind_accept_share(share, worker, shared_id_addr())
 
     if opts.threads > 1:
         # The listener is borrowed, not reduced to its fd: its last use would
@@ -1584,7 +1428,7 @@ def main() raises:
                 # across workers exactly as an in-process publish's is —
                 # `Last-Event-ID` means nothing otherwise. Exported by
                 # `_prepare_realtime` before the fork; 0 when there is none.
-                _shared_id_addr(),
+                shared_id_addr(),
             )
         except e:
             # A listener that cannot start is not a reason to refuse to
@@ -1965,7 +1809,7 @@ def _serve_threaded(
                 opts.pg_listen,
                 String(DEFAULT_CHANNEL),
                 bus.write_fds.copy(),
-                _shared_id_addr(),
+                shared_id_addr(),
             )
         except e:
             print("m0serve: pg-listen did not start: " + String(e), flush=True)

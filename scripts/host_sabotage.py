@@ -5,8 +5,11 @@
 `packages/m0-http/lightbug_http/host.mojo`, runs its gate, and restores the
 file. The gate is `smoke-host` for what the wire shows,
 `smoke-fragment-notes` for `ViewsApp` (the host's own app does not use
-it), or `test_host.mojo` for what only a thread-level test can see
-precisely (a producer that catches up still publishes). The fork is resolved from source by both, so
+it), `test_host.mojo` for what only a thread-level test can see precisely
+(a producer that catches up still publishes), or `test_prefork.mojo` for
+the pre-fork pieces both hosts share (`m0_http.prefork`; a src edit the
+apps would only see after a `.mojoc` rebuild, which a test run of `src.*`
+does not need). The fork is resolved from source by both, so
 nothing else needs rebuilding. An anchor that no longer matches is a
 failure -- re-point it with the line.
 
@@ -48,8 +51,11 @@ MOJO = str(_MOJO) if _MOJO.exists() else (shutil.which("mojo") or "mojo")
 SMOKE = "smoke"
 NOTES = "notes"
 UNIT = "unit"
+PREFORK = "prefork"
 
 HOST = Path("packages/m0-http/lightbug_http/host.mojo")
+PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
+ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
 
 # (label, gate, old, new); `old` and `new` may be tuples of the same
 # length for a rule that takes more than one edit to break.
@@ -57,98 +63,113 @@ SABOTAGES = [
     (
         "the publisher skips worker 0's channel",
         SMOKE,
+        HOST,
         "publish_to_channels(self._fds, -1, url, event_id, frame)",
         "publish_to_channels(self._fds, 0, url, event_id, frame)",
     ),
     (
         "the producer is handed worker 0's channel alone",
         SMOKE,
+        HOST,
         "    var out = Publisher(ctx.bus.write_fds.copy())\n",
         "    var out = Publisher([ctx.bus.write_fds[0]])\n",
     ),
     (
         "the bus is drained only above one worker",
         SMOKE,
+        HOST,
         "        bus_read_fd=bus.read_fd(worker),\n",
         "        bus_read_fd=bus.read_fd(worker) if forked else -1,\n",
     ),
     (
         "a producer in every worker (the tick-owner rule)",
         SMOKE,
+        HOST,
         "    if ctx.tick_owner() and P.wanted(ctx):\n",
         "    if P.wanted(ctx):\n",
     ),
     (
         "accept sharing is never bound",
         SMOKE,
-        "    share.bind(worker, host_page.addr(0))\n",
+        HOST,
+        "    bind_accept_share(share, worker, host_page.addr(0))\n",
         "",
     ),
     (
         "signals armed before the fork",
         SMOKE,
+        HOST,
         (
             "    var worker = 0\n    var forked = workers > 1\n    if forked:\n",
-            "    share.bind(worker, host_page.addr(0))\n"
+            "    bind_accept_share(share, worker, host_page.addr(0))\n"
             "    var shutdown_fd = install_shutdown_signals()\n",
         ),
         (
             "    var shutdown_fd = install_shutdown_signals()\n"
             "    var worker = 0\n    var forked = workers > 1\n    if forked:\n",
-            "    share.bind(worker, host_page.addr(0))\n",
+            "    bind_accept_share(share, worker, host_page.addr(0))\n",
         ),
     ),
     (
         "a forked worker returns from main",
         SMOKE,
+        HOST,
         "    if forked:\n        exit_worker()\n",
         "",
     ),
     (
         "the producer is never told to stop",
         SMOKE,
+        HOST,
         "        self._set.block(0).set(BLK_STOP, 1)\n",
         "",
     ),
     (
         "the join has no bound",
         SMOKE,
+        HOST,
         "        self.stragglers = self._set.join_within(timeout_ns)\n",
         "        self._set.join_all()\n        self.stragglers = 0\n",
     ),
     (
         "a producer's sleep is not sliced",
         SMOKE,
+        HOST,
         "            if left > SLEEP_SLICE_NS:\n                left = SLEEP_SLICE_NS\n",
         "",
     ),
     (
         "the status slot is written first",
         SMOKE,
+        HOST,
         "    var status = STATUS_RAISED\n    try:\n        _producer_run[P](block)\n",
         "    block.set(BLK_STATUS, STATUS_OK)\n    var status = STATUS_RAISED\n    try:\n        _producer_run[P](block)\n",
     ),
     (
         "a configuration the host does not serve is served",
         SMOKE,
+        HOST,
         "    if refusal:\n",
         "    if False:\n",
     ),
     (
         "the host never asks how many workers the app serves",
         SMOKE,
+        HOST,
         "    var refusal = host_refusal(config, H.max_workers())\n",
         "    var refusal = host_refusal(config)\n",
     ),
     (
         "ViewsApp drops its state's worker limit",
         NOTES,
+        HOST,
         "        return Self.S.max_workers()\n",
         "        return 0\n",
     ),
     (
         "the refusal comes after the bind",
         SMOKE,
+        HOST,
         "    var refusal = host_refusal(config, H.max_workers())\n",
         "    var early_listener = ListenConfig().listen(config.address())\n"
         "    var refusal = host_refusal(config, H.max_workers())\n",
@@ -157,26 +178,74 @@ SABOTAGES = [
     (
         "an overrun is caught up",
         UNIT,
+        HOST,
         "            next_ns = now\n            continue\n",
         "            continue\n",
     ),
     (
         "a raising step reports success",
         UNIT,
+        HOST,
         "    except e:\n        print(\"host: the producer raised",
         "    except e:\n        status = STATUS_OK\n        print(\"host: the producer raised",
     ),
     (
         "more workers than the app serves are not refused",
         UNIT,
+        HOST,
         "    if max_workers > 0 and config.workers > max_workers:\n",
         "    if False:\n",
     ),
     (
         "the publisher does not count a refusal",
         UNIT,
+        HOST,
         "            self.refused += 1\n",
         "",
+    ),
+    # --- the pre-fork pieces both hosts share, against test_prefork.mojo -----
+    (
+        "a spawned worker makes a new page instead of mapping its parent's",
+        PREFORK,
+        PREFORK_SRC,
+        "    if spawned_worker_index() >= 0:\n        var fds = int_list_env(\"M0_SHARED_ID_FD\")\n",
+        "    if False:\n        var fds = int_list_env(\"M0_SHARED_ID_FD\")\n",
+    ),
+    (
+        "the adopted page's address is not re-exported",
+        PREFORK,
+        PREFORK_SRC,
+        "        var mapped = SharedAtomics(from_fd=fds[0], count=slots)\n"
+        "        _ = setenv(\"M0_SHARED_ID_ADDR\", String(mapped.addr(0)), True)\n",
+        "        var mapped = SharedAtomics(from_fd=fds[0], count=slots)\n",
+    ),
+    (
+        "the page carries no magic word",
+        PREFORK,
+        PREFORK_SRC,
+        "    page.store(SHARED_PAGE_MAGIC_SLOT, SHARED_PAGE_MAGIC)\n",
+        "",
+    ),
+    (
+        "the bus's send ends are not exported",
+        PREFORK,
+        PREFORK_SRC,
+        "    _ = setenv(\"M0_BUS_WRITE_FDS\", _csv(bus.write_fds), True)\n",
+        "",
+    ),
+    (
+        "a spawned worker makes its own accept-share channels",
+        PREFORK,
+        PREFORK_SRC,
+        "    if spawned_worker_index() >= 0:\n        return AcceptShare(\n",
+        "    if False:\n        return AcceptShare(\n",
+    ),
+    (
+        "M0_ACCEPT_SHARE=0 is ignored",
+        PREFORK,
+        ACCEPT_SHARE_SRC,
+        "    return workers > 1 and getenv(\"M0_ACCEPT_SHARE\", \"\") != \"0\"\n",
+        "    return workers > 1\n",
     ),
 ]
 
@@ -207,7 +276,17 @@ def run_unit() -> tuple[bool, str]:
     return (p.returncode == 0 and " 0 failed" in out), out
 
 
-GATES = {SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit}
+def run_prefork() -> tuple[bool, str]:
+    p = subprocess.run(
+        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
+         "packages/m0-http/test/test_prefork.mojo"],
+        capture_output=True, text=True, timeout=600,
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and " 0 failed" in out), out
+
+
+GATES = {SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork}
 
 
 def why(out: str) -> str:
@@ -243,12 +322,15 @@ def main() -> int:
     if not chosen:
         print(f"no sabotage label contains {only!r}")
         return 1
+    files = sorted({f for _, _, f, _, _ in SABOTAGES})
     backup_dir = Path(tempfile.mkdtemp())
-    original = HOST.read_text()
-    shutil.copy(HOST, backup_dir / HOST.name)
+    originals = {}
+    for f in files:
+        originals[f] = f.read_text()
+        shutil.copy(f, backup_dir / f.name)
 
     print("baseline (unsabotaged) must PASS:")
-    for gate in sorted({g for _, g, _, _ in chosen}):
+    for gate in sorted({g for _, g, _, _, _ in chosen}):
         ok, out = GATES[gate]()
         print(f"  {'ok' if ok else 'FAIL'}  baseline ({gate})")
         if not ok:
@@ -257,7 +339,8 @@ def main() -> int:
 
     missed = []
     try:
-        for label, gate, old, new in chosen:
+        for label, gate, path, old, new in chosen:
+            original = originals[path]
             olds = old if isinstance(old, tuple) else (old,)
             news = new if isinstance(new, tuple) else (new,)
             if any(original.count(o) != 1 for o in olds):
@@ -267,13 +350,13 @@ def main() -> int:
             broken = original
             for o, n in zip(olds, news):
                 broken = broken.replace(o, n, 1)
-            HOST.write_text(broken)
+            path.write_text(broken)
             try:
                 ok, out = GATES[gate]()
             except subprocess.TimeoutExpired:
                 ok, out = False, "(timed out -- itself a failure)"
             finally:
-                HOST.write_text(original)
+                path.write_text(original)
             reason = why(out)
             if ok:
                 print(f"  MISSED  [{gate}] {label}")
@@ -284,7 +367,8 @@ def main() -> int:
             else:
                 print(f"  CAUGHT  [{gate}] {label}\n          {reason}")
     finally:
-        shutil.copy(backup_dir / HOST.name, HOST)
+        for f in files:
+            shutil.copy(backup_dir / f.name, f)
 
     print()
     if missed:

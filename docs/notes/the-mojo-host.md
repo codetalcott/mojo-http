@@ -110,9 +110,9 @@ package here builds a directory named `src` into `<name>.mojoc`, so
 traits are recorded under the directory's name and looked up under the
 package's (`poe check-mojoc-trait`; fixed on the nightly). A
 source-resolved module has no such mismatch, and `mojo_pool.mojo` is the
-precedent. The cost is five more fork-to-framework imports (`config`,
-`multiworker`, `signal`, `threads`, and `views` since round 2), all inside
-`packages/m0-http/`.
+precedent. The cost is six more fork-to-framework imports (`config`,
+`multiworker`, `signal`, `threads`, `views` since round 2 and `prefork`
+since round 3), all inside `packages/m0-http/`.
 CLAUDE.md's cycle paragraph lists them, and `poe check-fork-package`
 still compiles the fork whole. The second decision, the toolchain pin,
 stays at 1.0.0: no stable release carries the fix, and pinning a product
@@ -319,8 +319,58 @@ None of these needed an escape hatch in the host. The two additions are
 declarations (`max_workers`) and a convenience (`ViewsApp`), and neither
 lets an app reach around `serve`.
 
+## Round 3: one preparation for both hosts
+
+The plan's last round moves m0serve's Python-free startup pieces down to
+where both hosts call them. `m0_http.prefork` now holds:
+
+- `prefork_page(workers, required)`: the shared page, file-backed where
+  the host allows it, the magic word stored in slot 2, `M0_SHARED_ID_FD`
+  and `M0_SHARED_ID_ADDR` exported; `required` is m0serve's
+  `--spawn-workers`, where an anonymous page is no page at all;
+- `prefork_bus(channels)` and `prefork_accept_share(workers)`: created,
+  kept across exec and exported, or adopted;
+- `bind_accept_share`, `shared_id_addr`, `spawned_worker_index` and
+  `int_list_env`, moved from `m0serve.mojo`.
+
+The signatures narrowed on the way down. Each piece used to read
+`ServeOptions`; what either host decides is a worker count and whether
+the page must be file-backed, and that is all the functions take.
+m0serve's `_prepare_realtime` is three calls over them, keeping only what
+is its own: `channels` (workers or loop threads), `required`, and
+`M0_CORE_LIB` for `m0pub`. Its flags and the `M0_*` names `m0pub` and an
+exec'd worker read are unchanged, so the served contract is unchanged and
+textshelf needs no follow-up.
+
+Two things changed in behaviour, both on purpose:
+
+- **The Mojo host's page is file-backed and exported**, as m0serve's has
+  been since #322. In round 1 it was an anonymous mapping, enough for
+  forked workers and nothing else. A child process a host application
+  starts can now number its frames from the page it inherited, the way
+  `m0pub` does.
+- **A spawned worker with no page descriptor is refused.** m0serve's old
+  path skipped the adoption silently when `M0_SHARED_ID_FD` was missing
+  and went on to bind accept sharing to the address its parent exported,
+  which in a fresh image is nothing. `prefork_page` raises there, and
+  `host_refusal` refuses an inherited `M0_WORKER_SPAWNED` outright, since
+  the Mojo host never sets it and would adopt from descriptors it was
+  never handed.
+
+Exec'd workers for the Mojo host are now a small step, adopting
+`M0_LISTEN_FD` and calling `enable_spawn`, and are still refused (D29):
+no application under `apps/` needs one, and a mode nothing exercises is
+a mode nothing gates.
+
+`test_prefork.mojo` runs the adopt path in one process, which is enough:
+a spawned worker is a fresh image that maps the same descriptor again,
+and a second mapping in the same process is exactly that. SPEC E24 is
+the row; the exec itself stays E15's. `sabotage-host` grew six rules
+against that file, twenty-five in all.
+
 ## Next
 
-R3 moves m0serve's Python-free startup pieces down to where both hosts call
-them: the accept-share preparation, the shared page and the bus half of
-`--realtime`.
+The host has nothing left to take from m0serve that both can use. What
+it does not offer, pool lanes, loops on threads and exec'd workers, is
+D29's list of retiring conditions, each waiting on an application that
+needs it.

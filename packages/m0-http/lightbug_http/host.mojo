@@ -18,10 +18,11 @@ wrong. In this order:
    application whose state lives in one process. Exit 78, before anything
    is bound.
 2. **Listen**, once, in the process that will fork.
-3. **The shared pages**, before the fork. The host's own page has
-   `accept_share_slots` words (slot 0 the SSE event id, slot 2
-   `SHARED_PAGE_MAGIC`, each worker's accept-share line after), laid out as
-   m0serve lays out its own. The application's page, if
+3. **The shared pages**, before the fork. The host's own page is
+   m0serve's, made by the same function (`m0_http.prefork.prefork_page`):
+   slot 0 the SSE event id, slot 2 `SHARED_PAGE_MAGIC`, each worker's
+   accept-share line after, file-backed where the host allows it and
+   exported by descriptor. The application's page, if
    `AppHandler.page_slots` asks for one, is separate, so an app numbers its
    words from 0 and can never write over a sibling's load.
 4. **The bus, unconditionally**, at one worker too: it is the
@@ -50,9 +51,9 @@ the same reason: an application must CONFORM to `AppHandler` and
 `Producer`, and on the pinned toolchain a conformance to a trait inside a
 precompiled package gets no witness table (the package's name and its
 source directory disagree; `poe check-mojoc-trait`). A source-resolved
-module has no such mismatch. It costs five more fork -> `m0_http` edges
-(`config`, `multiworker`, `signal`, `threads` and `views`), inside
-`packages/m0-http/` as the existing two are; CLAUDE.md's cycle paragraph and
+module has no such mismatch. It costs six more fork -> `m0_http` edges
+(`config`, `multiworker`, `prefork`, `signal`, `threads` and `views`),
+inside `packages/m0-http/` as the existing two are; CLAUDE.md's cycle paragraph and
 NOTICE list them. When the pin moves, this can move to `m0_http`.
 
 **What the host decides for every producer** (DECISIONS D26, which it
@@ -89,13 +90,6 @@ from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.accept_share import (
-    AcceptShare,
-    SHARED_PAGE_MAGIC,
-    SHARED_PAGE_MAGIC_SLOT,
-    accept_share_slots,
-    accept_sharing_wanted,
-)
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.process import process_exit
 from lightbug_http.connection import ListenConfig
@@ -110,6 +104,13 @@ from lightbug_http.service import HTTPService
 # so the cycle never crosses a package boundary. See the module docstring.
 from m0_http.config import AppConfig
 from m0_http.multiworker import EX_CONFIG, SharedAtomics, WorkerSupervisor, exit_worker
+from m0_http.prefork import (
+    bind_accept_share,
+    prefork_accept_share,
+    prefork_bus,
+    prefork_page,
+    spawned_worker_index,
+)
 from m0_http.signal import install_shutdown_signals
 from m0_http.views import Views
 from m0_http.threads import (
@@ -457,6 +458,13 @@ def host_refusal(config: AppConfig, max_workers: Int = 0) -> Optional[String]:
             "M0_SPAWN_WORKERS is m0serve's; the Mojo host forks without exec"
             " (unset it)"
         )
+    if spawned_worker_index() >= 0:
+        # An exec'd m0serve worker's marker, inherited: the pre-fork pieces
+        # would be adopted from descriptors this process never received.
+        return String(
+            "M0_WORKER_SPAWNED marks an exec'd m0serve worker; the Mojo host"
+            " forks without exec (unset it)"
+        )
     return None
 
 
@@ -476,16 +484,15 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     var workers = config.workers
 
     var listener = ListenConfig().listen(config.address())
-    var host_page = SharedAtomics(accept_share_slots(workers))
-    host_page.store(SHARED_PAGE_MAGIC_SLOT, SHARED_PAGE_MAGIC)
+    # The page, the bus and the accept-share channels are m0serve's too:
+    # `m0_http.prefork` makes (and exports) all three for both hosts.
+    var host_page = prefork_page(workers)
     var app_page = 0
     var app_slots = H.page_slots(workers)
     if app_slots > 0:
         app_page = SharedAtomics(app_slots).addr(0)
-    var bus = BroadcastBus(workers)
-    var share = AcceptShare()
-    if accept_sharing_wanted(workers):
-        share = AcceptShare(workers)
+    var bus = prefork_bus(workers)
+    var share = prefork_accept_share(workers)
 
     var worker = 0
     var forked = workers > 1
@@ -493,8 +500,8 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         var supervisor = WorkerSupervisor(workers)
         supervisor.fork_all()
         worker = supervisor.worker_index
-    # Inactive with one worker or under the knob; `bind` is harmless there.
-    share.bind(worker, host_page.addr(0))
+    # Inactive with one worker or under the knob; binding is harmless there.
+    bind_accept_share(share, worker, host_page.addr(0))
     var shutdown_fd = install_shutdown_signals()
 
     var ctx = HostContext(

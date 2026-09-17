@@ -564,6 +564,13 @@ lightbug_http
         `ViewState`, the host's `ViewService`; one more import,
         `m0_http.views`.
 
+      - host.mojo (2026-09-16, round 3): the page, the bus and the
+        accept-share channels are made, exported and adopted by
+        `m0_http.prefork`, where m0serve's copies moved down so both
+        hosts run one preparation; one more import, `m0_http.prefork`.
+        The host's page is file-backed and exported by descriptor from
+        here on.
+
       - accept_share.mojo (2026-09-16): `accept_sharing_wanted(workers)`,
         the one place the `M0_ACCEPT_SHARE=0` knob is read for a worker
         count.
