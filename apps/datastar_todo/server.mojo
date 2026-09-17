@@ -119,6 +119,19 @@ struct TodoHandler(AppHandler):
         # AUTOINCREMENT keeps ids never-reused across deletes and restarts,
         # matching what the in-memory version promised. `ORDER BY id` below
         # is what preserves insertion order — the visible order of the list.
+        #
+        # Inside an IMMEDIATE transaction, because two workers build their
+        # handlers at once over one fresh file: `CREATE TABLE IF NOT EXISTS`
+        # reads the schema first and upgrades to a write, and SQLite answers
+        # that upgrade with "database is locked" at once rather than through
+        # the busy handler, which cannot help a read that would have to be
+        # redone (m0-sqlite's `busy_timeout` says so). Taking the write lock
+        # up front waits instead. The race that was MEASURED at two workers
+        # -- 29 of 30 starts refused -- was one step earlier, inside
+        # `open()`'s WAL pragma, and is m0-sqlite's to retry (O1); the host
+        # used to crash the losing worker and respawn it, which hid both
+        # (SPEC E25).
+        db.begin_immediate()
         db.execute(
             "CREATE TABLE IF NOT EXISTS todos ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -136,6 +149,7 @@ struct TodoHandler(AppHandler):
             "  url TEXT NOT NULL,"
             "  frame BLOB NOT NULL)"
         )
+        db.commit()
         var saved = db.prepare("SELECT id, url, frame FROM events ORDER BY id")
         while saved.step():
             self.stream.restore(

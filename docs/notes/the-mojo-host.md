@@ -433,6 +433,23 @@ and no producer, indefinitely. The supervisor now forwards SIGTERM to the
 siblings on an `EX_CONFIG` exit and exits 78 once they are gone;
 `test_respawn.mojo` pins it and D30 records the three together.
 
+**What the refusal uncovered, on its first CI run.** `smoke-todo`'s
+two-worker phase went red on the macOS runner: `datastar_todo`'s `make`
+raised `database is locked` in one worker, and the host refused it with
+78. Before this round that worker crashed on the unhandled exception and
+the supervisor respawned it, and the second attempt won the race, so the
+gate was green while every two-worker start was losing a coin toss.
+Reproduced on an M4 at 29 of 30 starts. The locked step was not the
+schema creation but `open()` itself: two processes switching one fresh
+file out of the rollback journal race on `PRAGMA journal_mode=WAL`, and
+SQLite answers the loser's at once without consulting the busy handler
+set the line before. m0-sqlite's `open` now retries the switch on
+`SQLITE_BUSY` within the same budget (O1, `test_two_processes_open_one_
+fresh_database`, which fails on the old `open` in round 0), and the todo
+app takes its schema lock with `BEGIN IMMEDIATE` for the second race the
+busy handler cannot help. Gating an ungated row keeps finding real
+defects; this one was found by a refusal replacing a crash.
+
 **Gates.** `smoke-host` gained two phases (SPEC E25). The respawn phase
 holds four streams spanning both workers for 4 s, SIGKILLs the pid the
 beats name, and requires the streams still held on worker 1 to beat

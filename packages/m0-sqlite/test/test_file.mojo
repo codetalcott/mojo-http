@@ -7,6 +7,7 @@ an in-memory-only suite would never have caught it.
 """
 
 from std.ffi import external_call, c_int
+from std.memory import stack_allocation
 from std.os import remove, mkdir, rmdir, path
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 from std.time import perf_counter_ns
@@ -389,6 +390,64 @@ def test_transaction_rollback_survives_reopen() raises:
     assert_equal(q.column_int(0), 0)
     q.finalize()
     again.close()
+    _cleanup(p)
+
+
+def _open_and_exit(db_path: String):
+    """A forked child's whole life: `open` the shared file, then `_exit` 0 on
+    success or 1 on a raise. `_exit`, never a return: the child is a copy of
+    the test runner and must not run its teardown."""
+    var code = 0
+    try:
+        var db = open(db_path)
+        db.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)")
+        db.close()
+    except:
+        code = 1
+    _ = external_call["_exit", c_int](c_int(code))
+
+
+def _wait_exit(pid: Int) -> Int:
+    """`waitpid` and the child's exit code (-1 if it died of a signal)."""
+    var status = stack_allocation[1, c_int]()
+    status[unsafe_offset=0] = 0
+    _ = external_call["waitpid", c_int](c_int(pid), status, c_int(0))
+    var raw = Int(status[unsafe_offset=0])
+    if raw & 0x7F != 0:
+        return -1
+    return (raw >> 8) & 0xFF
+
+
+def test_two_processes_open_one_fresh_database() raises:
+    """Two processes opening the same FRESH file at once must both succeed.
+
+    The shape of two forked `m0serve` or Mojo-host workers building their
+    handlers: each `open`s the one database, and the first switches it out
+    of the rollback journal while the second is doing the same. SQLite
+    answers the loser's `PRAGMA journal_mode=WAL` with "database is locked"
+    at once, without consulting the busy handler `open` set a line earlier
+    -- measured as 29 of 30 two-worker starts of `apps/datastar_todo`
+    refused, once the host stopped hiding it behind a crash and a respawn
+    (SPEC E25). Twelve pairs here, because one pair loses the race about
+    half the time on an M4 and the point is that no pair may.
+
+    covers: O1
+    """
+    var p = _fresh("concurrent-open")
+    for round in range(12):
+        _cleanup(p)
+        var a = Int(external_call["fork", c_int]())
+        if a == 0:
+            _open_and_exit(p)
+        var b = Int(external_call["fork", c_int]())
+        if b == 0:
+            _open_and_exit(p)
+        var ra = _wait_exit(a)
+        var rb = _wait_exit(b)
+        assert_equal(
+            ra + rb, 0,
+            String("round ", round, ": a concurrent open failed (exit codes ", ra, ", ", rb, ")"),
+        )
     _cleanup(p)
 
 

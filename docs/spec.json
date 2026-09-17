@@ -1693,9 +1693,9 @@
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",
-      "capability": "`open` promises WAL and raises when it cannot deliver it: `PRAGMA journal_mode` answers with the mode actually in force, and a database that stays on a rollback journal \u2014 a temp or in-memory database, some network filesystems \u2014 is an error at open rather than reader/writer concurrency that silently is not there",
+      "capability": "`open` promises WAL and raises when it cannot deliver it: `PRAGMA journal_mode` answers with the mode actually in force, and a database that stays on a rollback journal \u2014 a temp or in-memory database, some network filesystems \u2014 is an error at open rather than reader/writer concurrency that silently is not there; and two processes opening one fresh file at the same moment both get it, because the switch is retried on `SQLITE_BUSY` within the busy timeout, which SQLite does not consult for that pragma",
       "status": "verified",
-      "evidence": "`test_file.mojo:test_open_reports_wal_it_could_not_apply` (every PR) \u2014 the discarded row is the defect: `open` would promise WAL while delivering a lock that serializes, which surfaces later as inexplicable contention rather than as an error here"
+      "evidence": "`test_file.mojo:test_open_reports_wal_it_could_not_apply` (every PR) \u2014 the discarded row is the defect: `open` would promise WAL while delivering a lock that serializes, which surfaces later as inexplicable contention rather than as an error here; `test_two_processes_open_one_fresh_database` beside it forks twelve pairs that open one fresh file at once, and about one pair in two lost the race on an M4 before the retry (29 of 30 two-worker starts of `apps/datastar_todo` refused, seen the day the Mojo host stopped hiding a raising `make` behind a respawn, E25)"
     },
     {
       "id": "O2",
