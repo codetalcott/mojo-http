@@ -181,7 +181,9 @@ SSE delivery verified (event id 1)
 
 Every publish takes a unique id from a counter shared across workers, so a
 client that reconnects with `Last-Event-ID` is not re-sent what it already
-has.
+has. That is all the id does: a hold keeps no journal, so an event published
+while a client was disconnected is not delivered when it reconnects. Keep a
+catch-up path — a fetch on reconnect — for anything a client must not miss.
 
 ## 5. Two tabs
 

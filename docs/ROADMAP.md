@@ -61,6 +61,22 @@ somebody else's Django projects inside the pull request that trips it.
   beside the WSGI ones (SPEC M23), the mixed phase `smoke-hybrid` carried
   as phase 3t until 2026-09-14.
 
+- **A WSGI hold replays nothing on reconnect.** `M0-Hold: stream`
+  subscribes to the loop's `SSERegistry`, whose `Last-Event-ID` handling is
+  the redelivery filter alone (`event_id > last_event_id`): a reconnecting
+  client is not re-sent what it has, and events published while it was gone
+  are not delivered. Only `DatastarStream` keeps the bounded journal
+  (SPEC I10). RUNNING.md and the m0pub docstring said "replay covers them"
+  until 2026-09-17, and an application that believed it dropped its own
+  catch-up path; desk keeps a poll beside the stream for this reason.
+
+  **Closed by:** none — a bounded per-channel journal in the registry (the
+  `DatastarStream` shape, sized in frames, restored by the application if
+  it must survive a restart) would retire it, gated by a smoke that
+  reconnects a WSGI hold with `Last-Event-ID` after a publish; whether to
+  build it is an open decision, and until it is taken the docs say
+  suppression only.
+
 - **`mojo build` needs a C compiler on Linux and nothing says so.** It
   shells out for linking; a `python:*-slim` image fails with `unable to
   find suitable c compiler for linking`. Install `build-essential` beside

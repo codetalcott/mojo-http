@@ -83,12 +83,23 @@ worker. Inbound WebSocket messages arrive at the application as a `POST` to
 must be CSRF-exempt. Channel names beginning with a control byte are
 reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 
+**A hold replays nothing.** Event ids are numbered from one counter across
+every worker, and a client that reconnects with `Last-Event-ID` is not
+re-sent an event it already has — that is all the id buys. A plain
+`M0-Hold: stream` subscribes to the loop's registry, which keeps no journal,
+so an event published while a client was disconnected (a phone asleep, a
+proxy that dropped the stream) is not delivered when it reconnects. An
+application whose clients must not miss events keeps its own catch-up — a
+fetch on reconnect, or a poll beside the stream — and the stream is the
+fast path, not the record. Only `DatastarStream`, the Mojo-side fan-out,
+journals frames for replay (README, "SSE replay is journal-deep").
+
 Work that has to outlive its request can publish from a child process the
 view starts. Pass the bus and the event-id page by descriptor:
 `subprocess.Popen([...], pass_fds=m0pub.child_fds())`. The child's frames are
-then numbered from the same counter as every worker's, so `Last-Event-ID`
-replay covers them. With only `m0pub.bus_write_fds()` passed, the child still
-publishes, unnumbered. Up to 1.3.0 that second form was unsafe: a child that
+then numbered from the same counter as every worker's, so a client that
+reconnects with `Last-Event-ID` is not re-sent one it already has. With only
+`m0pub.bus_write_fds()` passed, the child still publishes, unnumbered. Up to 1.3.0 that second form was unsafe: a child that
 inherited the environment took an event id at an address in its parent's
 memory, and either died with SIGSEGV or published a wrong id that
 subscribers then dropped (#322). There, remove `M0_SHARED_ID_ADDR` from the
@@ -105,10 +116,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
 - **Terminate TLS at a proxy.** There is no TLS and no HTTP/2 here, by
   design. Fly, nginx, Caddy and a cloud load balancer all speak HTTP/1.1 to
   the app.
-- **Keep held connections alive through the proxy.** `M0_SSE_HEARTBEAT_MS`
-  sends a comment on idle SSE streams and a ping on idle WebSockets at that
-  cadence; set it below the proxy's idle timeout (25000 for a proxy that
-  closes at 60 s).
+- **Held connections are kept alive through the proxy by default.** Every
+  15 s an idle SSE stream gets a comment and an idle WebSocket a ping
+  (`M0_SSE_HEARTBEAT_MS`, default `15000`). Set the variable only to change
+  the cadence, and keep it below the proxy's idle timeout: a proxy that
+  closes at 60 s is fine with the default, and `25000` would be too.
 - **Static files.** `--static PREFIX=DIR` serves a directory from the server
   with `sendfile`, ETags and byte ranges, never entering Python; a miss falls
   through to the application. `--static-cache-control V` sets the header.

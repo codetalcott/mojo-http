@@ -10,8 +10,8 @@ the same scratch directory.
 Stop the server (Ctrl-C) and restart it with two workers. A publish from a
 view on either worker reaches subscribers on both: the bus and the id
 counter are created before the fork. Ids belong to the server's lifetime; a
-fresh server numbers from 1 again, so `Last-Event-ID` replay is scoped to a
-running server.
+fresh server numbers from 1 again, so a `Last-Event-ID` from a previous
+server means nothing to the new one.
 
 ```bash serve
 m0serve realtime:application --realtime --workers 2 --health-path /health --port 8000
