@@ -92,9 +92,12 @@ CI's runner it builds `--target-cpu x86-64-v2`. That is the first x86 Mojo
 build anything here has made, and it runs on every pull request. The run
 that settled it is #348's first `Tests` run
 ([35401394882](https://github.com/codetalcott/mojo-http/actions/runs/35401394882)).
-Its `pid1` job built the image, served it, and passed every phase of the
-probe, the whole of `smoke-blobs`' main run through the published port
-included. QEMU was never involved: a local amd64 build SIGFPEs under
+Its `pid1` job built the image in 58 s from a cold cache, served it, and
+passed every phase of the probe, the whole of `smoke-blobs`' main run
+through the published port included. There the image is 80.1 MB unpacked,
+3.4 MB of it the app, and the server's RSS was 20.1 MiB idle and 24.2 MiB
+with 100 streams held. The step at 10 Hz was 0.9 ms, and each viewer
+received 49 KB/s. QEMU was never involved: a local amd64 build SIGFPEs under
 emulation, which says nothing about the binary.
 
 D35's first retiring condition was a Linux x86 measurement. Phase 4 could

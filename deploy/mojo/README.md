@@ -44,7 +44,11 @@ RSS is VmRSS in MiB, summed over the server's processes.
 | RSS, 100 connections held | 16.4 (streams) | 13.2 (keep-alive) | — |
 
 On x86-64, the blobs image as CI's `pid1` job builds it on every pull
-request (a GitHub runner, whose docker counts unpacked bytes): X86_FILL.
+request, on a GitHub runner whose docker store counts unpacked bytes (run
+35401394882): 80.1 MB unpacked, 3.4 MB of it the app, on a Debian base
+that is smaller on amd64. RSS was 20.1 MiB idle and 24.2 MiB with 100
+streams held, more than on arm64. It built in 58 s from a cold cache, and
+the whole step, build and probe, took 66 s.
 
 **Compressed and unpacked are different numbers, and so is memory.** Until
 this date the page compared "29.2 MB" with "74 MiB". The first was the hello
