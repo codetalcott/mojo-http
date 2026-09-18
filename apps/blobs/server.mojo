@@ -18,7 +18,7 @@ handler. `ViewService` forwards only `func` and `before_request`, so
 the table dispatches, the struct holds the state and wires the four hooks
 to the state's `DatastarStream`.
 
-It runs on the Mojo host (`lightbug_http.host`): `main` reads the cadence
+It runs on the Mojo host (`m0_host.host`): `main` reads the cadence
 and calls `serve[BlobsHandler, BlobsProducer]`, and the host does the rest
 -- the listener, the pre-fork board and bus, the workers and their shared
 accepts, the signals, and the producer on worker 0, stopped and joined
@@ -52,7 +52,7 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPRequest, HTTPResponse
 from lightbug_http.c.process import process_exit
-from lightbug_http.host import AppHandler, HostContext, Producer, Publisher, serve
+from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
 
 from m0_core.json_parse import parse_json_number
 

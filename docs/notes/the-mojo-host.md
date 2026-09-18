@@ -1,7 +1,8 @@
 # The Mojo host — built 2026-09-16
 
 > A design note from the engineering record. What a Mojo application's
-> `main` used to be, what `lightbug_http.host` took out of it, the choices
+> `main` used to be, what the host (`lightbug_http.host` as written,
+> `m0_host` since 2026-09-18) took out of it, the choices
 > it makes for every application, and what it does not do yet.
 
 **The problem.** m0serve is a host: it owns the listener, the workers, the
@@ -102,6 +103,10 @@ memory the host never frees, because an abandoned producer outlives
 `test_host.mojo` can drive it with a real bus and no server.
 
 ## Where it lives: the fork (D28)
+
+> Retired 2026-09-18. The host is now the package `m0_host`, and the
+> reason it is not inside `m0_http` is a different one:
+> [the-host-leaves-the-fork](the-host-leaves-the-fork.md).
 
 The owner decided this before building, on the handoff's recommendation.
 On the pinned toolchain, an application's conformance to a trait in a

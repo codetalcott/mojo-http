@@ -51,7 +51,9 @@ path is then an error, not a quiet demo.
 
 `PoolHandler` is an app-facing trait, and a conformance declared behind a
 `.mojoc` gets no witness table: the handler builds and is never called
-([the trait's own record](../../packages/m0-http/lightbug_http/mojo_pool.mojo)).
+([the trait's own record](../../packages/m0-http/src/mojo_pool.mojo) —
+which moved out of the fork on 2026-09-18, once Mojo 1.1.0 had fixed this:
+[the-host-leaves-the-fork](the-host-leaves-the-fork.md)).
 A module found on an `-I` root is compiled from source together with the entry
 file, exactly as the struct was when it lived inside that file.
 `smoke-mojo-mount` and `smoke-mojo-mount-hold` passing with the demo in the

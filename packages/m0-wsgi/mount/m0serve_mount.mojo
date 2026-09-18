@@ -21,7 +21,8 @@ each pool thread by `make(ctx)`, answers `func`, and is told `shutdown`.
 Everything else in this module is the demo's own business.
 """
 
-from lightbug_http import PoolContext, PoolHandler, HTTPRequest, HTTPResponse
+from lightbug_http import HTTPRequest, HTTPResponse
+from m0_http import PoolContext, PoolHandler
 from lightbug_http.header import Header, Headers
 from m0_http import Html, Mount, Views, reply
 from std.memory.alloc import unsafe_alloc
@@ -302,11 +303,13 @@ struct MojoMount(PoolHandler):
     nothing more.
 
     It lives in a module the build resolves from SOURCE rather than in
-    `src/` because `PoolHandler` is an app-facing trait: a conformance
-    declared behind the `.mojoc` has its witness table silently never
-    emitted (`lightbug_http/mojo_pool.mojo` records why the trait itself
-    sits in the fork). A module found on an `-I` root compiles with the
-    entry file, as the entry file itself did, and `smoke-mojo-mount`
+    `src/` because it was written on Mojo 1.0, where a conformance to an
+    app-facing trait declared behind the `.mojoc` had its witness table
+    silently never emitted. Mojo 1.1.0 fixed that and `PoolHandler` itself
+    now lives in `m0_http` (`src/mojo_pool.mojo` records the move); what
+    keeps this struct here is the seam -- an application REPLACES this
+    directory on the include path. A module found on an `-I` root compiles
+    with the entry file, as the entry file itself did, and `smoke-mojo-mount`
     passing with this struct here is the measurement that says so. The same is why this
     struct, and not `m0_http.ViewService`, is what conforms: it holds a
     `Views` table and its per-thread state and forwards `func`, which is

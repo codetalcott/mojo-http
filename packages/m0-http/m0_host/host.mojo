@@ -82,15 +82,21 @@ wrong. In this order:
     `docker stop`'s default grace.
 13. **`exit_worker()`** in a forked worker, never a return from `main`.
 
-**Where it lives, and why.** In the fork, beside `mojo_pool.mojo`, and for
-the same reason: an application must CONFORM to `AppHandler` and
-`Producer`, and on the pinned toolchain a conformance to a trait inside a
-precompiled package gets no witness table (the package's name and its
-source directory disagree; `poe check-mojoc-trait`). A source-resolved
-module has no such mismatch. It costs six more fork -> `m0_http` edges
-(`config`, `multiworker`, `prefork`, `signal`, `threads` and `views`),
-inside `packages/m0-http/` as the existing two are; CLAUDE.md's cycle paragraph and
-NOTICE list them. When the pin moves, this can move to `m0_http`.
+**Where it lives, and why.** In a package of its own, `m0_host`
+(`packages/m0-http/m0_host/`), resolved from source the way the fork is
+and sitting above both it and `m0_http`. It was written in the fork,
+because on Mojo 1.0 an application's conformance to `AppHandler` and
+`Producer` behind a `.mojoc` got no witness table; Mojo 1.1.0 fixed that
+and the file left the fork on 2026-09-18 (DECISIONS D28, retired;
+docs/notes/the-host-leaves-the-fork.md). It is NOT inside `m0_http`, and
+cannot be: this file names `run_event_loop`, `event_loop.mojo` imports
+`m0_http.log`, and that resolves through `m0_http.mojoc` -- the file
+`build-http` would be writing while it compiled this one (`invalid magic
+bytes`, from a clean build and every one after; a function-local import
+does not help, a precompile parses every body it reaches). A package
+above both has no such cycle. `mojo_pool.mojo` names no loop and did move
+into `m0_http`, so an edit THERE reaches an app only after `build-http`;
+an edit here needs no rebuild.
 
 **What the host decides for every producer** (DECISIONS D26, which it
 retires):
@@ -143,16 +149,15 @@ from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import process_exit
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.event_loop import run_event_loop
-from lightbug_http.mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
 from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.service import HTTPService
 
-# Fork -> m0_http, like `event_loop` -> `m0_http.log` and `mojo_pool` ->
-# `m0_http.threads`: framework code on both sides of `packages/m0-http/`,
-# so the cycle never crosses a package boundary. See the module docstring.
+# Downward, through `m0_http.mojoc`: this package sits above both the fork
+# and `m0_http`, and neither imports it. See the module docstring.
 from m0_http.config import AppConfig
+from m0_http.mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
 from m0_http.multiworker import (
     EX_CONFIG,
     SharedAtomics,

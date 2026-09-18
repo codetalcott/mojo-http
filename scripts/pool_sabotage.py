@@ -26,7 +26,7 @@ from pathlib import Path
 _SIBLING = Path(sys.executable).with_name("mojo")
 MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
 
-POOL = Path("packages/m0-http/lightbug_http/mojo_pool.mojo")
+POOL = Path("packages/m0-http/src/mojo_pool.mojo")
 TEST = Path("packages/m0-http/test/test_mojo_pool.mojo")
 
 IS_LINUX = platform.system() == "Linux"

@@ -99,7 +99,7 @@ from lightbug_http import HTTPRequest, HTTPResponse
 from lightbug_http.header import HeaderKey
 from lightbug_http.c.process import process_exit
 from lightbug_http.http.date import unix_now
-from lightbug_http.host import HostContext, ViewState, ViewsApp, serve
+from m0_host.host import HostContext, ViewState, ViewsApp, serve
 
 from m0_core import constant_time_equal, sha256
 

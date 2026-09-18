@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D21, permanent ids, each with a retiring condition), which
+  (D1–D33, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -815,25 +815,52 @@ a `List[Struct]` anyway.
 
 There is one cycle, and it is intentional: files throughout `m0-http/src/`
 import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
-them — and three fork files import back: `lightbug_http/event_loop.mojo`
-imports `m0_http.log`, `lightbug_http/mojo_pool.mojo` imports
-`m0_http.threads`, and `lightbug_http/host.mojo` imports `m0_http.config`,
-`m0_http.multiworker`, `m0_http.prefork`, `m0_http.signal`, `m0_http.threads`
-and `m0_http.views` (DECISIONS D28). Both sides live inside `packages/m0-http/`, so the cycle never crosses a
-package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` because an app
-conforming to `PoolHandler` behind the `.mojoc` got no witness table on Mojo
-1.0. **The cause was never the package boundary** (probed 2026-09-15): a
-package compiled from a directory named other than the package recorded its
-traits under the DIRECTORY's name — `trait 'src::fragment::PageShell'` —
-while a consumer resolved them under the package's, and every package here
-runs `mojo precompile src -o <name>.mojoc`. **Mojo 1.1.0 fixed it and the
-pin moved on 2026-09-18**, so `poe check-mojoc-trait` is now a regression
-guard: the reason for this placement is spent, and moving the file back is
-a round of its own (D28's retiring condition). Renaming each `src/` was
-the other way out and is still NOT a quick fix: a source directory beside
-a `.mojoc` of the same name shadows it, so every consumer would silently
-compile from source. `build-apps` compiling
-`apps/pool_spike` is the guard against moving it back. `scripts/pool_sabotage.py`
+them — and ONE fork file imports back: `lightbug_http/event_loop.mojo`
+imports `m0_http.log`. Both sides live inside `packages/m0-http/`, so the
+cycle never crosses a package boundary. **That edge has a consequence:
+nothing in `src/` may reach `event_loop.mojo`, at any depth** (DECISIONS
+D33). `m0_http.log` resolves through `m0_http.mojoc`, which is the file
+`build-http` is writing while it compiles `src/`, so a `src/` module that
+names `run_event_loop` fails with `invalid magic bytes` from a clean
+checkout and every build after. A function-local import does not help — a
+precompile parses every body it reaches, and `Server.serve_nonblocking`'s
+local import works only because nothing in `src/` calls it.
+
+Until 2026-09-18 two more fork files imported back, `mojo_pool.mojo` and
+`host.mojo`, placed there because an app conforming to `PoolHandler` or
+`AppHandler` behind the `.mojoc` got no witness table on Mojo 1.0. **The
+cause was never the package boundary** (probed 2026-09-15): a package
+compiled from a directory named other than the package recorded its traits
+under the DIRECTORY's name — `trait 'src::fragment::PageShell'` — while a
+consumer resolved them under the package's, and every package here runs
+`mojo precompile src -o <name>.mojoc`. Mojo 1.1.0 fixed it, `poe
+check-mojoc-trait` is the regression guard, and both files left the fork
+(D28, retired; docs/notes/the-host-leaves-the-fork.md):
+
+- **`mojo_pool.mojo` is `m0_http.mojo_pool`**, in `src/`. `MojoPool`,
+  `PoolContext`, `PoolHandler` and `JOIN_TIMEOUT_NS` import from `m0_http`,
+  and `lightbug_http` no longer exports them. An edit there is invisible to
+  apps until `build-http` runs, and to `bin/m0serve` until `build-http`,
+  `build-wsgi` and `build-serve` have — the opposite of the habit formed
+  while it was source-resolved. Its own test imports `src.mojo_pool`.
+- **`host.mojo` is the package `m0_host`** (`packages/m0-http/m0_host/`),
+  because it calls `run_event_loop` and so cannot be in `src/`. It sits
+  above the fork and `m0_http`, is imported by neither, and is resolved
+  from SOURCE like the fork: the directory carries the package's name and
+  there is no `m0_host.mojoc` — never build one beside it, a directory
+  next to a `.mojoc` of its name shadows it. `poe check-host-package`
+  compiles it whole (lazy bodies, the fork's blind spot), inside
+  `test-all`. `test_host.mojo` imports `m0_host.host` and takes every
+  shared type from `m0_http.*`, never `src.*`: the host resolves them
+  through the `.mojoc`, and `src.threads.ThreadSet` is a different type.
+
+Renaming each `src/` was the other way out of the trait bug and is still
+NOT a quick fix: a source directory beside a `.mojoc` of the same name
+shadows it, so every consumer would silently compile from source.
+`build-apps` compiling `apps/pool_spike` has reversed with the move: it
+was the guard against putting `mojo_pool.mojo` in `src/`, and is now a
+second guard on the fix, failing for the real `PoolHandler` if a toolchain
+takes it away. `scripts/pool_sabotage.py`
 reverts six of that file's rules by matching EXACT source lines (the
 `T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
 so an edit to one of those lines passes every local gate and fails the
@@ -1212,7 +1239,7 @@ and refactored onto each piece under that green gate — do the same for any
 new piece of this layer: an app that asks, a wire gate, then the lift. The
 pieces, and the language fact each rests on:
 
-- **The Mojo host** (`lightbug_http/host.mojo`, SPEC E21–E23; the note is
+- **The Mojo host** (`m0_host/host.mojo`, SPEC E21–E23; the note is
   `docs/notes/the-mojo-host.md`): `serve[H, P](AppConfig())` is a Mojo
   app's whole `main` below its own configuration checks. `H: AppHandler`
   is an `HTTPService` with a static `make(ctx)` (and `page_slots(workers)`
@@ -1235,8 +1262,9 @@ pieces, and the language fact each rests on:
   decides for every producer). A `make` that raises, handler or producer,
   is refused with 78 rather than crash-looped, the producer being built on
   the spawning thread before the listen, and one worker's refusal ends its
-  siblings (D30). It lives in the fork for the witness-table
-  reason (D28), serves `M0_BLOCKING_THREADS=N` as one GIL-free pool lane
+  siblings (D30). It is a source-resolved package of its own, `m0_host`,
+  above the fork and `m0_http` (D33; it left the fork on 2026-09-18, D28
+  retired), serves `M0_BLOCKING_THREADS=N` as one GIL-free pool lane
   per worker (D31, SPEC E26: `PoolLane[H]` builds the app's handler again
   on each thread, `HostContext.thread` names the instance, the host waits
   for every thread's handler before it serves and a raising pool `make`
@@ -1337,9 +1365,9 @@ pieces, and the language fact each rests on:
   has flipped from a countdown to a regression guard — all four of its
   arms compile, and it fails if a toolchain takes the fix away. So
   `PageShell` (kept in `fragment.mojo` as that guard's target) is the API
-  to prefer from here, and `HTTPService`/`PoolHandler` no longer need the
-  source-resolved fork for this reason. None of those three moves has been
-  made yet; each is its own round, and D7, D12 and D28 stand until then.
+  to prefer from here. D28's move is made (`PoolHandler` is in `m0_http`,
+  the host in `m0_host`); the other two are each a round of their own, and
+  D7 and D12 stand until then.
 - **`url_for(PATTERN, params...)`** (`router.mojo`): the pattern is a
   `comptime` constant given to both `add` and `url_for`, so a misspelled
   route is a compile error; it raises on an arity mismatch and

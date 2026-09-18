@@ -213,6 +213,7 @@ The engineering record: long-form, dated, kept as written.
 - [The desktop-Mac server, and what the wheel gives up to ship](notes/desktop-mac-server.md)
 - [Mojo 1.0's PythonObject leak, and what the pin bump will hit — answered by the bump](notes/pythonobject-leak-and-the-pin-bump.md)
 - [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md)
+- [The host leaves the fork — 2026-09-18](notes/the-host-leaves-the-fork.md)
 - [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)

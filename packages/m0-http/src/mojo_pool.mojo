@@ -67,15 +67,12 @@ from lightbug_http.service import HTTPService
 from lightbug_http.hold import take_stream_hold, request_last_event_id, send_hold_frame
 from lightbug_http.c.process import getpid
 
-# The same back-edge `event_loop.mojo` uses for `m0_http.log`, and for the
-# same reason: `threads.mojo` is framework code, both sides live inside
-# `packages/m0-http/`, and the cycle never crosses a package boundary. It is
-# also why this file is HERE rather than in `src/` — a trait a handler must
-# conform to has to be source-visible to apps the way `HTTPService` is. Behind
-# the `.mojoc` its required methods mention `m0_http`'s own `HTTPRequest`
-# while an app's conformance mentions `lightbug_http`'s, and the witness table
-# is silently never emitted ("does not have witness table for trait").
-from m0_http.threads import (
+# This file lived in the fork until 2026-09-18, because on Mojo 1.0 an app's
+# conformance to `PoolHandler` behind the `.mojoc` got no witness table. The
+# cause was the package's name differing from its source directory, Mojo
+# 1.1.0 fixed it, and `poe check-mojoc-trait` is the regression guard
+# (DECISIONS D28, retired).
+from .threads import (
     ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS, BLK_LANE,
     STATUS_NEVER_RAN, STATUS_OK, STATUS_RAISED,
 )

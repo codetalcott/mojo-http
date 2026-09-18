@@ -16,7 +16,7 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns, sleep
 
 from lightbug_http.broadcast import BUS_MAX_FRAME, BroadcastBus, drain_bus_channel
-from lightbug_http.host import (
+from m0_host.host import (
     AppHandler,
     HostContext,
     NoProducer,
@@ -30,10 +30,10 @@ from lightbug_http.host import (
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.uri import URI
-from lightbug_http.mojo_pool import MojoPool, PoolContext
 from lightbug_http.offload import OffloadPool
 from lightbug_http.ring import atomic_at
 from m0_http.config import AppConfig
+from m0_http.mojo_pool import MojoPool, PoolContext
 from m0_http.views import Views
 from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
 from m0_http.threads import STATUS_NEVER_RAN, STATUS_OK, STATUS_RAISED

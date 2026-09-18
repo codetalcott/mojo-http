@@ -13,7 +13,7 @@
     GET  /slow?ms=N  spins for N ms in `func`: the placement load
 
 `smoke-host` (SPEC E21-E23, E25, E26) drives it. The application is
-nothing but the two conformances `lightbug_http.host` asks for — a handler
+nothing but the two conformances `m0_host.host` asks for — a handler
 with `make`, a producer with `make` and `step` — so what the gate observes
 is the host: which workers hold streams, whether every one of them gets
 every beat, where accepted connections land, how a drain ends, what
@@ -58,7 +58,7 @@ from std.time import perf_counter_ns, sleep
 
 from lightbug_http import OK, HTTPRequest, HTTPResponse
 from lightbug_http.c.process import getpid
-from lightbug_http.host import AppHandler, HostContext, Producer, Publisher, serve
+from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
 
 from m0_http import AppConfig, SSERegistry, format_sse_event, sse_response
 

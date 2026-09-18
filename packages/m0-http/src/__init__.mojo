@@ -81,4 +81,5 @@ from .signal import (
 )
 from .health import HealthRegistry
 from .config import AppConfig, threads_conflict
+from .mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
 from .client import Client
