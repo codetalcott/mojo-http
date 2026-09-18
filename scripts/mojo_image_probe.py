@@ -3,6 +3,7 @@
     python3 scripts/mojo_image_probe.py --app blobs --build   # poe smoke-blobs-image
     python3 scripts/mojo_image_probe.py --app hello --build   # poe probe-mojo-image
     python3 scripts/mojo_image_probe.py --app blobs --image TAG
+    python3 scripts/mojo_image_probe.py --app blobs --url https://blobs.m0serve.dev --version 1.5.0
 
 `--build` builds the image from the repository root exactly as `fly deploy`
 does, with `--target-cpu` chosen from the DOCKER DAEMON's architecture
@@ -40,6 +41,14 @@ And for `blobs`, the app that does more than answer:
     ENDED BY THE SERVER on `docker stop`, the exit is 0 within 10 s, and the
     log names nothing abandoned -- the producer was told to stop and joined.
 
+`--url` is the deploy's verification: the HTTP phases alone, against a
+server already running with other viewers on it, so nothing that needs a
+fresh producer. It asserts `/health`; `/about` naming the app, no Python
+and the version given (`--version`, default `pyproject.toml`'s); the
+footer saying what `/about` says; a stream that receives three frames with
+increasing ids, each a `datastar-patch-signals` event carrying every slot;
+and `/stats` counting steps.
+
 Measured and recorded (scripts/emit.py; a no-op outside CI): the build
 time, the image size the daemon reports (compressed under the containerd
 image store, uncompressed under the classic one -- the probe says which),
@@ -51,12 +60,14 @@ import argparse
 import http.client
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 import traceback
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -141,14 +152,45 @@ def megabytes(n):
     return f"{tenths // 10}.{tenths % 10} MB"
 
 
-def http_get(port, path, timeout=10):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+def _connect(target, timeout):
+    """A connection to `target`: a published port (int) or a base URL."""
+    if isinstance(target, int):
+        return http.client.HTTPConnection("127.0.0.1", target, timeout=timeout)
+    u = urllib.parse.urlsplit(target)
+    cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+    return cls(u.hostname, u.port, timeout=timeout)
+
+
+def http_get(target, path, timeout=10):
+    conn = _connect(target, timeout)
     try:
         conn.request("GET", path)
         resp = conn.getresponse()
         return resp.status, resp.read()
     finally:
         conn.close()
+
+
+def footer_line(facts):
+    """The footer as `apps/blobs/about.mojo` renders it from `facts`."""
+    return (f"m0 {facts['version']} · pure Mojo · no Python in this image · "
+            f"{megabytes(facts['image_bytes'])} unpacked, "
+            f"{megabytes(facts['app_bytes'])} of it this app")
+
+
+def check_page(target, facts):
+    """`/about` is `facts` and the page's footer says what they say."""
+    status, body = http_get(target, "/about")
+    if status != 200 or json.loads(body) != facts:
+        fail(f"/about answered {status} {body[:200]!r}, not the image's facts file")
+    status, body = http_get(target, "/")
+    page = body.decode()
+    line = footer_line(facts)
+    if status != 200 or line not in page:
+        start = page.find("<footer")
+        fail(f"the page's footer is not the image's facts: want {line!r}, "
+             f"page has {page[start:start + 300]!r}")
+    return line
 
 
 def pyproject_version():
@@ -293,19 +335,7 @@ def probe(args, tag, arch):
 
         if args.app == "blobs":
             phase("the page says what the image is")
-            status, body = http_get(port, "/about")
-            if status != 200 or json.loads(body) != facts:
-                fail(f"/about answered {status} {body[:200]!r}, not the image's facts file")
-            status, body = http_get(port, "/")
-            page = body.decode()
-            line = (f"m0 {facts['version']} · pure Mojo · no Python in this image · "
-                    f"{megabytes(facts['image_bytes'])} unpacked, "
-                    f"{megabytes(facts['app_bytes'])} of it this app")
-            if status != 200 or line not in page:
-                start = page.find("<footer")
-                fail(f"the page's footer is not the image's facts: want {line!r}, "
-                     f"page has {page[start:start + 300]!r}")
-            print(f"footer: {line}")
+            print(f"footer: {check_page(port, facts)}")
 
         phase("RSS, idle")
         idle = tree_rss_kb(name)
@@ -372,17 +402,89 @@ def probe(args, tag, arch):
             run("docker", "rm", "-f", name, check=False)
 
 
+FRAME_ID = re.compile(rb"(?:^|\n)id: (\d+)")
+SLOTS = 16
+
+
+def probe_url(args):
+    """The deploy's verification: HTTP phases only, other viewers welcome."""
+    base = args.url.rstrip("/")
+    want_version = args.version or pyproject_version()
+
+    phase("it serves")
+    status, _ = http_get(base, "/health")
+    if status != 200:
+        fail(f"/health answered {status}")
+
+    phase("the page says what the image is")
+    status, body = http_get(base, "/about")
+    if status != 200:
+        fail(f"/about answered {status}: {body[:200]!r}")
+    facts = json.loads(body)
+    for key, value in (("app", "blobs"), ("version", want_version), ("python", False)):
+        if facts.get(key) != value:
+            fail(f"/about says {key}={facts.get(key)!r}; want {value!r}")
+    print(f"footer: {check_page(base, facts)}")
+
+    phase("a stream gets frames")
+    conn = _connect(base, 15)
+    conn.request("GET", "/events", headers={"Accept": "text/event-stream"})
+    resp = conn.getresponse()
+    if resp.status != 200 or not (resp.getheader("content-type") or "").startswith("text/event-stream"):
+        fail(f"/events answered {resp.status} {resp.getheader('content-type')!r}")
+    buf = b""
+    ids = []
+    deadline = time.monotonic() + 15
+    while len(ids) < 3:
+        if time.monotonic() > deadline:
+            fail(f"{len(ids)} frames in 15 s")
+        chunk = resp.read1(65536)
+        if not chunk:
+            fail(f"the stream ended after {len(ids)} frames")
+        buf += chunk
+        while b"\n\n" in buf:
+            block, buf = buf.split(b"\n\n", 1)
+            if b"event: datastar-patch-signals" not in block:
+                continue
+            m = FRAME_ID.search(block)
+            if not m:
+                fail(f"a frame with no id: {block[:120]!r}")
+            missing = [k for k in range(SLOTS) if f'"_b{k}"'.encode() not in block]
+            if missing:
+                fail(f"frame {m.group(1).decode()} lacks slots {missing}: a delta, not a state")
+            ids.append(int(m.group(1)))
+    conn.close()
+    if ids != sorted(ids) or len(set(ids)) != len(ids):
+        fail(f"frame ids are not increasing: {ids}")
+
+    phase("the producer is stepping")
+    status, body = http_get(base, "/stats")
+    st = json.loads(body)
+    if status != 200 or st.get("steps", 0) <= 0:
+        fail(f"/stats answered {status} {body[:200]!r}")
+    print(f"{base}: {facts['app']} {facts['version']}, frames {ids}, "
+          f"{st['steps']} steps, step {st['step_us']} us")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--app", required=True, choices=["hello", "blobs"])
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--build", action="store_true", help="build deploy/mojo/Dockerfile, then probe")
     mode.add_argument("--image", help="probe an image already built")
+    mode.add_argument("--url", help="probe a running deploy over HTTP(S) (blobs only)")
+    ap.add_argument("--version", default="", help="--url: the version /about must name")
     ap.add_argument("--target-cpu", default="", help="default: M0_TARGET_CPU, else by the daemon's arch")
     ap.add_argument("--port", type=int, default=18099)
     ap.add_argument("--task", default="", help="the poe task the measurements are recorded under")
     ap.add_argument("--keep", action="store_true", help="leave the image and container behind")
     args = ap.parse_args()
+    if args.url:
+        if args.app != "blobs":
+            fail("--url probes the blobs deploy; hello has none")
+        probe_url(args)
+        print(f"mojo_image_probe: {args.url} OK")
+        return
     if run("docker", "info", check=False).returncode != 0:
         fail("docker is not available (daemon not running, or not installed)")
     arch = daemon_arch()
