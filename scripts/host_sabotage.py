@@ -185,8 +185,11 @@ SABOTAGES = [
         "a pool thread's raising make is served one thread short",
         SMOKE,
         HOST,
-        "        if threads.wait_ready(JOIN_TIMEOUT_NS) > 0:\n",
-        "        if False:\n",
+        "        var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "        if short > 0:\n",
+        "        var short = 0\n"
+        "        _ = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "        if short > 0:\n",
     ),
     (
         "a pool thread's handler is built as the loop's own",

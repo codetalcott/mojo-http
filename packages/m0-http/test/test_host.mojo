@@ -438,7 +438,10 @@ def test_the_host_refuses_what_it_does_not_serve() raises:
 
 
 def test_the_host_serves_what_it_does() raises:
-    """covers: E26"""
+    """What the host does serve is not refused, the pool lane included.
+
+    covers: E26
+    """
     assert_false(Bool(host_refusal(AppConfig())))
     assert_false(Bool(_refusal_for("M0_WORKERS", "4")))
     # Present at their defaults is not a request for the other mode.
