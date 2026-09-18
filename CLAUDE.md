@@ -187,10 +187,12 @@ it (`ServeOptions`'s `*_set` fields carry the distinction, mirrored on
 `AppConfig`; `resolve_blocking_threads` in `src/cli.mojo` is the one place the
 default is decided) — except that a mount set which cannot run inline keeps the
 default unless `--blocking-threads` itself is set (`pool_is_default`, SPEC
-M20). Three rules the Mojo 1.0 interop imposes and that the code depends on:
+M20). Three rules the pinned interop imposes and that the code depends on:
 
 - **`std.python` binds no `bytes` API and no latin-1 decoder — but the
-  unbound C API is still reachable.** `Python().cpython()` has no
+  unbound C API is still reachable.** (Re-probed on the 1.1.0 pin: neither
+  `PyBytes_AsString` nor `PyUnicode_DecodeLatin1` is an attribute of
+  `CPython`.) `Python().cpython()` has no
   `PyBytes_*` of any kind and no `PyUnicode_DecodeLatin1`, and
   `external_call` cannot reach them either: **libpython is not on the link
   line**, which is precisely why `CPython` is a struct of `dlopen`'d function
@@ -209,18 +211,26 @@ M20). Three rules the Mojo 1.0 interop imposes and that the code depends on:
   `PyUnicode_DecodeUTF8` produces the same `str`. Do not "simplify" any body
   path to a `String` round trip; Mojo strings are UTF-8 and it corrupts every
   byte above 0x7F.
-- **`PythonObject` interop leaks a reference per call argument and per
-  `__setitem__` value** (Mojo 1.0, measured; zero-argument calls, call
-  results, `len()`, and `String(py=...)` are clean). Never add a
-  per-request `PythonObject` call argument or dict/attr assignment to the
-  bridge — it reintroduces an unbounded per-request leak that shows up as
-  growing GC pauses, and `smoke-django`'s RSS guard will fail. Startup-only
-  calls (`set_app`) are the deliberate, bounded exception.
+- **The per-request path is the raw C API, and the reason is now speed
+  rather than a leak.** Through Mojo 1.0 a `PythonObject` call argument or
+  `__setitem__` value leaked a reference each (measured; zero-argument
+  calls, call results, `len()` and `String(py=...)` were clean), so the
+  bridge's shape was a correctness requirement. Mojo 1.1.0 carries the
+  upstream fix (modular/modular#6833) and the pin moved on 2026-09-18:
+  measured in this tree against 1.0.0 as the null case, 1000 operations
+  leak 1001 references there and 0 here. What survives is the
+  measurement that made the C API worth it anyway — 14.9 µs/request to
+  3.5 — so the rule stands as a performance rule: do not put a
+  per-request `PythonObject` call argument or dict/attr assignment in the
+  bridge, and keep `smoke-django`'s RSS guard at 0 KB over 10k requests,
+  which now watches the steal discipline below rather than the toolchain.
+  Startup-only calls (`set_app`) were the bounded exception and are now
+  simply cheap.
 
-  **The way around it is the raw C API, not avoidance.** `Python().cpython()`
+  **The way in is the raw C API.** `Python().cpython()`
   reaches `PyDict_New`, `PyDict_SetItem`, `PyUnicode_DecodeUTF8`,
   `PyTuple_New`/`SetItem` and `PyObject_CallObject`, which refcount
-  explicitly and so are not the leaking path. The bridge builds each
+  explicitly and cost no `PythonObject` round trip. The bridge builds each
   request's whole environ that way and hands it over as a stolen tuple
   slot — which is what let the environ stop being rebuilt in Python and
   took the bridge from 14.9 µs/request to 3.5. Two rules come with it:
@@ -811,16 +821,18 @@ imports `m0_http.log`, `lightbug_http/mojo_pool.mojo` imports
 `m0_http.multiworker`, `m0_http.prefork`, `m0_http.signal`, `m0_http.threads`
 and `m0_http.views` (DECISIONS D28). Both sides live inside `packages/m0-http/`, so the cycle never crosses a
 package boundary. `mojo_pool.mojo` sits in the fork rather than `src/` because an app
-conforming to `PoolHandler` behind the `.mojoc` got no witness table. **The
-cause is not the package boundary** (probed 2026-09-15): a package compiled
-from a directory named other than the package records its traits under the
-DIRECTORY's name — `trait 'src::fragment::PageShell'` — while a consumer
-resolves them under the package's, and every package here runs `mojo
-precompile src -o <name>.mojoc`. The same source from a directory named
-`m0_http` compiles an app conformance on this toolchain, and the Mojo
-nightly fixes the mismatch outright. `poe check-mojoc-trait` is the probe,
-and renaming is NOT a quick fix: a source directory beside a `.mojoc` of the
-same name shadows it, so every consumer would silently compile from source. `build-apps` compiling
+conforming to `PoolHandler` behind the `.mojoc` got no witness table on Mojo
+1.0. **The cause was never the package boundary** (probed 2026-09-15): a
+package compiled from a directory named other than the package recorded its
+traits under the DIRECTORY's name — `trait 'src::fragment::PageShell'` —
+while a consumer resolved them under the package's, and every package here
+runs `mojo precompile src -o <name>.mojoc`. **Mojo 1.1.0 fixed it and the
+pin moved on 2026-09-18**, so `poe check-mojoc-trait` is now a regression
+guard: the reason for this placement is spent, and moving the file back is
+a round of its own (D28's retiring condition). Renaming each `src/` was
+the other way out and is still NOT a quick fix: a source directory beside
+a `.mojoc` of the same name shadows it, so every consumer would silently
+compile from source. `build-apps` compiling
 `apps/pool_spike` is the guard against moving it back. `scripts/pool_sabotage.py`
 reverts six of that file's rules by matching EXACT source lines (the
 `T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
@@ -1281,7 +1293,8 @@ pieces, and the language fact each rests on:
   that is not one of the five. `Htmx.swap` and `Datastar.swap` are the
   only places either spelling lives; an app names its vocabulary once
   (`comptime Frag = Fragment[Htmx]`). The conformances stay INSIDE
-  `html.mojo` because an app cannot conform to a `.mojoc` trait (below).
+  `html.mojo` because on Mojo 1.0 an app could not conform to a `.mojoc`
+  trait; the pin has moved and D7 is what still keeps them there (below).
   One mode, on purpose: Datastar keeps a non-default mode on the
   RESPONSE (`datastar-mode`) and htmx on the element, so a `mode` on
   `swap` is a spelling one of them cannot honour; when an app appends,
@@ -1315,18 +1328,18 @@ pieces, and the language fact each rests on:
   APPENDS (`vary_accept` used to overwrite, unnoticed while nothing set
   `Vary` twice) and keeps `*` alone. A `status` parameter makes a styled
   404 a 404. The shell is
-  a `thin` function over a generic context, not a trait, because an app's
-  conformance to `PageShell` got no witness table (D12). **The discriminant
-  is now established and it is a NAME**: a package compiled from a
-  directory named other than the package loses its traits' witness tables,
-  and every package here builds `src` into `<name>.mojoc`. `poe
-  check-mojoc-trait` proves it four ways — the `m0_http` case refused, the
-  same synthetic source compiled from a matching directory ACCEPTED, from a
-  mismatched one refused, and `Views[S]` over an app type compiled — and
-  exits 1 the day the mismatch stops costing anything, which the Mojo
-  nightly already does. Then `PageShell` (kept in `fragment.mojo` for that
-  probe) is the API to prefer, and `HTTPService`/`PoolHandler` no longer
-  need the source-resolved fork for this reason.
+  a `thin` function over a generic context, not a trait, because on Mojo
+  1.0 an app's conformance to `PageShell` got no witness table (D12).
+  **The discriminant was a NAME, and Mojo 1.1.0 fixed it**: a package
+  compiled from a directory named other than the package used to lose its
+  traits' witness tables, and every package here builds `src` into
+  `<name>.mojoc`. The pin moved on 2026-09-18, so `poe check-mojoc-trait`
+  has flipped from a countdown to a regression guard — all four of its
+  arms compile, and it fails if a toolchain takes the fix away. So
+  `PageShell` (kept in `fragment.mojo` as that guard's target) is the API
+  to prefer from here, and `HTTPService`/`PoolHandler` no longer need the
+  source-resolved fork for this reason. None of those three moves has been
+  made yet; each is its own round, and D7, D12 and D28 stand until then.
 - **`url_for(PATTERN, params...)`** (`router.mojo`): the pattern is a
   `comptime` constant given to both `add` and `url_for`, so a misspelled
   route is a compile error; it raises on an arity mismatch and
@@ -1822,9 +1835,16 @@ Properties of the design, not defects to fix in passing:
   its control flow, so a check that moves in `main` must move in
   `_run_doctor` too.
 
-## Mojo 1.0 patterns
+## Mojo 1.1 patterns
 
-This project targets **Mojo 1.0** (pinned in `uv.lock`).
+This project targets **Mojo 1.1** (pinned in `uv.lock`; moved from 1.0.0 on
+2026-09-18, recorded in
+[docs/notes/the-pin-moves-to-1-1-0.md](docs/notes/the-pin-moves-to-1-1-0.md)).
+What the move cost: `Atomic[Int64]` rather than `Atomic[DType.int64]`,
+`_CTimeSpec.tv_nsec` rather than `tv_subsec`, `Hasher.update` taking a
+`Span[UInt8]`, `Array` rather than `InlineArray`, and
+`ptr`/`as_c_string_span` for the deprecated
+`unsafe_ptr`/`as_c_string_slice`.
 
 1. **`comptime` constants** — replaces deprecated `alias` for compile-time values
 2. **No `@value` decorator** — removed in 26.3; structs auto-derive copy/move

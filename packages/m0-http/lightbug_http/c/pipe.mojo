@@ -101,7 +101,7 @@ struct ShutdownHandle(Movable):
         # no allocation, which a signal handler could not do anyway.
         _ = _write(
             self.fd,
-            _NUDGE_BYTE.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
+            _NUDGE_BYTE.ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
                 ImmUntrackedOrigin
             ](),
             1,

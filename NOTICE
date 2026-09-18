@@ -574,6 +574,16 @@ lightbug_http
       - accept_share.mojo (2026-09-16): `accept_sharing_wanted(workers)`,
         the one place the `M0_ACCEPT_SHARE=0` knob is read for a worker
         count.
+      - Toolchain migration for the Mojo 1.1.0 pin (2026-09-18), behaviour-
+        preserving throughout: `Atomic[DType.int64]` -> `Atomic[Int64]` in
+        offload.mojo, ring.mojo and accept_share.mojo; `Hasher.update` now
+        takes a `Span[UInt8]`, so cookie/response_cookie_jar.mojo passes
+        `.as_bytes()` and uri.mojo's `Scheme` delegates to the scalar's own
+        `__hash__`; and the deprecations 1.1 introduces are cleared --
+        `unsafe_ptr` -> `ptr` in c/pipe.mojo, address.mojo and
+        c/network.mojo, `as_c_string_slice` -> `as_c_string_span` in the
+        latter two (verified still NUL-terminating, which getaddrinfo and
+        inet_pton depend on).
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

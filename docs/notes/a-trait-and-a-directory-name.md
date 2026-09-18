@@ -1,5 +1,12 @@
 # A trait and a directory name, 2026-09-15
 
+> **Fixed upstream.** Mojo 1.1.0 records a trait's identity so that a
+> package name differing from its source directory costs nothing, and
+> this repo pinned it on 2026-09-18. `poe check-mojoc-trait` is now a
+> regression guard rather than a countdown. The decisions this page
+> describes still stand, because the code has not moved yet; see
+> [The pin moves to Mojo 1.1.0](the-pin-moves-to-1-1-0.md).
+
 > A correction from the engineering record. For three weeks this repo
 > believed a language limitation that does not exist, and shaped four
 > decisions around it. This is what the limitation actually is, how it was

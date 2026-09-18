@@ -1,45 +1,51 @@
 #!/usr/bin/env python3
-"""Why an app cannot conform to a trait in one of this repo's `.mojoc`s.
+"""An app CAN conform to a trait in one of this repo's `.mojoc`s — now.
 
-It is NOT that a trait cannot cross a precompiled package boundary, which is
-what this file claimed from 2026-08-28 (`PoolHandler`) to 2026-09-15 and what
-`HTTPService`, `PoolHandler` and the thin-function page shell (D12) were all
-shaped around. **The discriminant is the package's NAME against the SOURCE
-DIRECTORY it was compiled from.** Identical twelve-line code:
+This file spent three weeks holding the wrong diagnosis and then a week
+counting down to the right one. Both halves are worth keeping, because what
+it guards is a property the tree stopped being able to assume once and could
+lose again.
 
-    src/pkg/      ->  pkg.mojoc     conformance compiles
+**It was never that a trait cannot cross a precompiled package boundary**,
+which is what this file claimed from 2026-08-28 (`PoolHandler`) to
+2026-09-15, and what `HTTPService`, `PoolHandler`, the thin-function page
+shell (D12) and the host's placement in the fork (D28) were all shaped
+around. The discriminant was the package's NAME against the SOURCE
+DIRECTORY it was compiled from. Identical twelve-line code, on Mojo 1.0.0:
+
+    src/pkg/      ->  pkg.mojoc     conformance compiled
     src/pkg_src/  ->  pkg.mojoc     "struct 'app::S' does not have witness
                                      table for trait 'pkg_src::lib::T'"
 
-A trait's identity is recorded under the directory's name while a consumer
-resolves it under the package's, and when those differ nothing matches. Every
-package here runs `mojo precompile src -o <name>.mojoc`, so every one of them
-has the mismatch -- and the error has been saying so all along:
+A trait's identity was recorded under the directory's name while a consumer
+resolved it under the package's, and when those differed nothing matched.
+Every package here runs `mojo precompile src -o <name>.mojoc`, so every one
+of them had the mismatch -- and the error had been saying so all along:
 `trait 'src::fragment::PageShell'`.
 
-Fixed upstream: on Mojo nightly 1.2.0.dev2026091505 both spellings work. So
-this check is a countdown to the pin moving, not a permanent limitation.
-
-Four cases, because a one-armed probe is what let the wrong diagnosis stand
-for three weeks:
+**Fixed in Mojo 1.1.0**, which this repo pinned on 2026-09-18. All four arms
+below compile there, and this check now fails if any of them stops:
 
     mismatch    an app conforming to `m0_http.fragment.PageShell`, whose
-                package was built from `src/`               must be REFUSED
+                package was built from `src/`               must COMPILE
     match       the same shape in a synthetic package whose directory and
                 package name agree                          must COMPILE
     control-x   that synthetic package rebuilt from a directory with a
-                different name                              must be REFUSED
+                different name                              must COMPILE
     control-v   `Views[S]` over an app type, a `.mojoc` generic over an app
                 type, which has always worked               must COMPILE
 
-`match` beside `control-x` is the whole argument: one source, two directory
-names, opposite outcomes. `control-v` is what stops a stale or broken
-`.mojoc` reading as the limitation.
+`mismatch` and `control-x` name the SHAPE, not the outcome: both are a
+package whose name differs from its directory, which is the case that used
+to be refused. They are kept apart because `mismatch` is the real
+`m0_http`, built by `build-http`, while `control-x` is twelve synthetic
+lines -- so a failure in one and not the other says whether the problem is
+the toolchain or this tree.
 
-The day `mismatch` and `control-x` compile, the toolchain has fixed it: this
-exits 1, D12 can retire, `PageShell` becomes the API to prefer over the
-thin-function shell, and `HTTPService`/`PoolHandler` no longer need to sit in
-the source-resolved fork for this reason.
+A failure here is not cosmetic. It means the constraint behind D12, D28 and
+D7 is back, `PageShell` can no longer be an app-facing trait, and anything
+moved out of the fork on the strength of the fix has to go back. Say so in
+the failure, because the next session will not have read this.
 """
 
 import shutil
@@ -144,8 +150,19 @@ def build_synthetic(td: Path, dir_name: str) -> Path:
     return build
 
 
+# The toolchain prints this on every invocation in a venv without its crash
+# handler, on stderr, before anything real. Left in, it is what every failure
+# message here reports instead of the compiler error -- measured while
+# null-casing the flipped check.
+_NOISE = ("Failed to initialize Crashpad",)
+
+
 def first_line(err: str) -> str:
-    return err.strip().splitlines()[0] if err.strip() else ""
+    """The first line of `err` that is a compiler diagnostic, not noise."""
+    for line in err.strip().splitlines():
+        if line.strip() and not any(n in line for n in _NOISE):
+            return line
+    return ""
 
 
 def main() -> int:
@@ -165,32 +182,39 @@ def main() -> int:
         return 1
 
     if not match_ok:
-        print("mojoc-trait: a package whose directory and name AGREE now refuses an "
-              f"app conformance too: {first_line(match_err)}. The name is no longer "
-              "the discriminant -- re-probe before trusting this file.")
+        print("mojoc-trait: a package whose directory and name AGREE refuses an app "
+              f"conformance: {first_line(match_err)}. That is broken beyond the "
+              "name-mismatch bug this file is about -- re-probe from scratch.")
         return 1
 
-    if mismatch_ok and controlx_ok:
-        print("mojoc-trait: the limitation has LIFTED -- a name mismatch no longer "
-              "costs the witness table. Prefer PageShell over the thin-function "
-              "shell in fragment.mojo (docs/DECISIONS.md D12), stop keeping "
-              "app-facing traits in the fork for this reason, and retire this check.")
+    # The regression this exists for. Either mismatched arm refusing means the
+    # 1.1.0 fix is gone on this toolchain.
+    regressed = [
+        (label, err)
+        for label, ok, err in (
+            ("m0_http (the real package, from `src`)", mismatch_ok, mismatch_err),
+            ("synthetic (twelve lines, from a renamed directory)", controlx_ok, controlx_err),
+        )
+        if not ok
+    ]
+    if regressed:
+        print("mojoc-trait: REGRESSED -- a package compiled from a directory named "
+              "other than the package has lost its traits' witness tables again.")
+        for label, err in regressed:
+            print(f"  {label}: {first_line(err)}")
+        if len(regressed) == 1:
+            print("  Only one of the two arms refused, so this may be this tree "
+                  "rather than the toolchain -- compare them before concluding.")
+        print("  What this costs: the constraint behind DECISIONS D7, D12 and D28 "
+              "is back. `PageShell` cannot be an app-facing trait, app-facing "
+              "traits belong in the source-resolved fork, and anything moved out "
+              "of it on the strength of Mojo 1.1.0 has to go back.")
         return 1
 
-    if mismatch_ok != controlx_ok:
-        print(f"mojoc-trait: the two mismatched cases disagree (m0_http={mismatch_ok}, "
-              f"synthetic={controlx_ok}) -- one of them is failing for another reason.")
-        return 1
-
-    for label, err in (("m0_http", mismatch_err), ("synthetic", controlx_err)):
-        if "witness table" not in err:
-            print(f"mojoc-trait: {label} refused, but not for the witness table: {first_line(err)}")
-            return 1
-
-    print("mojoc-trait: still present on this toolchain -- a package compiled from a "
-          "directory named other than the package loses its traits' witness tables "
-          "(m0_http is `src` -> `m0_http`); the same source from a matching "
-          "directory compiles, and Views[S] over an app type compiles")
+    print("mojoc-trait: an app conforms to a trait in a `.mojoc` whatever the "
+          "source directory is named -- the real m0_http (`src` -> `m0_http`), "
+          "the synthetic pair both ways, and Views[S] over an app type all "
+          "compile (refused before Mojo 1.1.0)")
     return 0
 
 

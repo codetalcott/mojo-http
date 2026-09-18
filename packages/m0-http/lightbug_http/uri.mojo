@@ -175,7 +175,9 @@ struct Scheme(Equatable, Hashable, ImplicitlyCopyable, Writable):
     comptime HTTPS = Self(1)
 
     def __hash__[H: Hasher](self, mut hasher: H):
-        hasher.update(self.value)
+        # `Hasher.update` takes a `Span[UInt8]`, so a lone scalar is hashed
+        # by the scalar's own `__hash__` rather than handed over directly.
+        self.value.__hash__(hasher)
 
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value

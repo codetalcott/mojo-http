@@ -42,7 +42,7 @@ struct ResponseCookieKey(ImplicitlyCopyable, KeyElement):
         return self.name == other.name and self.domain == other.domain and self.path == other.path
 
     def __hash__[H: Hasher](self: Self, mut hasher: H):
-        hasher.update(self.name + "~" + self.domain + "~" + self.path)
+        hasher.update((self.name + "~" + self.domain + "~" + self.path).as_bytes())
 
 
 @fieldwise_init
