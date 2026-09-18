@@ -1,6 +1,6 @@
 """What a prefork server creates before it forks: one module, both hosts.
 
-`m0serve` (the Python host) and `lightbug_http.host` (the Mojo host) each
+`m0serve` (the Python host) and `m0_host.host` (the Mojo host) each
 need the same three things made before `fork_all()`, because a fork copies
 descriptors and shared mappings and nothing made after it reaches a sibling:
 

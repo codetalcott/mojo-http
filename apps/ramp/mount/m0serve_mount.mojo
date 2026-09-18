@@ -8,7 +8,8 @@ given), and the table and state are the module's, built the way the host
 builds them. Nothing here is the ramp's own business.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse, PoolContext, PoolHandler
+from lightbug_http import HTTPRequest, HTTPResponse
+from m0_http import PoolContext, PoolHandler
 from m0_http import Mount, Views
 from ramp.views import Ramp, ramp_urls
 

@@ -19,7 +19,7 @@ So the cadence runs on a thread of its own and publishes each step through
 the `BroadcastBus`, exactly as `--pg-listen`'s listener thread does. The
 loop drains the channel and pays only `sse_peer_frame`.
 
-That thread is the Mojo host's `Producer` (`lightbug_http.host`): this app
+That thread is the Mojo host's `Producer` (`m0_host.host`): this app
 writes `SimProducer.step` and the host does the four things this file used
 to do by hand, each of which is easy to get wrong -- and this app got one
 wrong, publishing to `bus.write_fds[0]` alone under a comment saying every
@@ -60,7 +60,7 @@ from std.os import getenv
 from std.time import perf_counter_ns
 
 from lightbug_http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.host import AppHandler, HostContext, Producer, Publisher, serve
+from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
 
 from m0_http import AppConfig, SSERegistry, format_sse_event, sse_response
 from m0_http.multiworker import shared_fetch_add

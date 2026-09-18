@@ -25,15 +25,8 @@ not the answer to it. A pool exists for threads parked in a syscall.
 from std.ffi import c_int, external_call
 from std.os import getenv
 
-from lightbug_http import (
-    JOIN_TIMEOUT_NS,
-    MojoPool,
-    PoolContext,
-    PoolHandler,
-    Server,
-    HTTPRequest,
-    HTTPResponse,
-)
+from lightbug_http import Server, HTTPRequest, HTTPResponse
+from m0_http import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
 from lightbug_http.offload import OffloadPool
 from m0_http import AppConfig, install_shutdown_signals, reply
 

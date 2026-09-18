@@ -89,6 +89,23 @@ mojo precompile lightbug_http -I ../m0-core -I . -o "$out"
 rm -f "$out"
 """
 
+# The same question for the Mojo host, which left the fork on 2026-09-18 for
+# a source-resolved package of its own (`packages/m0-http/m0_host/`; its
+# module docstring says why it is not inside `m0_http`). It is resolved from
+# source exactly as the fork is, so its lazy bodies have the same blind spot
+# and get the same answer. No `m0_host.mojoc` is ever kept: a directory of
+# that name beside one would shadow it.
+[tool.poe.tasks.check-host-package]
+help = "The Mojo host (m0_host) type-checks as a whole package, lazy bodies included"
+deps = ["build-http"]
+shell = """
+set -e
+out="${TMPDIR:-/tmp}/m0_host_typecheck.mojoc"
+cd packages/m0-http
+mojo precompile m0_host -I ../m0-core -I . -o "$out"
+rm -f "$out"
+"""
+
 # consts.mojo and sse.mojo import nothing outside themselves, so the wire
 # format stays usable standalone. stream.mojo and signals.mojo are the server
 # glue and do depend on m0-http (which transitively needs m0-core), hence both
@@ -1002,7 +1019,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "check-fork-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -7294,7 +7311,7 @@ cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC
 # E21-E23): apps/host_check is a handler and a producer and nothing else,
-# so every assertion here is about `lightbug_http.host.serve`. One binary,
+# so every assertion here is about `m0_host.host.serve`. One binary,
 # every server on its own port: SO_REUSEPORT lets a stray one answer for a
 # port, which fakes a pass or a failure.
 [tool.poe.tasks.smoke-host]

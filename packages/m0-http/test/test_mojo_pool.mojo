@@ -20,7 +20,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.offload import OffloadPool
 from lightbug_http.uri import URI
 
-from lightbug_http.mojo_pool import MojoPool, PoolContext, PoolHandler
+from src.mojo_pool import MojoPool, PoolContext, PoolHandler
 from src.reply import json
 
 

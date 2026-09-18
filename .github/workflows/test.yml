@@ -550,7 +550,7 @@ jobs:
       # the same on two workers, a click crossing from worker 1.
       - name: Smoke test the blobs demo
         run: uv run poe smoke-blobs
-      # The Mojo host (lightbug_http.host.serve) on the smallest app that
+      # The Mojo host (m0_host.host.serve) on the smallest app that
       # uses all of it: the bus at one worker, every worker's streams get
       # every beat once, accept sharing, a drain signalled to the supervisor
       # alone, the producer's join bound, and the refusals before binding.

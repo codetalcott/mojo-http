@@ -585,6 +585,21 @@ lightbug_http
         latter two (verified still NUL-terminating, which getaddrinfo and
         inet_pton depend on).
 
+      - host.mojo and mojo_pool.mojo REMOVED from the fork (2026-09-18).
+        Both were written in this repository, never part of upstream, and
+        were placed here only because Mojo 1.0 emitted no witness table for
+        an application's conformance to a trait behind this repository's
+        `.mojoc` packages. Mojo 1.1.0 fixed that. mojo_pool.mojo is now
+        packages/m0-http/src/mojo_pool.mojo (`m0_http.mojo_pool`) and
+        host.mojo is packages/m0-http/m0_host/host.mojo, a package above
+        the fork that the fork does not import. __init__.mojo no longer
+        re-exports `MojoPool`, `PoolContext`, `PoolHandler` or
+        `JOIN_TIMEOUT_NS`. The entries above that name either file record
+        changes made while it lived here; its history from this date is
+        outside this list. The fork's imports of `m0_http` fall from eight
+        to one, event_loop.mojo -> `m0_http.log`
+        (docs/notes/the-host-leaves-the-fork.md).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

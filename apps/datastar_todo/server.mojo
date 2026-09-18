@@ -29,7 +29,7 @@ The list fragment is a `Fragment[Datastar]` (page.mojo): the same
 renderer whose output is the page's initial list is what every broadcast
 carries, and `smoke-todo` greps it out of a live stream's frame.
 
-It runs on the Mojo host (`lightbug_http.host`), so `M0_WORKERS=2` serves it
+It runs on the Mojo host (`m0_host.host`), so `M0_WORKERS=2` serves it
 from two processes over one SQLite file (WAL mode). Each worker opens its own
 connection, restores the same journal and joins the stream to the bus, and a
 mutation on either reaches every tab. One rule makes that correct rather than
@@ -60,7 +60,7 @@ from std.time import sleep
 
 from lightbug_http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.host import AppHandler, HostContext, serve
+from m0_host.host import AppHandler, HostContext, serve
 
 from m0_core.json_parse import parse_json_field
 

@@ -2,7 +2,7 @@
 """Break each rule the Mojo host keeps, and insist its gate fails every time.
 
 `blobs_sabotage.py`'s shape: each entry replaces one EXACT source block in
-`packages/m0-http/lightbug_http/host.mojo`, runs its gate, and restores the
+`packages/m0-http/m0_host/host.mojo`, runs its gate, and restores the
 file. The gate is `smoke-host` for what the wire shows,
 `smoke-fragment-notes` for `ViewsApp` (the host's own app does not use
 it), `test_host.mojo` for what only a thread-level test can see precisely
@@ -72,7 +72,7 @@ PREFORK = "prefork"
 RESPAWN = "respawn"
 VIEWS = "views"
 
-HOST = Path("packages/m0-http/lightbug_http/host.mojo")
+HOST = Path("packages/m0-http/m0_host/host.mojo")
 EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
 VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
 HOST_CHECK = Path("apps/host_check/server.mojo")

@@ -92,7 +92,7 @@ struct ThreadBlock(Copyable, Movable):
     def slot_addr(self, slot: Int) -> Int:
         """The address of `slot`'s word, for a writer that holds no block --
         the event loop stamping a producer's stop word when its drain begins
-        (`lightbug_http.host`). The word outlives the thread: a block is
+        (`m0_host.host`). The word outlives the thread: a block is
         `malloc`'d by `ThreadSet` and never freed."""
         return self.addr + slot * 8
 

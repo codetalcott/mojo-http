@@ -8,7 +8,8 @@ different routes, different state, a path parameter, a writing view -- so a
 build that silently picked up the wrong module cannot pass by accident.
 """
 
-from lightbug_http import PoolContext, PoolHandler, HTTPRequest, HTTPResponse
+from lightbug_http import HTTPRequest, HTTPResponse
+from m0_http import PoolContext, PoolHandler
 from m0_http import Mount, Views, reply
 
 comptime SEAM_INDEX = "/"

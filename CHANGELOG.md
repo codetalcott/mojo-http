@@ -10,7 +10,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
-- **The Mojo host** (SPEC E21–E23). `lightbug_http.host.serve[H, P]` is
+- **The Mojo host** (SPEC E21–E23). `m0_host.serve[H, P]` is
   everything in a Mojo application's `main` that is not the application:
   the listener, the pre-fork shared pages and bus, `M0_WORKERS` processes
   sharing their accepts, signals armed after the fork, a handler built in
@@ -156,6 +156,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   why this is a fix and not a footnote.
 
 ### Changed
+
+- **`PoolContext`, `PoolHandler`, `MojoPool` and `JOIN_TIMEOUT_NS` import
+  from `m0_http`, not `lightbug_http`** — a source break for a Mojo mount
+  module built through `M0SERVE_MOUNT_DIR` (SPEC N14), whose first line
+  becomes `from m0_http import PoolContext, PoolHandler`. The old import
+  is a compile error naming the missing name, at the build that adopts
+  this tree; nothing served changes, and a Mojo import path is outside the
+  served contract stated above. `mojo_pool.mojo` and the Mojo host were
+  placed in the `lightbug_http` fork because Mojo 1.0 emitted no witness
+  table for an application's conformance to a trait behind a `.mojoc`;
+  Mojo 1.1.0 fixed that, and both have left. The pool is
+  `m0_http.mojo_pool`. The host is a package of its own, `m0_host`
+  (`from m0_host import serve, AppHandler, ...`; it was
+  `lightbug_http.host`, which no release carried), resolved from source
+  beside the fork — it cannot be inside `m0_http`, because it calls the
+  event loop, `event_loop.mojo` imports `m0_http.log`, and that resolves
+  through the `.mojoc` the build would be writing (DECISIONS D33). `poe
+  check-host-package` compiles it whole inside `test-all`. The fork's
+  imports of `m0_http` fall from eight to one. DECISIONS D28 is retired.
+  The write-up is
+  [docs/notes/the-host-leaves-the-fork.md](docs/notes/the-host-leaves-the-fork.md).
 
 - **The pinned toolchain is Mojo 1.1.0** (was 1.0.0). It carries the
   upstream fix for the `PythonObject` reference leak

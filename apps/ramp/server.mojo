@@ -10,7 +10,7 @@ from `mount/` and compares the two on the wire.
 Run it:  uv run poe serve-ramp
 """
 
-from lightbug_http.host import ViewsApp, serve
+from m0_host.host import ViewsApp, serve
 
 from m0_http import AppConfig
 from ramp.views import RAMP_PREFIX, Ramp

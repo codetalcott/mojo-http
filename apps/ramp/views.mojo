@@ -37,7 +37,7 @@ from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns
 
 from lightbug_http import HTTPRequest, HTTPResponse
-from lightbug_http.host import HostContext, ViewState
+from m0_host.host import HostContext, ViewState
 from m0_http import Html, Mount, Views, reply
 
 

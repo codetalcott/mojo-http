@@ -203,7 +203,7 @@ reruns its gate, about nine minutes in all (`--only unit` runs the kernel's
 eight in about a minute).
 
 **And `uv run poe sabotage-host`** (SPEC E21–E24) — breaks each of
-twenty-five rules in `lightbug_http/host.mojo`, `src/prefork.mojo` and
+twenty-five rules in `m0_host/host.mojo`, `src/prefork.mojo` and
 `accept_share.mojo` and requires a gate to fail for every one: fourteen
 against `smoke-host`, one against `smoke-fragment-notes` (the `ViewsApp`
 adapter), four against `test_host.mojo`, six against `test_prefork.mojo`

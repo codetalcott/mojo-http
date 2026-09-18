@@ -56,9 +56,8 @@ from std.python import Python, PythonObject
 from std.sys.arg import argv
 from std.sys.info import CompilationTarget
 
-from lightbug_http import (
-    Server, MojoPool, PoolContext, PoolHandler, HTTPRequest, HTTPResponse,
-)
+from lightbug_http import Server, HTTPRequest, HTTPResponse
+from m0_http import MojoPool, PoolContext, PoolHandler
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 from m0_http import Mount, Views, reply
 from m0_http import GrantKeys, verify_grant, GRANT_KEY_ENV

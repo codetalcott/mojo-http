@@ -18,7 +18,7 @@ possible — the builders in `m0_datastar.sse` produce complete SSE frames, whic
 `SSERegistry.notify` cannot carry without double-framing them.
 
 It is also the reference for **cross-worker SSE fan-out**, on the Mojo host
-(`lightbug_http.host`). With `M0_WORKERS>1` the host creates, before the
+(`m0_host.host`). With `M0_WORKERS>1` the host creates, before the
 fork, the listener every worker accepts from, a `BroadcastBus` (one datagram
 channel per worker) and two shared pages: its own, whose slot 0 numbers SSE
 events across workers, and this app's (`page_slots`: the count, then uptime
@@ -35,7 +35,7 @@ Run it:  uv run poe serve-counter        (M0_WORKERS=2 for the fan-out shape)
 from lightbug_http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
 from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.host import AppHandler, HostContext, serve
+from m0_host.host import AppHandler, HostContext, serve
 
 from m0_http import AppConfig, reply
 from m0_http.multiworker import shared_fetch_add, shared_load

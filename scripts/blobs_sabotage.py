@@ -16,7 +16,7 @@ live in m0-datastar and are sabotaged against `test_stream.mojo`. Both are
 reached here through the app's use of them (the `send_latest=True`
 argument and the non-UTF-8 drop).
 The Mojo host's own rules -- every worker's channel, the tick owner, the
-bounded join -- moved into `lightbug_http.host` when this app did, and are
+bounded join -- moved into `m0_host.host` when this app did, and are
 `sabotage-host`'s; what stays here is the two-worker half that is the
 app's: the viewer sum and a board every worker shares.
 
