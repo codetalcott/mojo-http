@@ -434,7 +434,10 @@ def test_the_host_refuses_more_loops_than_the_app_serves() raises:
 
 
 def test_workers_and_threads_are_one_or_the_other() raises:
-    """covers: E29"""
+    """`M0_WORKERS` and `M0_THREADS` together are refused, not resolved.
+
+    covers: E29
+    """
     _ = setenv("M0_THREADS", "2", True)
     _ = setenv("M0_WORKERS", "2", True)
     var config = AppConfig()

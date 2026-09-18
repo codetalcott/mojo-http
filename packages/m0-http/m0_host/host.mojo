@@ -11,11 +11,13 @@ rules those lines obey are this repo's hardest-won (CLAUDE.md, "Runtime
 constraints"), so `serve` owns them and an application cannot spell them
 wrong. In this order:
 
-1. **Refuse what it does not serve** (`host_refusal`): `M0_THREADS` and
-   `M0_SPAWN_WORKERS` are m0serve's, and a variable the host silently
-   ignored would be a configuration that reads as applied; and more workers
-   than `AppHandler.max_workers()` allows, for an application whose state
-   lives in one process. Exit 78, before anything is bound.
+1. **Refuse what it does not serve** (`host_refusal`): `M0_SPAWN_WORKERS`
+   is m0serve's, and a variable the host silently ignored would be a
+   configuration that reads as applied; `M0_WORKERS` and `M0_THREADS`
+   together, the two being one choice; and more workers than
+   `AppHandler.max_workers()` allows, or more loops than `max_threads()`
+   (which defaults to it), for an application whose state lives in one
+   handler. Exit 78, before anything is bound.
 2. **Listen**, once, in the process that will fork.
 3. **The shared pages**, before the fork. The host's own page is
    m0serve's, made by the same function (`m0_http.prefork.prefork_page`):
@@ -82,6 +84,27 @@ wrong. In this order:
     `docker stop`'s default grace.
 13. **`exit_worker()`** in a forked worker, never a return from `main`.
 
+**Under `M0_THREADS=N` the same order runs with "fork" struck out**
+(`_serve_threaded`, since 2026-09-18; DECISIONS D35, SPEC E27-E29;
+docs/notes/loops-on-threads.md): N loops on N threads of this one process.
+Steps 2 to 5 happen once, sized by the LOOP count -- the bus is one channel
+per loop, and fan-out across loops rides it exactly as fan-out across
+workers does; accept sharing runs unchanged, an `SCM_RIGHTS` hand-off to a
+sibling thread being a `dup` the kernel does for us (measured on macOS
+without it: 30 of 32 connections on one loop of four). Step 8 moves BEFORE
+the threads exist, one process having one disposition, and the one signal
+pipe is fanned out to a pipe per loop (`ShutdownFanout`), because a loop
+never drains its shutdown pipe and N loops cannot share one. Steps 7, 9,
+9a, 11 and the pool's half of 12 run per thread (`_loop_run`), behind a
+barrier: no loop takes a connection until every loop has its handler, so a
+raising `make` on any loop is a 78 before anything was served.
+`HostContext.worker`/`workers` count loops, `threaded` says which kind, and
+an application written for workers is served unchanged. The producer is one
+thread beside the loops, built after every handler and before the barrier
+opens. There is no supervisor: **a loop that dies takes the process**
+(exit 1, named), and whatever restarts the process plays that part. And
+step 13 has no counterpart -- nothing was forked, so `main` returns.
+
 **Where it lives, and why.** In a package of its own, `m0_host`
 (`packages/m0-http/m0_host/`), resolved from source the way the fork is
 and sitting above both it and `m0_http`. It was written in the fork,
@@ -130,10 +153,10 @@ the host's `ViewService`: a state type conforming to `ViewState` (`make`,
 the SSE hooks writes its own `AppHandler` over `Views.dispatch`, as
 `apps/blobs` does.
 
-**What it does not do.** No `--threads` loops, no `--spawn-workers`, no
-CLI flags or `--doctor`: `AppConfig`'s environment is the whole
-configuration. Each is refused or absent rather than half-served. The pool
-lane (D31) is the one thing v1 refused that is served now; a hold from a
+**What it does not do.** No `--spawn-workers`, no CLI flags or
+`--doctor`: `AppConfig`'s environment is the whole configuration. Each is
+refused or absent rather than half-served. The pool lane (D31) and the
+loops on threads (D35) are what v1 refused and are served now; a hold from a
 pool thread (`set_hold_notify`) is not, and a Mojo application that wants a
 held stream opens it on the loop.
 """

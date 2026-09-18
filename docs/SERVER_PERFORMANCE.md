@@ -518,6 +518,38 @@ Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 26.6.2 (25G
 Throughput and per core are Mojo over numpy: the median across rounds of the ratio within each round. In parentheses, the same per-core ratio from the medians block — median rps over median cores for each arm — which is what the columns to its left divide out to. Cores are the server process's CPU seconds over wall seconds across the measured window; both arms share one process, so the column is each arm's own load, measured one at a time. numpy 2.5.3.
 <!-- /generated: mojo-mount -->
 
+## Workers or threads, for a Mojo application (2026-09-18)
+
+`m0serve` defaults to prefork for Python's reasons: a GIL, an interpreter to
+fork before. A Mojo application under the Mojo host has neither, and
+`M0_THREADS=N` serves it as N loops on N threads of one process (SPEC E27).
+`uv run poe bench-host-modes` measures the two against each other on
+`apps/ramp`: `now` is answered on the loop and measures the loop, `search` is
+the table's compute view. Each arm is a fresh server; keep-alive, with the
+keep-alive request cap off.
+
+<!-- generated: host-modes -- edit bench/results, not this table -->
+Source: [`host-modes-20260918T201017Z.json`](../bench/results/host-modes-20260918T201017Z.json) — 2026-09-18T20:10:17+00:00, commit `74b3255`.
+Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 26.6.2 (25G83); AC Power; wrk -c16,256 -d8s, 3 rounds, medians.
+
+| route, connections | 1 worker rps | 4 workers rps | cores | p99 ms | RSS MB | 4 threads rps | cores | p99 ms | RSS MB | throughput | per core | p99 | RSS |
+|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| now c16 | 212,455 | 191,576 | 2.60 | 0.12 | 47 | 190,676 | 2.73 | 0.12 | 37 | 0.99x | 0.95x | 1.02x | 0.78x |
+| now c256 | 212,360 | 206,107 | 2.79 | 1.42 | 50 | 206,693 | 2.88 | 1.42 | 40 | 1.00x | 0.96x | 1.00x | 0.79x |
+| search c16 | 29,983 | 101,816 | 3.94 | 0.52 | 48 | 100,710 | 3.94 | 0.53 | 37 | 0.99x | 0.99x | 1.02x | 0.78x |
+| search c256 | 30,130 | 102,816 | 3.96 | 5.82 | 51 | 102,223 | 3.96 | 5.62 | 40 | 0.99x | 0.99x | 0.95x | 0.80x |
+
+The last four columns are threads over workers: the median across rounds of the ratio within each round, so throughput and per core above 1.00x favour threads and p99 and RSS below it do. Cores and RSS are summed over the server's whole process tree; summed RSS counts a page two workers share twice. `now` is answered on the loop and measures the loop; `search` is the table's compute view.
+<!-- /generated: host-modes -->
+
+The modes serve the same requests at the same tail, and threads hold less
+memory: one runtime instead of N. On this machine the `now` rows are the
+client's — one worker serves as many as four, `wrk` running out of cores
+first — so what they compare is CPU per request. The Linux run, the reading
+of both, and why prefork stays the first recommendation (a worker that dies
+is replaced; a loop that dies takes the process) are in
+[loops-on-threads](notes/loops-on-threads.md) (DECISIONS D35).
+
 ## Non-goals, considered and rejected
 
 - **Pipelined-request support** — no longer a non-goal: implemented

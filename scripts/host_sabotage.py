@@ -166,8 +166,8 @@ SABOTAGES = [
         "M0_BLOCKING_THREADS is served on the loop",
         SMOKE,
         HOST,
-        "    var pooled = config.blocking_threads > 0\n",
-        "    var pooled = False\n",
+        "    return config.blocking_threads > 0\n",
+        "    return False\n",
     ),
     (
         "the loop is never told where the stop word is",
@@ -187,11 +187,11 @@ SABOTAGES = [
         "a pool thread's raising make is served one thread short",
         SMOKE,
         HOST,
-        "        var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
-        "        if short > 0:\n",
-        "        var short = 0\n"
-        "        _ = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
-        "        if short > 0:\n",
+        "    var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "    if short > 0:\n",
+        "    var short = 0\n"
+        "    _ = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "    if short > 0:\n",
     ),
     (
         "a pool thread's handler is built as the loop's own",
@@ -242,7 +242,7 @@ SABOTAGES = [
         "the host never asks how many workers the app serves",
         SMOKE,
         HOST,
-        "    var refusal = host_refusal(config, H.max_workers())\n",
+        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
         "    var refusal = host_refusal(config)\n",
     ),
     (
@@ -256,9 +256,9 @@ SABOTAGES = [
         "the refusal comes after the bind",
         SMOKE,
         HOST,
-        "    var refusal = host_refusal(config, H.max_workers())\n",
+        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
         "    var early_listener = ListenConfig().listen(config.address())\n"
-        "    var refusal = host_refusal(config, H.max_workers())\n",
+        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
     ),
     # --- round 4: the id space and a raising make (SPEC E25) -------------------
     (

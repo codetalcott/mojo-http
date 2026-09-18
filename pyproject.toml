@@ -7453,16 +7453,16 @@ python3 scripts/emit.py --covers E28 --task smoke-host-threads
 python3 scripts/emit.py --covers E29 --task smoke-host-threads
 """
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E26, N18, N19):
-# twenty-three against smoke-host, one against smoke-fragment-notes, six
-# against test_host.mojo, six against test_prefork.mojo (the pre-fork
+# Each Mojo host rule, broken on purpose (SPEC E21-E29, N18, N19):
+# twenty-three against smoke-host, seven against smoke-host-threads, two
+# against smoke-fragment-notes, six against test_host.mojo, six against test_prefork.mojo (the pre-fork
 # pieces both hosts share), one against test_respawn.mojo (the supervisor
 # ending the siblings on a refusal), one against test_views.mojo (the
-# placement flag). Pre-release: thirty-eight runs, about an hour;
-# `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
+# placement flag). Pre-release: forty-six runs, over an hour;
+# `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, test_host, test_prefork, test_respawn or test_views fails for every one (SPEC E21-E26, N19)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_prefork, test_respawn or test_views fails for every one (SPEC E21-E29, N19)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC

@@ -12,7 +12,8 @@ untouched: every per-slot structure is already a local of `run_event_loop`,
 so a second thread calling it gets a second, disjoint loop for free.
 
 What the mode buys: one process and one RSS instead of N copies, the app
-imported once, no bus needed for in-process fan-out — and the whole class of
+imported once — fan-out across the loops still rides the bus, one channel
+per loop (`ThreadedServer.bus_read_fds`) — and the whole class of
 fork-after-init hazards gone: no fork-before-first-Python-call, no
 `exit_worker()`, no `_scproxy` abort in a forked child. What it does NOT
 buy is per-request balancing: a keep-alive connection stays pinned to the
