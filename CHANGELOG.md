@@ -8,6 +8,28 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **An application defines its own frontend vocabulary** (DECISIONS D7,
+  retired 2026-09-18; D34; SPEC N21). `Vocabulary` was exported but not
+  implementable from outside: `Datastar` read a private field of `Html`
+  and both built-in conformances called a module-private verb check. New,
+  all exported from `m0_http`: `Html.open_kind()` answering an
+  `ElementKind` (`is_form`, `is_field`, `is_link`), a static
+  `Vocabulary.verbs()` with a default (`STANDARD_VERBS`, the five), and
+  the verb check moved into the layer — `Html.swap` and
+  `Fragment.swap`/`.el` refuse a verb outside `V.verbs()` before `V.swap`
+  runs, naming that vocabulary's list. A conformance that checks nothing
+  still refuses a typo, and one for htmx 4 allows `query` in one line.
+  `Vocabulary.swap`'s signature did not change and both built-in
+  vocabularies emit what they emitted, checked byte for byte across
+  `fragment_notes`' four swapping call sites and `datastar_todo`'s three.
+  `poe check-app-vocabulary` (inside `test-all`) builds an htmx 4
+  vocabulary from a directory outside the repository and reads its output
+  with `hxlint`, vendored from hx-flask (MIT; NOTICE, and a recorded-hash
+  guard in `check-docs`). The write-up is
+  [a-vocabulary-an-application-defines](docs/notes/a-vocabulary-an-application-defines.md).
+
 ### Changed
 
 - **The page shell is a trait** (DECISIONS D12, retired 2026-09-18).

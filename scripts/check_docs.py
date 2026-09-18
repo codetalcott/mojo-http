@@ -567,6 +567,57 @@ def check_m0pub_twins():
                  "on purpose; each runs where the other cannot)")
 
 
+# Two files here are another project's: hx-flask's htmx 4 linter and the
+# vocabulary it is generated against, which `app_vocabulary_check.py` reads an
+# application-defined vocabulary's output with (SPEC N21). CI cannot see the
+# upstream checkout, so the guard is the recorded hash: an edit made here, or a
+# refresh that skipped this table, fails naming the file. dj-hx's copy of the
+# same two files was eighty lines stale within two days of its upstream.
+VENDORED_UPSTREAM = "github.com/codetalcott/hx-flask at 5ad04b3"
+VENDORED_SHA256 = {
+    "scripts/hxlint.py": "5b44f603e1b7c1d58502bc94231695935db0e36ad8e26f86107be46663e7b65b",
+    "scripts/hx_vocab.py": "d84453e1ef70b632dc58fad2ed4a3940b981de5c71315595d7295e903cb40c08",
+}
+
+
+def vendored_problems(contents, notice):
+    """`contents` maps each vendored path to its bytes, or None if missing.
+
+    A pure function of its arguments so `--selftest` can hand it a doctored
+    file: the bytes must hash to the recorded value, and NOTICE -- the
+    licensing record -- must name each file, because they are not this
+    project's."""
+    import hashlib
+    problems = []
+    for path, want in VENDORED_SHA256.items():
+        data = contents.get(path)
+        if data is None:
+            problems.append(f"{path} is missing; `poe check-app-vocabulary` reads "
+                            "an app's htmx 4 output with it")
+            continue
+        got = hashlib.sha256(data).hexdigest()
+        if got != want:
+            problems.append(
+                f"{path} is not the file vendored from {VENDORED_UPSTREAM} "
+                f"(sha256 {got[:12]}..., recorded {want[:12]}...). It is another "
+                "project's file: change it upstream, copy it byte for byte, and "
+                "move VENDORED_SHA256 and VENDORED_UPSTREAM with it")
+        if Path(path).name not in notice:
+            problems.append(f"NOTICE does not name {Path(path).name}, which is "
+                            "vendored from another project under its own licence")
+    return problems
+
+
+def check_vendored_files():
+    """The vendored htmx 4 linter is byte for byte what upstream shipped."""
+    contents = {}
+    for path in VENDORED_SHA256:
+        f = REPO / path
+        contents[path] = f.read_bytes() if f.exists() else None
+    for problem in vendored_problems(contents, (REPO / "NOTICE").read_text()):
+        fail(problem)
+
+
 def check_target_cpu_pinned():
     """Every task that emits a distributable binary must pin --target-cpu.
 
@@ -1853,6 +1904,27 @@ def selftest():
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # The vendored files: each rule reverted against the committed bytes.
+    real_vendored = {path: (REPO / path).read_bytes() for path in VENDORED_SHA256}
+    real_notice = (REPO / "NOTICE").read_text()
+    first = next(iter(VENDORED_SHA256))
+    vendored_cases = [
+        ("a vendored file edited in place",
+         {**real_vendored, first: real_vendored[first] + b"\n# local fix\n"}, real_notice, True),
+        ("a vendored file deleted", {**real_vendored, first: None}, real_notice, True),
+        ("NOTICE no longer naming a vendored file",
+         real_vendored, real_notice.replace("hx_vocab.py", "the vocabulary"), True),
+        ("(control: the committed files)", real_vendored, real_notice, False),
+    ]
+    for label, contents, notice, must_fire in vendored_cases:
+        if must_fire and contents == real_vendored and notice == real_notice:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation changed nothing")
+            ok = False
+            continue
+        got = vendored_problems(contents, notice)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
     # The job-table rule: the line that hung the Linux canary, and the forms
     # around it that must stay quiet. The last case puts the defect back into
     # the committed file (phase 2's wait-by-pid is the LAST such wait in the
@@ -1920,6 +1992,7 @@ def main():
     check_version_single_source()
     check_wheel_platform_claims()
     check_m0pub_twins()
+    check_vendored_files()
     check_hybrid_p99_consistent()
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()

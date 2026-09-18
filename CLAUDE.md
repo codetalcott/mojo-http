@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D33, permanent ids, each with a retiring condition), which
+  (D1–D34, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -1320,9 +1320,21 @@ pieces, and the language fact each rests on:
   query from request data must too), and both vocabularies refuse a verb
   that is not one of the five. `Htmx.swap` and `Datastar.swap` are the
   only places either spelling lives; an app names its vocabulary once
-  (`comptime Frag = Fragment[Htmx]`). The conformances stay INSIDE
-  `html.mojo` because on Mojo 1.0 an app could not conform to a `.mojoc`
-  trait; the pin has moved and D7 is what still keeps them there (below).
+  (`comptime Frag = Fragment[Htmx]`). Those two are the ones the layer
+  ships; **`Vocabulary` is open to an application's own** (D7 retired
+  2026-09-18, D34, SPEC N21). Nothing behind a `.mojoc` is private — an
+  app reads `h._open_kind` and imports `_check_verb`, both measured — so
+  the contract is a rule, not a fence: a conformance is written WITHOUT
+  AN UNDERSCORE. `h.open_kind()` (`is_form`/`is_field`/`is_link`) is how
+  it learns the element, `verbs()` — static, defaulted to the five — is
+  how it names a sixth (htmx 4's `query`), and the verb check is the
+  LAYER's (`_swap[V]`, the one function all three call sites go through),
+  so do not put it back in a conformance and do not call `V.swap`
+  directly. `Datastar` is written against that surface on purpose.
+  `poe check-app-vocabulary` (in `test-all`) builds an htmx 4 vocabulary
+  from a directory outside the repo and reads its output with `hxlint` —
+  `scripts/hxlint.py` and `hx_vocab.py` are hx-flask's, vendored byte for
+  byte under a hash guard in `check-docs`: never edit them here.
   One mode, on purpose: Datastar keeps a non-default mode on the
   RESPONSE (`datastar-mode`) and htmx on the element, so a `mode` on
   `swap` is a spelling one of them cannot honour; when an app appends,
@@ -1369,10 +1381,9 @@ pieces, and the language fact each rests on:
   has flipped from a countdown to a regression guard — all four of its
   arms compile, its `mismatch` arm now passing an app conformance through
   `page_or_fragment` itself, and it fails if a toolchain takes the fix
-  away. D12 is retired (2026-09-18) and D28's move is made (`PoolHandler`
-  is in `m0_http`, the host in `m0_host`); D7 — `Vocabulary` opened to an
-  application-defined conformance — is the last of the three and stands
-  until its own round.
+  away. All three decisions the bug shaped are retired (2026-09-18): D28
+  (`PoolHandler` is in `m0_http`, the host in `m0_host`), D12, and D7 —
+  `Vocabulary` opened to an application-defined conformance.
 - **`url_for(PATTERN, params...)`** (`router.mojo`): the pattern is a
   `comptime` constant given to both `add` and `url_for`, so a misspelled
   route is a compile error; it raises on an arity mismatch and

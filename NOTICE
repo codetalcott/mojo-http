@@ -608,3 +608,25 @@ lightbug_http
     list above is the authoritative record of what they changed.
 
 --------------------------------------------------------------------------------
+
+hxlint and hx_vocab (development tooling; in no distributed artifact)
+
+    Path        scripts/hxlint.py, scripts/hx_vocab.py
+    Upstream    https://github.com/codetalcott/hx-flask
+    License     MIT — licenses/LICENSE.hx-flask.txt
+    Copyright   (c) 2026 William Talcott
+
+    An htmx 4 linter over rendered HTML, and the vocabulary it checks
+    against. Vendored byte for byte from hx-flask at commit 5ad04b3
+    (2026-09-15) and NOT MODIFIED; `scripts/check_docs.py` records each
+    file's sha256 and fails when either differs. hx_vocab.py is GENERATED,
+    by hx-flask's tools/gen_vocab.py from the htmx 4.0.0 source tree, and
+    regeneration happens upstream: refresh both files from there, never
+    edit them here. hx-flask's mapcore.py, hxmap.py and hx.py are not
+    vendored.
+
+    Read by `scripts/app_vocabulary_check.py` only, which runs at test
+    time. Neither file is imported by, linked into or shipped with the
+    wheel, `bin/m0serve` or libm0core.
+
+--------------------------------------------------------------------------------

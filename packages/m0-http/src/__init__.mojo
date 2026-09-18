@@ -10,7 +10,10 @@ SSE (Server-Sent Events) support, and multi-worker fork supervision.
 from .router import Mount, Router, MatchResult, reverse, url_for
 from .views import Views, ViewService
 from .fragment import PageShell, page_or_fragment, vary_on_fragment_headers, wants_fragment
-from .html import Datastar, Fragment, Html, Htmx, Vocabulary, attr, el, flag, text, void
+from .html import (
+    Datastar, ElementKind, Fragment, Html, Htmx, STANDARD_VERBS, Vocabulary,
+    attr, el, flag, text, void,
+)
 from .form import Form, form, is_form, parse_form
 from .grant import (
     GrantKey, GrantKeys, GrantVerdict, verify_grant, grant_key_id, session_binding,

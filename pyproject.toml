@@ -1019,7 +1019,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1115,6 +1115,11 @@ cmd = "python3 scripts/keepalive_barrier_check.py"
 [tool.poe.tasks.sabotage-keepalive]
 help = "Revert each rule of the keep-alive probe; check-keepalive-barrier must catch every one"
 cmd = "python3 scripts/keepalive_barrier_check.py --sabotage"
+
+[tool.poe.tasks.check-app-vocabulary]
+help = "An app OUTSIDE the repo defines a Vocabulary (htmx 4): attributes asserted in both tiers, read by the vendored hxlint (SPEC N21)"
+cmd = "python3 scripts/app_vocabulary_check.py"
+deps = ["build-core", "build-http"]
 
 [tool.poe.tasks.check-mojoc-trait]
 help = "An app conformance to a .mojoc trait compiles, whatever the source directory is named"

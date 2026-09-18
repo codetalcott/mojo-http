@@ -10,7 +10,40 @@ type parameter and in nothing an app writes.
 
 from std.testing import TestSuite, assert_equal, assert_true
 
-from src.html import Datastar, Fragment, Html, Htmx, attr, el, flag, text, void
+from src.html import (
+    Datastar, Fragment, Html, Htmx, Vocabulary, attr, el, flag, text, void,
+)
+
+
+struct Bare(Vocabulary):
+    """A stranger's vocabulary: checks nothing, reads the element kind, and
+    is written — as an application's must be — without an underscore."""
+
+    @staticmethod
+    def swap(mut h: Html, verb: String, url: String, target: String) raises:
+        var kind = h.open_kind()
+        var k = "other"
+        if kind.is_form():
+            k = "form"
+        elif kind.is_field():
+            k = "field"
+        elif kind.is_link():
+            k = "link"
+        h.attr(String("x-", verb), url)
+        h.attr("x-kind", k)
+        h.attr("x-into", target)
+
+
+struct Six(Vocabulary):
+    """A library with a sixth verb, as htmx 4 has."""
+
+    @staticmethod
+    def swap(mut h: Html, verb: String, url: String, target: String) raises:
+        h.attr(String("hx-", verb), url)
+
+    @staticmethod
+    def verbs() -> String:
+        return "get post put patch delete query"
 
 
 def test_attr_owns_the_delimiters_and_escapes_the_value() raises:
@@ -380,6 +413,101 @@ def test_a_forgotten_attrs_argument_is_refused() raises:
     assert_equal(el("p", "", "none"), "<p>none</p>")
     assert_equal(el("p", attr("class", "c"), text("hi")), '<p class="c">hi</p>')
     assert_equal(void("br", ""), "<br>")
+
+
+def test_the_layer_refuses_a_verb_a_conformance_never_checked() raises:
+    """The verb check is the layer's: `Bare.swap` checks nothing, and a
+    typo is still refused in both tiers and on `Html.swap`, before a byte
+    of it is written. A verb carrying a space cannot pass as two.
+
+    covers: N21
+    """
+    var f = Fragment[Bare]("notes")
+    f.open("a")
+    var raised = False
+    try:
+        f.swap("psot", "/x")
+    except e:
+        raised = True
+        assert_true(String(e).find("get, post, put, patch, delete") >= 0)
+    assert_true(raised)
+    raised = False
+    try:
+        _ = f.el("button", "get post", "/x", "")
+    except:
+        raised = True
+    assert_true(raised)
+    raised = False
+    try:
+        _ = f.el("button", "", "/x", "")
+    except:
+        raised = True
+    assert_true(raised)
+    assert_equal(f^.finish(), '<section id="notes"><a></section>')
+    var h = Html()
+    h.open("a")
+    raised = False
+    try:
+        h.swap[Bare]("DELETE", "/x", "#notes")
+    except:
+        raised = True
+    assert_true(raised)
+    _ = h^.finish()
+
+
+def test_a_conformance_reads_the_element_kind_without_an_underscore() raises:
+    """`open_kind()` is the whole of what a vocabulary may read about the
+    element, in both tiers — the surface `Datastar` is written against.
+
+    covers: N21
+    """
+    var f = Fragment[Bare]("n")
+    assert_equal(
+        f.el("form", "post", "/a", ""),
+        '<form x-post="/a" x-kind="form" x-into="#n"></form>',
+    )
+    assert_equal(
+        f.el("select", "get", "/a", ""),
+        '<select x-get="/a" x-kind="field" x-into="#n"></select>',
+    )
+    assert_equal(
+        f.el("button", "put", "/a", ""),
+        '<button x-put="/a" x-kind="link" x-into="#n"></button>',
+    )
+    f.open("div")
+    f.swap("delete", "/a")
+    f.close("div")
+    assert_equal(
+        f^.finish(),
+        '<section id="n"><div x-delete="/a" x-kind="other" x-into="#n"></div></section>',
+    )
+
+
+def test_a_vocabulary_names_its_own_verbs() raises:
+    """A sixth verb, as htmx 4 has. A conformance that answers `verbs()` is
+    allowed it, the built-in five-verb vocabularies still refuse it, and
+    the refusal names the list of the vocabulary that refused.
+
+    covers: N21
+    """
+    var f = Fragment[Six]("n")
+    assert_equal(f.el("a", "query", "/q", ""), '<a hx-query="/q"></a>')
+    var raised = False
+    try:
+        _ = f.el("a", "psot", "/q", "")
+    except e:
+        raised = True
+        assert_true(String(e).find("delete, query") >= 0)
+    assert_true(raised)
+    _ = f^.finish()
+    var hx = Fragment[Htmx]("n")
+    raised = False
+    try:
+        _ = hx.el("a", "query", "/q", "")
+    except:
+        raised = True
+    assert_true(raised)
+    _ = hx^.finish()
 
 
 def main() raises:
