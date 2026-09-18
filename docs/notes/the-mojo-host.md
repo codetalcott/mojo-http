@@ -480,3 +480,8 @@ The host has nothing left to take from m0serve that both can use. What
 it does not offer, pool lanes, loops on threads and exec'd workers, is
 D29's list of retiring conditions, each waiting on an application that
 needs it.
+
+*Since:* the pool lane landed on 2026-09-17 (D31, SPEC E26), for the ramp
+test, and the drain-then-join issue recorded above was retired with it;
+[the-ramp-test](the-ramp-test.md) is the record. Step 1's list of refused
+variables and "What v1 does not do" above are kept as written.

@@ -58,6 +58,8 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
   saturated pool like everything else.
 """
 
+from std.time import perf_counter_ns, sleep
+
 from lightbug_http.offload import OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP
 from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
 from lightbug_http.http.common_response import InternalError
@@ -75,7 +77,7 @@ from lightbug_http.c.process import getpid
 # is silently never emitted ("does not have witness table for trait").
 from m0_http.threads import (
     ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS, BLK_LANE,
-    STATUS_OK, STATUS_RAISED,
+    STATUS_NEVER_RAN, STATUS_OK, STATUS_RAISED,
 )
 
 
@@ -86,6 +88,17 @@ uses, and for the same reason: `BLK_INTS` is 8, so 7 is the last one free."""
 comptime BLK_THREAD_ID = 10
 """Block slot holding this thread's registered id (`register_thread`), or -1.
 The slot `m0_wsgi.blocking_pool` uses for the same value."""
+
+comptime BLK_READY = 11
+"""Block slot a pool thread sets to 1 once `T.make` has returned.
+
+What `wait_ready` polls: a thread whose `make` raised never sets it and
+ends with `STATUS_RAISED` instead, so a caller that must not serve short
+(the Mojo host, D30) can tell "still building" from "refused" without a
+thread-level error channel. Until 2026-09-17 a raising `make` here left the
+pool serving on with one thread fewer and nothing but a log line to say so
+-- an existing gap under `m0serve`, and a contradiction of D30 the day the
+host took a lane."""
 
 comptime JOB_BUFFER = 4096
 """Bytes a pool thread's receive buffer holds.
@@ -245,6 +258,48 @@ struct MojoPool(Movable):
             self._set.spawn(i, body_addr)
         self._started = True
 
+    def wait_ready(self, timeout_ns: Int) raises -> Int:
+        """How many threads have NOT built their handler within `timeout_ns`.
+
+        Polls each thread's `BLK_READY` word, which `_pool_serve` sets the
+        instant `T.make` returns; a thread whose `make` raised has ended
+        with `STATUS_RAISED` by then and is counted at once rather than
+        waited for. Zero means every thread is parked on its lane with a
+        handler of its own. The Mojo host calls this before it serves, so a
+        `make` that raises on a pool thread is a refusal (exit 78) rather
+        than a server quietly one thread short.
+        """
+        if not self._started:
+            return 0
+        var deadline = perf_counter_ns() + timeout_ns
+        var short = 0
+        for i in range(self.count):
+            var block = self._set.block(i)
+            while (
+                block.get(BLK_READY) == 0
+                and self._set.status(i) == STATUS_NEVER_RAN
+                and perf_counter_ns() < deadline
+            ):
+                sleep(0.001)
+            if block.get(BLK_READY) == 0:
+                short += 1
+        return short
+
+    def raised_before_ready(self) -> Int:
+        """How many threads ended (`STATUS_RAISED`) without ever setting
+        `BLK_READY`: a `make` that raised, as opposed to one still
+        building. For the caller of `wait_ready` to say which."""
+        if not self._started:
+            return 0
+        var n = 0
+        for i in range(self.count):
+            if (
+                self._set.block(i).get(BLK_READY) == 0
+                and self._set.status(i) == STATUS_RAISED
+            ):
+                n += 1
+        return n
+
     def stop_and_join(
         mut self, mut pool: OffloadPool, timeout_ns: Int = -1
     ) raises -> Int:
@@ -335,6 +390,9 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
     if lane >= 0 and lane < len(pool.lane_prefixes):
         prefix = pool.lane_prefixes[lane]
     var handler = T.make(PoolContext(index, block.get(BLK_USER), lane, prefix))
+    # Built: what `wait_ready` is waiting to see. A `make` that raised never
+    # gets here, and the body reports `STATUS_RAISED` instead.
+    block.set(BLK_READY, 1)
 
     # One receive buffer for this thread's life, not one per job.
     var buf = List[UInt8](capacity=JOB_BUFFER)

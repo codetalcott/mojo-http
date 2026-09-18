@@ -14,8 +14,13 @@ host's contract (a refusal ending the siblings, in `multiworker.mojo`).
 The fork is resolved from source by the smokes, and the unit gates
 compile `src.*` directly, so nothing needs rebuilding -- with one
 exception: a rule against `src/` gated on a SMOKE would need `build-http`
-first, and none is written that way. An anchor that no longer matches is
-a failure -- re-point it with the line.
+first, and none is written that way (`views.mojo`'s placement rule is
+gated on `test_views.mojo`, a unit gate, for that reason). An anchor that
+no longer matches is a failure -- re-point it with the line. A rule that
+takes edits in MORE THAN ONE FILE names a tuple of paths beside its tuples
+of anchors: the producer's stop has two writers since the pool lane (the
+loop's stamp in `event_loop.mojo` and the join's fallback in `host.mojo`),
+and removing one alone is not "never told to stop".
 
 Not here, and why: the handler built BEFORE the fork, and the pages and the
 bus created AFTER it, are not one-line edits in `serve` -- each needs the
@@ -23,6 +28,12 @@ order of several statements changed, and a harness that moves blocks
 around would be testing itself. The smoke's two-worker phases are what
 would fail (a single shared handler cannot hold a stream in two
 processes; a post-fork bus reaches no sibling).
+
+Nor the keep-alive of the pool after the joins (`_ = pool.capacity` at
+the end of `serve`): removed, a straggler thread the join gave up on
+writes its completion into a freed `OffloadPool`, a use-after-free with
+no symptom on the wire in the microseconds before `_exit`. Found by
+review; recorded here because a gate that cannot fail is not evidence.
 
 Nor the `_exit` after an abandoned producer. Removed, the smoke still
 passes: a forked worker leaves through `exit_worker` anyway, and a single
@@ -35,6 +46,7 @@ tell, so it is not claimed as a guarded rule.
     uv run poe sabotage-host --only "tick-owner"   one rule, by label substring
     uv run poe sabotage-host --only unit           the thread rules alone
     uv run poe sabotage-host --only respawn        the supervisor's rule
+    uv run poe sabotage-host --only views          the placement rule
 """
 
 from __future__ import annotations
@@ -58,14 +70,19 @@ NOTES = "notes"
 UNIT = "unit"
 PREFORK = "prefork"
 RESPAWN = "respawn"
+VIEWS = "views"
 
 HOST = Path("packages/m0-http/lightbug_http/host.mojo")
+EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
+VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
+HOST_CHECK = Path("apps/host_check/server.mojo")
 PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
 ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
 MULTIWORKER_SRC = Path("packages/m0-http/src/multiworker.mojo")
 
-# (label, gate, old, new); `old` and `new` may be tuples of the same
-# length for a rule that takes more than one edit to break.
+# (label, gate, path, old, new); `old` and `new` may be tuples of the same
+# length for a rule that takes more than one edit to break, and `path` a
+# tuple of the same length when those edits are in different files.
 SABOTAGES = [
     (
         "the publisher skips worker 0's channel",
@@ -127,16 +144,76 @@ SABOTAGES = [
     (
         "the producer is never told to stop",
         SMOKE,
-        HOST,
-        "        self._set.block(0).set(BLK_STOP, 1)\n",
-        "",
+        (EVENT_LOOP, HOST),
+        (
+            "    if st.stop_addr != 0:\n"
+            "        atomic_at(st.stop_addr)[].store(Int64(perf_counter_ns()))\n",
+            "            block.set(BLK_STOP, now)\n",
+        ),
+        ("", ""),
     ),
     (
         "the join has no bound",
         SMOKE,
         HOST,
-        "        self.stragglers = self._set.join_within(timeout_ns)\n",
+        "        self.stragglers = self._set.join_within(left)\n",
         "        self._set.join_all()\n        self.stragglers = 0\n",
+    ),
+    # --- the pool lane and the overlapping bounds (SPEC E26) -------------------
+    (
+        "M0_BLOCKING_THREADS is served on the loop",
+        SMOKE,
+        HOST,
+        "    var pooled = config.blocking_threads > 0\n",
+        "    var pooled = False\n",
+    ),
+    (
+        "the loop is never told where the stop word is",
+        SMOKE,
+        HOST,
+        "        stop_addr=producer.stop_addr(),\n",
+        "        stop_addr=0,\n",
+    ),
+    (
+        "the producer's join counts from the loop's return, not the drain's start",
+        SMOKE,
+        HOST,
+        "        var left = began + timeout_ns - now\n",
+        "        var left = timeout_ns\n",
+    ),
+    (
+        "a pool thread's raising make is served one thread short",
+        SMOKE,
+        HOST,
+        "        var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "        if short > 0:\n",
+        "        var short = 0\n"
+        "        _ = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "        if short > 0:\n",
+    ),
+    (
+        "a pool thread's handler is built as the loop's own",
+        SMOKE,
+        HOST,
+        "        mine.thread = ctx.index\n",
+        "",
+    ),
+    (
+        "the gate app answers its health path on a pool thread, not the loop",
+        SMOKE,
+        HOST_CHECK,
+        "        if req.uri.path == \"/health\":\n"
+        "            return OK('{\"status\":\"ok\"}', \"application/json\")\n"
+        "        if req.uri.path == STREAM:\n",
+        "        if req.uri.path == STREAM:\n",
+    ),
+    (
+        "an on-loop route is answered without its state",
+        VIEWS,
+        VIEWS_SRC,
+        "            if kind == LOOP_READ:\n"
+        "                return self._reads[slot](req, m.params, state)\n",
+        "            if kind == LOOP_READ:\n                return None\n",
     ),
     (
         "a producer's sleep is not sliced",
@@ -214,8 +291,8 @@ SABOTAGES = [
         "a raising producer make exits 1, a crash the supervisor respawns",
         SMOKE,
         HOST,
-        "            process_exit(EX_CONFIG)\n\n    var server = Server(",
-        "            process_exit(1)\n\n    var server = Server(",
+        "            process_exit(EX_CONFIG)\n\n    # The pool lane (docstring, 9a).",
+        "            process_exit(1)\n\n    # The pool lane (docstring, 9a).",
     ),
     (
         "start swallows the producer make's error and spawns nothing",
@@ -344,6 +421,16 @@ def run_prefork() -> tuple[bool, str]:
     return (p.returncode == 0 and " 0 failed" in out), out
 
 
+def run_views() -> tuple[bool, str]:
+    p = subprocess.run(
+        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
+         "packages/m0-http/test/test_views.mojo"],
+        capture_output=True, text=True, timeout=600,
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and " 0 failed" in out), out
+
+
 def run_respawn() -> tuple[bool, str]:
     p = subprocess.run(
         [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
@@ -356,8 +443,15 @@ def run_respawn() -> tuple[bool, str]:
 
 GATES = {
     SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork,
-    RESPAWN: run_respawn,
+    RESPAWN: run_respawn, VIEWS: run_views,
 }
+
+
+def _paths_of(entry) -> tuple:
+    """The file(s) a rule edits, one per anchor."""
+    _, _, path, old, _ = entry
+    n = len(old) if isinstance(old, tuple) else 1
+    return tuple(path) if isinstance(path, tuple) else (path,) * n
 
 
 def why(out: str) -> str:
@@ -393,7 +487,7 @@ def main() -> int:
     if not chosen:
         print(f"no sabotage label contains {only!r}")
         return 1
-    files = sorted({f for _, _, f, _, _ in SABOTAGES})
+    files = sorted({f for e in SABOTAGES for f in _paths_of(e)})
     backup_dir = Path(tempfile.mkdtemp())
     originals = {}
     for f in files:
@@ -410,24 +504,27 @@ def main() -> int:
 
     missed = []
     try:
-        for label, gate, path, old, new in chosen:
-            original = originals[path]
+        for entry in chosen:
+            label, gate, _, old, new = entry
+            paths = _paths_of(entry)
             olds = old if isinstance(old, tuple) else (old,)
             news = new if isinstance(new, tuple) else (new,)
-            if any(original.count(o) != 1 for o in olds):
+            if any(originals[p].count(o) != 1 for p, o in zip(paths, olds)):
                 print(f"  FAIL  anchor missing or ambiguous: {label}")
                 missed.append(label)
                 continue
-            broken = original
-            for o, n in zip(olds, news):
-                broken = broken.replace(o, n, 1)
-            path.write_text(broken)
+            broken = {p: originals[p] for p in set(paths)}
+            for p, o, n in zip(paths, olds, news):
+                broken[p] = broken[p].replace(o, n, 1)
+            for p, text in broken.items():
+                p.write_text(text)
             try:
                 ok, out = GATES[gate]()
             except subprocess.TimeoutExpired:
                 ok, out = False, "(timed out -- itself a failure)"
             finally:
-                path.write_text(original)
+                for p in broken:
+                    p.write_text(originals[p])
             reason = why(out)
             if ok:
                 print(f"  MISSED  [{gate}] {label}")

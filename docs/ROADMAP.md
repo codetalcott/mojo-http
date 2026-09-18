@@ -104,19 +104,6 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — outside the server's own behaviour.
 
-- <!-- observed: the bounds `host.mojo` and `event_loop.mojo` set, and smoke-host's overrun arm, 2026-09-17 -->**The Mojo host's drain and its producer join run in sequence.** On
-  SIGTERM the loop drains held streams for up to `DRAIN_TIMEOUT_NS`
-  (5 s) and only then tells the producer to stop and waits
-  `JOIN_TIMEOUT_NS` (another 5 s) for a step still running, so a held
-  stream beside an overrunning step can take the whole of `docker stop`'s
-  default 10 s grace and end in SIGKILL. `smoke-host`'s overrun arm
-  measures 5 s only because nothing is held during it.
-
-  **Closed by:** none — signalling the producer to stop when the drain
-  BEGINS, so the two bounds overlap and the worst case is the longer of
-  them, retires it; the re-test is the overrun arm with streams held
-  through it, asserting an exit inside the longer bound alone.
-
 - **Under `--workers`, which worker wins an accept is CPU placement, not
   load.** Two workers sharing one listener: the worker on the client's own
   CPU loses every accept race, measured 80 of 80 with the probe pinned
@@ -186,6 +173,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- **The Mojo host's drain and its producer join ran in sequence** — resolved 2026-09-17 with the pool lane (E26, D31): the loop stamps the producer's stop word as its drain begins and both joins count from that stamp, so a request in flight at SIGTERM beside a step past its bound leaves inside one bound. The premise as first recorded was wrong in one detail — the drain ends a HELD stream at once, so what stretches it is a request in flight, not a stream — and the gate holds a request of a few seconds instead. The write-up is [The ramp test: lanes in the host, one module on two hosts — 2026-09-17](notes/the-ramp-test.md).
 - **Sessions and CSRF behind a login** (N13) — built 2026-09-12: a stateless signed cookie and a CSRF token derived from its tag, on `apps/fragment_notes` with one user; `m0_http.session` beside `grant.mojo`, forged and admitted on the wire by a CPython issuer, five rules sabotage-proven. D15 retired; D24 and D25 record what it deliberately is not. The write-up is [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md).
 - **A Datastar form, end to end** (N12) — built 2026-09-12: the todo demo's rename form, `form(req)` on the other side, a smoke on the wire and a Chromium run that recorded what the pinned bundle sends; D21 confirmed. The write-up is [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md).
 - **Prefork workers did not share a listener's connections** (the same worker won 32 of 32 on macOS and 23–31 of 32 on Linux, so `--workers 2` served a keep-alive load at one worker's throughput) — resolved by E16, the accept-sharing hand-off; the write-up is [Accept sharing — shipped 2026-09-05](notes/accept-sharing.md).

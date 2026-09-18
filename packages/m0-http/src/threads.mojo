@@ -89,6 +89,13 @@ struct ThreadBlock(Copyable, Movable):
     def set(self, slot: Int, value: Int):
         _slot(self.addr + slot * 8)[] = value
 
+    def slot_addr(self, slot: Int) -> Int:
+        """The address of `slot`'s word, for a writer that holds no block --
+        the event loop stamping a producer's stop word when its drain begins
+        (`lightbug_http.host`). The word outlives the thread: a block is
+        `malloc`'d by `ThreadSet` and never freed."""
+        return self.addr + slot * 8
+
 
 struct ThreadSet(Movable):
     """`count` argument blocks and thread ids, spawned and joined as a set.

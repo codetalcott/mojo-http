@@ -77,6 +77,29 @@ The state an app hands its views is the natural carrier for the same
 spells the prefix; the `Mount` docstring says why a table that did not
 know it is a dead link nobody sees until it is clicked.
 
+## A route's placement is a property of the route
+
+Under a handler pool (`M0_BLOCKING_THREADS` on the Mojo host, or a
+`--mount X=mojo` lane under `m0serve`) every view runs on a pool thread
+unless it says otherwise, and two kinds of route must not: one that
+touches what only the event loop drains -- a view that subscribes a slot
+to a stream registry, which a pool thread's own registries would hold and
+nothing would drain (`mojo_pool.mojo` refuses it 409) -- and one that must
+answer while the pool is saturated, `/health` above all. `add_read` and
+`add_write` take `on_loop=True` for those: the route stays in the table
+(one `Allow`, one `url_for`, one 404), and `answer_on_loop(req, state)`,
+which `ViewsApp.before_request` and `ViewService.before_request` call,
+answers it ON THE LOOP with the loop instance's state before the request
+becomes a job. `add_loop` stays the stateless form. With no pool nothing
+changes: `before_request` answers it a hair earlier than `dispatch` would.
+
+`m0serve` cannot honour the flag. Its loop handler is `WSGIHandler`, which
+holds no Mojo table, so a mounted table's loop routes -- `add_loop` and
+`on_loop` alike -- are answered on a pool thread by `dispatch`, bytes
+identical, one round trip later, with THAT thread's state. Recorded rather
+than built (DECISIONS D32): the divergence is latency under a full lane,
+not a stall, and `smoke-ramp` measures it on both hosts.
+
 ## Views are stored as thin function pointers
 
 `fn` is gone in Mojo 1.0 and a function type spells `def (...) -> ...`,
@@ -120,6 +143,15 @@ from .reply import empty, problem
 from .router import Mount, Router, _list_contains
 
 
+comptime LOOP_STATELESS: UInt8 = 0
+"""A loop-router entry that is an `add_loop` view: no state, any host."""
+comptime LOOP_READ: UInt8 = 1
+"""An `add_read(..., on_loop=True)` view: answered on the loop with the
+loop instance's state borrowed, by a host whose loop handler holds it."""
+comptime LOOP_WRITE: UInt8 = 2
+"""An `add_write(..., on_loop=True)` view: the same, state `mut`."""
+
+
 struct Views[S: Movable]:
     """A `Router` and the view functions its handler ids stand for.
 
@@ -140,15 +172,17 @@ struct Views[S: Movable]:
     comptime LoopView = def (HTTPRequest, List[String]) thin -> HTTPResponse
     """A view answered on the EVENT LOOP, before the request becomes a job.
 
-    It receives **no state**, and that is a correctness rule rather than a
-    simplification. Under `--blocking-threads` each pool thread owns a whole
+    It receives **no state**, which is what lets EVERY host answer it on
+    the loop: under `--blocking-threads` each pool thread owns a whole
     handler of its own, built on the thread that will use it
     (`mojo_pool.mojo`: "Nothing in a handler is shared between pool threads
-    unless the handler itself shares it"). The loop has its own handler too.
-    So a view answered on the loop would read the LOOP instance's state
-    while every other view read a pool thread's — the same URL returning
-    different answers depending on where it ran. Giving a loop view nothing
-    to read is what makes that unrepresentable.
+    unless the handler itself shares it"), and the loop has its own -- so
+    on `m0serve`, whose loop handler holds no Mojo table, a loop route is
+    answered by `dispatch` on a pool thread instead, and a view with no
+    state answers the same bytes from either. A route that needs the
+    LOOP instance's state -- a stream open, or a read of what the loop
+    keeps -- is `add_read`/`add_write` with `on_loop=True`, which only a
+    host whose loop handler holds the table (`ViewsApp`) answers there.
 
     Non-raising, because `HTTPService.before_request` is.
     """
@@ -187,6 +221,12 @@ struct Views[S: Movable]:
 
     var _loops: List[Self.LoopView]
 
+    var _loop_kind: List[UInt8]
+    """Indexed by the LOOP router's handler id: `LOOP_STATELESS` (a
+    `LoopView` in `_loops`), `LOOP_READ` or `LOOP_WRITE` (an `on_loop`
+    route, whose view sits in `_reads`/`_writes` at `_loop_slot`)."""
+    var _loop_slot: List[Int32]
+
     var _not_found: Optional[Self.ReadView]
 
     var mount: Mount
@@ -201,21 +241,57 @@ struct Views[S: Movable]:
         self._is_read = List[Bool]()
         self._slot = List[Int32]()
         self._loops = List[Self.LoopView]()
+        self._loop_kind = List[UInt8]()
+        self._loop_slot = List[Int32]()
         self._not_found = None
 
-    def add_read(mut self, method: String, pattern: String, view: Self.ReadView):
-        """Register a view that does not write. State arrives borrowed."""
+    def add_read(
+        mut self,
+        method: String,
+        pattern: String,
+        view: Self.ReadView,
+        *,
+        on_loop: Bool = False,
+    ):
+        """Register a view that does not write. State arrives borrowed.
+
+        `on_loop=True` keeps it on the event loop under a pool (module
+        docstring, "A route's placement is a property of the route").
+        """
         self._router.add(method, self.mount.join(pattern), len(self._is_read))
         self._is_read.append(True)
         self._slot.append(Int32(len(self._reads)))
+        if on_loop:
+            self._place_on_loop(method, pattern, LOOP_READ, len(self._reads))
         self._reads.append(view)
 
-    def add_write(mut self, method: String, pattern: String, view: Self.WriteView):
-        """Register a view that may write. State arrives `mut`."""
+    def add_write(
+        mut self,
+        method: String,
+        pattern: String,
+        view: Self.WriteView,
+        *,
+        on_loop: Bool = False,
+    ):
+        """Register a view that may write. State arrives `mut`.
+
+        `on_loop=True` as for `add_read`: the view that subscribes a slot
+        to a stream registry is the usual one, since a stream begun on a
+        pool thread has no producer the loop can drain.
+        """
         self._router.add(method, self.mount.join(pattern), len(self._is_read))
         self._is_read.append(False)
         self._slot.append(Int32(len(self._writes)))
+        if on_loop:
+            self._place_on_loop(method, pattern, LOOP_WRITE, len(self._writes))
         self._writes.append(view)
+
+    def _place_on_loop(mut self, method: String, pattern: String, kind: UInt8, slot: Int):
+        """Register the route in the loop router too, naming which table
+        and slot its view lives in."""
+        self._loop_router.add(method, self.mount.join(pattern), len(self._loop_kind))
+        self._loop_kind.append(kind)
+        self._loop_slot.append(Int32(slot))
 
     def add_loop(mut self, method: String, pattern: String, view: Self.LoopView):
         """Register a view answered on the loop, without becoming a job.
@@ -226,27 +302,64 @@ struct Views[S: Movable]:
         reason. Keep the body quick — it runs on the thread every other
         connection is waiting on.
         """
-        self._loop_router.add(method, self.mount.join(pattern), len(self._loops))
+        self._place_on_loop(method, pattern, LOOP_STATELESS, len(self._loops))
         self._loops.append(view)
 
     def answer_on_loop(self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        """The `before_request` body: a loop route's answer, or nothing.
+        """The `before_request` body of a handler with no state at hand: a
+        stateless loop route's answer, or nothing.
 
         A miss returns None and the request goes on to `dispatch` as usual,
-        so a 404 here is never this table's to give.
+        so a 404 here is never this table's to give. An `on_loop` route is
+        a miss here too -- it needs the state -- and `dispatch` answers it.
         """
-        if len(self._loops) == 0:
+        if len(self._loop_kind) == 0:
+            return None
+        var m = self._loop_router.match(req.method, req.uri.path)
+        if not m.matched or self._loop_kind[m.handler_id] != LOOP_STATELESS:
+            return None
+        return self._loops[Int(self._loop_slot[m.handler_id])](req, m.params)
+
+    def answer_on_loop(
+        self, req: HTTPRequest, mut state: Self.S
+    ) -> Optional[HTTPResponse]:
+        """The `before_request` body of a handler that holds the state: a
+        loop route's answer, stateless or `on_loop`, or nothing.
+
+        Non-raising like the hook it serves: a view that raises here is
+        answered 500 and named in the log, as a raising `func` is.
+        """
+        if len(self._loop_kind) == 0:
             return None
         var m = self._loop_router.match(req.method, req.uri.path)
         if not m.matched:
             return None
-        return self._loops[m.handler_id](req, m.params)
+        var kind = self._loop_kind[m.handler_id]
+        var slot = Int(self._loop_slot[m.handler_id])
+        if kind == LOOP_STATELESS:
+            return self._loops[slot](req, m.params)
+        try:
+            if kind == LOOP_READ:
+                return self._reads[slot](req, m.params, state)
+            return self._writes[slot](req, m.params, state)
+        except e:
+            print(
+                "views: an on-loop view raised (" + req.method + " " + req.uri.path
+                + "): " + String(e),
+                flush=True,
+            )
+            return problem(
+                500,
+                String("Internal Server Error"),
+                String("the view raised"),
+                req.uri.path,
+            )
 
     def allow_header(self, path: String) -> String:
         """The `Allow` value for `path`: every method either table registers
         for it, `OPTIONS` appended once. What a preflight or a 405 says."""
         var allow = self._router.allow_header(path)
-        if len(self._loops) == 0:
+        if len(self._loop_kind) == 0:
             return allow
         var loop_allow = self._loop_router.allow_header(path)
         if loop_allow == "OPTIONS":
@@ -307,10 +420,12 @@ struct Views[S: Movable]:
         # request is in a method the loop route does not take. Answer the
         # first inline, and let the second fall into the 405 below.
         var loop_405 = False
-        if len(self._loops) > 0:
+        if len(self._loop_kind) > 0:
             var lm = self._loop_router.match(req.method, path)
             if lm.matched:
-                return self._loops[lm.handler_id](req, lm.params)
+                # Only a stateless loop route can match here: an `on_loop`
+                # route is in `_router` too and was answered above.
+                return self._loops[Int(self._loop_slot[lm.handler_id])](req, lm.params)
             loop_405 = lm.method_not_allowed
 
         # A preflight, or any OPTIONS on a path that exists: the server
@@ -366,7 +481,7 @@ struct ViewService[S: Movable & Deinitable](HTTPService):
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
         """Answer a loop route here, so it never becomes a pool job."""
-        return self.views.answer_on_loop(req)
+        return self.views.answer_on_loop(req, self.state)
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         return self.views.dispatch(req, self.state)
