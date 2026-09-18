@@ -53,8 +53,12 @@ RUN mojo precompile packages/m0-core/src -o packages/m0-core/m0_core.mojoc \
 ARG APP=hello
 ARG TARGET_CPU=generic
 COPY apps/ apps/
-# `-I apps/` for an app's own sibling modules (`blobs.kernel`).
-RUN test -f "apps/${APP}/server.mojo" \
+# `-I apps/` for an app's own sibling modules (`blobs.kernel`). An app the
+# `.dockerignore` does not let in is simply absent from the context, so say
+# where to fix it rather than let the compiler report a missing file.
+RUN if [ ! -f "apps/${APP}/server.mojo" ]; then \
+      echo "apps/${APP}/server.mojo is not in the build context: let apps/${APP}/ in through .dockerignore" >&2; \
+      exit 1; fi \
  && mkdir -p /out && mojo build --target-cpu "${TARGET_CPU}" \
       -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
       "apps/${APP}/server.mojo" -o /out/server \

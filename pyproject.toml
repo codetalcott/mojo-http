@@ -4848,8 +4848,9 @@ PYTHONPATH="$out" M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=25000 bin/m0serve 
 # the port, and `docker stop` ends a held stream with exit 0 inside 10 s and
 # nothing abandoned. The target CPU follows the DAEMON's architecture, so on
 # CI's ubuntu-latest this is the x86-64 build (x86-64-v2) that nothing else
-# here compiles. Every PR, in the pid1 job: MEASURE-ME on the runner, which
-# is why M26 -- pre-release while the cost was guessed at -- moved here.
+# here compiles. Every PR, in the pid1 job: the whole step, build and probe,
+# took 66 s on the runner when measured (2026-09-18), which is why M26 --
+# pre-release while that cost was guessed at -- moved here.
 [tool.poe.tasks.smoke-blobs-image]
 help = "Build the blobs demo's pure-Mojo image from the tree and probe it from outside: PID 1, no interpreter, the page's claims, the app, a held stream through the drain"
 shell = """

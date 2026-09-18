@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D35, permanent ids, each with a retiring condition), which
+  (D1–D36, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -1453,10 +1453,19 @@ pieces, and the language fact each rests on:
   newest frame, never a replay), counts what `publish_to_channels`
   returns (a frame over `BUS_MAX_FRAME` is refused, not sent), and
   reaches the loop's clicks and viewer counts through the pre-fork
-  `SharedAtomics` page, never `malloc`'d memory. Its `main` is annotated
-  `[host]`/`[blobs]`: the Mojo host's first specification. One worker
-  until that host exists. An app's own tests live in `apps/<app>/test/`
-  (no `__init__.mojo`) and run in `poe test-apps`.
+  `SharedAtomics` page, never `malloc`'d memory. It runs on the Mojo
+  host, two workers gated. **Its deploy image is `deploy/mojo/Dockerfile`**
+  (SPEC M26–M27; docs/notes/the-demo-in-its-own-image.md) -- ONE
+  Dockerfile for every Mojo app, `APP` naming the directory, the binary
+  at `/app/server` -- whose last layer measures the image (unpacked
+  bytes, and no interpreter anywhere, failing the build if one is) into
+  `/app/about.json`; the page's footer and `/about` read it through
+  `M0_IMAGE_FACTS`, so "no Python in this image" and its size are
+  measurements, and `smoke-blobs-image` (every PR, the only x86-64 Mojo
+  build CI makes) checks both again from outside. The build context is
+  `.dockerignore`'s allowlist: a new app's directory is let in by name.
+  Its deploy serves ONE loop (D36). An app's own tests live in
+  `apps/<app>/test/` (no `__init__.mojo`) and run in `poe test-apps`.
 
 Not built, each a row of `docs/DECISIONS.md` with the note that argues it
 and the condition that would retire it: templates (D2), middleware (D3),
