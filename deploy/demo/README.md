@@ -10,7 +10,7 @@ deployment; the application is described there.
 | `Dockerfile` | `python:3.12-slim` + Django + the m0serve wheel + `demoapp.py`. Context is the repository root; `.dockerignore` lets in only what it copies. |
 | `fly.toml` | App `m0serve-demo`, region `iad`, one shared CPU, 256 MB, always on, connection-counting concurrency, health check on the server's own `/health`. |
 | `wheelhouse/` | Empty in the repository. `poe smoke-demo` stages the tree's wheel here to prove the Dockerfile against main; a deploy leaves it empty and pins PyPI. |
-| `../../.github/workflows/deploy-site.yml` | The `deploy-demo` job deploys after every successful `Release` (pinning that release's wheel), or on demand with a version -- the same trigger as the docs site, a different app and a different token. |
+| `../../.github/workflows/deploy-site.yml` | The `deploy-demo` job deploys after every successful `Release` (pinning that release's wheel, built from that release's commit), or on demand with a version (built from its tag) -- the same trigger as the docs site, a different app and a different token. |
 
 ## Why its own app, and why one machine
 
@@ -80,7 +80,9 @@ uv run poe deploy-demo 0.17.0        # pins a release
 
 `flyctl deploy` runs from the repository root with `--config
 deploy/demo/fly.toml`, so the Dockerfile sees the same context the workflow
-gives it. `--remote-only`, always: a local build on an Apple Silicon Mac
+gives it -- which is the CHECKOUT: pinning a release from a branch ahead of
+it ships that branch's demo on the release's wheel. Check out the tag first
+(`git worktree add /tmp/demo-vX.Y.Z vX.Y.Z`), as the workflow does. `--remote-only`, always: a local build on an Apple Silicon Mac
 emulates x86_64 and the binary dies with `exit code: 136` (SIGFPE) under
 QEMU -- see [deploy/site/README.md](../site/README.md) for the whole trap.
 

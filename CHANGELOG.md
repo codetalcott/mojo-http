@@ -135,6 +135,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **The live demo's deploy built from main, not from the release it
+  pinned.** `deploy-site.yml`'s `deploy-demo` job checked out the default
+  branch and pinned the release's wheel, so `deploy/demo/Dockerfile`, the
+  demo application and the probe that verifies the deploy came from
+  whatever had merged since the release -- or, for the `release/v*` branch
+  form, from a main that might not hold the release's commit. It now checks
+  out the release's own commit (`head_sha`) after a release and the
+  version's tag on a dispatch, and refuses to deploy when the tree's
+  version is not the pinned one. The docs site's job builds from the
+  release's commit after a release too; a dispatch still renders the ref it
+  ran on, which is how prose merged after a release is published.
 - **The docs promised `Last-Event-ID` replay on a WSGI hold, which keeps no
   journal.** RUNNING.md and the `m0pub` docstring said a numbered frame was
   "covered by replay"; the plain `SSERegistry` a hold subscribes to only
