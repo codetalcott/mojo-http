@@ -673,6 +673,13 @@ export MACOSX_DEPLOYMENT_TARGET=13.0
 mount_dir="${M0SERVE_MOUNT_DIR:-packages/m0-wsgi/mount}"
 out="${M0SERVE_OUT:-bin/m0serve}"
 [ -f "$mount_dir/m0serve_mount.mojo" ] || { echo "build-serve: no m0serve_mount.mojo in $mount_dir"; exit 1; }
+# M0SERVE_INCLUDE is the application's OWN module root -- `apps/` for a
+# mount whose views live in `apps/ramp/views.mojo` -- and is the one
+# other root an application may add. It is not a second mount root: it
+# goes on the path AFTER the mount directory, so an `m0serve_mount.mojo`
+# at its top could never win, and the module is reached by its package
+# name (`ramp.views`), which only that root can resolve.
+[ -z "${M0SERVE_INCLUDE:-}" ] || [ -d "$M0SERVE_INCLUDE" ] || { echo "build-serve: M0SERVE_INCLUDE names no directory: $M0SERVE_INCLUDE"; exit 1; }
 # The binary reaches four packages through their .mojoc, which are build
 # output, so a fresh clone has none -- and every task that depends on this
 # one (bench-mojo-mount and most of the smokes) failed there on an unresolved import until someone
@@ -686,6 +693,7 @@ for pkg in core http postgres wsgi; do
 done
 mojo build --target-cpu "$tcpu" \
   -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
+  ${M0SERVE_INCLUDE:+-I "$M0SERVE_INCLUDE"} \
   packages/m0-wsgi/m0serve.mojo -o "$out" || exit 1
 
 # Same post-link surgery build-ffi does, and for the same reason: `mojo
@@ -1021,6 +1029,10 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datasta
 [tool.poe.tasks.serve-host-check]
 help = "Run the Mojo host's gate app on :8080 (a beat every 100 ms to every worker's streams)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/host_check/server.mojo"
+
+[tool.poe.tasks.serve-ramp]
+help = "Run the ramp module under the Mojo host (M0_BLOCKING_THREADS=4 for the lane)"
+cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ramp/server.mojo"
 
 # The three WSGI rows are Python-only projects; one binary serves them all.
 # M0_WORKERS=4 (and every other M0_ variable) still applies — flags override.
@@ -6291,6 +6303,117 @@ pid=
 rm -f seam.log seam_index.html "$srv"
 echo "smoke-mount-seam OK"
 python3 scripts/emit.py --covers N14 --task smoke-mount-seam
+"""
+
+# One views module on two hosts (SPEC N20; docs/notes/the-ramp-test.md).
+# `apps/ramp/views.mojo` is built into m0serve as `MojoMount` under
+# `--mount /x=mojo` and into a host binary under the same `Mount("/x")`,
+# and the two are compared on the wire: a fixed request set under the
+# prefix answers byte-identically apart from Date, a rendered link is
+# followed on each, the paths outside the prefix answer what each host
+# owns, and `/x/now` stays answered on both while two connections hold
+# `/x/slow` -- with the host's bare loop as the negative arm. Its own
+# ports, and the m0serve binary in bin/ beside the runtime it needs.
+[tool.poe.tasks.smoke-ramp]
+help = "One views module on two hosts: byte-identical answers, a followed link, and placement on m0serve and the Mojo host alike (SPEC N20)"
+shell = """
+set -u
+out=$(mktemp -d)
+srv=bin/m0serve-ramp
+pids=
+cleanup() {
+  [ -n "$pids" ] && kill $pids 2>/dev/null
+  pkill -KILL -f "$out/" 2>/dev/null
+  rm -rf "$out" "$srv"
+}
+trap cleanup EXIT
+fail() {
+  echo "FAIL: $1"
+  for f in "$out"/*.log; do
+    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
+  done
+  exit 1
+}
+# One module, two binaries. The mount build REPLACES the demo mount and
+# adds the application's module root (M0SERVE_INCLUDE); the host build is
+# the ordinary app build.
+rm -f "$srv"
+M0SERVE_MOUNT_DIR=apps/ramp/mount M0SERVE_INCLUDE=apps M0SERVE_OUT=$srv \
+  uv run poe build-serve || fail "build-serve with the ramp mount did not build"
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
+  apps/ramp/server.mojo -o "$out/ramp" || fail "the ramp's host binary did not build"
+
+# m0serve: the module as a mount beside a Python application, four
+# threads on its lane; the host: the same module with a lane of four.
+"$srv" --mount /=bareapp.wsgi --mount /x=mojo --app-dir apps/wsgi_bare \
+  --port 8821 --blocking-threads 4 > "$out/m0serve.log" 2>&1 &
+pids="$!"
+env M0_PORT=8822 M0_BLOCKING_THREADS=4 "$out/ramp" > "$out/host.log" 2>&1 &
+pids="$pids $!"
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8821/x/now > /dev/null \
+  || fail "m0serve never answered the mount"
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8822/x/now > /dev/null \
+  || fail "the host never answered"
+grep -q 'handler thread(s) behind the loop' "$out/host.log" || fail "the host started no lane"
+
+# Bytes: the request set under the prefix, the followed link, and the
+# paths outside the prefix asserted per host.
+res=$(python3 scripts/ramp_probe.py bytes 8821 8822 /x 2>&1) || fail "bytes: $res"
+echo "bytes: $res"
+
+# Placement, on each: two connections hold /x/slow?ms=200, and the worst
+# of 24 /x/now samples stays under 100 ms (sim_loop's bound).
+res=$(python3 scripts/ramp_probe.py placement 8821 /x 2 4 2>&1) || fail "placement, m0serve: $res"
+m0_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$m0_ms" ] && [ "$m0_ms" -lt 100 ] || fail "placement, m0serve: /x/now waited ${m0_ms:-?} ms behind two slow views on a lane of four ($res)"
+echo "placement, m0serve: $res"
+res=$(python3 scripts/ramp_probe.py placement 8822 /x 2 4 2>&1) || fail "placement, host: $res"
+host_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$host_ms" ] && [ "$host_ms" -lt 100 ] || fail "placement, host: /x/now waited ${host_ms:-?} ms behind two slow views on a lane of four ($res)"
+echo "placement, host: $res"
+
+# The lane FULL: four connections on four threads. The host's /x/now is
+# an `add_loop` route and the loop answers it whatever the lane is doing;
+# m0serve's loop handler holds no Mojo table, so the same route waits for
+# a pool thread (D32, recorded rather than built). The host is bounded;
+# m0serve's number is the measurement the decision asked for, recorded.
+res=$(python3 scripts/ramp_probe.py placement 8822 /x 4 4 2>&1) || fail "full lane, host: $res"
+host_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$host_full_ms" ] && [ "$host_full_ms" -lt 100 ] || fail "full lane, host: /x/now waited ${host_full_ms:-?} ms with every lane thread busy -- add_loop no longer keeps it on the loop ($res)"
+echo "full lane, host: $res"
+res=$(python3 scripts/ramp_probe.py placement 8821 /x 4 4 2>&1) || fail "full lane, m0serve: $res"
+m0_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$m0_full_ms" ] || fail "full lane, m0serve: no measurement in: $res"
+echo "full lane, m0serve (D32, recorded): $res"
+
+for p in $pids; do kill -TERM $p; done
+for p in $pids; do
+  i=0
+  while kill -0 $p 2>/dev/null; do i=$((i + 1)); [ $i -le 100 ] || fail "a server did not exit within 10 s of SIGTERM"; sleep 0.1; done
+  wait $p || fail "a server exited non-zero on SIGTERM"
+done
+pids=
+
+# The negative arm: the host with no lane must FAIL the bound under the
+# same load, or the placement arm above proves nothing.
+env M0_PORT=8823 M0_BLOCKING_THREADS=0 "$out/ramp" > "$out/host-bare.log" 2>&1 &
+pids="$!"
+curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8823/x/now > /dev/null \
+  || fail "the bare host never answered"
+res=$(python3 scripts/ramp_probe.py placement 8823 /x 2 4 2>&1) || fail "placement, bare host: $res"
+bare_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$bare_ms" ] && [ "$bare_ms" -ge 100 ] || fail "placement, bare host: /x/now answered in ${bare_ms:-?} ms with every view on the loop -- the arm no longer discriminates ($res)"
+echo "placement, bare host (negative arm): $res"
+kill -TERM $pids
+wait $pids || fail "the bare host exited non-zero on SIGTERM"
+pids=
+
+echo "smoke-ramp OK"
+python3 scripts/emit.py ramp.worst_now_ms.m0serve "$m0_ms" --unit ms --limit 100 --task smoke-ramp
+python3 scripts/emit.py ramp.worst_now_ms.host "$host_ms" --unit ms --limit 100 --task smoke-ramp
+python3 scripts/emit.py ramp.full_lane_now_ms.host "$host_full_ms" --unit ms --limit 100 --task smoke-ramp
+python3 scripts/emit.py ramp.full_lane_now_ms.m0serve "$m0_full_ms" --unit ms --task smoke-ramp
+python3 scripts/emit.py --covers N20 --task smoke-ramp
 """
 
 # An SSE hold from a Mojo mount (SPEC N11). A view on the Mojo mount

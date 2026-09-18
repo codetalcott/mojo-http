@@ -1706,6 +1706,14 @@
       "evidence": "`test_views.mojo:test_an_on_loop_route_is_answered_with_its_state_before_dispatch` (every PR) \u2014 its neighbours cover the stateless decline, the 500 and `ViewService`; `sabotage-host --only views` (pre-release) answers the on-loop read without its state and insists the test fails. Where a stream open goes under a pool, and why: [the-ramp-test](notes/the-ramp-test.md)"
     },
     {
+      "id": "N20",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "One views module, two hosts: `apps/ramp/views.mojo` \u2014 a `Views[Ramp]` table, its views and its state, built from the prefix alone \u2014 compiles into `m0serve` as `MojoMount` under `--mount /x=mojo` (`M0SERVE_MOUNT_DIR`, plus `M0SERVE_INCLUDE` for the application's own module root) and into a host binary under the same `Mount(\"/x\")`, and the two answer a fixed request set under the prefix byte-identically apart from `Date` (the index, `now`, the compute route, a 404 inside the prefix, a 405 with `Allow`, an `OPTIONS` 204), follow the same rendered link, answer what each host owns outside the prefix (the Python application on `m0serve`, the table's 404 on the host, and `/xapp` never swallowed by `/x`), and keep `/x/now` answered while two connections hold `/x/slow` on a lane of four \u2014 on `m0serve` from a pool thread (D32), on the host from the loop \u2014 where the host with no lane fails the same bound; and with the lane FULL (four connections on four threads) the host's loop route still answers, while `m0serve`'s waits for a thread \u2014 D32's divergence, measured on every run rather than argued",
+      "status": "verified",
+      "evidence": "`Smoke test one views module on two hosts` (every PR) \u2014 `scripts/ramp_probe.py` diffs status, headers and body per request across the two ports (only `Date` differs, measured) and follows the index's links on each; the placement bound is 100 ms, sim_loop's, and `M0_BLOCKING_THREADS=0` on the host is the negative arm that must reach it (1 ms on each host at two loaders, 378 ms on the bare loop, on an M4); the full-lane arm bounds the host (5 ms) and records `m0serve` (154 ms). The design and the measurements: [the-ramp-test](notes/the-ramp-test.md)"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",

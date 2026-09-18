@@ -634,6 +634,13 @@ jobs:
       # the demo's routes must be gone, not merely outnumbered (SPEC N14).
       - name: Smoke test a Mojo mount supplied by module
         run: uv run poe smoke-mount-seam
+      # One views module compiled into m0serve as a mount and into a host
+      # binary, compared on the wire: byte-identical under the prefix, a
+      # rendered link followed on each, and a trivial route kept answered
+      # beside slow views on both, with the bare host loop as the negative
+      # arm (SPEC N20).
+      - name: Smoke test one views module on two hosts
+        run: uv run poe smoke-ramp
       # A stream held on a Mojo pool thread against a grant Django signed
       # into the URL: session-bound, expiring, rotatable (SPEC I21).
       - name: Smoke test the grant-verified hold mount

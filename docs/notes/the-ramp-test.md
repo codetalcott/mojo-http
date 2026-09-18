@@ -177,4 +177,82 @@ parameter for the same reason, and says so.
 
 ## R5b — the ramp
 
-*Not yet built; this section is filled in by the round that builds it.*
+### The module
+
+`apps/ramp/views.mojo` is one `Views[Ramp]` table, four views and a
+state type, and nothing that knows which host it is on. Under `Mount`:
+`/` (the index, two links through `st.at.url_for`, `on_loop=True`),
+`/now` (`add_loop`, the timed route), `/search?sel=&k=` (the demo mount's
+filtered scan, a writing view over the instance's own score buffer) and
+`/slow?ms=` (a spin). Two adapters, each a page long:
+
+- `apps/ramp/mount/m0serve_mount.mojo` is the `MojoMount` `m0serve`
+  builds in with `M0SERVE_MOUNT_DIR=apps/ramp/mount`, taking its prefix
+  from the lane (`PoolContext.prefix`); `build-serve` gained
+  `M0SERVE_INCLUDE`, the application's own module root, placed AFTER the
+  mount directory so it can never be a second mount root (N14's rule).
+- `apps/ramp/server.mojo` is `serve[ViewsApp[Ramp]](AppConfig())`; the
+  `ViewState` conformance sits on the state itself, and the host, having
+  no mount table, takes the prefix from the module's `RAMP_PREFIX`. The
+  smoke passes that same value to `--mount`, and a disagreement is a
+  dead link the gate follows.
+
+The module keeps two rules the brief set. Nothing in a body names where
+it ran — the demo mount's `"thread":N` would be a lane index on one host
+and -1 on the other — and the spin count is not in `/slow`'s body either.
+And the state is built from the prefix alone (`Ramp.generate(at)`), so
+both adapters call one function.
+
+### What the wire said
+
+`scripts/ramp_probe.py bytes` issues nine requests under the prefix to
+both ports — the index, `now`, the scan with and without parameters,
+`slow`, a 404 inside the prefix, a 405 with `Allow`, an `OPTIONS` 204
+and a 405 on the writing route — and diffs status, headers and body
+per request. Every one was byte-identical apart from `Date` on the first
+run, as the brief predicted from the code: `x-worker` is set on holds
+alone, `x-thread` under `--threads` alone, and both hosts write the rest
+through the same `_finish_response`. It then follows the index's two
+links on each host and requires the same link without its prefix to be
+404 on both. Outside the prefix the two hosts differ by design and are
+asserted per host: `/` is the Python application on `m0serve` and the
+table's problem+json 404 on the host, and `/xapp/now` reaches neither
+mount.
+
+Placement, `scripts/ramp_probe.py placement`, is `host_probe.py`'s
+arithmetic under the prefix: K connections looping `/x/slow?ms=200`, 24
+samples of `/x/now` at random gaps, the worst reported.
+
+| arm | m0serve (lane of 4) | host (lane of 4) | host, bare loop |
+|---|---|---|---|
+| two connections on `/x/slow` | 1 ms | 1 ms | 378 ms |
+| four connections — the lane full | 154 ms | 5 ms | — |
+
+The first row is the gate's bound on both hosts (100 ms, `sim_loop`'s),
+and the bare loop is the negative arm that must fail it. The second row
+is the measurement D32 asked for. With every thread busy, `m0serve`'s
+loop route waits for a pool thread — its loop handler holds no Mojo
+table — while the host's, an `add_loop` route, is answered by the loop:
+a fixed cost of about one spin on `m0serve`, no stall. The gate bounds
+the host there and RECORDS `m0serve` (`ramp.full_lane_now_ms.m0serve`),
+so the number that would justify building option (i) accumulates on
+every run instead of being argued once.
+
+### The gates
+
+`smoke-ramp` (every PR, SPEC N20) builds both binaries from the one
+module, starts `m0serve` with the mount beside `bareapp.wsgi` and the
+host with a lane of four on ports of its own, runs the bytes phase, the
+two-loader placement on each, the full-lane arm on each, then the bare
+host as the negative arm, and records the four placement numbers. It
+reaps by its own temp directory as every host smoke does.
+
+### Open questions, answered
+
+1. A flag on `Views`, not a second table (N19).
+2. The drain-then-join issue retired inside R5a, which added the third
+   bound it would have stacked.
+3. `add_loop` on `m0serve`: recorded now (D32), built on evidence; the
+   evidence is now recorded on every run.
+4. `apps/ramp` is a fresh module; the demo mount keeps its job and its
+   thread index.

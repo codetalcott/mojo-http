@@ -1234,8 +1234,11 @@ pieces, and the language fact each rests on:
   word as its drain begins and the pool and producer joins count from
   it, so the shutdown bounds overlap rather than stack), and refuses
   `M0_THREADS` and `M0_SPAWN_WORKERS` with 78. `apps/host_check` is its gate app;
-  `apps/blobs`, `sim_loop`, `datastar_counter`, `datastar_todo` and
-  `fragment_notes` run on it. An app that broadcasts a whole rendered state
+  `apps/blobs`, `sim_loop`, `datastar_counter`, `datastar_todo`,
+  `fragment_notes` and `ramp` run on it — `apps/ramp` being ONE views
+  module built into m0serve as a mount and into a host binary, compared
+  byte for byte and by placement on both by `smoke-ramp` (SPEC N20;
+  docs/notes/the-ramp-test.md). An app that broadcasts a whole rendered state
   from several workers holds a lock from the change until the frame is
   numbered and published, or a stale render can take the newer id
   (`datastar_todo`, SPEC N17). Run `poe sabotage-host` after
