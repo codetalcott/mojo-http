@@ -1,0 +1,36 @@
+# THROWAWAY: host Phase 5's x86-64 measurements on a GitHub ubuntu-latest
+# runner -- D35's Linux x86 row (bench-host-modes) and the blobs image's
+# modes (bench_blobs_modes.py). Lives only on the bench-x86-phase5 branch;
+# the branch is deleted once the artifact is downloaded.
+name: Bench x86 (throwaway)
+
+on:
+  push:
+    branches: [bench-x86-phase5]
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Install wrk and the build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq wrk libsqlite3-dev patchelf
+      - run: uv run poe build-all
+      - name: The machine
+        run: |
+          lscpu; nproc; free -m
+          docker info --format '{{.OperatingSystem}} {{.KernelVersion}} {{.NCPU}} cpus {{.Architecture}} {{json .DriverStatus}}'
+      - name: bench-host-modes, N=2 (D35's Linux x86 row)
+        run: uv run python3 scripts/bench_host_modes.py --n 2 --wrk-threads 2 --rounds 3 --name host_modes_linux_x86
+      - name: blobs modes at one CPU
+        run: uv run python3 scripts/bench_blobs_modes.py --build --viewers 100,400 --rounds 3 --name blobs_modes_x86
+      - name: blobs modes at Fly's shared-cpu baseline
+        run: uv run python3 scripts/bench_blobs_modes.py --build --cpus 0.0625 --viewers 25,100 --rounds 3 --name blobs_modes_baseline_x86
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bench-x86
+          path: bench/results/*.json
+          if-no-files-found: error
