@@ -53,15 +53,26 @@ id it carries — the id the fragment already owns. `Fragment[Htmx]` and
 `Fragment[Datastar]` render identical code with different attributes;
 an app names its vocabulary once (`comptime Frag = Fragment[Htmx]`) and
 never writes an attribute of either. The `Vocabulary` trait below is the
-seam, `Htmx` and `Datastar` are its two conformances, and each is the ONLY
-place its library's spelling lives: switching a whole app is one edit, and
-a third library is one more struct here, not a change to any app.
+seam, `Htmx` and `Datastar` are the two conformances the layer ships and
+gates, and each is the ONLY place its library's spelling lives: switching
+a whole app is one edit.
 
-The conformances live in this file rather than in the apps because a
-trait from a `.mojoc` package cannot be conformed to from app source on
-this toolchain (`fragment.mojo`'s docstring records the observations). A
-type parameter bound to a type whose conformance is inside the package
-does cross the boundary, which is what `Views[S]` already relies on.
+**A third library is an application's own struct.** `Vocabulary` is open:
+an app conforms to it from its own source, through the `.mojoc`, and
+`Fragment[Theirs]` renders with it (Mojo 1.1.0; through 1.0 an app's
+conformance to a trait behind a `.mojoc` got no witness table, which is
+the only reason both conformances were ever written here). What a
+conformance may rely on is what it can write without an underscore: the
+builder's `attr` and `flag`, `Html.open_kind()` for which element it is
+on, and `verbs()` for the verbs its library takes. The two built-in
+conformances are written against exactly that surface, so it cannot be
+narrower than what a real library needed. The verb check is the LAYER's —
+`Html.swap` and `Fragment.swap`/`.el` refuse a verb outside `V.verbs()`
+before `V.swap` runs — so a conformance that checks nothing still refuses
+a typo, and one whose library has a sixth verb (htmx 4's `query`) says so
+in one line. `poe check-app-vocabulary` builds such an app from a
+directory outside this repository and reads its output with a linter
+this layer did not write.
 
 One mode: replace the fragment itself. The two libraries put a non-default
 mode on different sides — htmx on the element (`hx-swap="beforeend"`) or
@@ -114,18 +125,75 @@ def _kind_of(tag: String) -> UInt8:
     return _KIND_OTHER
 
 
-def _check_verb(verb: String) raises:
-    """Refuse a verb that is not one of the five: `hx-psot` is a silent
-    attribute in htmx and `@psot(...)` a runtime error in Datastar, and a
-    typo is the mistake this layer exists to catch."""
-    if not (
-        verb == "get" or verb == "post" or verb == "put"
-        or verb == "patch" or verb == "delete"
-    ):
+@fieldwise_init
+struct ElementKind(ImplicitlyCopyable, Movable):
+    """Which kind of element a start tag opened, as a vocabulary reads it
+    (`Html.open_kind()`): the default event htmx's own rule gives it. Three
+    questions rather than four constants, because "none of the three" is
+    the fourth answer and needs no name."""
+
+    var _kind: UInt8
+
+    def is_form(self) -> Bool:
+        """`<form>`: the request is the form's own submit."""
+        return self._kind == _KIND_FORM
+
+    def is_field(self) -> Bool:
+        """`<input>`, `<textarea>`, `<select>`: the request fires on change."""
+        return self._kind == _KIND_FIELD
+
+    def is_link(self) -> Bool:
+        """`<a>`, `<button>`: a click whose default is cancelled."""
+        return self._kind == _KIND_LINK
+
+
+comptime STANDARD_VERBS = "get post put patch delete"
+"""What `Vocabulary.verbs()` answers unless a conformance says otherwise."""
+
+
+def _verb_is_in(verb: String, verbs: String) -> Bool:
+    """Whether `verb` is one of the space-separated words of `verbs`. A
+    byte walk, not a split: this runs on every swapping element."""
+    var v = verb.as_bytes()
+    var b = verbs.as_bytes()
+    var n = len(v)
+    if n == 0:
+        return False
+    for k in range(n):
+        if v[k] == _SPACE:
+            return False
+    var i = 0
+    while i < len(b):
+        var j = i
+        while j < len(b) and b[j] != _SPACE:
+            j += 1
+        if j - i == n:
+            var same = True
+            for k in range(n):
+                if b[i + k] != v[k]:
+                    same = False
+                    break
+            if same:
+                return True
+        i = j + 1
+    return False
+
+
+def _swap[
+    V: Vocabulary
+](mut h: Html, verb: String, url: String, target: String) raises:
+    """Every swap goes through here: refuse a verb `V` does not take, then
+    let `V` spell it. `hx-psot` is a silent attribute in htmx and
+    `@psot(...)` a runtime error in Datastar, and a typo is the mistake
+    this layer exists to catch — so the check is the layer's, and a
+    conformance that checks nothing still refuses one."""
+    var verbs = V.verbs()
+    if not _verb_is_in(verb, verbs):
         raise Error(
-            'swap("', verb, '", ...): the verb must be one of get, post, put, '
-            "patch, delete"
+            'swap("', verb, '", ...): the verb must be one of ',
+            verbs.replace(" ", ", "),
         )
+    V.swap(h, verb, url, target)
 
 
 def _check_action_url(url: String) raises:
@@ -155,15 +223,29 @@ trait Vocabulary:
     """How a frontend library spells "fetch `url` with `verb` and put the
     answer where `target` is".
 
-    One static method, called with the element still open so the spelling
-    can read which element it is on. `target` is a selector (`#notes`);
-    a library that targets by id ignores it, and that is the point of
-    passing it rather than making the caller decide who needs it.
+    `swap` is called with the element still open, so the spelling can ask
+    `h.open_kind()` which element it is on and write with `h.attr` and
+    `h.flag`. `target` is a selector (`#notes`); a library that targets by
+    id ignores it, and that is the point of passing it rather than making
+    the caller decide who needs it. By the time `swap` runs the verb has
+    been checked against `verbs()`, so a conformance does not check it.
+
+    An application may conform to this from its own source. Everything a
+    conformance needs is spelled without an underscore; the two below are
+    written that way on purpose.
     """
 
     @staticmethod
     def swap(mut h: Html, verb: String, url: String, target: String) raises:
         ...
+
+    @staticmethod
+    def verbs() -> String:
+        """The verbs this library takes, space-separated. The layer refuses
+        any other before `swap` runs and names these in the error. The
+        default is the five both built-in libraries share; htmx 4 has a
+        sixth (`query`), and its conformance answers with all six."""
+        return STANDARD_VERBS
 
 
 struct Htmx(Vocabulary):
@@ -176,7 +258,6 @@ struct Htmx(Vocabulary):
 
     @staticmethod
     def swap(mut h: Html, verb: String, url: String, target: String) raises:
-        _check_verb(verb)
         h.attr(String("hx-", verb), url)
         h.attr("hx-target", target)
         h.attr("hx-swap", "outerHTML")
@@ -216,16 +297,16 @@ struct Datastar(Vocabulary):
     @staticmethod
     def swap(mut h: Html, verb: String, url: String, target: String) raises:
         _ = target
-        _check_verb(verb)
         _check_action_url(url)
-        if h._open_kind == _KIND_FORM:
+        var kind = h.open_kind()
+        if kind.is_form():
             h.attr(
                 "data-on:submit__prevent",
                 String("@", verb, "('", url, "', {contentType: 'form'})"),
             )
-        elif h._open_kind == _KIND_FIELD:
+        elif kind.is_field():
             h.attr("data-on:change", String("@", verb, "('", url, "')"))
-        elif h._open_kind == _KIND_LINK:
+        elif kind.is_link():
             h.attr("data-on:click__prevent", String("@", verb, "('", url, "')"))
         else:
             h.attr("data-on:click", String("@", verb, "('", url, "')"))
@@ -262,6 +343,12 @@ struct Html(Movable):
         self._buf.extend(tag.as_bytes())
         self._open = True
         self._open_kind = _kind_of(tag)
+
+    def open_kind(self) -> ElementKind:
+        """Which kind of element the open start tag is — what a
+        `Vocabulary` reads to pick its event. The last element opened, if
+        the start tag has since ended."""
+        return ElementKind(self._open_kind)
 
     def attr(mut self, name: String, value: String) raises:
         """` name="value"`, with `value` escaped. Raises if no element is
@@ -321,7 +408,7 @@ struct Html(Movable):
         and this form is for an element rendered OUTSIDE the fragment it
         swaps — a page-level link — which takes `frag.selector()`.
         """
-        V.swap(self, verb, url, target)
+        _swap[V](self, verb, url, target)
 
     def text(mut self, s: String):
         """`s` as text content, escaped."""
@@ -403,7 +490,7 @@ struct Fragment[V: Vocabulary](Movable):
         """Make the open element fetch `url` with `verb` and replace THIS
         fragment with the answer. Generated from the fragment's own id, in
         `V`'s spelling."""
-        Self.V.swap(self.html, verb, url, self.selector())
+        _swap[Self.V](self.html, verb, url, self.selector())
 
     def el(
         self, tag: String, verb: String, url: String, attrs: String, *children: String
@@ -421,7 +508,7 @@ struct Fragment[V: Vocabulary](Movable):
         var h = Html(128)
         h.open(tag)
         h.raw_attrs(attrs)
-        Self.V.swap(h, verb, url, self.selector())
+        _swap[Self.V](h, verb, url, self.selector())
         for c in children:
             h.raw(c)
         h.close(tag)

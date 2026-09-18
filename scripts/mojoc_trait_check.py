@@ -43,11 +43,13 @@ to be refused. They are kept apart because `mismatch` is the real
 lines -- so a failure in one and not the other says whether the problem is
 the toolchain or this tree.
 
-A failure here is not cosmetic. It means the constraint behind D12, D28 and
-D7 is back, `PageShell` can no longer be an app-facing trait, `page_or_fragment`
-goes back to a `thin` function over a context, and anything moved out of
-the fork on the strength of the fix has to go back. Say so in
-the failure, because the next session will not have read this.
+A failure here is not cosmetic. All three decisions the bug shaped are
+retired on the strength of the fix -- D28, D12 and D7 -- so it means
+`PageShell` can no longer be an app-facing trait and `page_or_fragment`
+goes back to a `thin` function over a context, an application can no
+longer define a `Vocabulary` (`poe check-app-vocabulary` will be failing
+beside this), and what moved out of the fork has to go back. Say so in the
+failure, because the next session will not have read this.
 """
 
 import shutil
@@ -211,11 +213,13 @@ def main() -> int:
         if len(regressed) == 1:
             print("  Only one of the two arms refused, so this may be this tree "
                   "rather than the toolchain -- compare them before concluding.")
-        print("  What this costs: the constraint behind DECISIONS D7, D12 and D28 "
-              "is back. `page_or_fragment` cannot take a `PageShell` and has to "
-              "go back to a `thin` function over a context, app-facing traits "
-              "belong in the source-resolved fork, and anything moved out of it "
-              "on the strength of Mojo 1.1.0 has to go back.")
+        print("  What this costs: DECISIONS D7, D12 and D28 were each retired on "
+              "this fix, and the constraint behind them is back. `page_or_fragment` "
+              "cannot take a `PageShell` and has to go back to a `thin` function "
+              "over a context, an application cannot define a `Vocabulary` (D7, "
+              "D34; `check-app-vocabulary`), app-facing traits belong in the "
+              "source-resolved fork, and what moved out of it on the strength "
+              "of Mojo 1.1.0 (D28, D33) has to go back.")
         return 1
 
     print("mojoc-trait: an app conforms to a trait in a `.mojoc` whatever the "

@@ -4,6 +4,14 @@
 > server-rendered fragment, checked against the shipped bundle rather than
 > recalled, and what the framework layer built on the answers.
 
+> **D7 is retired (2026-09-18).** Below, both conformances live in
+> `html.mojo` because an application could not conform to `Vocabulary`
+> through a `.mojoc`, and the "Not built" table's row "A `Vocabulary` an
+> application defines" waits on the probe flipping. It flipped with Mojo
+> 1.1.0 and that row is built:
+> [a-vocabulary-an-application-defines](a-vocabulary-an-application-defines.md).
+> The note is kept as written.
+
 [A fragment that names itself](a-fragment-that-names-itself.md) built the
 fragment layer for htmx and left one claim unproven: that the same
 renderer's output could go out as an HTTP body to htmx *and* as a
