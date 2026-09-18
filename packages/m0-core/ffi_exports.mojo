@@ -106,7 +106,7 @@ def m0_shared_fetch_add(addr: UInt64, delta: Int64) abi("C") -> Int64:
     rather than a call to it — m0-core depends on nothing, and importing
     m0-http here would invert the dependency direction the whole repo is
     arranged around. What keeps the two honest is that both are the only
-    thing they can be: `Atomic[DType.int64].fetch_add` on the address.
+    thing they can be: `Atomic[Int64].fetch_add` on the address.
 
     `addr` is 0-checked and answered with 0, so an unwired caller — one whose
     server never exported a slot — degrades to "no numbering" instead of
@@ -116,7 +116,7 @@ def m0_shared_fetch_add(addr: UInt64, delta: Int64) abi("C") -> Int64:
     """
     if addr == UInt64(0):
         return Int64(0)
-    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var slot = Pointer[Atomic[Int64], MutUntrackedOrigin](
         unsafe_from_address=Int(addr)
     )
     return slot[].fetch_add(delta)

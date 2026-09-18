@@ -470,7 +470,7 @@ def inet_pton[address_family: AddressFamily](var src: String) raises InetPtonErr
     else:
         ip_buffer = stack_allocation[4, c_void]()
 
-    var result = _inet_pton(address_family.value, src.as_c_string_slice().unsafe_ptr(), ip_buffer)
+    var result = _inet_pton(address_family.value, src.as_c_string_span().ptr(), ip_buffer)
     if result == 0:
         raise InetPtonInvalidAddressError()
     elif result == -1:

@@ -196,7 +196,7 @@ struct StaticFiles(Copyable, Movable):
             etag = stat_etag(
                 total,
                 Int(st.st_mtimespec.tv_sec) * 1_000_000_000
-                + Int(st.st_mtimespec.tv_subsec),
+                + Int(st.st_mtimespec.tv_nsec),
             )
         except:
             # No such file: the handler's to answer, not this module's.

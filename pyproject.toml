@@ -10,7 +10,7 @@ license = "MIT"
 # `mojo` brings the whole toolchain: mojo, mojo-lsp-server, mojo-lldb, mblack.
 # MAX is deliberately not a dependency — nothing in packages/ or apps/ imports it.
 dependencies = [
-    "mojo==1.0.0",
+    "mojo==1.1.0",
 ]
 
 [dependency-groups]
@@ -1099,7 +1099,7 @@ help = "Revert each rule of the keep-alive probe; check-keepalive-barrier must c
 cmd = "python3 scripts/keepalive_barrier_check.py --sabotage"
 
 [tool.poe.tasks.check-mojoc-trait]
-help = "An app conformance to a .mojoc trait is still refused (the reason the shell is a thin function)"
+help = "An app conformance to a .mojoc trait compiles, whatever the source directory is named"
 cmd = "python3 scripts/mojoc_trait_check.py"
 deps = ["build-core", "build-http"]
 
@@ -1823,9 +1823,12 @@ curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=False' \
 got=$(curl -s http://localhost:8080/pep3333/canary)
 [ "$got" = "canary" ] || fail "/pep3333/canary did not answer normally: got '$got'"
 
-# The bridge must not leak per request. Mojo 1.0's PythonObject interop leaks
-# one reference per call argument and per setitem value, which is why requests
-# cross as a byte blob (see m0-wsgi/src/bridge.mojo). The pre-blob bridge
+# The bridge must not leak per request. Through Mojo 1.0 its PythonObject
+# interop leaked one reference per call argument and per setitem value, which
+# is why requests crossed the C API rather than the obvious way (see
+# m0-wsgi/src/bridge.mojo); Mojo 1.1.0 fixed that and the pin moved
+# 2026-09-18, so what this now watches is the bridge's own steal discipline --
+# PyDict_SetItem does not steal and PyTuple_SetItem does. The pre-blob bridge
 # leaked ~2.3KB/request — ~23MB over this loop; 12MB allows allocator noise.
 rss0=$(ps -o rss= -p $pid | tr -d ' ')
 python3 - <<'PYEOF'
@@ -2358,7 +2361,8 @@ echo "phase 5: a hold taken on a pool thread, delivered in ${took}ms behind two 
 #
 # On a FREE-THREADED build this phase proves the refusal instead: the ASGI
 # mount needs the asyncio executor, whose Python type cannot be built there
-# (Mojo 1.0 lays PyObject out for the GIL build; modular/modular#5726), so
+# (Mojo lays PyObject out for the GIL build, measured on 1.0.0 and not
+# re-measured since the 1.1.0 pin; modular/modular#5726), so
 # the server must exit 78 naming the issue rather than segfault -- alone,
 # through --doctor (same code), and under --workers 2, where the refusal is
 # made in each worker and the supervisor must propagate it rather than
@@ -8444,7 +8448,7 @@ echo "CANARY PASSED against $(mojo --version)"
 # consistently switches BOTH the embedded libpython (Mojo resolves it from
 # PATH's python3) AND the smoke tasks' client-side python3 probes, with zero
 # smoke-task edits. The same uv.lock resolves under 3.14t (Django, asgiref,
-# and Flask ship py3-none wheels; mojo==1.0.0 is py3-none-<platform>), so
+# and Flask ship py3-none wheels; mojo==1.1.0 is py3-none-<platform>), so
 # `uv sync --frozen --python 3.14t` builds an identically-locked venv without
 # touching the lock. Unlike the nightly canary there is nothing to rebuild:
 # .mojoc artifacts are compiler-locked, and both venvs install the same

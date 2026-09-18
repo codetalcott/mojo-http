@@ -837,7 +837,7 @@ struct OffloadPool(Movable):
             self.done_ring = Ring(OFFLOAD_MAX_INFLIGHT * 2)
             self.wake_base = external_call["malloc", Int, Int](_WAKE_BYTES)
             for w in range(_WAKE_BYTES // 8):
-                atomic_at(self.wake_base + w * 8)[] = Atomic[DType.int64](0)
+                atomic_at(self.wake_base + w * 8)[] = Atomic[Int64](0)
             # The loop's flag starts SET: a loop that never announces its
             # parks (the inversion's driver waits inside asyncio) is poked on
             # every completion, the datagram shape it always had.
@@ -1268,7 +1268,7 @@ struct OffloadPool(Movable):
         var bytes = _THREAD_STRIDE * n
         self.thread_base = external_call["malloc", Int, Int](bytes)
         for w in range(bytes // 8):
-            atomic_at(self.thread_base + w * 8)[] = Atomic[DType.int64](0)
+            atomic_at(self.thread_base + w * 8)[] = Atomic[Int64](0)
         for t in range(n):
             atomic_at(self._rec(t) + _TR_LANE)[].store(-1)
             atomic_at(self._rec(t) + _TR_READ)[].store(-1)

@@ -97,7 +97,7 @@ def _dot(
 ) -> Float32:
     """Four independent accumulator chains (the demo mount's measurement:
     one chain runs at FMA latency rather than throughput)."""
-    var acc = InlineArray[SIMD[DType.float32, _W], _ACC](fill=0)
+    var acc = Array[SIMD[DType.float32, _W], _ACC](fill=0)
     var step = _W * _ACC
     var i = 0
     while i + step <= d:

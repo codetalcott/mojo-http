@@ -45,8 +45,10 @@ somebody else's Django projects inside the pull request that trips it.
 
 ## Known issues
 
-- **The asyncio executor cannot run on free-threaded CPython.** Mojo 1.0's
-  stdlib lays `PyObject` out for the GIL build, so the executor's
+- **The asyncio executor cannot run on free-threaded CPython.** Mojo's
+  stdlib lays `PyObject` out for the GIL build (measured on 1.0.0 and not
+  re-measured since the pin moved to 1.1.0; the weekly `py-canary` run is
+  what answers it), so the executor's
   in-process Python type (`ExecutorPort`) segfaults on a free-threaded
   build (modular/modular#5726). The server refuses instead of crashing: an
   ASGI application on such a build exits 78, `--doctor` reports the same
@@ -90,17 +92,6 @@ somebody else's Django projects inside the pull request that trips it.
   but not RHEL 9 at 2.34. `pip` declines the wheel rather than installing
   one that crashes. Reaching 2.34 means building inside a `manylinux_2_34`
   container; deferred until a release needs the reach.
-
-  **Closed by:** none — outside the server's own behaviour.
-
-- **Mojo 1.0's `PythonObject` interop leaks a reference per call argument
-  and per `__setitem__` value.** The bridge works around it by building the
-  environ through the raw C API and never passing a per-request object
-  through those operations; <!-- observed: the limit `smoke-django` enforces, pyproject.toml -->`smoke-django`'s RSS guard (0 KB over 10k
-  requests) is the instrument. The fix is upstream (modular/modular#6833),
-  in every nightly from `1.1.0.dev2026081405` and in no stable release.
-  What the pin bump will hit, measured by building the tree on a nightly,
-  is in [the note](notes/pythonobject-leak-and-the-pin-bump.md).
 
   **Closed by:** none — outside the server's own behaviour.
 
@@ -173,6 +164,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- **Mojo 1.0's `PythonObject` interop leaked a reference per call argument and per `__setitem__` value** — resolved 2026-09-18 by moving the pin to Mojo 1.1.0, which carries the upstream fix (modular/modular#6833). Measured in this tree against 1.0.0 as the null case: +1001 references per 1000 operations before, 0 after. The bridge keeps its raw C API environ build, which was always the faster path as well as the safe one, so nothing about the request path changes; what changes is that a per-request `PythonObject` argument is now a performance preference rather than a correctness constraint. The write-up is [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md).
 - **The Mojo host's drain and its producer join ran in sequence** — resolved 2026-09-17 with the pool lane (E26, D31): the loop stamps the producer's stop word as its drain begins and both joins count from that stamp, so a request in flight at SIGTERM beside a step past its bound leaves inside one bound. The premise as first recorded was wrong in one detail — the drain ends a HELD stream at once, so what stretches it is a request in flight, not a stream — and the gate holds a request of a few seconds instead. The write-up is [The ramp test: lanes in the host, one module on two hosts — 2026-09-17](notes/the-ramp-test.md).
 - **Sessions and CSRF behind a login** (N13) — built 2026-09-12: a stateless signed cookie and a CSRF token derived from its tag, on `apps/fragment_notes` with one user; `m0_http.session` beside `grant.mojo`, forged and admitted on the wire by a CPython issuer, five rules sabotage-proven. D15 retired; D24 and D25 record what it deliberately is not. The write-up is [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md).
 - **A Datastar form, end to end** (N12) — built 2026-09-12: the todo demo's rename form, `form(req)` on the other side, a smoke on the wire and a Chromium run that recorded what the pinned bundle sends; D21 confirmed. The write-up is [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md).
@@ -219,7 +211,8 @@ The engineering record: long-form, dated, kept as written.
 **Open questions, and questions since answered**
 
 - [The desktop-Mac server, and what the wheel gives up to ship](notes/desktop-mac-server.md)
-- [Mojo 1.0's PythonObject leak, and what the pin bump will hit](notes/pythonobject-leak-and-the-pin-bump.md)
+- [Mojo 1.0's PythonObject leak, and what the pin bump will hit — answered by the bump](notes/pythonobject-leak-and-the-pin-bump.md)
+- [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md)
 - [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)

@@ -110,6 +110,13 @@ being corrected in a later Mojo release; a statement from Modular about
 redistributing prebuilt runtime binaries; or building the runtime from the
 Apache-licensed source ourselves rather than shipping Modular's build.
 
+The cheapest of those has now been tried and did not settle it. A later
+release arrived — Mojo 1.1.0, pinned here on 2026-09-18 — and
+`mojo_compiler-1.1.0`'s METADATA still declares `License:
+LicenseRef-MAX-Platform-Software-License`, byte for byte what 1.0.0
+declared. So the determination stands where it was, and the next release is
+worth the same one-line check.
+
 ## Update, 2026-08-24: the two owned defects are fixed
 
 `build-ffi` now rewrites both paths after the link (they cannot be

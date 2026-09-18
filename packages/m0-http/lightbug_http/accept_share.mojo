@@ -112,8 +112,8 @@ def accept_sharing_wanted(workers: Int) -> Bool:
     return workers > 1 and getenv("M0_ACCEPT_SHARE", "") != "0"
 
 
-def _atomic(addr: Int) -> Pointer[Atomic[DType.int64], MutUntrackedOrigin]:
-    return Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+def _atomic(addr: Int) -> Pointer[Atomic[Int64], MutUntrackedOrigin]:
+    return Pointer[Atomic[Int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
 

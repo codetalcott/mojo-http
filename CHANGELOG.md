@@ -157,6 +157,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **The pinned toolchain is Mojo 1.1.0** (was 1.0.0). It carries the
+  upstream fix for the `PythonObject` reference leak
+  (modular/modular#6833) and for the witness-table bug that cost a trait
+  its conformance when a package's name differed from the directory it was
+  compiled from. Both were measured in this tree against 1.0.0 as the null
+  case: 1000 operations leak 1001 references there and 0 here, and all four
+  arms of `check-mojoc-trait` compile where two were refused. That check
+  was written as a countdown and is now a regression guard whose failure
+  says what the constraint's return would cost. Nothing served changes.
+  What the move cost in source: `Atomic[Int64]` for
+  `Atomic[DType.int64]` (20 sites), `_CTimeSpec.tv_nsec` for `tv_subsec`
+  (2), `Array` for `InlineArray` (2), a `Span[UInt8]` for `Hasher.update`
+  (2), and `ptr`/`as_c_string_span` for the deprecated
+  `unsafe_ptr`/`as_c_string_slice` (7 lines) — the warning ratchet's floor
+  stays 0. The ROADMAP known issue for the leak is retired; DECISIONS D7,
+  D12 and D28 have had their toolchain reason spent and stand only until
+  the code moves, each a round of its own. Free-threaded `PyObject` layout
+  (modular/modular#5726) is NOT known to be fixed — it needs a 3.14t
+  interpreter, so `py-canary` answers it. The write-up is
+  [docs/notes/the-pin-moves-to-1-1-0.md](docs/notes/the-pin-moves-to-1-1-0.md).
+
 - **One pre-fork preparation for both hosts** (SPEC E24). `m0_http.prefork`
   makes the shared page, the bus and the accept-share channels, exports
   each by descriptor, and adopts all three in a spawned worker; `m0serve`

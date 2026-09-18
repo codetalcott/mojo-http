@@ -131,7 +131,7 @@ struct MtimeScanner(Movable):
                 var st = stat(child)
                 var ns = (
                     Int(st.st_mtimespec.tv_sec) * 1_000_000_000
-                    + Int(st.st_mtimespec.tv_subsec)
+                    + Int(st.st_mtimespec.tv_nsec)
                 )
                 if ns > acc.newest_ns:
                     acc.newest_ns = ns

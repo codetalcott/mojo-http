@@ -542,10 +542,13 @@ request's WSGI environ itself, through the raw CPython C API — `PyDict_New`,
 shim, which supplies `start_response`, calls the application, and returns
 `(status, headers, body)`.
 
-The C API is not a micro-optimization but the only door available: Mojo 1.0's
-`PythonObject` interop leaks a reference per call argument and per
-`__setitem__` value, so any per-request Python object passed the obvious way
-is pinned forever. The C API refcounts explicitly, which is what lets the
+The C API is not a micro-optimization. Through Mojo 1.0 it was the only door
+available: `PythonObject` interop leaked a reference per call argument and
+per `__setitem__` value, so any per-request Python object passed the obvious
+way was pinned forever. Mojo 1.1.0 fixed that (pinned here 2026-09-18), and
+the C API remains the path because it is several times faster and because
+nothing else can build a `bytes`. It refcounts explicitly, which is what
+lets the
 environ be built at all — and it is why every string is `Py_DecRef`'d after
 `PyDict_SetItem` takes its own reference. `poe smoke-django` asserts the
 result: flat memory across 10k requests. Building the environ here rather

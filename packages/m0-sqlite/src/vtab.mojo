@@ -159,7 +159,7 @@ def _x_connect(
     db: Int, p_aux: Int, argc: c_int, argv: Int, pp_vtab: Int, pz_err: Int
 ) abi("C") -> c_int:
     var rc = Int(
-        external_call["sqlite3_declare_vtab", c_int](db, ARRAY_DECL.unsafe_ptr())
+        external_call["sqlite3_declare_vtab", c_int](db, ARRAY_DECL.ptr())
     )
     if rc != SQLITE_OK:
         return c_int(rc)
@@ -265,7 +265,7 @@ def _x_filter(
     # stray integer parameter cannot be reinterpreted as an address.
     var spec = Int(
         external_call["sqlite3_value_pointer", Int](
-            _words(argv)[unsafe_offset=0], ARRAY_TAG.unsafe_ptr()
+            _words(argv)[unsafe_offset=0], ARRAY_TAG.ptr()
         )
     )
     if spec == 0:
@@ -422,7 +422,7 @@ def _bind_spec(
     var destroy: FreeFn = _free_shim
     var rc = Int(
         external_call["sqlite3_bind_pointer", c_int](
-            stmt_handle, c_int(param), p, ARRAY_TAG.unsafe_ptr(), destroy
+            stmt_handle, c_int(param), p, ARRAY_TAG.ptr(), destroy
         )
     )
     if rc != SQLITE_OK:

@@ -38,9 +38,9 @@ comptime _RING_CELL = 16
 """Bytes per cell: the sequence word, then the value."""
 
 
-def atomic_at(addr: Int) -> Pointer[Atomic[DType.int64], MutUntrackedOrigin]:
+def atomic_at(addr: Int) -> Pointer[Atomic[Int64], MutUntrackedOrigin]:
     """The `Int64` atomic living at a raw address."""
-    return Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+    return Pointer[Atomic[Int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
 
@@ -74,10 +74,10 @@ struct Ring(Copyable, Movable):
         var bytes = _RING_HEADER + cap * _RING_CELL
         self.base = external_call["malloc", Int, Int](bytes)
         self.mask = cap - 1
-        atomic_at(self.base)[] = Atomic[DType.int64](0)
-        atomic_at(self.base + 128)[] = Atomic[DType.int64](0)
+        atomic_at(self.base)[] = Atomic[Int64](0)
+        atomic_at(self.base + 128)[] = Atomic[Int64](0)
         for i in range(cap):
-            atomic_at(self._seq_addr(i))[] = Atomic[DType.int64](Int64(i))
+            atomic_at(self._seq_addr(i))[] = Atomic[Int64](Int64(i))
             _value_at(self._val_addr(i))[] = 0
 
     def __init__(out self, *, unsafe_base: Int, mask: Int):

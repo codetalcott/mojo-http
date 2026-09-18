@@ -85,7 +85,7 @@ struct SharedAtomics(Copyable, Movable):
         self._base = raw
         self._count = count
         for i in range(count):
-            self._slot(i)[] = Atomic[DType.int64](0)
+            self._slot(i)[] = Atomic[Int64](0)
 
     def __init__(out self, count: Int, *, file_backed: Bool) raises:
         """The exec-surviving form: a file-backed page, kept open as `self.fd`."""
@@ -98,7 +98,7 @@ struct SharedAtomics(Copyable, Movable):
         self._count = count
         self.fd = fd
         for i in range(count):
-            self._slot(i)[] = Atomic[DType.int64](0)
+            self._slot(i)[] = Atomic[Int64](0)
 
     def __init__(out self, *, from_fd: Int, count: Int) raises:
         """Map a page a parent created with `file_backed=True`; slots are NOT reset."""
@@ -120,8 +120,8 @@ struct SharedAtomics(Copyable, Movable):
     def count(self) -> Int:
         return self._count
 
-    def _slot(self, i: Int) -> Pointer[Atomic[DType.int64], MutUntrackedOrigin]:
-        return Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+    def _slot(self, i: Int) -> Pointer[Atomic[Int64], MutUntrackedOrigin]:
+        return Pointer[Atomic[Int64], MutUntrackedOrigin](
             unsafe_from_address=self._base + i * 8
         )
 
@@ -152,7 +152,7 @@ def shared_fetch_add(addr: Int, delta: Int) -> Int:
     """
     if addr == 0:
         return 0
-    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var slot = Pointer[Atomic[Int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
     return Int(slot[].fetch_add(Int64(delta)))
@@ -162,7 +162,7 @@ def shared_load(addr: Int) -> Int:
     """`load` on a shared atomic slot named by its raw address (0 → 0)."""
     if addr == 0:
         return 0
-    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var slot = Pointer[Atomic[Int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
     return Int(slot[].load())
@@ -172,7 +172,7 @@ def shared_store(addr: Int, value: Int):
     """`store` on a shared atomic slot named by its raw address (0 → no-op)."""
     if addr == 0:
         return
-    var slot = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var slot = Pointer[Atomic[Int64], MutUntrackedOrigin](
         unsafe_from_address=addr
     )
     slot[].store(Int64(value))

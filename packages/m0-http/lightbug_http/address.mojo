@@ -1036,8 +1036,8 @@ def getaddrinfo[
     """
     var ptr: Optional[ExternalMutPointer[T]] = None
     var result = _getaddrinfo(
-        node.as_c_string_slice().unsafe_ptr(),
-        service.as_c_string_slice().unsafe_ptr(),
+        node.as_c_string_span().ptr(),
+        service.as_c_string_span().ptr(),
         Pointer(to=hints),
         Pointer(to=ptr),
     )

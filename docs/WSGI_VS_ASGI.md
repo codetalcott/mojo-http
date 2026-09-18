@@ -84,8 +84,9 @@ exists as an escape hatch and refuses an infinite stream rather than hold a
 thread forever.
 
 **One limit, from the toolchain.** The executor is a Python type built
-in-process, and Mojo 1.0's Python bindings lay that type out for the
-GIL build. On a free-threaded CPython the server refuses an ASGI app with
+in-process, and Mojo's Python bindings lay that type out for the
+GIL build (measured on 1.0.0 and not re-measured since the pin moved to
+1.1.0; `py-canary` is what answers it). On a free-threaded CPython the server refuses an ASGI app with
 exit 78 rather than crash, so ASGI under `--threads` does not exist on this
 toolchain ([the known issue](ROADMAP.md#known-issues)).
 

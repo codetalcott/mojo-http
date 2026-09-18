@@ -359,9 +359,11 @@ a Python-level call, slice and decode), two `int.from_bytes`, and an
 in Rust and hands Python a finished dict.
 
 The irony is that this is downstream of a *correct* decision. The blob
-exists precisely because Mojo 1.0's `PythonObject` leaks a reference per
-call argument, so the bridge cannot simply pass a dict (see Known issues in
-ROADMAP.md). The leak workaround is what costs the throughput.
+existed precisely because Mojo 1.0's `PythonObject` leaked a reference per
+call argument, so the bridge could not simply pass a dict. (The leak was
+fixed in Mojo 1.1.0 and the pin moved on 2026-09-18, after this was
+measured; the C API path stayed, being the faster one.) The leak workaround
+is what costs the throughput here.
 
 The way out is to build the environ dict in Mojo through the raw CPython C
 API, which manages refcounts explicitly and is therefore not the leaking
@@ -401,8 +403,9 @@ be Python — `start_response`, the application call, the joins, and `close()`.
 
 The blob is gone entirely, and with it `serialize_request` and the 28
 `_read_str` calls that parsed it back. **The request body is the one thing
-that still crosses as bytes**, because Mojo 1.0 has no `PyBytes_*` binding
-of any kind, so a `bytes` object cannot be built from Mojo at all: the body
+that still crosses as bytes**, because `std.python` binds no `PyBytes_*` of any
+kind — re-checked on the 1.1.0 pin — so a `bytes` object cannot be built
+through it at all: the body
 goes through the same persistent bytearray as before and the shim makes the
 `BytesIO`. A request with no body — every GET, and so every row in this
 document — now skips that path completely: `buf_addr()` is never called and

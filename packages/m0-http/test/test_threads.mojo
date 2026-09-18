@@ -30,7 +30,7 @@ from lightbug_http.c.pipe import create_shutdown_pipe, close_fd, ShutdownHandle
 def _counting_body(arg: Int) -> Int:
     """Writes index*10 into a spare slot, bumps the shared counter, reports ok."""
     var block = ThreadBlock(arg)
-    var counter = Pointer[Atomic[DType.int64], MutUntrackedOrigin](
+    var counter = Pointer[Atomic[Int64], MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_USER)
     )
     _ = counter[].fetch_add(1)
@@ -40,7 +40,7 @@ def _counting_body(arg: Int) -> Int:
 
 
 def test_threads_run_with_their_own_blocks_and_share_an_atomic() raises:
-    var counter = Atomic[DType.int64](0)
+    var counter = Atomic[Int64](0)
     var counter_ptr = Pointer(to=counter)
     var counter_addr = Pointer(to=counter_ptr).unsafe_bitcast[Int]()[]
 
