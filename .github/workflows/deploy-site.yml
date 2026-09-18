@@ -7,6 +7,13 @@
 # one, and a deploy per merge would re-pin nothing while re-rendering prose
 # about capabilities the deployed server may not have yet.
 #
+# Each job checks out the tree the RELEASE ran on (`head_sha`), not the
+# default branch: a `workflow_run` otherwise gets main's HEAD, which is
+# whatever merged after the release -- or, for the `release/v*` branch form,
+# a main that may not hold the release's commit at all -- while the wheel it
+# pins is the release's. On a dispatch the demo builds from the version's
+# tag, and the site from the ref the dispatch ran on (see each checkout).
+#
 # Needs two secrets in the `fly` environment, each a deploy token scoped to
 # ONE app (`fly tokens create deploy -a <app>`) and handed to flyctl as
 # FLY_API_TOKEN below: FLY_DEPLOY_SITE for the docs site (m0serve-docs) and
@@ -22,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "m0serve version on PyPI to pin (e.g. 0.17.0)"
+        description: "m0serve version on PyPI to pin (e.g. 0.17.0); the demo builds from its tag"
         required: true
         type: string
 
@@ -50,6 +57,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # After a release, the release's own commit. On a dispatch, the ref
+          # the dispatch ran on (main unless `gh workflow run --ref` says
+          # otherwise), deliberately: publishing prose merged after a release
+          # is what a site dispatch is for. What that leaves coupled to the
+          # pinned wheel is the fallback app (`apps/site/siteapp`), which
+          # `smoke-site-image` proves against main's wheel, not the pin's.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           # Full history: the sitemap's lastmod and each page's JSON-LD dates
           # come from git log, and a shallow clone would stamp today on all.
           fetch-depth: 0
@@ -119,7 +133,16 @@ jobs:
     timeout-minutes: 20
     environment: fly
     steps:
+      # The release's tree, never main's: the Dockerfile, the application
+      # (`apps/demo/demoapp.py`) and the probe that verifies the deploy
+      # (`scripts/demo_probe.py`) must all be the ones that shipped with the
+      # wheel pinned below, and main can be ahead of it by any number of
+      # merges. A dispatch names a version, so it builds from that version's
+      # tag -- and fails at this step, before anything deploys, if there is
+      # none.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.event.workflow_run.head_sha }}
       - name: Resolve the version to pin
         id: v
         run: |
@@ -136,6 +159,14 @@ jobs:
             sleep 20
           done
           echo "::error::m0serve==${{ steps.v.outputs.version }} never appeared on PyPI"; exit 1
+      # The tree and the pin must name the same release. A checkout of the
+      # wrong commit is otherwise silent: the image builds, the deploy
+      # passes, and the probe tests a demo that never shipped with this wheel.
+      - name: Check the tree is the release's
+        run: |
+          tree=$(python3 -c 'import re;print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
+          [ "$tree" = "${{ steps.v.outputs.version }}" ] || { echo "::error::checked out version $tree, pinning ${{ steps.v.outputs.version }}"; exit 1; }
+          echo "tree $(git rev-parse --short HEAD) is m0serve $tree"
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
       - name: Deploy
         env:
