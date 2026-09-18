@@ -156,7 +156,7 @@ from lightbug_http.service import HTTPService
 
 # Downward, through `m0_http.mojoc`: this package sits above both the fork
 # and `m0_http`, and neither imports it. See the module docstring.
-from m0_http.config import AppConfig
+from m0_http.config import AppConfig, threads_conflict
 from m0_http.mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
 from m0_http.multiworker import (
     EX_CONFIG,
@@ -175,13 +175,20 @@ from m0_http.prefork import (
 from m0_http.signal import install_shutdown_signals
 from m0_http.views import Views
 from m0_http.threads import (
+    BLK_BUS_FD,
+    BLK_INDEX,
+    BLK_LISTEN_FD,
+    BLK_SHUTDOWN_FD,
     BLK_STATUS,
     BLK_USER,
     STATUS_NEVER_RAN,
     STATUS_OK,
     STATUS_RAISED,
+    ShutdownFanout,
     ThreadBlock,
     ThreadSet,
+    dup_fd,
+    read_one_byte_blocking,
 )
 
 
@@ -192,6 +199,19 @@ slots 0-9; 10 upward are the spawner's."""
 comptime BLK_PRODUCER = 11
 """Producer block slot: the address of the producer `start` built, which
 the thread takes as its first act."""
+
+comptime BLK_LOOP_READY = 12
+"""Loop block slot (`M0_THREADS`): set to 1 by a loop thread once its
+handler, and its pool's handlers, are built."""
+
+comptime BLK_LOOP_GO = 13
+"""Loop block slot: set to 1 by the spawning thread once EVERY loop is
+ready. No loop takes a connection before it."""
+
+comptime LOOP_JOIN_SLACK_NS = 1_000_000_000
+"""What the spawning thread allows a loop past its own bounds (the drain's
+`JOIN_TIMEOUT_NS`, then the pool join's floor) before it calls the loop a
+straggler and leaves without it."""
 
 comptime SLEEP_SLICE_NS = 50_000_000
 """The longest a producer sleeps before it looks at `BLK_STOP` again."""
@@ -215,9 +235,10 @@ struct HostContext(Copyable, Movable):
     """What `AppHandler.make` and `Producer.make` are handed."""
 
     var worker: Int
-    """This worker's index, 0-based. Always 0 for a producer."""
+    """This worker's index, 0-based: a process under `M0_WORKERS`, a loop
+    thread under `M0_THREADS`. Always 0 for a producer."""
     var workers: Int
-    """How many workers serve: `M0_WORKERS`."""
+    """How many workers serve: `M0_WORKERS`, or `M0_THREADS`."""
     var capacity: Int
     """The server's connection capacity. Slots index a stream registry
     directly, so a registry needs at least this many entries."""
@@ -232,6 +253,12 @@ struct HostContext(Copyable, Movable):
     it from here."""
     var config: AppConfig
     """The environment the host was started with."""
+    var threaded: Bool
+    """Whether the workers are loops on threads of ONE process
+    (`M0_THREADS`) rather than forked processes (`M0_WORKERS`). `worker`
+    and `workers` count loops either way, so a handler written for one is
+    served by the other; what differs is that a threaded sibling shares
+    this address space, and `getpid()` no longer tells two of them apart."""
     var thread: Int
     """Which instance this `make` builds: -1 for the loop's own handler, the
     one whose `before_request` and streaming hooks run; 0 upward for a pool
@@ -248,6 +275,7 @@ struct HostContext(Copyable, Movable):
         var bus: BroadcastBus,
         var config: AppConfig,
         thread: Int = -1,
+        threaded: Bool = False,
     ):
         self.worker = worker
         self.workers = workers
@@ -257,6 +285,7 @@ struct HostContext(Copyable, Movable):
         self.bus = bus^
         self.config = config^
         self.thread = thread
+        self.threaded = threaded
 
     def tick_owner(self) -> Bool:
         """Whether this worker does the once-per-interval work: worker 0."""
@@ -297,6 +326,21 @@ trait AppHandler(HTTPService, Movable, Deinitable):
         """
         return 0
 
+    @staticmethod
+    def max_threads() -> Int:
+        """The most loops of ONE process (`M0_THREADS`) this application can
+        be served from; 0 is any number. Defaults to `max_workers()`.
+
+        Every loop builds its own handler with `make`, exactly as every
+        forked worker does, so state that lives in a struct is as divided
+        under threads as under workers -- N lists in one process instead of
+        N processes of one -- and an application that refuses workers
+        refuses threads without being asked. One whose state really is
+        shared across its loops (behind `ctx.page`, which under threads is
+        plain memory every loop sees, or a database) overrides this.
+        """
+        return Self.max_workers()
+
 
 trait ViewState(Movable, Deinitable):
     """The state a `Views` table dispatches to, served by `ViewsApp`."""
@@ -320,6 +364,11 @@ trait ViewState(Movable, Deinitable):
     def max_workers() -> Int:
         """As `AppHandler.max_workers`."""
         return 0
+
+    @staticmethod
+    def max_threads() -> Int:
+        """As `AppHandler.max_threads`."""
+        return Self.max_workers()
 
 
 struct ViewsApp[S: ViewState](AppHandler):
@@ -347,6 +396,10 @@ struct ViewsApp[S: ViewState](AppHandler):
     @staticmethod
     def max_workers() -> Int:
         return Self.S.max_workers()
+
+    @staticmethod
+    def max_threads() -> Int:
+        return Self.S.max_threads()
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
         # With the state: an `on_loop` route is answered here, on the loop
@@ -646,7 +699,9 @@ struct ProducerThread(Movable):
         return self.stragglers
 
 
-def host_refusal(config: AppConfig, max_workers: Int = 0) -> Optional[String]:
+def host_refusal(
+    config: AppConfig, max_workers: Int = 0, max_threads: Int = 0
+) -> Optional[String]:
     """Why the host will not serve `config`, or None.
 
     Each is a variable another server honours, or a count the application
@@ -661,11 +716,16 @@ def host_refusal(config: AppConfig, max_workers: Int = 0) -> Optional[String]:
             " at most ", max_workers, " process(es): its state lives in one"
             " process's memory",
         )
-    if config.threads > 1:
+    if config.threads < 1:
+        return String("M0_THREADS must be at least 1, not ", config.threads)
+    var conflict = threads_conflict(config.workers, config.threads)
+    if conflict:
+        return conflict.value()
+    if max_threads > 0 and config.threads > max_threads:
         return String(
-            "M0_THREADS is m0serve's threaded mode; the Mojo host serves one"
-            " loop per process (unset it, or use M0_WORKERS, or"
-            " M0_BLOCKING_THREADS for a pool behind each loop)"
+            "M0_THREADS=", config.threads, ", but this application serves from"
+            " at most ", max_threads, " loop(s): every loop builds its own"
+            " handler, and its state lives in one handler's memory",
         )
     if config.spawn_workers:
         return String(
@@ -712,10 +772,13 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     config: AppConfig, var server_config: ServerConfig
 ) raises:
     """`serve`, with server tuning the environment does not reach."""
-    var refusal = host_refusal(config, H.max_workers())
+    var refusal = host_refusal(config, H.max_workers(), H.max_threads())
     if refusal:
         print("host: " + refusal.value(), flush=True)
         process_exit(EX_CONFIG)
+    if config.threads > 1:
+        _serve_threaded[H, P](config, server_config)
+        return
     var workers = config.workers
 
     var listener = ListenConfig().listen(config.address())
@@ -764,51 +827,11 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     # one loop; one lane, which the host marks GIL-free because nothing
     # here ever attaches to an interpreter. A disabled pool (capacity 0)
     # when there is none, since `Optional` will not hold this type.
-    var pooled = config.blocking_threads > 0
+    var pooled = _wants_pool(config)
     var pool = OffloadPool(server_config.max_connections if pooled else 0)
     var threads = MojoPool(config.blocking_threads if pooled else 0)
     if pooled:
-        pool.set_lane_gil_free(0)
-        # The context every pool thread's `make` reads, in memory that
-        # outlives this frame: a thread abandoned at the join may outlive
-        # `main`, as the producer may.
-        var owned = unsafe_alloc[HostContext](count=1)
-        owned.unsafe_write(ctx.copy())
-        threads.start[PoolLane[H]](pool.addr(), user=Int(owned))
-        # Every thread has its handler, or one of them could not build it:
-        # then this is the refusal the loop's own `make` gets, before the
-        # server takes a connection, never a pool one thread short. Which
-        # kind is said, because they are different diagnoses: a raise
-        # (named above by `PoolLane.make`) or a build still running at the
-        # bound.
-        var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)
-        if short > 0:
-            var raised = threads.raised_before_ready()
-            if raised > 0:
-                print(
-                    String(
-                        "host: the handler's make raised on ", raised,
-                        " pool thread(s), so this configuration is refused",
-                    ),
-                    flush=True,
-                )
-            else:
-                print(
-                    String(
-                        "host: ", short, " pool thread(s) were still building the"
-                        " handler ", POOL_READY_TIMEOUT_NS // 1_000_000_000,
-                        " s after starting, so this configuration is refused",
-                    ),
-                    flush=True,
-                )
-            process_exit(EX_CONFIG)
-        print(
-            String(
-                "host: ", config.blocking_threads,
-                " handler thread(s) behind the loop (M0_BLOCKING_THREADS)",
-            ),
-            flush=True,
-        )
+        _start_pool[H](pool, threads, ctx)
 
     # `run_event_loop` directly rather than through `Server`, for the two
     # things `Server.serve_nonblocking` cannot pass: the pool, and the stop
@@ -836,17 +859,7 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     # races a step, not because anything on the wire differs.)
     var stuck = 0
     if pooled:
-        _ = threads.stop_and_join(pool, _left_of_bound(producer.drain_began()))
-        stuck = threads.stragglers
-        if stuck > 0:
-            print(
-                String(
-                    "host: ", stuck, " handler thread(s) still inside the"
-                    " application ", JOIN_TIMEOUT_NS // 1_000_000_000,
-                    " s after the drain began; exiting without them",
-                ),
-                flush=True,
-            )
+        stuck = _join_pool(pool, threads, producer.drain_began())
     if producer.stop_and_join(JOIN_TIMEOUT_NS) > 0:
         print(
             String(
@@ -868,6 +881,60 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     # the same way at the end of `_serve_offloaded`). Found by review.
     _ = pool.capacity
     _ = threads.count
+
+
+def _wants_pool(config: AppConfig) -> Bool:
+    """Whether `M0_BLOCKING_THREADS` puts a pool behind each loop."""
+    return config.blocking_threads > 0
+
+
+def _start_pool[H: AppHandler](
+    mut pool: OffloadPool, mut threads: MojoPool, ctx: HostContext
+) raises:
+    """Start one loop's pool lane and wait for every thread's handler
+    (docstring, 9a). The caller owns `pool` and `threads`: the threads hold
+    the pool's address, so neither may move once this has run."""
+    pool.set_lane_gil_free(0)
+    # The context every pool thread's `make` reads, in memory that
+    # outlives this frame: a thread abandoned at the join may outlive
+    # `main`, as the producer may.
+    var owned = unsafe_alloc[HostContext](count=1)
+    owned.unsafe_write(ctx.copy())
+    threads.start[PoolLane[H]](pool.addr(), user=Int(owned))
+    # Every thread has its handler, or one of them could not build it:
+    # then this is the refusal the loop's own `make` gets, before the
+    # server takes a connection, never a pool one thread short. Which
+    # kind is said, because they are different diagnoses: a raise
+    # (named above by `PoolLane.make`) or a build still running at the
+    # bound.
+    var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)
+    if short > 0:
+        var raised = threads.raised_before_ready()
+        if raised > 0:
+            print(
+                String(
+                    "host: the handler's make raised on ", raised,
+                    " pool thread(s), so this configuration is refused",
+                ),
+                flush=True,
+            )
+        else:
+            print(
+                String(
+                    "host: ", short, " pool thread(s) were still building the"
+                    " handler ", POOL_READY_TIMEOUT_NS // 1_000_000_000,
+                    " s after starting, so this configuration is refused",
+                ),
+                flush=True,
+            )
+        process_exit(EX_CONFIG)
+    print(
+        String(
+            "host: ", ctx.config.blocking_threads,
+            " handler thread(s) behind the loop (M0_BLOCKING_THREADS)",
+        ),
+        flush=True,
+    )
 
 
 def _run_loop[H: AppHandler](
@@ -904,6 +971,254 @@ def _run_loop[H: AppHandler](
         accept_share=accept_share^,
         stop_addr=stop_addr,
     )
+
+
+struct LoopShared(Movable):
+    """What every loop thread reads under `M0_THREADS`: made once by the
+    spawning thread, in memory that is never freed, because a loop the join
+    gave up on may outlive `main`."""
+
+    var ctx: HostContext
+    """Loop 0's context; each loop copies it and names itself in `worker`."""
+    var server_config: ServerConfig
+    var address: String
+    var share: AcceptShare
+    """Unbound. Each loop binds a COPY to its own index: `AcceptShare`
+    carries per-worker counters, and one value shared by N loops is a race."""
+    var page_addr: Int
+    var stop_addr: Int
+
+    def __init__(
+        out self,
+        var ctx: HostContext,
+        var server_config: ServerConfig,
+        var address: String,
+        var share: AcceptShare,
+        page_addr: Int,
+        stop_addr: Int,
+    ):
+        self.ctx = ctx^
+        self.server_config = server_config^
+        self.address = address^
+        self.share = share^
+        self.page_addr = page_addr
+        self.stop_addr = stop_addr
+
+
+def _loop_run[H: AppHandler](block: ThreadBlock) raises:
+    """One loop's whole life on its own thread (`M0_THREADS`).
+
+    Steps 7 to 12 of the module docstring, per THREAD instead of per
+    process: bind this loop's accept share, build its handler and its pool,
+    serve, join the pool. Everything here is this thread's own -- the
+    handler and whatever registries it keeps, the pool, the backend, and
+    inside `run_event_loop` the `ProvisionPool` a slot indexes -- and
+    nothing is shared with a sibling but the page, the bus and the
+    listener's description.
+    """
+    ref shared = Pointer[LoopShared, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_USER)
+    )[]
+    var index = block.get(BLK_INDEX)
+    var ctx = shared.ctx.copy()
+    ctx.worker = index
+    var handler = _make_handler[H](ctx)
+    var pooled = _wants_pool(ctx.config)
+    var pool = OffloadPool(shared.server_config.max_connections if pooled else 0)
+    var threads = MojoPool(ctx.config.blocking_threads if pooled else 0)
+    if pooled:
+        _start_pool[H](pool, threads, ctx)
+    var share = shared.share.copy()
+    bind_accept_share(share, index, shared.page_addr)
+
+    # The barrier. No loop takes a connection until EVERY loop has its
+    # handler: a `make` that raises on loop 3 is a refusal (78), and a
+    # refusal that arrives after loop 0 has answered requests is a server
+    # that ran a configuration it then said it would not run.
+    block.set(BLK_LOOP_READY, 1)
+    while block.get(BLK_LOOP_GO) == 0:
+        sleep(0.001)
+
+    var backend = PlatformBackend()
+    run_event_loop(
+        FileDescriptor(block.get(BLK_LISTEN_FD)),
+        handler,
+        backend,
+        shared.server_config,
+        shared.address,
+        True,
+        shutdown_read_fd=block.get(BLK_SHUTDOWN_FD),
+        bus_read_fd=block.get(BLK_BUS_FD),
+        offload_addr=pool.addr() if pooled else 0,
+        accept_share=share^,
+        stop_addr=shared.stop_addr,
+    )
+
+    if pooled:
+        var began = Pointer[Int, MutUntrackedOrigin](
+            unsafe_from_address=shared.stop_addr
+        )[]
+        if _join_pool(pool, threads, began) > 0:
+            # From a loop thread this ends every loop at once, as in
+            # m0serve's threaded mode: by now each loop's own drain has
+            # had its whole bound.
+            process_exit(0)
+    _ = pool.capacity
+    _ = threads.count
+
+
+def _loop_body[H: AppHandler](arg: Int) -> Int:
+    """pthread start routine: serve, then report.
+
+    **A loop that dies takes the process.** Under `M0_WORKERS` a worker
+    that raises exits 1 and the supervisor forks another; there is no
+    supervisor here, and a process that kept serving on the loops it had
+    left would be N-1 loops behind a listener N were promised -- with every
+    stream the dead loop held open and silent. Exit 1, named, and whatever
+    restarts the process (a container runtime, systemd) plays supervisor.
+    """
+    var block = ThreadBlock(arg)
+    try:
+        _loop_run[H](block)
+    except e:
+        print(
+            String(
+                "host: loop ", block.get(BLK_INDEX), " raised, and a loop"
+                " that dies takes the process: ", e,
+            ),
+            flush=True,
+        )
+        process_exit(1)
+    # Last act, and load-bearing: `join_within` waits on this slot.
+    block.set(BLK_STATUS, STATUS_OK)
+    return 0
+
+
+def _serve_threaded[H: AppHandler, P: Producer](
+    config: AppConfig, server_config: ServerConfig
+) raises:
+    """`serve` under `M0_THREADS=N`: N loops on N threads of this process.
+
+    The order is the prefork one with "fork" struck out. Once, here: the
+    listener, the pages, the bus (one channel per LOOP -- fan-out across
+    loops rides it exactly as fan-out across workers does), the
+    accept-share channels, the signals, the producer. Per thread, in
+    `_loop_run`: the handler, the pool, the loop. What has no counterpart:
+    `fork_all`, the after-fork placement of the signal install (one
+    process has one disposition, so it is armed before the threads exist
+    and the ONE pipe is fanned out to a pipe per loop, since a loop never
+    drains its shutdown pipe and N loops cannot share one), and
+    `exit_worker` -- nothing here was forked, so `main` returns.
+    """
+    var loops = config.threads
+    var listener = ListenConfig().listen(config.address())
+    var host_page = prefork_page(loops)
+    var app_page = 0
+    var app_slots = H.page_slots(loops)
+    if app_slots > 0:
+        app_page = SharedAtomics(app_slots).addr(0)
+    var bus = prefork_bus(loops)
+    var share = prefork_accept_share(loops)
+    var shutdown_fd = install_shutdown_signals()
+    if shutdown_fd < 0:
+        raise Error("host: the shutdown signals could not be installed, and nothing else stops the loops")
+
+    var ctx = HostContext(
+        0, loops, server_config.max_connections, app_page,
+        host_page.addr(0), bus.copy(), config.copy(), threaded=True,
+    )
+    var producer = ProducerThread()
+    var shared = unsafe_alloc[LoopShared](count=1)
+    shared.unsafe_write(
+        LoopShared(
+            ctx.copy(), server_config.copy(), config.address(), share^,
+            host_page.addr(0), producer.stop_addr(),
+        )
+    )
+
+    var fanout = ShutdownFanout(loops)
+    var set = ThreadSet(loops)
+    var body = _loop_body[H]
+    var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
+    for i in range(loops):
+        var block = set.block(i)
+        # One description, N dups: a loop closes its listener as it shuts
+        # down, and a dup makes that a per-thread close.
+        block.set(BLK_LISTEN_FD, dup_fd(Int(listener.socket.fd.value)))
+        block.set(BLK_SHUTDOWN_FD, fanout.read_fd(i))
+        block.set(BLK_BUS_FD, bus.read_fd(i))
+        block.set(BLK_USER, Int(shared))
+        set.spawn(i, body_addr)
+
+    # Every loop has its handler (a raising `make` has already left with
+    # 78, from its own thread, which ends the process). No bound, as the
+    # prefork `make` has none.
+    var ready = 0
+    while ready < loops:
+        ready = 0
+        for i in range(loops):
+            ready += set.block(i).get(BLK_LOOP_READY)
+        if ready < loops:
+            sleep(0.001)
+    if P.wanted(ctx):
+        try:
+            producer.start[P](ctx)
+        except e:
+            print(
+                "host: the producer's make raised, so this configuration is refused: "
+                + String(e),
+                flush=True,
+            )
+            process_exit(EX_CONFIG)
+    for i in range(loops):
+        set.block(i).set(BLK_LOOP_GO, 1)
+    print(String("host: ", loops, " loops on ", loops, " threads (M0_THREADS)"), flush=True)
+
+    # The coordinator: asleep until the signal handler writes its byte.
+    _ = read_one_byte_blocking(shutdown_fd)
+    fanout.notify_all()
+    var lost = set.join_within(
+        JOIN_TIMEOUT_NS + POOL_JOIN_FLOOR_NS + LOOP_JOIN_SLACK_NS
+    )
+    if lost > 0:
+        print(
+            String(
+                "host: ", lost, " loop(s) still running past the drain's"
+                " bound; exiting without them",
+            ),
+            flush=True,
+        )
+    if producer.stop_and_join(JOIN_TIMEOUT_NS) > 0:
+        print(
+            String(
+                "host: abandoned a producer step still running ",
+                JOIN_TIMEOUT_NS // 1_000_000_000,
+                " s after the drain; exiting without it",
+            ),
+            flush=True,
+        )
+        process_exit(1 if lost > 0 else 0)
+    if lost > 0:
+        process_exit(1)
+    _ = listener.socket.fd.value
+    _ = host_page.addr(0)
+
+
+def _join_pool(mut pool: OffloadPool, mut threads: MojoPool, began: Int) raises -> Int:
+    """Pill and join one loop's pool within what the drain left of the
+    bound; how many threads were left inside the application, named."""
+    _ = threads.stop_and_join(pool, _left_of_bound(began))
+    var stuck = threads.stragglers
+    if stuck > 0:
+        print(
+            String(
+                "host: ", stuck, " handler thread(s) still inside the"
+                " application ", JOIN_TIMEOUT_NS // 1_000_000_000,
+                " s after the drain began; exiting without them",
+            ),
+            flush=True,
+        )
+    return stuck
 
 
 def _left_of_bound(began: Int) -> Int:

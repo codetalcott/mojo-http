@@ -412,6 +412,39 @@ def test_the_host_refuses_more_workers_than_the_app_serves() raises:
     assert_false(Bool(host_refusal(AppConfig(), 1)))
 
 
+def test_the_host_refuses_more_loops_than_the_app_serves() raises:
+    """State that lives in one handler is not served from N loops, and the
+    app that refused workers did not have to say so again.
+
+    covers: E29
+    """
+    _ = setenv("M0_THREADS", "2", True)
+    var config = AppConfig()
+    _ = unsetenv("M0_THREADS")
+    var why = host_refusal(config, 1, OneProcess.max_threads())
+    assert_true(Bool(why), "two loops were served for a one-handler app")
+    assert_true("M0_THREADS=2" in why.value(), "the refusal does not name M0_THREADS")
+    # The default IS the worker limit, on both traits and through ViewsApp.
+    assert_equal(OneProcess.max_threads(), 1)
+    assert_equal(ViewsApp[OneProcess].max_threads(), 1)
+    assert_equal(Plain.max_threads(), 0)
+    # An app that shares its state across loops says so, and is served.
+    assert_false(Bool(host_refusal(config, 1, 0)))
+    assert_false(Bool(host_refusal(config, 1, 2)))
+
+
+def test_workers_and_threads_are_one_or_the_other() raises:
+    """covers: E29"""
+    _ = setenv("M0_THREADS", "2", True)
+    _ = setenv("M0_WORKERS", "2", True)
+    var config = AppConfig()
+    _ = unsetenv("M0_THREADS")
+    _ = unsetenv("M0_WORKERS")
+    var why = host_refusal(config)
+    assert_true(Bool(why), "M0_WORKERS=2 with M0_THREADS=2 was served")
+    assert_true("mutually exclusive" in why.value())
+
+
 def _refusal_for(name: String, value: String) raises -> Optional[String]:
     _ = setenv(name, value, True)
     var config = AppConfig()
@@ -420,11 +453,13 @@ def _refusal_for(name: String, value: String) raises -> Optional[String]:
 
 
 def test_the_host_refuses_what_it_does_not_serve() raises:
-    for name in [String("M0_THREADS"), String("M0_SPAWN_WORKERS")]:
-        var why = _refusal_for(name, String("2") if name != "M0_SPAWN_WORKERS" else String("1"))
-        assert_true(Bool(why), name + " was not refused")
-        assert_true(name in why.value(), "the refusal does not name " + name)
+    var why = _refusal_for("M0_SPAWN_WORKERS", "1")
+    assert_true(Bool(why), "M0_SPAWN_WORKERS was not refused")
+    assert_true("M0_SPAWN_WORKERS" in why.value(), "the refusal does not name it")
     assert_true(Bool(_refusal_for("M0_WORKERS", "0")))
+    var zero = _refusal_for("M0_THREADS", "0")
+    assert_true(Bool(zero), "M0_THREADS=0 was served")
+    assert_true("M0_THREADS" in zero.value())
     # An exec'd m0serve worker's marker, inherited by a Mojo host. Read by
     # `host_refusal` itself, not through the config, so it is set around
     # the call.
@@ -446,6 +481,8 @@ def test_the_host_serves_what_it_does() raises:
     assert_false(Bool(_refusal_for("M0_WORKERS", "4")))
     # Present at their defaults is not a request for the other mode.
     assert_false(Bool(_refusal_for("M0_THREADS", "1")))
+    # Loops on threads are served (D35), where Phases 2 and 3 refused them.
+    assert_false(Bool(_refusal_for("M0_THREADS", "4")))
     assert_false(Bool(_refusal_for("M0_BLOCKING_THREADS", "0")))
     # The pool lane is served (D31), where v1 refused it (D29).
     assert_false(Bool(_refusal_for("M0_BLOCKING_THREADS", "4")))

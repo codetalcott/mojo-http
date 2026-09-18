@@ -275,6 +275,11 @@ COMPARATORS = {
     # Mojo mount's code -- #320 changed the Mojo lane's wakes and left these
     # rows where they were.
     "mojo-mount": {"python(sel=100)", "python(sel=25)", "python(sel=5)"},
+    # One worker serves the same binary whatever the mode under test does.
+    "host-modes": {
+        "workers=1 now c16", "workers=1 now c256",
+        "workers=1 search c16", "workers=1 search c256",
+    },
 }
 DRIFT_TOLERANCE = 0.05
 
@@ -765,6 +770,67 @@ def render_mount_table(kind, path, d):
     return lines
 
 
+def render_host_modes_table(kind, path, d):
+    """N forked workers against N loops on N threads, for a Mojo host app.
+
+    One row per route and connection count: each arm's throughput, cores,
+    p99 and summed RSS, then threads over workers from the artifact's
+    `comparisons` block -- the median across rounds of the ratio within
+    each round. The one-worker arm is the comparator and gets a column of
+    its own, so a reader can see what N bought either way.
+    """
+    import statistics
+
+    med = d["medians"]
+    comp = d.get("comparisons", {})
+    n = comp.get("n", "N")
+    by_case = comp.get("by_case", {})
+
+    def rss(name):
+        vals = [r["rss_kb_summed"] for r in d["rows"]
+                if r["name"] == name and r.get("rss_kb_summed")]
+        return f"{statistics.median(vals) / 1024:,.0f}" if vals else "—"
+
+    def arm(name):
+        m = med.get(name)
+        if not m:
+            return ["—", "—", "—", "—"]
+        return [f"{m['rps']:,.0f}", f"{m.get('cores', 0):.2f}",
+                f"{m['p99_us'] / 1000:.2f}" if m.get("p99_us") is not None else "—",
+                rss(name)]
+
+    lines = provenance(path, d) + [
+        "",
+        f"| route, connections | 1 worker rps | {n} workers rps | cores | p99 ms | RSS MB |"
+        f" {n} threads rps | cores | p99 ms | RSS MB | throughput | per core | p99 | RSS |",
+        "|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
+    ]
+    for case in sorted(by_case, key=lambda c: (c.split()[0], int(c.split()[1][1:]))):
+        c = by_case[case]
+        one = med.get(f"workers=1 {case}")
+
+        def x(v):
+            return f"{v:.2f}x" if v is not None else "—"
+
+        lines.append(
+            f"| {case} | " + (f"{one['rps']:,.0f}" if one else "—")
+            + " | " + " | ".join(arm(f"workers=N {case}"))
+            + " | " + " | ".join(arm(f"threads=N {case}"))
+            + f" | {x(c.get('throughput'))} | {x(c.get('per_core'))}"
+            + f" | {x(c.get('p99'))} | {x(c.get('rss'))} |"
+        )
+    lines += [
+        "",
+        "The last four columns are threads over workers: the median across"
+        " rounds of the ratio within each round, so throughput and per core"
+        " above 1.00x favour threads and p99 and RSS below it do. Cores and"
+        " RSS are summed over the server's whole process tree; summed RSS"
+        " counts a page two workers share twice. `now` is answered on the"
+        " loop and measures the loop; `search` is the table's compute view.",
+    ]
+    return lines
+
+
 def render_absent(kind, note):
     return [
         f"_No `{kind}` artifact has been recorded yet._ {note}",
@@ -777,6 +843,7 @@ RENDERERS = {
     "asgi-executor": render_tail_table,
     "mixed-workload": render_isolation_table,
     "mojo-mount": render_mount_table,
+    "host-modes": render_host_modes_table,
 }
 
 ABSENT_NOTE = {
@@ -795,7 +862,7 @@ TARGETS = {
     REPO / "docs" / "BENCHMARKS.md": [
         "layer-split", "asgi-wrk-hello", "asgi-executor", "mixed-workload",
     ],
-    REPO / "docs" / "SERVER_PERFORMANCE.md": ["mojo-mount"],
+    REPO / "docs" / "SERVER_PERFORMANCE.md": ["mojo-mount", "host-modes"],
 }
 
 
