@@ -17,6 +17,10 @@ with `_`; the slots are underscored, and `filterSignals` keeps the body to
 `retry: 'always'` on the stream is what brings a tab back after a
 deploy: Datastar 1.0.3's default retries only network and stream errors,
 and a draining server closes cleanly.
+
+The footer is `about.mojo`'s, rendered from the image's own facts, and
+empty outside an image; the page is rendered once per handler, since
+nothing in it varies by request.
 """
 
 from m0_http import attr, el
@@ -71,7 +75,7 @@ def render_stage() raises -> String:
     )
 
 
-def render_page() raises -> String:
+def render_page(footer: String) raises -> String:
     """The whole document. Every shape arrives over the stream."""
     return String(
         "<!doctype html>\n"
@@ -93,7 +97,8 @@ def render_page() raises -> String:
         render_stage(),
         '\n<p class="meta">step <span data-text="$_step_us"></span> µs'
         ' · <span data-text="$_blobs"></span> blobs'
-        ' · <span data-text="$_viewers"></span> watching</p>\n'
+        ' · <span data-text="$_viewers"></span> watching</p>\n',
+        footer,
         "</main>\n"
         "</body>\n"
         "</html>\n",
@@ -111,6 +116,8 @@ comptime _STYLE = """<style>
   h1 { font-size: 1.2rem; font-weight: 600; margin: 0 0 .25rem; }
   .sub, .meta { color: #a49cb4; font-size: .85rem; margin: 0 0 1rem; }
   .meta { margin: .75rem 0 0; font-variant-numeric: tabular-nums; }
+  .foot { display: block; margin: 1.5rem 0 0; color: #6f6782; font-size: .75rem; }
+  .foot a { color: inherit; }
   #stage {
     position: relative; width: 100%; aspect-ratio: 1; cursor: crosshair;
     background: radial-gradient(circle at 50% 40%, #1d1628, #0d0b12 75%);

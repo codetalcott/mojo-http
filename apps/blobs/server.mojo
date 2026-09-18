@@ -4,6 +4,7 @@
     GET  /events   the state stream: the newest frame at open, then one per step
     POST /drop     {"x": pct, "y": pct} — drop a blob, for everyone
     GET  /stats    the producer's counters, as JSON
+    GET  /about    what the image says about itself (404 outside one)
     GET  /health   liveness (answered on the loop)
     GET  /now      a trivial request (answered on the loop; the gate times it)
 
@@ -44,6 +45,11 @@ The kernel (`kernel.mojo`) samples the metaball field on the stage's
 192 x 192 grid and traces its outlines, so blobs that meet merge into one
 shape. That is the work the step time reports.
 
+From an image (`deploy/mojo/Dockerfile`), the page's footer and `/about`
+say what the image measured about itself -- its version, its unpacked
+size, and that no interpreter is in it -- read once per handler from the
+file `M0_IMAGE_FACTS` names (`about.mojo`).
+
 Run it:  uv run poe serve-blobs
 """
 
@@ -61,6 +67,7 @@ from m0_http import AppConfig, Views, reply
 from m0_datastar.signals import read_signals
 from m0_datastar.stream import DatastarStream
 
+from blobs.about import ImageFacts, read_image_facts, render_footer
 from blobs.board import (
     B_FRAME_BYTES,
     B_FRAME_MAX,
@@ -83,7 +90,7 @@ from blobs.board import (
 )
 from blobs.kernel import Shapes, Tracer
 from blobs.page import render_page
-from blobs.routes import DROP, EVENTS, HEALTH, NOW, PAGE, STATS
+from blobs.routes import ABOUT, DROP, EVENTS, HEALTH, NOW, PAGE, STATS
 from blobs.wire import state_frame
 from blobs.world import STAGE, World
 
@@ -244,10 +251,15 @@ struct BlobState(Movable):
     var worker: Int
     var workers: Int
     var capacity: Int
+    var facts: ImageFacts
+    var page_html: String
     var _window_ms: List[Int]
     var _window_drops: List[Int]
 
-    def __init__(out self, capacity: Int, board: Board, worker: Int, workers: Int):
+    def __init__(
+        out self, capacity: Int, board: Board, worker: Int, workers: Int,
+        var facts: ImageFacts,
+    ) raises:
         # A stream of states: the newest frame at open, never a replay, and
         # no journal, since nothing here reads one.
         self.stream = DatastarStream(capacity, journal_entries=0, send_latest=True)
@@ -255,6 +267,8 @@ struct BlobState(Movable):
         self.worker = worker
         self.workers = workers
         self.capacity = capacity
+        self.page_html = render_page(render_footer(facts))
+        self.facts = facts^
         self._window_ms = List[Int](length=capacity, fill=0)
         self._window_drops = List[Int](length=capacity, fill=0)
 
@@ -292,7 +306,16 @@ def now_view(req: HTTPRequest, params: List[String]) -> HTTPResponse:
 
 
 def page(req: HTTPRequest, params: List[String], st: BlobState) raises -> HTTPResponse:
-    return reply.html(render_page())
+    return reply.html(st.page_html)
+
+
+def about(req: HTTPRequest, params: List[String], st: BlobState) raises -> HTTPResponse:
+    """The image's facts file, verbatim: what the footer was rendered from."""
+    if not st.facts.present():
+        return reply.problem(
+            404, "Not In An Image", "M0_IMAGE_FACTS is not set, so there are no facts to report", ABOUT
+        )
+    return reply.json(200, "OK", st.facts.json)
 
 
 def events(
@@ -367,6 +390,7 @@ def urls() raises -> Views[BlobState]:
     v.add_write("GET", EVENTS, events)
     v.add_write("POST", DROP, drop)
     v.add_read("GET", STATS, stats)
+    v.add_read("GET", ABOUT, about)
     return v^
 
 
@@ -386,7 +410,10 @@ struct BlobsHandler(AppHandler):
         # slots index it.
         return BlobsHandler(
             urls(),
-            BlobState(ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers),
+            BlobState(
+                ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers,
+                read_image_facts(),
+            ),
         )
 
     @staticmethod
