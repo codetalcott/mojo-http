@@ -8,6 +8,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The page shell is a trait** (DECISIONS D12, retired 2026-09-18).
+  `page_or_fragment` takes an application struct conforming to
+  `m0_http.PageShell` — one method, `wrap(fragment)`, called only when a
+  document is wanted — in place of the `thin` function and the separate
+  context argument it took through v1.4.0. The context and the function
+  travel as one value, and a shell that carries no context is a struct
+  with no fields, which is why no second form was kept. The migration is
+  mechanical: the context struct conforms, the shell function becomes its
+  `wrap` method, and the argument goes. `PageShell` is now exported from
+  the package. It was a `thin` function because on Mojo 1.0 an app's
+  conformance to a trait behind a `.mojoc` got no witness table; that was
+  a package-name-against-directory bug, fixed in Mojo 1.1.0 and pinned on
+  2026-09-18. `check-mojoc-trait`'s `mismatch` arm now passes an app's
+  shell through the real API, and `wrap_with`, the helper that existed
+  only for it, is gone. `apps/fragment_notes` is on the trait with its
+  wire byte-identical across all nine of its call sites; the write-up is
+  [the-page-shell-becomes-a-trait](docs/notes/the-page-shell-becomes-a-trait.md).
+
 ### Added
 
 - **The Mojo host** (SPEC E21–E23). `m0_host.serve[H, P]` is

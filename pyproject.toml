@@ -1104,9 +1104,10 @@ help = "A reading view must not compile if it writes"
 cmd = "python3 scripts/sabotage_views.py"
 deps = ["build-core", "build-http"]
 
-# The toolchain claim behind page_or_fragment's shape -- an app cannot
-# conform to a trait defined in a .mojoc -- as a probe that flips the day
-# it stops being true, with a control that catches a stale .mojoc.
+# The toolchain property page_or_fragment's shape now rests on -- an app
+# CAN conform to a trait defined in a .mojoc, fixed in Mojo 1.1.0 -- as a
+# regression guard, with a control that catches a stale .mojoc. Its
+# `mismatch` arm passes an app's `PageShell` through the real API.
 [tool.poe.tasks.check-keepalive-barrier]
 help = "The `_ = x` after an FFI call still pins the buffer that call reads"
 cmd = "python3 scripts/keepalive_barrier_check.py"

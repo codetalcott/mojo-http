@@ -1356,18 +1356,23 @@ pieces, and the language fact each rests on:
   APPENDS (`vary_accept` used to overwrite, unnoticed while nothing set
   `Vary` twice) and keeps `*` alone. A `status` parameter makes a styled
   404 a 404. The shell is
-  a `thin` function over a generic context, not a trait, because on Mojo
-  1.0 an app's conformance to `PageShell` got no witness table (D12).
+  the app's own struct conforming to **`PageShell`**, whose one method
+  `wrap(fragment)` is called only on the document branch — the context and
+  the function as one value, and a shell that needs no context is a struct
+  with no fields, which is why there is no second form for one. It was a
+  `thin` function over a separate context struct until 2026-09-18, because
+  on Mojo 1.0 an app's conformance to `PageShell` got no witness table.
   **The discriminant was a NAME, and Mojo 1.1.0 fixed it**: a package
   compiled from a directory named other than the package used to lose its
   traits' witness tables, and every package here builds `src` into
   `<name>.mojoc`. The pin moved on 2026-09-18, so `poe check-mojoc-trait`
   has flipped from a countdown to a regression guard — all four of its
-  arms compile, and it fails if a toolchain takes the fix away. So
-  `PageShell` (kept in `fragment.mojo` as that guard's target) is the API
-  to prefer from here. D28's move is made (`PoolHandler` is in `m0_http`,
-  the host in `m0_host`); the other two are each a round of their own, and
-  D7 and D12 stand until then.
+  arms compile, its `mismatch` arm now passing an app conformance through
+  `page_or_fragment` itself, and it fails if a toolchain takes the fix
+  away. D12 is retired (2026-09-18) and D28's move is made (`PoolHandler`
+  is in `m0_http`, the host in `m0_host`); D7 — `Vocabulary` opened to an
+  application-defined conformance — is the last of the three and stands
+  until its own round.
 - **`url_for(PATTERN, params...)`** (`router.mojo`): the pattern is a
   `comptime` constant given to both `add` and `url_for`, so a misspelled
   route is a compile error; it raises on an arity mismatch and

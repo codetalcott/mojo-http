@@ -14,11 +14,11 @@ from lightbug_http.header import Header, Headers, HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.uri import URI
 
-from src.fragment import page_or_fragment, wants_fragment
+from src.fragment import PageShell, page_or_fragment, wants_fragment
 from src.reply import vary_accept
 
 
-struct Shell:
+struct Shell(PageShell):
     """What a document knows that a fragment does not: here, a title."""
 
     var title: String
@@ -26,9 +26,8 @@ struct Shell:
     def __init__(out self, var title: String):
         self.title = title^
 
-
-def wrap(shell: Shell, fragment: String) raises -> String:
-    return String("<!doctype html><title>", shell.title, "</title>", fragment)
+    def wrap(self, fragment: String) raises -> String:
+        return String("<!doctype html><title>", self.title, "</title>", fragment)
 
 
 def _req(hx: String) raises -> HTTPRequest:
@@ -72,9 +71,9 @@ def test_wants_fragment_reads_the_header_exactly() raises:
 
 def test_page_or_fragment_wraps_only_without_the_header() raises:
     var frag = String('<section id="notes">x</section>')
-    var bare = page_or_fragment(_req("true"), frag, Shell("t"), wrap)
+    var bare = page_or_fragment(_req("true"), frag, Shell("t"))
     assert_equal(_body(bare), frag)
-    var page = page_or_fragment(_req(""), frag, Shell("t"), wrap)
+    var page = page_or_fragment(_req(""), frag, Shell("t"))
     assert_equal(_body(page), String("<!doctype html><title>t</title>", frag))
     assert_equal(page.status_code, 200)
     assert_equal(page.headers[HeaderKey.CONTENT_TYPE], "text/html; charset=utf-8")
@@ -86,11 +85,11 @@ def test_both_representations_vary_on_every_header_read() raises:
     that differ only in Datastar's header."""
     var frag = String("<p>x</p>")
     assert_equal(
-        page_or_fragment(_req("true"), frag, Shell("t"), wrap).headers[HeaderKey.VARY],
+        page_or_fragment(_req("true"), frag, Shell("t")).headers[HeaderKey.VARY],
         ALL_VARY,
     )
     assert_equal(
-        page_or_fragment(_req(""), frag, Shell("t"), wrap).headers[HeaderKey.VARY],
+        page_or_fragment(_req(""), frag, Shell("t")).headers[HeaderKey.VARY],
         ALL_VARY,
     )
 
@@ -98,7 +97,7 @@ def test_both_representations_vary_on_every_header_read() raises:
 def test_vary_on_the_header_keeps_a_vary_on_accept() raises:
     """A view that negotiated on `Accept` and then answered a fragment
     names both; the overwrite this replaced kept one."""
-    var resp = vary_accept(page_or_fragment(_req("true"), String("<p>x</p>"), Shell("t"), wrap))
+    var resp = vary_accept(page_or_fragment(_req("true"), String("<p>x</p>"), Shell("t")))
     assert_equal(resp.headers[HeaderKey.VARY], String(ALL_VARY, ", Accept"))
 
 
@@ -107,11 +106,11 @@ def test_a_styled_error_page_keeps_its_status() raises:
     representations, not a soft 200 crawlers index and htmx swaps in as
     success."""
     var frag = String("<h1>no such page</h1>")
-    var page = page_or_fragment(_req(""), frag, Shell("404"), wrap, status=404, text="Not Found")
+    var page = page_or_fragment(_req(""), frag, Shell("404"), status=404, text="Not Found")
     assert_equal(page.status_code, 404)
     assert_equal(page.status_text, "Not Found")
     assert_equal(page.headers[HeaderKey.VARY], ALL_VARY)
-    var bare = page_or_fragment(_req("true"), frag, Shell("404"), wrap, status=404, text="Not Found")
+    var bare = page_or_fragment(_req("true"), frag, Shell("404"), status=404, text="Not Found")
     assert_equal(bare.status_code, 404)
     assert_equal(_body(bare), frag)
 
@@ -132,7 +131,7 @@ def test_a_history_restore_is_a_page() raises:
     var frag = String('<section id="notes">x</section>')
     var restore = _req_with("HX-History-Restore-Request", "true", hx="true")
     assert_false(wants_fragment(restore))
-    var page = page_or_fragment(restore, frag, Shell("t"), wrap)
+    var page = page_or_fragment(restore, frag, Shell("t"))
     assert_equal(_body(page), String("<!doctype html><title>t</title>", frag))
     assert_equal(page.headers[HeaderKey.VARY], ALL_VARY)
     # The marker without `HX-Request` is not something htmx sends; it is a
@@ -152,7 +151,7 @@ def test_a_datastar_action_gets_the_bare_fragment() raises:
     var frag = String('<section id="notes">x</section>')
     var ds = _req_with("Datastar-Request", "true")
     assert_true(wants_fragment(ds))
-    var bare = page_or_fragment(ds, frag, Shell("t"), wrap)
+    var bare = page_or_fragment(ds, frag, Shell("t"))
     assert_equal(_body(bare), frag)
     assert_equal(bare.headers[HeaderKey.CONTENT_TYPE], "text/html; charset=utf-8")
     assert_equal(bare.headers[HeaderKey.VARY], ALL_VARY)
@@ -171,7 +170,7 @@ def test_a_boosted_request_is_a_page() raises:
     var frag = String('<section id="notes">x</section>')
     var boosted = _req_with("HX-Boosted", "true", hx="true")
     assert_false(wants_fragment(boosted))
-    var page = page_or_fragment(boosted, frag, Shell("t"), wrap)
+    var page = page_or_fragment(boosted, frag, Shell("t"))
     assert_equal(_body(page), String("<!doctype html><title>t</title>", frag))
     assert_equal(page.headers[HeaderKey.VARY], ALL_VARY)
     assert_true(wants_fragment(_req_with("HX-Boosted", "false", hx="true")))
