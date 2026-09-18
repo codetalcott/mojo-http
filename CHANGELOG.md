@@ -10,6 +10,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **The Mojo host serves `M0_THREADS=N`: N event loops on N threads of one
+  process** (DECISIONS D35; SPEC E27–E29). It was refused with 78. The
+  listener, the shared page, the bus and the accept-share channels are made
+  once and sized by the loop count; each thread builds its own handler with
+  `AppHandler.make`, its own pool under `M0_BLOCKING_THREADS`, and runs its
+  own loop; fan-out across loops rides the bus and accepts are shared
+  across the threads (without it, 30 of 32 connections sat on one loop of
+  four). `HostContext.worker`/`workers` count loops and the new
+  `HostContext.threaded` names the kind, so an application is served by
+  either mode unchanged. New on `AppHandler` and `ViewState`:
+  `max_threads()`, **defaulting to `max_workers()`** — an application whose
+  state lives in one handler refuses loops exactly as it refuses workers,
+  without being asked. `M0_WORKERS>1` with `M0_THREADS>1` is refused. No
+  loop takes a connection until every loop's `make` has returned, so a
+  raising `make` is still a 78 before anything is served. There is no
+  supervisor in this mode: a loop that dies takes the process. Measured
+  against prefork on `apps/ramp` (`poe bench-host-modes`): the same
+  throughput and tail on macOS and Linux, and 20–35 % less RSS — so prefork
+  stays what the documentation reaches for first
+  ([loops-on-threads](docs/notes/loops-on-threads.md)).
 - **An application defines its own frontend vocabulary** (DECISIONS D7,
   retired 2026-09-18; D34; SPEC N21). `Vocabulary` was exported but not
   implementable from outside: `Datastar` read a private field of `Html`

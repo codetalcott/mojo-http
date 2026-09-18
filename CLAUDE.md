@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D34, permanent ids, each with a retiring condition), which
+  (D1–D35, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -1272,8 +1272,23 @@ pieces, and the language fact each rests on:
   thread, so a stream open is `on_loop=True` or `add_loop` on its table —
   D32 — or lives in `before_request`; the loop stamps the producer's stop
   word as its drain begins and the pool and producer joins count from
-  it, so the shutdown bounds overlap rather than stack), and refuses
-  `M0_THREADS` and `M0_SPAWN_WORKERS` with 78. `apps/host_check` is its gate app;
+  it, so the shutdown bounds overlap rather than stack), serves
+  `M0_THREADS=N` as N loops on N threads of ONE process (D35, SPEC E27–E29,
+  `smoke-host-threads`; docs/notes/loops-on-threads.md: `_serve_threaded`
+  is the prefork order with "fork" struck out — page, bus and accept-share
+  channels made once and sized by the LOOP count, signals armed BEFORE the
+  threads exist and the one pipe fanned out to a pipe per loop, the
+  handler, pool and loop per thread in `_loop_run`, behind a barrier so no
+  loop serves until every `make` has returned; `ctx.worker`/`workers`
+  count loops and `ctx.threaded` names the kind, so an app is served by
+  either mode unchanged; `max_threads()` DEFAULTS to `max_workers()`, so
+  state that lives in one handler refuses loops without being asked;
+  there is no supervisor, so a loop that dies takes the process; nothing
+  was forked, so `main` returns. Measured at parity with prefork on
+  throughput and tail, 20–35 % less RSS, so prefork stays the documented
+  way to N and threads are the option), and refuses `M0_SPAWN_WORKERS`,
+  and `M0_WORKERS>1` beside `M0_THREADS>1`, with 78. `apps/host_check` is
+  its gate app;
   `apps/blobs`, `sim_loop`, `datastar_counter`, `datastar_todo`,
   `fragment_notes` and `ramp` run on it — `apps/ramp` being ONE views
   module built into m0serve as a mount and into a host binary, compared

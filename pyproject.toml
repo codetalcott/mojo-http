@@ -4487,6 +4487,14 @@ rm -f mounts-threads.log
 echo "smoke-mounts-threads OK"
 """
 
+# N forked workers against N loops on N threads for a Mojo host app
+# (DECISIONS D35): apps/ramp, the loop route and the compute route, c16 and
+# c256, cores and RSS summed over the process tree. Needs wrk. Record from a
+# CLEAN tree; `poe render-bench-docs` afterwards.
+[tool.poe.tasks.bench-host-modes]
+help = "PRE-RELEASE: M0_WORKERS=N against M0_THREADS=N under the Mojo host -> bench/results/host-modes-*.json"
+cmd = "python3 scripts/bench_host_modes.py"
+
 [tool.poe.tasks.bench-mojo-mount]
 help = "What the Mojo mount is worth: the same filtered search, Mojo and numpy, in one process"
 deps = ["build-serve"]
@@ -7303,16 +7311,158 @@ python3 scripts/emit.py --covers N16 --task smoke-blobs
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E26, N18, N19):
-# twenty-three against smoke-host, one against smoke-fragment-notes, six
-# against test_host.mojo, six against test_prefork.mojo (the pre-fork
+# The Mojo host under `M0_THREADS=N` (SPEC E27-E29): N loops on N threads of
+# ONE process. There is no interpreter here, so unlike m0serve's threaded
+# phases -- which skip on CI's GIL-enabled CPython and prove the refusal
+# alone -- every phase below runs on every pull request. Each phase first
+# proves its connections sit on DIFFERENT loops (`x-worker`) of ONE pid:
+# a fan-out assertion over streams that all landed on loop 0 proves nothing.
+[tool.poe.tasks.smoke-host-threads]
+help = "The Mojo host under M0_THREADS: every loop's streams get every beat, N handler instances in one pid, a drain with a request in flight on every loop, loops of pools, and the refusals"
+shell = """
+out=$(mktemp -d)
+pid=
+probe=
+cleanup() {
+  [ -n "$pid" ] && kill $pid 2>/dev/null
+  [ -n "$probe" ] && kill $probe 2>/dev/null
+  pkill -KILL -f "$out/" 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+fail() {
+  echo "$1"
+  for f in "$out"/*.log "$out"/*.out; do
+    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
+  done
+  exit 1
+}
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
+  apps/host_check/server.mojo -o "$out/host_check" || exit 1
+start() {
+  port=$1
+  name=$2
+  shift 2
+  env M0_PORT=$port "$@" "$out/host_check" > "$out/$name.log" 2>&1 &
+  pid=$!
+  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
+    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($name)"
+}
+stop() {
+  t0=$(date +%s)
+  kill -TERM $pid
+  i=0
+  while kill -0 $pid 2>/dev/null; do
+    i=$((i + 1))
+    [ $i -le 200 ] || fail "$1: still running 20 s after SIGTERM"
+    sleep 0.1
+  done
+  wait $pid
+  rc=$?
+  took=$(($(date +%s) - t0))
+  pid=
+}
+
+# --- fan-out across loops (SPEC E27) ----------------------------------------
+# One producer thread, one bus channel per LOOP: four streams spanning both
+# loops each carry every beat, contiguous, from one pid.
+start 8861 threads M0_THREADS=2
+grep -q 'host: 2 loops on 2 threads' "$out/threads.log" || fail "M0_THREADS=2 did not start two loops"
+grep -q '^\\[worker' "$out/threads.log" && fail "M0_THREADS=2 forked"
+res=$(python3 scripts/host_probe.py streams 8861 4 2 2 2>&1) || fail "fan-out across loops: $res"
+echo "fan-out across loops: $res"
+
+# --- N handler instances in one process (SPEC E29) --------------------------
+res=$(python3 scripts/host_probe.py isolation 8861 2 2>&1) || fail "isolation: $res"
+echo "isolation: $res"
+
+# --- the drain, with a request in flight on every loop (SPEC E28) -----------
+# The signal lands on ONE pipe; each loop must see the stop on its own. A
+# loop that never does is still spinning its request's successor when the
+# coordinator's bound runs out, and the exit is 1, named.
+python3 scripts/host_probe.py inflight 8861 "$out/inflight" 2 1500 > "$out/inflight.out" 2>&1 &
+probe=$!
+i=0
+while [ ! -f "$out/inflight" ]; do
+  i=$((i + 1))
+  [ $i -le 100 ] || fail "the in-flight probe never got a request onto every loop"
+  kill -0 $probe 2>/dev/null || fail "the in-flight probe ended early"
+  sleep 0.1
+done
+stop "threads drain"
+wait $probe || fail "the drain dropped a request in flight"
+probe=
+[ "$rc" -eq 0 ] || fail "threads drain: SIGTERM exited $rc, not 0"
+[ "$took" -le 8 ] || fail "threads drain: took ${took}s"
+grep -Eq 'still running|abandoned' "$out/threads.log" && fail "threads drain: a loop or the producer was left behind"
+echo "drain: $(cat "$out/inflight.out"); exit 0 in ${took}s"
+drain_s=$took
+
+# --- T loops of N: a pool behind every loop ---------------------------------
+start 8862 pooled M0_THREADS=2 M0_BLOCKING_THREADS=2
+[ "$(grep -c 'handler thread(s) behind the loop' "$out/pooled.log")" -eq 2 ] || fail "two loops did not each start a pool"
+res=$(python3 scripts/host_probe.py streams 8862 4 2 2 2>&1) || fail "pooled loops, streams: $res"
+res2=$(python3 scripts/host_probe.py placement 8862 2 4 2>&1) || fail "pooled loops, placement: $res2"
+worst=$(echo "$res2" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
+[ "$worst" -lt 100 ] || fail "pooled loops: /health took ${worst} ms behind slow views"
+stop "pooled loops"
+[ "$rc" -eq 0 ] || fail "pooled loops: SIGTERM exited $rc, not 0"
+echo "two loops of two: $res; $res2; exit 0 in ${took}s"
+
+# --- the refusals, before the bind (SPEC E29) -------------------------------
+# An application whose state lives in one handler refuses loops exactly as
+# it refuses workers, WITHOUT being asked: `max_threads` defaults to
+# `max_workers`. And the two modes stay mutually exclusive.
+refused() {
+  name=$1
+  want=$2
+  shift 2
+  env M0_PORT=8863 "$@" "$out/host_check" > "$out/refused.log" 2>&1 &
+  pid=$!
+  i=0
+  while kill -0 $pid 2>/dev/null; do
+    i=$((i + 1))
+    [ $i -le 100 ] || fail "$name was still running after 10s -- served, not refused"
+    sleep 0.1
+  done
+  wait $pid
+  rc=$?
+  pid=
+  [ "$rc" -eq 78 ] || fail "$name exited $rc, not 78"
+  grep -q "host: .*$want" "$out/refused.log" || fail "$name was refused without naming $want"
+  grep -q 'listening' "$out/refused.log" && fail "$name was refused after the host bound its port"
+}
+refused "threads above what the app serves" 'M0_THREADS=2, but this application' M0_THREADS=2 M0_HOSTCHECK_MAX_WORKERS=1
+refused "workers and threads together" 'mutually exclusive' M0_THREADS=2 M0_WORKERS=2
+refused "M0_THREADS=0" 'M0_THREADS must be at least 1' M0_THREADS=0
+# A raising make on ANY loop is the 78 the prefork make gets, and no loop
+# serves first: the barrier holds every loop until all have a handler.
+# The knob raises on loop 1 ALONE, 300 ms late, so loop 0 has long had its
+# handler: without the barrier it is serving by then.
+env M0_PORT=8864 M0_THREADS=2 M0_HOSTCHECK_LOOP_MAKE_RAISES=1 "$out/host_check" > "$out/make.log" 2>&1
+rc=$?
+[ "$rc" -eq 78 ] || fail "a raising make under M0_THREADS exited $rc, not 78"
+grep -q 'host: .*M0_HOSTCHECK_LOOP_MAKE_RAISES' "$out/make.log" || fail "a raising make under M0_THREADS was not named"
+grep -q 'Event loop started' "$out/make.log" && fail "a loop served before every loop's handler was built"
+echo "refused with 78 before binding: threads above max_threads, workers with threads, M0_THREADS=0; a raising make before any loop serves"
+
+echo "smoke-host-threads OK"
+python3 scripts/emit.py host.threads_drain_s "$drain_s" --unit s --limit 8 --task smoke-host-threads
+python3 scripts/emit.py --covers E27 --task smoke-host-threads
+python3 scripts/emit.py --covers E28 --task smoke-host-threads
+python3 scripts/emit.py --covers E29 --task smoke-host-threads
+"""
+
+# Each Mojo host rule, broken on purpose (SPEC E21-E29, N18, N19):
+# twenty-three against smoke-host, seven against smoke-host-threads, two
+# against smoke-fragment-notes, six against test_host.mojo, six against test_prefork.mojo (the pre-fork
 # pieces both hosts share), one against test_respawn.mojo (the supervisor
 # ending the siblings on a refusal), one against test_views.mojo (the
-# placement flag). Pre-release: thirty-eight runs, about an hour;
-# `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
+# placement flag). Pre-release: forty-six runs, over an hour;
+# `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, test_host, test_prefork, test_respawn or test_views fails for every one (SPEC E21-E26, N19)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_prefork, test_respawn or test_views fails for every one (SPEC E21-E29, N19)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC
@@ -7540,7 +7690,8 @@ echo "overlap: a 4 s request answered, the producer abandoned, exit 0 in ${took}
 
 # --- what the host does not serve is refused, before it binds --------------
 for v in M0_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_WORKERS=2; do
-  # The last is refused only because the app says it serves one process.
+  # The first and the last are refused only because the app says it serves
+  # one process: a loop per thread is as divided as a worker (SPEC E29).
   env M0_PORT=8788 M0_HOSTCHECK_MAX_WORKERS=1 $v "$out/host_check" > "$out/refused.log" 2>&1 &
   pid=$!
   i=0
@@ -8027,6 +8178,22 @@ code=$?
 [ "$code" = "78" ] || fail "expected exit 78 for M0_WORKERS=2, got $code"
 grep -q 'M0_WORKERS=2' refusal.log || fail 'the worker-count refusal did not name M0_WORKERS'
 grep -q 'listening' refusal.log && fail 'M0_WORKERS=2 was refused after the port was bound'
+# The same list would be N lists under M0_THREADS -- every loop builds its
+# own state -- and the app never said a word about threads: `max_threads`
+# defaults to `max_workers`, so the one answer refuses both (SPEC E29).
+M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+rpid=$!
+i=0
+while kill -0 $rpid 2>/dev/null; do
+  i=$((i + 1))
+  [ $i -le 100 ] || { kill $rpid; fail 'M0_THREADS=2 was still running after 10s -- served as two lists, not refused'; }
+  sleep 0.1
+done
+wait $rpid
+code=$?
+[ "$code" = "78" ] || fail "expected exit 78 for M0_THREADS=2, got $code"
+grep -q 'M0_THREADS=2' refusal.log || fail 'the loop-count refusal did not name M0_THREADS'
+grep -q 'listening' refusal.log && fail 'M0_THREADS=2 was refused after the port was bound'
 
 M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > fragment.log 2>&1 &
 pid=$!

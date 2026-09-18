@@ -11,6 +11,10 @@
                    the same stream opened in `func`: what a pool thread
                    refuses 409, kept as a route so the gate pins that
     GET  /slow?ms=N  spins for N ms in `func`: the placement load
+    GET  /instance this handler INSTANCE's own request count, with
+                   `x-worker` and the pid: under `M0_THREADS` every loop
+                   shares one pid, so this is what tells N loops' N
+                   handlers apart (SPEC E29)
 
 `smoke-host` (SPEC E21-E23, E25, E26) drives it. The application is
 nothing but the two conformances `m0_host.host` asks for — a handler
@@ -23,7 +27,7 @@ refused 409 -- it would subscribe a pool thread's registry, which nothing
 drains (`mojo_pool.mojo`) -- so `/events` opens on the loop and
 `/events-from-func` keeps the refused shape for the gate to pin.
 
-Six knobs, all for the gate:
+Seven knobs, all for the gate:
 
     M0_HOSTCHECK_PERIOD_MS   the beat's period (default 100)
     M0_HOSTCHECK_STEP_MS     how long each beat sleeps before it publishes
@@ -43,6 +47,11 @@ Six knobs, all for the gate:
                              alone (`ctx.thread >= 0`): the host must
                              refuse with 78 before it serves, never run a
                              pool one thread short
+
+    M0_HOSTCHECK_LOOP_MAKE_RAISES=1
+                             under `M0_THREADS`, the handler's `make` raises
+                             on loop 1 ALONE, 300 ms late: loop 0 is built
+                             by then, and must not have served (SPEC E29)
 
 Each beat's id comes from the host's shared word (`Publisher.next_id`),
 never from a counter of this process's own: the gate's respawn phase kills
@@ -129,10 +138,14 @@ struct Check(AppHandler):
 
     var streams: SSERegistry
     var worker: Int
+    var hits: Int
+    """`/instance` requests THIS instance has answered. A plain field on
+    purpose: per-instance state is the thing the isolation phase reads."""
 
     def __init__(out self, capacity: Int, worker: Int):
         self.streams = SSERegistry(capacity)
         self.worker = worker
+        self.hits = 0
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
@@ -143,6 +156,12 @@ struct Check(AppHandler):
                 "M0_HOSTCHECK_POOL_MAKE_RAISES: the handler refuses to be built on"
                 " pool thread " + String(ctx.thread)
             )
+        if (
+            ctx.threaded and ctx.on_loop() and ctx.worker == 1
+            and getenv("M0_HOSTCHECK_LOOP_MAKE_RAISES", "") == "1"
+        ):
+            sleep(0.3)
+            raise Error("M0_HOSTCHECK_LOOP_MAKE_RAISES: loop 1's handler refuses to be built")
         return Check(ctx.capacity, ctx.worker)
 
     @staticmethod
@@ -169,6 +188,14 @@ struct Check(AppHandler):
         var path = req.uri.path
         if path == "/pid":
             return OK(String(getpid()), "text/plain")
+        if path == "/instance":
+            self.hits += 1
+            var resp = OK(
+                String('{"worker":', self.worker, ',"pid":', getpid(), ',"hits":', self.hits, "}"),
+                "application/json",
+            )
+            resp.headers["x-worker"] = String(self.worker)
+            return resp^
         if path == "/slow":
             # A spin, not a sleep: what holds the thread that serves it,
             # loop or pool, and what the placement phase measures against.

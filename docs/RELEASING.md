@@ -202,12 +202,15 @@ the kernel's eight against its unit tests. Each rule rebuilds the app and
 reruns its gate, about nine minutes in all (`--only unit` runs the kernel's
 eight in about a minute).
 
-**And `uv run poe sabotage-host`** (SPEC E21–E24) — breaks each of
-twenty-five rules in `m0_host/host.mojo`, `src/prefork.mojo` and
-`accept_share.mojo` and requires a gate to fail for every one: fourteen
-against `smoke-host`, one against `smoke-fragment-notes` (the `ViewsApp`
-adapter), four against `test_host.mojo`, six against `test_prefork.mojo`
-(the pre-fork pieces both hosts share). A sabotage that does not compile is reported as BROKEN
+**And `uv run poe sabotage-host`** (SPEC E21–E29, N18, N19) — breaks each
+of forty-six rules in `m0_host/host.mojo`, `src/prefork.mojo`,
+`accept_share.mojo`, `multiworker.mojo` and `views.mojo` and requires a
+gate to fail for every one: twenty-three against `smoke-host`, seven
+against `smoke-host-threads` (the loops on threads; `--only threads`, about
+six minutes), two against `smoke-fragment-notes` (the `ViewsApp` adapter's
+worker and loop limits), six against `test_host.mojo`, six against
+`test_prefork.mojo` (the pre-fork pieces both hosts share), and one each
+against `test_respawn.mojo` and `test_views.mojo`. A sabotage that does not compile is reported as BROKEN
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
 
@@ -239,7 +242,9 @@ outside their own tree is above half a core across three samples
 the pool rows 7 % with the comparators unmoved: build `apps/hello`
 to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,
 `poe bench-asgi-wrk`, `poe bench-asgi`, `poe bench-mojo-mount` (the table in
-docs/SERVER_PERFORMANCE.md, its comparators the numpy rows), and
+docs/SERVER_PERFORMANCE.md, its comparators the numpy rows),
+`poe bench-host-modes` (prefork against loops on threads under the Mojo
+host, the same page; its comparators the one-worker rows), and
 `scripts/bench_mixed_workload.sh`
 under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
 Reproducing section; `.venv-pinned/` is ignored so the parked venv does not

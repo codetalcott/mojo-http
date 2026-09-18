@@ -20,6 +20,16 @@
         the worst sample; the caller says what the number means (under a
         pool of more than K threads it must stay small, on the bare loop
         it must not -- the negative arm)
+    host_probe.py isolation PORT LOOPS
+        keep-alive connections spanning LOOPS loops of ONE process
+        (`M0_THREADS`), five `GET /instance` on each: every answer names
+        the same pid, and each loop's handler has counted exactly its own
+        requests -- 1..n with no gap and no repeat -- so the loops are
+        threads and their handlers are N distinct instances
+    host_probe.py inflight PORT FLAG LOOPS MS
+        one connection on each of LOOPS loops, a `GET /slow?ms=MS` written
+        on every one at once; touch FLAG; exit 0 once every one has been
+        answered 200 (the caller signals the server while they spin)
 
 Each prints one summary line and exits 0, or exits 1 naming the phase and
 the first assertion that failed. Stdlib only.
@@ -350,6 +360,92 @@ def placement(port: int, k: int, seconds: float) -> None:
     print("worst_health_ms=%d slow_requests=%d" % (int(worst), sum(counts)))
 
 
+class Conn:
+    """One keep-alive connection, and the loop `/instance` says it is on."""
+
+    def __init__(self, port: int):
+        self.conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+        self.answers: list[dict] = []
+        self.worker = self.instance()["worker"]
+
+    def instance(self) -> dict:
+        self.conn.request("GET", "/instance")
+        resp = self.conn.getresponse()
+        body = resp.read()
+        if resp.status != 200:
+            fail(f"/instance answered HTTP {resp.status}")
+        got = json.loads(body)
+        if str(got["worker"]) != resp.getheader("x-worker"):
+            fail(f"/instance's body and its x-worker header disagree: {got}")
+        self.answers.append(got)
+        return got
+
+
+def spread_conns(port: int, loops: int) -> list[Conn]:
+    conns: list[Conn] = []
+    for _ in range(8 * loops):
+        conns.append(Conn(port))
+        if len({c.worker for c in conns}) >= loops:
+            break
+    got = sorted({c.worker for c in conns})
+    if len(got) < loops:
+        fail(
+            f"{len(conns)} connections landed on loops {got}, not {loops} of them"
+            " -- nothing here would be proven"
+        )
+    return conns
+
+
+def isolation(port: int, loops: int) -> None:
+    phase("connections spanning the loops")
+    conns = spread_conns(port, loops)
+    phase("each loop's handler counts its own requests")
+    for _ in range(4):
+        for c in conns:
+            if c.instance()["worker"] != c.worker:
+                fail("a keep-alive connection changed loops between requests")
+    answers = [a for c in conns for a in c.answers]
+    pids = {a["pid"] for a in answers}
+    if len(pids) != 1:
+        fail(f"the loops answered from {len(pids)} processes {sorted(pids)}, not threads of one")
+    for w in sorted({a["worker"] for a in answers}):
+        hits = sorted(a["hits"] for a in answers if a["worker"] == w)
+        if hits != list(range(1, len(hits) + 1)):
+            fail(
+                f"loop {w}'s handler counted {hits} for its {len(hits)} requests"
+                " -- its state is not its own"
+            )
+    for c in conns:
+        c.conn.close()
+    print("loops=%d pid=%d requests=%d" % (len({c.worker for c in conns}), pids.pop(), len(answers)))
+
+
+def inflight(port: int, flag: str, loops: int, ms: int) -> None:
+    phase("one connection on each loop")
+    by_loop: dict = {}
+    for c in spread_conns(port, loops):
+        if c.worker in by_loop:
+            c.conn.close()
+        else:
+            by_loop[c.worker] = c
+    phase("a slow request in flight on every loop")
+    for c in by_loop.values():
+        c.conn.request("GET", "/slow?ms=%d" % ms)
+    time.sleep(0.2)
+    with open(flag, "w") as fh:
+        fh.write("in flight\n")
+    phase("every in-flight request is answered through the drain")
+    for w, c in sorted(by_loop.items()):
+        try:
+            resp = c.conn.getresponse()
+            body = resp.read()
+        except (OSError, http.client.HTTPException) as exc:
+            fail(f"the request in flight on loop {w} was dropped by the drain: {exc!r}")
+        if resp.status != 200 or json.loads(body).get("ms") != ms:
+            fail(f"the request in flight on loop {w} answered HTTP {resp.status} {body!r}")
+    print("answered=%d loops=%d" % (len(by_loop), loops))
+
+
 def main() -> None:
     a = sys.argv
     if len(a) == 5 and a[1] == "placement":
@@ -358,6 +454,10 @@ def main() -> None:
         streams(int(a[2]), int(a[3]), float(a[4]), int(a[5]))
     elif len(a) == 6 and a[1] == "hold":
         hold(int(a[2]), a[3], int(a[4]), int(a[5]))
+    elif len(a) == 4 and a[1] == "isolation":
+        isolation(int(a[2]), int(a[3]))
+    elif len(a) == 6 and a[1] == "inflight":
+        inflight(int(a[2]), a[3], int(a[4]), int(a[5]))
     elif len(a) == 5 and a[1] == "respawn":
         respawn(int(a[2]), int(a[3]), int(a[4]))
     else:

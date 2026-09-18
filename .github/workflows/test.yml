@@ -556,6 +556,11 @@ jobs:
       # alone, the producer's join bound, and the refusals before binding.
       - name: Smoke test the Mojo host
         run: uv run poe smoke-host
+      # N loops on N threads of one process. No interpreter, so nothing here
+      # skips on CI's GIL-enabled CPython: the first threaded SERVING gated
+      # on every pull request (m0serve's threaded step proves its refusal).
+      - name: Smoke test the Mojo host's loops on threads
+        run: uv run poe smoke-host-threads
       # The flagship: a mutation broadcasts the rendered fragment to a live
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo

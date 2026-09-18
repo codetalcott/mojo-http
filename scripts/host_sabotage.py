@@ -47,6 +47,7 @@ tell, so it is not claimed as a guarded rule.
     uv run poe sabotage-host --only unit           the thread rules alone
     uv run poe sabotage-host --only respawn        the supervisor's rule
     uv run poe sabotage-host --only views          the placement rule
+    uv run poe sabotage-host --only threads        the loops-on-threads rules (SPEC E27-E29)
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ UNIT = "unit"
 PREFORK = "prefork"
 RESPAWN = "respawn"
 VIEWS = "views"
+THREADS = "threads"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
 EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
@@ -164,8 +166,8 @@ SABOTAGES = [
         "M0_BLOCKING_THREADS is served on the loop",
         SMOKE,
         HOST,
-        "    var pooled = config.blocking_threads > 0\n",
-        "    var pooled = False\n",
+        "    return config.blocking_threads > 0\n",
+        "    return False\n",
     ),
     (
         "the loop is never told where the stop word is",
@@ -185,11 +187,11 @@ SABOTAGES = [
         "a pool thread's raising make is served one thread short",
         SMOKE,
         HOST,
-        "        var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
-        "        if short > 0:\n",
-        "        var short = 0\n"
-        "        _ = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
-        "        if short > 0:\n",
+        "    var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "    if short > 0:\n",
+        "    var short = 0\n"
+        "    _ = threads.wait_ready(POOL_READY_TIMEOUT_NS)\n"
+        "    if short > 0:\n",
     ),
     (
         "a pool thread's handler is built as the loop's own",
@@ -240,7 +242,7 @@ SABOTAGES = [
         "the host never asks how many workers the app serves",
         SMOKE,
         HOST,
-        "    var refusal = host_refusal(config, H.max_workers())\n",
+        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
         "    var refusal = host_refusal(config)\n",
     ),
     (
@@ -254,9 +256,9 @@ SABOTAGES = [
         "the refusal comes after the bind",
         SMOKE,
         HOST,
-        "    var refusal = host_refusal(config, H.max_workers())\n",
+        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
         "    var early_listener = ListenConfig().listen(config.address())\n"
-        "    var refusal = host_refusal(config, H.max_workers())\n",
+        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
     ),
     # --- round 4: the id space and a raising make (SPEC E25) -------------------
     (
@@ -308,6 +310,65 @@ SABOTAGES = [
         MULTIWORKER_SRC,
         "                        self._kill_all(SIGTERM)\n                        while remaining > 0:\n",
         "                        while remaining > 0:\n",
+    ),
+    # --- loops on threads (SPEC E27-E29), against smoke-host-threads ----------
+    (
+        "only loop 0 drains its bus channel",
+        THREADS,
+        HOST,
+        "        bus_read_fd=block.get(BLK_BUS_FD),\n",
+        "        bus_read_fd=block.get(BLK_BUS_FD) if index == 0 else -1,\n",
+    ),
+    (
+        "the stop reaches loop 0 alone",
+        THREADS,
+        HOST,
+        "        block.set(BLK_SHUTDOWN_FD, fanout.read_fd(i))\n",
+        "        block.set(BLK_SHUTDOWN_FD, fanout.read_fd(i) if i == 0 else -1)\n",
+    ),
+    (
+        "every loop's handler is built as loop 0",
+        THREADS,
+        HOST,
+        "    ctx.worker = index\n",
+        "",
+    ),
+    (
+        "a loop serves before every loop's handler is built",
+        THREADS,
+        HOST,
+        "    while block.get(BLK_LOOP_GO) == 0:\n        sleep(0.001)\n",
+        "",
+    ),
+    (
+        "more loops than the app serves are not refused",
+        THREADS,
+        HOST,
+        "    if max_threads > 0 and config.threads > max_threads:\n",
+        "    if False:\n",
+    ),
+    (
+        "max_threads does not default to max_workers",
+        THREADS,
+        HOST,
+        "        plain memory every loop sees, or a database) overrides this.\n"
+        '        """\n        return Self.max_workers()\n',
+        "        plain memory every loop sees, or a database) overrides this.\n"
+        '        """\n        return 0\n',
+    ),
+    (
+        "workers and threads together are served",
+        THREADS,
+        HOST,
+        "    if conflict:\n        return conflict.value()\n",
+        "",
+    ),
+    (
+        "ViewsApp drops its state's loop limit",
+        NOTES,
+        HOST,
+        "        return Self.S.max_threads()\n",
+        "        return 0\n",
     ),
     # --- the thread's own rules, against test_host.mojo -----------------------
     (
@@ -393,6 +454,14 @@ def run_smoke() -> tuple[bool, str]:
     return (p.returncode == 0 and "smoke-host OK" in out), out
 
 
+def run_threads() -> tuple[bool, str]:
+    p = subprocess.run(
+        [POE, "smoke-host-threads"], capture_output=True, text=True, timeout=600
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and "smoke-host-threads OK" in out), out
+
+
 def run_notes() -> tuple[bool, str]:
     p = subprocess.run(
         [POE, "smoke-fragment-notes"], capture_output=True, text=True, timeout=600
@@ -443,7 +512,7 @@ def run_respawn() -> tuple[bool, str]:
 
 GATES = {
     SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork,
-    RESPAWN: run_respawn, VIEWS: run_views,
+    RESPAWN: run_respawn, VIEWS: run_views, THREADS: run_threads,
 }
 
 
