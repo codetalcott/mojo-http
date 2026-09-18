@@ -241,10 +241,12 @@ def run_arm(args, net, image, arm, viewers, rnd):
         "--cpus", str(args.cpus), "--memory", args.memory,
         *arm_env(arm, args.n), image)
     try:
+        # The script travels on stdin, not a bind mount: a daemon in a VM
+        # (colima) sees only the directories it shares, and a worktree under
+        # /tmp is not one of them.
         client_argv = [
-            "docker", "run", "--rm", "--network", net,
-            "-v", f"{REPO / 'scripts'}:/s:ro", args.client_image,
-            "python3", "/s/bench_blobs_modes.py", "client", "--host", name,
+            "docker", "run", "--rm", "-i", "--network", net, args.client_image,
+            "python3", "-", "client", "--host", name,
             "--viewers", str(viewers), "--warm", str(args.warm), "--secs", str(args.secs),
         ]
         # Wait for health from inside the network.
@@ -255,7 +257,8 @@ def run_arm(args, net, image, arm, viewers, rnd):
             time.sleep(0.2)
         time.sleep(1.0)
         phase(f"r{rnd} {arm} v{viewers}: measure")
-        proc = subprocess.Popen(client_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(client_argv, stdin=open(Path(__file__).resolve()),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         cpu0 = cpu1 = None
         t0 = t1 = None
         rss = None
@@ -329,6 +332,12 @@ def main():
         run("docker", "build", "-q", "-f", "deploy/mojo/Dockerfile", "--build-arg", "APP=blobs",
             "--build-arg", f"TARGET_CPU={cpu}", "-t", image, ".", timeout=1800)
     facts = json.loads(run("docker", "run", "--rm", "--entrypoint", "cat", image, "/app/about.json").stdout)
+    # Where the server actually ran. The artifact's `environment` describes
+    # the machine running THIS driver, which under colima is a Mac while the
+    # measured server is in a Linux VM with its own core count.
+    daemon = json.loads(run("docker", "info", "--format",
+                            '{"os":{{json .OperatingSystem}},"kernel":{{json .KernelVersion}},'
+                            '"arch":{{json .Architecture}},"cpus":{{.NCPU}},"memory_bytes":{{.MemTotal}}}').stdout)
     net = f"m0-bench-{uuid.uuid4().hex[:8]}"
     run("docker", "network", "create", net)
     arms = ["loop", f"workers={args.n}", f"threads={args.n}"]
@@ -372,6 +381,7 @@ def main():
         "window": f"{args.secs}s after {args.warm}s", "rounds": str(args.rounds),
         "subject": "apps/blobs in deploy/mojo/Dockerfile's image; /events held by V viewers, /now every 50 ms",
         "image": {k: facts.get(k) for k in ("version", "target_cpu", "arch", "image_bytes", "app_bytes")},
+        "daemon": daemon,
     }, extra={"comparisons": comparisons})
     return 0
 
