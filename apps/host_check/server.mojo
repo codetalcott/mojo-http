@@ -3,7 +3,13 @@
     GET  /health   liveness -- answered in `before_request`, ON THE LOOP,
                    so it stays answered whatever a pool is busy with
     GET  /pid      this worker's pid, as text (what `accept_spread.py` asks)
-    GET  /events   the producer's beats, as SSE; `x-worker` names the worker
+    GET  /events   the producer's beats, as SSE; `x-worker` names the worker.
+                   Opened in `before_request` too: a stream is subscribed
+                   in the LOOP instance's registry, the one the loop
+                   drains, so it works under a pool
+    GET  /events-from-func
+                   the same stream opened in `func`: what a pool thread
+                   refuses 409, kept as a route so the gate pins that
     GET  /slow?ms=N  spins for N ms in `func`: the placement load
 
 `smoke-host` (SPEC E21-E23, E25, E26) drives it. The application is
@@ -12,10 +18,10 @@ with `make`, a producer with `make` and `step` — so what the gate observes
 is the host: which workers hold streams, whether every one of them gets
 every beat, where accepted connections land, how a drain ends, what
 happens to a producer that will not stop, and where a request is served
-under `M0_BLOCKING_THREADS`. Under a pool `/events` is refused 409: its
-`func` subscribes THIS instance's registry, and a pool thread's is one
-nothing drains (`mojo_pool.mojo`); the gate pins that refusal rather than
-moving the route, because the refusal is what an application meets.
+under `M0_BLOCKING_THREADS`. Under a pool a stream opened in `func` is
+refused 409 -- it would subscribe a pool thread's registry, which nothing
+drains (`mojo_pool.mojo`) -- so `/events` opens on the loop and
+`/events-from-func` keeps the refused shape for the gate to pin.
 
 Six knobs, all for the gate:
 
@@ -144,11 +150,20 @@ struct Check(AppHandler):
         return _env_ms("M0_HOSTCHECK_MAX_WORKERS", 0)
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        # On the loop, in every shape: the one route that must answer while
-        # every pool thread is inside a slow view.
+        # On the loop, in every shape: the route that must answer while
+        # every pool thread is inside a slow view, and the stream, whose
+        # subscription must land in the registry the loop drains.
         if req.uri.path == "/health":
             return OK('{"status":"ok"}', "application/json")
+        if req.uri.path == STREAM:
+            return self._open_stream(req)
         return None
+
+    def _open_stream(mut self, req: HTTPRequest) -> HTTPResponse:
+        self.streams.subscribe(req.slot_id, STREAM, 0)
+        var resp = sse_response()
+        resp.headers["x-worker"] = String(self.worker)
+        return resp^
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var path = req.uri.path
@@ -169,11 +184,10 @@ struct Check(AppHandler):
             while perf_counter_ns() < deadline:
                 spins += 1
             return OK(String('{"ms":', ms, ',"spins":', spins, "}"), "application/json")
-        if path == STREAM:
-            self.streams.subscribe(req.slot_id, STREAM, 0)
-            var resp = sse_response()
-            resp.headers["x-worker"] = String(self.worker)
-            return resp^
+        if path == "/events-from-func":
+            # Correct without a pool (the loop's own instance), refused
+            # with one: the shape the docstring names.
+            return self._open_stream(req)
         return OK("host_check", "text/plain")
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:

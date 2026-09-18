@@ -191,6 +191,14 @@ the thread takes as its first act."""
 comptime SLEEP_SLICE_NS = 50_000_000
 """The longest a producer sleeps before it looks at `BLK_STOP` again."""
 
+comptime POOL_READY_TIMEOUT_NS = 600_000_000_000
+"""How long the host waits for every pool thread's `make` before it refuses
+the configuration as one it cannot build. Ten minutes: a `make` that loads
+a model is the application's business and the loop's own `make` has no
+bound at all, so this exists only so a wedged build ends in a named 78
+rather than a server that never listens. A `make` that RAISES is refused
+at once, whatever this says."""
+
 comptime POOL_JOIN_FLOOR_NS = 500_000_000
 """The least the pool's join waits after the drain, whatever is left of the
 bound. A thread that is idle takes its pill and ends in microseconds, but
@@ -764,13 +772,30 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         threads.start[PoolLane[H]](pool.addr(), user=Int(owned))
         # Every thread has its handler, or one of them could not build it:
         # then this is the refusal the loop's own `make` gets, before the
-        # server takes a connection, never a pool one thread short.
-        if threads.wait_ready(JOIN_TIMEOUT_NS) > 0:
-            print(
-                "host: a pool thread could not build the handler, so this"
-                " configuration is refused",
-                flush=True,
-            )
+        # server takes a connection, never a pool one thread short. Which
+        # kind is said, because they are different diagnoses: a raise
+        # (named above by `PoolLane.make`) or a build still running at the
+        # bound.
+        var short = threads.wait_ready(POOL_READY_TIMEOUT_NS)
+        if short > 0:
+            var raised = threads.raised_before_ready()
+            if raised > 0:
+                print(
+                    String(
+                        "host: the handler's make raised on ", raised,
+                        " pool thread(s), so this configuration is refused",
+                    ),
+                    flush=True,
+                )
+            else:
+                print(
+                    String(
+                        "host: ", short, " pool thread(s) were still building the"
+                        " handler ", POOL_READY_TIMEOUT_NS // 1_000_000_000,
+                        " s after starting, so this configuration is refused",
+                    ),
+                    flush=True,
+                )
             process_exit(EX_CONFIG)
         print(
             String(
@@ -831,6 +856,13 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         process_exit(0)
     if forked:
         exit_worker()
+    # Alive to here, whatever path left: a straggler thread the join gave
+    # up on still holds the pool's address in its block and writes its
+    # completion into it when its view returns -- into freed memory, had
+    # the pool been destroyed at its last use above (m0serve pins its own
+    # the same way at the end of `_serve_offloaded`). Found by review.
+    _ = pool.capacity
+    _ = threads.count
 
 
 def _run_loop[H: AppHandler](

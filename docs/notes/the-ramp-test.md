@@ -134,12 +134,14 @@ a lane.
 which gained `/slow?ms=N` (a spin in `func`), `/health` answered in
 `before_request`, and the pool knob:
 
-- **placement** — `M0_BLOCKING_THREADS=4`, two connections looping a
-  200 ms spin, the worst of 24 `/health` samples under 100 ms (0 ms on an
-  M4); `/events` answered 409 with the refusal in the log; a clean exit
-  with no thread reported a straggler;
+- **placement** — `M0_BLOCKING_THREADS=2`, two connections looping a
+  200 ms spin holding both threads, the worst of 24 `/health` samples
+  under 100 ms (0 ms on an M4); two streams opened on the loop carrying
+  every beat under the pool, and four spanning two pooled workers;
+  `/events-from-func` answered 409 with the refusal in the log; a clean
+  exit with no thread reported a straggler;
 - **the negative arm** — `M0_BLOCKING_THREADS=0` under the same load
-  must reach 100 ms (382 ms measured), or the placement arm proves
+  must reach 100 ms (389 ms measured), or the placement arm proves
   nothing;
 - **overlap** — the table above, asserted as an exit inside 6 s with the
   request answered whole and the producer named;
@@ -155,15 +157,16 @@ bound, against the unstamped control that waits the whole bound),
 `test_views.mojo` (the flag, the stateless decline, the 500,
 `ViewService`).
 
-`sabotage-host` grows by six rules to thirty-seven, and two moved. "The
+`sabotage-host` grows by seven rules to thirty-eight, and three moved. "The
 producer is never told to stop" now edits TWO files — the loop's stamp
 and the join's fallback — because removing either alone leaves the other
-telling it; the harness takes a tuple of paths for that. The six: the
+telling it; the harness takes a tuple of paths for that. The seven: the
 variable served on the loop, the stop word withheld from the loop, the
 producer's join counted from the loop's return, a raising pool `make`
-served short, a pool thread's handler built as the loop's own, and an
-on-loop read answered without its state (against `test_views.mojo`, a
-unit gate, since `views.mojo` is `src/`).
+served short, a pool thread's handler built as the loop's own, the gate
+app's `/health` moved onto the pool, and an on-loop read answered without
+its state (against `test_views.mojo`, a unit gate, since `views.mojo` is
+`src/`).
 
 ### Found on the way
 
@@ -174,6 +177,31 @@ failed with EBADF before a connection was taken — with and without a
 pool. `Server.serve_nonblocking` never had the problem because the
 listener was its argument. `_run_loop` in `host.mojo` takes it as a read
 parameter for the same reason, and says so.
+
+### Found by review
+
+The round's review, from a fresh context as the process asks, read the
+commit before the ramp was written and found one defect and two gates
+that could not tell. The defect: `pool`'s last use in `serve` was the
+join, so Mojo destroyed the `OffloadPool` there — while a straggler thread
+the join had given up on still held its address and would write its
+completion into freed memory when its view returned, in the microseconds
+before `_exit`. `m0serve` pins its own pool with `_ = pool.capacity` at
+the end of `_serve_offloaded` for exactly this; the host now does the
+same, and the harness records why no sabotage can guard it (no symptom on
+the wire). The gates: the placement phase held two threads of four, so an
+idle thread would have answered a `/health` that became a job within a
+millisecond and the phase could not tell "on the loop" from "on a spare
+thread" — it now holds every thread (a pool of two, both busy; two rather
+than four so a shared runner's cores keep something for the loop), and a
+sabotage moves the gate app's `/health` into `func` and insists the phase
+fails; and E23's prose still said the producer was told to stop after the
+drain. Two more things the review asked for: a stream opened on the LOOP
+under a pool is now gated (`host_check`'s `/events` moved into
+`before_request`, the refused shape kept as `/events-from-func`, and a
+two-worker pooled phase holds streams spanning both), and the ready wait
+says which of two things it refused — a raise, or a build still running
+at a ten-minute bound.
 
 ## R5b — the ramp
 
@@ -223,13 +251,16 @@ Placement, `scripts/ramp_probe.py placement`, is `host_probe.py`'s
 arithmetic under the prefix: K connections looping `/x/slow?ms=200`, 24
 samples of `/x/now` at random gaps, the worst reported.
 
-| arm | m0serve (lane of 4) | host (lane of 4) | host, bare loop |
+| arm | m0serve (lane of 2) | host (lane of 2) | host, bare loop |
 |---|---|---|---|
-| two connections on `/x/slow` | 1 ms | 1 ms | 378 ms |
-| four connections — the lane full | 154 ms | 5 ms | — |
+| one connection on `/x/slow` | 1 ms | 0 ms | 385 ms |
+| two connections — the lane full | 196 ms | 0 ms | — |
 
-The first row is the gate's bound on both hosts (100 ms, `sim_loop`'s),
-and the bare loop is the negative arm that must fail it. The second row
+(The first cut used lanes of four with two and four loaders: 1 ms and
+1 ms, then 154 ms against 5 ms — the same shape. Two threads leave a
+shared runner's cores something for the loop.) The first row is the
+gate's bound on both hosts (100 ms, `sim_loop`'s), and the bare loop is
+the negative arm that must fail it. The second row
 is the measurement D32 asked for. With every thread busy, `m0serve`'s
 loop route waits for a pool thread — its loop handler holds no Mojo
 table — while the host's, an `add_loop` route, is answered by the loop:

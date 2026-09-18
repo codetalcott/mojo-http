@@ -29,6 +29,12 @@ around would be testing itself. The smoke's two-worker phases are what
 would fail (a single shared handler cannot hold a stream in two
 processes; a post-fork bus reaches no sibling).
 
+Nor the keep-alive of the pool after the joins (`_ = pool.capacity` at
+the end of `serve`): removed, a straggler thread the join gave up on
+writes its completion into a freed `OffloadPool`, a use-after-free with
+no symptom on the wire in the microseconds before `_exit`. Found by
+review; recorded here because a gate that cannot fail is not evidence.
+
 Nor the `_exit` after an abandoned producer. Removed, the smoke still
 passes: a forked worker leaves through `exit_worker` anyway, and a single
 process returning from `main` with the producer asleep inside its step
@@ -69,6 +75,7 @@ VIEWS = "views"
 HOST = Path("packages/m0-http/lightbug_http/host.mojo")
 EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
 VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
+HOST_CHECK = Path("apps/host_check/server.mojo")
 PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
 ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
 MULTIWORKER_SRC = Path("packages/m0-http/src/multiworker.mojo")
@@ -189,6 +196,15 @@ SABOTAGES = [
         "",
     ),
     (
+        "the gate app answers its health path on a pool thread, not the loop",
+        SMOKE,
+        HOST_CHECK,
+        "        if req.uri.path == \"/health\":\n"
+        "            return OK('{\"status\":\"ok\"}', \"application/json\")\n"
+        "        if req.uri.path == STREAM:\n",
+        "        if req.uri.path == STREAM:\n",
+    ),
+    (
         "an on-loop route is answered without its state",
         VIEWS,
         VIEWS_SRC,
@@ -272,8 +288,8 @@ SABOTAGES = [
         "a raising producer make exits 1, a crash the supervisor respawns",
         SMOKE,
         HOST,
-        "            process_exit(EX_CONFIG)\n\n    var server = Server(",
-        "            process_exit(1)\n\n    var server = Server(",
+        "            process_exit(EX_CONFIG)\n\n    # The pool lane (docstring, 9a).",
+        "            process_exit(1)\n\n    # The pool lane (docstring, 9a).",
     ),
     (
         "start swallows the producer make's error and spawns nothing",

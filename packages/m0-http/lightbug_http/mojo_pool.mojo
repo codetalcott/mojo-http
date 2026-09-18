@@ -285,6 +285,21 @@ struct MojoPool(Movable):
                 short += 1
         return short
 
+    def raised_before_ready(self) -> Int:
+        """How many threads ended (`STATUS_RAISED`) without ever setting
+        `BLK_READY`: a `make` that raised, as opposed to one still
+        building. For the caller of `wait_ready` to say which."""
+        if not self._started:
+            return 0
+        var n = 0
+        for i in range(self.count):
+            if (
+                self._set.block(i).get(BLK_READY) == 0
+                and self._set.status(i) == STATUS_RAISED
+            ):
+                n += 1
+        return n
+
     def stop_and_join(
         mut self, mut pool: OffloadPool, timeout_ns: Int = -1
     ) raises -> Int:

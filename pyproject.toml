@@ -6346,9 +6346,9 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
 # m0serve: the module as a mount beside a Python application, four
 # threads on its lane; the host: the same module with a lane of four.
 "$srv" --mount /=bareapp.wsgi --mount /x=mojo --app-dir apps/wsgi_bare \
-  --port 8821 --blocking-threads 4 > "$out/m0serve.log" 2>&1 &
+  --port 8821 --blocking-threads 2 > "$out/m0serve.log" 2>&1 &
 pids="$!"
-env M0_PORT=8822 M0_BLOCKING_THREADS=4 "$out/ramp" > "$out/host.log" 2>&1 &
+env M0_PORT=8822 M0_BLOCKING_THREADS=2 "$out/ramp" > "$out/host.log" 2>&1 &
 pids="$pids $!"
 curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8821/x/now > /dev/null \
   || fail "m0serve never answered the mount"
@@ -6361,27 +6361,29 @@ grep -q 'handler thread(s) behind the loop' "$out/host.log" || fail "the host st
 res=$(python3 scripts/ramp_probe.py bytes 8821 8822 /x 2>&1) || fail "bytes: $res"
 echo "bytes: $res"
 
-# Placement, on each: two connections hold /x/slow?ms=200, and the worst
-# of 24 /x/now samples stays under 100 ms (sim_loop's bound).
-res=$(python3 scripts/ramp_probe.py placement 8821 /x 2 4 2>&1) || fail "placement, m0serve: $res"
+# Placement, on each: one connection holds /x/slow?ms=200 on a lane of
+# two, and the worst of 24 /x/now samples stays under 100 ms (sim_loop's
+# bound) -- on m0serve because the lane's other thread answers, on the
+# host because the loop does.
+res=$(python3 scripts/ramp_probe.py placement 8821 /x 1 4 2>&1) || fail "placement, m0serve: $res"
 m0_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$m0_ms" ] && [ "$m0_ms" -lt 100 ] || fail "placement, m0serve: /x/now waited ${m0_ms:-?} ms behind two slow views on a lane of four ($res)"
+[ -n "$m0_ms" ] && [ "$m0_ms" -lt 100 ] || fail "placement, m0serve: /x/now waited ${m0_ms:-?} ms behind a slow view on a lane of two ($res)"
 echo "placement, m0serve: $res"
-res=$(python3 scripts/ramp_probe.py placement 8822 /x 2 4 2>&1) || fail "placement, host: $res"
+res=$(python3 scripts/ramp_probe.py placement 8822 /x 1 4 2>&1) || fail "placement, host: $res"
 host_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$host_ms" ] && [ "$host_ms" -lt 100 ] || fail "placement, host: /x/now waited ${host_ms:-?} ms behind two slow views on a lane of four ($res)"
+[ -n "$host_ms" ] && [ "$host_ms" -lt 100 ] || fail "placement, host: /x/now waited ${host_ms:-?} ms behind a slow view on a lane of two ($res)"
 echo "placement, host: $res"
 
-# The lane FULL: four connections on four threads. The host's /x/now is
-# an `add_loop` route and the loop answers it whatever the lane is doing;
+# The lane FULL: two connections on two threads. The host's /x/now is an
+# `add_loop` route and the loop answers it whatever the lane is doing;
 # m0serve's loop handler holds no Mojo table, so the same route waits for
 # a pool thread (D32, recorded rather than built). The host is bounded;
 # m0serve's number is the measurement the decision asked for, recorded.
-res=$(python3 scripts/ramp_probe.py placement 8822 /x 4 4 2>&1) || fail "full lane, host: $res"
+res=$(python3 scripts/ramp_probe.py placement 8822 /x 2 4 2>&1) || fail "full lane, host: $res"
 host_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$host_full_ms" ] && [ "$host_full_ms" -lt 100 ] || fail "full lane, host: /x/now waited ${host_full_ms:-?} ms with every lane thread busy -- add_loop no longer keeps it on the loop ($res)"
 echo "full lane, host: $res"
-res=$(python3 scripts/ramp_probe.py placement 8821 /x 4 4 2>&1) || fail "full lane, m0serve: $res"
+res=$(python3 scripts/ramp_probe.py placement 8821 /x 2 4 2>&1) || fail "full lane, m0serve: $res"
 m0_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$m0_full_ms" ] || fail "full lane, m0serve: no measurement in: $res"
 echo "full lane, m0serve (D32, recorded): $res"
@@ -7274,15 +7276,16 @@ python3 scripts/emit.py --covers N16 --task smoke-blobs
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E25, N18): seventeen
-# against smoke-host, one against smoke-fragment-notes, six against
-# test_host.mojo, six against test_prefork.mojo (the pre-fork pieces both
-# hosts share), one against test_respawn.mojo (the supervisor ending the
-# siblings on a refusal). Pre-release: thirty-one runs, about twenty
-# minutes; `--only unit`, `--only prefork` and `--only respawn` are about
-# one each.
+# Each Mojo host rule, broken on purpose (SPEC E21-E26, N18, N19):
+# twenty-three against smoke-host, one against smoke-fragment-notes, six
+# against test_host.mojo, six against test_prefork.mojo (the pre-fork
+# pieces both hosts share), one against test_respawn.mojo (the supervisor
+# ending the siblings on a refusal), one against test_views.mojo (the
+# placement flag). Pre-release: thirty-eight runs, about an hour;
+# `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
+# about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork and supervisor rule and insist smoke-host, test_host, test_prefork or test_respawn fails for every one (SPEC E21-E25)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, test_host, test_prefork, test_respawn or test_views fails for every one (SPEC E21-E26, N19)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC
@@ -7441,28 +7444,44 @@ grep -q 'abandoned' "$out/long.log" && fail "a long period: the producer was aba
 echo "a long period: exit 0 in ${took}s"
 
 # --- the pool lane (SPEC E26) -----------------------------------------------
-# M0_BLOCKING_THREADS=4 puts four handler threads behind the loop. Two
-# connections looping a 200 ms spin hold two of them; /health, answered in
-# `before_request` on the loop, must not wait behind either. The bare loop
-# is the negative arm: the same load must stall it, or the pool arm proves
+# M0_BLOCKING_THREADS=2 puts two handler threads behind the loop, and two
+# connections looping a 200 ms spin hold BOTH -- every thread busy, so a
+# /health that became a pool job would wait, and only one answered in
+# `before_request` on the loop stays under the bound (with a thread to
+# spare, an idle thread answers a job within a millisecond and the phase
+# could not tell the two apart; found by review). The bare loop is the
+# negative arm: the same load must stall it, or the pool arm proves
 # nothing. 100 ms is sim_loop's bound and its rationale (a request lands
-# in a 200 ms step's first half about 0.68 of the time; 24 samples).
-start 8791 pool M0_BLOCKING_THREADS=4
-grep -q 'handler thread(s) behind the loop' "$out/pool.log" || fail "pool: the host started no pool for M0_BLOCKING_THREADS=4"
+# in a 200 ms step's first half about 0.68 of the time; 24 samples). Two
+# threads rather than four so the spinners leave a shared runner's cores
+# something for the loop.
+start 8791 pool M0_BLOCKING_THREADS=2
+grep -q 'handler thread(s) behind the loop' "$out/pool.log" || fail "pool: the host started no pool for M0_BLOCKING_THREADS=2"
 res=$(python3 scripts/host_probe.py placement 8791 2 4 2>&1) || fail "pool placement: $res"
 pool_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$pool_ms" ] || fail "pool placement: no measurement in: $res"
-[ "$pool_ms" -lt 100 ] || fail "pool placement: /health waited ${pool_ms} ms behind two slow views on a pool of four"
-# A stream begun in `func` on a pool thread has no producer the loop can
+[ "$pool_ms" -lt 100 ] || fail "pool placement: /health waited ${pool_ms} ms with both pool threads inside slow views"
+# A stream opened on the LOOP works under the pool: the subscription is
+# in the registry the loop drains, and the producer's beats reach it.
+res2=$(python3 scripts/host_probe.py streams 8791 2 2 1 2>&1) || fail "pool: a stream opened in before_request under the pool: $res2"
+# One begun in `func` on a pool thread has no producer the loop can
 # drain: refused 409, per request, named in the log -- as on a Mojo mount.
-code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/event-stream' http://127.0.0.1:8791/events)
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/event-stream' http://127.0.0.1:8791/events-from-func)
 [ "$code" = "409" ] || fail "pool: a stream opened from func on a pool thread answered $code, not 409"
 grep -q 'refused a streaming response from a pool thread' "$out/pool.log" \
   || fail "pool: the refused stream was not named in the log"
 stop "pool"
 [ "$rc" -eq 0 ] || fail "pool: SIGTERM exited $rc, not 0"
 grep -q 'still inside the application' "$out/pool.log" && fail "pool: an idle pool thread was reported as a straggler"
-echo "pool of 4: $res; a stream from func refused 409; exit 0 in ${took}s"
+echo "pool of 2, both busy: $res; streams on the loop: $res2; a stream from func refused 409; exit 0 in ${took}s"
+# Two workers, each with a pool: streams spanning both must carry every
+# beat -- the bus is drained inline at completions under offload, and
+# this is the phase that says so.
+start 8795 pool2 M0_WORKERS=2 M0_BLOCKING_THREADS=2
+res2=$(python3 scripts/host_probe.py streams 8795 4 2 2 2>&1) || fail "two pooled workers: $res2"
+stop "two pooled workers"
+[ "$rc" -eq 0 ] || fail "two pooled workers: exited $rc, not 0"
+echo "two pooled workers: $res2"
 start 8792 nopool M0_BLOCKING_THREADS=0
 res=$(python3 scripts/host_probe.py placement 8792 2 4 2>&1) || fail "no pool: $res"
 bare_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
@@ -7482,7 +7501,7 @@ echo "no pool (negative arm): $res"
 start 8793 overlap M0_BLOCKING_THREADS=2 M0_HOSTCHECK_STEP_MS=60000
 curl -s --max-time 30 'http://127.0.0.1:8793/slow?ms=4000' > "$out/overlap-slow.out" &
 slow=$!
-sleep 0.5
+sleep 1
 stop "overlap"
 [ "$rc" -eq 0 ] || fail "overlap: exited $rc, not 0"
 [ "$took" -le 6 ] || fail "overlap: took ${took}s to leave -- the drain and the producer's bound ran in sequence"
