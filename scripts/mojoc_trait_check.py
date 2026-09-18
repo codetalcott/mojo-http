@@ -26,8 +26,9 @@ of them had the mismatch -- and the error had been saying so all along:
 **Fixed in Mojo 1.1.0**, which this repo pinned on 2026-09-18. All four arms
 below compile there, and this check now fails if any of them stops:
 
-    mismatch    an app conforming to `m0_http.fragment.PageShell`, whose
-                package was built from `src/`               must COMPILE
+    mismatch    an app conforming to `m0_http.PageShell` and passing the
+                conformance through `page_or_fragment`, the real API,
+                from a package built from `src/`            must COMPILE
     match       the same shape in a synthetic package whose directory and
                 package name agree                          must COMPILE
     control-x   that synthetic package rebuilt from a directory with a
@@ -43,8 +44,9 @@ lines -- so a failure in one and not the other says whether the problem is
 the toolchain or this tree.
 
 A failure here is not cosmetic. It means the constraint behind D12, D28 and
-D7 is back, `PageShell` can no longer be an app-facing trait, and anything
-moved out of the fork on the strength of the fix has to go back. Say so in
+D7 is back, `PageShell` can no longer be an app-facing trait, `page_or_fragment`
+goes back to a `thin` function over a context, and anything moved out of
+the fork on the strength of the fix has to go back. Say so in
 the failure, because the next session will not have read this.
 """
 
@@ -59,7 +61,10 @@ _SIBLING = Path(sys.executable).with_name("mojo")
 MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
 
 MISMATCH = """
-from m0_http.fragment import PageShell, wrap_with
+from lightbug_http.uri import URI
+from lightbug_http.http import HTTPRequest
+
+from m0_http import PageShell, page_or_fragment
 
 
 struct Site(PageShell):
@@ -73,7 +78,8 @@ struct Site(PageShell):
 
 
 def main() raises:
-    print(wrap_with(Site(), String("f")))
+    var req = HTTPRequest(URI.parse("http://127.0.0.1/"))
+    print(page_or_fragment(req, String("f"), Site()).status_code)
 """
 
 CONTROL_VIEWS = """
@@ -206,9 +212,10 @@ def main() -> int:
             print("  Only one of the two arms refused, so this may be this tree "
                   "rather than the toolchain -- compare them before concluding.")
         print("  What this costs: the constraint behind DECISIONS D7, D12 and D28 "
-              "is back. `PageShell` cannot be an app-facing trait, app-facing "
-              "traits belong in the source-resolved fork, and anything moved out "
-              "of it on the strength of Mojo 1.1.0 has to go back.")
+              "is back. `page_or_fragment` cannot take a `PageShell` and has to "
+              "go back to a `thin` function over a context, app-facing traits "
+              "belong in the source-resolved fork, and anything moved out of it "
+              "on the strength of Mojo 1.1.0 has to go back.")
         return 1
 
     print("mojoc-trait: an app conforms to a trait in a `.mojoc` whatever the "

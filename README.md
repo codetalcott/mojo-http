@@ -230,7 +230,9 @@ the URL table names (`Views`, with the state borrowed for reads and `mut` for
 writes, compile-checked); the fragment names itself (`Fragment("notes")`
 writes the id once and `swap` generates the attribute that targets it); the
 framework decides page-versus-fragment from `HX-Request` (`page_or_fragment`,
-`Vary` on both); routes are `comptime` patterns reversed by `url_for`; and
+`Vary` on both) and wraps it in the app's own document (`PageShell`, whose
+`wrap` runs only when a document is wanted); routes are `comptime` patterns
+reversed by `url_for`; and
 `form(req)` keeps every value of a repeated checkbox key. `uv run poe
 serve-fragment-notes` runs it; `poe smoke-fragment-notes` pins its wire
 contract, which did not change while the app was refactored onto each of

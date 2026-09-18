@@ -22,9 +22,10 @@ of those lifts, and the smoke has not changed:
   this app knows about its frontend library.
 - **the view returns one thing.** `page_or_fragment` reads `HX-Request`
   (and `HX-History-Restore-Request` and `HX-Boosted`, which ask for the
-  page back) and
-  calls `wrap` only when a whole document is wanted, with `Vary` naming
-  every header it read on both. No view branches on a header.
+  page back) and calls `Site.wrap` — this app's `PageShell`, the document
+  and everything it knows that a fragment does not — only when a whole
+  document is wanted, with `Vary` naming every header it read on both. No
+  view branches on a header.
 
 - **routes are values.** `NOTES` and `NOTE` are `comptime` patterns given
   to the table and to `url_for`; no renderer spells a path. A misspelled
@@ -118,6 +119,7 @@ from m0_http import (
     flag,
     form,
     issue_session,
+    PageShell,
     page_or_fragment,
     session_cookie_line,
     session_refused,
@@ -335,7 +337,7 @@ struct NoteStore(ViewState):
 # --- templates -----------------------------------------------------------------
 
 
-struct Site:
+struct Site(PageShell):
     """What the document knows that a fragment does not: the title."""
 
     var title: String
@@ -343,63 +345,62 @@ struct Site:
     def __init__(out self, var title: String):
         self.title = title^
 
+    def wrap(self, fragment: String) raises -> String:
+        """The document around any fragment: head, the htmx config and
+        script, the stylesheet.
 
-def wrap(site: Site, fragment: String) raises -> String:
-    """The document around any fragment: head, the htmx config and script,
-    the stylesheet.
-
-    The one library setting this app makes, and it is here rather than on
-    an element because it is about the transport and not about a
-    fragment: htmx 2.0.4 ships `methodsThatUseUrlParams: ["get","delete"]`,
-    so a `hx-delete` form puts its fields in the query string. The CSRF
-    token is one of those fields, and a token in a URL is a token in the
-    access log, the Referer and the browser history. Narrowing the
-    setting to `get` puts every write's fields in the body, where
-    `form(req)` reads them and the server accepts them from nowhere else.
-    """
-    var h = Html(1024)
-    h.raw("<!doctype html>\n")
-    h.open("html")
-    h.attr("lang", "en")
-    h.raw("\n")
-    h.open("head")
-    h.raw("\n")
-    h.open("meta")
-    h.attr("charset", "utf-8")
-    h.raw("\n")
-    h.open("meta")
-    h.attr("name", "viewport")
-    h.attr("content", "width=device-width,initial-scale=1")
-    h.raw("\n")
-    h.open("meta")
-    h.attr("name", "htmx-config")
-    h.attr("content", '{"methodsThatUseUrlParams":["get"]}')
-    h.raw("\n")
-    h.open("title")
-    h.text(site.title)
-    h.close("title")
-    h.raw("\n")
-    h.open("script")
-    h.attr("src", HTMX_CDN)
-    h.close("script")
-    h.raw("\n")
-    h.raw(_STYLE)
-    h.raw("\n")
-    h.close("head")
-    h.raw("\n")
-    h.open("body")
-    h.raw("\n")
-    h.open("main")
-    h.raw("\n")
-    h.raw(fragment)
-    h.raw("\n")
-    h.close("main")
-    h.raw("\n")
-    h.close("body")
-    h.raw("\n")
-    h.close("html")
-    h.raw("\n")
-    return h^.finish()
+        The one library setting this app makes, and it is here rather than on
+        an element because it is about the transport and not about a
+        fragment: htmx 2.0.4 ships `methodsThatUseUrlParams: ["get","delete"]`,
+        so a `hx-delete` form puts its fields in the query string. The CSRF
+        token is one of those fields, and a token in a URL is a token in the
+        access log, the Referer and the browser history. Narrowing the
+        setting to `get` puts every write's fields in the body, where
+        `form(req)` reads them and the server accepts them from nowhere else.
+        """
+        var h = Html(1024)
+        h.raw("<!doctype html>\n")
+        h.open("html")
+        h.attr("lang", "en")
+        h.raw("\n")
+        h.open("head")
+        h.raw("\n")
+        h.open("meta")
+        h.attr("charset", "utf-8")
+        h.raw("\n")
+        h.open("meta")
+        h.attr("name", "viewport")
+        h.attr("content", "width=device-width,initial-scale=1")
+        h.raw("\n")
+        h.open("meta")
+        h.attr("name", "htmx-config")
+        h.attr("content", '{"methodsThatUseUrlParams":["get"]}')
+        h.raw("\n")
+        h.open("title")
+        h.text(self.title)
+        h.close("title")
+        h.raw("\n")
+        h.open("script")
+        h.attr("src", HTMX_CDN)
+        h.close("script")
+        h.raw("\n")
+        h.raw(_STYLE)
+        h.raw("\n")
+        h.close("head")
+        h.raw("\n")
+        h.open("body")
+        h.raw("\n")
+        h.open("main")
+        h.raw("\n")
+        h.raw(fragment)
+        h.raw("\n")
+        h.close("main")
+        h.raw("\n")
+        h.close("body")
+        h.raw("\n")
+        h.close("html")
+        h.raw("\n")
+        return h^.finish()
 
 
 def _csrf_input(csrf: String) raises -> String:
@@ -560,7 +561,6 @@ def _refuse(req: HTTPRequest, verdict: SessionVerdict) raises -> HTTPResponse:
             req,
             render_login(String("signed out (", verdict.reason, ")")),
             Site("sign in"),
-            wrap,
             401,
             String("Unauthorized"),
         ))
@@ -611,7 +611,7 @@ def login_form(
     req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
     """GET /login — the form. The one page outside the session."""
-    return page_or_fragment(req, render_login(String("")), Site("sign in"), wrap)
+    return page_or_fragment(req, render_login(String("")), Site("sign in"))
 
 
 def login(
@@ -638,7 +638,6 @@ def login(
             req,
             render_login(String("wrong user or password")),
             Site("sign in"),
-            wrap,
             401,
             String("Unauthorized"),
         )
@@ -649,7 +648,7 @@ def login(
     var resp: HTTPResponse
     if wants_fragment(req):
         resp = page_or_fragment(
-            req, render_list(store, session.subject, session.csrf), Site("notes"), wrap
+            req, render_list(store, session.subject, session.csrf), Site("notes")
         )
     else:
         resp = vary_on_fragment_headers(reply.redirect(303, NOTES))
@@ -673,7 +672,7 @@ def logout(
         return refused.take()
     var resp: HTTPResponse
     if wants_fragment(req):
-        resp = page_or_fragment(req, render_login(String("")), Site("sign in"), wrap)
+        resp = page_or_fragment(req, render_login(String("")), Site("sign in"))
     else:
         resp = vary_on_fragment_headers(reply.redirect(303, LOGIN))
     resp.cookies.add_raw(
@@ -690,7 +689,7 @@ def index(
     if not session.ok:
         return _refuse(req, session)
     return _private(page_or_fragment(
-        req, render_list(store, session.subject, session.csrf), Site("notes"), wrap
+        req, render_list(store, session.subject, session.csrf), Site("notes")
     ))
 
 
@@ -719,7 +718,7 @@ def create(
         )
     store.add(title, f.first("body"), f.all("tag"))
     return _private(page_or_fragment(
-        req, render_list(store, session.subject, session.csrf), Site("notes"), wrap
+        req, render_list(store, session.subject, session.csrf), Site("notes")
     ))
 
 
@@ -734,7 +733,7 @@ def detail(
     if i < 0:
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
     return _private(
-        page_or_fragment(req, render_note(store, i), Site(store.titles[i]), wrap)
+        page_or_fragment(req, render_note(store, i), Site(store.titles[i]))
     )
 
 
@@ -760,7 +759,7 @@ def delete(
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
     store.remove(i)
     return _private(page_or_fragment(
-        req, render_list(store, session.subject, session.csrf), Site("notes"), wrap
+        req, render_list(store, session.subject, session.csrf), Site("notes")
     ))
 
 

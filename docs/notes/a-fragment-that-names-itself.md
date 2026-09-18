@@ -4,6 +4,15 @@
 > application written in Mojo, built app-first under a wire gate. What was
 > built, what each lift found, what was refused, and what is not claimed.
 
+> **D12 is retired (2026-09-18).** The page shell below is a `thin`
+> function over a separate context struct, because an app's conformance to
+> a trait behind a `.mojoc` got no witness table on Mojo 1.0. The
+> discriminant was the package's name against its source directory, fixed
+> in Mojo 1.1.0; `page_or_fragment` now takes a `PageShell` and
+> `check-mojoc-trait` guards the fix rather than counting down to it
+> ([the-page-shell-becomes-a-trait](the-page-shell-becomes-a-trait.md)).
+> The rest of the note stands as written.
+
 Every one of the 172 rows `docs/SPEC.md` carried at 1.0.0 was about serving
 Python. The tree's own Mojo apps were seven `server.mojo` files that each
 routed by `if path ==` or a handler-id chain, wrote every byte of HTML as a
