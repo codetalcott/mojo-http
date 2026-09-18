@@ -52,6 +52,13 @@ def _health(req: HTTPRequest, params: List[String]) -> HTTPResponse:
     return reply.json(200, String("OK"), String('{"ok":true}'))
 
 
+def _raising(
+    req: HTTPRequest, params: List[String], st: Counter
+) raises -> HTTPResponse:
+    """An on-loop view that raises: `before_request` cannot, so it is 500."""
+    raise Error("the view raised on purpose")
+
+
 def _custom_404(
     req: HTTPRequest, params: List[String], st: Counter
 ) raises -> HTTPResponse:
@@ -290,6 +297,72 @@ def test_a_mounted_table_matches_under_its_prefix_only() raises:
     assert_false(v.answer_on_loop(_req(String("GET"), String("/health"))))
     assert_equal(v.allow_header(String("/native/notes")), "POST, OPTIONS")
     assert_equal(v.mount.url_for(String("/notes/:id"), String("42")), "/native/notes/42")
+
+
+def test_an_on_loop_route_is_answered_with_its_state_before_dispatch() raises:
+    """`add_read`/`add_write` with `on_loop=True` keep the route in the
+    table -- one `Allow`, one 404, one `url_for` -- and `answer_on_loop`
+    with the state answers it on the loop, reads borrowed and writes `mut`.
+
+    covers: N19
+    """
+    var v = _table()
+    v.add_read(String("GET"), String("/stats"), _index, on_loop=True)
+    v.add_write(String("POST"), String("/events"), _bump, on_loop=True)
+    var st = Counter()
+    var got = v.answer_on_loop(_req(String("GET"), String("/stats")), st)
+    assert_true(got, "the on-loop read was not answered on the loop")
+    assert_equal(_body(got.value()), "<p>index 0</p>")
+    var wrote = v.answer_on_loop(_req(String("POST"), String("/events")), st)
+    assert_true(wrote, "the on-loop write was not answered on the loop")
+    assert_equal(wrote.value().status_code, 204)
+    assert_equal(st.hits, 1)
+    # Still a plain route everywhere else: the table dispatches it, counts
+    # it, and names it in `Allow` exactly once.
+    assert_equal(v.route_count(), 5)
+    assert_equal(_body(v.dispatch(_req(String("GET"), String("/stats")), st)), "<p>index 1</p>")
+    assert_equal(v.allow_header(String("/stats")), "GET, OPTIONS")
+    assert_equal(v.allow_header(String("/events")), "POST, OPTIONS")
+    # A route not flagged is not answered on the loop, and the wrong method
+    # on a flagged one falls through to dispatch's 405.
+    assert_false(v.answer_on_loop(_req(String("GET"), String("/notes")), st))
+    assert_false(v.answer_on_loop(_req(String("DELETE"), String("/stats")), st))
+    assert_equal(v.dispatch(_req(String("DELETE"), String("/stats")), st).status_code, 405)
+
+
+def test_an_on_loop_route_needs_the_state_to_answer_early() raises:
+    """The stateless `answer_on_loop` -- a handler with no state at hand,
+    or `m0serve`'s loop, which holds no Mojo table -- declines an `on_loop`
+    route, and `dispatch` answers it one round trip later, bytes identical.
+    A stateless `add_loop` route is still answered by both."""
+    var v = _table()
+    v.add_read(String("GET"), String("/stats"), _index, on_loop=True)
+    v.add_loop(String("GET"), String("/health"), _health)
+    assert_false(v.answer_on_loop(_req(String("GET"), String("/stats"))))
+    assert_true(v.answer_on_loop(_req(String("GET"), String("/health"))))
+    var st = Counter()
+    assert_true(v.answer_on_loop(_req(String("GET"), String("/health")), st))
+    assert_equal(_body(v.dispatch(_req(String("GET"), String("/stats")), st)), "<p>index 0</p>")
+
+
+def test_a_raising_on_loop_view_is_500_not_a_crash() raises:
+    """`before_request` is non-raising, so the loop answers 500 for it."""
+    var v = _table()
+    v.add_read(String("GET"), String("/boom"), _raising, on_loop=True)
+    var st = Counter()
+    var got = v.answer_on_loop(_req(String("GET"), String("/boom")), st)
+    assert_true(got)
+    assert_equal(got.value().status_code, 500)
+
+
+def test_a_view_service_answers_on_loop_routes_with_its_state() raises:
+    """`ViewService.before_request` hands its own state to the table."""
+    var v = _table()
+    v.add_read(String("GET"), String("/stats"), _index, on_loop=True)
+    var svc = ViewService(v^, Counter())
+    var got = svc.before_request(_req(String("GET"), String("/stats")))
+    assert_true(got, "ViewService answered no on-loop route")
+    assert_equal(_body(got.value()), "<p>index 0</p>")
 
 
 def main() raises:

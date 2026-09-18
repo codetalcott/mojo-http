@@ -1224,8 +1224,16 @@ pieces, and the language fact each rests on:
   is refused with 78 rather than crash-looped, the producer being built on
   the spawning thread before the listen, and one worker's refusal ends its
   siblings (D30). It lives in the fork for the witness-table
-  reason (D28) and refuses `M0_THREADS`, `M0_BLOCKING_THREADS` and
-  `M0_SPAWN_WORKERS` with 78 (D29). `apps/host_check` is its gate app;
+  reason (D28), serves `M0_BLOCKING_THREADS=N` as one GIL-free pool lane
+  per worker (D31, SPEC E26: `PoolLane[H]` builds the app's handler again
+  on each thread, `HostContext.thread` names the instance, the host waits
+  for every thread's handler before it serves and a raising pool `make`
+  is the same 78; a stream begun in `func` is refused 409 from a pool
+  thread, so a stream open is `on_loop=True` or `add_loop` on its table —
+  D32 — or lives in `before_request`; the loop stamps the producer's stop
+  word as its drain begins and the pool and producer joins count from
+  it, so the shutdown bounds overlap rather than stack), and refuses
+  `M0_THREADS` and `M0_SPAWN_WORKERS` with 78. `apps/host_check` is its gate app;
   `apps/blobs`, `sim_loop`, `datastar_counter`, `datastar_todo` and
   `fragment_notes` run on it. An app that broadcasts a whole rendered state
   from several workers holds a lock from the change until the frame is

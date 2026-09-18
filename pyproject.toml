@@ -7168,7 +7168,7 @@ cmd = "python3 scripts/host_sabotage.py"
 # every server on its own port: SO_REUSEPORT lets a stray one answer for a
 # port, which fakes a pass or a failure.
 [tool.poe.tasks.smoke-host]
-help = "The Mojo host: the bus at one worker, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused"
+help = "The Mojo host: the bus at one worker, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused, the pool lane and the overlapping shutdown bounds"
 shell = """
 out=$(mktemp -d)
 pid=
@@ -7317,8 +7317,60 @@ stop "a long period"
 grep -q 'abandoned' "$out/long.log" && fail "a long period: the producer was abandoned instead of stopped"
 echo "a long period: exit 0 in ${took}s"
 
+# --- the pool lane (SPEC E26) -----------------------------------------------
+# M0_BLOCKING_THREADS=4 puts four handler threads behind the loop. Two
+# connections looping a 200 ms spin hold two of them; /health, answered in
+# `before_request` on the loop, must not wait behind either. The bare loop
+# is the negative arm: the same load must stall it, or the pool arm proves
+# nothing. 100 ms is sim_loop's bound and its rationale (a request lands
+# in a 200 ms step's first half about 0.68 of the time; 24 samples).
+start 8791 pool M0_BLOCKING_THREADS=4
+grep -q 'handler thread(s) behind the loop' "$out/pool.log" || fail "pool: the host started no pool for M0_BLOCKING_THREADS=4"
+res=$(python3 scripts/host_probe.py placement 8791 2 4 2>&1) || fail "pool placement: $res"
+pool_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$pool_ms" ] || fail "pool placement: no measurement in: $res"
+[ "$pool_ms" -lt 100 ] || fail "pool placement: /health waited ${pool_ms} ms behind two slow views on a pool of four"
+# A stream begun in `func` on a pool thread has no producer the loop can
+# drain: refused 409, per request, named in the log -- as on a Mojo mount.
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/event-stream' http://127.0.0.1:8791/events)
+[ "$code" = "409" ] || fail "pool: a stream opened from func on a pool thread answered $code, not 409"
+grep -q 'refused a streaming response from a pool thread' "$out/pool.log" \
+  || fail "pool: the refused stream was not named in the log"
+stop "pool"
+[ "$rc" -eq 0 ] || fail "pool: SIGTERM exited $rc, not 0"
+grep -q 'still inside the application' "$out/pool.log" && fail "pool: an idle pool thread was reported as a straggler"
+echo "pool of 4: $res; a stream from func refused 409; exit 0 in ${took}s"
+start 8792 nopool M0_BLOCKING_THREADS=0
+res=$(python3 scripts/host_probe.py placement 8792 2 4 2>&1) || fail "no pool: $res"
+bare_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$bare_ms" ] || fail "no pool: no measurement in: $res"
+[ "$bare_ms" -ge 100 ] || fail "no pool: /health answered in ${bare_ms} ms under two slow views on the bare loop -- the placement arm no longer discriminates"
+stop "no pool"
+[ "$rc" -eq 0 ] || fail "no pool: SIGTERM exited $rc, not 0"
+echo "no pool (negative arm): $res"
+
+# --- the shutdown bounds overlap (the ROADMAP issue retired 2026-09-17) -----
+# A 4 s request in flight on a pool thread at SIGTERM, beside a 60 s step.
+# The loop stamps the producer's stop word as the drain BEGINS, so the
+# producer's 5 s counts from then: the drain answers the request (~3.5 s
+# left of it), the pool joins at once, and the producer is abandoned at
+# 5 s -- one bound, not two. Told to stop only after the drain, it took
+# 8.5 s (measured). The in-flight request must still be answered.
+start 8793 overlap M0_BLOCKING_THREADS=2 M0_HOSTCHECK_STEP_MS=60000
+curl -s --max-time 30 'http://127.0.0.1:8793/slow?ms=4000' > "$out/overlap-slow.out" &
+slow=$!
+sleep 0.5
+stop "overlap"
+[ "$rc" -eq 0 ] || fail "overlap: exited $rc, not 0"
+[ "$took" -le 6 ] || fail "overlap: took ${took}s to leave -- the drain and the producer's bound ran in sequence"
+wait $slow || fail "overlap: the request in flight at SIGTERM was not answered"
+grep -q '"ms":4000' "$out/overlap-slow.out" || fail "overlap: the in-flight request's answer is not whole: $(cat "$out/overlap-slow.out")"
+grep -q 'abandoned a producer step' "$out/overlap.log" || fail "overlap: the abandoned producer was not named"
+overlap_s=$took
+echo "overlap: a 4 s request answered, the producer abandoned, exit 0 in ${took}s"
+
 # --- what the host does not serve is refused, before it binds --------------
-for v in M0_THREADS=2 M0_BLOCKING_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_WORKERS=2; do
+for v in M0_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_WORKERS=2; do
   # The last is refused only because the app says it serves one process.
   env M0_PORT=8788 M0_HOSTCHECK_MAX_WORKERS=1 $v "$out/host_check" > "$out/refused.log" 2>&1 &
   pid=$!
@@ -7335,7 +7387,7 @@ for v in M0_THREADS=2 M0_BLOCKING_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_W
   grep -q "${v%%=*}" "$out/refused.log" || fail "$v was refused without naming it"
   grep -q 'listening' "$out/refused.log" && fail "$v was refused after the host bound its port"
 done
-echo "refused before binding, with 78: M0_THREADS, M0_BLOCKING_THREADS, M0_SPAWN_WORKERS, M0_WORKERS=0, M0_WORKERS above max_workers"
+echo "refused before binding, with 78: M0_THREADS, M0_SPAWN_WORKERS, M0_WORKERS=0, M0_WORKERS above max_workers"
 
 # --- a raising make is a refusal, not a crash loop (SPEC E25) --------------
 # The handler's `make` runs after the fork, the producer's on worker 0
@@ -7369,12 +7421,41 @@ for v in M0_HOSTCHECK_MAKE_RAISES=1 M0_HOSTCHECK_PRODUCER_RAISES=1; do
 done
 echo "a raising make is refused with 78, one worker and two, handler and producer"
 
+# --- a make that raises on a POOL thread is the same refusal (E25, E26) ----
+# Before the host waited for every thread to report its handler built, a
+# raising `make` on a pool thread was a log line and a pool one thread
+# short. Now: 78 before the server takes a connection, no worker left.
+for workers in 1 2; do
+  env M0_PORT=8794 M0_WORKERS=$workers M0_BLOCKING_THREADS=2 M0_HOSTCHECK_POOL_MAKE_RAISES=1 \
+    "$out/host_check" > "$out/pool-make-refused.log" 2>&1 &
+  pid=$!
+  i=0
+  while kill -0 $pid 2>/dev/null; do
+    i=$((i + 1))
+    [ $i -le 100 ] || fail "M0_HOSTCHECK_POOL_MAKE_RAISES at $workers worker(s) was still running after 10s -- served one thread short, not refused"
+    sleep 0.1
+  done
+  wait $pid
+  rc=$?
+  pid=
+  [ "$rc" -eq 78 ] || fail "M0_HOSTCHECK_POOL_MAKE_RAISES at $workers worker(s) exited $rc, not 78"
+  grep -q 'host: .*M0_HOSTCHECK_POOL_MAKE_RAISES' "$out/pool-make-refused.log" \
+    || fail "the pool thread's raising make was refused without the host naming the error"
+  grep -Eq 'respawned worker|rapid crashes|crashed [(]exit_code' "$out/pool-make-refused.log" \
+    && fail "the pool thread's raising make at $workers worker(s) was treated as a crash"
+  pgrep -f "$out/host_check" > /dev/null && fail "a worker outlived the pool thread's refusal"
+done
+echo "a raising make on a pool thread is refused with 78, one worker and two"
+
 echo "smoke-host OK"
 python3 scripts/emit.py host.overrun_exit_s "$overrun_s" --unit s --limit 12 --task smoke-host
+python3 scripts/emit.py host.pool_health_ms "$pool_ms" --unit ms --limit 100 --task smoke-host
+python3 scripts/emit.py host.overlap_exit_s "$overlap_s" --unit s --limit 6 --task smoke-host
 python3 scripts/emit.py --covers E21 --task smoke-host
 python3 scripts/emit.py --covers E22 --task smoke-host
 python3 scripts/emit.py --covers E23 --task smoke-host
 python3 scripts/emit.py --covers E25 --task smoke-host
+python3 scripts/emit.py --covers E26 --task smoke-host
 """
 
 [tool.poe.tasks.smoke-todo]

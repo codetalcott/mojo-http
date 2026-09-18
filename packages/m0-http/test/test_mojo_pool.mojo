@@ -343,6 +343,48 @@ def test_stop_and_join_ends_every_thread_that_could_not_register() raises:
     assert_equal(threads.stragglers, 0)
 
 
+struct RefusingHandler(PoolHandler):
+    """A handler that cannot be built: the shape `wait_ready` exists for."""
+
+    def __init__(out self):
+        pass
+
+    @staticmethod
+    def make(ctx: PoolContext) raises -> Self:
+        raise Error("thread " + String(ctx.index) + " refuses to build")
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return json(200, String("OK"), String("{}"))
+
+
+def test_wait_ready_counts_a_thread_whose_make_raised() raises:
+    """A raising `make` used to leave the pool serving one thread short with
+    a log line for company. `wait_ready` reports it at once (the thread has
+    ended `STATUS_RAISED`, so it is not waited for), and reports 0 once
+    every thread of a sound pool has its handler."""
+    var pool = OffloadPool(8)
+    var sound = MojoPool(3)
+    sound.start[EchoHandler](pool.addr())
+    assert_equal(sound.wait_ready(5_000_000_000), 0)
+    _ = sound.stop_and_join(pool, 5_000_000_000)
+
+    var pool2 = OffloadPool(8)
+    var refusing = MojoPool(2)
+    refusing.start[RefusingHandler](pool2.addr())
+    var t0 = perf_counter_ns()
+    assert_equal(refusing.wait_ready(5_000_000_000), 2)
+    assert_true(
+        perf_counter_ns() - t0 < 2_000_000_000,
+        "a thread that had already raised was waited for",
+    )
+    _ = refusing.stop_and_join(pool2, 5_000_000_000)
+
+
+def test_an_unstarted_pool_waits_for_nothing() raises:
+    var threads = MojoPool(2)
+    assert_equal(threads.wait_ready(1_000_000_000), 0)
+
+
 def test_an_unstarted_pool_joins_cleanly() raises:
     """`stop_and_join` before `start` must not send pills nobody will take."""
     var pool = OffloadPool(4)

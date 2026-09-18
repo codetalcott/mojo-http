@@ -14,9 +14,19 @@
         owner), and require the streams STILL HELD on the sibling to beat
         again within a bound, from the respawned producer, with an id above
         the last one they saw
+    host_probe.py placement PORT K SECONDS
+        hold K connections each looping `GET /slow?ms=200` for SECONDS
+        while sampling `GET /health` 24 times at random gaps, and print
+        the worst sample; the caller says what the number means (under a
+        pool of more than K threads it must stay small, on the bare loop
+        it must not -- the negative arm)
 
 Each prints one summary line and exits 0, or exits 1 naming the phase and
 the first assertion that failed. Stdlib only.
+
+The placement phase's 24 samples are `sim_loop_probe.py`'s arithmetic: a
+sample lands too late to see a 200 ms spin with probability about 0.68,
+so 24 at random phases miss it about once in 10,000 runs.
 
 Every beat names the pid that produced it, and one run must see exactly
 one: the loop's redelivery filter keeps the newer of two racing ids, so a
@@ -287,9 +297,64 @@ def respawn(port: int, n: int, workers: int) -> None:
     )
 
 
+PLACEMENT_SAMPLES = 24
+SLOW_MS = 200
+
+
+def _slow_loop(port: int, until: float, counts: list) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    n = 0
+    while time.perf_counter() < until:
+        conn.request("GET", "/slow?ms=%d" % SLOW_MS)
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status != 200:
+            fail("a /slow request answered HTTP %d" % resp.status)
+        n += 1
+    conn.close()
+    counts.append(n)
+
+
+def placement(port: int, k: int, seconds: float) -> None:
+    import random
+
+    phase("holding %d connections on /slow" % k)
+    until = time.perf_counter() + seconds
+    counts: list = []
+    loaders = [
+        threading.Thread(target=_slow_loop, args=(port, until, counts), daemon=True)
+        for _ in range(k)
+    ]
+    for t in loaders:
+        t.start()
+    time.sleep(0.3)
+    phase("sampling /health under the load")
+    worst = 0.0
+    for _ in range(PLACEMENT_SAMPLES):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        t0 = time.perf_counter()
+        try:
+            conn.request("GET", "/health")
+            resp = conn.getresponse()
+            resp.read()
+        finally:
+            conn.close()
+        if resp.status != 200:
+            fail("/health answered HTTP %d under the load" % resp.status)
+        worst = max(worst, (time.perf_counter() - t0) * 1000.0)
+        time.sleep(random.uniform(0.05, 0.3))
+    for t in loaders:
+        t.join(timeout=seconds + 30)
+    if len(counts) != k or min(counts) == 0:
+        fail("the slow connections did not all serve: %r" % counts)
+    print("worst_health_ms=%d slow_requests=%d" % (int(worst), sum(counts)))
+
+
 def main() -> None:
     a = sys.argv
-    if len(a) == 6 and a[1] == "streams":
+    if len(a) == 5 and a[1] == "placement":
+        placement(int(a[2]), int(a[3]), float(a[4]))
+    elif len(a) == 6 and a[1] == "streams":
         streams(int(a[2]), int(a[3]), float(a[4]), int(a[5]))
     elif len(a) == 6 and a[1] == "hold":
         hold(int(a[2]), a[3], int(a[4]), int(a[5]))

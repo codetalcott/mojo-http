@@ -1,17 +1,23 @@
 """The Mojo host's own gate: the smallest application that uses all of it.
 
-    GET  /health   liveness
+    GET  /health   liveness -- answered in `before_request`, ON THE LOOP,
+                   so it stays answered whatever a pool is busy with
     GET  /pid      this worker's pid, as text (what `accept_spread.py` asks)
     GET  /events   the producer's beats, as SSE; `x-worker` names the worker
+    GET  /slow?ms=N  spins for N ms in `func`: the placement load
 
-`smoke-host` (SPEC E21-E23) drives it. The application is nothing but the
-two conformances `lightbug_http.host` asks for — a handler with `make`, a
-producer with `make` and `step` — so what the gate observes is the host:
-which workers hold streams, whether every one of them gets every beat,
-where accepted connections land, how a drain ends, and what happens to a
-producer that will not stop.
+`smoke-host` (SPEC E21-E23, E25, E26) drives it. The application is
+nothing but the two conformances `lightbug_http.host` asks for — a handler
+with `make`, a producer with `make` and `step` — so what the gate observes
+is the host: which workers hold streams, whether every one of them gets
+every beat, where accepted connections land, how a drain ends, what
+happens to a producer that will not stop, and where a request is served
+under `M0_BLOCKING_THREADS`. Under a pool `/events` is refused 409: its
+`func` subscribes THIS instance's registry, and a pool thread's is one
+nothing drains (`mojo_pool.mojo`); the gate pins that refusal rather than
+moving the route, because the refusal is what an application meets.
 
-Five knobs, all for the gate:
+Six knobs, all for the gate:
 
     M0_HOSTCHECK_PERIOD_MS   the beat's period (default 100)
     M0_HOSTCHECK_STEP_MS     how long each beat sleeps before it publishes
@@ -26,6 +32,11 @@ Five knobs, all for the gate:
                              the producer's `make` raises the same way; at
                              two workers only worker 0 builds one, and the
                              supervisor must end worker 1 with it
+    M0_HOSTCHECK_POOL_MAKE_RAISES=1
+                             the handler's `make` raises on a POOL thread
+                             alone (`ctx.thread >= 0`): the host must
+                             refuse with 78 before it serves, never run a
+                             pool one thread short
 
 Each beat's id comes from the host's shared word (`Publisher.next_id`),
 never from a counter of this process's own: the gate's respawn phase kills
@@ -37,7 +48,7 @@ Run it:  uv run poe serve-host-check
 """
 
 from std.os import getenv
-from std.time import sleep
+from std.time import perf_counter_ns, sleep
 
 from lightbug_http import OK, HTTPRequest, HTTPResponse
 from lightbug_http.c.process import getpid
@@ -46,6 +57,17 @@ from lightbug_http.host import AppHandler, HostContext, Producer, Publisher, ser
 from m0_http import AppConfig, SSERegistry, format_sse_event, sse_response
 
 comptime STREAM = "/events"
+
+
+def _digits(val: String) -> Int:
+    """A non-negative decimal, or 0 for anything else."""
+    var result = 0
+    for b in val.as_bytes():
+        var c = Int(b)
+        if c < ord("0") or c > ord("9"):
+            return 0
+        result = result * 10 + (c - ord("0"))
+    return result
 
 
 def _env_ms(name: String, default: Int) -> Int:
@@ -110,18 +132,43 @@ struct Check(AppHandler):
     def make(ctx: HostContext) raises -> Self:
         if getenv("M0_HOSTCHECK_MAKE_RAISES", "") == "1":
             raise Error("M0_HOSTCHECK_MAKE_RAISES: the handler refuses to be built")
+        if ctx.thread >= 0 and getenv("M0_HOSTCHECK_POOL_MAKE_RAISES", "") == "1":
+            raise Error(
+                "M0_HOSTCHECK_POOL_MAKE_RAISES: the handler refuses to be built on"
+                " pool thread " + String(ctx.thread)
+            )
         return Check(ctx.capacity, ctx.worker)
 
     @staticmethod
     def max_workers() -> Int:
         return _env_ms("M0_HOSTCHECK_MAX_WORKERS", 0)
 
+    def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
+        # On the loop, in every shape: the one route that must answer while
+        # every pool thread is inside a slow view.
+        if req.uri.path == "/health":
+            return OK('{"status":"ok"}', "application/json")
+        return None
+
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var path = req.uri.path
-        if path == "/health":
-            return OK('{"status":"ok"}', "application/json")
         if path == "/pid":
             return OK(String(getpid()), "text/plain")
+        if path == "/slow":
+            # A spin, not a sleep: what holds the thread that serves it,
+            # loop or pool, and what the placement phase measures against.
+            var ms = 0
+            try:
+                ref q = req.uri.queries
+                if "ms" in q:
+                    ms = _digits(q["ms"])
+            except:
+                pass
+            var deadline = perf_counter_ns() + ms * 1_000_000
+            var spins = 0
+            while perf_counter_ns() < deadline:
+                spins += 1
+            return OK(String('{"ms":', ms, ',"spins":', spins, "}"), "application/json")
         if path == STREAM:
             self.streams.subscribe(req.slot_id, STREAM, 0)
             var resp = sse_response()

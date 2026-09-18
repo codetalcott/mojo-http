@@ -38,6 +38,7 @@ from lightbug_http.strings import strHttp11, strHttp10
 from lightbug_http.io.bytes import Bytes
 from std.memory import unsafe_memcpy
 from lightbug_http.metrics import ServerMetrics
+from lightbug_http.ring import atomic_at
 from lightbug_http.offload import (
     OffloadPool, OffloadLoopState, POOL_WAKE_WAIT_MS,
 )
@@ -227,6 +228,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     offload_addr: Int = 0,
     peer_bus_fd: Int = -1,
     accept_share: AcceptShare = AcceptShare(),
+    stop_addr: Int = 0,
 ) raises:
     """Run the IO-multiplexed event loop.
 
@@ -246,6 +248,15 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     against a pool thread's own handler and its own registries. The caller
     refuses the combination rather than letting the two drift.
 
+    `stop_addr`, when non-zero, is the address of an Int64 word the loop
+    stores `perf_counter_ns()` into the moment its drain BEGINS -- the Mojo
+    host's producer stop word (`ProducerThread.stop_addr`), so a thread the
+    caller must join after the loop returns is told to stop while the drain
+    runs and its join bound overlaps the drain's, instead of starting when
+    the drain ends. Told only then, a slow request in flight at SIGTERM
+    beside a step past its bound put the two 5 s budgets in sequence, which
+    is `docker stop`'s whole default grace.
+
     Parameters:
         T: The HTTP service handler type.
         B: The IO multiplexing backend (KqueueBackend on macOS, EpollBackend on Linux).
@@ -255,6 +266,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         tcp_keep_alive, shutdown_read_fd, bus_read_fd, offload_addr,
         peer_bus_fd, accept_share,
     )
+    st.stop_addr = stop_addr
     while True:
         var n_events = _wait_for_events(backend, st, 1000)
         var pass_start = perf_counter_ns()
@@ -355,6 +367,9 @@ struct LoopState(Movable):
     var peer_bus_fd: Int
     var accept_share: AcceptShare
     """This worker's view of accept sharing; inactive with one worker."""
+    var stop_addr: Int
+    """A caller's word to stamp when the drain begins, or 0. See
+    `run_event_loop`."""
 
     def __init__(
         out self,
@@ -415,6 +430,7 @@ struct LoopState(Movable):
         self.bus_read_fd = bus_read_fd
         self.peer_bus_fd = peer_bus_fd
         self.accept_share = accept_share^
+        self.stop_addr = 0
 
 
 def _run_pass[T: HTTPService, B: EventLoopBackend](
@@ -1912,6 +1928,13 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     ref server_address = st.server_address
     ref tcp_keep_alive = st.tcp_keep_alive
     ref accept_share = st.accept_share
+
+    # First, before anything the drain waits on: the caller's stop word,
+    # so a producer thread ends DURING the drain rather than after it
+    # (the host's join then counts from this stamp). Non-zero is the
+    # signal; the value is when, for the bound.
+    if st.stop_addr != 0:
+        atomic_at(st.stop_addr)[].store(Int64(perf_counter_ns()))
 
     # Accept sharing: siblings stop sending here the moment they read the
     # word; what they sent before that is admitted now, so the drain

@@ -20,6 +20,7 @@ from lightbug_http.host import (
     AppHandler,
     HostContext,
     NoProducer,
+    PoolLane,
     Producer,
     ProducerThread,
     Publisher,
@@ -28,6 +29,10 @@ from lightbug_http.host import (
     host_refusal,
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
+from lightbug_http.uri import URI
+from lightbug_http.mojo_pool import MojoPool, PoolContext
+from lightbug_http.offload import OffloadPool
+from lightbug_http.ring import atomic_at
 from m0_http.config import AppConfig
 from m0_http.views import Views
 from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
@@ -98,17 +103,34 @@ struct Ticker(Producer):
 
 
 struct Plain(AppHandler):
-    """The smallest handler: `make` and `func`, nothing else."""
+    """The smallest handler: `make` and `func`, nothing else -- plus which
+    instance it is, so a pool lane's copy can be told from the loop's."""
+
+    var thread: Int
+
+    def __init__(out self, thread: Int = -1):
+        self.thread = thread
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return Plain(ctx.thread)
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("plain")
+
+
+struct Unbuildable(AppHandler):
+    """A handler whose `make` raises, on any thread."""
 
     def __init__(out self):
         pass
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
-        return Plain()
+        raise Error("thread " + String(ctx.thread) + " cannot build this")
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
-        return OK("plain")
+        return OK("never")
 
 
 struct OneProcess(ViewState):
@@ -398,9 +420,7 @@ def _refusal_for(name: String, value: String) raises -> Optional[String]:
 
 
 def test_the_host_refuses_what_it_does_not_serve() raises:
-    for name in [
-        String("M0_THREADS"), String("M0_BLOCKING_THREADS"), String("M0_SPAWN_WORKERS"),
-    ]:
+    for name in [String("M0_THREADS"), String("M0_SPAWN_WORKERS")]:
         var why = _refusal_for(name, String("2") if name != "M0_SPAWN_WORKERS" else String("1"))
         assert_true(Bool(why), name + " was not refused")
         assert_true(name in why.value(), "the refusal does not name " + name)
@@ -418,11 +438,84 @@ def test_the_host_refuses_what_it_does_not_serve() raises:
 
 
 def test_the_host_serves_what_it_does() raises:
+    """covers: E26"""
     assert_false(Bool(host_refusal(AppConfig())))
     assert_false(Bool(_refusal_for("M0_WORKERS", "4")))
     # Present at their defaults is not a request for the other mode.
     assert_false(Bool(_refusal_for("M0_THREADS", "1")))
     assert_false(Bool(_refusal_for("M0_BLOCKING_THREADS", "0")))
+    # The pool lane is served (D31), where v1 refused it (D29).
+    assert_false(Bool(_refusal_for("M0_BLOCKING_THREADS", "4")))
+
+
+def test_a_pool_lane_builds_the_handler_for_its_thread() raises:
+    """`PoolLane[H].make` reads the worker's context back through
+    `PoolContext.user` and hands `H.make` a copy naming the thread; the
+    loop's own instance is built with `thread = -1`.
+
+    covers: E26
+    """
+    var page = _page(1)
+    var ctx = _ctx(2, page)
+    assert_equal(Plain.make(ctx).thread, -1)
+    assert_true(ctx.on_loop())
+    var ctx_ptr = Pointer(to=ctx)
+    var addr = Pointer(to=ctx_ptr).unsafe_bitcast[Int]()[]
+    var lane = PoolLane[Plain].make(PoolContext(2, addr))
+    assert_equal(lane.inner.thread, 2)
+    var resp = lane.func(HTTPRequest(URI.parse(String("http://127.0.0.1/"))))
+    assert_equal(resp.status_code, 200)
+    _ = ctx
+
+
+def test_a_pool_lane_reports_a_make_that_raised() raises:
+    """A pool thread that cannot build the handler is counted by
+    `wait_ready`, which is what turns it into the host's 78 rather than a
+    pool one thread short (D30 on the lane).
+
+    covers: E26
+    """
+    var page = _page(1)
+    var ctx = _ctx(1, page)
+    var ctx_ptr = Pointer(to=ctx)
+    var addr = Pointer(to=ctx_ptr).unsafe_bitcast[Int]()[]
+    var pool = OffloadPool(8)
+    var threads = MojoPool(2)
+    threads.start[PoolLane[Unbuildable]](pool.addr(), user=addr)
+    assert_equal(threads.wait_ready(5_000_000_000), 2)
+    _ = threads.stop_and_join(pool, 5_000_000_000)
+    var sound = MojoPool(2)
+    var pool2 = OffloadPool(8)
+    sound.start[PoolLane[Plain]](pool2.addr(), user=addr)
+    assert_equal(sound.wait_ready(5_000_000_000), 0)
+    _ = sound.stop_and_join(pool2, 5_000_000_000)
+    _ = ctx
+
+
+def test_a_stop_stamped_by_the_loop_shortens_the_join() raises:
+    """The loop stamps the stop word as its drain begins, so the join
+    afterwards waits only for what is left of the bound. Stamped 900 ms
+    ago, a 1 s bound has 100 ms left: the join must give up on a step
+    still running well inside the bound, not wait the whole second again.
+    `test_an_overrunning_step_is_abandoned_within_the_bound` is the
+    unstamped control, which waits the whole bound.
+
+    covers: E23
+    """
+    var page = _page(1_000_000, cost_ns=3_000_000_000)
+    var ctx = _ctx(1, page)
+    var producer = ProducerThread()
+    producer.start[Ticker](ctx)
+    sleep(0.05)
+    assert_equal(producer.drain_began(), 0)
+    # What the loop does at `_shutdown_begin`, 900 ms in the past.
+    atomic_at(producer.stop_addr())[].store(Int64(perf_counter_ns() - 900_000_000))
+    assert_true(producer.drain_began() > 0)
+    var t0 = perf_counter_ns()
+    var left = producer.stop_and_join(1_000_000_000)
+    var took_ms = (perf_counter_ns() - t0) // 1_000_000
+    assert_equal(left, 1, "the step should still be running")
+    assert_true(took_ms < 500, String("the join waited ", took_ms, " ms, not the ~100 left"))
 
 
 def main() raises:
