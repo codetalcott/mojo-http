@@ -91,22 +91,40 @@ def _current_version():
     return tuple(int(x) for x in m.groups())
 
 
-def _known_issues(text=None):
-    """(title, body) for each `- **...**` bullet under `## Known issues`."""
+# An entry opens with `- **Title**`, optionally BEHIND an HTML comment. The
+# comment is not decoration: the doc-fact ratchet requires an
+# `<!-- observed: ... -->` marker on any prose carrying a bare figure, and an
+# entry whose title states one carries the marker in front of the bold title.
+# This pattern used to be a bare `- \*\*`, so every such entry was invisible
+# here -- not merely uncounted (the report said "known issues: 6 open" both
+# before and after a round retired one) but exempt from rule 1 below, the
+# `**Closed by:**` gate, for its whole life. Two ratchets pulling against each
+# other is the shape to watch for; rule 4 is what keeps them from doing it
+# again.
+_ENTRY = r"- (?:<!--.*?-->\s*)?\*\*"
+
+
+def _known_issues_section(text=None):
+    """The text under `## Known issues`, or "" if the heading is gone."""
     text = text if text is not None else ROADMAP.read_text()
     try:
         start = text.index("\n## Known issues")
     except ValueError:
-        return []
+        return ""
     rest = text[start + 1:]
     end = rest.find("\n## ", 1)
-    section = rest[:end] if end > 0 else rest
+    return rest[:end] if end > 0 else rest
+
+
+def _known_issues(text=None):
+    """(title, body) for each `- **...**` bullet under `## Known issues`."""
     out = []
-    for chunk in re.split(r"\n(?=- \*\*)", section):
-        if not chunk.lstrip().startswith("- **"):
+    for chunk in re.split(r"\n(?=" + _ENTRY + ")",
+                          _known_issues_section(text)):
+        m = re.match(_ENTRY + r"(.*?)\*\*", chunk.lstrip(), re.S)
+        if not m:
             continue
-        title = chunk.lstrip()[4:].split("**", 1)[0]
-        out.append((title, chunk))
+        out.append((m.group(1), chunk))
     return out
 
 
@@ -327,6 +345,52 @@ def check(roadmap_text=None, real_app_text=None, rows=None):
             "says NOT MET until an application outside apps/ has run on "
             "the layer; the section must exist to say so" % LAYER_SOAK_HEADING
         )
+    # 4. The reader above SEES every bullet under `## Known issues`, and the
+    #    shape the doc-fact ratchet imposes is one of the shapes it sees.
+    #    This is the rule the other three rest on: an entry the reader drops
+    #    is not caught by rule 1 and is not counted by the report, and it
+    #    fails SILENTLY -- the report prints a smaller number, which is
+    #    indistinguishable from progress. That is not hypothetical. The
+    #    ratchet demands an `<!-- observed: ... -->` marker in front of the
+    #    bold title of any entry stating a bare figure, and the reader keyed
+    #    on `- **`, so the two rules contradicted each other exactly: an
+    #    entry could satisfy the ratchet only by leaving the count, and the
+    #    count stayed at 6 across a round that retired one of the 6.
+    #
+    #    The first half is a FIXTURE rather than a sabotage, because the rule
+    #    it protects lives in this file and `SABOTAGES` may only mutate
+    #    documents. Narrowing `_ENTRY` back to `- \*\*` turns every pull
+    #    request red here, which is the same end by a shorter road.
+    marked = _known_issues(
+        "\n## Known issues\n\n"
+        "- <!-- observed: a fixture, not a measurement -->**A marked "
+        "entry.** It takes 4 s.\n\n**Closed by:** none\n\n## After\n"
+    )
+    if [t for t, _b in marked] != ["A marked entry."]:
+        failures.append(
+            "the Known-issues reader cannot see an entry carrying an "
+            "`<!-- observed: ... -->` marker before its bold title — the "
+            "shape the doc-fact ratchet REQUIRES of an entry stating a "
+            "figure. Such an entry would be invisible to the `Closed by` "
+            "rule and missing from the count"
+        )
+    heads = [ln for ln in _known_issues_section(roadmap_text).split("\n")
+             if ln.startswith("- ")]
+    for head in heads:
+        if not re.match(_ENTRY, head):
+            failures.append(
+                "the Known issue %r does not open as `- **Title**` (a "
+                "leading `<!-- ... -->` marker is allowed in front of the "
+                "bold title, and nothing else is) — the reader drops it, so "
+                "nothing gates its `Closed by` line and the count omits it"
+                % head[:60]
+            )
+    if len(heads) != len(_known_issues(roadmap_text)):
+        failures.append(
+            "`## Known issues` has %d bullet(s) and the reader finds %d "
+            "entr(ies) — an entry whose title never closes its `**` reads "
+            "as no entry at all" % (len(heads), len(_known_issues(roadmap_text)))
+        )
     return failures
 
 
@@ -360,7 +424,32 @@ SABOTAGES = [
          rm, ra.replace("\n## " + LAYER_SOAK_HEADING,
                         "\n## A heading the milestone does not read", 1),
          rows)),
+    # Rule 4's document half: a bullet the reader cannot see. Matched by
+    # SHAPE and anchored to the section, for the reason the comment above
+    # gives -- a sabotage quoting today's first issue stops applying the day
+    # that issue is retired, and `sabotage()` reports NOT APPLICABLE, which
+    # is a guard with an expiry date on it.
+    ("a known issue's title stops being bold",
+     lambda rm, ra, rows: (_unbold_first_issue(rm), ra, rows)),
+    ("a known issue is marked in a way the reader cannot read",
+     lambda rm, ra, rows: (_mismark_first_issue(rm), ra, rows)),
 ]
+
+
+def _unbold_first_issue(rm):
+    """The first `## Known issues` bullet loses its bold title."""
+    i = rm.index("\n## Known issues")
+    return rm[:i] + re.sub(r"^- \*\*", "- ", rm[i:], count=1, flags=re.M)
+
+
+def _mismark_first_issue(rm):
+    """The first bullet takes an observed marker AFTER its opening `- `,
+    swallowing the title's `**` — the ratchet's requirement spelled in a
+    position the reader does not admit."""
+    i = rm.index("\n## Known issues")
+    return rm[:i] + re.sub(r"^- \*\*(.*?)\*\*",
+                           r"- <!-- observed: somewhere, sometime -->\1",
+                           rm[i:], count=1, flags=re.M | re.S)
 
 
 def sabotage():
