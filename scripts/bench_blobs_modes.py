@@ -390,6 +390,17 @@ def main():
     for k, c in comparisons.items():
         if k != "definition":
             print(f"  {k:<24} cores {c['cores']}x  rss {c['rss']}x  now p99 {c['now_p99']}x")
+    # Every measured field, median per arm across rounds: what the note
+    # quotes. The standard `medians` block knows only rps, cores and p99.
+    fields = ("cores", "throttled_frac", "rss_kb_summed", "delivered", "spread_p50_ms",
+              "spread_p99_ms", "now_p50_us", "now_p99_us", "now_max_us", "step_us")
+    by_arm = {}
+    for name in dict.fromkeys(r["name"] for r in rows):
+        rs = [r for r in rows if r["name"] == name]
+        by_arm[name] = {f: statistics.median(r[f] for r in rs) for f in fields}
+        by_arm[name]["rounds"] = len(rs)
+        print(f"  median {name:<16} " + " ".join(f"{f}={by_arm[name][f]}" for f in fields[:4] + ("now_p99_us",)))
+    by_arm["definition"] = "per arm and viewer count: the median across rounds of each field"
     if args.no_artifact:
         return 0
     from bench_record import write_artifact  # noqa: E402
@@ -400,7 +411,7 @@ def main():
         "subject": "apps/blobs in deploy/mojo/Dockerfile's image; /events held by V viewers, /now every 50 ms",
         "image": {k: facts.get(k) for k in ("version", "target_cpu", "arch", "image_bytes", "app_bytes")},
         "daemon": daemon,
-    }, extra={"comparisons": comparisons})
+    }, extra={"comparisons": comparisons, "by_arm": by_arm})
     return 0
 
 
