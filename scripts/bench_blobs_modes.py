@@ -8,13 +8,21 @@ parallelism buys little. D35 measured workers against threads on a many-core
 Mac and Linux box and found parity; this measures the demo itself, in its
 own deploy image, on the budget it will have.
 
-Each arm is a fresh container of the SAME image with `--cpus` and
-`--memory` set as the machine's (`--cpus 1 --memory 256m` by default) and
-one of:
+Each arm is a fresh container of the SAME image PINNED TO ONE CORE
+(`--cpuset-cpus`), with `--cpus` and `--memory` set as the machine's
+(`--cpus 1 --memory 256m` by default), and one of:
 
     loop         the host's default: one event loop, the producer beside it
     workers=N    M0_WORKERS=N: prefork, a supervisor, accept sharing
     threads=N    M0_THREADS=N: N loops on N threads of one process
+
+The pin is load-bearing. `--cpus` alone is a QUOTA of CPU time, which two
+loops spend on two cores at once whenever the machine has them, and that
+is not a one-vCPU machine: measured unpinned, two loops halved `/now`'s
+p99 at 400 viewers by running beside each other, which a Fly shared-cpu-1x
+machine cannot do. Pinned, every thread of every mode shares one core, as
+there. `--cpus` below one then models the machine's sustained share on
+top (a shared-cpu-1x's baseline is 1/16 of its vCPU).
 
 The load is the demo's: V viewers each holding `/events` (every step's
 frame fanned out to all of them), plus one keep-alive connection timing a
@@ -238,14 +246,15 @@ def run_arm(args, net, image, arm, viewers, rnd):
     name = f"m0-bench-blobs-{uuid.uuid4().hex[:8]}"
     phase(f"r{rnd} {arm} v{viewers}: start")
     run("docker", "run", "-d", "--name", name, "--network", net,
-        "--cpus", str(args.cpus), "--memory", args.memory,
+        "--cpuset-cpus", args.cpuset, "--cpus", str(args.cpus), "--memory", args.memory,
         *arm_env(arm, args.n), image)
     try:
         # The script travels on stdin, not a bind mount: a daemon in a VM
         # (colima) sees only the directories it shares, and a worktree under
         # /tmp is not one of them.
         client_argv = [
-            "docker", "run", "--rm", "-i", "--network", net, args.client_image,
+            "docker", "run", "--rm", "-i", "--network", net,
+            "--cpuset-cpus", args.client_cpuset, args.client_image,
             "python3", "-", "client", "--host", name,
             "--viewers", str(viewers), "--warm", str(args.warm), "--secs", str(args.secs),
         ]
@@ -313,6 +322,7 @@ def main():
     ap.add_argument("--n", type=int, default=2, help="workers, and loops")
     ap.add_argument("--viewers", default="100,400")
     ap.add_argument("--cpus", type=float, default=1.0)
+    ap.add_argument("--cpuset", default="1", help="the ONE core the server is pinned to")
     ap.add_argument("--memory", default="256m")
     ap.add_argument("--secs", type=float, default=20)
     ap.add_argument("--warm", type=float, default=3)
@@ -338,6 +348,13 @@ def main():
     daemon = json.loads(run("docker", "info", "--format",
                             '{"os":{{json .OperatingSystem}},"kernel":{{json .KernelVersion}},'
                             '"arch":{{json .Architecture}},"cpus":{{.NCPU}},"memory_bytes":{{.MemTotal}}}').stdout)
+    if "," in args.cpuset or "-" in args.cpuset:
+        fail("--cpuset names one core: the machine being modelled has one vCPU")
+    # The client keeps off the server's core, so its parsing is not charged
+    # to the server's one vCPU.
+    args.client_cpuset = ",".join(str(c) for c in range(daemon["cpus"]) if str(c) != args.cpuset)
+    if not args.client_cpuset:
+        fail("the daemon has one core; the client would share it with the server")
     net = f"m0-bench-{uuid.uuid4().hex[:8]}"
     run("docker", "network", "create", net)
     arms = ["loop", f"workers={args.n}", f"threads={args.n}"]
@@ -378,6 +395,7 @@ def main():
     from bench_record import write_artifact  # noqa: E402
     write_artifact(args.name, rows, {
         "n": str(args.n), "viewers": args.viewers, "cpus": str(args.cpus), "memory": args.memory,
+        "cpuset": args.cpuset, "client_cpuset": args.client_cpuset,
         "window": f"{args.secs}s after {args.warm}s", "rounds": str(args.rounds),
         "subject": "apps/blobs in deploy/mojo/Dockerfile's image; /events held by V viewers, /now every 50 ms",
         "image": {k: facts.get(k) for k in ("version", "target_cpu", "arch", "image_bytes", "app_bytes")},
