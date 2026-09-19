@@ -59,8 +59,9 @@ matches its `~/.pgpass` line: the default connects over the Unix socket,
 which a `localhost` entry does not cover, and fails every test with
 `fe_sendauth: no password supplied` (the 1.4.0 run), where
 `M0_PG_TEST_URL=postgres://postgres@localhost:5432/postgres` passes. It
-fails without a server; it never skips. Budget half an hour: the three
-files took 26 minutes on the 1.4.0 run.
+fails without a server; it never skips. The three files took 26 minutes on
+the 1.4.0 run and 12 seconds on the 1.5.0 run; what made the difference
+was not traced, so budget for the former.
 
 **And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
 reproducers, in the `m0lin` Linux container — the only place a lost pool
@@ -228,6 +229,16 @@ figure `deploy/mojo/README.md` sets beside the blobs demo's. Needs docker
 while another container gate is running. The target CPU follows the
 daemon's architecture (`M0_TARGET_CPU` overrides, never `native`), and the
 README names the architecture each figure was taken on.
+
+**And `uv run poe sabotage-mojo-image`** (SPEC M26, M27) — builds ten
+sabotaged images from a copy of the build context and requires
+`smoke-blobs-image` to fail each one in the phase it names: a shell at PID
+1, a stop signal the server ignores, a size written rather than measured, a
+page without its footer, and so on, plus the rules the Dockerfile refuses
+itself. Nothing tracked is edited. Pre-release because it is ten image
+builds, most of them a layer or two from the cache; docker otherwise idle,
+as above. Both rows cited it as `(pre-release)` from the day it landed, and
+this page did not name it until the 1.5.0 run.
 
 **And the benchmarks, when `check-docs` says so.** Every table in
 docs/BENCHMARKS.md renders from the newest committed artifact, and

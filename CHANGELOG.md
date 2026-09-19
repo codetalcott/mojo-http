@@ -8,46 +8,59 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-19
+
+A host for Mojo applications — workers, loops on threads, a handler pool
+and a producer from one `serve` call — and the first application written
+for it, streaming from an image with no Python in it at
+[blobs.m0serve.dev](https://blobs.m0serve.dev). The pin moves to Mojo
+1.1.0, which lets an application conform to the layer's traits, and an
+unmounted `--realtime` gets the handler pool every other WSGI app gets.
+
 ### Added
 
-- **The Mojo demo's deploy: `blobs.m0serve.dev`**, from the next release on.
-  `deploy/blobs/` (the Fly app `m0serve-blobs`: one machine, one loop per
-  D36, connection-counted concurrency at soft 200 and hard 400) and a
-  `deploy-blobs` job in `deploy-site.yml`. The job builds the release's
-  commit, or a dispatched version's tag, since the image compiles its
-  checkout. It verifies the deploy with `mojo_image_probe.py --url` and
-  skips a tag older than the deploy with a notice. `poe deploy-blobs`
-  deploys by hand. The site links it beside the Django demo.
+- **The Mojo host** (SPEC E21–E25). `m0_host.serve[H, P]` is
+  everything in a Mojo application's `main` that is not the application:
+  the listener, the pre-fork shared pages and bus, `M0_WORKERS` processes
+  sharing their accepts, signals armed after the fork, a handler built in
+  each worker by `AppHandler.make`, and one `Producer` on worker 0 whose
+  frames go to every worker's channel, stopped and joined within the
+  drain's 5 s. An application writes two conformances and
+  `serve[MyHandler, MyProducer](AppConfig())`. A producer numbers its
+  frames from the pre-fork shared word (`Publisher.next_id`), so a
+  respawned worker 0 continues above what every held stream has seen
+  rather than restarting at 1 and leaving them silent for the pre-crash
+  uptime. A `make` that raises, the handler's or the producer's, is a
+  refusal with 78 before the server listens, never a crash loop, and one
+  worker's refusal ends its siblings (DECISIONS D30). `M0_SPAWN_WORKERS` is
+  m0serve's and is refused with 78. Gated by `smoke-host` on
+  `apps/host_check` and by `test_host.mojo`; `sabotage-host` (46 rules
+  across the host and the pieces it shares) before a release. DECISIONS D26
+  is retired: the `Producer` trait is the helper it deferred, and D27
+  records its choices. The write-up is
+  [the-mojo-host](docs/notes/the-mojo-host.md).
 
-- **The blobs demo ships as a pure-Mojo image, gated on every pull request**
-  (SPEC M26, M27; docs/notes/the-demo-in-its-own-image.md).
-  `deploy/mojo/Dockerfile` replaces `deploy/mojo-hello/`: one Dockerfile for
-  every Mojo app, `APP` naming the directory and the binary at `/app/server`.
-  Its last layer measures the image into `/app/about.json`: the unpacked
-  bytes, and no interpreter anywhere, failing the build if one is found.
-  `apps/blobs` reads the file through `M0_IMAGE_FACTS` for a footer and a
-  new `/about`, and refuses a malformed one with 78.
-  `poe smoke-blobs-image` builds it from the tree in CI's `pid1` job, the
-  first x86-64 Mojo build CI makes, and probes it from outside with
-  `scripts/mojo_image_probe.py`: PID 1, no interpreter, the page's claims,
-  the whole of `smoke-blobs`' main run through the published port, and a
-  held stream ended by `docker stop` with exit 0. M26 moved from pre-release
-  to every PR: the step takes about a minute on the runner. Ten sabotages
-  are in `poe sabotage-mojo-image`.
-- **D36: the blobs deploy serves one loop.** On one core, one loop, two
-  workers and two threads measure the same CPU, delivery and fan-out, on
-  arm64 and on x86-64 (`scripts/bench_blobs_modes.py`). Only memory
-  differs: 1.11–1.25x one loop's for threads, 1.79–2.29x for workers.
-- **Linux x86-64 in D35.** `bench-host-modes` on a GitHub runner: threads
-  over workers at parity on throughput and the tail, and 0.56–0.59x on RSS.
-  At 256 connections on the loop route threads used more CPU per request,
-  0.86–0.94x workers' per core in every round, which is prefork's side of
-  the decision.
+- **A handler pool and route placement in the host** (SPEC E26, N19;
+  DECISIONS D31, D32). `M0_BLOCKING_THREADS=N` is served as N `MojoPool`
+  threads behind each worker's loop, on one lane the host marks GIL-free.
+  `PoolLane[H]` builds the application's handler again on each thread with
+  `AppHandler.make`, `HostContext.thread` naming the instance, so an
+  application conforms once; the host waits for every thread's handler
+  before it serves, and a raising pool `make` is the same 78. A stream
+  begun in `func` on a pool thread is refused 409, as on a Mojo mount; one
+  opened on the loop works under the pool. `Views.add_read` and `add_write`
+  take `on_loop=True`, which keeps a route in the table (one `Allow`, one
+  `url_for`, one 404) and answers it on the loop with the loop instance's
+  state before it becomes a pool job; `m0serve`'s loop holds no Mojo table
+  and answers such a route one round trip later (D32). The shutdown bounds
+  overlap: the loop stamps the producer's stop word as its drain begins and
+  the pool and producer joins count from that stamp, so a request in flight
+  at SIGTERM beside a long step leaves inside one 5 s bound, not two.
 
 - **The Mojo host serves `M0_THREADS=N`: N event loops on N threads of one
-  process** (DECISIONS D35; SPEC E27–E29). It was refused with 78. The
-  listener, the shared page, the bus and the accept-share channels are made
-  once and sized by the loop count; each thread builds its own handler with
+  process** (DECISIONS D35; SPEC E27–E29). The listener, the shared page,
+  the bus and the accept-share channels are made once and sized by the loop
+  count; each thread builds its own handler with
   `AppHandler.make`, its own pool under `M0_BLOCKING_THREADS`, and runs its
   own loop; fan-out across loops rides the bus and accepts are shared
   across the threads (without it, 30 of 32 connections sat on one loop of
@@ -63,7 +76,88 @@ in a minor release: `m0serve`'s flags and environment variables, the
   against prefork on `apps/ramp` (`poe bench-host-modes`): the same
   throughput and tail on macOS and Linux, and 20–35 % less RSS — so prefork
   stays what the documentation reaches for first
-  ([loops-on-threads](docs/notes/loops-on-threads.md)).
+  ([loops-on-threads](docs/notes/loops-on-threads.md)). On a Linux x86-64
+  GitHub runner, threads over workers measured the same throughput and
+  tail and 0.56–0.59x the RSS; at 256 connections on the loop route
+  threads used more CPU per request, 0.86–0.94x workers' per core in
+  every round, which is prefork's side of the decision.
+
+- **One views module on two hosts** (SPEC N20). `apps/ramp/views.mojo` is
+  one `Views[Ramp]` table built from its mount prefix alone; two adapters a
+  page long build it into `m0serve` under `--mount /x=mojo` and into a host
+  binary. `smoke-ramp` diffs nine requests across the two (only `Date`
+  differs), follows a rendered link on each, and measures where a request
+  waits behind a slow view: with the lane full the host's loop route still
+  answers, while `m0serve`'s waits for a thread, which is D32's divergence
+  recorded on every run. New on `build-serve`: `M0SERVE_INCLUDE` puts an
+  application's own module root on the include path beside
+  `M0SERVE_MOUNT_DIR`. The write-up is
+  [the-ramp-test](docs/notes/the-ramp-test.md).
+
+- **Every Mojo app that forked or streamed now runs on the host.**
+  `sim_loop` (`main` 105 → 19 lines), `datastar_counter` (56 → 7),
+  `datastar_todo` (18 → 7) and `fragment_notes` (15 → 10). The counter
+  now shares its accepts across workers. The todo list now serves
+  `M0_WORKERS=2` over one SQLite file (SPEC N17), holding the write lock
+  from a change until its frame is published, so a tab's newest frame
+  never misses an older one's change. `ViewsApp[S]` serves a `Views` table
+  with no handler struct (SPEC N18), and an application whose state is
+  per process declares `max_workers`: `fragment_notes`, which used to
+  ignore `M0_WORKERS=2`, now refuses it with 78.
+
+- **`apps/blobs`: a live world the page cannot hold** (SPEC N16). The first
+  application written for the Mojo-native stack. A producer thread steps up
+  to sixteen metaballs at 10 Hz — samples their field on a 192 × 192 grid,
+  traces the outlines where blobs merge, and resamples each to 48 vertices
+  in the slot it held last step — and publishes each step as one
+  full-state Datastar frame of `polygon()` clip-paths; a click drops a
+  blob for every open tab. A step costs ~0.2–0.4 ms on an M4. It is the
+  first app that is both a `Views` table and a streaming handler, and the
+  first on the Mojo host: its `main` is fifteen lines, and `M0_WORKERS=2`
+  serves from two processes, a click on either reaching the one producer.
+  Sixteen separate blobs make a 9.6 KB frame, ~96 KB/s per viewer; merged
+  ones make less. `uv run poe serve-blobs`; gated by `smoke-blobs` and the
+  kernel's unit tests, with `browser-blobs` and `sabotage-blobs` (23 rules)
+  before a release.
+
+- **A Mojo application ships as an image with nothing under it, gated on
+  every pull request** (SPEC M26, M27;
+  [the-demo-in-its-own-image](docs/notes/the-demo-in-its-own-image.md)).
+  `deploy/mojo/Dockerfile` is one Dockerfile for every Mojo app, `APP`
+  naming the directory: the pinned toolchain compiles it in a builder
+  stage, and the runtime stage carries the binary, at `/app/server` and
+  PID 1, and the three Mojo runtime libraries beside it, with no
+  interpreter and no toolchain. Its last layer measures the image into
+  `/app/about.json`: the unpacked bytes, and no interpreter anywhere,
+  failing the build if one is found. `apps/blobs` reads the file through
+  `M0_IMAGE_FACTS` for a footer and a new `/about`, and refuses a malformed
+  one with 78. `poe smoke-blobs-image` builds it from the tree in CI's
+  `pid1` job, the first x86-64 Mojo build CI makes, and probes it from
+  outside with `scripts/mojo_image_probe.py`: PID 1, no interpreter, the
+  page's claims, the whole of `smoke-blobs`' main run through the published
+  port, and a held stream ended by `docker stop` with exit 0. On arm64 the
+  blobs image is 102.1 MB unpacked (29.3 MB compressed), 3.0 MB of it the
+  app, against 184.6 MB (60.3 MB) for the Django demo's image; on x86-64 it
+  is 80.1 MB unpacked and holds 20.1 MiB of RSS idle and 24.2 MiB with 100
+  streams held. `deploy/mojo/README.md` names each figure's unit and
+  architecture. Before a release, `poe probe-mojo-image` records the floor
+  under every Mojo image (`apps/hello` from the same Dockerfile) and `poe
+  sabotage-mojo-image` breaks ten of the image's rules.
+
+- **D36: the blobs deploy serves one loop.** On one core, one loop, two
+  workers and two threads measure the same CPU, delivery and fan-out, on
+  arm64 and on x86-64 (`scripts/bench_blobs_modes.py`). Only memory
+  differs: 1.11–1.25x one loop's for threads, 1.79–2.29x for workers.
+
+- **The Mojo demo's deploy: `blobs.m0serve.dev`**, made by each release
+  from this one. `deploy/blobs/` (the Fly app `m0serve-blobs`: one machine,
+  one loop per D36, connection-counted concurrency at soft 200 and hard
+  400) and a `deploy-blobs` job in `deploy-site.yml`. The job builds the
+  release's commit, or a dispatched version's tag, since the image compiles
+  its checkout. It verifies the deploy with `mojo_image_probe.py --url` and
+  skips a tag older than the deploy with a notice. `poe deploy-blobs`
+  deploys by hand. The site links it beside the Django demo.
+
 - **An application defines its own frontend vocabulary** (DECISIONS D7,
   retired 2026-09-18; D34; SPEC N21). `Vocabulary` was exported but not
   implementable from outside: `Datastar` read a private field of `Html`
@@ -84,6 +178,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   guard in `check-docs`). The write-up is
   [a-vocabulary-an-application-defines](docs/notes/a-vocabulary-an-application-defines.md).
 
+- **`DatastarStream(send_latest=True)`: a stream of states** (SPEC I24).
+  Every subscriber, new or reconnecting, is sent the newest frame for its
+  url at open and then the live feed, never a replay. Without it a page
+  fed by a paused or slow producer stays blank until the next frame.
+
+- **A bus publish reports what it delivered** (SPEC I25).
+  `publish_to_channels` and `BroadcastBus.publish` return how many channels
+  took the frame, 0 for a frame over `BUS_MAX_FRAME`, a reserved channel or
+  an over-long name. Each of those was dropped without a word.
+
+- **`poe test-apps`** runs an application's own tests from
+  `apps/<app>/test/`, inside `test-all`; `apps/blobs` is the first.
+
 ### Changed
 
 - **The page shell is a trait** (DECISIONS D12, retired 2026-09-18).
@@ -103,183 +210,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   only for it, is gone. `apps/fragment_notes` is on the trait with its
   wire byte-identical across all nine of its call sites; the write-up is
   [the-page-shell-becomes-a-trait](docs/notes/the-page-shell-becomes-a-trait.md).
-
-### Added
-
-- **The Mojo host** (SPEC E21–E23). `m0_host.serve[H, P]` is
-  everything in a Mojo application's `main` that is not the application:
-  the listener, the pre-fork shared pages and bus, `M0_WORKERS` processes
-  sharing their accepts, signals armed after the fork, a handler built in
-  each worker by `AppHandler.make`, and one `Producer` on worker 0 whose
-  frames go to every worker's channel, stopped and joined within the
-  drain's 5 s. An application writes two conformances and
-  `serve[MyHandler, MyProducer](AppConfig())`. `M0_THREADS`,
-  `M0_BLOCKING_THREADS` and `M0_SPAWN_WORKERS` are m0serve's and are refused
-  with 78 before anything is bound. Gated by `smoke-host` on
-  `apps/host_check` and by `test_host.mojo`; `sabotage-host` (25 rules)
-  before a release. DECISIONS D26 is retired: the `Producer` trait is the
-  helper it deferred, and D27 records its choices.
-- **Every Mojo app that forked or streamed now runs on the host.**
-  `sim_loop` (`main` 105 → 19 lines), `datastar_counter` (56 → 7),
-  `datastar_todo` (18 → 7) and `fragment_notes` (15 → 10). The counter
-  now shares its accepts across workers. The todo list now serves
-  `M0_WORKERS=2` over one SQLite file (SPEC N17), holding the write lock
-  from a change until its frame is published, so a tab's newest frame
-  never misses an older one's change. `ViewsApp[S]` serves a `Views` table
-  with no handler struct (SPEC N18), and an application whose state is
-  per process declares `max_workers`: `fragment_notes`, which used to
-  ignore `M0_WORKERS=2`, now refuses it with 78.
-- **A Mojo application ships as an image with nothing under it** (SPEC M26).
-  `deploy/mojo-hello/Dockerfile` compiles `apps/hello` with the pinned
-  toolchain in a builder stage; the runtime stage carries the binary and the
-  three Mojo runtime libraries beside it, and no interpreter. Measured on
-  `linux/arm64`: 29.2 MB image, 12.1 MB RSS idle and 13.5 MB holding 100
-  keep-alive connections, against the Django demo's 74 MiB and 52 MB per
-  worker. `docker stop` is the drain, and `/proc/1/cmdline` — read inside the
-  container — is the binary itself. `uv run poe probe-mojo-image` builds and
-  probes it; pre-release, because the builder installs the toolchain wheel
-  and compiles from source. The x86-64 arm is deliberately not claimed: the
-  toolchain publishes a manylinux x86-64 wheel, but QEMU is not evidence and
-  it has to run on a real x86 host.
-
-- **`apps/blobs`: a live world the page cannot hold** (SPEC N16). The first
-  application written for the Mojo-native stack. A producer thread steps up
-  to sixteen metaballs at 10 Hz — samples their field on a 192 × 192 grid,
-  traces the outlines where blobs merge, and resamples each to 48 vertices
-  in the slot it held last step — and publishes each step as one
-  full-state Datastar frame of `polygon()` clip-paths; a click drops a
-  blob for every open tab. A step costs ~0.2–0.4 ms on an M4. It is the
-  first app that is both a `Views` table and a streaming handler, and the
-  first on the Mojo host: its `main` is fifteen lines, and `M0_WORKERS=2`
-  serves from two processes, a click on either reaching the one producer.
-  Sixteen separate blobs make a 9.6 KB frame, ~96 KB/s per viewer; merged
-  ones make less. `uv run poe serve-blobs`; gated by `smoke-blobs` and the
-  kernel's unit tests, with `browser-blobs` and `sabotage-blobs` (23 rules)
-  before a release.
-- **`DatastarStream(send_latest=True)`: a stream of states** (SPEC I24).
-  Every subscriber, new or reconnecting, is sent the newest frame for its
-  url at open and then the live feed, never a replay. Without it a page
-  fed by a paused or slow producer stays blank until the next frame.
-- **A bus publish reports what it delivered** (SPEC I25).
-  `publish_to_channels` and `BroadcastBus.publish` return how many channels
-  took the frame, 0 for a frame over `BUS_MAX_FRAME`, a reserved channel or
-  an over-long name. Each of those was dropped without a word.
-- **`poe test-apps`** runs an application's own tests from
-  `apps/<app>/test/`, inside `test-all`; `apps/blobs` is the first.
-
-### Fixed
-
-- **`poe deploy-site` and `poe deploy-demo` failed without a version
-  argument.** Their default, the tree's own version, was a Python one-liner
-  whose `\"` escapes TOML consumed, leaving a syntax error; a version given
-  on the command line never evaluated it, which is how it went unnoticed.
-  Both now read the version with the `grep`/`sed` pair another task already
-  uses, as does the new `poe deploy-blobs`.
-- **SPEC M26 compared an image's compressed size with a container's
-  memory.** Its "29.2 MB against the Django demo's 74 MiB" set the hello
-  image's compressed size (what colima's containerd store reports from
-  `docker image inspect`) against the Django demo container's RSS. Measured
-  the same way, the blobs image is 29.3 MB compressed and 102.1 MB
-  unpacked, and the Django demo's is 60.3 MB and 184.6 MB;
-  `deploy/mojo/README.md` records each figure's unit and architecture.
-- **Two `sabotage-blobs` anchors matched nothing.** One had been stale since
-  the host's round 4 renamed the publish call's argument, so that sabotage
-  would have reported NOT APPLICABLE. `bench_record.medians` no longer
-  assumes every bench measures a rate.
-- **The live demo's deploy built from main, not from the release it
-  pinned.** `deploy-site.yml`'s `deploy-demo` job checked out the default
-  branch and pinned the release's wheel, so `deploy/demo/Dockerfile`, the
-  demo application and the probe that verifies the deploy came from
-  whatever had merged since the release -- or, for the `release/v*` branch
-  form, from a main that might not hold the release's commit. It now checks
-  out the release's own commit (`head_sha`) after a release and the
-  version's tag on a dispatch, and refuses to deploy when the tree's
-  version is not the pinned one. The docs site's job builds from the
-  release's commit after a release too; a dispatch still renders the ref it
-  ran on, which is how prose merged after a release is published.
-- **The docs promised `Last-Event-ID` replay on a WSGI hold, which keeps no
-  journal.** RUNNING.md and the `m0pub` docstring said a numbered frame was
-  "covered by replay"; the plain `SSERegistry` a hold subscribes to only
-  suppresses an event a reconnecting client already has, and events
-  published while it was gone are not delivered — an application that
-  trusted the sentence and dropped its own catch-up lost messages every
-  time a phone slept. Both now say suppression only, README's "journal-deep"
-  limit names the hold, the Quickstart says to keep a catch-up path, and a
-  Known issue records what a journal would take. Two more from the same
-  notes: RUNNING.md read as if SSE heartbeats were off until
-  `M0_SSE_HEARTBEAT_MS` was set (they default to 15 s, so its 25000 example
-  made them rarer), and `m0pub.publish` did not say that `data` is a payload
-  rather than a frame, so pre-framed text was framed again and reached the
-  client as `data: data: ...` with nothing logged; its docstring now says
-  so and points at `publish_frame`. Not detected at run time, because a
-  payload may legitimately begin with `data:`. Found running desk on
-  m0serve 1.4.0.
-- **A supervisor told to stop no longer respawns a worker that fails its
-  drain** (SPEC D10). After a SIGTERM to the supervisor alone — what
-  `docker stop` sends — a worker that exited non-zero, or died of any
-  signal but the one forwarded, was replaced. Nothing ever signalled the
-  replacement, so the supervisor served it until SIGKILL. The supervisor now
-  lets it go and exits 1 once the rest are gone. `m0serve --workers N` and
-  every Mojo app that forks share the supervisor. Found while gating the
-  Mojo host.
-
-- **A JSON number read from a request body could kill the server** (SPEC
-  G14). `m0_core.json_parse.parse_json_number` cut the number out with a
-  `String` slice, which asserts a codepoint boundary, so a body such as
-  `{"x":1<0x80>}` trapped the thread that read it. Nothing in the tree
-  called it until `apps/blobs`' drop view; the cut is now a byte-span slice.
-- **A language limitation this repo had believed for three weeks does not
-  exist.** An app conforming to a trait in a `.mojoc` was recorded as
-  impossible (`PoolHandler` 2026-08-28, `PageShell` 2026-09-10), and
-  `HTTPService`/`PoolHandler` living in the source-resolved fork, D12's
-  thin-function page shell and D14 were all decided on it. The discriminant
-  is the package's NAME against the SOURCE DIRECTORY it was compiled from:
-  `src/pkg/ -> pkg.mojoc` compiles, `src/pkg_src/ -> pkg.mojoc` loses the
-  witness table, and every package here builds `src` into `<name>.mojoc` —
-  which the error said all along (`trait 'src::fragment::PageShell'`). Fixed
-  on the Mojo nightly, so the workarounds have an end date rather than a
-  rename: a source directory beside a `.mojoc` of the same name shadows it,
-  so renaming would silently stop every consumer using the artifact.
-  `poe check-mojoc-trait` now proves the cause four ways (the `m0_http`
-  case refused, one synthetic source ACCEPTED from a matching directory and
-  refused from a mismatched one, `Views[S]` still compiling) and says what
-  retires D12 and D14. [notes/a-trait-and-a-directory-name](docs/notes/a-trait-and-a-directory-name.md).
-- **Ten unchecked bodies in the lightbug fork, one of them a stack write
-  past the end.** Mojo type-checks method bodies lazily and `build-http`
-  precompiles `src` only, so the fork's 56 files were checked only where an
-  app instantiated them — and nothing compiled them whole. `poe
-  check-fork-package` now does, inside `test-all`: `Int` where `Int32` was
-  wanted at `_getsockopt`, `_recvfrom` and `_writev`, a `socklen_t` from
-  `size_of`, an origin mismatch in the dead `ProvisionPool.get_ptr` (removed),
-  four hand-written copy/move dunders in the cookie types (removed, the
-  compiler derives them), and `getsockopt` landing the kernel's reply in a
-  one-byte allocation it had described as `size_of[Int]()` bytes. All ten
-  sat in paths nothing instantiates, so no shipped behaviour changes; the
-  gate is what stops the next one.
-- **The live demo's WebSocket status line described another tab's socket**
-  (`apps/demo`, SPEC M17). It updated on any message that arrived over a
-  WebSocket, and every tab's socket messages reach every tab on the
-  visitor's channel, so after tab A sent one, both tabs said "slot 1 on
-  worker 647 answered a message" -- tab A's socket, measured in Chromium and
-  WebKit against demo.m0serve.dev on 1.4.0. Each tab now sends
-  `{"text", "tab"}` with a random tab id, the view echoes the id, and a tab
-  learns its socket's worker only from its own echo. A client that sends
-  plain text, or JSON that is not the envelope, still has it broadcast
-  verbatim.
-- **`apps/sim_loop` delivered its steps to worker 0's streams only under
-  `M0_WORKERS>1`** (SPEC N15). The simulation thread published to
-  `bus.write_fds[0]` alone, while the app's own comments said every
-  worker's loop received the frames; its gate ran one worker, where the
-  first channel is every channel. The thread now holds every write fd. The
-  app also shares accepts (SPEC E16) — without it one worker takes nearly
-  every connection — and `/events` names its worker in `x-worker`.
-  `smoke-sim-loop` gains a two-worker phase: four held streams must span
-  both workers and each carry the steps, so a run that lands them all on
-  one worker fails as vacuous rather than passing. The reference for
-  periodic work off the loop is what a Mojo application copies, which is
-  why this is a fix and not a footnote.
-
-### Changed
 
 - **`PoolContext`, `PoolHandler`, `MojoPool` and `JOIN_TIMEOUT_NS` import
   from `m0_http`, not `lightbug_http`** — a source break for a Mojo mount
@@ -316,9 +246,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   (2), `Array` for `InlineArray` (2), a `Span[UInt8]` for `Hasher.update`
   (2), and `ptr`/`as_c_string_span` for the deprecated
   `unsafe_ptr`/`as_c_string_slice` (7 lines) — the warning ratchet's floor
-  stays 0. The ROADMAP known issue for the leak is retired; DECISIONS D7,
-  D12 and D28 have had their toolchain reason spent and stand only until
-  the code moves, each a round of its own. Free-threaded `PyObject` layout
+  stays 0. The ROADMAP known issue for the leak is retired, and DECISIONS D7,
+  D12 and D28, each decided on the witness-table bug, are retired in this
+  release (the entries above). That bug had been recorded here as a
+  language limitation for three weeks (`PoolHandler` 2026-08-28,
+  `PageShell` 2026-09-10); the error named the cause all along
+  (`trait 'src::fragment::PageShell'`), and
+  [a-trait-and-a-directory-name](docs/notes/a-trait-and-a-directory-name.md)
+  records how it was found. Free-threaded `PyObject` layout
   (modular/modular#5726) is NOT known to be fixed — it needs a 3.14t
   interpreter, so `py-canary` answers it. The write-up is
   [docs/notes/the-pin-moves-to-1-1-0.md](docs/notes/the-pin-moves-to-1-1-0.md).
@@ -333,8 +268,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `m0serve`'s already was, and a spawned worker handed no page descriptor
   is refused rather than served from an address that is not its own
   (the old `m0serve` path skipped the adoption silently and would have
-  bound accept sharing to its parent's address). `sabotage-host` grows
-  to 25 rules, six of them against `test_prefork.mojo`.
+  bound accept sharing to its parent's address). Six of
+  `sabotage-host`'s rules run against `test_prefork.mojo`.
+
 - **An unmounted `--realtime` gets the zero-config handler pool.** It
   used to turn the pool off, so `m0serve app:application --realtime` — the
   Quickstart's own command — ran every view on the event loop, and one slow
@@ -349,6 +285,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   single loop run pooled, and `--blocking-threads 0` (or
   `M0_BLOCKING_THREADS=0`) is that shape by name — which is how SPEC E20's
   gate serves it. Found running desk on m0serve 1.4.0.
+
 - **The live demo shows the bus crossing it exists to demonstrate.** Each
   line names the worker that published it and the worker that delivered it
   to this tab, marks the ones that crossed between them, and the page counts
@@ -359,6 +296,108 @@ in a minor release: `m0serve`'s flags and environment variables, the
   CSP allows the inline script and stylesheet by sha256 instead of
   `'unsafe-inline'`. `scripts/demo_probe.py` asserts each, sabotaged eight
   ways against a local server on the 1.4.0 wheel.
+
+### Fixed
+
+- **A JSON number read from a request body could kill the server** (SPEC
+  G14). `m0_core.json_parse.parse_json_number` cut the number out with a
+  `String` slice, which asserts a codepoint boundary, so a body such as
+  `{"x":1<0x80>}` trapped the thread that read it. Nothing in the tree
+  called it until `apps/blobs`' drop view; the cut is now a byte-span slice.
+
+- **Two processes opening one fresh SQLite file could not both get WAL**
+  (m0-sqlite, SPEC O1). `open` switches a new file out of the rollback
+  journal with `PRAGMA journal_mode=WAL`, and SQLite answers the loser of
+  that race with `SQLITE_BUSY` at once, without consulting the busy handler
+  set the line before, so `open` raised `database is locked`. It now
+  retries the switch within `DEFAULT_BUSY_TIMEOUT_MS`. About one pair in
+  two lost the race on an M4 (`test_two_processes_open_one_fresh_database`
+  forks twelve), and `apps/datastar_todo` refused 29 of 30 two-worker
+  starts once the host stopped hiding the raise behind a respawn; the todo
+  list also creates its schema inside `BEGIN IMMEDIATE`.
+
+- **A supervisor told to stop no longer respawns a worker that fails its
+  drain** (SPEC D10). After a SIGTERM to the supervisor alone — what
+  `docker stop` sends — a worker that exited non-zero, or died of any
+  signal but the one forwarded, was replaced. Nothing ever signalled the
+  replacement, so the supervisor served it until SIGKILL. The supervisor now
+  lets it go and exits 1 once the rest are gone. `m0serve --workers N` and
+  every Mojo app that forks share the supervisor. Found while gating the
+  Mojo host.
+
+- **Ten unchecked bodies in the lightbug fork, one of them a stack write
+  past the end.** Mojo type-checks method bodies lazily and `build-http`
+  precompiles `src` only, so the fork's 56 files were checked only where an
+  app instantiated them — and nothing compiled them whole. `poe
+  check-fork-package` now does, inside `test-all`: `Int` where `Int32` was
+  wanted at `_getsockopt`, `_recvfrom` and `_writev`, a `socklen_t` from
+  `size_of`, an origin mismatch in the dead `ProvisionPool.get_ptr` (removed),
+  four hand-written copy/move dunders in the cookie types (removed, the
+  compiler derives them), and `getsockopt` landing the kernel's reply in a
+  one-byte allocation it had described as `size_of[Int]()` bytes. All ten
+  sat in paths nothing instantiates, so no shipped behaviour changes; the
+  gate is what stops the next one.
+
+- **`poe deploy-site` and `poe deploy-demo` failed without a version
+  argument.** Their default, the tree's own version, was a Python one-liner
+  whose `\"` escapes TOML consumed, leaving a syntax error; a version given
+  on the command line never evaluated it, which is how it went unnoticed.
+  Both now read the version with the `grep`/`sed` pair another task already
+  uses, as does the new `poe deploy-blobs`.
+
+- **The live demo's deploy built from main, not from the release it
+  pinned.** `deploy-site.yml`'s `deploy-demo` job checked out the default
+  branch and pinned the release's wheel, so `deploy/demo/Dockerfile`, the
+  demo application and the probe that verifies the deploy came from
+  whatever had merged since the release -- or, for the `release/v*` branch
+  form, from a main that might not hold the release's commit. It now checks
+  out the release's own commit (`head_sha`) after a release and the
+  version's tag on a dispatch, and refuses to deploy when the tree's
+  version is not the pinned one. The docs site's job builds from the
+  release's commit after a release too; a dispatch still renders the ref it
+  ran on, which is how prose merged after a release is published.
+
+- **The docs promised `Last-Event-ID` replay on a WSGI hold, which keeps no
+  journal.** RUNNING.md and the `m0pub` docstring said a numbered frame was
+  "covered by replay"; the plain `SSERegistry` a hold subscribes to only
+  suppresses an event a reconnecting client already has, and events
+  published while it was gone are not delivered — an application that
+  trusted the sentence and dropped its own catch-up lost messages every
+  time a phone slept. Both now say suppression only, README's "journal-deep"
+  limit names the hold, the Quickstart says to keep a catch-up path, and a
+  Known issue records what a journal would take. Two more from the same
+  notes: RUNNING.md read as if SSE heartbeats were off until
+  `M0_SSE_HEARTBEAT_MS` was set (they default to 15 s, so its 25000 example
+  made them rarer), and `m0pub.publish` did not say that `data` is a payload
+  rather than a frame, so pre-framed text was framed again and reached the
+  client as `data: data: ...` with nothing logged; its docstring now says
+  so and points at `publish_frame`. Not detected at run time, because a
+  payload may legitimately begin with `data:`. Found running desk on
+  m0serve 1.4.0.
+
+- **The live demo's WebSocket status line described another tab's socket**
+  (`apps/demo`, SPEC M17). It updated on any message that arrived over a
+  WebSocket, and every tab's socket messages reach every tab on the
+  visitor's channel, so after tab A sent one, both tabs said "slot 1 on
+  worker 647 answered a message" -- tab A's socket, measured in Chromium and
+  WebKit against demo.m0serve.dev on 1.4.0. Each tab now sends
+  `{"text", "tab"}` with a random tab id, the view echoes the id, and a tab
+  learns its socket's worker only from its own echo. A client that sends
+  plain text, or JSON that is not the envelope, still has it broadcast
+  verbatim.
+
+- **`apps/sim_loop` delivered its steps to worker 0's streams only under
+  `M0_WORKERS>1`** (SPEC N15). The simulation thread published to
+  `bus.write_fds[0]` alone, while the app's own comments said every
+  worker's loop received the frames; its gate ran one worker, where the
+  first channel is every channel. The thread now holds every write fd. The
+  app also shares accepts (SPEC E16) — without it one worker takes nearly
+  every connection — and `/events` names its worker in `x-worker`.
+  `smoke-sim-loop` gains a two-worker phase: four held streams must span
+  both workers and each carry the steps, so a run that lands them all on
+  one worker fails as vacuous rather than passing. The reference for
+  periodic work off the loop is what a Mojo application copies, which is
+  why this is a fix and not a footnote.
 
 ## [1.4.0] — 2026-09-15
 
@@ -4836,6 +4875,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.5.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.5.0
 [1.4.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.4.0
 [1.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.3.0
 [1.2.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.2.0
