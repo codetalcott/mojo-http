@@ -343,10 +343,17 @@ def medians(rows):
         by_name.setdefault(r["name"], []).append(r)
     out = {}
     for name, rs in by_name.items():
-        med = {"rps": statistics.median(r["rps"] for r in rs), "rounds": len(rs)}
+        # A bench that measures no throughput (bench_blobs_modes.py holds a
+        # fixed load and measures its cost) has rows with no `rps`; its
+        # medians carry cores and the rounds, and no invented rate.
+        med = {"rounds": len(rs)}
+        rps = [r["rps"] for r in rs if "rps" in r]
+        if rps:
+            med["rps"] = statistics.median(rps)
         cores = [r["cores"] for r in rs if "cores" in r]
         if cores:
             med["cores"] = statistics.median(cores)
+        if cores and rps:
             med["rps_per_core"] = round(med["rps"] / max(med["cores"], 0.01))
             # The other definition, and the one a round-by-round table
             # quotes: each round's own rps per core, THEN the median. The two

@@ -10,9 +10,12 @@
 !deploy/demo/wheelhouse/
 !apps/demo/demoapp.py
 
-# The Mojo image (deploy/mojo-hello/Dockerfile) compiles in its builder
-# stage, so its context is source: the toolchain pin, the packages, the one
-# app, and the three scripts that make a linked artifact redistributable.
+# The Mojo image (deploy/mojo/Dockerfile, one file for every Mojo app it
+# builds) compiles in its builder stage, so its context is source: the
+# toolchain pin, the packages, the apps it is used for -- each let in by name,
+# so a new one's first build fails `"/apps/<name>/server.mojo": not found`
+# until it is added here -- and the three scripts that make a linked artifact
+# redistributable.
 # Built `.mojoc` artifacts are excluded even under those paths -- the builder
 # precompiles its own, and a stale one from the host would be a silent
 # mismatch with the toolchain in the image.
@@ -20,6 +23,7 @@
 !uv.lock
 !packages/
 !apps/hello/
+!apps/blobs/
 !scripts/relocate.py
 !scripts/bundle_artifact.py
 !scripts/binfmt.py

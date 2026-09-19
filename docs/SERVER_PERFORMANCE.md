@@ -548,7 +548,10 @@ client's — one worker serves as many as four, `wrk` running out of cores
 first — so what they compare is CPU per request. The Linux run, the reading
 of both, and why prefork stays the first recommendation (a worker that dies
 is replaced; a loop that dies takes the process) are in
-[loops-on-threads](notes/loops-on-threads.md) (DECISIONS D35).
+[loops-on-threads](notes/loops-on-threads.md) (DECISIONS D35). The x86-64
+run, and the one place it disagreed, are in
+[the-demo-in-its-own-image](notes/the-demo-in-its-own-image.md), which also
+measures the modes on ONE core for the blobs deploy (D36).
 
 ## Non-goals, considered and rejected
 

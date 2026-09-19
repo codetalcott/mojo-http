@@ -4838,22 +4838,44 @@ PYTHONPATH="$out" M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=25000 bin/m0serve 
 # and the 429 -- plus m0serve as PID 1 and `docker stop` as the drain with
 # held connections open. In CI it runs in the pid1 job (the one with docker
 # and a Linux wheel); the same probe with --url verifies the live deploy.
-# The pure-Mojo image: the pinned toolchain compiles `apps/hello` in a builder
-# stage and the runtime stage carries the binary and the Mojo runtime
-# libraries and nothing else -- no interpreter, no toolchain. Pre-release
-# rather than every-PR because the builder stage installs the toolchain
-# wheel (48 MB for linux x86-64) and compiles the packages from source, which
-# is minutes and a large download on a shared runner; `smoke-demo` next door
-# builds an image from a wheel and is cheap by comparison.
-[tool.poe.tasks.probe-mojo-image]
-help = "PRE-RELEASE: build the pure-Mojo image and probe it from outside"
+# The Mojo demo's deploy image (SPEC M26, M27): deploy/mojo/Dockerfile --
+# ONE Dockerfile for every Mojo app, `APP` naming the directory -- built for
+# apps/blobs from THIS tree, the pinned toolchain compiling it inside the
+# builder stage, and probed from outside through a published port by
+# scripts/mojo_image_probe.py: the binary is PID 1, no interpreter is in the
+# image, the image's facts file is true and the page's footer and /about say
+# exactly what it says, the whole of smoke-blobs' main run passes through
+# the port, and `docker stop` ends a held stream with exit 0 inside 10 s and
+# nothing abandoned. The target CPU follows the DAEMON's architecture, so on
+# CI's ubuntu-latest this is the x86-64 build (x86-64-v2) that nothing else
+# here compiles. Every PR, in the pid1 job: the whole step, build and probe,
+# took 66 s on the runner when measured (2026-09-18), which is why M26 --
+# pre-release while that cost was guessed at -- moved here.
+[tool.poe.tasks.smoke-blobs-image]
+help = "Build the blobs demo's pure-Mojo image from the tree and probe it from outside: PID 1, no interpreter, the page's claims, the app, a held stream through the drain"
 shell = """
-set -e
-tcpu="${M0_TARGET_CPU:-generic}"
-docker build -f deploy/mojo-hello/Dockerfile --build-arg TARGET_CPU="$tcpu" \
-  -t m0-hello-spike:local .
-scripts/mojo_image_probe.sh m0-hello-spike:local
+python3 scripts/mojo_image_probe.py --app blobs --build --port 18351 --task smoke-blobs-image || exit 1
+python3 scripts/emit.py --covers M26 --task smoke-blobs-image
+python3 scripts/emit.py --covers M27 --task smoke-blobs-image
 """
+
+# Each rule the image gate stands on, broken on purpose (SPEC M26, M27): ten
+# sabotaged images -- a shell at PID 1, a stop signal the server ignores, an
+# interpreter after and before the image measures itself, a size written
+# rather than measured, no relocation, three footer or /about lies, and a
+# producer never told to stop -- each required to fail in the probe phase or
+# the build step it names. Builds from temporary copies; edits nothing
+# tracked. Pre-release: ten image builds, a layer or two each.
+[tool.poe.tasks.sabotage-mojo-image]
+help = "PRE-RELEASE: build ten sabotaged Mojo images and insist smoke-blobs-image fails each where it should (SPEC M26, M27)"
+cmd = "python3 scripts/mojo_image_sabotage.py"
+
+# The same image for apps/hello, which answers and does nothing else: the
+# floor under every Mojo image's size and RSS (deploy/mojo/README.md).
+# A measurement, not a row's gate -- smoke-blobs-image proves the shape.
+[tool.poe.tasks.probe-mojo-image]
+help = "PRE-RELEASE: build deploy/mojo/Dockerfile for apps/hello and probe it from outside (the size and RSS floor)"
+cmd = "python3 scripts/mojo_image_probe.py --app hello --build --task probe-mojo-image"
 
 [tool.poe.tasks.smoke-demo]
 help = "Build the live demo's deploy image from the tree's wheel and probe it from outside the container"

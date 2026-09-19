@@ -15,5 +15,8 @@ comptime STATS = "/stats"
 comptime HEALTH = "/health"
 """Liveness, answered on the loop."""
 
+comptime ABOUT = "/about"
+"""The image's own facts as JSON (version, sizes, no interpreter); 404 outside one."""
+
 comptime NOW = "/now"
 """A trivial request, answered on the loop; the gate times it during steps."""

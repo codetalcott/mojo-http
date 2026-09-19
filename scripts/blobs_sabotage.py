@@ -56,7 +56,7 @@ SABOTAGES = [
         "the producer never publishes (cadence)",
         SMOKE,
         SERVER,
-        "        if not out.publish(EVENTS, self.step_no, frame.as_bytes()):\n",
+        "        if not out.publish(EVENTS, id, frame.as_bytes()):\n",
         "        if False:\n",
     ),
     (
@@ -144,20 +144,18 @@ SABOTAGES = [
         SERVER,
         (
             "from m0_http import AppConfig, Views, reply\n",
-            "            BlobState(ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers),\n",
+            "                ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers,\n",
         ),
         (
             "from m0_http import AppConfig, Views, reply\n"
             "from m0_http.multiworker import SharedAtomics\n",
-            "            BlobState(\n"
             "                ctx.capacity,\n"
             "                Board(\n"
             "                    ctx.page if ctx.worker == 0\n"
             "                    else SharedAtomics(board_slots(ctx.workers)).addr(0)\n"
             "                ),\n"
             "                ctx.worker,\n"
-            "                ctx.workers,\n"
-            "            ),\n",
+            "                ctx.workers,\n",
         ),
     ),
     (

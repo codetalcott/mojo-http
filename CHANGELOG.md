@@ -10,6 +10,31 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **The blobs demo ships as a pure-Mojo image, gated on every pull request**
+  (SPEC M26, M27; docs/notes/the-demo-in-its-own-image.md).
+  `deploy/mojo/Dockerfile` replaces `deploy/mojo-hello/`: one Dockerfile for
+  every Mojo app, `APP` naming the directory and the binary at `/app/server`.
+  Its last layer measures the image into `/app/about.json`: the unpacked
+  bytes, and no interpreter anywhere, failing the build if one is found.
+  `apps/blobs` reads the file through `M0_IMAGE_FACTS` for a footer and a
+  new `/about`, and refuses a malformed one with 78.
+  `poe smoke-blobs-image` builds it from the tree in CI's `pid1` job, the
+  first x86-64 Mojo build CI makes, and probes it from outside with
+  `scripts/mojo_image_probe.py`: PID 1, no interpreter, the page's claims,
+  the whole of `smoke-blobs`' main run through the published port, and a
+  held stream ended by `docker stop` with exit 0. M26 moved from pre-release
+  to every PR: the step takes about a minute on the runner. Ten sabotages
+  are in `poe sabotage-mojo-image`.
+- **D36: the blobs deploy serves one loop.** On one core, one loop, two
+  workers and two threads measure the same CPU, delivery and fan-out, on
+  arm64 and on x86-64 (`scripts/bench_blobs_modes.py`). Only memory
+  differs: 1.11–1.25x one loop's for threads, 1.79–2.29x for workers.
+- **Linux x86-64 in D35.** `bench-host-modes` on a GitHub runner: threads
+  over workers at parity on throughput and the tail, and 0.56–0.59x on RSS.
+  At 256 connections on the loop route threads used more CPU per request,
+  0.86–0.94x workers' per core in every round, which is prefork's side of
+  the decision.
+
 - **The Mojo host serves `M0_THREADS=N`: N event loops on N threads of one
   process** (DECISIONS D35; SPEC E27–E29). It was refused with 78. The
   listener, the shared page, the bus and the accept-share channels are made
@@ -135,6 +160,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **SPEC M26 compared an image's compressed size with a container's
+  memory.** Its "29.2 MB against the Django demo's 74 MiB" set the hello
+  image's compressed size (what colima's containerd store reports from
+  `docker image inspect`) against the Django demo container's RSS. Measured
+  the same way, the blobs image is 29.3 MB compressed and 102.1 MB
+  unpacked, and the Django demo's is 60.3 MB and 184.6 MB;
+  `deploy/mojo/README.md` records each figure's unit and architecture.
+- **Two `sabotage-blobs` anchors matched nothing.** One had been stale since
+  the host's round 4 renamed the publish call's argument, so that sabotage
+  would have reported NOT APPLICABLE. `bench_record.medians` no longer
+  assumes every bench measures a rate.
 - **The live demo's deploy built from main, not from the release it
   pinned.** `deploy-site.yml`'s `deploy-demo` job checked out the default
   branch and pinned the release's wheel, so `deploy/demo/Dockerfile`, the

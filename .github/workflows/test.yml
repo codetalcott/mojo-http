@@ -275,6 +275,16 @@ jobs:
       # and `docker stop` as the drain with held connections open.
       - name: Smoke test the live demo's deploy image
         run: uv run poe smoke-demo
+      # The Mojo demo's deploy image (deploy/mojo/Dockerfile for apps/blobs,
+      # what `fly deploy` builds for blobs.m0serve.dev): the pinned toolchain
+      # compiles the tree inside the builder stage -- on this x86-64 runner,
+      # with --target-cpu x86-64-v2, the only x86 Mojo build CI makes -- and
+      # the runtime stage carries the binary and nothing else. Probed from
+      # outside: PID 1, no interpreter, the page's claims about the image
+      # true, the producer stepping and streaming through the published
+      # port, and `docker stop` ending a held stream with exit 0.
+      - name: Smoke test the Mojo demo's deploy image
+        run: uv run poe smoke-blobs-image
       - name: Record the measurements
         if: always()
         run: |
