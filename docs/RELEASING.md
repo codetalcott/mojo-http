@@ -29,8 +29,16 @@ modes.
 **And `uv run poe probe-pool`**, the Mojo handler pool's timing half —
 pre-release for the same reason stress-asgi is: a p99 table from a shared
 runner is noise. The pooled row must hold single-digit milliseconds at
-`slow=1` and `slow=2` (measured 0.2–0.3 ms on an M4; the loop-only row
-collapsing to ~the blocking duration is expected and is the point), and
+`slow=1` and `slow=2` (the loop-only row collapsing to ~the blocking
+duration is expected and is the point). On an M4 that row measured
+0.2–0.3 ms through the 1.3.0 artifact and 1.5–1.6 ms at 1.4.0 and 1.5.0,
+the p50 moving with it. The step is a64d370, first in 1.4.0: Mojo pool
+threads register on their lane (SPEC M22), which makes the lane elastic
+(M25) where it had read as all-parked and woken on every push, so a fast
+job behind a busy thread now waits for the loop's stall check, whose wait
+is capped at `POOL_WAKE_WAIT_MS` (1 ms) — the price M25 records paying for
+the trivial route's throughput. Dated by the artifacts rather than
+bisected; a figure well past 1.6 ms is a change to look at. And
 the final column is the deliberate saturation boundary — more blockers
 than threads — where the pooled row is EXPECTED to collapse too. The
 deterministic halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
@@ -59,8 +67,9 @@ matches its `~/.pgpass` line: the default connects over the Unix socket,
 which a `localhost` entry does not cover, and fails every test with
 `fe_sendauth: no password supplied` (the 1.4.0 run), where
 `M0_PG_TEST_URL=postgres://postgres@localhost:5432/postgres` passes. It
-fails without a server; it never skips. Budget half an hour: the three
-files took 26 minutes on the 1.4.0 run.
+fails without a server; it never skips. The three files took 26 minutes on
+the 1.4.0 run and 12 seconds on the 1.5.0 run; what made the difference
+was not traced, so budget for the former.
 
 **And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
 reproducers, in the `m0lin` Linux container — the only place a lost pool
@@ -228,6 +237,16 @@ figure `deploy/mojo/README.md` sets beside the blobs demo's. Needs docker
 while another container gate is running. The target CPU follows the
 daemon's architecture (`M0_TARGET_CPU` overrides, never `native`), and the
 README names the architecture each figure was taken on.
+
+**And `uv run poe sabotage-mojo-image`** (SPEC M26, M27) — builds ten
+sabotaged images from a copy of the build context and requires
+`smoke-blobs-image` to fail each one in the phase it names: a shell at PID
+1, a stop signal the server ignores, a size written rather than measured, a
+page without its footer, and so on, plus the rules the Dockerfile refuses
+itself. Nothing tracked is edited. Pre-release because it is ten image
+builds, most of them a layer or two from the cache; docker otherwise idle,
+as above. Both rows cited it as `(pre-release)` from the day it landed, and
+this page did not name it until the 1.5.0 run.
 
 **And the benchmarks, when `check-docs` says so.** Every table in
 docs/BENCHMARKS.md renders from the newest committed artifact, and
