@@ -93,8 +93,14 @@ an Apple Silicon Mac would emulate it (see [deploy/site](../site/README.md)).
 ```bash
 python3 scripts/mojo_image_probe.py --app blobs --url https://blobs.m0serve.dev --version X.Y.Z
 curl -s https://blobs.m0serve.dev/about          # the image's own facts
-fly ssh console -a m0serve-blobs -C 'cat /proc/1/limits'   # open files on Fly: not yet checked
+fly ssh console -a m0serve-blobs -C "sh -c 'for f in /proc/[0-9]*/comm; do [ \"\$(cat \$f)\" = server ] && cat \${f%comm}limits; done; true'"
 ```
+
+On Fly the server is not PID 1: Fly's `/fly/init` is, and `/app/server` is
+its child, so `/proc/1/limits` describes init. Read on the first deploy,
+1.5.0 (2026-09-19): the server's open-files limit is 10240, soft and hard,
+above the 400 connections the hard concurrency limit admits. It held
+13.9 MiB of RSS in three threads on one vCPU, idle.
 
 The probe asserts `/health`, `/about` naming blobs, no Python and the
 version, the footer saying what `/about` says, a stream receiving three
