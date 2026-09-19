@@ -13,9 +13,11 @@ Five stages, run once per producer step on buffers a `Tracer` keeps:
 4. **Resample.** Each outer cycle becomes exactly `NVERT` vertices spaced
    by arc length, vertex 0 its topmost (ties: leftmost).
 5. **Match.** Each polygon takes the slot whose previous polygon was
-   nearest, so a slot follows one blob instead of jumping across the stage.
+   nearest, so a slot follows one blob instead of jumping across the stage,
+   turned to the vertex order nearest that previous polygon; a slot that
+   starts or ends is given a shape to morph from or into.
 
-Five rules, each of which cost a round to find, and each held by a test
+Seven rules, each of which cost a round to find, and each held by a test
 in `test/test_kernel.mojo` that fails when the rule is broken
 (`poe sabotage-blobs` breaks each on purpose):
 
@@ -40,15 +42,33 @@ in `test/test_kernel.mojo` that fails when the rule is broken
   page coordinates (y down) gives an outer contour a NEGATIVE shoelace
   area and a hole a positive one. The prototype emitted a hole as a
   polygon of its own; a `clip-path` cannot cut one out, so it is dropped.
-- **Vertex 0 is chosen after resampling.** CSS moves vertex `i` to vertex
-  `i`, so the start must not wander between frames; picking it among the
-  resampled vertices makes the rule exact rather than exact up to
-  rounding in the interpolation.
+- **Vertex 0 is chosen after resampling.** A polygon's canonical start is
+  its topmost resampled vertex (ties leftmost), picked among the resampled
+  vertices so the rule is exact rather than exact up to rounding. It is
+  where a slot's FIRST polygon starts, and nothing more.
+- **A slot keeps its vertex order.** CSS moves vertex `i` to vertex `i`,
+  so a continuing slot's polygon is turned to the cyclic shift nearest its
+  previous one. Topmost every step was the rule until the first deploy: a
+  blob whose highest point moved to another lobe restarted its order
+  there, and the transition dragged every vertex around the outline --
+  measured on the live stream as 64 of 1,758 slot steps, a vertex moving
+  10-15 % of the stage where the nearest shift moved it under 1 %.
+- **Nothing appears or vanishes in one frame.** A slot that `data-show`
+  reveals or hides does not transition, so a shape that starts or ends is
+  given one to morph from or into: a split starts as a copy of its
+  parent's previous polygon; any other new shape starts as a tiny copy of
+  itself at its centre; a shape absorbed by a merge becomes the merged
+  outline, then shrinks toward where it was; any other shape that ends
+  shrinks to its centre. Each farewell holds the slot a step or two, and
+  no new shape takes it meanwhile. The first trace draws everything whole.
 
 The contract the wire and the page depend on, per filled slot: exactly
-`NVERT` vertices in grid units strictly inside the stage; vertex 0 the
-topmost, ties leftmost; negative shoelace area. At most one slot per live
-blob is filled, and at least one while any blob lives.
+`NVERT` vertices in grid units strictly inside the stage; negative
+shoelace area; a continuing slot in the vertex order nearest its previous
+polygon; a new slot starting topmost (ties leftmost) or as an exact copy
+of another slot's previous polygon. At most one slot per live blob holds
+a shape of its own, plus the slots saying farewell, and at least one while
+any blob lives.
 """
 
 from std.math import iota, sqrt
@@ -77,6 +97,21 @@ comptime MIN_LOOP = 8
 comptime MATCH_RADIUS = Float32(40.0)
 """How far, in grid units, a polygon's centre may move and keep its slot."""
 
+comptime SEED_SCALE = Float32(0.08)
+"""How small a shape is drawn where it starts or ends, as a fraction of it."""
+
+comptime BORN_COPY = 1
+"""A new slot's first polygon is its parent's previous one: a split."""
+
+comptime BORN_SEED = 2
+"""A new slot's first polygon is a `SEED_SCALE` copy of itself at its centre."""
+
+comptime LEAVE_SHRINK = 1
+"""A farewell slot that shrinks next step: it became the merged outline."""
+
+comptime LEAVE_HIDE = 2
+"""A farewell slot that hides next step: it has shrunk."""
+
 comptime _LANES = simd_width_of[DType.float32]()
 
 
@@ -89,7 +124,14 @@ struct Shapes(Movable):
     var py: List[Float32]
     var filled: List[Bool]
     var cx: List[Float32]
+    """A slot's centre: its blob's, or where a farewell shrinks toward."""
     var cy: List[Float32]
+    var born: List[Int]
+    """0, or `BORN_COPY`/`BORN_SEED`: the polygon is a new shape's first."""
+    var leaving: List[Int]
+    """0, or `LEAVE_SHRINK`/`LEAVE_HIDE`: the slot is saying farewell."""
+    var primed: Bool
+    """A step has been traced. The first draws every shape whole."""
 
     def __init__(out self):
         self.px = List[Float32](length=SLOTS * NVERT, fill=0.0)
@@ -97,6 +139,16 @@ struct Shapes(Movable):
         self.filled = List[Bool](length=SLOTS, fill=False)
         self.cx = List[Float32](length=SLOTS, fill=0.0)
         self.cy = List[Float32](length=SLOTS, fill=0.0)
+        self.born = List[Int](length=SLOTS, fill=0)
+        self.leaving = List[Int](length=SLOTS, fill=0)
+        self.primed = False
+
+    def leaving_count(self) -> Int:
+        var n = 0
+        for k in range(SLOTS):
+            if self.filled[k] and self.leaving[k] != 0:
+                n += 1
+        return n
 
     def filled_count(self) -> Int:
         var n = 0
@@ -450,7 +502,12 @@ struct Tracer(Movable):
         biggest one's slot, and when more polygons exist than slots the
         smallest are the ones left out. A new polygon prefers a slot that
         was empty last step: one that just emptied would animate its old
-        shape across the stage to the new one.
+        shape across the stage to the new one. A slot saying farewell is
+        neither matched nor offered.
+
+        Then each slot's polygon is placed: a continuing one turned to the
+        vertex order nearest its previous polygon, a new one as the shape
+        it grows from, and every shape that ended as its farewell.
         """
         var ncand = len(self.cand_area)
         var order = List[Int]()
@@ -462,8 +519,10 @@ struct Tracer(Movable):
         if len(order) > SLOTS:
             order.resize(SLOTS, 0)
         var was = shapes.filled.copy()
+        var was_leaving = shapes.leaving.copy()
         var taken = List[Bool](length=SLOTS, fill=False)
         var slot_of = List[Int](length=len(order), fill=-1)
+        var cont = List[Bool](length=len(order), fill=False)
         var mx = List[Float32](length=len(order), fill=0.0)
         var my = List[Float32](length=len(order), fill=0.0)
         for oi in range(len(order)):
@@ -478,7 +537,7 @@ struct Tracer(Movable):
             var best = -1
             var best_d = MATCH_RADIUS * MATCH_RADIUS
             for k in range(SLOTS):
-                if not was[k] or taken[k]:
+                if not was[k] or taken[k] or was_leaving[k] != 0:
                     continue
                 var dx = shapes.cx[k] - mx[oi]
                 var dy = shapes.cy[k] - my[oi]
@@ -489,6 +548,7 @@ struct Tracer(Movable):
             if best >= 0:
                 taken[best] = True
                 slot_of[oi] = best
+                cont[oi] = True
         for oi in range(len(order)):
             if slot_of[oi] >= 0:
                 continue
@@ -504,17 +564,134 @@ struct Tracer(Movable):
                         break
             taken[pick] = True
             slot_of[oi] = pick
+
+        # Last step's polygons, read before this step writes over them.
+        var old_x = shapes.px.copy()
+        var old_y = shapes.py.copy()
+        var primed = shapes.primed
         for k in range(SLOTS):
             shapes.filled[k] = taken[k]
+            shapes.born[k] = 0
+            shapes.leaving[k] = 0
         for oi in range(len(order)):
             var c = order[oi]
             var k = slot_of[oi]
-            for v in range(NVERT):
-                shapes.px[k * NVERT + v] = self.cand_x[c * NVERT + v]
-                shapes.py[k * NVERT + v] = self.cand_y[c * NVERT + v]
+            if cont[oi]:
+                var shift = _best_shift(
+                    self.cand_x, self.cand_y, c * NVERT, old_x, old_y, k * NVERT
+                )
+                _put(shapes, k, self.cand_x, self.cand_y, c * NVERT, shift)
+            elif primed:
+                # A new shape grows from its parent's outline, or from itself.
+                var parent = _containing(old_x, old_y, was, was_leaving, mx[oi], my[oi])
+                if parent >= 0:
+                    shapes.born[k] = BORN_COPY
+                    _put(shapes, k, old_x, old_y, parent * NVERT, 0)
+                else:
+                    shapes.born[k] = BORN_SEED
+                    _put(shapes, k, self.cand_x, self.cand_y, c * NVERT, 0)
+                    _shrink(shapes, k, mx[oi], my[oi])
+            else:
+                _put(shapes, k, self.cand_x, self.cand_y, c * NVERT, 0)
             shapes.cx[k] = mx[oi]
             shapes.cy[k] = my[oi]
+
+        # Farewells: last step's shapes that no polygon continues. A slot
+        # keeps the centre it had, which is where it shrinks toward.
+        for k in range(SLOTS):
+            if not was[k] or taken[k] or was_leaving[k] == LEAVE_HIDE:
+                continue
+            shapes.filled[k] = True
+            if was_leaving[k] == 0:
+                var into = self._absorber(order, shapes.cx[k], shapes.cy[k])
+                if into >= 0:
+                    var shift = _best_shift(
+                        self.cand_x, self.cand_y, into * NVERT, old_x, old_y, k * NVERT
+                    )
+                    _put(shapes, k, self.cand_x, self.cand_y, into * NVERT, shift)
+                    shapes.leaving[k] = LEAVE_SHRINK
+                    continue
+            _put(shapes, k, old_x, old_y, k * NVERT, 0)
+            _shrink(shapes, k, shapes.cx[k], shapes.cy[k])
+            shapes.leaving[k] = LEAVE_HIDE
+        shapes.primed = True
         self.kept = len(order)
+
+    def _absorber(self, order: List[Int], x: Float32, y: Float32) -> Int:
+        """The drawn polygon that now covers (`x`, `y`), or -1."""
+        for oi in range(len(order)):
+            if _inside(self.cand_x, self.cand_y, order[oi] * NVERT, x, y):
+                return order[oi]
+        return -1
+
+
+def _best_shift(
+    nx: List[Float32], ny: List[Float32], nbase: Int,
+    ox: List[Float32], oy: List[Float32], obase: Int,
+) -> Int:
+    """The rotation of the new polygon whose vertices lie nearest the old's.
+
+    Vertex `i` of the result is new vertex `(i + shift) % NVERT`, and CSS
+    moves it to where old vertex `i` was: this is the order that moves them
+    least in total (squared distance, ties to the smaller shift).
+    """
+    var best = 0
+    var best_d = Float32(3.0e38)
+    for s in range(NVERT):
+        var d = Float32(0)
+        for v in range(NVERT):
+            var w = (v + s) % NVERT
+            var dx = nx[nbase + w] - ox[obase + v]
+            var dy = ny[nbase + w] - oy[obase + v]
+            d += dx * dx + dy * dy
+        if d < best_d:
+            best_d = d
+            best = s
+    return best
+
+
+def _put(
+    mut shapes: Shapes, k: Int,
+    xs: List[Float32], ys: List[Float32], base: Int, shift: Int,
+):
+    """Slot `k`'s polygon: `xs[base:]`, rotated left by `shift`."""
+    for v in range(NVERT):
+        shapes.px[k * NVERT + v] = xs[base + (v + shift) % NVERT]
+        shapes.py[k * NVERT + v] = ys[base + (v + shift) % NVERT]
+
+
+def _shrink(mut shapes: Shapes, k: Int, x: Float32, y: Float32):
+    """Scale slot `k`'s polygon toward (`x`, `y`) by `SEED_SCALE`."""
+    for v in range(NVERT):
+        shapes.px[k * NVERT + v] = x + SEED_SCALE * (shapes.px[k * NVERT + v] - x)
+        shapes.py[k * NVERT + v] = y + SEED_SCALE * (shapes.py[k * NVERT + v] - y)
+
+
+def _inside(xs: List[Float32], ys: List[Float32], base: Int, x: Float32, y: Float32) -> Bool:
+    """Whether (`x`, `y`) is inside the polygon at `xs[base:]` (crossing count)."""
+    var inside = False
+    var j = NVERT - 1
+    for i in range(NVERT):
+        var xi = xs[base + i]
+        var yi = ys[base + i]
+        var xj = xs[base + j]
+        var yj = ys[base + j]
+        if (yi > y) != (yj > y):
+            if x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _containing(
+    xs: List[Float32], ys: List[Float32],
+    was: List[Bool], was_leaving: List[Int], x: Float32, y: Float32,
+) -> Int:
+    """The slot whose last-step shape (not a farewell) covered (`x`, `y`), or -1."""
+    for k in range(SLOTS):
+        if was[k] and was_leaving[k] == 0 and _inside(xs, ys, k * NVERT, x, y):
+            return k
+    return -1
 
 
 def _rotate(mut xs: List[Float32], base: Int, by: Int):

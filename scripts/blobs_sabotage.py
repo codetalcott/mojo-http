@@ -169,14 +169,17 @@ SABOTAGES = [
         "shapes wind the other way (vertex order reversed)",
         SMOKE,
         KERNEL,
-        "                shapes.px[k * NVERT + v] = self.cand_x[c * NVERT + v]\n"
-        "                shapes.py[k * NVERT + v] = self.cand_y[c * NVERT + v]\n",
-        "                shapes.px[k * NVERT + v] = self.cand_x[c * NVERT + NVERT - 1 - v]\n"
-        "                shapes.py[k * NVERT + v] = self.cand_y[c * NVERT + NVERT - 1 - v]\n",
+        "        shapes.px[k * NVERT + v] = xs[base + (v + shift) % NVERT]\n"
+        "        shapes.py[k * NVERT + v] = ys[base + (v + shift) % NVERT]\n",
+        "        shapes.px[k * NVERT + v] = xs[base + (NVERT - 1 - v + shift) % NVERT]\n"
+        "        shapes.py[k * NVERT + v] = ys[base + (NVERT - 1 - v + shift) % NVERT]\n",
     ),
+    # The wire stopped checking vertex 0 when a continuing slot's order came
+    # to be its previous polygon's rather than its topmost vertex; a slot's
+    # FIRST polygon still starts topmost, and the kernel test holds that.
     (
         "vertex 0 is not the topmost vertex (start rotated past it)",
-        SMOKE,
+        UNIT,
         KERNEL,
         "        tmp.append(xs[base + (v + by) % NVERT])\n",
         "        tmp.append(xs[base + (v + by + 3) % NVERT])\n",
@@ -212,6 +215,27 @@ SABOTAGES = [
         "",
     ),
     (
+        "a twist reaches the wire (a slot restarts at its topmost vertex)",
+        SMOKE,
+        KERNEL,
+        "                _put(shapes, k, self.cand_x, self.cand_y, c * NVERT, shift)\n",
+        "                _put(shapes, k, self.cand_x, self.cand_y, c * NVERT, 0)\n",
+    ),
+    (
+        "a pop reaches the wire (a shape that ends is hidden at once)",
+        SMOKE,
+        KERNEL,
+        "            if not was[k] or taken[k] or was_leaving[k] == LEAVE_HIDE:\n",
+        "            if True:\n",
+    ),
+    (
+        "a pop reaches the wire (a new shape appears whole)",
+        SMOKE,
+        KERNEL,
+        "                    _shrink(shapes, k, mx[oi], my[oi])\n",
+        "",
+    ),
+    (
         "vertex 0 is not re-chosen after resampling",
         UNIT,
         KERNEL,
@@ -231,6 +255,41 @@ SABOTAGES = [
         KERNEL,
         "                if not taken[k] and not was[k]:\n",
         "                if not taken[k]:\n",
+    ),
+    (
+        "a slot restarts at its topmost vertex every step (a twist)",
+        UNIT,
+        KERNEL,
+        "                _put(shapes, k, self.cand_x, self.cand_y, c * NVERT, shift)\n",
+        "                _put(shapes, k, self.cand_x, self.cand_y, c * NVERT, 0)\n",
+    ),
+    (
+        "a shape that ends is hidden at once (no farewell)",
+        UNIT,
+        KERNEL,
+        "            if not was[k] or taken[k] or was_leaving[k] == LEAVE_HIDE:\n",
+        "            if True:\n",
+    ),
+    (
+        "a new shape appears whole (no seed)",
+        UNIT,
+        KERNEL,
+        "                    _shrink(shapes, k, mx[oi], my[oi])\n",
+        "",
+    ),
+    (
+        "a split appears whole beside its parent (no parent copy)",
+        UNIT,
+        KERNEL,
+        "                var parent = _containing(old_x, old_y, was, was_leaving, mx[oi], my[oi])\n",
+        "                var parent = -1\n",
+    ),
+    (
+        "an absorbed shape shrinks where it was (no merged outline)",
+        UNIT,
+        KERNEL,
+        "                var into = self._absorber(order, shapes.cx[k], shapes.cy[k])\n",
+        "                var into = -1\n",
     ),
     (
         "a drop is not clamped (a lone blob against the wall)",

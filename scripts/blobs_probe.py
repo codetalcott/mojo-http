@@ -17,18 +17,23 @@ assertion that failed. Stdlib only.
 What a frame must be, every time: a `datastar-patch-signals` event whose
 signals carry EVERY slot `_b0`..`_b15` (full state, never a delta), each
 either empty or `polygon(...)` with exactly 48 vertices, every coordinate
-inside 0–100 %, vertex 0 at the smallest y, and a negative shoelace area
-in page coordinates — one winding for every shape. The frame is under
-the bus's 64 KB, and the ids of one stream are contiguous.
+inside 0–100 %, and a negative shoelace area in page coordinates — one
+winding for every shape. The frame is under the bus's 64 KB, and the ids
+of one stream are contiguous.
+
+What consecutive frames must be (`check_motion`), because CSS moves vertex
+`i` to vertex `i` and does not transition a slot `data-show` reveals or
+hides: a slot in both frames is in the rotation nearest its last (no
+twist); a slot that empties has shrunk first (a farewell); a slot that
+fills starts as a copy of a shape in the frame before (a split) or as a
+seed a fraction of the size it grows into.
 
 Merged blobs may reach a wall (the kernel's border closes them there), so
 "clear of the edge" is asserted only for a LONE blob: the corner drop,
 which the drop view clamps a margin inside the stage.
 
-Vertex 0 is checked as "no vertex above it", not as the kernel's exact
-rule (smallest y, ties by smallest x): coordinates are rounded to 0.1 %
-on the wire, which makes near-ties exact ties whose x order is rounding's.
-The kernel's own test holds the exact rule.
+Vertex order is the kernel test's to hold exactly; on the wire,
+coordinates are rounded to 0.1 %, so the twist check allows that much.
 
 The newest-state check is deterministic, which is why it waits for the
 producer to PAUSE: with nobody watching, no step runs, so the last id the
@@ -238,9 +243,6 @@ def check_polygon(value: str, where: str, clear: bool = False) -> tuple[float, f
                 + (" -- a lone blob against the wall: the drop clamp is not"
                    " keeping it a margin inside" if clear else "")
             )
-    y0 = pts[0][1]
-    if min(y for _, y in pts) < y0:
-        fail(f"{where}: vertex 0 (y={y0}) is not the topmost vertex")
     area = sum(
         pts[i][0] * pts[(i + 1) % NVERT][1] - pts[(i + 1) % NVERT][0] * pts[i][1]
         for i in range(NVERT)
@@ -268,6 +270,60 @@ def check_frame(frame: dict, where: str) -> None:
     extra = [k for k in sig if not k.startswith("_")]
     if extra:
         fail(f"{where}: frame {frame['id']} patches non-underscore signals {extra} -- they would ride every click")
+
+
+def _extent(pts: list[tuple[float, float]]) -> float:
+    """How far the farthest vertex is from the vertices' mean."""
+    cx = sum(x for x, _ in pts) / len(pts)
+    cy = sum(y for _, y in pts) / len(pts)
+    return max(((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in pts)
+
+
+def _mean_move(a: list, b: list, shift: int) -> float:
+    n = len(a)
+    return sum(
+        ((b[(i + shift) % n][0] - a[i][0]) ** 2 + (b[(i + shift) % n][1] - a[i][1]) ** 2) ** 0.5
+        for i in range(n)
+    ) / n
+
+
+# A seed or a shrunk farewell is SEED_SCALE (0.08) of its shape; anything
+# under this fraction of the shape beside it is one, and a whole shape is 1.
+SEED_RATIO = 0.3
+
+
+def check_motion(frames: list[dict], where: str) -> None:
+    """Consecutive frames of one stream: no twist, nothing popping in or out."""
+    moved = 0
+    for i in range(len(frames) - 1):
+        a, b = frames[i]["signals"], frames[i + 1]["signals"]
+        if frames[i + 1]["id"] != frames[i]["id"] + 1:
+            continue
+        for k in range(SLOTS):
+            key = f"_b{k}"
+            pa, pb = a[key], b[key]
+            at = f"{where} frames {frames[i]['id']}-{frames[i + 1]['id']} {key}"
+            if pa and pb:
+                va, vb = polygon_points(pa, at), polygon_points(pb, at)
+                here = _mean_move(va, vb, 0)
+                best = min(_mean_move(va, vb, s) for s in range(NVERT))
+                if here > 1.05 * best + 0.15:
+                    fail(f"{at}: twisted -- vertices moved {here:.2f} % where the nearest rotation moves {best:.2f} %")
+                moved += 1
+            elif pa and not pb and i > 0 and frames[i - 1]["signals"][key]:
+                last = polygon_points(pa, at)
+                before = polygon_points(frames[i - 1]["signals"][key], at)
+                if _extent(last) > SEED_RATIO * _extent(before):
+                    fail(f"{at}: hidden without a farewell -- its last shape was not shrunk")
+            elif pb and not pa:
+                if pb in a.values():
+                    continue  # a split: its parent's shape, from the frame before
+                if i + 2 < len(frames) and frames[i + 2]["id"] == frames[i + 1]["id"] + 1:
+                    grown = frames[i + 2]["signals"][key]
+                    if grown and _extent(polygon_points(pb, at)) > SEED_RATIO * _extent(polygon_points(grown, at)):
+                        fail(f"{at}: appeared whole -- its first shape is neither its parent's nor a seed")
+    if moved == 0 and len(frames) > 2:
+        fail(f"{where}: no slot was drawn in two consecutive frames, so the twist check checked nothing")
 
 
 def check_contiguous(frames: list[dict], where: str) -> None:
@@ -381,6 +437,22 @@ def serve(port: int) -> None:
     if len(corner) != 1:
         fail(f"a drop at (100, 100) drew {len(corner)} shapes in the bottom-right corner, not one")
     check_polygon(corner[0], "the corner drop", clear=True)
+    # A drop's first polygon is an 8 % seed of itself, clear of the wall
+    # whatever the band is, so the clearance is asserted on the GROWN shape
+    # too: the same slot, one frame on. Checking the seed alone let a
+    # collapsed band through (measured: MISSED).
+    slot = next(k for k in range(SLOTS) if seen["s1"]["signals"][f"_b{k}"] == corner[0])
+    grown = None
+    while time.perf_counter() - t_drop < 3.0 and grown is None:
+        for f in s1.snapshot():
+            if f["id"] == seen["s1"]["id"] + 1:
+                grown = f
+        time.sleep(0.02)
+    if grown is None:
+        fail("no frame followed the corner drop's first within 3 s")
+    if not grown["signals"][f"_b{slot}"]:
+        fail(f"the corner drop's slot _b{slot} was empty one frame after it appeared")
+    check_polygon(grown["signals"][f"_b{slot}"], "the corner drop, grown", clear=True)
 
     phase("filling the world past its cap")
     extra = [a] + [http.client.HTTPConnection("127.0.0.1", port, timeout=10) for _ in range(2)]
@@ -431,6 +503,7 @@ def serve(port: int) -> None:
         for f in frames:
             check_frame(f, name)
         check_contiguous(frames, name)
+        check_motion(frames, name)
     expected = held_for * hz
     if not (0.5 * expected <= len(f1) <= 1.3 * expected + 2):
         fail(f"{len(f1)} frames in {held_for:.1f} s at {hz} Hz: outside {0.5 * expected:.0f}-{1.3 * expected + 2:.0f}")
@@ -616,6 +689,7 @@ def two(port: int) -> None:
             )
         for f in frames:
             check_frame(f, f"worker {s.worker}")
+        check_motion(frames, f"worker {s.worker}")
     tops = {s.worker: latest(s.snapshot())["id"] for s in streams}
     if max(tops.values()) - min(tops.values()) > 3:
         fail(f"the workers' streams are at different steps: {tops}")
