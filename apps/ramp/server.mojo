@@ -11,13 +11,15 @@ Run it:  uv run poe serve-ramp
 """
 
 from m0_host.host import ViewsApp, serve
+from m0_host.flags import host_config
 
-from m0_http import AppConfig
 from ramp.views import RAMP_PREFIX, Ramp
 
 
 def main() raises:
-    var config = AppConfig()
+    # With the command line applied, so the address printed below is the
+    # one `serve` binds under `--port` (`m0_host.flags`).
+    var config = host_config()
     print(
         String(
             "ramp on ", config.base_url, " under ", RAMP_PREFIX, ", ",

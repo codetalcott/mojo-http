@@ -61,8 +61,9 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPRequest, HTTPResponse, OK
 from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
+from m0_host.flags import host_config
 
-from m0_http import AppConfig, SSERegistry, format_sse_event, sse_response
+from m0_http import SSERegistry, format_sse_event, sse_response
 from m0_http.multiworker import shared_fetch_add
 
 comptime STREAM_URL = "/events"
@@ -249,7 +250,9 @@ struct SimHandler(AppHandler):
 
 
 def main() raises:
-    var config = AppConfig()
+    # With the command line applied, so the address printed below is the
+    # one `serve` binds under `--port` (`m0_host.flags`).
+    var config = host_config()
     var sim = SimConfig()
     print(
         String(

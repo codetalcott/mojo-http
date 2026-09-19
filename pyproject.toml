@@ -7489,16 +7489,39 @@ python3 scripts/emit.py --covers E28 --task smoke-host-threads
 python3 scripts/emit.py --covers E29 --task smoke-host-threads
 """
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E29, N18, N19):
+# The Mojo host's command line (SPEC E30, E31). m0serve's `smoke-doctor`
+# shape: every configuration is run BOTH ways -- `--doctor ARGS` and `ARGS`
+# -- and the exit codes must agree, because a doctor that reports "fine"
+# where the server refuses is worse than none. The table is the probe's.
+[tool.poe.tasks.smoke-host-doctor]
+help = "The Mojo host's flags and --doctor: flag > env > default on the wire, and the doctor exits with the server's own code for every configuration, having bound nothing"
+shell = """
+out=$(mktemp -d)
+cleanup() {
+  pkill -KILL -f "$out/" 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
+  apps/host_check/server.mojo -o "$out/host_check" || exit 1
+python3 scripts/host_doctor_probe.py "$out/host_check" 8900 || exit 1
+echo "smoke-host-doctor OK"
+python3 scripts/emit.py --covers E30 --task smoke-host-doctor
+python3 scripts/emit.py --covers E31 --task smoke-host-doctor
+"""
+
+# Each Mojo host rule, broken on purpose (SPEC E21-E31, N18, N19):
 # twenty-three against smoke-host, seven against smoke-host-threads, two
 # against smoke-fragment-notes, six against test_host.mojo, six against test_prefork.mojo (the pre-fork
 # pieces both hosts share), one against test_respawn.mojo (the supervisor
 # ending the siblings on a refusal), one against test_views.mojo (the
-# placement flag). Pre-release: forty-six runs, over an hour;
+# placement flag), and the command line's twelve: seven against
+# smoke-host-doctor and five against test_host_flags.mojo. Pre-release:
+# fifty-eight runs, over an hour; `--only doctor` is about five minutes;
 # `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_prefork, test_respawn or test_views fails for every one (SPEC E21-E29, N19)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_prefork, test_respawn, test_views or smoke-host-doctor fails for every one (SPEC E21-E31, N19)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC

@@ -48,6 +48,8 @@ tell, so it is not claimed as a guarded rule.
     uv run poe sabotage-host --only respawn        the supervisor's rule
     uv run poe sabotage-host --only views          the placement rule
     uv run poe sabotage-host --only threads        the loops-on-threads rules (SPEC E27-E29)
+    uv run poe sabotage-host --only doctor         the command line on the wire (SPEC E30, E31)
+    uv run poe sabotage-host --only flags          the parser's rules
 """
 
 from __future__ import annotations
@@ -73,11 +75,14 @@ PREFORK = "prefork"
 RESPAWN = "respawn"
 VIEWS = "views"
 THREADS = "threads"
+DOCTOR = "doctor"
+FLAGS = "flags"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
 EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
 VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
 HOST_CHECK = Path("apps/host_check/server.mojo")
+FLAGS_SRC = Path("packages/m0-http/m0_host/flags.mojo")
 PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
 ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
 MULTIWORKER_SRC = Path("packages/m0-http/src/multiworker.mojo")
@@ -360,8 +365,8 @@ SABOTAGES = [
         "workers and threads together are served",
         THREADS,
         HOST,
-        "    if conflict:\n        return conflict.value()\n",
-        "",
+        "    if conflict:\n        out.append(HostCheck(\n",
+        "    if False:\n        out.append(HostCheck(\n",
     ),
     (
         "ViewsApp drops its state's loop limit",
@@ -443,6 +448,91 @@ SABOTAGES = [
         "    return workers > 1 and getenv(\"M0_ACCEPT_SHARE\", \"\") != \"0\"\n",
         "    return workers > 1\n",
     ),
+    # --- The command line and `--doctor` (SPEC E30, E31) ---------------------
+    (
+        "the doctor ignores what the application declares",
+        DOCTOR,
+        HOST,
+        "    var checks = host_checks(config, H.max_workers(), H.max_threads())\n",
+        "    var checks = host_checks(config)\n",
+    ),
+    (
+        "the doctor always exits 0",
+        DOCTOR,
+        HOST,
+        "        process_exit(report.exit_code())\n",
+        "        process_exit(0)\n",
+    ),
+    (
+        "--doctor is read and the server starts anyway",
+        DOCTOR,
+        HOST,
+        "    if flags.doctor:\n",
+        "    if False:\n",
+    ),
+    (
+        "the command line is read and the environment is served",
+        DOCTOR,
+        HOST,
+        "    var config = flags.config.copy()\n",
+        "    var config = seed.copy()\n",
+    ),
+    (
+        "a given flag never reaches the ServerConfig the loop reads",
+        DOCTOR,
+        HOST,
+        "    flags.apply_to(server_config)\n",
+        "",
+    ),
+    (
+        "the server refuses by its LAST failed check, the doctor by its first",
+        DOCTOR,
+        HOST,
+        "    for i in range(len(checks)):\n        if not checks[i].ok:\n            return String(",
+        "    for i in reversed(range(len(checks))):\n        if not checks[i].ok:\n            return String(",
+    ),
+    (
+        "the gate app's banner is printed from the environment alone",
+        DOCTOR,
+        HOST_CHECK,
+        "    var config = host_config()\n",
+        "    var config = AppConfig()\n",
+    ),
+    (
+        "an unknown flag is ignored",
+        FLAGS,
+        FLAGS_SRC,
+        '                raise Error("unknown option " + name)\n',
+        "                pass\n",
+    ),
+    (
+        "a flag does not mark its count as chosen",
+        FLAGS,
+        FLAGS_SRC,
+        "        config.workers_set = True\n",
+        "",
+    ),
+    (
+        "a moved port leaves the base URL naming the old one",
+        FLAGS,
+        FLAGS_SRC,
+        '            config.base_url = "http://localhost:" + String(port)\n',
+        "            pass\n",
+    ),
+    (
+        "a flag that was not given overwrites tuning the application set",
+        FLAGS,
+        FLAGS_SRC,
+        '        if self.was_given("--app-tick-ms"):\n',
+        "        if True:\n",
+    ),
+    (
+        "--threads 0 is a usage error for the flag and a refusal for the variable",
+        FLAGS,
+        FLAGS_SRC,
+        '        config.threads = _parse_int(value, "--threads")\n',
+        '        config.threads = _parse_int(value, "--threads")\n        if config.threads < 1:\n            raise Error("--threads must be at least 1")\n',
+    ),
 ]
 
 
@@ -510,9 +600,28 @@ def run_respawn() -> tuple[bool, str]:
     return (p.returncode == 0 and " 0 failed" in out), out
 
 
+def run_doctor() -> tuple[bool, str]:
+    p = subprocess.run(
+        [POE, "smoke-host-doctor"], capture_output=True, text=True, timeout=900
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and "smoke-host-doctor OK" in out), out
+
+
+def run_flags() -> tuple[bool, str]:
+    p = subprocess.run(
+        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
+         "packages/m0-http/test/test_host_flags.mojo"],
+        capture_output=True, text=True, timeout=600,
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and " 0 failed" in out), out
+
+
 GATES = {
     SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork,
     RESPAWN: run_respawn, VIEWS: run_views, THREADS: run_threads,
+    DOCTOR: run_doctor, FLAGS: run_flags,
 }
 
 

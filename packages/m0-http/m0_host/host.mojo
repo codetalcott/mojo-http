@@ -11,7 +11,12 @@ rules those lines obey are this repo's hardest-won (CLAUDE.md, "Runtime
 constraints"), so `serve` owns them and an application cannot spell them
 wrong. In this order:
 
-1. **Refuse what it does not serve** (`host_refusal`): `M0_SPAWN_WORKERS`
+0. **Read the command line** over the `AppConfig` it was handed
+   (`m0_host.flags`; flag > env > default, m0serve's precedence). One that
+   cannot be read is the usage and exit 2; `--doctor` prints what the
+   steps below WOULD do as one JSON object (`host_report`) and leaves with
+   the code step 1 would, having bound nothing.
+1. **Refuse what it does not serve** (`host_checks`): `M0_SPAWN_WORKERS`
    is m0serve's, and a variable the host silently ignored would be a
    configuration that reads as applied; `M0_WORKERS` and `M0_THREADS`
    together, the two being one choice; and more workers than
@@ -153,15 +158,18 @@ the host's `ViewService`: a state type conforming to `ViewState` (`make`,
 the SSE hooks writes its own `AppHandler` over `Views.dispatch`, as
 `apps/blobs` does.
 
-**What it does not do.** No `--spawn-workers`, no CLI flags or
-`--doctor`: `AppConfig`'s environment is the whole configuration. Each is
-refused or absent rather than half-served. The pool lane (D31) and the
+**What it does not do.** No `--spawn-workers`: refused rather than
+half-served. Flags and `--doctor` arrived on 2026-09-19 (D29, retired); an
+application's OWN settings stay in its own variables, and the doctor does
+not render them. The pool lane (D31) and the
 loops on threads (D35) are what v1 refused and are served now; a hold from a
 pool thread (`set_hold_notify`) is not, and a Mojo application that wants a
 held stream opens it on the loop.
 """
 
 from std.memory import Pointer
+from std.os import getenv
+from std.sys.info import CompilationTarget
 from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns, sleep
 
@@ -180,6 +188,7 @@ from lightbug_http.service import HTTPService
 # Downward, through `m0_http.mojoc`: this package sits above both the fork
 # and `m0_http`, and neither imports it. See the module docstring.
 from m0_http.config import AppConfig, threads_conflict
+from m0_http.doctor import Report
 from m0_http.mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
 from m0_http.multiworker import (
     EX_CONFIG,
@@ -197,6 +206,8 @@ from m0_http.prefork import (
 )
 from m0_http.signal import install_shutdown_signals
 from m0_http.views import Views
+
+from .flags import DOCTOR_FORMAT, HostFlags, read_flags_or_exit
 from m0_http.threads import (
     BLK_BUS_FD,
     BLK_INDEX,
@@ -722,51 +733,234 @@ struct ProducerThread(Movable):
         return self.stragglers
 
 
-def host_refusal(
-    config: AppConfig, max_workers: Int = 0, max_threads: Int = 0
-) -> Optional[String]:
-    """Why the host will not serve `config`, or None.
+struct HostCheck(Copyable, Movable):
+    """One rule `serve` refuses by, evaluated: what `--doctor` lists."""
 
-    Each is a variable another server honours, or a count the application
-    cannot keep one state across; ignoring either would serve a
-    configuration other than the one written down.
+    var name: String
+    var ok: Bool
+    var detail: String
+    """What was found: the refusal `serve` prints under `host:` when not ok."""
+    var fix: String
+    """What to change. Empty when ok."""
+
+    def __init__(out self, var name: String, var detail: String):
+        self.name = name^
+        self.ok = True
+        self.detail = detail^
+        self.fix = String("")
+
+    def __init__(out self, var name: String, var detail: String, var fix: String):
+        self.name = name^
+        self.ok = False
+        self.detail = detail^
+        self.fix = fix^
+
+
+def host_checks(
+    config: AppConfig, max_workers: Int = 0, max_threads: Int = 0
+) -> List[HostCheck]:
+    """Every rule the host refuses a configuration by, in the order `serve`
+    applies them, each evaluated.
+
+    ONE description, read twice: `host_refusal` is the first of these that
+    failed, which is what `serve` exits 78 on, and `--doctor` lists them all
+    and exits on the same first failure -- so the doctor cannot report a
+    configuration as served that the server refuses, or refuse for another
+    reason. Each is a setting another server honours, or a count the
+    application cannot keep one state across; ignoring either would serve a
+    configuration other than the one written down. Whether the number came
+    from a flag or a variable is not asked: both are named.
     """
+    var out = List[HostCheck]()
     if config.workers < 1:
-        return String("M0_WORKERS must be at least 1, not ", config.workers)
+        out.append(HostCheck(
+            "workers-count",
+            String("M0_WORKERS must be at least 1, not ", config.workers),
+            "set --workers (M0_WORKERS) to 1 or more, or leave it unset for one process",
+        ))
+    else:
+        out.append(HostCheck("workers-count", String(config.workers, " worker process(es)")))
     if max_workers > 0 and config.workers > max_workers:
-        return String(
-            "M0_WORKERS=", config.workers, ", but this application serves from"
-            " at most ", max_workers, " process(es): its state lives in one"
-            " process's memory",
-        )
+        out.append(HostCheck(
+            "workers-vs-application",
+            String(
+                "M0_WORKERS=", config.workers, ", but this"
+                " application serves from at most ", max_workers,
+                " process(es): its state lives in one process's memory",
+            ),
+            String("set --workers (M0_WORKERS) to ", max_workers, " or fewer"),
+        ))
+    else:
+        out.append(HostCheck(
+            "workers-vs-application",
+            String("the application serves from any number of processes")
+            if max_workers == 0
+            else String("the application serves from at most ", max_workers, " process(es)"),
+        ))
     if config.threads < 1:
-        return String("M0_THREADS must be at least 1, not ", config.threads)
+        out.append(HostCheck(
+            "threads-count",
+            String("M0_THREADS must be at least 1, not ", config.threads),
+            "set --threads (M0_THREADS) to 1 or more, or leave it unset for one loop",
+        ))
+    else:
+        out.append(HostCheck("threads-count", String(config.threads, " loop(s) per process")))
     var conflict = threads_conflict(config.workers, config.threads)
     if conflict:
-        return conflict.value()
+        out.append(HostCheck(
+            "workers-vs-threads",
+            conflict.value(),
+            "keep --workers (M0_WORKERS) or --threads (M0_THREADS) above 1, not both",
+        ))
+    else:
+        out.append(HostCheck("workers-vs-threads", "one execution mode"))
     if max_threads > 0 and config.threads > max_threads:
-        return String(
-            "M0_THREADS=", config.threads, ", but this application serves from"
-            " at most ", max_threads, " loop(s): every loop builds its own"
-            " handler, and its state lives in one handler's memory",
-        )
+        out.append(HostCheck(
+            "threads-vs-application",
+            String(
+                "M0_THREADS=", config.threads, ", but this"
+                " application serves from at most ", max_threads, " loop(s):"
+                " every loop builds its own handler, and its state lives in"
+                " one handler's memory",
+            ),
+            String("set --threads (M0_THREADS) to ", max_threads, " or fewer"),
+        ))
+    else:
+        out.append(HostCheck(
+            "threads-vs-application",
+            String("the application serves from any number of loops")
+            if max_threads == 0
+            else String("the application serves from at most ", max_threads, " loop(s)"),
+        ))
     if config.spawn_workers:
-        return String(
-            "M0_SPAWN_WORKERS is m0serve's; the Mojo host forks without exec"
-            " (unset it)"
-        )
+        out.append(HostCheck(
+            "spawn-workers",
+            "M0_SPAWN_WORKERS is m0serve's; the Mojo host"
+            " forks without exec",
+            "drop --spawn-workers and unset M0_SPAWN_WORKERS",
+        ))
+    else:
+        out.append(HostCheck("spawn-workers", "workers fork without exec"))
     if spawned_worker_index() >= 0:
         # An exec'd m0serve worker's marker, inherited: the pre-fork pieces
         # would be adopted from descriptors this process never received.
-        return String(
+        out.append(HostCheck(
+            "spawned-marker",
             "M0_WORKER_SPAWNED marks an exec'd m0serve worker; the Mojo host"
-            " forks without exec (unset it)"
-        )
+            " forks without exec",
+            "unset M0_WORKER_SPAWNED",
+        ))
+    else:
+        out.append(HostCheck("spawned-marker", "not an exec'd m0serve worker"))
+    return out^
+
+
+def host_refusal(
+    config: AppConfig, max_workers: Int = 0, max_threads: Int = 0
+) -> Optional[String]:
+    """Why the host will not serve `config`, or None: the first of
+    `host_checks` that failed, with its fix."""
+    var checks = host_checks(config, max_workers, max_threads)
+    for i in range(len(checks)):
+        if not checks[i].ok:
+            return String(checks[i].detail, " (", checks[i].fix, ")")
     return None
 
 
+def host_report[H: AppHandler](
+    flags: HostFlags, server_config: ServerConfig
+) -> Report:
+    """`--doctor`: the configuration `serve` would run, and whether it would.
+
+    Facts first: the resolved configuration, where each value came from
+    (`flag`, `env` or `default`), the topology it adds up to, and what the
+    application declares about itself. Then `host_checks`, whole. The exit
+    code is the first failed check's, which is `serve`'s own (`host_checks`).
+
+    What it does NOT cover, because finding out means doing it: the bind,
+    and the application's `make`. An address in use, or a handler that
+    cannot be built, is reported by the run. The application's own
+    configuration is not rendered either; its checks run in its `main`
+    before `serve` and so fire under `--doctor` exactly as they do without.
+    `M0_API_KEY` is never printed.
+    """
+    ref config = flags.config
+    var report = Report(String(DOCTOR_FORMAT), String("m0_host"))
+    report.add_fact(
+        "build", "os",
+        String("macos") if CompilationTarget.is_macos() else String("linux"),
+    )
+    var arch: String
+    if CompilationTarget.is_x86():
+        arch = String("x86_64")
+    elif CompilationTarget.is_macos():
+        arch = String("arm64")
+    else:
+        arch = String("aarch64")
+    report.add_fact("build", "arch", arch)
+
+    report.add_fact("config", "host", config.host)
+    report.add_int("config", "port", config.port)
+    report.add_fact("config", "address", config.address())
+    report.add_fact("config", "base_url", config.base_url)
+    report.add_int("config", "workers", config.workers)
+    report.add_int("config", "threads", config.threads)
+    report.add_int("config", "blocking_threads", config.blocking_threads)
+    # The four fields a `ServerConfig` shares are read from IT: that is what
+    # the loop consults, and an application may have set them in code.
+    report.add_bool("config", "access_log", server_config.access_log)
+    report.add_int("config", "sse_heartbeat_ms", server_config.sse_heartbeat_ms)
+    report.add_int("config", "app_tick_ms", server_config.app_tick_ms)
+    report.add_int("config", "max_keepalive_requests", server_config.max_keepalive_requests)
+    report.add_bool("config", "qos", config.qos)
+    report.add_bool("config", "spawn_workers", config.spawn_workers)
+
+    report.add_fact("sources", "host", flags.source("--host"))
+    report.add_fact("sources", "port", flags.source("--port"))
+    report.add_fact("sources", "workers", flags.source("--workers"))
+    report.add_fact("sources", "threads", flags.source("--threads"))
+    report.add_fact("sources", "blocking_threads", flags.source("--blocking-threads"))
+    report.add_fact("sources", "access_log", flags.source("--access-log"))
+    report.add_fact("sources", "sse_heartbeat_ms", flags.source("--sse-heartbeat-ms"))
+    report.add_fact("sources", "app_tick_ms", flags.source("--app-tick-ms"))
+    report.add_fact("sources", "max_keepalive_requests", flags.source("--max-keepalive-requests"))
+    report.add_fact("sources", "qos", flags.source("--qos"))
+    report.add_fact("sources", "spawn_workers", flags.source("--spawn-workers"))
+
+    var loops = config.threads if config.threads > 1 else config.workers
+    var mode = String("single")
+    if config.threads > 1:
+        mode = String("threads")
+    elif config.workers > 1:
+        mode = String("prefork")
+    report.add_fact("topology", "mode", mode)
+    report.add_int("topology", "loops", loops)
+    report.add_int(
+        "topology", "handler_threads",
+        loops * config.blocking_threads if _wants_pool(config) else 0,
+    )
+    report.add_int("topology", "max_connections_per_loop", server_config.max_connections)
+    report.add_bool(
+        "topology", "accept_share",
+        loops > 1 and getenv("M0_ACCEPT_SHARE", "") != "0",
+    )
+
+    report.add_int("application", "max_workers", H.max_workers())
+    report.add_int("application", "max_threads", H.max_threads())
+    report.add_int("application", "page_slots", H.page_slots(loops if loops > 0 else 1))
+
+    var checks = host_checks(config, H.max_workers(), H.max_threads())
+    for i in range(len(checks)):
+        if checks[i].ok:
+            report.pass_check(checks[i].name, checks[i].detail)
+        else:
+            report.fail_check(checks[i].name, checks[i].detail, checks[i].fix, EX_CONFIG)
+    return report^
+
+
 def serve[H: AppHandler, P: Producer = NoProducer](config: AppConfig) raises:
-    """Serve `H` (and run `P` on the tick owner) as the environment says."""
+    """Serve `H` (and run `P` on the tick owner) as the command line and the
+    environment say."""
     serve[H, P](config, config.server_config())
 
 
@@ -792,9 +986,24 @@ def _make_handler[H: AppHandler](ctx: HostContext) raises -> H:
 
 
 def serve[H: AppHandler, P: Producer = NoProducer](
-    config: AppConfig, var server_config: ServerConfig
+    seed: AppConfig, var server_config: ServerConfig
 ) raises:
-    """`serve`, with server tuning the environment does not reach."""
+    """`serve`, with server tuning the environment does not reach.
+
+    `seed` is the environment's word (`AppConfig()`); the command line is
+    laid over it here, first, so everything below reads one resolved
+    `config` (`m0_host.flags`). A line that cannot be read has already left
+    with 2, and `--help` with 0.
+    """
+    var flags = read_flags_or_exit(seed)
+    var config = flags.config.copy()
+    flags.apply_to(server_config)
+    if flags.doctor:
+        # Before the refusal, not instead of it: the report carries the
+        # same checks and leaves with the same code, having bound nothing.
+        var report = host_report[H](flags, server_config)
+        print(report.render(), flush=True)
+        process_exit(report.exit_code())
     var refusal = host_refusal(config, H.max_workers(), H.max_threads())
     if refusal:
         print("host: " + refusal.value(), flush=True)

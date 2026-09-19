@@ -61,11 +61,12 @@ from std.time import sleep
 from lightbug_http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.header import Headers, Header, HeaderKey
 from m0_host.host import AppHandler, HostContext, serve
+from m0_host.flags import host_config
 
 from m0_core.json_parse import parse_json_field
 
 from m0_http import reply
-from m0_http import AppConfig, Router, form, url_for
+from m0_http import Router, form, url_for
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
@@ -324,7 +325,9 @@ struct TodoHandler(AppHandler):
 
 
 def main() raises:
-    var config = AppConfig()
+    # With the command line applied, so the address printed below is the
+    # one `serve` binds under `--port` (`m0_host.flags`).
+    var config = host_config()
     print(
         "Datastar todos on " + config.base_url
         + " — open it in two tabs (db: " + getenv("M0_DB", "todos.db") + ")"

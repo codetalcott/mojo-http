@@ -211,15 +211,18 @@ the kernel's eight against its unit tests. Each rule rebuilds the app and
 reruns its gate, about nine minutes in all (`--only unit` runs the kernel's
 eight in about a minute).
 
-**And `uv run poe sabotage-host`** (SPEC E21–E29, N18, N19) — breaks each
-of forty-six rules in `m0_host/host.mojo`, `src/prefork.mojo`,
-`accept_share.mojo`, `multiworker.mojo` and `views.mojo` and requires a
+**And `uv run poe sabotage-host`** (SPEC E21–E31, N18, N19) — breaks each
+of fifty-eight rules in `m0_host/host.mojo`, `m0_host/flags.mojo`,
+`src/prefork.mojo`, `accept_share.mojo`, `multiworker.mojo` and
+`views.mojo` and requires a
 gate to fail for every one: twenty-three against `smoke-host`, seven
 against `smoke-host-threads` (the loops on threads; `--only threads`, about
 six minutes), two against `smoke-fragment-notes` (the `ViewsApp` adapter's
 worker and loop limits), six against `test_host.mojo`, six against
-`test_prefork.mojo` (the pre-fork pieces both hosts share), and one each
-against `test_respawn.mojo` and `test_views.mojo`. A sabotage that does not compile is reported as BROKEN
+`test_prefork.mojo` (the pre-fork pieces both hosts share), one each
+against `test_respawn.mojo` and `test_views.mojo`, and the command line's
+twelve: seven against `smoke-host-doctor` (`--only doctor`, about five
+minutes) and five against `test_host_flags.mojo` (`--only flags`). A sabotage that does not compile is reported as BROKEN
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
 

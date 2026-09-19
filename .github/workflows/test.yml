@@ -571,6 +571,11 @@ jobs:
       # on every pull request (m0serve's threaded step proves its refusal).
       - name: Smoke test the Mojo host's loops on threads
         run: uv run poe smoke-host-threads
+      # The host's command line. Every configuration is run both ways,
+      # `--doctor ARGS` and `ARGS`, and the two exit codes must agree --
+      # smoke-doctor's shape, for the Mojo host.
+      - name: Smoke test the Mojo host's flags and doctor
+        run: uv run poe smoke-host-doctor
       # The flagship: a mutation broadcasts the rendered fragment to a live
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo
