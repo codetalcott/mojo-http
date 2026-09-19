@@ -437,6 +437,22 @@ def serve(port: int) -> None:
     if len(corner) != 1:
         fail(f"a drop at (100, 100) drew {len(corner)} shapes in the bottom-right corner, not one")
     check_polygon(corner[0], "the corner drop", clear=True)
+    # A drop's first polygon is an 8 % seed of itself, clear of the wall
+    # whatever the band is, so the clearance is asserted on the GROWN shape
+    # too: the same slot, one frame on. Checking the seed alone let a
+    # collapsed band through (measured: MISSED).
+    slot = next(k for k in range(SLOTS) if seen["s1"]["signals"][f"_b{k}"] == corner[0])
+    grown = None
+    while time.perf_counter() - t_drop < 3.0 and grown is None:
+        for f in s1.snapshot():
+            if f["id"] == seen["s1"]["id"] + 1:
+                grown = f
+        time.sleep(0.02)
+    if grown is None:
+        fail("no frame followed the corner drop's first within 3 s")
+    if not grown["signals"][f"_b{slot}"]:
+        fail(f"the corner drop's slot _b{slot} was empty one frame after it appeared")
+    check_polygon(grown["signals"][f"_b{slot}"], "the corner drop, grown", clear=True)
 
     phase("filling the world past its cap")
     extra = [a] + [http.client.HTTPConnection("127.0.0.1", port, timeout=10) for _ in range(2)]
