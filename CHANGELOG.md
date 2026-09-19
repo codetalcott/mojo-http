@@ -8,6 +8,41 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **The blobs demo's shapes twisted and popped** (`apps/blobs`, SPEC N16).
+  Measured on 1.5.0's live stream over 45 s: 64 of 1,758 slot steps
+  twisted, and 69 of 331 frames made a slot appear or vanish whole. The
+  cause was the kernel, not delivery (frames arrived 96–104 ms apart at
+  p5–p95), the server (0.5–1 ms a step) or the browser (60 fps, the main
+  thread about 4 % busy). CSS moves vertex `i` to vertex `i`, and vertex 0
+  was each step's topmost point, so when a blob's highest point moved to
+  another lobe every vertex was dragged around the outline. A continuing
+  slot is now turned to the rotation of its outline nearest its previous
+  polygon. `data-show` does not transition a slot it reveals or hides, so
+  now nothing appears or vanishes in one frame:
+  - a split starts as a copy of its parent's outline;
+  - a drop starts as a seed at 8 % of its size;
+  - an absorbed blob becomes the merged outline, then shrinks where it was;
+  - any other shape that ends shrinks to its centre before its slot hides.
+
+  The alignment adds about 25 µs to a 312 µs step on an M4 (the same
+  600-step world, best of five). Measured locally over 60 s after the fix:
+  no twist in 2,588 slot steps. All 40 splits began as their parent's copy,
+  and all 40 disappearances shrank first. The unit tests check every trace
+  against the one before. `smoke-blobs` checks
+  consecutive frames on the wire for a twist and a pop.
+  `sabotage-blobs` grows from 23 rules to 31, eight of them new: five
+  against the unit tests, three against the smoke.
+
+### Changed
+
+- **blobs.m0serve.dev no longer slows to 2 Hz when idle.** The app drops to
+  its idle rate a minute after the last click, and on 1.5.0's live stream
+  that was nearly every visit, where each shape moved in 500 ms straight
+  lines. The deploy sets `M0_BLOBS_IDLE_HZ=10`. The app's own default is
+  unchanged.
+
 ## [1.5.0] — 2026-09-19
 
 A host for Mojo applications — workers, loops on threads, a handler pool
