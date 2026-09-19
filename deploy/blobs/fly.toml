@@ -1,0 +1,77 @@
+# The Mojo demo on Fly.io: https://blobs.m0serve.dev
+#
+# Deploy from the repository root, so the Dockerfile's context is the tree:
+#
+#     uv run poe deploy-blobs
+#
+# A separate app from the docs site and the Django demo: its own machine,
+# its own token, and an image with no Python in it. The image compiles the
+# tree's `apps/blobs` in its builder stage (deploy/mojo/Dockerfile), so the
+# checkout IS the version -- the deploy job builds from the release's tag,
+# and a hand deploy must check the tag out first.
+#
+# ONE machine, by design. The world is held by one producer thread and
+# carried to every stream by the bus of one process tree: a second machine
+# would be a second world, and two tabs could be looking at different ones.
+# After the first deploy (which creates two):
+#
+#     fly scale count 1 -a m0serve-blobs
+#
+# auto-stop is OFF: a stopped machine drops every held stream, and the page
+# is a stream.
+app = "m0serve-blobs"
+primary_region = "iad"
+
+[build]
+  # Relative to THIS file; the build CONTEXT is the working directory given
+  # to `flyctl deploy` -- the repository root -- which the Dockerfile's COPY
+  # paths assume.
+  dockerfile = "../mojo/Dockerfile"
+
+  [build.args]
+    APP = "blobs"
+    # Fly's machines in iad are x86-64. Never `native`: the remote builder is
+    # not the machine that runs the image.
+    TARGET_CPU = "x86-64-v2"
+
+[env]
+  # Frames flow at 2-10 Hz while anyone watches, so a heartbeat matters only
+  # through a quiet proxy; the Django demo's cadence.
+  M0_SSE_HEARTBEAT_MS = "25000"
+  # One loop, and no M0_WORKERS or M0_THREADS: DECISIONS D36. On one shared
+  # vCPU a second loop cannot run beside the first; measured, it buys no CPU,
+  # delivery or spread, and costs memory.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # Held streams are the workload, so the proxy counts CONNECTIONS: with the
+  # default `requests` type every held stream would count as one in-flight
+  # request. The limits are the owner's, set from the measurement in
+  # docs/notes/the-demo-in-its-own-image.md: 400 viewers at 10 Hz cost about
+  # 6 % of an x86 core, a shared-cpu-1x's baseline share, and 30-50 KB/s
+  # each of egress. Both stay far under the server's 1024 per loop
+  # (max_connections, and the stream registry sized to it) and a process's
+  # default 1024 open files.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 400
+
+  # The server's own health path, answered on the loop.
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

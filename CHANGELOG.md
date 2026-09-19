@@ -10,6 +10,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **The Mojo demo's deploy: `blobs.m0serve.dev`**, from the next release on.
+  `deploy/blobs/` (the Fly app `m0serve-blobs`: one machine, one loop per
+  D36, connection-counted concurrency at soft 200 and hard 400) and a
+  `deploy-blobs` job in `deploy-site.yml`. The job builds the release's
+  commit, or a dispatched version's tag, since the image compiles its
+  checkout. It verifies the deploy with `mojo_image_probe.py --url` and
+  skips a tag older than the deploy with a notice. `poe deploy-blobs`
+  deploys by hand. The site links it beside the Django demo.
+
 - **The blobs demo ships as a pure-Mojo image, gated on every pull request**
   (SPEC M26, M27; docs/notes/the-demo-in-its-own-image.md).
   `deploy/mojo/Dockerfile` replaces `deploy/mojo-hello/`: one Dockerfile for
@@ -160,6 +169,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **`poe deploy-site` and `poe deploy-demo` failed without a version
+  argument.** Their default, the tree's own version, was a Python one-liner
+  whose `\"` escapes TOML consumed, leaving a syntax error; a version given
+  on the command line never evaluated it, which is how it went unnoticed.
+  Both now read the version with the `grep`/`sed` pair another task already
+  uses, as does the new `poe deploy-blobs`.
 - **SPEC M26 compared an image's compressed size with a container's
   memory.** Its "29.2 MB against the Django demo's 74 MiB" set the hello
   image's compressed size (what colima's containerd store reports from

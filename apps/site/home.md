@@ -30,6 +30,11 @@ m0serve myproject.wsgi --realtime
 [demo.m0serve.dev](https://demo.m0serve.dev) is this running: open it in two
 tabs and type in either. The page names the version serving it.
 
+[blobs.m0serve.dev](https://blobs.m0serve.dev) is the other end of the same
+stack: an application written in Mojo on the HTTP server underneath
+m0serve, in an image with no Python in it. Click to drop a blob; every open
+tab sees it.
+
 The view runs first, with sessions and permissions in hand, so authorization
 stays where it is. Under gunicorn the two headers pass through unread and the
 same view returns a short plain response.

@@ -13,6 +13,7 @@ version does not stop the soak going stale.
 | [Quickstart](../QUICKSTART.md) | Live updates between browser tabs from one file of synchronous Django, in five steps. CI runs every command on it. |
 | [After the quickstart](QUICKSTART_NEXT.md) | The same application under two workers, in Flask, and under gunicorn. |
 | [demo.m0serve.dev](https://demo.m0serve.dev) | The quickstart's two-tab sync, live. [apps/demo](../apps/demo/README.md) is the file, [deploy/demo](../deploy/demo/README.md) the deployment. |
+| [blobs.m0serve.dev](https://blobs.m0serve.dev) | An application written in Mojo, served from an image with no Python in it: one world stepped on the server and streamed to every tab. [apps/blobs](../apps/blobs/server.mojo) is the app, [deploy/blobs](../deploy/blobs/README.md) the deployment, which each release makes from 1.5.0. |
 | [Running m0serve](RUNNING.md) | Flags, execution modes, what to put in front of it, shutdown and exit codes. |
 | [Capabilities](SPEC.md) | One row per capability with the test that proves it. Also [spec.json](spec.json). |
 | [WSGI and ASGI modes](WSGI_VS_ASGI.md) | What each mode is for, what free-threading changes, where each has a cliff. |
