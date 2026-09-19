@@ -38,9 +38,14 @@ every tab back.
 **The proxy counts connections, at soft 200 and hard 400.** Every viewer
 holds a stream. 400 viewers at 10 Hz cost about 6 % of an x86 core, a
 shared-cpu-1x's baseline share, and each receives 30-50 KB/s (a whole state
-per frame) until a minute passes without a drop and the producer slows to
-2 Hz. The limits are where that stops being a demo's cost
+per frame). The limits are where that stops being a demo's cost
 (docs/notes/the-demo-in-its-own-image.md).
+
+**No idle slowdown** (`M0_BLOBS_IDLE_HZ=10`). The app drops to 2 Hz a minute
+after the last click, and on 1.5.0's live stream that was nearly every
+visit: two clicks in its first day, so a visitor arrived to shapes moving
+in 500 ms straight lines. The deploy stays at 10 Hz; the cost is the
+paragraph above, which the limits already bound.
 
 **Heartbeats every 25 s** (`M0_SSE_HEARTBEAT_MS`): frames already flow while
 anyone watches, so this matters only through a quiet proxy. Keep the DNS

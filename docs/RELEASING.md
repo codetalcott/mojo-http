@@ -205,11 +205,12 @@ tabs must reopen the stream after the server restarts, which Datastar's
 default retry does not do after a clean close. It prints the body the
 bundle sent. Pre-release for the reason `browser-datastar-form` is: it
 needs Chromium, and the bundle is pinned (D20). Ten seconds. `uv run poe
-sabotage-blobs` breaks each of twenty-three rules in `apps/blobs/` and
-requires a gate to fail for every one: fifteen against `smoke-blobs`, and
-the kernel's eight against its unit tests. Each rule rebuilds the app and
-reruns its gate, about nine minutes in all (`--only unit` runs the kernel's
-eight in about a minute).
+sabotage-blobs` breaks each of thirty-one rules in `apps/blobs/` and
+requires a gate to fail for every one: seventeen against `smoke-blobs`,
+among them a twist and both kinds of pop reaching the wire, and the
+kernel's fourteen against its unit tests. Each rule rebuilds the app and
+reruns its gate, about six minutes in all (`--only unit` runs the
+kernel's fourteen in about fifteen seconds).
 
 **And `uv run poe sabotage-host`** (SPEC E21–E31, N18, N19) — breaks each
 of fifty-eight rules in `m0_host/host.mojo`, `m0_host/flags.mojo`,

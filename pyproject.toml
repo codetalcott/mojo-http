@@ -7340,9 +7340,9 @@ python3 scripts/emit.py blobs.shapes_max "$(field "$serve" shapes_max)" --task s
 python3 scripts/emit.py --covers N16 --task smoke-blobs
 """
 
-# Each apps/blobs rule, broken on purpose (SPEC N16): fifteen against
-# smoke-blobs, the kernel's eight against its unit tests. Pre-release:
-# twenty-three rebuilds, about nine minutes; `--only unit` is about one.
+# Each apps/blobs rule, broken on purpose (SPEC N16): seventeen against
+# smoke-blobs, the kernel's fourteen against its unit tests. Pre-release:
+# thirty-one rebuilds, about six minutes; `--only unit` is about fifteen seconds.
 [tool.poe.tasks.sabotage-blobs]
 help = "PRE-RELEASE: revert each apps/blobs rule and insist smoke-blobs fails for every one (SPEC N16)"
 cmd = "python3 scripts/blobs_sabotage.py"
