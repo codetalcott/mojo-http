@@ -4798,7 +4798,7 @@ python3 scripts/emit.py --covers F14 --task smoke-site-image
 help = "Render the docs site for https://m0serve.dev and deploy it to Fly.io (arg: PyPI version to pin)"
 shell = """
 set -u
-v="${version:-$(python3 -c 'import re;print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')}"
+v="${version:-$(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"//g')}"
 python3 scripts/docsite.py --out dist/site --base-url https://m0serve.dev || exit 1
 echo "deploying m0serve-docs pinned to m0serve==$v"
 flyctl deploy --remote-only --config deploy/site/fly.toml --build-arg "M0SERVE_VERSION=$v" .
@@ -4893,7 +4893,7 @@ python3 scripts/emit.py --covers M17 --task smoke-demo
 help = "Deploy the live demo to Fly.io as https://demo.m0serve.dev (arg: PyPI version to pin)"
 shell = """
 set -u
-v="${version:-$(python3 -c 'import re;print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')}"
+v="${version:-$(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"//g')}"
 echo "deploying m0serve-demo pinned to m0serve==$v"
 flyctl deploy --remote-only --config deploy/demo/fly.toml --build-arg "M0SERVE_VERSION=$v" .
 """
@@ -4902,6 +4902,20 @@ flyctl deploy --remote-only --config deploy/demo/fly.toml --build-arg "M0SERVE_V
 name = "version"
 positional = true
 default = ""
+
+# Deploy the Mojo demo by hand: `flyctl deploy` from the repository root, so
+# the Dockerfile's context is the tree -- which is also the version, since
+# the image compiles the checkout. Check out the release's tag first; the
+# page's footer names the version the image read from pyproject.toml.
+# deploy/blobs/README.md is the runbook.
+[tool.poe.tasks.deploy-blobs]
+help = "Deploy the Mojo demo to Fly.io as https://blobs.m0serve.dev (builds the checkout: check out a release tag first)"
+shell = """
+set -u
+v=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"//g')
+echo "deploying m0serve-blobs from $(git rev-parse --short HEAD), version $v"
+flyctl deploy --remote-only --config deploy/blobs/fly.toml .
+"""
 
 # Served the way it deploys: m0serve with `--static /=<tree>` in front of the
 # fallback in apps/site. The build alone cannot prove the served shape -- that

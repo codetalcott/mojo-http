@@ -16,7 +16,8 @@ docker build -f deploy/mojo/Dockerfile --build-arg APP=blobs --build-arg TARGET_
 
 `TARGET_CPU` is never `native`. The probe picks it from the docker daemon's
 architecture: `x86-64-v2` on x86-64, `generic` on arm64. `M0_TARGET_CPU`
-overrides it.
+overrides it. `blobs.m0serve.dev` is this image for `apps/blobs`
+([deploy/blobs](../blobs/README.md)).
 
 ## The image says what it is
 

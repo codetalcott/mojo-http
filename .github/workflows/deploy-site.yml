@@ -14,12 +14,14 @@
 # pins is the release's. On a dispatch the demo builds from the version's
 # tag, and the site from the ref the dispatch ran on (see each checkout).
 #
-# Needs two secrets in the `fly` environment, each a deploy token scoped to
-# ONE app (`fly tokens create deploy -a <app>`) and handed to flyctl as
-# FLY_API_TOKEN below: FLY_DEPLOY_SITE for the docs site (m0serve-docs) and
-# FLY_DEPLOY_DEMO for the live demo (m0serve-demo), which the second job
-# deploys on the same trigger. deploy/site/README.md and deploy/demo/README.md
-# are the runbooks, including the one-time app and certificate creation.
+# Needs three secrets, each a deploy token scoped to ONE app (`fly tokens
+# create deploy -a <app>`) and handed to flyctl as FLY_API_TOKEN below:
+# FLY_DEPLOY_SITE for the docs site (m0serve-docs), FLY_DEPLOY_DEMO for the
+# live demo (m0serve-demo) and FLY_DEPLOY_BLOBS for the Mojo demo
+# (m0serve-blobs), which the second and third jobs deploy on the same
+# trigger. deploy/site/README.md, deploy/demo/README.md and
+# deploy/blobs/README.md are the runbooks, including the one-time app and
+# certificate creation.
 name: Deploy site
 
 on:
@@ -205,3 +207,81 @@ jobs:
           done
           curl -s https://demo.m0serve.dev/about | grep -q "\"m0serve\": \"${{ steps.v.outputs.version }}\""
           echo "demo.m0serve.dev is serving m0serve==${{ steps.v.outputs.version }}"
+
+  # The Mojo demo (https://blobs.m0serve.dev): its own Fly app, its own
+  # token. No wheel to wait for -- the image compiles the checkout
+  # (deploy/mojo/Dockerfile) -- so the checkout IS the version, and the job
+  # builds from the release's commit, or a dispatched version's tag, exactly
+  # as deploy-demo does. The page's footer and /about name the version the
+  # image recorded from that checkout's pyproject.toml, which is what the
+  # verification reads back.
+  deploy-blobs:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (startsWith(github.event.workflow_run.head_branch, 'v') ||
+        startsWith(github.event.workflow_run.head_branch, 'release/v')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: fly
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.event.workflow_run.head_sha }}
+      - name: Resolve the version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${{ github.event.workflow_run.head_branch }}"; v="${v#release/}"; v="${v#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"; echo "deploying blobs at $v"
+      # A tag from before the Mojo demo existed has nothing to deploy -- a
+      # dispatch that republishes the site at such a version must not go red
+      # here -- so that is a notice and the rest is skipped. A tree whose
+      # version is not the one asked for is still an error.
+      - name: Check the tree is the release's
+        id: tree
+        run: |
+          tree=$(python3 -c 'import re;print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
+          [ "$tree" = "${{ steps.v.outputs.version }}" ] || { echo "::error::checked out version $tree, deploying ${{ steps.v.outputs.version }}"; exit 1; }
+          if [ -f deploy/blobs/fly.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"; echo "tree $(git rev-parse --short HEAD) is $tree"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$tree predates the Mojo demo's deploy (deploy/blobs/); nothing to deploy"
+          fi
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
+        if: steps.tree.outputs.present == 'true'
+      - name: Deploy
+        if: steps.tree.outputs.present == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_DEPLOY_BLOBS }}
+        run: flyctl deploy --remote-only --config deploy/blobs/fly.toml .
+      # The deploy's verification is the image probe's --url mode: /health,
+      # /about naming blobs, no Python and this version, the footer saying
+      # what /about says, whole-state frames with increasing ids, and the
+      # producer stepping. Tolerance for a transient edge failure lives here,
+      # as in deploy-demo: three runs, 20 s apart.
+      - name: Verify the live Mojo demo
+        if: steps.tree.outputs.present == 'true'
+        run: |
+          set -e
+          for i in $(seq 1 24); do
+            ok=0
+            for j in 1 2 3; do
+              curl -sf -o /dev/null --max-time 5 https://blobs.m0serve.dev/health && ok=$((ok+1))
+              sleep 1
+            done
+            [ "$ok" = 3 ] && break
+            sleep 5
+          done
+          [ "$ok" = 3 ] || { echo "::error::blobs.m0serve.dev/health never answered steadily"; exit 1; }
+          for attempt in 1 2 3; do
+            python3 scripts/mojo_image_probe.py --app blobs --url https://blobs.m0serve.dev \
+              --version "${{ steps.v.outputs.version }}" && break
+            [ "$attempt" = 3 ] && { echo "::error::the live Mojo demo failed the probe three times"; exit 1; }
+            echo "probe attempt $attempt failed; retrying in 20 s"; sleep 20
+          done
+          echo "blobs.m0serve.dev is serving $(curl -s https://blobs.m0serve.dev/about)"

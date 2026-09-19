@@ -242,8 +242,10 @@ come from, not the binary.
 
 - **Fly's own CPU.** The throttled run is a cgroup quota, not Fly's burst
   balance, and it runs on a runner's EPYC 7763 and an M4, not Fly's hosts.
-- **The deploy.** The Fly app `m0serve-blobs`, its IPs and the certificate
-  for `blobs.m0serve.dev` exist, and so does the deploy token. The first
+- **The deploy.** The Fly app `m0serve-blobs`, its IPs, DNS and the
+  certificate for `blobs.m0serve.dev` exist, and so does the deploy token.
+  Fly's remote builder has built the image (build-only, 2026-09-19: x86_64,
+  80.1 MB unpacked), so the build the release will run is not in doubt. The first
   deploy is the release workflow's, from the v1.5.0 tag. A hand deploy from
   main would have shown a version its code is not.
 - **Open files on Fly.** The container's soft limit is 1024 under docker. Fly
