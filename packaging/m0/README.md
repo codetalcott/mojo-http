@@ -1,0 +1,41 @@
+# m0
+
+**Preview.** Write a web application in [Mojo](https://www.modular.com/mojo)
+on the [mojo-http](https://github.com/codetalcott/mojo-http) framework: an
+HTTP/1.1 server, a router and views, HTML fragments for htmx and Datastar,
+Server-Sent Events, and a host that runs the lot as one binary with no
+interpreter in it.
+
+This wheel carries the framework's **source** and a small CLI that builds
+against it. It is pure Python and installs anywhere; the toolchain it drives
+runs on macOS arm64 and glibc Linux (x86-64, aarch64).
+
+```bash
+uv add --dev 'mojo==1.1.0' m0     # the pair: m0 is gated on one exact mojo
+uv run m0 build                   # src/server.mojo -> bin/server, about ten seconds
+uv run m0 test                    # mojo run over test/test_*.mojo, two or three seconds each
+uv run m0 doctor                  # the toolchain checks, then bin/server's own --doctor
+uv run m0 include                 # where the framework's source is: read it
+```
+
+| command | what it does |
+|---|---|
+| `m0 build [--release] [--target-cpu CPU]` | Compiles `src/server.mojo` and renames the result onto `bin/server`, so a running server is never written over. `--release` compiles for the platform's baseline CPU, relocates the binary and bundles the Mojo runtime beside it in `dist/` — the directory an image's runtime stage copies. |
+| `m0 test [FILE...]` | `mojo run` per file, serial, output untouched. Needs no C compiler. A run with no test files is refused, not passed. |
+| `m0 doctor [--json] [-- HOST_ARGS]` | Every check, then `bin/server HOST_ARGS --doctor` with your environment. Exits with the first failed check's code, else the application's. |
+| `m0 include` | Prints the include root. |
+
+Exit codes are a closed set: `0`; `1` the tool m0 ran failed; `2` the command
+line cannot be accepted; `78` m0 refused before running anything, with one
+`m0: detail (fix)` line on stderr.
+
+m0 runs the `mojo` installed in **its own environment** — never the one on
+`PATH` — and refuses a version it was not gated on, naming the pin to add.
+There is no override: every gate in the repository ran on that one compiler.
+
+`m0` is versioned apart from the repository it is cut from, and stays `0.x`
+until an application outside that repository has soaked on it.
+`m0/_build_info.json` records the tree.
+
+MIT. The `lightbug_http` fork inside is MIT too; both licences are in
+`m0/licenses/`.

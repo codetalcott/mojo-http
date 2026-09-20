@@ -794,6 +794,40 @@ def check_no_jobs_in_substitution():
         )
 
 
+def root_build_system(text):
+    """The problems with a ROOT pyproject's text: a `[build-system]` in it.
+
+    A pure function of the file's text, so the selftest can hand it the
+    committed file with a table added. Parsed, not grepped: a comment that
+    quotes the header is prose, and `build-system.requires = [...]` as a
+    dotted key is the same table without the header.
+    """
+    import tomllib
+
+    if "build-system" in tomllib.loads(text):
+        return [
+            "pyproject.toml has a [build-system]. The root is a VIRTUAL project "
+            "on purpose: with one, uv treats the repo as an installable package "
+            "and `uv sync` tries to build it -- which needs bin/m0serve, which "
+            "needs the venv that `uv sync` is creating. Each wheel's "
+            "[build-system] lives under packaging/<name>/"
+        ]
+    return []
+
+
+def check_root_has_no_build_system():
+    """The root pyproject.toml declares no `[build-system]`.
+
+    The rule was prose for as long as there was one wheel ("the repo's only
+    [build-system]"), and had no guard at all. With `packaging/m0/` beside
+    `packaging/m0serve/` it is restated as its reason -- none in the ROOT --
+    and held here. Nothing else fails when it breaks: `uv sync` on a
+    developer's machine with a built tree succeeds, and a clean clone does not.
+    """
+    for problem in root_build_system((REPO / "pyproject.toml").read_text()):
+        fail(problem)
+
+
 def check_test_counts():
     """README's "What's in the box" table quotes a test count per package and a
     total, and the commands block quotes the total again; all of them are
@@ -1965,6 +1999,21 @@ def selftest():
         good = bool(jobs_in_substitutions(reverted))
         print(f"  {'caught' if good else 'MISSED'}          phase 2's wait reverted in pyproject.toml")
         ok &= good
+    # The root's build-system rule: the committed file is quiet, and each way
+    # of spelling the table into it fires.
+    build_cases = [
+        ("(control: the root pyproject as committed)", real_pyproject, False),
+        ("a [build-system] table added to the root",
+         real_pyproject + '\n[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n', True),
+        ("the same table as a dotted key",
+         'build-system.requires = ["hatchling"]\n' + real_pyproject, True),
+        ("(control: a comment quoting the header)",
+         real_pyproject + "\n# never add a [build-system] here\n", False),
+    ]
+    for label, text, must_fire in build_cases:
+        good = bool(root_build_system(text)) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}")
+        ok &= good
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -1998,6 +2047,7 @@ def main():
     check_consumer_jobs_stay_clean()
     check_pyproject_parses_for_consumers()
     check_no_jobs_in_substitution()
+    check_root_has_no_build_system()
     check_test_counts()
     check_backend_seam()
     check_spec_sheet()

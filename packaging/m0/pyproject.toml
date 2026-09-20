@@ -1,0 +1,69 @@
+# The `m0` wheel: the framework's SOURCE and the CLI that builds against it.
+#
+# A [build-system] of its own, like packaging/m0serve/ and for the same
+# reason: the ROOT pyproject.toml may never have one (uv would then treat the
+# repo as an installable package, and `uv sync` would try to build it), so
+# each wheel's lives under packaging/<name>/. `check_root_has_no_build_system`
+# in scripts/check_docs.py holds the root to that.
+#
+# Wheels only, no sdist. What this wheel carries is mapped out of the
+# repository around it by hatch_build.py (`git ls-files` over five source
+# trees), so an sdist could not build without the repo it was cut from.
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "m0"
+dynamic = ["version"]
+description = "Write a web application in Mojo: the mojo-http framework's source and the CLI that builds against it"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.github.com" }]
+keywords = ["mojo", "http", "server", "htmx", "datastar", "sse"]
+
+# Plain MIT, unlike m0serve: no Mojo runtime rides in this wheel. The
+# lightbug_http fork is MIT too, and its LICENSE travels inside the tree.
+license = "MIT"
+
+# Deliberately empty, and deliberately NOT `mojo==X`. The toolchain is
+# ~220 MB of wheels; a hard dependency would download it before `m0 new`
+# wrote a file, and would turn a version mismatch into a resolver's prose
+# instead of `m0 doctor`'s sentence naming the fix (docs/DECISIONS.md D39).
+# The pair is checked at run time against m0/_build_info.json.
+dependencies = []
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage = "https://github.com/codetalcott/mojo-http"
+Documentation = "https://m0serve.dev"
+Source = "https://github.com/codetalcott/mojo-http"
+Changelog = "https://github.com/codetalcott/mojo-http/blob/main/CHANGELOG.md"
+
+[project.scripts]
+m0 = "m0.__main__:main"
+
+[tool.hatch.version]
+source = "code"
+path = "hatch_version.py"
+expression = "read_version()"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/m0"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+# See the note at the top: an sdist here cannot build.
+exclude = ["*"]
