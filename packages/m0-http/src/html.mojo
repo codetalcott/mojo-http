@@ -69,8 +69,8 @@ conformances are written against exactly that surface, so it cannot be
 narrower than what a real library needed. The verb check is the LAYER's —
 `Html.swap` and `Fragment.swap`/`.el` refuse a verb outside `V.verbs()`
 before `V.swap` runs — so a conformance that checks nothing still refuses
-a typo, and one whose library has a sixth verb (htmx 4's `query`) says so
-in one line. `poe check-app-vocabulary` builds such an app from a
+a typo, and one whose library has a sixth verb (htmx 4's `query`, which
+is how `Htmx` itself takes it) says so in one line. `poe check-app-vocabulary` builds such an app from a
 directory outside this repository and reads its output with a linter
 this layer did not write.
 
@@ -243,17 +243,33 @@ trait Vocabulary:
     def verbs() -> String:
         """The verbs this library takes, space-separated. The layer refuses
         any other before `swap` runs and names these in the error. The
-        default is the five both built-in libraries share; htmx 4 has a
-        sixth (`query`), and its conformance answers with all six."""
+        default is the five every library here shares; htmx 4 has a
+        sixth (`query`), and `Htmx` answers with all six."""
         return STANDARD_VERBS
 
 
+comptime HTMX_VERBS = "get post put patch delete query"
+"""The `#verbs` of htmx 4, in its order: the five, and `query`."""
+
+
 struct Htmx(Vocabulary):
-    """The htmx 2 spelling: `hx-VERB`, `hx-target`, `hx-swap="outerHTML"`.
+    """The htmx 4 spelling: `hx-VERB`, `hx-target`, `hx-swap="outerHTML"`.
+
+    Gated against htmx 4.0.0 since 2026-09-19 (2.0.4 before; DECISIONS D6,
+    retired). The three attributes are the ones htmx 2 took, byte for
+    byte, and that is deliberate: all three go on the ELEMENT, so htmx 4
+    turning inheritance off (`implicitInheritance: false`) takes nothing
+    away, and its new default swap (`innerHTML`) is never consulted. What
+    the major version adds here is its sixth verb, `query`.
 
     htmx picks the event itself (a form on submit, a field on change, the
     rest on click) and cancels the default for forms, submit buttons and
     anchors, so nothing about the element needs spelling here.
+
+    What this cannot spell is a request HEADER, and htmx 4 makes an app
+    want one: a `delete`'s fields ride the query string there, hard-coded,
+    so a CSRF token on one travels as a header (`hx-headers` on the
+    element; `apps/fragment_notes` writes it by hand, D38).
     """
 
     @staticmethod
@@ -261,6 +277,10 @@ struct Htmx(Vocabulary):
         h.attr(String("hx-", verb), url)
         h.attr("hx-target", target)
         h.attr("hx-swap", "outerHTML")
+
+    @staticmethod
+    def verbs() -> String:
+        return HTMX_VERBS
 
 
 struct Datastar(Vocabulary):

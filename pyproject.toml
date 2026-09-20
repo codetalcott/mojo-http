@@ -8192,7 +8192,8 @@ python3 scripts/emit.py --covers G14 --task smoke-notes
 # key repeated once per tick and every value kept, one URL answering a bare
 # fragment under `HX-Request: true` (or `Datastar-Request: true`) and a
 # whole document without it — or WITH it beside a history restore or a
-# boost — with `Vary` naming all four on every answer, a body that is not a form
+# boost, or as htmx 4 says outright with `HX-Request-Type` — with `Vary`
+# naming all five on every answer, a body that is not a form
 # refused rather than parsed as one field named after the whole document,
 # and a method the collection does not take answered 405 with a correct
 # Allow.
@@ -8260,7 +8261,7 @@ trap 'kill $pid 2>/dev/null' EXIT
 B=http://localhost:8094
 
 # Every header the fragment-or-page decision reads, in the order Vary names them.
-VARY='HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request'
+VARY='HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request, HX-Request-Type'
 
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
@@ -8310,11 +8311,14 @@ head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /login was not a d
 grep -q 'name="user"' page.html || fail 'the login page carried no form'
 grep -qi "^vary: $VARY" headers.txt || fail 'the login page carried no Vary naming every header read'
 
-# The one library setting this app makes, and the reason the CSRF token can
-# ride in the body of a DELETE: htmx 2.0.4 ships methodsThatUseUrlParams as
-# ["get","delete"], which would put the token in the query string.
-grep -q 'name="htmx-config" content="{&quot;methodsThatUseUrlParams&quot;:\\[&quot;get&quot;\\]}"' page.html \
-  || fail 'the shell did not narrow htmx methodsThatUseUrlParams to get'
+# The library the shell loads is the one the layer is gated against, by
+# exact version. The htmx-config meta the 2.0.4 shell carried is GONE, and
+# its absence is asserted: htmx 4 has no methodsThatUseUrlParams to narrow
+# (a DELETE's fields ride the query string, hard-coded), so a meta left
+# behind would be a setting that reads as a protection and is none.
+grep -q 'src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"' page.html \
+  || fail 'the shell did not load htmx 4.0.0'
+grep -q 'htmx-config' page.html && fail 'the shell still carries an htmx-config meta htmx 4 does not read'
 
 # --- N13: the login itself -------------------------------------------------
 code=$(curl -s -o frag.html -w '%{http_code}' -D headers.txt -d "user=notes&password=wrong" $B/login)
@@ -8420,6 +8424,25 @@ curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-Boosted: true' $B
 head -c 15 page.html | grep -q '<!doctype html>' || fail 'a boosted request was answered a bare fragment'
 grep -qi "^vary: $VARY" headers.txt || fail 'the boosted document carried no Vary naming every header read'
 
+# --- N22: htmx 4 says which it wants ---------------------------------------
+# Every htmx 4.0.0 request carries HX-Request-Type, and when it is there it
+# decides. `full` beside `HX-Request: true` is a page: the target is the
+# body, and the 2.x rule alone would hand it a bare section.
+curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-Request-Type: full' $B/notes -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail 'HX-Request-Type: full was answered a bare fragment'
+grep -qi "^vary: $VARY" headers.txt || fail 'the full answer carried no Vary naming every header read'
+curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-Request-Type: partial' $B/notes -o frag.html
+head -c 20 frag.html | grep -q '<section id="notes">' || fail 'HX-Request-Type: partial was not answered the fragment'
+grep -qi "^vary: $VARY" headers.txt || fail 'the partial answer carried no Vary naming every header read'
+# The restore as htmx 4 sends it, measured in Chromium: the marker and
+# `full`, and NO HX-Request at all.
+curl -s -b jar.txt -H 'HX-History-Restore-Request: true' -H 'HX-Request-Type: full' $B/notes -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail 'an htmx 4 history restore was answered a bare fragment'
+# Where the two majors differ on the same headers: a boosted element with
+# its own hx-target sends `partial` beside HX-Boosted, and means it.
+curl -s -b jar.txt -H 'HX-Request: true' -H 'HX-Boosted: true' -H 'HX-Request-Type: partial' $B/notes -o frag.html
+head -c 20 frag.html | grep -q '<section id="notes">' || fail 'an htmx 4 boosted partial was answered a document'
+
 # Datastar asks with its own header and gets the same bare fragment as a
 # text/html body, which it morphs into the element carrying the id. One
 # renderer, the other transport, decided by the framework from the header.
@@ -8437,10 +8460,9 @@ OTHER_CSRF=$($ISSUE --key $KEY --csrf-for "$OTHER")
 [ "$OTHER_CSRF" != "$CSRF" ] || fail 'two sessions derived the same CSRF token'
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -d "csrf=$OTHER_CSRF&title=forged" $B/notes)
 [ "$code" = "403" ] || fail "expected 403 for another session's CSRF token, got $code"
-# The token is read from the body and from nowhere else: in the query
-# string it is in the access log, the Referer and the history, and a
-# server that accepted it there would make the htmx-config above
-# decorative.
+# The token is read from the body or the X-CSRF-Token header and from
+# nowhere else: in the query string it is in the access log, the Referer
+# and the history.
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X POST "$B/notes?csrf=$CSRF" -d 'title=forged')
 [ "$code" = "403" ] || fail "expected 403 for a CSRF token in the query string, got $code"
 curl -s -b jar.txt -H 'HX-Request: true' $B/notes | grep -q 'forged' \
@@ -8502,16 +8524,36 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X PATCH $B/notes/1)
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
 [ "$code" = "200" ] || fail "a 405 on a note must leave it intact, but GET answered $code"
 
-# Delete carries the token in the BODY, which is what the shell's
-# htmx-config buys: with the token in the query string it is refused, and
-# the note survives.
+# Delete carries the token as a HEADER. htmx 4 sends a DELETE with no body
+# and its form's fields in the query string, so the delete form must hold
+# no token field at all -- one there is one in the URL -- and carries
+# hx-headers instead. With the token in the query it is refused, and the
+# note survives.
+DELFORM=$(grep -o '<form class="delete"[^>]*hx-delete="/notes/1"[^>]*>' frag.html)
+[ -n "$DELFORM" ] || fail 'the list carried no delete form for note 1'
+echo "$DELFORM" | grep -q "hx-headers=\\"{&quot;X-CSRF-Token&quot;:&quot;$CSRF&quot;}\\"" \
+  || fail 'the delete form did not carry this session token as hx-headers'
+# The token is a FIELD in the create form and the sign-out form and in no
+# other: two notes are listed, so a field in each delete form would be four.
+[ "$(grep -o 'name="csrf"' frag.html | wc -l | tr -d ' ')" = "2" ] \
+  || fail 'a delete form holds a csrf FIELD, which htmx 4 would put in the URL'
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE "$B/notes/1?csrf=$CSRF")
 [ "$code" = "403" ] || fail "expected 403 for a DELETE whose token was in the query, got $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE $B/notes/1)
 [ "$code" = "403" ] || fail "expected 403 for a DELETE with no token, got $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
 [ "$code" = "200" ] || fail "a refused DELETE must leave the note, but GET answered $code"
-curl -s -X DELETE -b jar.txt -H 'HX-Request: true' -d "csrf=$CSRF" $B/notes/1 -o frag.html
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE -H "X-CSRF-Token: $OTHER_CSRF" $B/notes/1)
+[ "$code" = "403" ] || fail "expected 403 for a DELETE carrying another session's token as a header, got $code"
+# A header that is present decides: a wrong one is not rescued by a right
+# field beside it.
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE -H "X-CSRF-Token: $OTHER_CSRF" -d "csrf=$CSRF" $B/notes/1)
+[ "$code" = "403" ] || fail "expected 403 for a wrong token header beside a right field, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
+[ "$code" = "200" ] || fail "a DELETE refused for its header must leave the note, but GET answered $code"
+# The request as htmx 4.0.0 shapes it: no body, the token a header.
+curl -s -X DELETE -b jar.txt -H 'HX-Request: true' -H 'HX-Request-Type: partial' -H "X-CSRF-Token: $CSRF" $B/notes/1 -o frag.html
+head -c 20 frag.html | grep -q '<section id="notes">' || fail 'the DELETE was not answered the list fragment'
 grep -q 'Café au lait' frag.html && fail 'the list after delete still carried the note'
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
@@ -8584,6 +8626,7 @@ rm -f fragment.log refusal.log headers.txt page.html frag.html jar.txt notes_app
 echo "smoke-fragment-notes OK"
 python3 scripts/emit.py --covers N1 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N8 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N22 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N13 --task smoke-fragment-notes
 python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N18 --task smoke-fragment-notes

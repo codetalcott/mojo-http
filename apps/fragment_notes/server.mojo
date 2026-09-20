@@ -17,11 +17,14 @@ of those lifts, and the smoke has not changed:
 - **the fragment names itself.** `Frag("notes")` writes `id="notes"`
   once — `NOTES_ID`, given to both renderers — and `f.swap("post", NOTES)`
   on the form generates the `hx-target` from that same id. Nothing in this
-  file types `#notes`, and nothing in it types an `hx-` attribute either:
+  file types `#notes`, and nothing in it types a swap's `hx-` attributes
+  either (the one `hx-` it does type is `hx-headers`, below):
   `Frag` is `Fragment[Htmx]`, named once below, and that one line is what
   this app knows about its frontend library.
-- **the view returns one thing.** `page_or_fragment` reads `HX-Request`
-  (and `HX-History-Restore-Request` and `HX-Boosted`, which ask for the
+- **the view returns one thing.** `page_or_fragment` reads
+  `HX-Request-Type`, htmx 4's own `partial` or `full` (and, for a client
+  that does not send it, `HX-Request` with `HX-History-Restore-Request`
+  and `HX-Boosted`, which ask for the
   page back) and calls `Site.wrap` — this app's `PageShell`, the document
   and everything it knows that a fragment does not — only when a whole
   document is wanted, with `Vary` naming every header it read on both. No
@@ -66,25 +69,31 @@ What the app promises on the wire, and the gate asserts:
                          /notes. A wrong one is 401 with the form back
     POST /logout         expires the cookie, 303 to /login; needs the token
     GET  /notes          the list; a bare `<section id="notes">` when the
-                         request carries `HX-Request: true`, a whole
-                         document otherwise — and `Vary: HX-Request` on both
+                         request carries `HX-Request-Type: partial`, a
+                         whole document otherwise — and `Vary` naming
+                         every header that decision reads on both
     POST /notes          a urlencoded form: `title`, `body`, `tag` repeated
                          once per ticked checkbox, and `csrf`; answers the list
     GET  /notes/:id      one note, page or fragment the same way
-    DELETE /notes/:id    removes it, answers the list; needs the token
+    DELETE /notes/:id    removes it, answers the list; needs the token,
+                         as an `X-CSRF-Token` HEADER — a DELETE has no body
+                         under htmx 4, and a token in its query is refused
     GET  /               303 to /notes
     GET  /health         {"status":"ok"} — the one path outside the session
 
 Everything under /notes answers a request with no usable session with 303
 to /login, or 401 carrying the login fragment when the request asked for
-a fragment. htmx 2.0.4 does not swap a 401 by default, so a session that
-expires mid-interaction shows nothing until the page is reloaded; making
-it swap is `htmx.config.responseHandling`, a vocabulary-specific setting
-this app does not spell.
+a fragment. htmx 4 swaps a 4xx like any other answer (its `noSwap` is 204
+and 304 alone), so a session that expires mid-interaction puts the login
+form where the list was — which is why that 401 carries a fragment of the
+same id. Under htmx 2.0.4 it showed nothing until a reload.
 
-The attribute vocabulary is htmx 2 (`hx-*`), pinned to one CDN version;
-`Htmx.swap` in m0-http is the only place it is spelled, and `Frag` below
-is the only place this app names it.
+The attribute vocabulary is htmx 4 (`hx-*`), pinned to one CDN version;
+`Htmx.swap` in m0-http is the only place a swap is spelled, and `Frag`
+below is the only place this app names it. `hx-headers` is the one
+attribute written here by hand (`_csrf_header`): the layer spells swaps,
+not request headers, and one app is not evidence of what a header helper
+should look like (DECISIONS D38).
 
 The store is in-memory, parallel lists, one process — see `notes_api`. It
 runs on the Mojo host as `ViewsApp[NoteStore]`, and `NoteStore` says it
@@ -133,7 +142,7 @@ from m0_http import (
 
 # Pinned deliberately, as datastar_todo pins its CDN: a floating version
 # would let an upstream release break this example without a commit here.
-comptime HTMX_CDN = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"
+comptime HTMX_CDN = "https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"
 
 comptime _STYLE = """<style>
 body{font-family:system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 1rem}
@@ -178,6 +187,9 @@ comptime LOGOUT = "/logout"
 comptime SESSION_COOKIE = "m0_notes_session"
 comptime SESSION_TTL_DEFAULT = 3600
 comptime CSRF_FIELD = "csrf"
+comptime CSRF_HEADER = "x-csrf-token"
+"""Where a DELETE carries the token (`X-CSRF-Token`). Lowercase, as
+`Headers` stores every name."""
 
 comptime KEY_ENV = "M0_NOTES_KEY"
 comptime PREV_KEY_ENV = "M0_NOTES_KEY_PREV"
@@ -346,17 +358,16 @@ struct Site(PageShell):
         self.title = title^
 
     def wrap(self, fragment: String) raises -> String:
-        """The document around any fragment: head, the htmx config and
-        script, the stylesheet.
+        """The document around any fragment: head, the htmx script, the
+        stylesheet.
 
-        The one library setting this app makes, and it is here rather than on
-        an element because it is about the transport and not about a
-        fragment: htmx 2.0.4 ships `methodsThatUseUrlParams: ["get","delete"]`,
-        so a `hx-delete` form puts its fields in the query string. The CSRF
-        token is one of those fields, and a token in a URL is a token in the
-        access log, the Referer and the browser history. Narrowing the
-        setting to `get` puts every write's fields in the body, where
-        `form(req)` reads them and the server accepts them from nowhere else.
+        No library setting. Under htmx 2.0.4 there was one, a
+        `<meta name="htmx-config">` narrowing `methodsThatUseUrlParams` to
+        `get` so that a `hx-delete` form's fields — the CSRF token among
+        them — rode the body rather than the query string. htmx 4 has no
+        such setting: `/GET|DELETE/.test(method)` is in the source, so a
+        DELETE's fields go in the URL whatever the page says, and the
+        token left the form for a header instead (`_csrf_header`).
         """
         var h = Html(1024)
         h.raw("<!doctype html>\n")
@@ -371,10 +382,6 @@ struct Site(PageShell):
         h.open("meta")
         h.attr("name", "viewport")
         h.attr("content", "width=device-width,initial-scale=1")
-        h.raw("\n")
-        h.open("meta")
-        h.attr("name", "htmx-config")
-        h.attr("content", '{"methodsThatUseUrlParams":["get"]}')
         h.raw("\n")
         h.open("title")
         h.text(self.title)
@@ -413,6 +420,22 @@ def _csrf_input(csrf: String) raises -> String:
     )
 
 
+def _csrf_header(csrf: String) raises -> String:
+    """The token as a request header, for the write that has no body.
+
+    htmx 4 sends a DELETE's parameters in the query string and offers no
+    setting to change that, and a token in a URL is a token in the access
+    log, the `Referer` and the browser history. So the delete form holds
+    NO hidden field — a field there is a field in the URL — and carries
+    `hx-headers` instead, which htmx reads from the element itself
+    (inheritance is explicit in htmx 4, so it goes on each form rather
+    than once on the list). The value is JSON; a token is 43 base64url
+    characters, none of which JSON escapes, and `attr` escapes the quotes
+    around it for the HTML context.
+    """
+    return attr("hx-headers", String('{"X-CSRF-Token":"', csrf, '"}'))
+
+
 def render_login(error: String) raises -> String:
     """The login form, as the same fragment the notes list occupies — so a
     401 answered to a swap lands where the list was, and the whole page
@@ -446,9 +469,11 @@ def render_list(store: NoteStore, subject: String, csrf: String) raises -> Strin
     call per attribute. Same `Frag`, same bytes; the two shapes are kept
     side by side on purpose.
 
-    Every write is a `<form>`, delete included, because a form is what
-    carries the CSRF token: htmx serialises the enclosing form's fields
-    into the request, and the shell's `htmx-config` puts them in the body.
+    Every write is a `<form>`, and how each carries the CSRF token
+    follows from where htmx 4 puts a form's fields: a POST's go in the
+    body, so create and sign-out hold the token as a hidden field; a
+    DELETE's go in the query string, so the delete form holds no field at
+    all and sends the token as a header.
     """
     var f = Frag(NOTES_ID)
     var boxes = String()
@@ -470,8 +495,7 @@ def render_list(store: NoteStore, subject: String, csrf: String) raises -> Strin
         items += el("li", "",
             f.el("a", "get", url, attr("href", url), text(store.titles[i])),
             tags, " ",
-            f.el("form", "delete", url, attr("class", "delete"),
-                _csrf_input(csrf),
+            f.el("form", "delete", url, attr("class", "delete") + _csrf_header(csrf),
                 el("button", "", "&times;"),
             ),
         )
@@ -567,10 +591,26 @@ def _refuse(req: HTTPRequest, verdict: SessionVerdict) raises -> HTTPResponse:
     return _private(vary_on_fragment_headers(reply.redirect(303, LOGIN)))
 
 
+def _token_matches(verdict: SessionVerdict, got: String) -> Bool:
+    return constant_time_equal(
+        Span(verdict.csrf.as_bytes()), Span(got.as_bytes())
+    )
+
+
 def _csrf_refusal(
-    body: Optional[Form], verdict: SessionVerdict, instance: String
+    req: HTTPRequest,
+    body: Optional[Form],
+    verdict: SessionVerdict,
+    instance: String,
 ) -> Optional[HTTPResponse]:
-    """403 unless the request carries THIS session's token, in the body.
+    """403 unless the request carries THIS session's token — in the
+    `X-CSRF-Token` header, or in the body. Never the query string: nothing
+    here reads it, so a token that reached the URL is a 403 rather than a
+    quiet acceptance.
+
+    Two places because htmx 4 leaves a DELETE no body to carry a field
+    in; a header is the stronger of the two, since a cross-origin page
+    cannot set one without a preflight this server never answers.
 
     The guard, in the shape D3 leaves for one: an early return, not a
     decorator. It takes `form(req)` rather than a `Form` so a view that
@@ -592,12 +632,16 @@ def _csrf_refusal(
         return reply.problem(
             403, String("Forbidden"), String("no session to hold a token"), instance
         )
-    if body:
+    var sent = req.headers.get(CSRF_HEADER)
+    if sent:
+        # A header that is present decides: a wrong one is not rescued by
+        # a field, so a request cannot offer two tokens and pass on either.
+        if _token_matches(verdict, sent.value()):
+            return None
+    elif body:
         var got = body.value().get(CSRF_FIELD)
         if got:
-            if constant_time_equal(
-                Span(verdict.csrf.as_bytes()), Span(got.value().as_bytes())
-            ):
+            if _token_matches(verdict, got.value()):
                 return None
     return reply.problem(
         403,
@@ -667,7 +711,7 @@ def logout(
     var session = _session(req, store)
     if not session.ok:
         return _refuse(req, session)
-    var refused = _csrf_refusal(form(req), session, LOGOUT)
+    var refused = _csrf_refusal(req, form(req), session, LOGOUT)
     if refused:
         return refused.take()
     var resp: HTTPResponse
@@ -707,7 +751,7 @@ def create(
             "the request body must be application/x-www-form-urlencoded",
             NOTES,
         )
-    var refused = _csrf_refusal(maybe, session, NOTES)
+    var refused = _csrf_refusal(req, maybe, session, NOTES)
     if refused:
         return refused.take()
     var f = maybe.take()
@@ -742,16 +786,15 @@ def delete(
 ) raises -> HTTPResponse:
     """DELETE /notes/:id — answers the list without it.
 
-    The token arrives in the BODY, from the hidden field in the form the
-    button sits in: the shell's `htmx-config` narrows
-    `methodsThatUseUrlParams` to `get`, so htmx body-encodes this one.
-    `form(req)` is the only place it is read, so a token that reached the
-    query string instead would be a 403 rather than a quiet acceptance.
+    The token arrives as the `X-CSRF-Token` HEADER, from `hx-headers` on
+    the form the button sits in: htmx 4 sends a DELETE with no body and
+    its form's fields in the query string, which is why that form has no
+    fields. A token in the query is never read, so it is a 403.
     """
     var session = _session(req, store)
     if not session.ok:
         return _refuse(req, session)
-    var refused = _csrf_refusal(form(req), session, req.uri.path)
+    var refused = _csrf_refusal(req, form(req), session, req.uri.path)
     if refused:
         return refused.take()
     var i = _index_of(store, params[0])

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Revert each rule behind SPEC N13 and insist `smoke-fragment-notes` fails.
+"""Revert each rule behind SPEC N13 and N22 and insist `smoke-fragment-notes` fails.
 
 Same shape as `outbox_cap_sabotage.py` and `pool_sabotage.py`: patch one
 load-bearing line in the tree, run the gate, insist it goes red, put the
@@ -14,7 +14,15 @@ private view that forgot to ask, and a cookie that is readable by script
 and travels cross-site. All but one leave every other assertion in
 the smoke passing, which is why each needs its own arm.
 
-Rebuilds `m0-http` whenever `session.mojo` has moved since the last build
+Since the layer moved to htmx 4 (2026-09-19) it also reverts what that
+move rests on: the token on a DELETE being a header and never a field (a
+field in that form is a token in the URL, htmx 4 sending a DELETE's fields
+in the query string), a header that is present deciding, and
+`page_or_fragment` taking `HX-Request-Type` at its word in both directions
+with `Vary` naming it.
+
+Rebuilds `m0-http` whenever `session.mojo` or `fragment.mojo` has moved
+since the last build
 -- on the sabotage AND on the restore. The app resolves `m0_http` through
 the `.mojoc`, so an edit there is not in the app until `build-http` runs;
 running the gate against a stale artifact tests a tree nobody has, in
@@ -35,6 +43,7 @@ import tempfile
 from pathlib import Path
 
 SESSION = Path("packages/m0-http/src/session.mojo")
+FRAGMENT = Path("packages/m0-http/src/fragment.mojo")
 APP = Path("apps/fragment_notes/server.mojo")
 
 # (label, path, old, new)
@@ -64,15 +73,71 @@ SABOTAGES = [
     (
         "the CSRF guard always passes",
         APP,
+        """    var sent = req.headers.get(CSRF_HEADER)
+    if sent:""",
+        """    var sent = req.headers.get(CSRF_HEADER)
+    if True:
+        return None
+    if sent:""",
+    ),
+    (
+        "a wrong token header is rescued by a right field beside it",
+        APP,
+        """    elif body:
+        var got = body.value().get(CSRF_FIELD)""",
         """    if body:
-        var got = body.value().get(CSRF_FIELD)
-        if got:
-            if constant_time_equal(
-                Span(verdict.csrf.as_bytes()), Span(got.value().as_bytes())
-            ):
-                return None""",
-        """    if True:
-        return None""",
+        var got = body.value().get(CSRF_FIELD)""",
+    ),
+    (
+        "the token header is never compared",
+        APP,
+        """        if _token_matches(verdict, sent.value()):
+            return None""",
+        """        return None""",
+    ),
+    (
+        "the delete form holds the token as a FIELD, which htmx 4 puts in the URL",
+        APP,
+        """attr("class", "delete") + _csrf_header(csrf),
+""",
+        """attr("class", "delete") + _csrf_header(csrf),
+                _csrf_input(csrf),
+""",
+    ),
+    (
+        "the delete form carries no hx-headers",
+        APP,
+        """attr("class", "delete") + _csrf_header(csrf),""",
+        """attr("class", "delete"),""",
+    ),
+    (
+        "the shell loads the htmx the layer is no longer gated against",
+        APP,
+        "htmx.org@4.0.0",
+        "htmx.org@2.0.4",
+    ),
+    (
+        "HX-Request-Type: full is ignored, so a body-targeted swap gets a section",
+        FRAGMENT,
+        """    if req.headers.value_equals_ignore_case(REQUEST_TYPE_HEADER, "full"):
+        return False
+""",
+        "",
+    ),
+    (
+        "HX-Request-Type: partial is ignored, so a boosted partial gets a document",
+        FRAGMENT,
+        """    if req.headers.value_equals_ignore_case(REQUEST_TYPE_HEADER, "partial"):
+        return True
+""",
+        "",
+    ),
+    (
+        "Vary does not name HX-Request-Type",
+        FRAGMENT,
+        """    resp = vary(resp^, DATASTAR_VARY)
+    return vary(resp^, REQUEST_TYPE_VARY)""",
+        """    return vary(resp^, DATASTAR_VARY)""",
     ),
     (
         "a private view forgets to ask for a session",
@@ -96,11 +161,11 @@ SABOTAGES.append(
         '''    var session = _session(req, store)
     if not session.ok:
         return _refuse(req, session)
-    var refused = _csrf_refusal(form(req), session, req.uri.path)''',
+    var refused = _csrf_refusal(req, form(req), session, req.uri.path)''',
         '''    var session = _session(req, store)
     if False:
         return _refuse(req, session)
-    var refused = _csrf_refusal(form(req), session, req.uri.path)''',
+    var refused = _csrf_refusal(req, form(req), session, req.uri.path)''',
     ),
 )
 """The sixth arm: `delete` without its guard. Caught by the unauthenticated
@@ -112,7 +177,7 @@ is unreachable, which is what a layer under another one means."""
 
 # What `m0_http.mojoc` was last built from. The app resolves `m0_http`
 # through that file, so the gate tests the tree only while this matches
-# `session.mojo` on disk -- and it stops matching on the RESTORE as well as
+# `session.mojo` and `fragment.mojo` on disk -- and it stops matching on the RESTORE as well as
 # on the sabotage. Rebuilding only when a sabotage is applied left the
 # previous one's session.mojo in the artifact for every app-side arm after
 # it, and two of them then failed on the wrong assertion while reporting
@@ -122,9 +187,9 @@ _built_session = None
 
 
 def sync_build() -> bool:
-    """Rebuild `m0-http` if `session.mojo` has moved since the last build."""
+    """Rebuild `m0-http` if a package source has moved since the last build."""
     global _built_session
-    have = SESSION.read_text()
+    have = SESSION.read_text() + FRAGMENT.read_text()
     if have == _built_session:
         return True
     p = subprocess.run(["uv", "run", "poe", "build-http"],
@@ -160,7 +225,7 @@ def _detail(out: str) -> str:
 
 
 def main() -> int:
-    originals = {p: p.read_text() for p in (SESSION, APP)}
+    originals = {p: p.read_text() for p in (SESSION, FRAGMENT, APP)}
     tmp = Path(tempfile.mkdtemp())
     for p, text in originals.items():
         (tmp / p.name).write_text(text)
@@ -185,7 +250,10 @@ def main() -> int:
         path.write_text(original.replace(old, new, 1))
         try:
             if not sync_build():
-                print(f"  SKIP  {label} (does not build)")
+                # A sabotage that does not build reverted nothing, and a
+                # rule nobody reverted is a rule nobody showed to be guarded.
+                print(f"  BAD   {label} (does not build)")
+                failures.append(label)
                 path.write_text(original)
                 continue
             ok, out = run_gate()

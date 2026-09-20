@@ -3,20 +3,26 @@
 
 `smoke-fragment-notes` proves the server's half with curl: the cookie, the
 forgeries, and a write refused unless it carries this session's token in the
-body. It cannot prove the half that fails silently — that htmx actually PUTS
-the token in the body of a `DELETE`.
+body or the `X-CSRF-Token` header. It cannot prove the half that fails
+silently — what htmx actually SENDS — and under htmx 4 that half is most of
+the contract (SPEC N22):
 
-htmx 2.0.4 ships `methodsThatUseUrlParams: ["get","delete"]`, so a form with
-`hx-delete` sends its fields in the QUERY STRING, where a CSRF token becomes
-an access-log entry, a `Referer` and a history entry. The app narrows that to
-`get` in one `<meta name="htmx-config">` in its shell. Nothing on the wire can
-tell whether the bundle honoured it: the smoke greps the meta out of the page,
-which says it was served, and refuses a token in the query, which says the
-server would not take one — so a bundle that ignored the meta would leave the
-delete button quietly broken, 403 on every click, with a green suite.
+- **A `DELETE`'s token is a header.** htmx 4.0.0 sends a DELETE's parameters
+  in the QUERY STRING, hard-coded (`/GET|DELETE/.test(method)`; the
+  `methodsThatUseUrlParams` setting the 2.0.4 shell narrowed is gone), where a
+  CSRF token becomes an access-log entry, a `Referer` and a history entry. So
+  the delete form holds no field and carries `hx-headers`. Nothing on the wire
+  can tell whether the bundle honoured that attribute: a bundle that ignored
+  it would leave the delete button quietly broken, 403 on every click, with a
+  green suite.
+- **Every request says `HX-Request-Type`.** `page_or_fragment` takes htmx 4 at
+  its word, so the word has to be there: `partial` on a swap into `#notes`.
+- **A 4xx is swapped.** A session that ends mid-interaction is answered 401
+  with the login fragment, and htmx 4 puts it where the list was (2.0.4 showed
+  nothing). Checked by dropping the cookie and clicking.
 
 This opens the app in Chromium, signs in, adds a note, deletes it, and records
-the request the bundle made for each — the URL, the content type and the body.
+the request the bundle made for each — the URL, the headers and the body.
 It also signs out, which is the other form that is a plain navigation rather
 than a swap.
 
@@ -63,7 +69,8 @@ def run(url: str) -> list[str]:
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_context().new_page()
+        context = browser.new_context()
+        page = context.new_page()
 
         def record(request):
             parts = urllib.parse.urlparse(request.url)
@@ -72,6 +79,8 @@ def run(url: str) -> list[str]:
                 "path": parts.path,
                 "query": parts.query,
                 "content_type": request.headers.get("content-type", ""),
+                "request_type": request.headers.get("hx-request-type", ""),
+                "csrf_header": request.headers.get("x-csrf-token", ""),
                 "body": request.post_data or "",
             })
 
@@ -99,18 +108,47 @@ def run(url: str) -> list[str]:
         create = next((r for r in seen if r["method"] == "POST" and r["path"] == "/notes"), None)
 
         # The delete button: the request this whole check exists for. The
-        # wait is in a try because the failure it is watching for is a
-        # note that never goes away — the server refusing a token that
-        # went to the query string — and a raised timeout would print a
-        # stack trace where the request shapes below say what happened.
+        # STATUS is what is read, not the list: htmx 4 swaps a 4xx, so a
+        # refused delete replaces the list with the refusal and the note
+        # "goes away" either way.
         seen.clear()
-        page.click("form.delete button")
+        status = 0
         try:
-            page.wait_for_selector("li a", state="detached", timeout=5000)
+            with page.expect_response(
+                lambda r: r.request.method == "DELETE", timeout=5000
+            ) as answered:
+                page.click("form.delete button")
+            status = answered.value.status
         except Exception:
-            failures.append("the note was still in the list after the delete "
-                            "was clicked — the write was refused")
+            failures.append("clicking the delete button made no DELETE request")
+        if status == 200:
+            try:
+                page.wait_for_selector("li a", state="detached", timeout=5000)
+            except Exception:
+                failures.append("the note was still in the list after a DELETE answered 200")
+        elif status:
+            failures.append(f"the DELETE was answered {status} — the write was refused")
+            page.goto(url + "/notes")
+            page.wait_for_selector('input[name="title"]', timeout=5000)
         delete = next((r for r in seen if r["method"] == "DELETE"), None)
+
+        # A session that ends mid-interaction: drop the cookie, add a note.
+        # The 401 carries the login fragment under the list's id, and htmx 4
+        # swaps a 4xx -- so the form appears in place, the address unmoved.
+        jar = context.cookies()
+        context.clear_cookies()
+        page.fill('input[name="title"]', "after the session ended")
+        page.click('form[hx-post] button')
+        try:
+            page.wait_for_selector('#notes input[name="password"]', timeout=5000)
+        except Exception:
+            failures.append("a 401 answered to a swap did not put the login "
+                            "form where the list was")
+        if not page.url.endswith("/notes"):
+            failures.append(f"the swapped-in login moved the address bar (it is {page.url})")
+        context.add_cookies(jar)
+        page.goto(url + "/notes")
+        page.wait_for_selector('input[name="title"]', timeout=5000)
 
         # Signing out is a navigation too, back to a form with no session.
         page.click("form.session button")
@@ -133,18 +171,25 @@ def run(url: str) -> list[str]:
             failures.append(f"the create form carried no CSRF token: {create['body']!r}")
         if fields.get("title") != ["buy milk"]:
             failures.append(f"the create form's fields did not travel: {create['body']!r}")
+        if create["request_type"] != "partial":
+            failures.append("the create form's swap did not say HX-Request-Type: partial "
+                            f"(it said {create['request_type']!r}) — the header "
+                            "page_or_fragment decides by")
     if not delete:
         failures.append("no DELETE was made by the delete button")
     else:
-        fields = urllib.parse.parse_qs(delete["body"])
-        if delete["query"]:
+        if "csrf" in urllib.parse.parse_qs(delete["query"]):
             failures.append(
-                "the DELETE put its fields in the query string "
-                f"({delete['query']!r}) — the htmx-config meta narrowing "
-                "methodsThatUseUrlParams to `get` was not honoured"
+                "the DELETE put a CSRF token in the query string "
+                f"({delete['query']!r}) — the delete form holds a field, and "
+                "htmx 4 sends a DELETE's fields in the URL"
             )
-        if not fields.get("csrf"):
-            failures.append(f"the DELETE carried no CSRF token in its body: {delete['body']!r}")
+        if not delete["csrf_header"]:
+            failures.append("the DELETE carried no X-CSRF-Token header — "
+                            "hx-headers on the form was not honoured")
+        if delete["request_type"] != "partial":
+            failures.append("the DELETE did not say HX-Request-Type: partial "
+                            f"(it said {delete['request_type']!r})")
 
     print("what the bundle sent:")
     for label, req in (("create (POST)", create), ("delete (DELETE)", delete)):
@@ -153,6 +198,8 @@ def run(url: str) -> list[str]:
                   f"{'?' + req['query'] if req['query'] else ''}"
                   f"  content-type {req['content_type']!r}")
             print(f"    body {req['body']!r}")
+            print(f"    hx-request-type {req['request_type']!r}  "
+                  f"x-csrf-token {'present' if req['csrf_header'] else 'absent'}")
     return failures
 
 
@@ -191,7 +238,8 @@ def main() -> int:
         print(f"FAIL  {f}")
     if failures:
         return 1
-    print("ok    the login navigates, and every write carries its token in the body")
+    print("ok    the login navigates, a POST carries its token in the body and a "
+          "DELETE in a header, and a 401 is swapped in")
     return 0
 
 

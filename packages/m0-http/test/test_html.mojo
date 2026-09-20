@@ -485,8 +485,9 @@ def test_a_conformance_reads_the_element_kind_without_an_underscore() raises:
 
 def test_a_vocabulary_names_its_own_verbs() raises:
     """A sixth verb, as htmx 4 has. A conformance that answers `verbs()` is
-    allowed it, the built-in five-verb vocabularies still refuse it, and
-    the refusal names the list of the vocabulary that refused.
+    allowed it — `Htmx` is one, since it moved to htmx 4 — a vocabulary
+    left on the default five still refuses it, and the refusal names the
+    list of the vocabulary that refused.
 
     covers: N21
     """
@@ -501,13 +502,21 @@ def test_a_vocabulary_names_its_own_verbs() raises:
     assert_true(raised)
     _ = f^.finish()
     var hx = Fragment[Htmx]("n")
+    assert_equal(
+        hx.el("a", "query", "/q", ""),
+        '<a hx-query="/q" hx-target="#n" hx-swap="outerHTML"></a>',
+    )
+    _ = hx^.finish()
+    var ds = Fragment[Datastar]("n")
     raised = False
     try:
-        _ = hx.el("a", "query", "/q", "")
-    except:
+        _ = ds.el("a", "query", "/q", "")
+    except e:
         raised = True
+        assert_true(String(e).find("patch, delete") >= 0)
+        assert_true(String(e).find("delete, query") < 0)
     assert_true(raised)
-    _ = hx^.finish()
+    _ = ds^.finish()
 
 
 def main() raises:

@@ -1339,7 +1339,13 @@ pieces, and the language fact each rests on:
   parameter**: `Fragment[Htmx]` emits `hx-*` and `Fragment[Datastar]`
   emits `data-on:EVENT="@verb('url')"` with no target (Datastar morphs a
   `text/html` answer into the element whose id it carries — the
-  fragment's own), the event picked from the OPEN element by htmx's own
+  fragment's own; `Htmx` is gated against htmx **4.0.0** since 2026-09-19,
+  D6 retired: the same three per-element attributes, which explicit
+  inheritance leaves intact, plus `query`, the sixth verb. htmx 4 sends a
+  DELETE's fields in the QUERY STRING with no setting to change it, so a
+  CSRF token on one is a header — `hx-headers`, which the app writes by
+  hand, D38 — and it swaps every 4xx, so an error a person may see is
+  answered as a fragment), the event picked from the OPEN element by htmx's own
   default-trigger rule (a form submits with `__prevent` and
   `{contentType: 'form'}`, a field changes, an `a`/`button` clicks with
   `__prevent`, the rest click — WHEN agrees; WHAT travels is each
@@ -1387,14 +1393,21 @@ pieces, and the language fact each rests on:
   value that does not open with a space, so `el("p", "none")` raises
   instead of rendering `<pnone>`.
 - **`page_or_fragment`** (`m0-http/src/fragment.mojo`): the framework
-  decides page-versus-fragment from FOUR headers — `Datastar-Request:
-  true` is a fragment; `HX-Request: true` is a fragment unless
+  decides page-versus-fragment from FIVE headers — `Datastar-Request:
+  true` is a fragment; **`HX-Request-Type` DECIDES when present**
+  (`partial` a fragment, `full` a page; htmx 4 sends it on every request
+  and htmx 2 never does, so which rule runs is keyed on a header only one
+  major sends — SPEC N22, docs/notes/the-layer-moves-to-htmx-4.md. It
+  decides rather than advises because a v4 boosted element with its own
+  target says `partial` beside `HX-Boosted: true` and means it, and a v4
+  history restore carries `full` and NO `HX-Request`); without it,
+  `HX-Request: true` is a fragment unless
   `HX-History-Restore-Request: true` or `HX-Boosted: true` is beside it,
   because htmx 2.0.4's history restore sends both and swaps the answer's
   BODY into the page it is rebuilding, and a boosted navigation targets
   the body and takes a full document's body (a bare fragment there is a
   page with no head, or a body that is one section) — and every answer
-  names all four in `Vary` through `reply.vary`, which
+  names all five in `Vary` through `reply.vary`, which
   APPENDS (`vary_accept` used to overwrite, unnoticed while nothing set
   `Vary` twice) and keeps `*` alone. A `status` parameter makes a styled
   404 a 404. The shell is

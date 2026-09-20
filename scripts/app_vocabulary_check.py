@@ -7,11 +7,14 @@ a `.mojoc`. This builds the third one where an application would write it:
 a source file in a directory OUTSIDE this repository, compiled against the
 built `.mojoc`s and nothing else.
 
-The vocabulary is **htmx 4**, which the layer itself does not speak (its
-`Htmx` is gated against 2.0.4, D6). `Htmx4` differs from `Htmx` in exactly
-two places, and both are asserted by exact string, because with `outerHTML`
-the two spell identical attributes and a green gate would prove only that a
-conformance compiles:
+The vocabulary is **htmx 4 with the morph swap**. When this was written the
+layer's own `Htmx` was gated against 2.0.4 (D6) and the app's differed from
+it in two places; since 2026-09-19 `Htmx` speaks htmx 4 itself, `query`
+included (SPEC N22), and what is left to an application is the swap STYLE
+the layer chose not to change under existing apps. Both attributes are
+still asserted by exact string, because with `outerHTML` the two spell
+identical attributes and a green gate would prove only that a conformance
+compiles:
 
     hx-swap="outerMorph"   htmx 4's built-in morph-by-id, which is what
                            Datastar does with the same fragment
@@ -23,7 +26,7 @@ What is checked, in order:
    application may rely on is the one spelled without one;
 2. it compiles and runs from outside the repository root;
 3. both tiers (`Fragment.swap`, `Fragment.el`) and `Html.swap[V]` emit the
-   attributes above, and the five-verb `Htmx` still refuses `query`;
+   attributes above, and the five-verb `Datastar` still refuses `query`;
 4. a typo is refused by the LAYER, `Htmx4.swap` having checked nothing;
 5. the rendered document is read by `hxlint`, vendored from hx-flask and
    generated from htmx 4's own source tree: a second implementation, so the
@@ -53,7 +56,7 @@ _SIBLING = Path(sys.executable).with_name("mojo")
 MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
 
 APP = '''
-from m0_http import ElementKind, Fragment, Html, Htmx, Vocabulary, attr, text
+from m0_http import Datastar, ElementKind, Fragment, Html, Vocabulary, attr, text
 
 
 struct Htmx4(Vocabulary):
@@ -129,7 +132,7 @@ def main() raises:
 
     print("TYPO", refused[Htmx4]("psot"))
     print("QUERY4", refused[Htmx4]("query"))
-    print("QUERY2", refused[Htmx]("query"))
+    print("QUERY5", refused[Datastar]("query"))
 '''
 
 DOC = (
@@ -212,8 +215,9 @@ def main() -> int:
         return fail(f"a typo was not refused by the layer with the app's own verb list: {typo!r}")
     if got.get("QUERY4") != "ALLOWED":
         return fail(f"`query` was refused for a vocabulary that names it: {got.get('QUERY4')!r}")
-    if "must be one of get, post, put, patch, delete" not in got.get("QUERY2", ""):
-        return fail(f"the five-verb `Htmx` allowed `query`: {got.get('QUERY2')!r}")
+    five = got.get("QUERY5", "")
+    if "must be one of get, post, put, patch, delete" not in five or "delete, query" in five:
+        return fail(f"the five-verb `Datastar` allowed `query`: {five!r}")
 
     # The outside reader. First prove it can say no.
     for label, broken, rule in (
