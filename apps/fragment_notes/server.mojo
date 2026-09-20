@@ -110,12 +110,12 @@ from lightbug_http.header import HeaderKey
 from lightbug_http.c.process import process_exit
 from lightbug_http.http.date import unix_now
 from m0_host.host import HostContext, ViewState, ViewsApp, serve
+from m0_host.flags import host_config
 
 from m0_core import constant_time_equal, sha256
 
 from m0_http import reply
 from m0_http import (
-    AppConfig,
     Form,
     Fragment,
     Html,
@@ -862,7 +862,9 @@ def _auth_or_exit() raises -> NotesAuth:
 
 
 def main() raises:
-    var config = AppConfig()
+    # With the command line applied, so the address printed below is the
+    # one `serve` binds under `--port` (`m0_host.flags`).
+    var config = host_config()
     var auth = _auth_or_exit()
     print(
         String(

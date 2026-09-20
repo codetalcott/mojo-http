@@ -134,6 +134,11 @@ finding when it gates an ungated row. A host that offers pool lanes and a
 bus will have to call `run_event_loop` directly for `peer_bus_fd`, as
 m0serve does. No application under `apps/` needs that yet.
 
+*(Later: pool lanes arrived with D31, loops on threads with D35, and flags
+and `--doctor` on 2026-09-19 —
+[flags-and-a-doctor-for-the-host](flags-and-a-doctor-for-the-host.md).
+Exec'd workers are still refused.)*
+
 The handler is built after the fork and the pages before it. Neither
 order is a one-line edit in `serve`, so neither is sabotaged on its own.
 The two-worker phases are what would fail: one handler cannot hold

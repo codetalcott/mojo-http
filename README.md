@@ -181,12 +181,20 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 99 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 813 |
+<<<<<<< HEAD
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 827 |
+=======
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 823 |
+>>>>>>> origin/main
 | `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 80 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 157 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 116 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 75 |
-| **Total** | | **1340** |
+<<<<<<< HEAD
+| **Total** | | **1354** |
+=======
+| **Total** | | **1350** |
+>>>>>>> origin/main
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -318,7 +326,11 @@ own configuration check, its whole `main` is
 listener, the workers and their shared accepts, the bus, the signals and
 the producer thread, so `M0_WORKERS=2` serves blobs from two processes and a
 click on either reaches the one producer
-([the-mojo-host](docs/notes/the-mojo-host.md)).
+([the-mojo-host](docs/notes/the-mojo-host.md)). A host binary takes
+m0serve's flags for the same settings (`--port`, `--workers`, `--threads`,
+…; `--help` lists them) and has its own `--doctor`, which prints the
+configuration it would serve as JSON and exits with the code serving would
+([flags-and-a-doctor-for-the-host](docs/notes/flags-and-a-doctor-for-the-host.md)).
 
 A note on Datastar v1.0.x attribute syntax, learned the hard way in a real
 browser: the stream opens from `data-init` (there is no `on-load` plugin), and
@@ -868,7 +880,11 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1340 unit tests, then compiles every example
+<<<<<<< HEAD
+uv run poe test-all         # 1354 unit tests, then compiles every example
+=======
+uv run poe test-all         # 1350 unit tests, then compiles every example
+>>>>>>> origin/main
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

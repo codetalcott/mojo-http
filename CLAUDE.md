@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D36, permanent ids, each with a retiring condition), which
+  (D1–D37, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -1050,9 +1050,9 @@ Three things about it are load-bearing:
   names which side is missing.
 - **The rules are pure functions of text**, which is what lets
   `--sabotage` revert one in memory and insist the checker catches it —
-  `shim_ownership.py`'s shape. Nine of the twenty-five sabotages mutate
-  `pyproject.toml`, `test.yml`, `cli.mojo` or the test index rather than the
-  sheet, so every source arrives as an argument. Do not "simplify" the
+  `shim_ownership.py`'s shape. Ten of the twenty-eight sabotages mutate
+  `pyproject.toml`, `test.yml`, `cli.mojo`, the host's `flags.mojo` or the
+  test index rather than the sheet, so every source arrives as an argument. Do not "simplify" the
   checker into something that reads paths.
 
 What it deliberately cannot do, and the page says so: prove that a cited gate
@@ -1287,7 +1287,22 @@ pieces, and the language fact each rests on:
   was forked, so `main` returns. Measured at parity with prefork on
   throughput and tail, 20–35 % less RSS, so prefork stays the documented
   way to N and threads are the option), and refuses `M0_SPAWN_WORKERS`,
-  and `M0_WORKERS>1` beside `M0_THREADS>1`, with 78. `apps/host_check` is
+  and `M0_WORKERS>1` beside `M0_THREADS>1`, with 78. **It has a command
+  line and a doctor** (`m0_host/flags.mojo`, SPEC E30–E31, D37, `smoke-host-doctor`;
+  docs/notes/flags-and-a-doctor-for-the-host.md): `serve` lays the flags
+  over the `AppConfig` it is handed — flag > env > default, strict, exit 2
+  for what cannot be READ — and the overlay is idempotent, which is what
+  lets an app that prints its own address take `host_config()` instead
+  (`AppConfig()` must never read argv itself: m0serve builds one). A count
+  that cannot be SERVED is a 78 whichever way it arrived, because
+  `host_checks` is the ONE list both `serve` (its first failure) and
+  `--doctor` (all of them, same exit) read — add a refusal THERE, never
+  beside it. The report is `m0_http.doctor.Report`, m0serve's shape, as the
+  LAST line of stdout (an app's banner comes first). The gate app runs the
+  flag rows in both shapes (`M0_HOSTCHECK_ENV_CONFIG=1` is
+  `serve(AppConfig())`): with `host_config()` alone two sabotages were
+  MISSED, the flags having been applied before `serve` saw them.
+  `apps/host_check` is
   its gate app;
   `apps/blobs`, `sim_loop`, `datastar_counter`, `datastar_todo`,
   `fragment_notes` and `ramp` run on it — `apps/ramp` being ONE views
