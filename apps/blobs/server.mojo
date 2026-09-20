@@ -59,10 +59,11 @@ from std.time import perf_counter_ns
 from lightbug_http import HTTPRequest, HTTPResponse
 from lightbug_http.c.process import process_exit
 from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
+from m0_host.flags import host_config
 
 from m0_core.json_parse import parse_json_number
 
-from m0_http import AppConfig, Views, reply
+from m0_http import Views, reply
 
 from m0_datastar.signals import read_signals
 from m0_datastar.stream import DatastarStream
@@ -447,7 +448,9 @@ def main() raises:
     if not cadence.valid():
         print("blobs: M0_BLOBS_HZ and M0_BLOBS_IDLE_HZ must be positive", flush=True)
         process_exit(78)
-    var config = AppConfig()
+    # With the command line applied, so the address printed below is the
+    # one `serve` binds under `--port` (`m0_host.flags`).
+    var config = host_config()
     print(
         String(
             "blobs on ", config.base_url, " -- ", cadence.hz, " Hz, ",

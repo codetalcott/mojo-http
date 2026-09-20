@@ -27,7 +27,7 @@ refused 409 -- it would subscribe a pool thread's registry, which nothing
 drains (`mojo_pool.mojo`) -- so `/events` opens on the loop and
 `/events-from-func` keeps the refused shape for the gate to pin.
 
-Seven knobs, all for the gate:
+Nine knobs, all for the gate:
 
     M0_HOSTCHECK_PERIOD_MS   the beat's period (default 100)
     M0_HOSTCHECK_STEP_MS     how long each beat sleeps before it publishes
@@ -35,6 +35,10 @@ Seven knobs, all for the gate:
                              host's join bound)
     M0_HOSTCHECK_MAX_WORKERS what `max_workers` answers (default 0, any),
                              so the gate can prove the host asks
+    M0_HOSTCHECK_REFUSES=1   `main` refuses with 78 BEFORE `serve`: an application's
+                             own check, which fires under `--doctor` as without
+    M0_HOSTCHECK_ENV_CONFIG=1 `main` hands `serve` a bare `AppConfig()`, so the command
+                             line is applied by `serve` alone (the banner may lie)
     M0_HOSTCHECK_MAKE_RAISES=1
                              the handler's `make` raises, naming the knob:
                              the host must refuse with 78, not crash-loop
@@ -66,7 +70,8 @@ from std.os import getenv
 from std.time import perf_counter_ns, sleep
 
 from lightbug_http import OK, HTTPRequest, HTTPResponse
-from lightbug_http.c.process import getpid
+from lightbug_http.c.process import getpid, process_exit
+from m0_host.flags import host_config
 from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
 
 from m0_http import AppConfig, SSERegistry, format_sse_event, sse_response
@@ -231,6 +236,20 @@ struct Check(AppHandler):
 
 
 def main() raises:
-    var config = AppConfig()
+    # An application's OWN configuration is checked here, before `serve`, so
+    # it is refused identically with and without `--doctor` -- the doctor
+    # never runs (SPEC E31; `smoke-host-doctor` runs both and compares).
+    if getenv("M0_HOSTCHECK_REFUSES", "") == "1":
+        print("host_check: M0_HOSTCHECK_REFUSES: the application refuses its own configuration (unset it)", flush=True)
+        process_exit(78)
+    # `host_config`, not `AppConfig`: the line below prints an address, and
+    # under `--port` only a config with the command line applied names the
+    # one `serve` binds.
+    var config = host_config()
+    if getenv("M0_HOSTCHECK_ENV_CONFIG", "") == "1":
+        # The other shape, `serve(AppConfig())`: the command line is applied
+        # by `serve` alone. The gate runs both, because `host_config` has
+        # already applied it and would otherwise hide whether `serve` does.
+        config = AppConfig()
     print(String("host_check on ", config.base_url, ", ", config.workers, " worker(s)"), flush=True)
     serve[Check, Beat](config)

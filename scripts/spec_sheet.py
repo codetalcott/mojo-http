@@ -11,9 +11,9 @@ this file can confirm from the workflow files.
 
 The checks are pure functions of TEXT rather than readers of paths. That is not
 style: `--sabotage` follows scripts/shim_ownership.py and scripts/pool_sabotage.py
-in patching sources *in memory* and insisting the suite goes red for each. Nine
-of the twenty-five sabotages mutate pyproject.toml, test.yml, cli.mojo or the
-test index rather than the sheet, so every source has to arrive as an argument.
+in patching sources *in memory* and insisting the suite goes red for each. Ten
+of the twenty-eight sabotages mutate pyproject.toml, test.yml, cli.mojo, the
+host's flags.mojo or the test index rather than the sheet, so every source has to arrive as an argument.
 
 Coverage is DECLARED by the gate, not merely cited by the sheet (SPEC F12;
 docs/notes/traceability.md, phase 2): every `verified (every PR)` row must be
@@ -505,9 +505,19 @@ def analyse(src):
         failures.append(
             f"m0serve accepts `{flag}` and no row in docs/SPEC.md names it"
         )
-    for flag in sorted(cited_flags - accepted):
+    # The Mojo host has a command line of its own (`m0_host/flags.mojo`), a
+    # second closed set held to the same two directions. Most of its flags
+    # are m0serve's by name, so a row naming one covers both; the ones that
+    # are the host's alone are what this adds.
+    hosted = set(re.findall(r'name == "(--[a-z-]+)"', src["host_flags"]))
+    for flag in sorted(hosted - cited_flags):
+        failures.append(
+            f"the Mojo host accepts `{flag}` and no row in docs/SPEC.md names it"
+        )
+    for flag in sorted(cited_flags - accepted - hosted):
         failures.append(
             f"docs/SPEC.md names `{flag}`, which cli.mojo does not accept"
+            " (nor m0_host/flags.mojo)"
         )
 
     # --- Declared coverage (SPEC F12; docs/notes/traceability.md, phase 2) -----
@@ -667,6 +677,7 @@ def read_sources(**override):
         "nightly": txt(".github/workflows/nightly-canary.yml"),
         "citations": txt(".github/workflows/citations.yml"),
         "cli": txt("packages/m0-wsgi/src/cli.mojo"),
+        "host_flags": txt("packages/m0-http/m0_host/flags.mojo"),
         "tests": tests,
         "sources": sources,
     }
@@ -810,6 +821,9 @@ SABOTAGES = [
     ("a new CLI flag is named by no row", "cli",
      ('name == "--metrics"', 'name == "--metrics"\n        or name == "--nitro"'),
      "and no row in docs/SPEC.md names it"),
+    ("a new Mojo-host flag is named by no row", "host_flags",
+     ('name == "--qos"', 'name == "--qos"\n        or name == "--nitro"'),
+     "the Mojo host accepts `--nitro` and no row"),
     ("a row names a flag the CLI does not accept", "sheet",
      ("`--max-body`", "`--max-corpus`"), "which cli.mojo does not accept"),
     ("a self-skipping gate loses its dependency", "pyproject",

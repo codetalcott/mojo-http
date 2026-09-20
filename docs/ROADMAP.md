@@ -218,6 +218,7 @@ The engineering record: long-form, dated, kept as written.
 - [A vocabulary an application defines — 2026-09-18](notes/a-vocabulary-an-application-defines.md)
 - [Loops on threads — 2026-09-18](notes/loops-on-threads.md)
 - [The demo in its own image — 2026-09-18](notes/the-demo-in-its-own-image.md)
+- [Flags and a doctor for the host — 2026-09-19](notes/flags-and-a-doctor-for-the-host.md)
 - [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)

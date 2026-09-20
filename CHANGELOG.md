@@ -8,6 +8,39 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **A command line and a doctor for Mojo host applications** (SPEC
+  E30–E31). `serve[H, P](AppConfig())` now reads the binary's flags —
+  `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`,
+  `--access-log`, `--sse-heartbeat-ms`, `--app-tick-ms`,
+  `--max-keepalive-requests`, `--qos` — with m0serve's precedence, flag
+  over `M0_` variable over default, and m0serve's strictness: an unknown
+  flag, an unreadable value or a positional is the usage and exit 2.
+  `--doctor` prints the configuration the binary would serve as one JSON
+  object (the last line of stdout, in m0serve's report shape, each failed
+  check carrying its `fix`) and exits with the code serving would exit
+  with, having bound nothing; `smoke-host-doctor` runs twenty
+  configurations both ways and requires the codes to agree. An
+  application that prints its own address takes `host_config()` so the
+  banner names the port a flag moved. Nothing changes for an application
+  that is passed no arguments.
+
+### Changed
+
+- A Mojo host's refusals (exit 78) now end with the fix in parentheses,
+  naming both spellings: `M0_THREADS must be at least 1, not 0 (set
+  --threads (M0_THREADS) to 1 or more, ...)`. The opening words are
+  unchanged.
+- `Report`, the pure half of `m0serve --doctor`, lives in
+  `m0_http.doctor` so both doctors render one shape; `m0_wsgi.doctor`
+  re-exports it and m0serve's output is byte-identical.
+- **blobs.m0serve.dev no longer slows to 2 Hz when idle.** The app drops to
+  its idle rate a minute after the last click, and on 1.5.0's live stream
+  that was nearly every visit, where each shape moved in 500 ms straight
+  lines. The deploy sets `M0_BLOBS_IDLE_HZ=10`. The app's own default is
+  unchanged.
+
 ### Fixed
 
 - **The blobs demo's shapes twisted and popped** (`apps/blobs`, SPEC N16).
@@ -35,13 +68,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `sabotage-blobs` grows from 23 rules to 31, eight of them new: five
   against the unit tests, three against the smoke.
 
-### Changed
-
-- **blobs.m0serve.dev no longer slows to 2 Hz when idle.** The app drops to
-  its idle rate a minute after the last click, and on 1.5.0's live stream
-  that was nearly every visit, where each shape moved in 500 ms straight
-  lines. The deploy sets `M0_BLOBS_IDLE_HZ=10`. The app's own default is
-  unchanged.
 
 ## [1.5.0] — 2026-09-19
 

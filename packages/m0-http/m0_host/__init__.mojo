@@ -10,5 +10,8 @@ package of its own rather than part of `m0_http`.
 
 from .host import (
     AppHandler, HostContext, NoProducer, PoolLane, Producer, Publisher,
-    ViewState, ViewsApp, host_refusal, serve,
+    HostCheck, ViewState, ViewsApp, host_checks, host_refusal, host_report, serve,
+)
+from .flags import (
+    EX_USAGE, HostFlags, host_config, host_usage, parse_host_flags,
 )

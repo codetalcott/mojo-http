@@ -36,8 +36,9 @@ from lightbug_http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
 from lightbug_http.header import Headers, Header, HeaderKey
 from m0_host.host import AppHandler, HostContext, serve
+from m0_host.flags import host_config
 
-from m0_http import AppConfig, reply
+from m0_http import reply
 from m0_http.multiworker import shared_fetch_add, shared_load
 
 from m0_datastar.stream import DatastarStream
@@ -193,7 +194,9 @@ struct CounterHandler(AppHandler):
 
 
 def main() raises:
-    var config = AppConfig()
+    # With the command line applied, so the address printed below is the
+    # one `serve` binds under `--port` (`m0_host.flags`).
+    var config = host_config()
     print("Datastar counter on " + config.base_url + " — open it in two tabs")
     # Heartbeats keep idle streams alive through proxies and NATs, and let the
     # loop discover dead subscribers; M0_SSE_HEARTBEAT_MS tunes the cadence
