@@ -37,6 +37,25 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **The built-in htmx vocabulary is htmx 4** (SPEC N22, DECISIONS D6
+  retired; docs/notes/the-layer-moves-to-htmx-4.md). `Fragment[Htmx]`,
+  `page_or_fragment` and `apps/fragment_notes` were gated against 2.0.4 and
+  are now gated against 4.0.0:
+  - `page_or_fragment` takes `HX-Request-Type` at its word — `partial` is
+    the fragment, `full` the document — and reads a request without it by
+    the htmx 2 rule, unchanged, so an application still on htmx 2 is
+    answered as before. **Every answer's `Vary` gains `HX-Request-Type`**,
+    fifth and last; that is the one change on the wire for an application
+    that did nothing.
+  - `Htmx` takes htmx 4's sixth verb, `query`. A swap is spelled in the
+    same three attributes, byte for byte.
+  - The notes app sends a DELETE's CSRF token as an `X-CSRF-Token` header
+    (`hx-headers` on the form), because htmx 4 puts a DELETE's fields in
+    the query string and has no setting to change it; its server reads the
+    token from that header or the body and never from the URL.
+  - For applications moving: htmx 4 swaps every 4xx, so answer an error a
+    person may see as a fragment.
+
 - **blobs.m0serve.dev no longer slows to 2 Hz when idle.** The app drops to
   its idle rate a minute after the last click, and on 1.5.0's live stream
   that was nearly every visit, where each shape moved in 500 ms straight

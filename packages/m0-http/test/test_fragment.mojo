@@ -1,9 +1,10 @@
 """The fragment-or-page decision in `src/fragment.mojo`.
 
-The view returns one thing; the framework reads four request headers and
-decides whether to wrap it: htmx asks for a fragment with `HX-Request`
-unless it is restoring history or boosting a navigation, Datastar asks
-with `Datastar-Request`.
+The view returns one thing; the framework reads five request headers and
+decides whether to wrap it: htmx 4 says `HX-Request-Type: partial` or
+`full` and is taken at its word, htmx 2 asks for a fragment with
+`HX-Request` unless it is restoring history or boosting a navigation,
+Datastar asks with `Datastar-Request`.
 Both answers must say they vary on every header read, and saying so must
 not lose a `Vary` the response already carried.
 """
@@ -52,7 +53,7 @@ def _req_with(name: String, value: String, hx: String = "") raises -> HTTPReques
     )
 
 
-comptime ALL_VARY = "HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request"
+comptime ALL_VARY = "HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request, HX-Request-Type"
 """Every header the decision reads, in the order `Vary` names them."""
 
 
@@ -174,6 +175,89 @@ def test_a_boosted_request_is_a_page() raises:
     assert_equal(_body(page), String("<!doctype html><title>t</title>", frag))
     assert_equal(page.headers[HeaderKey.VARY], ALL_VARY)
     assert_true(wants_fragment(_req_with("HX-Boosted", "false", hx="true")))
+
+
+def _htmx4(kind: String, name: String = "", value: String = "") raises -> HTTPRequest:
+    """A request as htmx 4.0.0 shapes one: `HX-Request-Type: kind` beside
+    `HX-Request: true`, plus `name: value` when given."""
+    if name.byte_length() == 0:
+        return HTTPRequest(
+            URI.parse("http://127.0.0.1/notes"),
+            headers=Headers(Header("HX-Request", "true"), Header("HX-Request-Type", kind)),
+        )
+    return HTTPRequest(
+        URI.parse("http://127.0.0.1/notes"),
+        headers=Headers(
+            Header("HX-Request", "true"),
+            Header("HX-Request-Type", kind),
+            Header(name, value),
+        ),
+    )
+
+
+def test_htmx_4_says_which_it_wants_and_is_taken_at_its_word() raises:
+    """Every htmx 4.0.0 request is stamped `HX-Request-Type`: `full` when the
+    target is the body or a `select` picks from the answer, `partial`
+    otherwise. `full` is a page even though `HX-Request: true` sits beside
+    it, which under the htmx 2 rule alone would be a bare fragment swapped
+    over the body.
+
+    covers: N22
+    """
+    var frag = String('<section id="notes">x</section>')
+    assert_true(wants_fragment(_htmx4("partial")))
+    assert_false(wants_fragment(_htmx4("full")))
+    assert_true(wants_fragment(_htmx4("Partial")))
+    assert_false(wants_fragment(_htmx4("FULL")))
+    var page = page_or_fragment(_htmx4("full"), frag, Shell("t"))
+    assert_equal(_body(page), String("<!doctype html><title>t</title>", frag))
+    assert_equal(page.headers[HeaderKey.VARY], ALL_VARY)
+    var bare = page_or_fragment(_htmx4("partial"), frag, Shell("t"))
+    assert_equal(_body(bare), frag)
+    assert_equal(bare.headers[HeaderKey.VARY], ALL_VARY)
+
+
+def test_an_htmx_4_history_restore_is_a_page_without_hx_request() raises:
+    """Measured in Chromium against 4.0.0: a restore carries
+    `HX-History-Restore-Request: true` and `HX-Request-Type: full` and NO
+    `HX-Request`, the restore's `request` option replacing the header
+    object whole. The page it gets is the right answer for a stated
+    reason now, not because nothing asked for a fragment.
+
+    covers: N22
+    """
+    var restore = HTTPRequest(
+        URI.parse("http://127.0.0.1/notes"),
+        headers=Headers(
+            Header("HX-History-Restore-Request", "true"),
+            Header("HX-Request-Type", "full"),
+        ),
+    )
+    assert_false(wants_fragment(restore))
+
+
+def test_an_htmx_4_boosted_link_with_its_own_target_gets_the_fragment() raises:
+    """The one place the two rules DIFFER on the same headers, and why the
+    new header decides rather than advises: htmx 4 sends `HX-Boosted:
+    true` beside `partial` when a boosted element names its own
+    `hx-target`, and given a whole document its `makeFragment` lifts the
+    `<body>` element into the swap. htmx 2 sends no type, and its boosted
+    request is still a page.
+
+    covers: N22
+    """
+    assert_true(wants_fragment(_htmx4("partial", "HX-Boosted", "true")))
+    assert_false(wants_fragment(_htmx4("full", "HX-Boosted", "true")))
+    assert_false(wants_fragment(_req_with("HX-Boosted", "true", hx="true")))
+
+
+def test_a_request_type_that_is_neither_word_falls_through() raises:
+    """Not guessed at: an unknown value leaves the decision to the headers
+    htmx 2 sends, so a proxy's mangling degrades to the older rule rather
+    than to a coin toss."""
+    assert_true(wants_fragment(_htmx4("sideways")))
+    assert_false(wants_fragment(_req_with("HX-Request-Type", "sideways")))
+    assert_false(wants_fragment(_htmx4("", "HX-Boosted", "true")))
 
 
 def main() raises:

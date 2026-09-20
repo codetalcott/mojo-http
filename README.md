@@ -181,12 +181,12 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 99 |
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 809 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 813 |
 | `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 80 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 157 |
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 116 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 75 |
-| **Total** | | **1336** |
+| **Total** | | **1340** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -229,8 +229,9 @@ The same resource as a server-rendered htmx app:
 the URL table names (`Views`, with the state borrowed for reads and `mut` for
 writes, compile-checked); the fragment names itself (`Fragment("notes")`
 writes the id once and `swap` generates the attribute that targets it); the
-framework decides page-versus-fragment from `HX-Request` (`page_or_fragment`,
-`Vary` on both) and wraps it in the app's own document (`PageShell`, whose
+framework decides page-versus-fragment from the request's headers — htmx 4's
+`HX-Request-Type`, or `HX-Request` from a client that does not send it
+(`page_or_fragment`, `Vary` on both) and wraps it in the app's own document (`PageShell`, whose
 `wrap` runs only when a document is wanted); routes are `comptime` patterns
 reversed by `url_for`; and
 `form(req)` keeps every value of a repeated checkbox key. `uv run poe
@@ -867,7 +868,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1336 unit tests, then compiles every example
+uv run poe test-all         # 1340 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

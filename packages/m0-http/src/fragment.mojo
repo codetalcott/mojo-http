@@ -24,8 +24,24 @@ title, a nav — are the struct's own fields, so the context and the
 function travel as one value. A shell that needs no context is a struct
 with no fields, which is why there is no second form for one.
 
-**Four headers decide, and the decision is the same for both libraries.**
-htmx sends `HX-Request: true` on every request it makes, INCLUDING a
+**Five headers decide, and the decision is one function for every
+library.** htmx 4 says what it wants outright: every request it makes
+carries `HX-Request-Type`, `full` when the target is the body or a
+`select` will pick from the answer, `partial` otherwise (htmx 4.0.0,
+`ctx.target === document.body || ctx.select`). When that header is present
+it DECIDES — `partial` is a fragment, `full` is a page — and nothing else
+htmx sent is consulted, for two measured reasons. A v4 history restore
+carries `HX-History-Restore-Request: true` and `HX-Request-Type: full` and
+almost nothing else: no `HX-Request` at all, the restore's own `request`
+option replacing the whole header object. And a v4 boosted link with an
+explicit `hx-target` sends `HX-Boosted: true` beside `partial`, and means
+it: handed a whole document, v4's `makeFragment` lifts the `<body>`
+ELEMENT into the fragment, which is not what a section's `outerHTML` swap
+wants.
+
+htmx 2 never sends `HX-Request-Type`, so a request without it is read by
+the rule htmx 2 needs, unchanged. There `HX-Request: true` rides every
+request, INCLUDING a
 history restore (`loadHistoryFromServer` in htmx 2.0.4 sets both) and a
 boosted navigation (`hx-boost` adds `HX-Boosted: true`) — and both need
 the whole document: a history restore swaps the response's body into the
@@ -33,7 +49,10 @@ page it is rebuilding, and a boosted request targets the body with
 `innerHTML` and takes a full document's body (`makeFragment`), so a bare
 fragment in either place is a page with no `<head>`, no script and no
 styles, or a body that is one section. So `HX-History-Restore-Request:
-true` and `HX-Boosted: true` each win over `HX-Request: true`. Datastar
+true` and `HX-Boosted: true` each win over `HX-Request: true`. The two
+rules cannot collide: which one runs is keyed on a header only one major
+version sends, and a value of it that is neither word falls through to
+the second rule rather than being guessed at. Datastar
 sends `Datastar-Request: true` on its `@get`/`@post` actions and accepts a
 `text/html` answer, which it morphs into the element whose id it
 carries — the id the fragment owns — so a Datastar action gets the bare
@@ -58,8 +77,9 @@ retired 2026-09-18.
 `Vary` is not optional here. One URL now has two representations, so a
 shared cache that stored the fragment would replay it to a direct
 navigation. Both answers name EVERY header the decision reads — `Vary:
-HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request` —
-ADDED to
+HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request,
+HX-Request-Type` (the fifth last, so the four an older cache already keyed
+on keep their order) — ADDED to
 whatever `Vary` the response already carries, so a view that negotiated
 on `Accept` too keeps that. Naming a header the app's own library never
 sends costs nothing (a cache keys on its absence) and is what makes the
@@ -83,6 +103,10 @@ comptime HISTORY_HEADER = "hx-history-restore-request"
 comptime BOOSTED_HEADER = "hx-boosted"
 """The htmx boost marker, sent BESIDE `HX-Request: true` by `hx-boost`."""
 
+comptime REQUEST_TYPE_HEADER = "hx-request-type"
+"""What htmx 4 itself answers to the question: `full` or `partial`, on every
+request it makes, a history restore included. htmx 2 never sends it."""
+
 comptime DATASTAR_HEADER = "datastar-request"
 """Datastar's request header, sent by every `@get`/`@post` action."""
 
@@ -95,18 +119,26 @@ comptime BOOSTED_VARY = "HX-Boosted"
 
 comptime DATASTAR_VARY = "Datastar-Request"
 
+comptime REQUEST_TYPE_VARY = "HX-Request-Type"
+
 
 def wants_fragment(req: HTTPRequest) -> Bool:
     """Whether the request asked for a bare fragment: `Datastar-Request:
-    true`, or `HX-Request: true` with neither `HX-History-Restore-Request:
-    true` nor `HX-Boosted: true` beside it.
+    true`; else what `HX-Request-Type` says when it says `partial` or
+    `full` (htmx 4); else `HX-Request: true` with neither
+    `HX-History-Restore-Request: true` nor `HX-Boosted: true` beside it
+    (htmx 2).
 
     Compared without allocating and without regard to the value's case:
-    both libraries send `true`, and a proxy that capitalised it should not
-    be served a whole document.
+    the libraries send lowercase, and a proxy that capitalised a value
+    should not be served a whole document.
     """
     if req.headers.value_equals_ignore_case(DATASTAR_HEADER, "true"):
         return True
+    if req.headers.value_equals_ignore_case(REQUEST_TYPE_HEADER, "partial"):
+        return True
+    if req.headers.value_equals_ignore_case(REQUEST_TYPE_HEADER, "full"):
+        return False
     if not req.headers.value_equals_ignore_case(FRAGMENT_HEADER, "true"):
         return False
     if req.headers.value_equals_ignore_case(HISTORY_HEADER, "true"):
@@ -119,7 +151,8 @@ def vary_on_fragment_headers(var resp: HTTPResponse) -> HTTPResponse:
     resp = vary(resp^, FRAGMENT_VARY)
     resp = vary(resp^, HISTORY_VARY)
     resp = vary(resp^, BOOSTED_VARY)
-    return vary(resp^, DATASTAR_VARY)
+    resp = vary(resp^, DATASTAR_VARY)
+    return vary(resp^, REQUEST_TYPE_VARY)
 
 
 trait PageShell:
