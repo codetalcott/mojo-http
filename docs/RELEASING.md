@@ -239,6 +239,14 @@ fail. Pre-release because each rule rebuilds the wheel and reruns the
 smoke, a minute or two apiece; `--only LABEL` runs one. Nothing here
 publishes the wheel: `m0` has no release workflow yet.
 
+**And `uv run poe sabotage-scaffold`** (SPEC N27, N29) — breaks each rule of
+`m0 new` and its two templates from the template side, rebuilds the wheel,
+and requires `smoke-scaffold` to fail for that template AND to say the
+expected thing. The rules the wire holds run with the template's own tests
+switched off, so the wire assertion and not `m0 test` is what must fail;
+one rule runs the other way round, to show the template's test goes red.
+About a minute a rule; `--only LABEL` runs one.
+
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.

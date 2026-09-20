@@ -1,0 +1,20 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # --locked: the lock is the toolchain. A pyproject edited without
+      # `uv lock` fails here rather than building on something else.
+      - run: uv sync --locked
+      - run: uv run m0 doctor
+      - run: uv run m0 test
+      - run: ./smoke.sh

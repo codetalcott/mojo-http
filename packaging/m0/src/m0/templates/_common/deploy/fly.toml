@@ -1,0 +1,50 @@
+# __M0_APP__ on Fly.io. Deploy from the PROJECT ROOT, so the Dockerfile's
+# context is the project (deploy/README.md):
+#
+#     fly deploy -c deploy/fly.toml --remote-only
+#
+# ONE machine. State held in the process -- a list, a producer's world -- is
+# one machine's; a second machine would be a second copy, and two visitors
+# could be looking at different ones. After the first deploy, which creates
+# two:
+#
+#     fly scale count 1 -a __M0_APP__
+app = "__M0_APP__"
+primary_region = "iad"
+
+[build]
+  # Relative to THIS file; the build context is the directory `fly deploy`
+  # runs in.
+  dockerfile = "Dockerfile"
+
+[env]
+  # A comment frame every 25 s keeps a quiet stream open through the proxy.
+  M0_SSE_HEARTBEAT_MS = "25000"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # A stopped machine drops every held stream and forgets in-process state.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # A held stream is one connection for its whole life, so the proxy counts
+  # connections: under `requests` each would be an in-flight request forever.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 400
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

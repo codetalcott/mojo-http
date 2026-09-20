@@ -182,7 +182,7 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | --- | --- | --- |
 | `m0-core` | FNV-1a, xxHash32, wyhash64, SIMD JSON escape, HTML escape, JSON field parser, C-ABI exports | 99 |
 <<<<<<< HEAD
-| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 827 |
+| `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 828 |
 =======
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for, form bodies, signed session cookies and CSRF | 823 |
 >>>>>>> origin/main
@@ -191,7 +191,7 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 116 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 75 |
 <<<<<<< HEAD
-| **Total** | | **1354** |
+| **Total** | | **1355** |
 =======
 | **Total** | | **1350** |
 >>>>>>> origin/main
@@ -881,7 +881,7 @@ is silently a different number.
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
 <<<<<<< HEAD
-uv run poe test-all         # 1354 unit tests, then compiles every example
+uv run poe test-all         # 1355 unit tests, then compiles every example
 =======
 uv run poe test-all         # 1350 unit tests, then compiles every example
 >>>>>>> origin/main

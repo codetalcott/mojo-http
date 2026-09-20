@@ -11,7 +11,8 @@ against it. It is pure Python and installs anywhere; the toolchain it drives
 runs on macOS arm64 and glibc Linux (x86-64, aarch64).
 
 ```bash
-uv add --dev 'mojo==1.1.0' m0     # the pair: m0 is gated on one exact mojo
+uvx m0 new shop                   # writes ./shop; needs no toolchain and no network
+cd shop && uv sync                # the pair it pinned: m0, and the one exact mojo it is gated on
 uv run m0 build                   # src/server.mojo -> bin/server, about ten seconds
 uv run m0 test                    # mojo run over test/test_*.mojo, two or three seconds each
 uv run m0 doctor                  # the toolchain checks, then bin/server's own --doctor
@@ -20,6 +21,7 @@ uv run m0 include                 # where the framework's source is: read it
 
 | command | what it does |
 |---|---|
+| `m0 new NAME [--template views\|live]` | Writes an application into `./NAME`: `src/`, `test/`, a `pyproject.toml` pinning `mojo` and `m0` exactly, `AGENTS.md`, `smoke.sh`, `deploy/`. `views` (the default) is a server-rendered list swapped by htmx 4; `live` is a producer pushing state to every tab over SSE, with Datastar. Exit 2 for a name that is not lowercase letters, digits and hyphens, or a target that is not empty. |
 | `m0 build [--release] [--target-cpu CPU]` | Compiles `src/server.mojo` and renames the result onto `bin/server`, so a running server is never written over. `--release` compiles for the platform's baseline CPU, relocates the binary and bundles the Mojo runtime beside it in `dist/` — the directory an image's runtime stage copies. |
 | `m0 test [FILE...]` | `mojo run` per file, serial, output untouched. Needs no C compiler. A run with no test files is refused, not passed. |
 | `m0 doctor [--json] [-- HOST_ARGS]` | Every check, then `bin/server HOST_ARGS --doctor` with your environment. Exits with the first failed check's code, else the application's. |

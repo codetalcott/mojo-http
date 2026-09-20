@@ -74,6 +74,7 @@ jobs:
         shell: bash
         run: |
           python3 scripts/emit.py --covers L7 --task step
+          python3 scripts/emit.py --covers N28 --task step
           set -o pipefail
           uv run poe test-all 2>&1 | tee -a compile.log
       # Holds the residual warning count at scripts/warning_baseline.json.
@@ -582,6 +583,11 @@ jobs:
       # network. The Linux leg is the first x86-64 build from all-source.
       - name: Smoke test the m0 wheel
         run: uv run poe smoke-m0-wheel
+      # What `m0 new` writes, per template, as a user meets it: written by
+      # `uvx --offline` with no toolchain on PATH, built by the literal
+      # `uv run m0 build` against the tree's wheel, and asserted on the wire.
+      - name: Smoke test the m0 scaffold
+        run: uv run poe smoke-scaffold
       # The flagship: a mutation broadcasts the rendered fragment to a live
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo

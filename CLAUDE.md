@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D43, permanent ids, each with a retiring condition), which
+  (D1–D44, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -954,6 +954,20 @@ one home; `0.x` until the layer soak). Rules:
   whole compile. `m0 test` skips it: `mojo run` links nothing.
 - **Builds rename into place** (`bin/.server.next` → `bin/server`); never
   `-o` onto a binary that may be running.
+- **`m0 new` writes from REAL files** (`src/m0/templates/`, SPEC N27–N29,
+  D44; docs/notes/the-scaffold.md): two sessionless templates, `views`
+  (htmx 4) and `live` (a producer and Datastar frames), behind a closed
+  `--template`. A template compiles UNSUBSTITUTED — the app's name only
+  inside string literals, TOML and Markdown, as `__M0_APP__` — which is
+  what lets substitution be `str.replace`; `poe check-templates` (in
+  `test-all`) builds both in place against the tree, so a layer change
+  that breaks one fails in its own pull request. A new template file goes
+  in `new.py`'s manifest AND in `scripts/m0_scaffold_smoke.py`'s second
+  spelling; dot-files are stored as `dot-x`. `_common/AGENTS.md` is the
+  product's agent page: a rule an app author needs goes THERE, once it is
+  true of the layer. Run `poe sabotage-scaffold` after touching a template
+  or `new.py`; its wire rules run with the template's own tests off. The
+  scaffold's `deploy/` is ungated until `m0 image` lands.
 - `poe build-m0-wheel` stamps `0.1.0+tree` (`M0_WHEEL_LOCAL`) so an exact
   pin on the smoke's wheel can never resolve to a published one. Run
   `poe sabotage-m0-wheel` after touching `packaging/m0/`: its anchors are

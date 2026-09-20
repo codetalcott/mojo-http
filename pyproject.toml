@@ -1019,7 +1019,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -7117,6 +7117,34 @@ python3 scripts/emit.py --covers N26 --task smoke-m0-wheel
 [tool.poe.tasks.sabotage-m0-wheel]
 help = "PRE-RELEASE: revert each m0 wheel and CLI rule and insist smoke-m0-wheel fails for every one (SPEC N23-N26)"
 cmd = "python3 scripts/m0_wheel_sabotage.py"
+
+# SPEC N28. The scaffold's templates are REAL files that compile
+# unsubstituted -- the application's name sits only where a compiler does
+# not look -- which is what lets `m0 new` be `str.replace` with no engine.
+# Inside test-all, so a layer change that breaks a template fails in the
+# pull request that made it.
+[tool.poe.tasks.check-templates]
+help = "The m0 scaffold's templates compile in place against the tree, their tests pass, and every file is in new.py's manifest (SPEC N28)"
+cmd = "python3 scripts/check_templates.py"
+deps = ["build-core", "build-http", "build-datastar"]
+
+# SPEC N27, N29. `m0 new` through `uvx --offline` with no toolchain on PATH,
+# then the user's literal `uv run m0 build` against the tree's wheel, per
+# template, on the wire. The sync resolves ONLINE with every wheel cached
+# (a scaffold's sync cannot resolve offline from a locked sync's cache,
+# measured); `m0` itself is `0.1.0+tree`, which no index can serve.
+[tool.poe.tasks.smoke-scaffold]
+help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor, the wire (a 422 fragment; two differing Datastar frames), the scaffold's own smoke.sh"
+deps = ["build-m0-wheel"]
+shell = """
+python3 scripts/m0_scaffold_smoke.py dist/m0 8951 || exit 1
+python3 scripts/emit.py --covers N27 --task smoke-scaffold
+python3 scripts/emit.py --covers N29 --task smoke-scaffold
+"""
+
+[tool.poe.tasks.sabotage-scaffold]
+help = "PRE-RELEASE: break each scaffold rule from the template side and insist smoke-scaffold fails for every one (SPEC N27, N29)"
+cmd = "python3 scripts/m0_scaffold_sabotage.py"
 
 
 # `docker stop` is SIGTERM to PID 1 and nothing else, and PID 1 gets no
