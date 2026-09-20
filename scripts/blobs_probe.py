@@ -279,12 +279,21 @@ def _extent(pts: list[tuple[float, float]]) -> float:
     return max(((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in pts)
 
 
-def _mean_move(a: list, b: list, shift: int) -> float:
+def _rms_move(a: list, b: list, shift: int) -> float:
+    """Root-mean-SQUARE vertex move under `shift`, in % of the stage.
+
+    Squared on purpose: the kernel's `_best_shift` picks the rotation with
+    the least SUM OF SQUARES, and RMS orders rotations exactly as that sum
+    does. This was the mean distance until 2026-09-19, which agrees with it
+    on a small step and not on a large one -- a split's copy growing into
+    its own outline moves 10-18 % -- so the probe called the kernel's own
+    best rotation a twist about one run in eight (18.16 % against 16.16 %).
+    """
     n = len(a)
-    return sum(
-        ((b[(i + shift) % n][0] - a[i][0]) ** 2 + (b[(i + shift) % n][1] - a[i][1]) ** 2) ** 0.5
+    return (sum(
+        (b[(i + shift) % n][0] - a[i][0]) ** 2 + (b[(i + shift) % n][1] - a[i][1]) ** 2
         for i in range(n)
-    ) / n
+    ) / n) ** 0.5
 
 
 # A seed or a shrunk farewell is SEED_SCALE (0.08) of its shape; anything
@@ -305,8 +314,8 @@ def check_motion(frames: list[dict], where: str) -> None:
             at = f"{where} frames {frames[i]['id']}-{frames[i + 1]['id']} {key}"
             if pa and pb:
                 va, vb = polygon_points(pa, at), polygon_points(pb, at)
-                here = _mean_move(va, vb, 0)
-                best = min(_mean_move(va, vb, s) for s in range(NVERT))
+                here = _rms_move(va, vb, 0)
+                best = min(_rms_move(va, vb, s) for s in range(NVERT))
                 if here > 1.05 * best + 0.15:
                     fail(f"{at}: twisted -- vertices moved {here:.2f} % where the nearest rotation moves {best:.2f} %")
                 moved += 1
