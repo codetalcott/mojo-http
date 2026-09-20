@@ -133,7 +133,12 @@ def check_new(work, whl, template, name, pin, m0v):
     # No toolchain anywhere: uv's own directory and the system's. A `mojo`
     # or a venv reachable from here would let `new` lean on one unnoticed.
     bare = clean_env(PATH=os.pathsep.join([str(Path(uv).parent), "/usr/bin", "/bin"]))
-    new = [uv, "tool", "run", "--offline", "--from", str(whl), "m0", "new"]
+    # The interpreter is named: with PATH stripped, an offline uv otherwise
+    # takes the system's python3 (3.9 on a macOS runner, below m0's floor)
+    # and cannot download another. A Python is not a toolchain; the base
+    # interpreter under this script's own venv has no mojo beside it.
+    python = os.path.realpath(sys.executable)
+    new = [uv, "tool", "run", "--offline", "--python", python, "--from", str(whl), "m0", "new"]
 
     done = sh(new + ["Not_A_Name", "--template", template], work, bare, "m0 new Not_A_Name", code=2)
     want = ("m0 new: 'Not_A_Name' is not a usable name (lowercase letters, digits and "
