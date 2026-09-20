@@ -1810,6 +1810,30 @@
       "evidence": "`Smoke test the m0 wheel` (every PR) \u2014 the report's keys in order, green with the host's report and its `topology` inside and `paths.mojo` the project venv's; `stale` true after an edit and the exit still 0, false after a build; a worker count of zero handed through exits 78 with every m0 check passing and the failed check in the HOST's report, so the code came through the binary; fragment_notes run without its key exits 78 with `report: null` and the app's sentence in `output`. The unit file holds the format refusal and the exit order"
     },
     {
+      "id": "N27",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "`m0 new NAME` writes an application, from a closed set of two templates: `views`, a server-rendered list swapped in place by htmx 4, and `live`, a producer pushing full-state Datastar frames to every tab (D44). It needs no toolchain and no network \u2014 it runs through `uvx` before anything is installed \u2014 and copies files the wheel carries, replacing three tokens by plain string replacement: there is no template engine. NAME, or a path's last segment, is the directory, the project and the deploy's app name at once (lowercase letters, digits and hyphens, a letter first, at most 40), and a name that cannot be all three, or a target that exists and is not empty, is exit 2 with one sentence and nothing written. What is written is a closed manifest \u2014 `src/` with `server.mojo` importing its siblings by bare name, `test/`, a `pyproject.toml` with no build system that pins BOTH `mojo` and `m0` exactly in its dev group, `AGENTS.md` with `CLAUDE.md` pointing at it, an executable `smoke.sh`, a workflow, and `deploy/` \u2014 after which the user's own `uv run m0 build` makes the venv and the binary, `uv run m0 test` runs the template's tests, and the server answers on the wire",
+      "status": "verified",
+      "evidence": "`Smoke test the m0 scaffold` (every PR) \u2014 per template, outside the tree: written by `uvx` offline with `PATH` holding uv's directory and the system's alone; the written tree EQUAL to the gate's own second spelling of the manifest, both pins present, no token left, no build system; a second `m0 new` onto its output and an unusable name each exit 2 with the sentence whole and the tree untouched; then a sync that REFRESHES `m0` \u2014 the gate's own step, because uv serves a version it has cached and this wheel is rebuilt under one: a reverted layer fix once passed \u2014 with every file the wheel carries under `m0/` required byte-equal in the venv, and the literal `uv run m0 build` against the tree's wheel (stamped `0.1.0+tree`, which no index can serve, so the exact pin cannot resolve to a published one), `m0 test` green and then red with a failing test appended, the server started on the run's own port and stopped by pid with exit 0, `m0 doctor` as JSON green with the host's report inside, and the scaffold's own `smoke.sh` green on another port. `live` on the wire: the fragment at first paint with the pinned Datastar tag, two DIFFERING `datastar-patch-elements` frames for the root id inside five seconds, a kick counted and no frame refused by the bus. `packaging/m0/tests/test_m0.py` holds the name rule and the manifest under the installed interpreter. The sync resolves online with every wheel cached, the dependency the job's own sync already has. NOT covered: `deploy/` \u2014 no gate builds the scaffold's image until `m0 image` lands. `poe sabotage-scaffold` (pre-release) breaks each rule from the template side, the wire rules with the template's own tests switched off"
+    },
+    {
+      "id": "N28",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "The scaffold's templates are real source files that compile UNSUBSTITUTED against the tree: the application's name appears only where a compiler does not look \u2014 inside string literals, TOML and Markdown \u2014 so a change to the layer that breaks a template fails in the pull request that made it, not in the next person's first build. Every file under `templates/` is named by `new.py`'s manifest and every name there is a file; the two version tokens appear in `pyproject.toml` alone; and no other token of that shape exists, since a misspelled one would be written verbatim",
+      "status": "verified",
+      "evidence": "`Run unit tests` (every PR) \u2014 `poe check-templates`, inside `test-all`: `mojo build` of each template's `src/server.mojo` in place with the artifact thrown away, `mojo run` of each test file, then the manifest compared both ways with the files on disk and every token checked against the closed three"
+    },
+    {
+      "id": "N29",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "An error a person may see is a fragment with its own status: `page_or_fragment(..., status=422)` with `text` left alone answers `422 Unprocessable Content` \u2014 the status's own RFC 9110 phrase from `reply.reason_phrase` \u2014 where it used to answer `422 OK`, the default having been the literal `OK`; an explicit `text` still wins. htmx 4 swaps every 4xx, so the scaffold's `views` template answers a bad form with the list, the message inside it under an alert role, and a missing item with a 404 fragment; `reply.problem` stays for routes no browser swaps",
+      "status": "verified",
+      "evidence": "`Smoke test the m0 scaffold` (every PR) \u2014 an empty title over a socket is `422 Unprocessable Content`, `text/html`, its body the bare fragment under its root id holding the alert, and a missing item is `404 Not Found` and the fragment; `test_fragment.mojo:test_a_status_alone_carries_its_own_reason_phrase` holds the phrase, the default and the override"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",

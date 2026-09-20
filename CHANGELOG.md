@@ -27,6 +27,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and `0.x` until the application-layer soak. `m0 new`, the templates,
   `dev` and `image` are later pull requests; nothing is on PyPI.
   `smoke-m0-wheel` runs on every pull request, both legs.
+- **`m0 new` and the two templates it writes** (SPEC N27–N29, D44;
+  docs/notes/the-scaffold.md). `m0 new NAME [--template views|live]` needs
+  no toolchain and no network — it runs through `uvx` before anything is
+  installed — and writes an application a person can read in one sitting:
+  `src/` and `test/`, a `pyproject.toml` pinning BOTH `mojo` and `m0`
+  exactly, `AGENTS.md` (the rules that are not obvious from the code,
+  written for a coding agent), an executable `smoke.sh`, a workflow, and
+  `deploy/`. `views` is a server-rendered list swapped in place by htmx 4;
+  `live` is a producer pushing full-state Datastar frames to every tab.
+  Both are sessionless. The templates are real source files that compile
+  unsubstituted — `poe check-templates`, inside `test-all` — so
+  substitution is plain string replacement and there is no template
+  engine. `smoke-scaffold` runs on every pull request, both legs. The
+  scaffold's `deploy/` is written and NOT yet gated: no job builds its
+  image until `m0 image` lands. Still unpublished.
 
 ### Changed
 
@@ -63,6 +78,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   unchanged.
 
 ### Fixed
+
+- **`page_or_fragment(..., status=422)` answered `422 OK`.** `text`
+  defaulted to the literal `"OK"`, so a styled error carried the wrong
+  reason phrase unless the caller passed one. `text` left alone is now the
+  status's own RFC 9110 phrase (`reply.reason_phrase`); an explicit `text`
+  still wins (SPEC N29).
 
 - **`mojo build` needing a C compiler on Linux, and saying so only after
   the whole compile**, is retired as a known issue for an application built

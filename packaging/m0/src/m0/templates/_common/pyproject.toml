@@ -1,0 +1,21 @@
+[project]
+name = "__M0_APP__"
+version = "0.1.0"
+description = "A web application in Mojo, on the m0 framework"
+requires-python = ">=3.10"
+# The application that ships has no Python in it: the binary and the Mojo
+# runtime beside it are the whole of `dist/`.
+dependencies = []
+
+# Both exact, both `dev`. `m0` is gated on exactly one `mojo`, and refuses
+# (exit 78, naming the fix) any other — so move them together, by taking a
+# newer `m0` and the `mojo` its `m0 doctor` names.
+[dependency-groups]
+dev = [
+    "mojo==__MOJO_VERSION__",
+    "m0==__M0_VERSION__",
+]
+
+# No [build-system], on purpose: there is nothing here for uv to build.
+[tool.uv]
+package = false

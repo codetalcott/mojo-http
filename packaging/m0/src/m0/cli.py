@@ -18,18 +18,31 @@ interpreter in it.
 import argparse
 from pathlib import Path
 
-from m0 import build, checks, doctor, include, test
+from m0 import build, checks, doctor, include, new, test
 
 
 def _parser():
     parser = argparse.ArgumentParser(
         prog="m0",
         allow_abbrev=False,
-        description="Build, test and check a Mojo web application against "
-        "the framework source this wheel carries.",
+        description="Write, build, test and check a Mojo web application "
+        "against the framework source this wheel carries.",
     )
     parser.add_argument("--version", action="version", version=f"m0 {checks.m0_version()}")
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+
+    p = sub.add_parser(
+        "new", allow_abbrev=False,
+        help="write an application into ./NAME; needs no toolchain and no network",
+    )
+    p.add_argument("name", metavar="NAME",
+                   help="the directory, the project and the deploy's app name at once")
+    # A closed set of what exists and is gated on the wire; it grows by a
+    # value, never by a flag per feature (docs/DECISIONS.md D44).
+    p.add_argument("--template", choices=new.TEMPLATES, default="views",
+                   help="views: a server-rendered list swapped by htmx 4 (default); "
+                   "live: a producer pushing state to every tab over SSE, with Datastar")
+    p.set_defaults(run=new.run)
 
     p = sub.add_parser(
         "include", allow_abbrev=False,

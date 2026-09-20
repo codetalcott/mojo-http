@@ -1,0 +1,7 @@
+.venv/
+bin/
+dist/
+__pycache__/
+.vscode/
+smoke.log
+smoke.body

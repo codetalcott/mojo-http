@@ -92,7 +92,7 @@ in one place.
 
 from lightbug_http.http import HTTPRequest, HTTPResponse
 
-from .reply import html, vary
+from .reply import html, reason_phrase, vary
 
 comptime FRAGMENT_HEADER = "hx-request"
 """The htmx request header. Lowercase, as `Headers` stores every name."""
@@ -173,18 +173,23 @@ def page_or_fragment[S: PageShell](
     fragment: String,
     shell: S,
     status: Int = 200,
-    text: String = "OK",
+    text: String = "",
 ) raises -> HTTPResponse:
     """`fragment` bare if the request asked for one, else
     `shell.wrap(fragment)`; `Vary` on every header the decision reads
     either way. `wrap` runs only when a document is wanted. `status` is
     for a styled error page — a 404 an app wants to render is still a 404,
-    not a soft one crawlers index."""
+    not a soft one crawlers index. `text` left alone is the status's own
+    reason phrase (`reply.reason_phrase`); it defaulted to `"OK"` once, and
+    `status=422` alone went out as `422 OK`."""
     var resp: HTTPResponse
     if wants_fragment(req):
         resp = html(fragment)
     else:
         resp = html(shell.wrap(fragment))
     resp.status_code = status
-    resp.status_text = text
+    if text.byte_length() > 0:
+        resp.status_text = text
+    else:
+        resp.status_text = reason_phrase(status)
     return vary_on_fragment_headers(resp^)

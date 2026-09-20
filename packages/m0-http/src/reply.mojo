@@ -188,3 +188,45 @@ def _reason_for_redirect(status: Int) -> String:
     if status == 308:
         return String("Permanent Redirect")
     return String("Redirect")
+
+
+def reason_phrase(status: Int) -> String:
+    """The RFC 9110 reason phrase for the statuses a view answers with, or
+    an empty phrase — legal on the wire — for one not listed.
+
+    For `page_or_fragment`, whose `status` used to travel with a default
+    `text` of `"OK"`: a styled 422 went out as `422 OK`.
+    """
+    if status == 200:
+        return String("OK")
+    if status == 201:
+        return String("Created")
+    if status == 202:
+        return String("Accepted")
+    if status == 400:
+        return String("Bad Request")
+    if status == 401:
+        return String("Unauthorized")
+    if status == 403:
+        return String("Forbidden")
+    if status == 404:
+        return String("Not Found")
+    if status == 405:
+        return String("Method Not Allowed")
+    if status == 409:
+        return String("Conflict")
+    if status == 410:
+        return String("Gone")
+    if status == 413:
+        return String("Content Too Large")
+    if status == 415:
+        return String("Unsupported Media Type")
+    if status == 422:
+        return String("Unprocessable Content")
+    if status == 429:
+        return String("Too Many Requests")
+    if status == 500:
+        return String("Internal Server Error")
+    if status == 503:
+        return String("Service Unavailable")
+    return String("")

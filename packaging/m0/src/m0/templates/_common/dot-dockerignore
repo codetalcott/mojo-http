@@ -1,0 +1,7 @@
+# The image compiles in its builder stage, so its context is source and the
+# two files that pin the toolchain. Everything else -- `.venv` above all --
+# stays out of the context and out of every layer.
+*
+!pyproject.toml
+!uv.lock
+!src/

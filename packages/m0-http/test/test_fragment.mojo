@@ -80,6 +80,17 @@ def test_page_or_fragment_wraps_only_without_the_header() raises:
     assert_equal(page.headers[HeaderKey.CONTENT_TYPE], "text/html; charset=utf-8")
 
 
+def test_a_status_alone_carries_its_own_reason_phrase() raises:
+    """`status=422` with `text` left alone used to answer `422 OK`."""
+    var frag = String("<p>x</p>")
+    var bad = page_or_fragment(_req("true"), frag, Shell("t"), status=422)
+    assert_equal(bad.status_code, 422)
+    assert_equal(bad.status_text, "Unprocessable Content")
+    assert_equal(page_or_fragment(_req("true"), frag, Shell("t")).status_text, "OK")
+    var named = page_or_fragment(_req(""), frag, Shell("t"), 404, String("Gone Fishing"))
+    assert_equal(named.status_text, "Gone Fishing")
+
+
 def test_both_representations_vary_on_every_header_read() raises:
     """A cache must key on all three: two requests that differ only in the
     history-restore marker get different representations, and so do two
