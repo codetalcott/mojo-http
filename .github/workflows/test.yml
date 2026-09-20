@@ -576,6 +576,12 @@ jobs:
       # smoke-doctor's shape, for the Mojo host.
       - name: Smoke test the Mojo host's flags and doctor
         run: uv run poe smoke-host-doctor
+      # The `m0` wheel, outside the tree: its contents against git's own
+      # manifest, then fragment_notes built, tested and doctored by the CLI
+      # from an installed wheel, and every refusal's sentence with no
+      # network. The Linux leg is the first x86-64 build from all-source.
+      - name: Smoke test the m0 wheel
+        run: uv run poe smoke-m0-wheel
       # The flagship: a mutation broadcasts the rendered fragment to a live
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo

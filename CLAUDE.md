@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D37, permanent ids, each with a retiring condition), which
+  (D1–D43, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -911,12 +911,54 @@ sides read; the mount refuses to start without it or without
 docs/notes/grant-verified-holds.md). The verifier's test vectors are
 grants the issuer signed, so the two sides cannot drift silently.
 
-`packaging/m0serve/` builds the `pip install m0serve` wheel and holds the
-repo's **only** `[build-system]`: one in the root would make `uv sync` build
-the repo, which needs `bin/m0serve`, which needs the venv `uv sync` is
-creating. Wheels only (an sdist cannot build without the toolchain),
-`dependencies` deliberately empty, platform tag measured from the binary
-rather than declared. `poe smoke-wheel` proves the lot outside the tree.
+**The ROOT pyproject.toml never gets a `[build-system]`**: one there would
+make `uv sync` build the repo, which needs `bin/m0serve`, which needs the
+venv `uv sync` is creating. Each wheel's lives under `packaging/<name>/`,
+and `check_root_has_no_build_system` in `scripts/check_docs.py` holds the
+root to it (the rule was prose, "the repo's only `[build-system]`", until
+there were two wheels). Both are wheels only, with `dependencies`
+deliberately empty.
+
+`packaging/m0serve/` builds the `pip install m0serve` wheel: an sdist cannot
+build without the toolchain, and the platform tag is measured from the
+binary rather than declared. `poe smoke-wheel` proves the lot outside the
+tree.
+
+`packaging/m0/` builds the `m0` wheel — the framework's SOURCE and the
+stdlib-Python CLI that builds an application against it (SPEC N23–N26,
+D39–D43; docs/notes/the-m0-wheel.md). Pure Python, `py3-none-any`,
+versioned apart from the repo (`__version__` in `src/m0/__init__.py`, its
+one home; `0.x` until the layer soak). Rules:
+
+- **Nothing is staged.** `hatch_build.py` force-includes `git ls-files` of
+  the five source trees into `m0/_mojo/<import name>/`, and the three
+  `scripts/` a release build runs into `m0/_tools/`, unedited. A new
+  framework file ships by being tracked; a new TREE goes in the hook's
+  table AND in `scripts/m0_wheel_smoke.py`'s second spelling of it, which
+  is the guard. Editing `relocate.py`, `bundle_artifact.py` or `binfmt.py`
+  edits what the wheel ships — `bundle_artifact.py` finds the runtime under
+  `./.venv`, which is where `uv run m0 build` has it.
+- **`gated_mojo` is read from the root pin**, never written: bumping
+  `mojo==X` in the root moves the wheel's table with it, and the hook
+  refuses anything but one exact `==`.
+- **`checks.py` holds the ONE list** (`platform`, `mojo-installed`,
+  `mojo-gated`, `c-compiler`, `project`) that every command reads to its
+  first failure and `m0 doctor` reads whole — `host_checks`' rule. Add a
+  refusal THERE. Every one is 78 and one `m0: detail (fix)` line, and
+  `smoke-m0-wheel` asserts the sentences WHOLE, so rewording one means
+  rewording its arm.
+- **mojo runs from `sys.prefix`, never `PATH`** (`paths.mojo_bin`), and
+  the smoke runs every real build with a stub `mojo` first on `PATH`.
+- **The C-compiler check is the name `cc` plus a link test** — mojo 1.1.0
+  looks for no other name, and a `cc` that cannot link fails after the
+  whole compile. `m0 test` skips it: `mojo run` links nothing.
+- **Builds rename into place** (`bin/.server.next` → `bin/server`); never
+  `-o` onto a binary that may be running.
+- `poe build-m0-wheel` stamps `0.1.0+tree` (`M0_WHEEL_LOCAL`) so an exact
+  pin on the smoke's wheel can never resolve to a published one. Run
+  `poe sabotage-m0-wheel` after touching `packaging/m0/`: its anchors are
+  exact source lines, and its arm rules run with the unit phase OFF so the
+  arm, not a unit test, is what must fail.
 
 ## The lightbug fork
 

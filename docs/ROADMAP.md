@@ -79,13 +79,6 @@ somebody else's Django projects inside the pull request that trips it.
   build it is an open decision, and until it is taken the docs say
   suppression only.
 
-- **`mojo build` needs a C compiler on Linux and nothing says so.** It
-  shells out for linking; a `python:*-slim` image fails with `unable to
-  find suitable c compiler for linking`. Install `build-essential` beside
-  `libsqlite3-dev` and `patchelf`.
-
-  **Closed by:** none — outside the server's own behaviour.
-
 - **The Linux wheel misses RHEL 9 by one glibc minor.** The binary requires
   glibc 2.35 (the Mojo toolchain's output, not the build image's) and the
   wheel is tagged `manylinux_2_35`, which covers Ubuntu 22.04 and Debian 12
@@ -164,6 +157,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- **`mojo build` needs a C compiler on Linux and nothing said so** (a `python:*-slim` image failed with `unable to find suitable c compiler for linking`, after the whole compile) — resolved 2026-09-20 for an application built with the `m0` CLI (N25): `m0 build` and `m0 doctor` check before running the compiler and name the fix, `apt-get install build-essential` or the platform's own. The check is not the one first planned, on two measured counts: mojo 1.1.0 looks for the literal name `cc` and nothing else, so a machine with `gcc` and no `cc` is refused by name, and a `cc` that exists and cannot link (gcc without `libc6-dev`) is caught by linking a one-line program. Inside this repository nothing changes — `mojo build` by hand still says what it said, and `deploy/mojo/Dockerfile` installs `build-essential`. The write-up is [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md).
 - **Mojo 1.0's `PythonObject` interop leaked a reference per call argument and per `__setitem__` value** — resolved 2026-09-18 by moving the pin to Mojo 1.1.0, which carries the upstream fix (modular/modular#6833). Measured in this tree against 1.0.0 as the null case: +1001 references per 1000 operations before, 0 after. The bridge keeps its raw C API environ build, which was always the faster path as well as the safe one, so nothing about the request path changes; what changes is that a per-request `PythonObject` argument is now a performance preference rather than a correctness constraint. The write-up is [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md).
 - **The Mojo host's drain and its producer join ran in sequence** — resolved 2026-09-17 with the pool lane (E26, D31): the loop stamps the producer's stop word as its drain begins and both joins count from that stamp, so a request in flight at SIGTERM beside a step past its bound leaves inside one bound. The premise as first recorded was wrong in one detail — the drain ends a HELD stream at once, so what stretches it is a request in flight, not a stream — and the gate holds a request of a few seconds instead. The write-up is [The ramp test: lanes in the host, one module on two hosts — 2026-09-17](notes/the-ramp-test.md).
 - **Sessions and CSRF behind a login** (N13) — built 2026-09-12: a stateless signed cookie and a CSRF token derived from its tag, on `apps/fragment_notes` with one user; `m0_http.session` beside `grant.mojo`, forged and admitted on the wire by a CPython issuer, five rules sabotage-proven. D15 retired; D24 and D25 record what it deliberately is not. The write-up is [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md).
@@ -219,6 +213,7 @@ The engineering record: long-form, dated, kept as written.
 - [Loops on threads — 2026-09-18](notes/loops-on-threads.md)
 - [The demo in its own image — 2026-09-18](notes/the-demo-in-its-own-image.md)
 - [Flags and a doctor for the host — 2026-09-19](notes/flags-and-a-doctor-for-the-host.md)
+- [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md)
 - [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)

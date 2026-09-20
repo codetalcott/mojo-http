@@ -10,21 +10,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
-- **A command line and a doctor for Mojo host applications** (SPEC
-  E30–E31). `serve[H, P](AppConfig())` now reads the binary's flags —
-  `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`,
-  `--access-log`, `--sse-heartbeat-ms`, `--app-tick-ms`,
-  `--max-keepalive-requests`, `--qos` — with m0serve's precedence, flag
-  over `M0_` variable over default, and m0serve's strictness: an unknown
-  flag, an unreadable value or a positional is the usage and exit 2.
-  `--doctor` prints the configuration the binary would serve as one JSON
-  object (the last line of stdout, in m0serve's report shape, each failed
-  check carrying its `fix`) and exits with the code serving would exit
-  with, having bound nothing; `smoke-host-doctor` runs twenty
-  configurations both ways and requires the codes to agree. An
-  application that prints its own address takes `host_config()` so the
-  banner names the port a flag moved. Nothing changes for an application
-  that is passed no arguments.
+- **The `m0` wheel and its CLI, in the tree and unpublished** (SPEC
+  N23–N26, D39–D43). `packaging/m0/` builds a pure-Python wheel that
+  carries the framework's SOURCE — the five trees an application compiles
+  against, mapped file by file from `git ls-files` into
+  `m0/_mojo/<import name>/` — and a stdlib CLI that builds against it from
+  outside this repository: `m0 build` (renamed onto `bin/server`, never
+  written over a running binary; `--release` compiles for the platform's
+  baseline CPU and bundles the Mojo runtime into `dist/`), `m0 test`
+  (`mojo run` per test file, no C compiler needed), `m0 doctor [--json]`
+  (the toolchain checks, then the binary's own `--doctor` with whatever
+  follows `--`), and `m0 include`. The wheel is gated on ONE exact mojo,
+  read from the root pin, and m0 refuses any other with the pin to add; it
+  runs the `mojo` in its own environment, never `PATH`'s. Exit codes are a
+  closed set (0, 1, 2, 78). Versioned apart from the repository, `0.1.0`
+  and `0.x` until the application-layer soak. `m0 new`, the templates,
+  `dev` and `image` are later pull requests; nothing is on PyPI.
+  `smoke-m0-wheel` runs on every pull request, both legs.
 
 ### Changed
 
@@ -61,6 +63,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
   unchanged.
 
 ### Fixed
+
+- **`mojo build` needing a C compiler on Linux, and saying so only after
+  the whole compile**, is retired as a known issue for an application built
+  with `m0`: the check runs first and names the fix. Measured on the way:
+  mojo 1.1.0 looks for the literal name `cc` and nothing else, so `gcc`
+  without `cc` is refused by name, and a `cc` that cannot link is caught by
+  linking one line of C.
+
+- **A command line and a doctor for Mojo host applications** (SPEC
+  E30–E31). `serve[H, P](AppConfig())` now reads the binary's flags —
+  `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`,
+  `--access-log`, `--sse-heartbeat-ms`, `--app-tick-ms`,
+  `--max-keepalive-requests`, `--qos` — with m0serve's precedence, flag
+  over `M0_` variable over default, and m0serve's strictness: an unknown
+  flag, an unreadable value or a positional is the usage and exit 2.
+  `--doctor` prints the configuration the binary would serve as one JSON
+  object (the last line of stdout, in m0serve's report shape, each failed
+  check carrying its `fix`) and exits with the code serving would exit
+  with, having bound nothing; `smoke-host-doctor` runs twenty
+  configurations both ways and requires the codes to agree. An
+  application that prints its own address takes `host_config()` so the
+  banner names the port a flag moved. Nothing changes for an application
+  that is passed no arguments.
 
 - **The blobs demo's shapes twisted and popped** (`apps/blobs`, SPEC N16).
   Measured on 1.5.0's live stream over 45 s: 64 of 1,758 slot steps

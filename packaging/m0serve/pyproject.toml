@@ -1,8 +1,11 @@
-# The only [build-system] in this repository, and deliberately not in the root
+# A [build-system] of this wheel's own, and deliberately not in the root
 # pyproject.toml. Adding one there would make uv treat the repo as an
 # installable package: `uv sync` would try to build it, that build needs
 # bin/m0serve, and building bin/m0serve needs the .venv that `uv sync` is
-# creating. The root stays a virtual project; this is a separate one.
+# creating. The root stays a virtual project; each wheel is a separate one
+# under packaging/<name>/ (packaging/m0/ is the other), and
+# `check_root_has_no_build_system` in scripts/check_docs.py holds the root
+# to that.
 #
 # Wheels only, no sdist. An sdist cannot build without the Mojo toolchain, a
 # compiled binary and the repository root that hatch_version.py reads -- so

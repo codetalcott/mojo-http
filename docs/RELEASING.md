@@ -230,6 +230,15 @@ minutes) and five against `test_host_flags.mojo` (`--only flags`). A sabotage th
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
 
+**And `uv run poe sabotage-m0-wheel`** (SPEC N23–N26) — reverts each rule
+of the `m0` wheel's recipe and CLI in `packaging/m0/` and requires
+`smoke-m0-wheel` to fail AND to say the expected thing; a smoke that fails
+somewhere else is reported MISSED. The rules a refusal arm claims run with
+the smoke's unit phase off, so the arm and not a unit test is what must
+fail. Pre-release because each rule rebuilds the wheel and reruns the
+smoke, a minute or two apiece; `--only LABEL` runs one. Nothing here
+publishes the wheel: `m0` has no release workflow yet.
+
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
