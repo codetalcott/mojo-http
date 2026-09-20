@@ -1,0 +1,127 @@
+# Publishes the `m0` wheel -- the framework's source and the CLI that builds
+# an application against it (packaging/m0/, SPEC N23) -- to PyPI.
+#
+# Apart from release.yml on purpose. `m0` is versioned apart from the
+# repository (docs/DECISIONS.md D43), so it has tags of its own, `m0-v*`,
+# which release.yml's `v*` does not match and must never be widened to. It
+# is one pure-Python wheel, so there is no platform matrix and nothing to
+# compile. And trusted publishing trusts the tuple (owner, repository,
+# workflow, environment): a second project gets a second workflow and a
+# second environment, `pypi-m0`, whose deployment policy admits `m0-v*`
+# tags and nothing else. docs/RELEASING.md, "Releasing m0", has the
+# one-time setup and the order of operations.
+#
+# ONE trigger: a pushed tag. No branch path and no dispatch -- release.yml
+# has both for reasons (a credential that can push branches but not tags)
+# that do not apply to a release a person cuts by hand.
+#
+# The tag is the claim; the jobs check it against the tree before anything
+# is uploaded: the tag's version is `__version__`, the wheel carries NO
+# local label (`M0_WHEEL_LOCAL` is what every smoke builds with, and a
+# `0.1.0+tree` cannot be uploaded anyway -- PyPI refuses local versions),
+# the wheel was cut from exactly this commit with a clean tree, and a
+# scaffold written by the built wheel pins that same version.
+#
+# Additive: the automerge workflows key on the workflow named "Tests".
+name: Release m0
+
+on:
+  push:
+    tags:
+      - 'm0-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      # UNSET, not empty-by-accident: hatch_version.py appends a local label
+      # whenever the variable holds one, and `poe build-m0-wheel` defaults it
+      # to `tree`. So this does not go through poe.
+      - name: Build the wheel with no local label
+        run: |
+          set -euo pipefail
+          unset M0_WHEEL_LOCAL
+          uv build --wheel packaging/m0 -o dist/m0
+          ls -l dist/m0
+      - name: Refuse a wheel that is not what the tag says
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/m0/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] \
+            || { echo "::error::expected 1 wheel, found ${#wheels[@]}"; exit 1; }
+          name=$(basename "${wheels[0]}")
+          version=$(echo "$name" | cut -d- -f2)
+          case "$version" in
+            *+*) echo "::error::$name carries a local label; PyPI cannot serve one"; exit 1 ;;
+          esac
+          [ "m0-v$version" = "$GITHUB_REF_NAME" ] \
+            || { echo "::error::wheel version $version does not match tag $GITHUB_REF_NAME"; exit 1; }
+          [ "$name" = "m0-$version-py3-none-any.whl" ] \
+            || { echo "::error::$name is not a pure wheel"; exit 1; }
+          python3 - "${wheels[0]}" "$version" "$GITHUB_SHA" <<'PY'
+          import json, sys, zipfile
+          wheel, version, sha = sys.argv[1:]
+          with zipfile.ZipFile(wheel) as z:
+              info = json.loads(z.read("m0/_build_info.json"))
+              meta = z.read(f"m0-{version}.dist-info/METADATA").decode()
+          problems = []
+          if info["m0"] != version:
+              problems.append(f"_build_info.json says m0 {info['m0']}")
+          if info["commit"] != sha:
+              problems.append(f"cut from {info['commit']}, and the tag is {sha}")
+          if info["dirty"]:
+              problems.append("cut from a dirty tree")
+          if len(info["gated_mojo"]) != 1:
+              problems.append(f"gated_mojo is {info['gated_mojo']}")
+          if "Requires-Dist" in meta:
+              problems.append("the wheel declares a dependency (D39)")
+          for p in problems:
+              print(f"::error::{p}")
+          sys.exit(1 if problems else 0)
+          PY
+          echo "m0 $version, cut from $GITHUB_SHA"
+      # The wheel as a user first meets it: `uvx m0 new`, with no toolchain.
+      # What it writes must pin the version being published -- a scaffold
+      # pinning a version that is not on the index cannot sync.
+      - name: Scaffold from the built wheel
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#m0-v}"
+          work=$(mktemp -d)
+          cd "$work"
+          uvx --from "$GITHUB_WORKSPACE"/dist/m0/*.whl m0 new probe
+          grep -F "\"m0==$version\"" probe/pyproject.toml
+          grep -F '"mojo==' probe/pyproject.toml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: m0-wheel
+          path: dist/m0/*.whl
+          if-no-files-found: error
+
+  # The only job here holding a credential. Its environment is the
+  # authorization boundary (docs/RELEASING.md): `pypi-m0` admits `m0-v*`
+  # tags only, and its required reviewer is the pause between a pushed tag
+  # and a filename burned on PyPI for good.
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi-m0
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: m0-wheel
+          path: dist
+      # SHA-pinned for release.yml's reason: a branch ref is rewritable by
+      # whoever controls the action's repository. Same pin as release.yml;
+      # Dependabot's github-actions ecosystem moves both.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2

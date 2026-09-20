@@ -3,7 +3,13 @@
 # stage, and the runtime stage carries the binary, the Mojo runtime
 # libraries beside it, and nothing else -- no interpreter, no toolchain.
 #
-#     docker build -f deploy/Dockerfile -t __M0_APP__ .      (from the project root)
+#     uv run m0 image
+#
+# which is, from the project root,
+#
+#     docker build -f deploy/Dockerfile -t __M0_APP__ .
+#
+# and then the image's own /app/about.json.
 #
 # The builder runs what you run: `uv sync`, then `uv run m0 build --release`,
 # which compiles for the platform's BASELINE CPU (never the builder's own:
@@ -30,8 +36,15 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen
 
 COPY src/ src/
-RUN uv run --frozen m0 build --release \
- && sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1 > /tmp/version
+# Empty is the platform's baseline; `m0 image --target-cpu CPU` sets it.
+# m0 build's last line names the CPU it compiled for, which about.json
+# records: the image says what it needs rather than what was asked.
+ARG TARGET_CPU=
+RUN { uv run --frozen m0 build --release ${TARGET_CPU:+--target-cpu "$TARGET_CPU"} > /tmp/built; \
+      code=$?; cat /tmp/built; [ "$code" = 0 ]; } \
+ && mkdir /tmp/facts \
+ && sed -n 's/^built dist\/ for //p' /tmp/built > /tmp/facts/cpu \
+ && sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1 > /tmp/facts/version
 
 
 FROM ${BASE}
@@ -39,7 +52,7 @@ FROM ${BASE}
 ARG BASE
 RUN useradd --system --create-home --uid 10001 app
 COPY --from=build /src/dist/ /app/
-COPY --from=build /tmp/version /tmp/version
+COPY --from=build /tmp/facts/ /tmp/facts/
 
 # What the image is, measured from inside it as its last layer. The build
 # FAILS if an interpreter is present rather than writing a false line.
@@ -49,11 +62,12 @@ RUN set -e; \
             \( -type f -o -type l \) | grep -q .; then \
       echo "an interpreter is in the image" >&2; exit 1; \
     fi; \
-    version=$(cat /tmp/version); rm /tmp/version; \
+    version=$(cat /tmp/facts/version); cpu=$(cat /tmp/facts/cpu); rm -r /tmp/facts; \
+    [ -n "$version" ] && [ -n "$cpu" ] || { echo "the builder recorded no version or no CPU" >&2; exit 1; }; \
     app_bytes=$(du -sb /app | cut -f1); \
     image_bytes=$(du -sxb / | cut -f1); \
-    printf '{"app":"%s","version":"%s","arch":"%s","base":"%s","python":false,"app_bytes":%s,"image_bytes":%s}\n' \
-      "__M0_APP__" "$version" "$(uname -m)" "$BASE" "$app_bytes" "$image_bytes" > /app/about.json; \
+    printf '{"app":"%s","version":"%s","arch":"%s","cpu":"%s","base":"%s","python":false,"app_bytes":%s,"image_bytes":%s}\n' \
+      "__M0_APP__" "$version" "$(uname -m)" "$cpu" "$BASE" "$app_bytes" "$image_bytes" > /app/about.json; \
     cat /app/about.json
 
 USER app

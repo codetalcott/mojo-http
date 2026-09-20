@@ -15,7 +15,9 @@ uvx m0 new shop                   # writes ./shop; needs no toolchain and no net
 cd shop && uv sync                # the pair it pinned: m0, and the one exact mojo it is gated on
 uv run m0 build                   # src/server.mojo -> bin/server, about ten seconds
 uv run m0 test                    # mojo run over test/test_*.mojo, two or three seconds each
+uv run m0 dev -- --port 8080      # build, serve, rebuild on save; the old server serves until a build succeeds
 uv run m0 doctor                  # the toolchain checks, then bin/server's own --doctor
+uv run m0 image                   # docker build of deploy/Dockerfile, then the image's about.json
 uv run m0 include                 # where the framework's source is: read it
 ```
 
@@ -25,6 +27,8 @@ uv run m0 include                 # where the framework's source is: read it
 | `m0 build [--release] [--target-cpu CPU]` | Compiles `src/server.mojo` and renames the result onto `bin/server`, so a running server is never written over. `--release` compiles for the platform's baseline CPU, relocates the binary and bundles the Mojo runtime beside it in `dist/` — the directory an image's runtime stage copies. |
 | `m0 test [FILE...]` | `mojo run` per file, serial, output untouched. Needs no C compiler. A run with no test files is refused, not passed. |
 | `m0 doctor [--json] [-- HOST_ARGS]` | Every check, then `bin/server HOST_ARGS --doctor` with your environment. Exits with the first failed check's code, else the application's. |
+| `m0 dev [-- HOST_ARGS]` | Builds and serves `bin/server HOST_ARGS`, then polls `src/` and `pyproject.toml` (stdlib, no watcher). On a change it builds WHILE the old server serves; a failed build leaves it serving; a good one sends it SIGTERM, waits for the pid to exit (6 s, then SIGKILL, named), and starts the new binary. Ctrl-C stops the server and exits 0. |
+| `m0 image [--tag T] [--target-cpu CPU] [-- DOCKER_ARGS]` | `docker build -f deploy/Dockerfile -t T DOCKER_ARGS .` from the project root (T defaults to the directory's name), then the image's `/app/about.json` as the last line of stdout. Needs docker and no toolchain. Docker missing or failing is exit 1, its output untouched. It does not deploy. |
 | `m0 include` | Prints the include root. |
 
 Exit codes are a closed set: `0`; `1` the tool m0 ran failed; `2` the command

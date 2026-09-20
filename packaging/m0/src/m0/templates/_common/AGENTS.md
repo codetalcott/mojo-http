@@ -13,13 +13,18 @@ Always `uv run m0 …` (the project's own venv; `uvx` is for `m0 new` alone).
 |---|---|---|
 | `uv run m0 test` | runs `test/test_*.mojo`; no link, no server | 2–3 s |
 | `uv run m0 build` | compiles `src/server.mojo` to `bin/server` | 10–13 s after an edit |
+| `uv run m0 dev` | builds, serves, and rebuilds when `src/` or `pyproject.toml` changes; the old server keeps serving until a build SUCCEEDS, so a syntax error costs a compiler message and not the page; `-- --port 8080` goes to the binary | a build per save |
 | `uv run m0 doctor` | every toolchain check, then the binary's resolved configuration; `--json` for a machine | < 1 s |
 | `uv run m0 build --release` | a relocatable `dist/` for the baseline CPU | a build, plus the bundling |
+| `uv run m0 image` | `docker build -f deploy/Dockerfile`, then the image's own `about.json`; needs docker and a committed `uv.lock`, and no local toolchain | minutes the first time |
 | `./smoke.sh` | build, serve on its own port, probe the wire, stop | a build, plus a second |
 
 The test loop is four to five times faster than the build loop. **Put logic in
 functions a test can reach** — a renderer that takes values, a state struct
-with methods — and keep views thin. `bin/server --port 8080` runs the app;
+with methods — and keep views thin. A test is also the only thing that
+vouches for a function nothing calls yet: in an imported module the compiler
+does not diagnose one, malformed signature included, so a green build says
+nothing about it. `bin/server --port 8080` runs the app;
 `--doctor` prints its configuration and starts nothing.
 
 Every refusal, from `m0` and from the binary, is exit **78** and one line

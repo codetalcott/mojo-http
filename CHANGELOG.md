@@ -39,9 +39,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Both are sessionless. The templates are real source files that compile
   unsubstituted — `poe check-templates`, inside `test-all` — so
   substitution is plain string replacement and there is no template
-  engine. `smoke-scaffold` runs on every pull request, both legs. The
-  scaffold's `deploy/` is written and NOT yet gated: no job builds its
-  image until `m0 image` lands. Still unpublished.
+  engine. `smoke-scaffold` runs on every pull request, both legs. Still
+  unpublished.
+- **`m0 dev`, `m0 image`, and the workflow that will publish `m0`** (SPEC
+  N30–N32; docs/notes/dev-image-and-a-release.md). `m0 dev [-- HOST_ARGS]`
+  is build-then-swap: the old server keeps answering while a build runs
+  and after one fails, and only a build that succeeded ends it — SIGTERM
+  by pid, a six-second wait for the pid to exit, then the new binary, so
+  there is never a second process on the port. The watcher is a stdlib
+  mtime poll of `src/` and `pyproject.toml`. `m0 image [--tag T]
+  [--target-cpu CPU] [-- DOCKER_ARGS]` builds the scaffold's
+  `deploy/Dockerfile` and prints the image's own `about.json`; it needs
+  docker and no toolchain, and does not deploy. The scaffold's Dockerfile
+  takes `TARGET_CPU` as a build argument and its `about.json` records
+  `cpu`, what the builder's release build said it compiled for.
+  `smoke-scaffold-dev` (both legs) and `smoke-scaffold-image` (Linux, the
+  first x86-64 build of the scaffold's image, its Dockerfile built as
+  written) run on every pull request, which retires the `deploy/` gap
+  the scaffold shipped with. `release-m0.yml` publishes from `m0-v*`
+  tags through a trusted publisher and an environment of its own; it is
+  written and held to its rules by `check-docs`, and has never run.
+  Still unpublished.
 
 ### Changed
 
