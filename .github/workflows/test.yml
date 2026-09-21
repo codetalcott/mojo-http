@@ -25,12 +25,19 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    # Green runs finish in 11-15 min (2026-09-03; they were 4-6 when the cap
-    # was set). Without an explicit cap a hung step runs to GitHub's 6-hour
-    # default while holding this ref's concurrency group, so a stall reads
-    # as "still running" for hours instead of failing. See the apt step
-    # below for the stall that motivated this.
-    timeout-minutes: 30
+    # Green runs finish in 13-18 min (2026-09-21; 11-15 on 2026-09-03, and
+    # 4-6 when the cap was first set). Without an explicit cap a hung step
+    # runs to GitHub's 6-hour default while holding this ref's concurrency
+    # group, so a stall reads as "still running" for hours instead of
+    # failing. See the apt step below for the stall that motivated this.
+    #
+    # 30 was too close. `Run unit tests` is ONE 14-minute step (`poe
+    # test-all`), and the same slow ubuntu runners that cancelled the
+    # smoke job ran this leg at 22m0s and 26m1s against 18m0s on `main`
+    # — 87% of the cap, with nothing in the tree changed. A cap a green
+    # run can reach is a coin toss, so this one is left at roughly twice
+    # the measured run, like the two smoke jobs below.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -394,16 +401,38 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    needs: unit-tests
-    # Green runs finish in 16-19 min across some fifty steps (2026-09-03;
-    # they were 3-5 min when the cap was 20, and a 19.5 min green run had
-    # been recorded). Same rationale as unit-tests above: every smoke step
-    # starts a server and polls it, so a wedged server would otherwise hang
-    # here rather than fail -- and the cap is what turned one into a
-    # failure (a server that never exited after SIGTERM in the inverted
-    # ASGI smoke, macOS, 2026-09-02), which is why that smoke's shutdown
-    # waits are now bounded themselves and name their phase.
-    timeout-minutes: 35
+    # NOT `needs: unit-tests`. It was, and the serialization cost 18-26 min
+    # on the front of every run while catching nothing: in the three most
+    # recent failing `Tests` runs (35515503893, 35477118692, 35477093973)
+    # the failure was in a smoke job every time and `unit-tests` was green
+    # every time. The repository is PUBLIC, so the minutes are free and the
+    # macOS 10x multiplier does not bill; observed queueing is under 90 s.
+    # What the gate really protected against -- a doc-fact drift, or a
+    # broken `build-all` lighting up every job at once -- is answered by
+    # `Docs`, which is unfiltered, always reports, and is the ONE required
+    # check on `main` (see CLAUDE.md).
+    # THE SMOKES ARE TWO JOBS, and the split is a cap, not taste. One job
+    # ran 30m17s green on `main` and the ubuntu leg was cancelled at the
+    # 35-minute cap four times across two pull requests -- always mid
+    # `Smoke test the Django realtime example over WebSockets`, the last
+    # long step, on a runner that was simply slower (its unit-tests leg
+    # took 26m1s against the usual 18m0s). A cap a green run reaches is a
+    # coin toss, so the work is halved AND the cap left at roughly twice
+    # the measured run: this job and `smoke-gateway` divide `main`'s own
+    # step times into 12.0 and 13.1 min on ubuntu, 13.2 and 12.8 on macOS,
+    # against 30. The slowest runner observed
+    # so far was 1.45x (that 26m1s unit-tests leg), which lands a 14 min
+    # job at 21; 30 still turns a wedged server into a failure rather than
+    # a six-hour hang, and the cap is not the thing that has to be right
+    # to the minute.
+    #
+    # Shards are SEPARATE JOBS, never one job with `if: matrix.shard`:
+    # scripts/spec_sheet.py refuses a SPEC row whose cited step carries an
+    # `if:`, because a conditional step is not evidence that it ran.
+    # Moving a step between the two jobs is free -- the sheet reads step
+    # NAMES out of this file and does not care which job holds one -- but
+    # renaming or deleting one is what it is there to catch.
+    timeout-minutes: 30
     env:
       # Where `scripts/emit.py` appends the measurements the smokes already
       # compute (RSS growth, fast-request latency). Unset locally, which makes
@@ -426,13 +455,19 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       - name: Build all packages
         run: uv run poe build-all
-      # Exercises the m0-http <-> lightbug_http cycle end to end: the binary
-      # only runs if lightbug_http/event_loop.mojo's `from m0_http.log import
-      # log_access` resolves against m0_http.mojoc at run time.
-      - name: Compile every example app
-        run: uv run poe build-apps
-      # The serve CLI: one binary for every WSGI row. Built here once; the
-      # smoke-wsgi/django/flask tasks below depend on it and reuse it.
+      # `Compile every example app` is deliberately NOT here. It builds each
+      # app into a mktemp dir and DISCARDS the binaries, so nothing in this
+      # job could consume it even in principle: every row either `mojo run`s
+      # its app, `mojo build`s its own copy, or serves through bin/m0serve.
+      # It is a compile gate, `poe test-all` runs it in the unit-tests job,
+      # and it cost 4 min a leg -- twice over, once per shard -- to
+      # re-answer a settled question. The discarded output is the reason,
+      # not any ordering against unit-tests, which now runs in parallel.
+
+      # The serve CLI. Most of this job's rows are Mojo, but the timeout,
+      # keep-alive, sendfile and site rows all serve through it, and the
+      # tasks declare it as a poe dep -- building it as a step keeps that
+      # cost out of whichever smoke happens to run first.
       - name: Build the serve CLI
         run: uv run poe build-serve
       # Emits libm0core.so (.dylib on macOS) and drives it through ctypes —
@@ -649,6 +684,77 @@ jobs:
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo
         run: uv run poe smoke-todo
+      # The measurements, rendered into the run's own summary page and kept as
+      # an artifact. Until now every one of these numbers went to a job log
+      # that expires, so "did it pass" was answerable and "is it drifting
+      # toward the limit" was not. `always()`: a measurement from a smoke that
+      # later failed is usually the interesting one.
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-${{ matrix.os }}
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-logs-${{ matrix.os }}
+          path: |
+            hello.log
+            shutdown1.log
+            shutdown2.log
+            notes.log
+            fragment.log
+            counter.log
+            todo.log
+            serve.log
+            threads.log
+          if-no-files-found: ignore
+
+  smoke-gateway:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    # No `needs:`, for the reason spelled out on `smoke` above.
+    # The gateway half of the smokes: the WSGI and ASGI bridges, the mounts,
+    # the pool and the --realtime rows. `smoke` above carries the server and
+    # the Mojo layer and explains why there are two jobs at all.
+    timeout-minutes: 30
+    env:
+      # Where `scripts/emit.py` appends the measurements the smokes already
+      # compute (RSS growth, fast-request latency). Unset locally, which makes
+      # every call site a no-op there; the script also always exits 0, so a
+      # recording failure can never turn a green gate red.
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install libsqlite3 (Linux)
+        if: runner.os == 'Linux'
+        # Normally ~6 s. Observed hanging for 63 min against an unreachable
+        # apt mirror, which is what a step-level cap turns into a fast,
+        # legible failure — the job cap above is the backstop, this is the
+        # one step known to stall.
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+      - name: Build all packages
+        run: uv run poe build-all
+      # The serve CLI: one binary for every WSGI row. Built here once; the
+      # smoke-wsgi/django/flask tasks below depend on it and reuse it.
+      - name: Build the serve CLI
+        run: uv run poe build-serve
       # PEP 3333 conformance against a bare WSGI callable -- no framework, so a
       # wrong answer is the server's by construction. Covers surface no
       # framework-based test can reach: the write() callable, a second
@@ -863,7 +969,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ci-results-${{ matrix.os }}
+          name: ci-results-${{ matrix.os }}-gateway
           path: ci-results.jsonl
           if-no-files-found: ignore
 
@@ -871,15 +977,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: server-logs-${{ matrix.os }}
+          name: server-logs-${{ matrix.os }}-gateway
           path: |
-            hello.log
-            shutdown1.log
-            shutdown2.log
-            notes.log
-            fragment.log
-            counter.log
-            todo.log
             django.log
             django2.log
             django3.log
