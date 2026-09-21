@@ -320,6 +320,89 @@ def test_fragment_el_spells_the_swap_from_the_tag_it_is_given() raises:
     assert_equal(ds^.finish(), '<section id="notes"></section>')
 
 
+def test_a_pushed_swap_moves_the_address_bar_in_both_tiers() raises:
+    """`push=True` is the swap plus `hx-push-url="true"`, from the builder
+    and from the expression tier alike, byte for byte; without it nothing
+    about history is written. The answer to the back button is already the
+    layer's: htmx re-requests a pushed URL with `HX-Request-Type: full`,
+    which `page_or_fragment` answers as a document (N22).
+
+    covers: N37
+    """
+    var f = Fragment[Htmx]("notes")
+    f.open("a")
+    f.attr("href", "/notes?page=2")
+    f.swap("get", "/notes?page=2", push=True)
+    f.text("next")
+    f.close("a")
+    var built = f^.finish()
+    var want = String(
+        '<a href="/notes?page=2" hx-get="/notes?page=2" hx-target="#notes"',
+        ' hx-swap="outerHTML" hx-push-url="true">next</a>',
+    )
+    assert_true(built.find(want) >= 0, built)
+    var g = Fragment[Htmx]("notes")
+    assert_equal(
+        g.el("a", "get", "/notes?page=2", attr("href", "/notes?page=2"), text("next"), push=True),
+        want,
+    )
+    assert_true(g.el("a", "get", "/notes", "", text("all")).find("push") < 0)
+    _ = g^.finish()
+
+
+def test_only_a_get_is_pushed() raises:
+    """A pushed URL is one the browser GETs on reload and on a history
+    restore, so pushing a write's is an address that answers 405. Refused
+    by the layer for every verb but `get`, htmx 4's `query` included: its
+    parameters travel in the body and the URL alone would not name the view."""
+    for verb in ["post", "put", "patch", "delete", "query"]:
+        var f = Fragment[Htmx]("notes")
+        f.open("button")
+        var raised = String("")
+        try:
+            f.swap(verb, "/notes", push=True)
+        except e:
+            raised = String(e)
+        assert_true("only a get is pushed" in raised, String(verb, ": ", raised))
+        _ = f^.finish()
+
+
+def test_a_vocabulary_with_no_spelling_for_a_push_refuses_one() raises:
+    """`push_url` has a default, so a conformance written before it existed
+    still compiles — and the default raises, so that conformance asked for a
+    push says so instead of rendering a swap that did not navigate."""
+    var f = Fragment[Bare]("notes")
+    f.open("a")
+    var raised = String("")
+    try:
+        f.swap("get", "/notes", push=True)
+    except e:
+        raised = String(e)
+    assert_true("cannot push a URL" in raised, raised)
+    _ = f^.finish()
+
+
+def test_datastar_refuses_a_pushed_url() raises:
+    """Datastar 1.0.3 has no history handling, so a push there would change
+    the address and leave the back button with nothing to rebuild. The
+    swap is refused rather than written without its push: a filter that
+    silently stopped being linkable is the failure this exists to stop.
+    The same swap without `push` is unchanged."""
+    var f = Fragment[Datastar]("notes")
+    f.open("a")
+    var raised = String("")
+    try:
+        f.swap("get", "/notes?page=2", push=True)
+    except e:
+        raised = String(e)
+    assert_true("no history handling" in raised, raised)
+    _ = f^.finish()
+    var ok = Fragment[Datastar]("notes")
+    ok.open("a")
+    ok.swap("get", "/notes?page=2")
+    assert_true(ok^.finish().find("data-on:click__prevent") >= 0)
+
+
 def test_a_datastar_url_that_would_end_the_expression_is_refused() raises:
     """`attr` escapes for the HTML context; the browser un-escapes before
     Datastar evaluates the expression, so a `'` in the URL would close the

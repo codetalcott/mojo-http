@@ -1890,6 +1890,14 @@
       "evidence": "`test_router.mojo:test_a_query_is_built_encoded_and_only_from_what_is_set` (every PR) \u2014 its neighbours send the result back through `URI.parse` (`&`, `=`, `+`, `#`, `%` and a space survive), encode bytes that are not UTF-8, and hand a query of hostile request data to `Datastar.swap`"
     },
     {
+      "id": "N37",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A swap that arrives at a view can move the address bar: `push=True` on `Fragment.swap`, `Fragment.el` and `Html.swap[V]` writes the swap and then `Vocabulary.push_url` on the same element \u2014 `hx-push-url=\"true\"` for `Htmx` \u2014 so a filtered list or a detail reached by a swap can be reloaded, bookmarked and gone back to, the restore being the `HX-Request-Type: full` request N22 already answers as a document. Two refusals, never a no-op: the LAYER refuses a push on any verb but `get`, a pushed URL being one the browser GETs on reload (htmx 4's `query` included, its parameters being in the body); and the trait's default refuses, which is `Datastar`'s answer by name, Datastar 1.0.3 having no history handling for a back button to meet (D46)",
+      "status": "verified",
+      "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 the list's link to a note (expression tier) and the detail's link back (builder) each carry `hx-push-url=\"true\"`, nothing else in the list does, and the pushed URL asked for as an htmx 4 restore is the note inside a document; each push reverted alone fails the gate at its own line. `test_html.mojo` holds the bytes in both tiers and the three refusals"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",
