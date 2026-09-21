@@ -2886,14 +2886,17 @@ shell = """
 # both worker modes, because a spawned worker adopts the channels by fd.
 python3 scripts/accept_spread.py --assert --expect-handoffs --rounds 2 --port 8631 || exit 1
 echo "smoke-accept-spread: bursts spread within 2:1 across two workers, fork and spawn"
-# The negative arm on macOS, where the bare race is deterministic: with the
-# knob off the same probe must see the skew, or the gate is not testing the
-# mechanism. Linux's race sometimes lands within 2:1 on its own, so there
-# it is measured (the note) rather than asserted.
+# The negative arm on macOS, where the bare race is all but deterministic:
+# with the knob off the same probe must see the skew, or the gate is not
+# testing the mechanism. Linux's race sometimes lands within 2:1 on its own,
+# so there it is measured (the note) rather than asserted. Five rounds, and
+# the arm fails only if EVERY one is within 2:1: one round was the arm
+# asserting a single race, and a CI runner landed it balanced once (10 of
+# 10 skew on an M4, 30:2 the closest).
 if [ "$(uname)" = Darwin ]; then
-  if M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --assert --rounds 1 --modes fork --port 8635 > as-neg.log 2>&1; then
+  if M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --assert --rounds 5 --modes fork --port 8635 > as-neg.log 2>&1; then
     cat as-neg.log; rm -f as-neg.log
-    echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 spread within 2:1 -- the negative arm no longer discriminates"; exit 1
+    echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 spread within 2:1 five rounds of five -- the negative arm no longer discriminates"; exit 1
   fi
   rm -f as-neg.log
   echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 skews as before (macOS negative arm)"
@@ -7760,11 +7763,12 @@ python3 scripts/accept_spread.py --app-bin "$out/host_check" --modes fork \
   --assert --expect-handoffs --rounds 2 --port 8783 > "$out/spread.out" 2>&1 \
   || fail "accept sharing: bursts did not spread"
 echo "accept sharing: $(tail -1 "$out/spread.out")"
-# The negative arm where the bare race is deterministic (E16's reasoning):
-# with the knob off the same probe must see the skew.
+# The negative arm where the bare race is all but deterministic (E16's
+# reasoning): with the knob off the same probe must see the skew. Five
+# rounds, failing only if every one is within 2:1, as E16's arm does.
 if [ "$(uname)" = Darwin ]; then
   if env M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --app-bin "$out/host_check" \
-      --modes fork --assert --rounds 1 --port 8784 > "$out/spread-off.out" 2>&1; then
+      --modes fork --assert --rounds 5 --port 8784 > "$out/spread-off.out" 2>&1; then
     fail "accept sharing: M0_ACCEPT_SHARE=0 spread within 2:1 -- the negative arm no longer discriminates"
   fi
   echo "accept sharing: M0_ACCEPT_SHARE=0 skews (macOS negative arm)"
