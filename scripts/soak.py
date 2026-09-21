@@ -929,12 +929,23 @@ def pop_abandon(cfg, stop, stats):
     followed at once by a short request, so the freed slot is recycled
     while the abandoned producer may still be running — the arrangement
     that found the executor's slot-ownership bug.
+
+    Paced by `--abandon-pause`: every lap closes two connections from this
+    side, and each close leaves a local port in TIME_WAIT. Against a route
+    that answers whole inside the first read a lap takes two milliseconds,
+    and unpaced that was ~515 connections a second -- this machine's whole
+    ephemeral range inside 25 s, after which every population (and every
+    other program on the host) failed with EADDRNOTAVAIL and the run read
+    as 200,000 server failures. The pause is between laps, never between
+    the abandonment and the request that reuses its slot.
     """
     routes = [r for r in cfg["routes"] if r.get("class") in ("stream", "abandon")]
     if not routes:
         return
     i = 0
     while not stop.is_set():
+        if i and stop.wait(cfg["abandon_pause"]):
+            break
         route = routes[i % len(routes)]
         reset = bool(i % 2)
         i += 1
@@ -1177,6 +1188,7 @@ def build_cfg(manifest, url, capture, args):
         "requests_per_connection": args.requests_per_connection,
         "abandon_bytes": args.abandon_bytes,
         "abandon_seconds": args.abandon_seconds,
+        "abandon_pause": args.abandon_pause,
         "metrics_path": args.metrics_path,
         "dump_dir": (args.log + ".diffs") if getattr(args, "log", None) else None,
     }
@@ -1691,6 +1703,10 @@ def main():
     ap.add_argument("--abandon-bytes", type=int, default=4096)
     ap.add_argument("--abandon-seconds", type=float, default=0.5,
                     help="how long an abandoner reads before vanishing")
+    ap.add_argument("--abandon-pause", type=float, default=0.05,
+                    help="seconds between one abandoner's laps; each lap "
+                         "leaves two local ports in TIME_WAIT, and 0 can "
+                         "exhaust the client's ephemeral range")
     ap.add_argument("--metrics-path", default="/__metrics",
                     help="sampled each interval; \"\" to skip")
     ap.add_argument("--churn-every", type=float, default=0,
