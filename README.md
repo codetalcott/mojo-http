@@ -201,10 +201,10 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 >>>>>>> origin/main
 | `m0-datastar` | Datastar v1.0.3 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame | 80 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 157 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 116 |
+| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 117 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 75 |
 <<<<<<< HEAD
-| **Total** | | **1355** |
+| **Total** | | **1356** |
 =======
 | **Total** | | **1350** |
 >>>>>>> origin/main
@@ -894,7 +894,7 @@ is silently a different number.
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
 <<<<<<< HEAD
-uv run poe test-all         # 1355 unit tests, then compiles every example
+uv run poe test-all         # 1356 unit tests, then compiles every example
 =======
 uv run poe test-all         # 1350 unit tests, then compiles every example
 >>>>>>> origin/main
