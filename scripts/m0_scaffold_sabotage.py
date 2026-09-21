@@ -184,7 +184,9 @@ RULES = [
      "lacks the fragment or the pinned Datastar tag", WIRE),
     ("live: the document paints no fragment", "live", T + "live/src/pages.mojo",
      "        render_live(0, still, 0),\n",
-     '        "",\n',
+     # `still` stays USED: dropping its one use makes the build warn, and
+     # N34's no-warning check then fails first -- MISSED (failed elsewhere).
+     '        String("<!-- ", len(still), " -->"),\n',
      "lacks the fragment or the pinned Datastar tag", WIRE),
 
     # --- m0 dev (smoke-scaffold-dev; the template slot is unused) -------------
