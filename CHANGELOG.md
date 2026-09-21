@@ -61,6 +61,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   tag on 2026-09-21: green in both jobs at the first attempt, and the
   published wheel then passed docs/RELEASING.md's two after-upload runs
   (a scaffold synced from the index, and the quickstart page verbatim).
+- **The scaffold's `AGENTS.md` says three things the first scaffolded app
+  had to find out** (`unotes`, the application-layer soak's subject; its
+  `SOAK_LOG.md` findings 4–6). Login and logout are plain forms answered
+  with a 303, never swaps — a swap leaves the address bar behind, so
+  signing in left the application under `/login`. A hand-built
+  `HTTPRequest` parses no `Cookie` header, so a test of a view behind a
+  session fills a `RequestCookieJar` itself; without the two lines every
+  such test is answered as signed out, and finding them meant reading
+  framework source. And the worked login, `apps/fragment_notes`, is not in
+  the wheel: the page now gives its URL and says to read its renderer as
+  well as its views. Reaches a scaffold with the next `m0` release.
 - **Documentation for the Mojo stack, and a quickstart CI executes** (SPEC
   N33, N35, D45). Six pages under `/mojo/` on the site, their URLs
   permanent: the section index (where "preview" is said, once), a

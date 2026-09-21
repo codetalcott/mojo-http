@@ -79,8 +79,23 @@ session cookie exists, **every write needs a CSRF token**: a POST's as a
 hidden field; a DELETE's as an `X-CSRF-Token` header from a hand-written
 `hx-headers` attribute (htmx 4 puts a DELETE's fields in the query string,
 and a token in a URL is a token in every log) — the ONE `hx-` attribute
-typed by hand. `m0_http.session` has the signed cookie and `csrf_token`;
-`apps/fragment_notes` in the framework's repository is the worked example.
+typed by hand. `m0_http.session` has the signed cookie and `csrf_token`.
+The worked example is not installed with the framework: it is
+`apps/fragment_notes/server.mojo` at
+https://github.com/codetalcott/mojo-http — read its renderer as well as
+its views.
+
+- **Login and logout are PLAIN forms** (`el("form", attr("method", "post")
+  + attr("action", url))`), answered with a 303 — never `f.el("form", …)`.
+  A swap changes the fragment and not the address bar, so signing in
+  leaves the application under `/login` and signing out leaves the login
+  form under whatever was open.
+- **A hand-built request parses no `Cookie` header**; only the server's
+  parser fills `req.cookies`. A test of a view behind a session fills the
+  jar itself: `var jar = RequestCookieJar()` (from
+  `lightbug_http.cookie.request_cookie_jar`), `jar.add_pairs("name=value")`,
+  then `HTTPRequest(uri, headers=…, cookies=jar^)`. Without it every such
+  test is answered as signed out.
 
 ## Streaming (SSE)
 
