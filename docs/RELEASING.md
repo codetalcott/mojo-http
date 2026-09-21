@@ -497,11 +497,11 @@ filename. The first `m0-v*` tag is its first execution; read its log as one.
 
 ### One-time, and only the owner can do these
 
-1. PyPI → *Your projects* → **Publishing** → add a **pending** publisher:
-   project `m0`, owner `codetalcott`, repository `mojo-http`, workflow
-   `release-m0.yml`, environment `pypi-m0`. The name was unclaimed on
-   2026-09-19; a pending publisher does not reserve it, so do this shortly
-   before the first tag rather than long before.
+1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
+   publisher: owner `codetalcott`, repository `mojo-http`, workflow
+   `release-m0.yml`, environment `pypi-m0`. The project exists — a
+   placeholder `0.0.1` reserved the name on 2026-09-19 — so this is an
+   ordinary publisher on an existing project, not a pending one.
 2. This repository → Settings → Environments → create `pypi-m0`, with a
    deployment policy admitting the tag pattern `m0-v*` and nothing else,
    and yourself as required reviewer. `pypi` cannot be shared: its policy
