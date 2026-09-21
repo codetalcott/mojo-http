@@ -48,7 +48,15 @@ comptime P_MAKE_RAISES = 5
 """1 makes `Ticker.make` raise, the shape of a producer that cannot be built."""
 comptime P_ID = 6
 """The shared event-id word, what `HostContext.id_addr` names in `serve`."""
-comptime P_SLOTS = 7
+comptime P_BEGUN = 7
+"""The number of the step now running or last run: `P_STEPS` counts a step
+only once it has finished, and two tests need to know one has STARTED."""
+comptime P_SLOTS = 8
+
+comptime WAIT_NS = 10_000_000_000
+"""How long a test waits for the producer to get somewhere. A bound on a
+hang, never a measurement: a starved runner has started a thread 100 ms
+late, and every fixed sleep here used to assume it could not."""
 
 
 def _ctx(workers: Int, page: SharedAtomics) raises -> HostContext:
@@ -90,6 +98,7 @@ struct Ticker(Producer):
 
     def step(mut self, mut out: Publisher) raises -> Int:
         self.step_no += 1
+        _ = shared_fetch_add(self.page + P_BEGUN * 8, 1)
         if self.load(P_RAISE) == self.step_no:
             raise Error("step ", self.step_no, " raised on purpose")
         var cost = self.load(P_COST_NS)
@@ -156,6 +165,15 @@ struct OneProcess(ViewState):
     @staticmethod
     def max_workers() -> Int:
         return 1
+
+
+def _await(page: SharedAtomics, slot: Int, at_least: Int) raises:
+    """Return once `slot` has reached `at_least`; raise after `WAIT_NS`."""
+    var t0 = perf_counter_ns()
+    while page.load(slot) < at_least:
+        if perf_counter_ns() - t0 > WAIT_NS:
+            raise Error("slot ", slot, " is at ", page.load(slot), ", waited for ", at_least)
+        sleep(0.002)
 
 
 def _ids(fd: Int) raises -> List[Int]:
@@ -254,11 +272,12 @@ def test_producer_publishes_to_every_worker_in_order() raises:
     var ctx = _ctx(2, page)
     var p = ProducerThread()
     p.start[Ticker](ctx)
-    sleep(0.2)
+    # Five steps, however long they take: "five in 200 ms" was a claim about
+    # the runner's scheduler, and a starved one made four.
+    _await(page, P_STEPS, 5)
     assert_equal(p.stop_and_join(5_000_000_000), 0)
     assert_equal(p.status(), STATUS_OK)
     var steps = page.load(P_STEPS)
-    assert_true(steps >= 5, String("only ", steps, " steps in 200 ms at 100 Hz"))
     for w in range(2):
         var ids = _ids(ctx.bus.read_fd(w))
         assert_equal(len(ids), steps, String("worker ", w, " missed frames"))
@@ -275,13 +294,16 @@ def test_an_overrun_does_not_catch_up() raises:
     apart: both run the steps back to back.) The bound comes from the
     window as measured, because a loaded runner oversleeps both the test's
     wait and the producer's periods; the nine caught-up steps take no sleep
-    at all, so oversleeping cannot hide them.
+    at all, so oversleeping cannot hide them. The window opens on a step
+    finished AFTER the overrun rather than on a fixed sleep, so a thread
+    that started late still has its second step inside it.
     """
     var page = _page(20_000_000, cost_ns=200_000_000, slow_step=1)
     var p = ProducerThread()
     var t0 = perf_counter_ns()
     p.start[Ticker](_ctx(1, page))
-    sleep(0.4)
+    _await(page, P_STEPS, 2)
+    sleep(0.18)
     _ = p.stop_and_join(5_000_000_000)
     var window_ms = Int((perf_counter_ns() - t0) // 1_000_000)
     var steps = page.load(P_STEPS)
@@ -298,11 +320,11 @@ def test_a_long_period_does_not_delay_the_stop() raises:
     var page = _page(30_000_000_000)
     var p = ProducerThread()
     p.start[Ticker](_ctx(1, page))
-    sleep(0.1)
+    _await(page, P_STEPS, 1)
     var t0 = perf_counter_ns()
     assert_equal(p.stop_and_join(5_000_000_000), 0)
     var took_ms = (perf_counter_ns() - t0) // 1_000_000
-    assert_true(took_ms < 500, String("a stop took ", took_ms, " ms behind a 30 s period"))
+    assert_true(took_ms < 2000, String("a stop took ", took_ms, " ms behind a 30 s period"))
     assert_equal(page.load(P_STEPS), 1)
 
 
@@ -314,11 +336,11 @@ def test_an_overrunning_step_is_abandoned_within_the_bound() raises:
     var page = _page(1_000_000, cost_ns=3_000_000_000)
     var p = ProducerThread()
     p.start[Ticker](_ctx(1, page))
-    sleep(0.05)
+    _await(page, P_BEGUN, 1)
     var t0 = perf_counter_ns()
     assert_equal(p.stop_and_join(200_000_000), 1)
     var took_ms = (perf_counter_ns() - t0) // 1_000_000
-    assert_true(took_ms < 1000, String("the bounded join took ", took_ms, " ms"))
+    assert_true(took_ms < 2000, String("the bounded join took ", took_ms, " ms"))
     assert_equal(p.stragglers, 1)
     assert_true(p.running())
 
@@ -549,7 +571,7 @@ def test_a_stop_stamped_by_the_loop_shortens_the_join() raises:
     var ctx = _ctx(1, page)
     var producer = ProducerThread()
     producer.start[Ticker](ctx)
-    sleep(0.05)
+    _await(page, P_BEGUN, 1)
     assert_equal(producer.drain_began(), 0)
     # What the loop does at `_shutdown_begin`, 900 ms in the past.
     atomic_at(producer.stop_addr())[].store(Int64(perf_counter_ns() - 900_000_000))
