@@ -1813,6 +1813,16 @@ Properties of the design, not defects to fix in passing:
   identical code cleanly, which is what makes it look like a load bug. Use
   `http.client.HTTPConnection` (no proxy lookup) — `apps/wsgi_bare`'s
   `/reentrant` route is the worked example and `poe smoke-wsgi` pins it.
+  **Apple's libsqlite3 is in this family too**, and it needs no application
+  code at all: it instruments `openDatabase` with os_signpost, and in a
+  forked child that path can fault — both children of a round killed by
+  SIGSEGV inside `_os_log_preferences_refresh`, 3 of 60 runs of
+  `test_file.mojo` on an M4 (docs/notes/a-signpost-in-a-forked-child.md).
+  So a worker that opens an m0-sqlite connection after the fork is exposed
+  on macOS, and the answers are this family's usual one, `--spawn-workers`,
+  or `OS_ACTIVITY_MODE=disable` in the environment, which is measured at
+  0 of 200 and is what `test-sqlite` sets. A rerun is not the answer:
+  the crash is rare, real and not ours.
 - **Mojo has no global `var`, but it does have `pop.global_alloc`.** A POSIX
   handler gets no user-data pointer, so `src/global_slot.mojo` reaches an
   internal MLIR op for what C spells `static`. `@no_inline` on the accessors

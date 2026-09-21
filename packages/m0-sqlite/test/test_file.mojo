@@ -4,6 +4,15 @@ Separate from test_sqlite.mojo because these touch the filesystem. They matter
 disproportionately: the NUL-termination bug that `c_string` exists to prevent
 only ever manifested on a *path* argument, and only for some path lengths, so
 an in-memory-only suite would never have caught it.
+
+NOTE: run this binary with `OS_ACTIVITY_MODE=disable` on macOS, as
+`poe test-sqlite` does. The fork test below trips a fault in Apple's own
+signpost instrumentation of `sqlite3_open_v2` -- both children of a round
+killed by SIGSEGV inside `_os_log_preferences_refresh`, about 5% of runs
+on an M4 -- which is neither this package's bug nor what the test claims:
+docs/notes/a-signpost-in-a-forked-child.md has the trace and the
+measurement, and the variable turns that subsystem off without blunting
+the test (the WAL retry removed, it still fails 12 of 12).
 """
 
 from std.ffi import external_call, c_int
