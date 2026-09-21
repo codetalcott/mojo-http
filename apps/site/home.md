@@ -33,7 +33,7 @@ tabs and type in either. The page names the version serving it.
 [blobs.m0serve.dev](https://blobs.m0serve.dev) is the other end of the same
 stack: an application written in Mojo on the HTTP server underneath
 m0serve, in an image with no Python in it. Click to drop a blob; every open
-tab sees it.
+tab sees it. [The Mojo stack](../../docs/MOJO.md) is how to write one.
 
 The view runs first, with sessions and permissions in hand, so authorization
 stays where it is. Under gunicorn the two headers pass through unread and the

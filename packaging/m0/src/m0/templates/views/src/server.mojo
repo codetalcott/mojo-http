@@ -1,4 +1,4 @@
-"""__M0_APP__ — a server-rendered list, swapped in place by htmx 4.
+"""`__M0_APP__` — a server-rendered list, swapped in place by htmx 4.
 
     GET    /            303 to /items
     GET    /items       the list: a whole document, or the bare fragment

@@ -265,6 +265,13 @@ jobs:
           enable-cache: true
       - name: Smoke test m0 dev on the scaffold
         run: uv run poe smoke-scaffold-dev
+      # N33: the Mojo stack's front door, executed. Here and not in `smoke`
+      # for the reason above -- it needs the m0 wheel and nothing else -- and
+      # on both platforms, because the page claims both. The page lives at
+      # packaging/m0/QUICKSTART.md, outside this workflow's paths-ignore, so
+      # a pull request that edits only the page still runs it.
+      - name: Execute the Mojo quickstart
+        run: uv run poe smoke-quickstart-mojo
       - name: Record the measurements
         if: always()
         run: |

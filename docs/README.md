@@ -18,6 +18,19 @@ version does not stop the soak going stale.
 | [Capabilities](SPEC.md) | One row per capability with the test that proves it. Also [spec.json](spec.json). |
 | [WSGI and ASGI modes](WSGI_VS_ASGI.md) | What each mode is for, what free-threading changes, where each has a cliff. |
 
+## The Mojo stack
+
+Writing the application itself in Mojo, with the `m0` package.
+
+| page | contents |
+|---|---|
+| [The Mojo stack](MOJO.md) | What it is for, what it is not, and the `m0` command. |
+| [Quickstart (Mojo)](../packaging/m0/QUICKSTART.md) | `uvx m0 new` to a served page, tests, rebuild on save and an image. CI runs every tagged command on it. |
+| [The host](MOJO_HOST.md) | Handlers and producers, workers, threads and a handler pool, flags, the doctor, every refusal and exit code. |
+| [Views and fragments](MOJO_VIEWS.md) | The views table, fragments for htmx 4 and Datastar, a page or a fragment from one view, URLs, signed sessions. |
+| [Deploy](MOJO_DEPLOY.md) | The release build, the image and what it measures of itself, Fly.io. |
+| [From m0serve to Mojo](MOJO_RAMP.md) | One views module as a mount inside m0serve and as a binary of its own. |
+
 ## Measurements
 
 Records of something measured, with the environment it was measured in.

@@ -140,7 +140,20 @@ rather than installed and crashed at startup — RHEL 9 and its rebuilds sit
 at glibc 2.34 and miss by one minor version. Reaching them means building
 inside a `manylinux_2_34` container rather than relabelling the artifact.
 
-To **develop against the Mojo packages**, you do need the toolchain:
+To **write an application in Mojo** (preview), the `m0` package writes the
+project and installs the toolchain into it:
+
+```bash
+uvx m0 new shop
+cd shop && uv sync
+uv run m0 build && bin/server --port 8080
+```
+
+[packaging/m0/QUICKSTART.md](packaging/m0/QUICKSTART.md) is that path to a
+served page, tests, rebuild on save and a deploy image, executed by CI like
+the one above; [docs/MOJO.md](docs/MOJO.md) is the index of its pages.
+
+To **develop against the Mojo packages in this repository**, clone it:
 
 ```bash
 uv sync                     # installs the Mojo toolchain

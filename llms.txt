@@ -63,3 +63,60 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
   server loses.
 - The realtime example the quickstart builds on, as a project:
   [apps/django_realtime](apps/django_realtime/).
+
+## The Mojo stack: operating contract
+
+Preview. A second package, `m0`, for writing the application itself in
+Mojo on the framework m0serve is built from: one compiled binary, no Python
+at run time. `m0` is pure Python and versioned apart from m0serve. Toolchain
+platforms: macOS arm64, glibc Linux x86_64 and aarch64.
+
+- `uvx m0 new NAME [--template views|live]` writes a project and needs no
+  toolchain and no network. Inside it every command is `uv run m0 ...`;
+  `uv sync` installs the two exact pins, `m0` and the one `mojo` it was
+  tested on. `m0` runs the `mojo` in its own environment, never `PATH`'s,
+  and refuses any other version. There is no override.
+- `m0 build` compiles `src/server.mojo` to `bin/server` by rename, so a
+  running server is never written over; `m0 build --release` makes a
+  relocatable `dist/` for the platform's baseline CPU. A build needs a C
+  compiler named `cc`. `m0 test` runs `test/test_*.mojo` and needs none; it
+  is several times faster than a build, so logic belongs where a test
+  reaches it. A build does not diagnose a function nothing calls.
+- `m0 dev [-- HOST_ARGS]` builds, serves and rebuilds on save. The old
+  server answers until a build succeeds; a failed build changes nothing.
+- `m0 doctor --json [-- HOST_ARGS]` prints one JSON object: every toolchain
+  check, then the binary's own report. Parse it; do not scrape stderr.
+- `m0 image` is `docker build -f deploy/Dockerfile` and then the image's
+  `/app/about.json` (`"python":false`, the CPU compiled for, bytes) as the
+  last line of stdout. It needs docker and a committed `uv.lock`.
+- Exit codes, from `m0` and from the binary: 0; 1 the tool that ran failed;
+  2 a command line that cannot be read; 78 a refusal, one line naming the
+  fix. Read the line; do not retry.
+- The binary: flag over `M0_*` variable over default. `--workers N` forks,
+  `--threads N` is loops in one process (not both above 1),
+  `--blocking-threads N` is a handler pool behind each loop. `--doctor`
+  prints the resolved configuration as the last line of stdout, binds
+  nothing, and exits with the code serving would. SIGTERM drains and
+  exits 0.
+- A view is a free function `(req, params, state) raises -> HTTPResponse`
+  in a `Views[S]` table: `add_read` borrows the state, `add_write` takes it
+  `mut`, `add_loop` has none and runs on the event loop. No middleware, no
+  decorators: a guard is an early return. State held in one process
+  declares `max_workers() -> 1`, and a second worker is then refused.
+- `Fragment[Htmx]` (htmx 4) or `Fragment[Datastar]` generates every swap
+  attribute from the fragment's root id; never type one by hand. `text` and
+  `attr` escape, `raw` does not. `page_or_fragment` answers a document or
+  the bare fragment from the request headers and sets `Vary`. Routes are
+  `comptime` constants given to the table and to `url_for`.
+- A request-derived `String` may not be UTF-8: never slice one with
+  `s[byte=a:b]`; use `String(unsafe_from_utf8=s.as_bytes()[a:b])`.
+- Not built: a template engine, middleware, an ORM, multipart parsing, a
+  session store, password hashing.
+- A scaffolded project's `AGENTS.md` is this contract at full length, and
+  `uv run m0 include` prints where the framework's source is installed.
+
+Pages: [The Mojo stack](docs/MOJO.md),
+[Quickstart (Mojo)](packaging/m0/QUICKSTART.md),
+[The host](docs/MOJO_HOST.md),
+[Views and fragments](docs/MOJO_VIEWS.md), [Deploy](docs/MOJO_DEPLOY.md),
+[From m0serve to Mojo](docs/MOJO_RAMP.md).

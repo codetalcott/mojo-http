@@ -295,10 +295,17 @@ def run_template(work, whl, template, port, pin, m0v, servers):
     synced = time.time() - t0
     check_installed_is_the_wheel(project, whl)
     t0 = time.time()
-    sh(["uv", "run", "m0", "build"], project, env, "uv run m0 build")
+    built = sh(["uv", "run", "m0", "build"], project, env, "uv run m0 build")
     took = time.time() - t0
     if not os.access(project / "bin" / "server", os.X_OK):
         fail("uv run m0 build left no bin/server")
+    # A person's first build is the product's first impression, and the
+    # templates compile UNSUBSTITUTED in check-templates: `__M0_APP__` opening
+    # a docstring passes the summary lint there and `corner-views` does not.
+    # Only the written project can show it (found by smoke-quickstart-mojo).
+    noise = [l for l in (built.stdout + built.stderr).splitlines() if "warning:" in l]
+    if noise:
+        fail("the first build of a fresh %s scaffold warns:\n  %s" % (template, "\n  ".join(noise)))
     print("build[%s]: sync %.1f s, first build %.1f s" % (template, synced, took))
     emit("m0.scaffold_%s_sync_s" % template, "%.1f" % synced, "--unit", "s")
     emit("m0.scaffold_%s_first_build_s" % template, "%.1f" % took, "--unit", "s")

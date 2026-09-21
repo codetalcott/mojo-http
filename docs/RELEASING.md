@@ -535,6 +535,15 @@ filename. The first `m0-v*` tag is its first execution; read its log as one.
    find-links lock. Record the result in docs/REAL_APP_VALIDATION.md or
    the release notes; a failure here is a yank and a patch release, never
    a re-upload.
+6. Then the front door, verbatim against the index:
+   `python3 scripts/run_quickstart.py --doc packaging/m0/QUICKSTART.md`
+   with `M0_WHEEL` UNSET and port 8080 free. On every pull request the page
+   runs against the tree's wheel (SPEC N33); this is the only run in which
+   its first line, `uvx m0 new`, means what a reader's does. The Mojo
+   stack's pages say `uvx m0 new` plainly, so until `0.1.0` is on PyPI that
+   line installs the `0.0.1` placeholder, which has no `new`. The site
+   deploys only on a release or a "Deploy site" dispatch: never deploy it
+   with those pages in the tree and no `m0` of that version on the index.
 
 A mojo pin bump is an m0 release: `gated_mojo` is read from the root pin at
 build time (D39), so the wheel on PyPI keeps refusing the new compiler until

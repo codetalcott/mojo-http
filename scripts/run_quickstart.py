@@ -27,6 +27,25 @@ PyPI package on `pip install` lines. CI sets it: a pull request must prove
 the TREE's wheel, and must pass with no network dependence on what is
 published. Run without it to rehearse the published-package path verbatim.
 
+`M0_WHEEL=/path/to/m0-X.whl` does the same for a page that starts `uvx m0
+new` (packaging/m0/QUICKSTART.md, `poe smoke-quickstart-mojo`), and three
+more things, each the gate's own step and none the reader's:
+
+  - `uvx m0 ...` becomes `uvx --from WHEEL m0 ...`, and `UV_FIND_LINKS`
+    names the wheel's directory, so the project's exact `m0==` pin -- a
+    local version no index serves -- resolves to the wheel under test.
+  - the page's `uv sync` gains `--refresh-package m0` and is followed by
+    `m0_scaffold_smoke.check_installed_is_the_wheel`: the wheel is rebuilt
+    under ONE version and uv caches a version by name (smoke-scaffold once
+    passed against yesterday's framework that way).
+  - the blocks run in a reader's environment rather than this process's:
+    `PATH` is uv's directory and the system's, and `VIRTUAL_ENV` and its
+    kin are dropped, so nothing the page does not install -- this
+    repository's venv, its `mojo`, its `m0` -- is reachable. `UV_PYTHON`
+    names this interpreter's base, because the system `python3` on a macOS
+    runner is below m0's floor and a download is a network flake; a Python
+    is not a toolchain.
+
     python3 scripts/run_quickstart.py [--doc QUICKSTART.md --doc docs/QUICKSTART_NEXT.md] [--keep]
 """
 
@@ -82,6 +101,50 @@ def substitute_wheel(body, wheel):
     return "\n".join(out)
 
 
+_UVX_M0 = re.compile(r"(?<![\w-])uvx m0(?=\s)")
+_UV_SYNC = re.compile(r"^(\s*)uv sync\s*$")
+
+
+def substitute_m0_wheel(body, wheel, repo):
+    """Point `uvx m0` at the local wheel; refresh and verify at `uv sync`."""
+    check = (
+        # Not `python3`: on the stripped PATH that is the system's, and the
+        # module imports tomllib.
+        "\"$UV_PYTHON\" -c 'import sys; sys.path.insert(0, sys.argv[1]); "
+        "from pathlib import Path; "
+        "from m0_scaffold_smoke import check_installed_is_the_wheel as c; "
+        "c(Path.cwd(), Path(sys.argv[2]))' "
+        + shlex.quote(os.path.join(repo, "scripts")) + " " + shlex.quote(wheel)
+    )
+    out = []
+    for line in body.splitlines():
+        line = _UVX_M0.sub("uvx --from " + shlex.quote(wheel) + " m0", line)
+        m = _UV_SYNC.match(line)
+        if m:
+            out.append(m.group(1) + "uv sync --refresh-package m0")
+            out.append(m.group(1) + check)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def bare_env(wheel):
+    """A reader's terminal: uv and the system, and nothing of this tree's."""
+    import shutil
+
+    uv = shutil.which("uv")
+    if not uv:
+        raise SystemExit("run-quickstart: uv is not on PATH")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_FIND_LINKS")}
+    env["PATH"] = os.pathsep.join(
+        [os.path.dirname(uv), "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    env["UV_FIND_LINKS"] = os.path.dirname(wheel)
+    env["UV_PYTHON"] = os.path.realpath(
+        getattr(sys, "_base_executable", None) or sys.executable)
+    return env
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--doc", action="append",
@@ -134,10 +197,30 @@ def main():
         if not os.path.exists(wheel):
             raise SystemExit(f"run-quickstart: M0SERVE_WHEEL={wheel} does not exist")
 
+    m0_wheel = os.environ.get("M0_WHEEL", "")
+    if m0_wheel:
+        m0_wheel = os.path.abspath(m0_wheel)
+        if not os.path.exists(m0_wheel):
+            raise SystemExit(f"run-quickstart: M0_WHEEL={m0_wheel} does not exist")
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     script = [PRELUDE]
+    if m0_wheel:
+        # Asked on every run, before the page's first line: the page installs
+        # its own toolchain, and one already reachable would let every later
+        # block lean on it. With `bare_env` reverted this fires naming this
+        # repository's .venv/bin/mojo (measured).
+        script.append(
+            'if command -v mojo || command -v m0 || [ -n "${VIRTUAL_ENV:-}" ]; then\n'
+            '  echo "run-quickstart: a toolchain or a venv is reachable before '
+            'the page installed one" >&2; exit 1\nfi')
+    substituted = set()
     for i, (tag, body) in enumerate(blocks, 1):
         if wheel:
             body = substitute_wheel(body, wheel)
+        if m0_wheel:
+            body = substitute_m0_wheel(body, m0_wheel, repo)
+            substituted |= {w for w in ("uvx --from", "--refresh-package m0") if w in body}
         script.append(f'echo; echo "== block {i} ({tag}) =="')
         if tag == "serve":
             script.append("kill_server")
@@ -146,11 +229,20 @@ def main():
         else:
             script.append(body)
     script.append('echo; echo "quickstart: every block passed"')
+    if m0_wheel and len(substituted) != 2:
+        # A page reworded so that neither line matches would install whatever
+        # the index serves and prove nothing about the tree.
+        raise SystemExit(
+            "run-quickstart: M0_WHEEL is set, and the page must hold both a "
+            "`uvx m0 ...` line and a bare `uv sync` line for the wheel under "
+            f"test to be the one built against (substituted: {sorted(substituted)})")
 
     scratch = tempfile.mkdtemp(prefix="m0serve-quickstart-")
     print(f"run-quickstart: {len(blocks)} blocks {counts} in {scratch}"
-          + (f" (local wheel: {wheel})" if wheel else " (published package)"))
-    proc = subprocess.run(["bash", "-c", "\n".join(script)], cwd=scratch)
+          + (f" (local wheel: {wheel or m0_wheel})" if wheel or m0_wheel
+             else " (published package)"))
+    proc = subprocess.run(["bash", "-c", "\n".join(script)], cwd=scratch,
+                          env=bare_env(m0_wheel) if m0_wheel else None)
     if args.keep or proc.returncode != 0:
         print(f"run-quickstart: scratch kept at {scratch}", file=sys.stderr)
     else:

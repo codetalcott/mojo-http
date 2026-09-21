@@ -141,6 +141,38 @@ PAGES = [
     Page("docs/README.md", "/docs/", "Documentation",
          "Every page on this site, grouped by what it is for.",
          "Start here"),
+    # The Mojo stack: writing the application itself in Mojo, with the `m0`
+    # package. These six URLs are PERMANENT (docs/DECISIONS.md D45): agents
+    # cache links, the scaffold's AGENTS.md sends every new project here, and
+    # `mojo_pages_problems` in check_docs.py fails a slug that moves. The
+    # quickstart's source is under packaging/ because CI executes it and
+    # test.yml ignores docs/**.
+    Page("docs/MOJO.md", "/mojo/", "The Mojo stack",
+         "Writing the application itself in Mojo with the m0 package: what "
+         "it is for, what it is not, and the m0 command. Preview.",
+         "The Mojo stack", nav="The Mojo stack"),
+    Page("packaging/m0/QUICKSTART.md", "/mojo/quickstart/", "Quickstart (Mojo)",
+         "uvx m0 new to a served page, tests, rebuild on save and a deploy "
+         "image. CI runs every tagged command on the page.",
+         "The Mojo stack"),
+    Page("docs/MOJO_HOST.md", "/mojo/host/", "The host",
+         "What a Mojo application's main hands over: handlers and producers, "
+         "workers, threads and a handler pool, flags, the doctor, every "
+         "refusal and exit code.",
+         "The Mojo stack"),
+    Page("docs/MOJO_VIEWS.md", "/mojo/views/", "Views and fragments",
+         "The views table, fragments for htmx 4 and Datastar or a vocabulary "
+         "of your own, a page or a fragment from one view, URLs, signed "
+         "sessions.",
+         "The Mojo stack"),
+    Page("docs/MOJO_DEPLOY.md", "/mojo/deploy/", "Deploy",
+         "The release build, the image with no interpreter in it and what it "
+         "measures of itself, Fly.io.",
+         "The Mojo stack"),
+    Page("docs/MOJO_RAMP.md", "/mojo/ramp/", "From m0serve to Mojo",
+         "One views module compiled into m0serve as a mount beside a Python "
+         "application, and into a binary of its own.",
+         "The Mojo stack"),
     # Measurements: records that age, kept with their environment.
     Page("docs/BENCHMARKS.md", "/docs/benchmarks/", "Benchmarks",
          "m0serve against gunicorn, uvicorn and Granian: where it wins, "

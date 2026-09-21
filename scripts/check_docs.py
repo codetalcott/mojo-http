@@ -1213,6 +1213,203 @@ def check_m0_release_workflow():
         fail(problem)
 
 
+# The Mojo stack's pages (docs/MOJO*.md and packaging/m0/QUICKSTART.md).
+# Their tables restate lists that live in source, and their URLs are handed
+# out by every scaffolded project's AGENTS.md -- so each is held to its
+# source here, where a doc-only pull request still runs. Pure functions of
+# a {name: text} mapping, so the selftest can revert each rule in memory.
+MOJO_SLUGS = {
+    "docs/MOJO.md": "/mojo/",
+    "packaging/m0/QUICKSTART.md": "/mojo/quickstart/",
+    "docs/MOJO_HOST.md": "/mojo/host/",
+    "docs/MOJO_VIEWS.md": "/mojo/views/",
+    "docs/MOJO_DEPLOY.md": "/mojo/deploy/",
+    "docs/MOJO_RAMP.md": "/mojo/ramp/",
+}
+MOJO_SOURCES = {
+    "host": "packages/m0-http/m0_host/host.mojo",
+    "flags": "packages/m0-http/m0_host/flags.mojo",
+    "cli": "packaging/m0/src/m0/cli.py",
+    "checks": "packaging/m0/src/m0/checks.py",
+    "agents": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+    "pyproject": "pyproject.toml",
+}
+_MOJO_FENCE = re.compile(r"^```[^\n]*\n(.*?)^```\s*$", re.S | re.M)
+
+
+def _first_seen(items):
+    return list(dict.fromkeys(items))
+
+
+def _section(text, heading):
+    """The body under `## heading`, up to the next `## `."""
+    m = re.search(r"^## " + re.escape(heading) + r"\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    return m.group(1) if m else ""
+
+
+def mojo_pages_problems(pages, site_urls, src):
+    """Pure: the six pages' texts, docsite's {source: url}, the sources' texts
+    -> failure messages.
+
+    What it cannot do: say whether a sentence about a check or a flag is
+    TRUE. It holds the lists, which is where these pages would drift first.
+    """
+    out = []
+    for rel, url in MOJO_SLUGS.items():
+        if rel not in pages:
+            out.append(f"{rel} is gone: it is one of the Mojo stack's six pages")
+        if site_urls.get(rel) != url:
+            out.append(
+                f"{rel} is served at {site_urls.get(rel)!r}, not {url!r}: the Mojo "
+                "stack's URLs are permanent (docs/DECISIONS.md D45); every "
+                "scaffolded project's AGENTS.md and every agent's cache points at them")
+    host_page = pages.get("docs/MOJO_HOST.md", "")
+    index_page = pages.get("docs/MOJO.md", "")
+    quickstart = pages.get("packaging/m0/QUICKSTART.md", "")
+
+    want = _first_seen(re.findall(r'HostCheck\(\s*"([a-z-]+)"', src["host"]))
+    have = re.findall(r"^\| `([a-z-]+)` \|", _section(host_page, "Exit codes and refusals"), re.M)
+    if not want:
+        out.append(f"{MOJO_SOURCES['host']} names no HostCheck: the refusal table has no source")
+    elif have != want:
+        out.append(
+            "docs/MOJO_HOST.md's refusal table lists " + ", ".join(have)
+            + f"; host_checks in {MOJO_SOURCES['host']} applies " + ", ".join(want)
+            + ", in that order")
+
+    want = set(re.findall(r'^\s+"\s+(?:-h, )?(--[a-z-]+)', src["flags"], re.M))
+    have = set(re.findall(r"^\| `(--[a-z-]+)", _section(host_page, "Configuration"), re.M))
+    if not want:
+        out.append(f"{MOJO_SOURCES['flags']}' help text names no flag")
+    elif have != want:
+        out.append(
+            "docs/MOJO_HOST.md's flag table and the host's own help text differ: "
+            + ", ".join(sorted(have ^ want)))
+
+    checks = re.findall(r'^\s+\("([a-z-]+)", check_', src["checks"], re.M)
+    spelled = ", ".join(f"`{c}`" for c in checks)
+    if not checks:
+        out.append(f"{MOJO_SOURCES['checks']} holds no CHECKS list")
+    elif spelled not in " ".join(host_page.split()):
+        out.append(
+            f"docs/MOJO_HOST.md does not list m0's checks as {spelled}, the order "
+            f"{MOJO_SOURCES['checks']} runs them in")
+
+    commands = set(re.findall(r'add_parser\(\s*"([a-z]+)"', src["cli"]))
+    tabled = set(re.findall(r"^\| `m0 ([a-z]+)", index_page, re.M))
+    if not commands:
+        out.append(f"{MOJO_SOURCES['cli']} declares no subcommand")
+    elif tabled != commands:
+        out.append(
+            "docs/MOJO.md's command table and m0's parser differ: "
+            + ", ".join(sorted(tabled ^ commands)))
+    for rel, text in sorted(pages.items()):
+        for block in _MOJO_FENCE.findall(text):
+            for cmd in re.findall(r"(?:uv run|uvx) m0 ([a-z]+)", block):
+                if commands and cmd not in commands:
+                    out.append(f"{rel} runs `m0 {cmd}` in a code block, and m0 has no such command")
+
+    # The two loop times, said once in the scaffold's AGENTS.md (what every
+    # project ships with) and again on the front door: one figure, not two.
+    for row, what in (("`uv run m0 test`", "m0 test"), ("`uv run m0 build`", "a build after an edit")):
+        m = re.search(r"^\| " + re.escape(row) + r" \|.*\| (\d+–\d+ s)[^|]*\|$", src["agents"], re.M)
+        if not m:
+            out.append(f"{MOJO_SOURCES['agents']} no longer gives a time for {row}")
+        elif m.group(1) not in quickstart:
+            out.append(
+                f"packaging/m0/QUICKSTART.md does not give {what} as {m.group(1)}, "
+                f"the figure {MOJO_SOURCES['agents']} ships in every project")
+
+    # A link the scaffold writes into every project outlives this tree: it
+    # must be one of the permanent six.
+    linked = re.findall(r"https://m0serve\.dev(/mojo/[a-z/]*)", src["agents"])
+    if not linked:
+        out.append(f"{MOJO_SOURCES['agents']} no longer links the Mojo stack's pages")
+    for path in linked:
+        if path not in MOJO_SLUGS.values():
+            out.append(
+                f"{MOJO_SOURCES['agents']} links https://m0serve.dev{path}, which is "
+                "not one of the Mojo stack's six URLs")
+
+    # The gate's pinned shape against the page, so a fence that loses its tag
+    # fails HERE, on a doc-only pull request, and not only where the gate runs.
+    m = re.search(r"--doc packaging/m0/QUICKSTART\.md \\\n\s+--expect (\S+)", src["pyproject"])
+    counts = {t: len(re.findall(r"^```bash " + t + r"\s*$", quickstart, re.M))
+              for t in ("setup", "serve", "verify")}
+    shape = ",".join(f"{t}={counts[t]}" for t in ("setup", "serve", "verify"))
+    if not m:
+        out.append("pyproject.toml's smoke-quickstart-mojo no longer pins the page's block counts")
+    elif m.group(1) != shape:
+        out.append(
+            f"packaging/m0/QUICKSTART.md has {shape} executable blocks and "
+            f"smoke-quickstart-mojo expects {m.group(1)}: a fence lost its tag, or "
+            "the task's pin was not moved with the page")
+    return out
+
+
+def _mojo_pages_inputs():
+    sys.path.insert(0, str(REPO / "scripts"))
+    import docsite
+
+    pages = {rel: (REPO / rel).read_text() for rel in MOJO_SLUGS if (REPO / rel).exists()}
+    site_urls = {p.source: p.url for p in docsite.PAGES}
+    src = {k: (REPO / v).read_text() for k, v in MOJO_SOURCES.items()}
+    return pages, site_urls, src
+
+
+def check_mojo_pages():
+    """The Mojo stack's pages agree with the sources their tables restate."""
+    for problem in mojo_pages_problems(*_mojo_pages_inputs()):
+        fail(problem)
+
+
+def _mojo_pages_cases():
+    """Each rule reverted against the committed pages and sources.
+
+    Returns (label, pages, site_urls, src, must_fire); a mutation that
+    changes nothing is NOT APPLICABLE and fails the selftest.
+    """
+    pages, urls, src = _mojo_pages_inputs()
+    host, index, quick = "docs/MOJO_HOST.md", "docs/MOJO.md", "packaging/m0/QUICKSTART.md"
+
+    def page(rel, old, new):
+        return dict(pages, **{rel: pages[rel].replace(old, new, 1)})
+
+    def source(key, old, new):
+        return dict(src, **{key: src[key].replace(old, new, 1)})
+
+    return [
+        ("(control: the pages as committed)", pages, urls, src, False),
+        ("a slug moved", pages, dict(urls, **{host: "/docs/mojo-host/"}), src, True),
+        ("a page dropped from the site's table", pages,
+         {k: v for k, v in urls.items() if k != quick}, src, True),
+        ("a refusal the host page never heard of", pages, urls,
+         source("host", 'HostCheck("spawned-marker"', 'HostCheck("new-refusal"'), True),
+        ("the refusal table out of the host's order",
+         page(host, "| `workers-count` |", "| `threads-count` |"), urls, src, True),
+        ("a flag the host grew", pages, urls,
+         source("flags", '"  --qos ', '"  --new-flag N  a thing\\n"\n        "  --qos '), True),
+        ("a flag row deleted from the page",
+         page(host, "| `--access-log` |", "| access log |"), urls, src, True),
+        ("m0's checks reordered in the source", pages, urls,
+         source("checks", '("platform", check_platform),', '("zz-first", check_zz),\n    ("platform", check_platform),'), True),
+        ("an m0 command the index does not table", pages, urls,
+         source("cli", 'add_parser(\n        "image"', 'add_parser(\n        "deploy"'), True),
+        ("a code block running a command m0 does not have",
+         page(quick, "uv run m0 test\n", "uv run m0 tests\n"), urls, src, True),
+        ("the front door quoting a stale build time",
+         page(quick, "10–13 s", "0.7–1 s"), urls, src, True),
+        ("the scaffold's test time moved without the front door", pages, urls,
+         source("agents", "| 2–4 s |", "| 5–9 s |"), True),
+        ("the scaffold linking a page that does not exist", pages, urls,
+         source("agents", "https://m0serve.dev/mojo/ ", "https://m0serve.dev/mojo/hosting/ "), True),
+        ("a verify fence that lost its tag",
+         page(quick, "```bash verify\nuv run m0 doctor", "```bash\nuv run m0 doctor"), urls, src, True),
+        ("(control: prose reworded beside a table)",
+         page(host, "One loop in one process is the default.", "The default is one loop."), urls, src, False),
+    ]
+
+
 def check_bench_kinds_do_not_shadow():
     """No bench artifact kind may be a dash-prefix of another.
 
@@ -1526,7 +1723,11 @@ BENCH_PAGE = "docs/BENCHMARKS.md"
 # claim needing a span or a marker one at a time, so they are recorded
 # here rather than half-done; `_page_figure_counts` in the selftest prints
 # them, so the number cannot rot into a claim of its own.
-FIGURE_PAGES = (BENCH_PAGE, "docs/ROADMAP.md")
+# The Mojo stack's six pages joined on the day they were written, so their
+# figures never had a bare form to drift from.
+FIGURE_PAGES = (BENCH_PAGE, "docs/ROADMAP.md", "docs/MOJO.md",
+                "docs/MOJO_HOST.md", "docs/MOJO_VIEWS.md", "docs/MOJO_DEPLOY.md",
+                "docs/MOJO_RAMP.md", "packaging/m0/QUICKSTART.md")
 _REGION = re.compile(
     r"<!-- generated: ([a-z0-9-]+) -- .*?-->.*?<!-- /generated: \1 -->", re.S)
 _NUM_SPAN = re.compile(r"<!-- num:[a-z0-9-]+@\d -->.*?<!-- /num -->", re.S)
@@ -1945,7 +2146,10 @@ def selftest():
     # iterates FIGURE_PAGES: a page quietly removed from it would simply
     # stop being tested, which is the failure this whole block exists to
     # prevent. Add a page to the rule and to this set together.
-    expected_pages = {"docs/BENCHMARKS.md", "docs/ROADMAP.md"}
+    expected_pages = {"docs/BENCHMARKS.md", "docs/ROADMAP.md", "docs/MOJO.md",
+                      "docs/MOJO_HOST.md", "docs/MOJO_VIEWS.md",
+                      "docs/MOJO_DEPLOY.md", "docs/MOJO_RAMP.md",
+                      "packaging/m0/QUICKSTART.md"}
     good = set(FIGURE_PAGES) == expected_pages
     print(f"  {'caught' if good else 'MISSED'}          "
           "(the pages the figure rule reads are the pages it is meant to)"
@@ -2058,6 +2262,18 @@ def selftest():
             ok = False
             continue
         got = m0_release_problems(text, release_text)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
+    # The Mojo stack's pages: each list they restate, moved in its source
+    # or on the page, against the committed texts.
+    real_mojo = _mojo_pages_inputs()
+    for label, pages, urls, src, must_fire in _mojo_pages_cases():
+        if must_fire and (pages, urls, src) == real_mojo:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation changed nothing")
+            ok = False
+            continue
+        got = mojo_pages_problems(pages, urls, src)
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
@@ -2177,6 +2393,7 @@ def main():
     check_required_context_intact()
     check_dependabot_gate()
     check_m0_release_workflow()
+    check_mojo_pages()
     check_ci_measurements_are_collected()
     check_site_corpus()
     check_rfc_citations()
