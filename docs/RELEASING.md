@@ -490,10 +490,23 @@ m0serve`, and nothing is posted anywhere until the remaining release gates in
 
 `m0` — the wheel under `packaging/m0/` — is versioned apart from the
 repository (DECISIONS D43) and published by `.github/workflows/release-m0.yml`
-from tags `m0-v*`. **That workflow has never run** (SPEC N32): it was
-written, reviewed, and is held to its rules by `check-docs`
-(`m0_release_problems`), because the only rehearsal PyPI offers burns a
-filename. The first `m0-v*` tag is its first execution; read its log as one.
+from tags `m0-v*`. **No gate runs that workflow; only a tag does** (SPEC
+N32): it is held to its rules by `check-docs` (`m0_release_problems`),
+because the only rehearsal PyPI offers burns a filename. So every tag is
+an execution nothing rehearsed since the last one; read its log as one.
+
+**The record.** `m0 0.1.0` — tag `m0-v0.1.0` at `e6823b6`, 2026-09-21, the
+workflow's first run: `build` green at the first attempt ("m0 0.1.0, cut
+from e6823b6…", 488,370 bytes, byte count equal to the local step-3
+wheel), `publish-pypi` green after approval. Step 1's sabotages found one
+rule MISSED (failed elsewhere) — a stale sabotage, not a product defect,
+fixed in #361 before the tag. Step 5 on macOS arm64: `uvx m0 new` 1.4 s,
+`uv.lock` naming `m0 0.1.0` from pypi.org, first build 12.6 s with no
+warning, `smoke.sh`, six tests and every doctor check green; `m0 image`
+NOT run (no docker daemon that day), so the published wheel's path through
+`uv sync --frozen` in a builder is still unproven and falls to the first
+scaffolded app's deploy. Step 6: 8 blocks passed against the published
+package.
 
 ### One-time, and only the owner can do these
 
@@ -540,8 +553,8 @@ filename. The first `m0-v*` tag is its first execution; read its log as one.
    with `M0_WHEEL` UNSET and port 8080 free. On every pull request the page
    runs against the tree's wheel (SPEC N33); this is the only run in which
    its first line, `uvx m0 new`, means what a reader's does. The Mojo
-   stack's pages say `uvx m0 new` plainly, so until `0.1.0` is on PyPI that
-   line installs the `0.0.1` placeholder, which has no `new`. The site
+   stack's pages say `uvx m0 new` plainly, and a scaffold pins the `m0`
+   that wrote it. The site
    deploys only on a release or a "Deploy site" dispatch: never deploy it
    with those pages in the tree and no `m0` of that version on the index.
 
