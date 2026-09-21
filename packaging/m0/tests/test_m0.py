@@ -17,7 +17,12 @@ import os
 import tempfile
 from pathlib import Path
 
-from m0 import build, checks, cli, doctor, new, paths
+import signal
+import subprocess
+import sys
+import time
+
+from m0 import build, checks, cli, dev, doctor, image, new, paths
 
 
 class Platform(unittest.TestCase):
@@ -139,11 +144,113 @@ class CommandLine(unittest.TestCase):
         self.assertIn(build.baseline_cpu(), said)
 
     def test_the_set_is_closed(self):
-        for argv in (["dev"], ["image"], ["new", "x", "--ui", "htmx"],
+        # `dev` and `image` exist since 0.1.0's third pull request; what is
+        # closed about them is everything that is not theirs: a host flag
+        # without the `--` that hands it over, a deploy, a push, a port.
+        for argv in (["dev", "--port", "8080"], ["dev", "--watch", "x"],
+                     ["image", "--push"], ["image", "--deploy"], ["image", "x"],
+                     ["deploy"], ["watch"],
+                     ["new", "x", "--ui", "htmx"],
                      ["new", "x", "--template", "auth"], ["new", "x", "--live"],
                      ["build", "-o", "x"], ["build", "--rel"],
+                     ["build", "--", "x"], ["include", "--", "x"],
                      ["test", "--", "x"], []):
             self.assertEqual(self._exit(argv)[0], 2, argv)
+
+    def test_an_image_for_native_is_2(self):
+        code, said = self._exit(["image", "--target-cpu", "native"])
+        self.assertEqual(code, 2)
+        self.assertIn("never compiles for the machine that builds", said)
+
+
+class Image(unittest.TestCase):
+    def test_the_docker_command_line(self):
+        self.assertEqual(
+            image.build_argv("shop", None, []),
+            ["docker", "build", "-f", "deploy/Dockerfile", "-t", "shop", "."])
+        self.assertEqual(
+            image.build_argv("shop:1", "x86-64-v3", ["--platform", "linux/amd64"]),
+            ["docker", "build", "-f", "deploy/Dockerfile", "-t", "shop:1",
+             "--build-arg", "TARGET_CPU=x86-64-v3", "--platform", "linux/amd64", "."])
+        self.assertEqual(
+            image.about_argv("shop"),
+            ["docker", "run", "--rm", "--entrypoint", "cat", "shop", "/app/about.json"])
+
+    def test_no_project_is_78_and_runs_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            old = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with contextlib.redirect_stderr(err):
+                    code = cli.main(["image"])
+            finally:
+                os.chdir(old)
+        self.assertEqual(code, 78)
+        self.assertIn("there is no src/server.mojo", err.getvalue())
+
+
+class Dev(unittest.TestCase):
+    def test_a_snapshot_sees_an_edit_a_new_file_and_pyproject_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "src" / "deep").mkdir(parents=True)
+            (project / "bin").mkdir()
+            (project / "src" / "server.mojo").write_text("a")
+            (project / "pyproject.toml").write_text("p")
+            first = dev.snapshot(project)
+            self.assertEqual(dev.snapshot(project), first)
+
+            (project / "bin" / "server").write_text("built")
+            (project / "README.md").write_text("prose")
+            (project / "src" / ".server.mojo.swp").write_text("vim")
+            self.assertEqual(dev.snapshot(project), first)
+
+            (project / "src" / "server.mojo").write_text("ab")
+            second = dev.snapshot(project)
+            self.assertNotEqual(second, first)
+            (project / "src" / "deep" / "more.mojo").write_text("n")
+            third = dev.snapshot(project)
+            self.assertNotEqual(third, second)
+            (project / "pyproject.toml").write_text("pq")
+            fourth = dev.snapshot(project)
+            self.assertNotEqual(fourth, third)
+            (project / "src" / "deep" / "more.mojo").unlink()
+            self.assertNotEqual(dev.snapshot(project), fourth)
+
+    def _child(self, body):
+        child = subprocess.Popen([sys.executable, "-c", body], stdout=subprocess.PIPE)
+        child.stdout.readline()  # its handlers are installed
+        return child
+
+    def test_stop_waits_for_the_pid_to_be_gone(self):
+        child = self._child(
+            "import signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, lambda *a: (time.sleep(0.3), sys.exit(0)))\n"
+            "print('up', flush=True)\n"
+            "time.sleep(60)\n")
+        killed = dev.stop(child, wait=5)
+        self.assertFalse(killed)
+        self.assertEqual(child.poll(), 0)
+
+    def test_a_server_that_ignores_sigterm_is_killed_and_named(self):
+        child = self._child(
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('up', flush=True)\n"
+            "time.sleep(60)\n")
+        err = io.StringIO()
+        t0 = time.time()
+        with contextlib.redirect_stderr(err):
+            killed = dev.stop(child, wait=0.5)
+        self.assertTrue(killed)
+        self.assertLess(time.time() - t0, 5)
+        self.assertEqual(child.poll(), -signal.SIGKILL)
+        self.assertIn(f"pid {child.pid} did not exit within 0.5 s of SIGTERM; sent SIGKILL",
+                      err.getvalue())
+
+    def test_the_wait_is_the_drain_plus_one(self):
+        self.assertEqual(dev.STOP_SECONDS, 6.0)
 
     def test_baselines_are_build_serves(self):
         self.assertEqual(build.baseline_cpu("darwin", "arm64"), "apple-m1")

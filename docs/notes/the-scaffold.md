@@ -133,25 +133,15 @@ missed was the gate's own defect:
   runner that persists uv's cache between runs would have had the same
   hole, silently.
 
-## Not covered
+## Not covered — retired
 
-`deploy/` is written and not gated: nothing builds the scaffold's image
-until the next pull request's `smoke-scaffold-image`, which also has to
-answer how the tree's wheel reaches `uv sync` inside `docker build`. The
-Dockerfile is `deploy/mojo/Dockerfile` with the package chain replaced by
-`uv sync` and `uv run m0 build --release`; its runtime stage and its
-self-measurement are unchanged. Until that gate exists, SPEC N27 says so.
-
-Probed once by hand, so the next round inherits a fact rather than a
-guess: a scaffolded `views` app built with `docker build` in a Linux
-aarch64 VM and answered `/health` and the 422 from the container —
-`about.json` reading `"python":false`, `app_bytes` 2,953,336 (the binary
-and four runtime libraries), built `for generic`. The probe ADDED what that
-round has to design, because the wheel is on no index: the wheel copied
-into the context under `.wheels/`, `UV_FIND_LINKS` pointing at it in the
-builder, and a sync that wrote its own lock in place of `--frozen`. The
-file as the scaffold writes it has not been built; x86-64 has not been
-built at all.
+This section said `deploy/` was written and not gated. It is gated since
+the next pull request: `smoke-scaffold-image` builds the scaffold's
+Dockerfile as written, on x86-64 in CI, and
+[dev-image-and-a-release](dev-image-and-a-release.md) records how the
+tree's wheel reaches `uv sync --frozen` inside `docker build` — the
+question this section left open. Its hand probe's figures (2,953,336 bytes
+of app, `"python":false`, Linux aarch64) were reproduced by the gate.
 
 ## Timings
 

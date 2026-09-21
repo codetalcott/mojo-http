@@ -37,6 +37,7 @@ caused by code moving, not by doc edits.
 """
 
 import json
+import fnmatch
 import re
 import subprocess
 import sys
@@ -1103,6 +1104,115 @@ def check_dependabot_gate():
         fail(problem)
 
 
+M0_RELEASE = ".github/workflows/release-m0.yml"
+_PUBLISH_PIN = re.compile(r"uses: pypa/gh-action-pypi-publish@([0-9a-f]{40})\b")
+
+
+def m0_release_problems(text, release_text):
+    """The rules `release-m0.yml` keeps, as a pure function of two texts.
+
+    The workflow cannot be exercised without publishing -- a PyPI filename is
+    burned for good -- so what a rehearsal would have shown is held here:
+
+    - ONE trigger, tags `m0-v*`: no branch path, no dispatch, and above all
+      no pattern release.yml's `v*` jobs could also answer;
+    - the wheel is built with `M0_WHEEL_LOCAL` UNSET and never through
+      `poe build-m0-wheel`, which defaults it to `tree`; and a wheel whose
+      version carries a `+` is refused by name before the upload;
+    - the tag must equal the wheel's version;
+    - `id-token: write` appears once, in a job bound to the `pypi-m0`
+      environment -- never `pypi`, whose deployment policy admits m0serve's
+      refs and is m0serve's publisher tuple;
+    - the publish action is SHA-pinned, to the same commit release.yml pins.
+
+    `release_text` is release.yml: its tag patterns must not match `m0-v*`.
+    """
+    problems = []
+    # Comments say what the rules forbid, by name; only what RUNS is read.
+    text = "".join(l for l in text.splitlines(True) if not l.lstrip().startswith("#"))
+    on = re.search(r"^on:\n((?:[ \t]+.*\n|\n)+)", text, re.M)
+    block = on.group(1) if on else ""
+    tags = re.findall(r"^\s*- '([^']+)'\s*$", block, re.M)
+    if tags != ["m0-v*"] or re.search(r"^\s*(branches|workflow_dispatch|pull_request|schedule)\b", block, re.M):
+        problems.append(
+            f"{M0_RELEASE} must have exactly one trigger, a pushed tag matching "
+            f"`m0-v*` (found tags {tags}): a second way in is a second way to publish"
+        )
+    if not re.search(r"^\s*unset M0_WHEEL_LOCAL\s*$", text, re.M) \
+            or re.search(r"M0_WHEEL_LOCAL\s*[:=]", text) or "poe build-m0-wheel" in text:
+        problems.append(
+            f"{M0_RELEASE} must build with M0_WHEEL_LOCAL unset (`unset "
+            "M0_WHEEL_LOCAL`, then `uv build` directly): `poe build-m0-wheel` "
+            "and any assignment stamp a local label no index can serve"
+        )
+    if "*+*)" not in text:
+        problems.append(f"{M0_RELEASE} no longer refuses a wheel whose version carries a local label")
+    if '[ "m0-v$version" = "$GITHUB_REF_NAME" ]' not in text:
+        problems.append(f"{M0_RELEASE} no longer requires the tag to equal the wheel's version")
+    if text.count("id-token: write") != 1:
+        problems.append(f"{M0_RELEASE} must grant `id-token: write` exactly once, to the publishing job")
+    environments = re.findall(r"^\s*environment:\s*(\S+)\s*$", text, re.M)
+    if environments != ["pypi-m0"]:
+        problems.append(
+            f"{M0_RELEASE} must publish from the `pypi-m0` environment alone (found "
+            f"{environments}): `pypi` is m0serve's publisher tuple and admits m0serve's refs"
+        )
+    mine, theirs = _PUBLISH_PIN.findall(text), _PUBLISH_PIN.findall(release_text)
+    if len(mine) != 1 or mine != theirs:
+        problems.append(
+            f"{M0_RELEASE} must pin pypa/gh-action-pypi-publish to the commit "
+            f"release.yml pins (here {mine}, there {theirs})"
+        )
+    for pattern in re.findall(r"^\s*- '([^']+)'\s*$", release_text.split("\njobs:")[0], re.M):
+        if fnmatch.fnmatchcase("m0-v0.1.0", pattern):
+            problems.append(
+                f"release.yml's trigger {pattern!r} matches an m0 tag: pushing "
+                "`m0-v0.1.0` would cut an m0serve release too"
+            )
+    return problems
+
+
+def _m0_release_cases():
+    real = (REPO / M0_RELEASE).read_text()
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text()
+    pin = _PUBLISH_PIN.search(real).group(1)
+    return real, [
+        ("release-m0: a dispatch trigger added",
+         real.replace("on:\n  push:\n", "on:\n  workflow_dispatch:\n  push:\n"), release, True),
+        ("release-m0: the tag pattern widened to every tag",
+         real.replace("      - 'm0-v*'\n", "      - '*'\n"), release, True),
+        ("release-m0: built through poe, which stamps +tree",
+         real.replace("uv build --wheel packaging/m0 -o dist/m0", "uv run poe build-m0-wheel"), release, True),
+        ("release-m0: the unset dropped",
+         real.replace("          unset M0_WHEEL_LOCAL\n", ""), release, True),
+        ("release-m0: a local label no longer refused",
+         real.replace("*+*)", "*~*)"), release, True),
+        ("release-m0: the tag no longer compared with the version",
+         real.replace('[ "m0-v$version" = "$GITHUB_REF_NAME" ]', "true"), release, True),
+        ("release-m0: published from m0serve's environment",
+         real.replace("environment: pypi-m0", "environment: pypi"), release, True),
+        ("release-m0: the token granted to the whole workflow",
+         real.replace("permissions:\n  contents: read\n", "permissions:\n  contents: read\n  id-token: write\n"),
+         release, True),
+        ("release-m0: the publish action on a branch ref",
+         real.replace("@" + pin, "@release/v1"), release, True),
+        ("release-m0: release.yml's tags widened over m0's",
+         real, release.replace("      - 'v*'\n", "      - '*v*'\n"), True),
+        ("(control: the committed workflows)", real, release, False),
+    ]
+
+
+def check_m0_release_workflow():
+    """release-m0.yml publishes m0, from `m0-v*` tags, unlabelled, from `pypi-m0`."""
+    path = REPO / M0_RELEASE
+    if not path.exists():
+        fail(f"{M0_RELEASE} is gone; docs/RELEASING.md's m0 section describes a workflow that does not exist")
+        return
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text()
+    for problem in m0_release_problems(path.read_text(), release):
+        fail(problem)
+
+
 def check_bench_kinds_do_not_shadow():
     """No bench artifact kind may be a dash-prefix of another.
 
@@ -1938,6 +2048,19 @@ def selftest():
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # release-m0.yml: written and reviewed, never exercised -- so each rule a
+    # rehearsal would have shown is reverted against the committed text.
+    real_m0, m0_cases = _m0_release_cases()
+    real_release = (REPO / ".github" / "workflows" / "release.yml").read_text()
+    for label, text, release_text, must_fire in m0_cases:
+        if must_fire and text == real_m0 and release_text == real_release:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation left the workflow unchanged")
+            ok = False
+            continue
+        got = m0_release_problems(text, release_text)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
     # The vendored files: each rule reverted against the committed bytes.
     real_vendored = {path: (REPO / path).read_bytes() for path in VENDORED_SHA256}
     real_notice = (REPO / "NOTICE").read_text()
@@ -2053,6 +2176,7 @@ def main():
     check_spec_sheet()
     check_required_context_intact()
     check_dependabot_gate()
+    check_m0_release_workflow()
     check_ci_measurements_are_collected()
     check_site_corpus()
     check_rfc_citations()

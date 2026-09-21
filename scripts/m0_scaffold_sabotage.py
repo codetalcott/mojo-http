@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Break each rule the scaffold keeps, and insist smoke-scaffold fails.
+"""Break each rule the scaffold keeps, and insist its smoke fails.
+
+Three smokes, one runner: `smoke-scaffold` (what `m0 new` writes, on the
+wire), `smoke-scaffold-dev` (`m0 dev`'s build-then-swap) and
+`smoke-scaffold-image` (`m0 image`, and the image). A rule names the one
+that holds it.
 
 `m0_wheel_sabotage.py`'s shape, from the TEMPLATE side: each entry replaces
 one EXACT block in a template, in `new.py` or in the layer, rebuilds the
@@ -23,14 +28,27 @@ Not here, and why:
 
 - `DatastarStream(capacity)` below the connection count, and `send_latest`:
   neither shows inside one connection and five seconds.
-- The deploy files. Nothing here builds an image; `smoke-scaffold-image`
-  is the next pull request's, and until it lands `deploy/` is ungated.
+- `uv sync --frozen` in the Dockerfile. Dropping it changes nothing a gate
+  can read: a lock that satisfies `--frozen` satisfies a plain sync too.
+  What is held instead is that the Dockerfile is built AS WRITTEN (its hash
+  before and after) against a lock `--frozen` accepts.
+- `m0 dev` starting the new server before the old one is GONE. The old
+  server drains in milliseconds with no connection open, so the overlap
+  cannot be seen from outside; `dev.stop` returning only after the pid has
+  exited is `test_m0.py`'s (`test_stop_waits_for_the_pid_to_be_gone`). What
+  the wire holds is the rule's two neighbours: the old server is never
+  stopped at all, and it is killed rather than drained.
+- `m0 dev` watching `pyproject.toml`: `test_m0.py`'s snapshot test. On the
+  wire it would be a fourth build for a line of `dev.py`.
 
     uv run poe sabotage-scaffold
     uv run poe sabotage-scaffold --only 422       one rule, by label substring
+    uv run poe sabotage-scaffold --only dev:      one smoke's rules (dev:, image:)
 """
 
+import datetime
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -38,8 +56,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 M0 = "packaging/m0/src/m0/"
 T = M0 + "templates/"
-WIRE, TEST, NEW = "wire", "test", "new"
+WIRE, TEST, NEW, DEV, IMAGE = "wire", "test", "new", "dev", "image"
 PORT = "8971"
+DEV_SMOKE = "scripts/m0_scaffold_dev_smoke.py"
+IMAGE_SMOKE = "scripts/m0_scaffold_image_smoke.py"
+
+# holder -> (the smoke's argv after `python3`, the prefix of its failure line)
+SMOKES = {
+    DEV: ([DEV_SMOKE, "dist/m0", "8972"], "smoke-scaffold-dev:"),
+    IMAGE: ([IMAGE_SMOKE, "dist/m0", "18371"], "smoke-scaffold-image:"),
+}
 
 # (label, template, file, old, new, the smoke must say, what holds it)
 RULES = [
@@ -148,6 +174,92 @@ RULES = [
      "        render_live(0, still, 0),\n",
      '        "",\n',
      "lacks the fragment or the pinned Datastar tag", WIRE),
+
+    # --- m0 dev (smoke-scaffold-dev; the template slot is unused) -------------
+    ("dev: the old server is stopped BEFORE the build", "-", M0 + "dev.py",
+     '            say("change seen, building" + (\n',
+     '            stop(server)\n            say("change seen, building" + (\n',
+     "it was not serving while the build ran", DEV),
+    ("dev: a failed build ends the old server", "-", M0 + "dev.py",
+     "                continue\n            stop(server)\n",
+     "                stop(server)\n                server = None\n"
+     "                continue\n            stop(server)\n",
+     "after a failed build the port answers", DEV),
+    ("dev: a failed build ends m0 dev", "-", M0 + "dev.py",
+     "                continue\n            stop(server)\n",
+     "                return 1\n            stop(server)\n",
+     "m0 dev exited 1", DEV),
+    ("dev: the old server is never stopped", "-", M0 + "dev.py",
+     "            stop(server)\n            server = start(project, args.host_args)\n",
+     "            server = start(project, args.host_args)\n",
+     "the swapped-in server exited on its own", DEV),
+    ("dev: the old server is killed, not drained", "-", M0 + "dev.py",
+     "    server.send_signal(signal.SIGTERM)\n    killed = False\n",
+     "    server.kill()\n    killed = False\n",
+     "does not say the old server", DEV),
+    ("dev: Ctrl-C leaves the server running", "-", M0 + "dev.py",
+     "    except (KeyboardInterrupt, _Stop):\n        stop(server)\n        return 0\n",
+     "    except (KeyboardInterrupt, _Stop):\n        server = None\n        return 0\n",
+     "after m0 dev exited, pid", DEV),
+    ("dev: Ctrl-C is a failure", "-", M0 + "dev.py",
+     "    except (KeyboardInterrupt, _Stop):\n        stop(server)\n        return 0\n",
+     "    except (KeyboardInterrupt, _Stop):\n        stop(server)\n        return 130\n",
+     "m0 dev exited 130 on SIGINT, not 0", DEV),
+    ("dev: src/ is not watched", "-", M0 + "dev.py",
+     'WATCHED_DIR = "src"\n', 'WATCHED_DIR = "source"\n',
+     "the edited literal was never served", DEV),
+
+    # --- m0 image (smoke-scaffold-image) --------------------------------------
+    ("image: the whole toolchain is demanded", "-", M0 + "image.py",
+     "    failed = checks.preflight(project, skip=others)\n",
+     "    failed = checks.preflight(project)\n",
+     "with no docker on PATH m0 image exited 78", IMAGE),
+    # The exit docker RETURNED, apart from docker being absent (an OSError,
+    # which has an arm of its own and comes first in the smoke).
+    ("image: docker's failure is exit 0", "-", M0 + "image.py",
+     "        return subprocess.run(argv, cwd=project).returncode\n",
+     "        subprocess.run(argv, cwd=project)\n        return 0\n",
+     "m0 image with a flag docker refuses exited 0, not 1", IMAGE),
+    ("image: docker missing is a traceback", "-", M0 + "image.py",
+     "    except OSError as exc:\n", "    except ZeroDivisionError as exc:\n",
+     "with no docker on PATH m0 image exited 1 saying", IMAGE),
+    ("image: --tag is ignored", "-", M0 + "image.py",
+     "    tag = args.tag or project.name\n", "    tag = project.name\n",
+     "`docker run -d --name", IMAGE),
+    ("image: about.json is not printed", "-", M0 + "image.py",
+     "    return 1 if _docker(about_argv(tag), project) != 0 else 0\n", "    return 0\n",
+     "the last stdout line is not about.json", IMAGE),
+    ("image: --target-cpu never reaches the builder", "-", M0 + "image.py",
+     "    if target_cpu:\n", "    if False:\n",
+     "did not reach the builder's m0 build", IMAGE),
+    ("image: the release build is not for the baseline", "-", M0 + "build.py",
+     '    return "generic" if machine == "aarch64" else "x86-64-v2"\n',
+     '    return "neoverse-n1" if machine == "aarch64" else "x86-64-v3"\n',
+     "about.json is", IMAGE),
+    ("image: an interpreter, and the Dockerfile's own measurement refuses it", "-",
+     T + "_common/deploy/Dockerfile",
+     "ARG BASE\nRUN useradd",
+     "ARG BASE\nRUN ln -s /bin/true /usr/local/bin/python3\nRUN useradd",
+     "an interpreter is in the image", IMAGE),
+    ("image: an interpreter added AFTER the image measured itself", "-",
+     T + "_common/deploy/Dockerfile",
+     "\nUSER app\n",
+     "\nRUN ln -s /bin/true /usr/local/bin/python3\nUSER app\n",
+     'about.json says "python":false and the image holds', IMAGE),
+    ("image: the server is not PID 1", "-", T + "_common/deploy/Dockerfile",
+     'ENTRYPOINT ["/app/server"]', 'ENTRYPOINT ["/bin/sh", "-c", "/app/server; exit $?"]',
+     "PID 1 is", IMAGE),
+    ("image: the builder holds another m0 than the wheel under test", "-", IMAGE_SMOKE,
+     '    shutil.copytree(project / ".wheels", basedir / ".wheels")\n',
+     '    shutil.copytree(project / ".wheels", basedir / ".wheels")\n'
+     '    _stale = next((basedir / ".wheels").glob("*.whl"))\n'
+     '    with zipfile.ZipFile(_stale) as _z:\n'
+     '        _all = {n: _z.read(n) for n in _z.namelist()}\n'
+     '    _all["m0/include.py"] += b"\\n# a stale layer\\n"\n'
+     '    with zipfile.ZipFile(_stale, "w") as _z:\n'
+     '        for _n, _b in _all.items():\n'
+     '            _z.writestr(_n, _b)\n',
+     "is not the wheel's", IMAGE),
 ]
 
 # Held by check-templates, not by the smoke: (label, file, old, new, it must say).
@@ -166,6 +278,40 @@ TEMPLATE_RULES = [
      "    assert_equal(board.viewers(2), 5)\n", "    assert_equal(board.viewers(2), 6)\n",
      "run test_live.mojo failed"),
 ]
+
+
+def prune_build_cache(since):
+    """Drop the BuildKit records this run created, and only those.
+
+    Every image rule is a cold build -- the wheel changes, so the base image
+    does, so every layer after `FROM` does -- and leaves about 1.2 GB of
+    build cache behind. Ten rules once filled the disk under a colima VM,
+    whose journal aborted; `docker rmi` does not touch the cache, and
+    `docker builder prune`'s time filter selects OLD records, the opposite of
+    what is wanted. So records are picked by their creation time and pruned
+    by id. (On colima the host gets the space back only after
+    `colima ssh -- sudo fstrim -av`.)
+    """
+    # In passes: a record with a child is not reclaimable until the child is
+    # gone, so one pass takes the leaves and leaves the gigabytes.
+    pruned = 0
+    for _ in range(12):
+        out = subprocess.run(["docker", "buildx", "du", "--verbose"],
+                             capture_output=True, text=True).stdout
+        ids = []
+        for block in out.split("\n\n"):
+            rid = re.search(r"^ID:\s+(\S+)", block, re.M)
+            made = re.search(r"^Created at:\s+(\S+ \S+)", block, re.M)
+            if rid and made and re.search(r"^Reclaimable:\s+true", block, re.M) \
+                    and made.group(1)[:19] >= since:
+                ids.append(rid.group(1))
+        if not ids:
+            break
+        for rid in ids:
+            subprocess.run(["docker", "builder", "prune", "-f", "--filter", "id=" + rid],
+                           capture_output=True)
+        pruned += len(ids)
+    return pruned
 
 
 def run_template_rules(only):
@@ -208,6 +354,7 @@ def main():
     if not rules and not verdicts:
         sys.exit("no rule matches --only %r" % only)
 
+    started = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     for label, template, rel, old, new, want, holder in rules:
         path = ROOT / rel
         original = path.read_text()
@@ -226,9 +373,11 @@ def main():
                                    capture_output=True, text=True)
             if built.returncode != 0:
                 sys.exit("the wheel would not build under %r:\n%s" % (label, built.stderr[-2000:]))
-            done = subprocess.run(
-                ["python3", "scripts/m0_scaffold_smoke.py", "dist/m0", PORT, template],
-                cwd=ROOT, env=env, capture_output=True, text=True)
+            argv, prefix = SMOKES.get(
+                holder, (["scripts/m0_scaffold_smoke.py", "dist/m0", PORT, template],
+                         "smoke-scaffold:"))
+            done = subprocess.run(["uv", "run", "python3", *argv],
+                                  cwd=ROOT, env=env, capture_output=True, text=True)
         finally:
             path.write_text(original)
         said = done.stdout + done.stderr
@@ -238,10 +387,18 @@ def main():
             verdict = "MISSED (failed elsewhere)"
         else:
             verdict = "caught"
-        line = [l for l in said.splitlines() if l.startswith("smoke-scaffold:")]
-        print("%-26s %s\n    %s" % (verdict, label, line[-1][:200] if line else "(the smoke passed)"),
-              flush=True)
+        line = [l for l in said.splitlines() if l.startswith(prefix)]
+        shown = line[-1][:200] if line else (
+            "(the smoke passed)" if done.returncode == 0
+            else "(exit %d with no line of the smoke's own)" % done.returncode)
+        print("%-26s %s\n    %s" % (verdict, label, shown), flush=True)
+        if verdict != "caught":
+            # What it said instead, so a miss can be read without a rerun.
+            print("    ... " + "\n    ... ".join(said.strip().splitlines()[-12:]), flush=True)
         verdicts.append((verdict, label))
+        if holder == IMAGE:
+            print("    (pruned %d build-cache records of this run's)" % prune_build_cache(started),
+                  flush=True)
 
     subprocess.run(["uv", "run", "poe", "build-m0-wheel"], cwd=ROOT, capture_output=True)
     bad = [v for v in verdicts if v[0] != "caught"]

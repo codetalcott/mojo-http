@@ -238,6 +238,46 @@ jobs:
           path: ci-results.jsonl
           if-no-files-found: ignore
 
+  # N30: `uv run m0 dev` on a scaffolded app, asked of a real process tree --
+  # the OLD server answers while a build runs and after one fails, a build
+  # that succeeded swaps pids with exactly one process listening, and SIGINT
+  # to m0 dev alone stops the server and exits 0.
+  #
+  # A job of its own, on both platforms, rather than a step in `smoke`: that
+  # job is capped at 35 minutes and its macOS leg ran 33:00 on main the day
+  # this was added, and this gate needs nothing `smoke` builds -- the m0
+  # wheel is pure Python and the scaffold compiles from the SOURCE it
+  # carries, so there is no `build-all` here and it starts with the run.
+  scaffold-dev:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: scaffold-dev-${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Smoke test m0 dev on the scaffold
+        run: uv run poe smoke-scaffold-dev
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-scaffold-dev-${{ matrix.os }}
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
   # M11: `docker stop` is SIGTERM to PID 1 and nothing else, and PID 1 gets
   # no default signal dispositions — a SIGTERM with no handler installed is
   # discarded, not fatal. The smoke matrix cannot host this (macOS runners
@@ -286,6 +326,16 @@ jobs:
       # port, and `docker stop` ending a held stream with exit 0.
       - name: Smoke test the Mojo demo's deploy image
         run: uv run poe smoke-blobs-image
+      # What `m0 new` writes under deploy/, built AS WRITTEN by the user's own
+      # `uv run m0 image` -- the Dockerfile byte for byte, `uv sync --frozen`
+      # and all -- and probed from outside: about.json says no Python and the
+      # baseline CPU, the binary is PID 1, the views template's wire (its 422
+      # fragment included) through the published port, `docker stop` exit 0.
+      # The first x86-64 build of the scaffold's image. The tree's wheel,
+      # which no index serves, arrives in a base image that replaces
+      # python:3.13-slim as a named build context.
+      - name: Smoke test the m0 scaffold's deploy image
+        run: uv run poe smoke-scaffold-image
       - name: Record the measurements
         if: always()
         run: |

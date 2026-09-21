@@ -60,10 +60,14 @@ def run(args):
         return checks.refuse(failed)
     if args.release:
         return _release(project, args.target_cpu or baseline_cpu())
+    return build(project, args.target_cpu)
 
+
+def build(project, target_cpu=None):
+    """The development build, past preflight: `m0 build`'s and `m0 dev`'s."""
     nxt = project / paths.BINARY_NEXT
     nxt.parent.mkdir(exist_ok=True)
-    if _mojo_build(project, paths.BINARY_NEXT, args.target_cpu) != 0:
+    if _mojo_build(project, paths.BINARY_NEXT, target_cpu) != 0:
         nxt.unlink(missing_ok=True)
         return 1
     os.replace(nxt, project / paths.BINARY)

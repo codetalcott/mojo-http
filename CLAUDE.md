@@ -965,9 +965,29 @@ one home; `0.x` until the layer soak). Rules:
   in `new.py`'s manifest AND in `scripts/m0_scaffold_smoke.py`'s second
   spelling; dot-files are stored as `dot-x`. `_common/AGENTS.md` is the
   product's agent page: a rule an app author needs goes THERE, once it is
-  true of the layer. Run `poe sabotage-scaffold` after touching a template
-  or `new.py`; its wire rules run with the template's own tests off. The
-  scaffold's `deploy/` is ungated until `m0 image` lands.
+  true of the layer. Run `poe sabotage-scaffold` after touching a template,
+  `new.py`, `dev.py` or `image.py`; its wire rules run with the template's
+  own tests off.
+- **`m0 dev` builds, THEN swaps** (SPEC N30; docs/notes/dev-image-and-a-release.md):
+  the old server serves through a build and after a failed one, and the
+  new binary starts only once the old PID has exited (6 s, then SIGKILL,
+  named). `smoke-scaffold-dev` breaks the ENTRY file for its syntax
+  error: mojo 1.1.0 builds an imported module holding a malformed `def`
+  nothing calls with exit 0.
+- **`m0 image` checks `project` and nothing else** (N31): the compiler runs
+  in the builder, and a `docker` check in the ONE list would turn every
+  docker-less machine's doctor red. `smoke-scaffold-image` builds the
+  scaffold's Dockerfile AS WRITTEN, `--frozen` included: the tree's wheel
+  rides in `.wheels/` behind a RELATIVE `UV_FIND_LINKS` (uv records a
+  relative one relatively, an absolute one absolutely) and reaches the
+  builder in a base image swapped in with `--build-context`. Do not make
+  the gate edit the Dockerfile; a change users need goes in the template.
+  `about.json`'s `cpu` is read from the image because a cached layer
+  prints nothing.
+- **`release-m0.yml` has never run** (N32) — tags `m0-v*`, environment
+  `pypi-m0`, `M0_WHEEL_LOCAL` unset and never through `poe
+  build-m0-wheel`. `m0_release_problems` in `check_docs.py` holds its
+  rules; docs/RELEASING.md has the order. Push no `m0-v*` tag casually.
 - `poe build-m0-wheel` stamps `0.1.0+tree` (`M0_WHEEL_LOCAL`) so an exact
   pin on the smoke's wheel can never resolve to a published one. Run
   `poe sabotage-m0-wheel` after touching `packaging/m0/`: its anchors are

@@ -237,12 +237,19 @@ somewhere else is reported MISSED. The rules a refusal arm claims run with
 the smoke's unit phase off, so the arm and not a unit test is what must
 fail. Pre-release because each rule rebuilds the wheel and reruns the
 smoke, a minute or two apiece; `--only LABEL` runs one. Nothing here
-publishes the wheel: `m0` has no release workflow yet.
+publishes the wheel; "Releasing m0" below does.
 
 **And `uv run poe sabotage-scaffold`** (SPEC N27, N29) — breaks each rule of
 `m0 new` and its two templates from the template side, rebuilds the wheel,
 and requires `smoke-scaffold` to fail for that template AND to say the
-expected thing. The rules the wire holds run with the template's own tests
+expected thing; its `dev:` rules run `smoke-scaffold-dev` (N30) and its
+`image:` rules `smoke-scaffold-image` (N31, docker needed — and nothing
+else may touch docker while they run). Every image rule is a COLD build,
+about 1.2 GB of BuildKit cache apiece; the runner prunes the records its
+own run created, but under colima the host gets the space back only after
+`colima ssh -- sudo fstrim -av`. Check `df -h` first: a full disk here
+aborted the docker volume's journal, and what that looks like is a column
+of MISSED. The rules the wire holds run with the template's own tests
 switched off, so the wire assertion and not `m0 test` is what must fail;
 one rule runs the other way round, to show the template's test goes red.
 About a minute a rule; `--only LABEL` runs one.
@@ -478,3 +485,57 @@ Publishing and announcing are separate acts. The first releases are
 deliberately quiet: the wheel exists, the README documents `pip install
 m0serve`, and nothing is posted anywhere until the remaining release gates in
 [ROADMAP.md](ROADMAP.md) are done.
+
+## Releasing m0
+
+`m0` — the wheel under `packaging/m0/` — is versioned apart from the
+repository (DECISIONS D43) and published by `.github/workflows/release-m0.yml`
+from tags `m0-v*`. **That workflow has never run** (SPEC N32): it was
+written, reviewed, and is held to its rules by `check-docs`
+(`m0_release_problems`), because the only rehearsal PyPI offers burns a
+filename. The first `m0-v*` tag is its first execution; read its log as one.
+
+### One-time, and only the owner can do these
+
+1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
+   publisher: owner `codetalcott`, repository `mojo-http`, workflow
+   `release-m0.yml`, environment `pypi-m0`. The project exists — a
+   placeholder `0.0.1` reserved the name on 2026-09-19 — so this is an
+   ordinary publisher on an existing project, not a pending one.
+2. This repository → Settings → Environments → create `pypi-m0`, with a
+   deployment policy admitting the tag pattern `m0-v*` and nothing else,
+   and yourself as required reviewer. `pypi` cannot be shared: its policy
+   admits m0serve's refs, and it is m0serve's publisher tuple. The
+   environment is the authorization boundary here exactly as it is there.
+
+### Each release
+
+1. Everything the gates below hold is green on `main`: `Tests` for the
+   commit to be tagged, then locally `uv run poe sabotage-m0-wheel` and
+   `uv run poe sabotage-scaffold`, read for MISSED and NOT APPLICABLE at
+   the head.
+2. `__version__` in `packaging/m0/src/m0/__init__.py` is the version to
+   publish — its one home — and CHANGELOG says what changed for someone
+   who writes applications, not for m0serve's users. Merge that.
+3. Run the build job's own checks by hand on the merged commit, clean
+   tree: `env -u M0_WHEEL_LOCAL uv build --wheel packaging/m0 -o /tmp/m0-rc`.
+   The filename must be `m0-X.Y.Z-py3-none-any.whl`, no `+`. Then, in an
+   empty directory, `uvx --from /tmp/m0-rc/m0-*.whl m0 new probe` and read
+   `probe/pyproject.toml`: it pins `m0==X.Y.Z`. Do NOT `uv sync` that
+   probe and expect it to resolve — the version is not on the index yet,
+   which is the one thing about a scaffold no gate can ask before a
+   release exists.
+4. `git tag m0-vX.Y.Z <sha> && git push origin m0-vX.Y.Z`. Approve the
+   `pypi-m0` deployment when the `build` job is green and you have read
+   its "cut from" line.
+5. After the upload: in an empty directory, `uvx m0 new probe && cd probe
+   && uv sync && uv run m0 build && ./smoke.sh`, then `uv run m0 image` if
+   docker is up — the published-wheel path through `uv sync --frozen` in
+   the builder, which `smoke-scaffold-image` can only approximate with a
+   find-links lock. Record the result in docs/REAL_APP_VALIDATION.md or
+   the release notes; a failure here is a yank and a patch release, never
+   a re-upload.
+
+A mojo pin bump is an m0 release: `gated_mojo` is read from the root pin at
+build time (D39), so the wheel on PyPI keeps refusing the new compiler until
+a new `m0` is cut from a tree whose gates ran on it.

@@ -832,6 +832,7 @@ python3 scripts/check_docs.py || exit 1
 python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs
 python3 scripts/emit.py --covers F15 --task check-docs
+python3 scripts/emit.py --covers N32 --task check-docs
 """
 
 # Citation tracking: every `RFC nnnn` in the tree against
@@ -7142,8 +7143,33 @@ python3 scripts/emit.py --covers N27 --task smoke-scaffold
 python3 scripts/emit.py --covers N29 --task smoke-scaffold
 """
 
+# SPEC N30. `uv run m0 dev` on a scaffolded app: build-then-swap, asked of a
+# real process tree. One template -- m0 dev never reads what it builds.
+# About a minute: three builds (first, swapped, mended) and one that fails.
+[tool.poe.tasks.smoke-scaffold-dev]
+help = "uv run m0 dev outside the tree: the old server answers while a build runs and after one fails, a good build swaps pids with ONE process on the port, SIGINT stops the server and exits 0"
+deps = ["build-m0-wheel"]
+shell = """
+python3 scripts/m0_scaffold_dev_smoke.py dist/m0 8961 || exit 1
+python3 scripts/emit.py --covers N30 --task smoke-scaffold-dev
+"""
+
+# SPEC N31. The scaffold's deploy/Dockerfile built AS WRITTEN by the user's
+# `uv run m0 image`, then the image probed from outside. Linux only in CI
+# (the pid1 job, beside smoke-blobs-image, for its reason: GitHub's macOS
+# runners have no docker), where it is the first x86-64 build of the
+# scaffold's image. The script's docstring says how `0.1.0+tree` reaches
+# `uv sync --frozen` in the builder without the Dockerfile changing.
+[tool.poe.tasks.smoke-scaffold-image]
+help = "uv run m0 image on a scaffolded app: the Dockerfile as written and --frozen, about.json (python false, the baseline CPU), PID 1, the views wire through a published port, docker stop exit 0"
+deps = ["build-m0-wheel"]
+shell = """
+python3 scripts/m0_scaffold_image_smoke.py dist/m0 18361 || exit 1
+python3 scripts/emit.py --covers N31 --task smoke-scaffold-image
+"""
+
 [tool.poe.tasks.sabotage-scaffold]
-help = "PRE-RELEASE: break each scaffold rule from the template side and insist smoke-scaffold fails for every one (SPEC N27, N29)"
+help = "PRE-RELEASE: break each scaffold rule from the template side and insist smoke-scaffold, smoke-scaffold-dev or smoke-scaffold-image fails for every one (SPEC N27, N29-N31)"
 cmd = "python3 scripts/m0_scaffold_sabotage.py"
 
 

@@ -9,10 +9,15 @@ uv run m0 build              # src/server.mojo -> bin/server (~10 s after an edi
 bin/server --port 8080       # serve; http://localhost:8080
 ```
 
+Or, while editing: `uv run m0 dev -- --port 8080` builds, serves, and
+rebuilds on every save. The running server is replaced only by a build
+that succeeded.
+
 ```sh
 uv run m0 test               # test/test_*.mojo, 2–3 s: the fast loop
 uv run m0 doctor             # toolchain checks + the binary's resolved configuration
 ./smoke.sh                   # build, serve, probe the wire, stop
+uv run m0 image              # the deploy image (docker), and what it measured of itself
 ```
 
 The routes are the docstring of `src/server.mojo`. `AGENTS.md` is the rules

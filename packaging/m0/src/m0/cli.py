@@ -7,7 +7,9 @@
     78   m0 refused before running anything: one `m0: detail (fix)` line on
          stderr, from `checks.py`
 
-`m0 doctor` adds the application's own exit, passed through.
+`m0 doctor` adds the application's own exit, passed through. What follows a
+bare `--` is never m0's: `doctor` and `dev` hand it to `bin/server`, `image`
+to `docker build`.
 
 Stdlib only, on purpose (docs/DECISIONS.md D40): the build toolchain is a
 PyPI wheel inside a venv whatever this is written in, so Python adds nothing
@@ -18,7 +20,7 @@ interpreter in it.
 import argparse
 from pathlib import Path
 
-from m0 import build, checks, doctor, include, new, test
+from m0 import build, checks, dev, doctor, image, include, new, test
 
 
 def _parser():
@@ -74,16 +76,38 @@ def _parser():
     p.add_argument("--json", action="store_true",
                    help="one JSON object as the last line of stdout")
     p.set_defaults(run=doctor.run)
+
+    p = sub.add_parser(
+        "dev", allow_abbrev=False,
+        help="build and serve, rebuilding when src/ or pyproject.toml changes; the old server "
+        "serves until a build SUCCEEDS; arguments after -- go to the binary",
+    )
+    p.set_defaults(run=dev.run)
+
+    p = sub.add_parser(
+        "image", allow_abbrev=False,
+        help="docker build -f deploy/Dockerfile, then the image's own about.json; "
+        "arguments after -- go to docker build",
+    )
+    p.add_argument("--tag", metavar="T",
+                   help="the image's tag (default: the project directory's name)")
+    p.add_argument("--target-cpu", metavar="CPU",
+                   help="the CPU the builder stage compiles for (default: the platform's baseline)")
+    p.set_defaults(run=image.run)
     return parser
+
+
+# The commands with something to hand what follows `--` to.
+TAKES_REST = ("doctor", "dev", "image")
 
 
 def main(argv=None):
     import sys
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Everything after `--` is the application's, and only `doctor` has an
-    # application to hand it to. Split before argparse sees it, so a host
-    # flag can never be read as one of ours.
+    # Everything after `--` belongs to what the command runs -- the
+    # application, or docker. Split before argparse sees it, so a host flag
+    # can never be read as one of ours.
     host_args = []
     if "--" in argv:
         at = argv.index("--")
@@ -91,12 +115,17 @@ def main(argv=None):
 
     parser = _parser()
     args = parser.parse_args(argv)
-    if host_args and args.command != "doctor":
+    if host_args and args.command not in TAKES_REST:
         parser.error(f"m0 {args.command} takes no arguments after --")
     if args.command == "build" and args.release and args.target_cpu == "native":
         parser.error(
             "--release never compiles for the machine that builds; the "
             f"baseline here is {build.baseline_cpu()} (omit --target-cpu, or name a CPU)"
+        )
+    if args.command == "image" and args.target_cpu == "native":
+        parser.error(
+            "an image never compiles for the machine that builds it "
+            "(omit --target-cpu for the platform's baseline, or name a CPU)"
         )
     args.host_args = host_args
     args.project = Path.cwd()
