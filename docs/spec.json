@@ -1882,6 +1882,14 @@
       "evidence": "`Check machine-sourced doc facts` (every PR) \u2014 `mojo_pages_problems` in `scripts/check_docs.py`, a pure function of the pages, the site's table and six source files; its selftest reverts thirteen rules against the committed texts, in the source or on the page as the rule runs, with two controls, and counts an unchanged mutation as MISSED. What it cannot show is that a sentence ABOUT a check or a flag is true"
     },
     {
+      "id": "N36",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A query string is built by the layer, not by hand: `Query` takes pairs in order and writes them on a path (`q.on(url_for(X))`), names and values percent-encoded as `url_for` encodes a segment \u2014 RFC 3986 unreserved bytes kept, every other BYTE `%XX`, a space as `%20` \u2014 so a value that is not UTF-8 is encoded rather than trapped on (G14) and the result never carries what `Datastar.swap` refuses in a URL; `add` skips an empty value, so a filter's URL is only what is set and one view has one address, and `add_empty` keeps the pair whose presence is the meaning. `url_for` encoded the path alone and the encoder was private, so the first application outside `apps/` with a GET filter wrote its own",
+      "status": "verified",
+      "evidence": "`test_router.mojo:test_a_query_is_built_encoded_and_only_from_what_is_set` (every PR) \u2014 its neighbours send the result back through `URI.parse` (`&`, `=`, `+`, `#`, `%` and a space survive), encode bytes that are not UTF-8, and hand a query of hostile request data to `Datastar.swap`"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",

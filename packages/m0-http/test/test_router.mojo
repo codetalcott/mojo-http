@@ -2,7 +2,9 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.router import Mount, Router, MatchResult, reverse, url_for
+from lightbug_http.uri import URI
+from src.html import Datastar, Fragment
+from src.router import Mount, Query, Router, MatchResult, reverse, url_for
 
 
 def test_exact_match() raises:
@@ -395,6 +397,64 @@ def test_url_for_encodes_a_parameter_to_one_segment() raises:
     assert_equal(url_for("/n/:id", "a b/c?d"), "/n/a%20b%2Fc%3Fd")
     assert_equal(url_for("/n/:id", "A-z.0_9~"), "/n/A-z.0_9~")
     assert_equal(url_for("/n/:id", "café"), "/n/caf%C3%A9")
+
+
+def test_a_query_is_built_encoded_and_only_from_what_is_set() raises:
+    """`Query` is `url_for`'s other half: pairs in the order added, names
+    and values encoded as a path segment is, an empty value skipped by
+    `add` and kept by `add_empty`, and a path left alone when nothing was
+    added -- so a filter's URL is only what is set, and one view has one
+    address.
+
+    covers: N36
+    """
+    var q = Query()
+    assert_true(q.is_empty())
+    assert_equal(q.on("/notes"), "/notes")
+    q.add("q", "a b&c=d")
+    q.add("era", "")
+    q.add("keyword", "café")
+    q.add("keyword", "x/y")
+    q.add_empty("draft")
+    q.add("a b", "1")
+    assert_equal(q.encoded(), "q=a%20b%26c%3Dd&keyword=caf%C3%A9&keyword=x%2Fy&draft=&a%20b=1")
+    assert_equal(q.on(url_for("/notes")), String("/notes?", q.encoded()))
+    assert_true(not q.is_empty())
+
+
+def test_a_query_survives_the_parser_it_is_sent_back_through() raises:
+    """What `Query` writes, `URI.parse` reads back as the values that went
+    in: `&`, `=`, `+`, `#`, `%` and a space among them, none of which may
+    split a pair, end the query or decode to something else."""
+    var values = ["a b", "1+1=2", "50%", "#top", "x&y", "?", "'\\\r\n"]
+    var q = Query()
+    for i in range(len(values)):
+        q.add(String("k", i), values[i])
+    var uri = URI.parse(q.on("/notes"))
+    for i in range(len(values)):
+        assert_equal(uri.queries.get(String("k", i), "<missing>"), values[i])
+
+
+def test_a_query_encodes_bytes_that_are_not_utf8() raises:
+    """A filter's value is request data, and request data may not be UTF-8
+    (SPEC G14). The encoder walks bytes, so it is `%XX` and not a trap."""
+    var bad: List[UInt8] = [UInt8(0x61), UInt8(0x80), UInt8(0xC3), UInt8(0x28)]
+    var q = Query()
+    q.add("q", String(unsafe_from_utf8=Span(bad)))
+    assert_equal(q.encoded(), "q=a%80%C3%28")
+
+
+def test_a_query_of_request_data_is_a_url_datastar_accepts() raises:
+    """`Datastar.swap` refuses a URL carrying `'`, a backslash, CR or LF,
+    its URL being inside a JavaScript string. A query built here carries
+    none of them whatever the value held, so the refusal is never met by
+    an application that built its URL the documented way."""
+    var q = Query()
+    q.add("q", "x') ; alert(1) ; ('\\\r\n")
+    var f = Fragment[Datastar]("notes")
+    f.open("button")
+    f.swap("get", q.on("/notes"))
+    assert_true(f^.finish().find("/notes?q=x%27%29%20%3B") >= 0)
 
 
 def test_every_registered_route_reverses_and_matches() raises:
