@@ -35,8 +35,9 @@ reaching a frame.
 **The browser run** (`poe browser-datastar-form`, pre-release) starts the
 demo, opens two Chromium tabs, adds a todo from the draft field and renames
 it from the keyboard in one tab, records every request the bundle makes,
-and waits for the other tab to morph. What the pinned bundle (v1.0.3)
-sent, verbatim:
+and waits for the other tab to morph. What the pinned bundle (v1.0.4)
+sent, verbatim — re-run at the pin move and byte-identical to what
+v1.0.3 sent:
 
 ```
 the field's action (D21): POST /add  content-type 'application/json'

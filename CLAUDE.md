@@ -1510,7 +1510,8 @@ pieces, and the language fact each rests on:
   docs/notes/a-swap-that-moves-the-address-bar.md): `Htmx` writes
   `hx-push-url="true"` through `Vocabulary.push_url`, whose default
   REFUSES, the layer refuses it for any verb but `get`, and `Datastar`
-  raises — its 1.0.3 bundle has no history code at all, so a push there is
+  raises — its free bundle has no history code at all (re-read at 1.0.4;
+  `data-replace-url` and `data-query-string` are Pro), so a push there is
   an address the back button cannot rebuild. A refusal, never a no-op.
   One mode, on purpose: Datastar keeps a non-default mode on the
   RESPONSE (`datastar-mode`) and htmx on the element, so a `mode` on

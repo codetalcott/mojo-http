@@ -18,7 +18,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   against the scaffold's own rule. Only a `get` is pushed (the layer
   refuses the rest); `Vocabulary.push_url` is new with a default that
   REFUSES, so an application's own conformance still compiles, and
-  `Fragment[Datastar]` raises — Datastar 1.0.3 has no history handling.
+  `Fragment[Datastar]` raises — Datastar's free bundle has no history
+  handling.
   `apps/fragment_notes` pushes its two links and its smoke holds them.
 - **`Query`, a query-string builder beside `url_for`** (SPEC N36).
   `url_for` fills and encodes a path and nothing past it, and the encoder
@@ -107,6 +108,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   release, so merging this publishes nothing.
 
 ### Changed
+
+- **Datastar is pinned at v1.0.4** (was v1.0.3; DECISIONS D20).
+  `m0-datastar`'s `VERSION`, the three demo pages' CDN pins, the `live`
+  scaffold template's, and the SDK conformance-case URL. **Not a protocol
+  change**: the v1.0.3...v1.0.4 compare is 74 files with **none under
+  `sdk/`**, and every string this tree's behaviour rests on is in both
+  bundles in the same count — `Datastar-Request`, the three accepted
+  content types, the key parser `split(/:(.+)/)`, `datastar-patch-elements`
+  and `-signals`, `retry`, `contentType`, `FetchFormNotFound`. The two
+  source files that touch this contract were read: `patchElements.ts`
+  removes committed merge-conflict markers and adds two casts, and
+  `fetch.ts` registers `@query()` (as the `QUERY` method, not yet in
+  `Datastar.verbs()`) and stops a `requestCancellation: 'cleanup'` fetch
+  dispatching events for an element that has since been removed. Rocket,
+  the new `datastar-rocket.js` web-component bundle, is **not** adopted:
+  it is client-side only, in beta, and orthogonal to `Vocabulary`.
+- **D46's retiring condition now names a price, not a release.** Datastar's
+  free bundle still names neither `pushState`, `replaceState` nor
+  `popstate` at 1.0.4, and the two attributes that would spell a push,
+  `data-replace-url` and `data-query-string`, are **Pro**. So
+  `Fragment[Datastar]` refusing `push=True` is not waiting on a version.
 
 - **The built-in htmx vocabulary is htmx 4** (SPEC N22, DECISIONS D6
   retired; docs/notes/the-layer-moves-to-htmx-4.md). `Fragment[Htmx]`,

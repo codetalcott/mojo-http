@@ -180,7 +180,7 @@ RULES = [
      "",
      "after one kick /stats says", WIRE),
     ("live: Datastar floats", "live", T + "live/src/pages.mojo",
-     "datastar@v1.0.3/bundles", "datastar@main/bundles",
+     "datastar@v1.0.4/bundles", "datastar@main/bundles",
      "lacks the fragment or the pinned Datastar tag", WIRE),
     ("live: the document paints no fragment", "live", T + "live/src/pages.mojo",
      "        render_live(0, still, 0),\n",

@@ -334,7 +334,7 @@ struct Datastar(Vocabulary):
     (`data-bind:name`, the page's attribute) for its value to travel.
     `{contentType: 'form'}` is not emitted for a field: it would send the
     enclosing form inside one and raise `FetchFormNotFound` outside one
-    (v1.0.3), which is a runtime error for a rule the builder cannot see.
+    (v1.0.4), which is a runtime error for a rule the builder cannot see.
 
     The single quotes in the expression reach the wire as `&#x27;` because
     `attr` escapes; the HTML parser un-escapes the attribute before
@@ -364,8 +364,10 @@ struct Datastar(Vocabulary):
 
     @staticmethod
     def push_url(mut h: Html) raises:
-        """Refused. Datastar 1.0.3 has no history handling at all — its
-        bundle names neither `pushState` nor `popstate` — so the only
+        """Refused. Datastar 1.0.4's free bundle has no history handling at
+        all — it names neither `pushState` nor `popstate`, and the two
+        attributes that would spell one, `data-replace-url` and
+        `data-query-string`, are Pro — so the only
         spelling is a `history.pushState(...)` appended to the expression,
         and nothing would answer the back button: the address would change
         and the page would not. Half of a navigation is a dead address, so
