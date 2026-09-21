@@ -1077,8 +1077,9 @@ requests, a fast request's latency behind two slow views, sendfile's RSS
 delta. A guard tells you pass or fail; it does not tell you the number has
 moved from 300 KB to 11000 KB against a 12288 KB limit and is one commit from
 red. `scripts/emit.py` appends each to `$M0_RESULTS` as one JSON line, and
-the `smoke` job renders them into the run summary (with a **headroom** column,
-which is the point) and uploads them as `ci-results-<os>`. Three properties
+each smoke job renders them into the run summary (with a **headroom** column,
+which is the point) and uploads them as `ci-results-<os>` and
+`ci-results-<os>-gateway`. Three properties
 are load-bearing:
 
 - **It never fails.** Exit status is 0 whatever happens — bad argument,
@@ -1218,6 +1219,32 @@ CI lives in `.github/workflows/test.yml` and is named `Tests`. Both
 name, so renaming the workflow silently disables both. `test.yml` ignores
 `*.md`, `docs/**` and `.claude/**` — a doc-only change runs nothing, and
 therefore never reaches the auto-merge workflows either.
+
+**The smokes are TWO jobs, `smoke` and `smoke-gateway`, and the split is a
+cap rather than taste.** One job ran 30m17s green on `main`, which left four
+minutes under its 35-minute cap; the ubuntu leg was cancelled at that cap
+four times across two pull requests, each time inside `Smoke test the
+Django realtime example over WebSockets` near the end of the list, on
+runners that were simply slower (26m1s for a unit-tests leg that usually
+takes 18m0s — nothing in the tree had changed). Halving the work AND
+leaving the cap at roughly twice the measured run is what keeps a cap able
+to catch a wedged server without cancelling a green one: the two jobs
+divide `main`'s own step times into 12.0 and 13.1 min on ubuntu, 13.2 and
+12.8 on macOS, against 30. `smoke` carries the server and the Mojo layer,
+`smoke-gateway` the WSGI and ASGI bridges, the mounts, the pool and
+`--realtime`. Two rules come with the shape:
+
+- **Shards are separate JOBS, never one job with `if: matrix.shard`.**
+  `scripts/spec_sheet.py` refuses a SPEC row whose cited step carries an
+  `if:`, a conditional step not being evidence that it ran — so the matrix
+  form would fail every cited row at once. Moving a step between the two
+  jobs is free: the sheet reads step NAMES out of the file and does not
+  care which job holds one.
+- **Neither job compiles the example apps.** `build-apps` builds each into
+  a mktemp dir and discards the binaries, so no smoke can consume it — it
+  is a compile gate, and `poe test-all` already runs it in the `unit-tests`
+  job both smoke jobs `needs:`. It cost 4 min a leg to re-answer a settled
+  question. If that `needs:` ever goes, the gate comes back.
 
 **`main` is protected by a ruleset**: pull request required (0 approvals),
 no force push, no deletion, no bypass actor — so branch first, or the push is
