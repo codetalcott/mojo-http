@@ -401,7 +401,16 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    needs: unit-tests
+    # NOT `needs: unit-tests`. It was, and the serialization cost 18-26 min
+    # on the front of every run while catching nothing: in the three most
+    # recent failing `Tests` runs (35515503893, 35477118692, 35477093973)
+    # the failure was in a smoke job every time and `unit-tests` was green
+    # every time. The repository is PUBLIC, so the minutes are free and the
+    # macOS 10x multiplier does not bill; observed queueing is under 90 s.
+    # What the gate really protected against -- a doc-fact drift, or a
+    # broken `build-all` lighting up every job at once -- is answered by
+    # `Docs`, which is unfiltered, always reports, and is the ONE required
+    # check on `main` (see CLAUDE.md).
     # THE SMOKES ARE TWO JOBS, and the split is a cap, not taste. One job
     # ran 30m17s green on `main` and the ubuntu leg was cancelled at the
     # 35-minute cap four times across two pull requests -- always mid
@@ -446,12 +455,14 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       - name: Build all packages
         run: uv run poe build-all
-      # `Compile every example app` is deliberately NOT here: it builds
-      # each app into a mktemp dir and discards the binaries, so no smoke
-      # can consume it -- it is a compile gate, and `poe test-all` already
-      # runs `build-apps` in the unit-tests job this one `needs:`. It cost
-      # 4 min a leg to re-answer a settled question. If that `needs:` ever
-      # goes, this gate comes back.
+      # `Compile every example app` is deliberately NOT here. It builds each
+      # app into a mktemp dir and DISCARDS the binaries, so nothing in this
+      # job could consume it even in principle: every row either `mojo run`s
+      # its app, `mojo build`s its own copy, or serves through bin/m0serve.
+      # It is a compile gate, `poe test-all` runs it in the unit-tests job,
+      # and it cost 4 min a leg -- twice over, once per shard -- to
+      # re-answer a settled question. The discarded output is the reason,
+      # not any ordering against unit-tests, which now runs in parallel.
 
       # The serve CLI. Most of this job's rows are Mojo, but the timeout,
       # keep-alive, sendfile and site rows all serve through it, and the
@@ -713,7 +724,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    needs: unit-tests
+    # No `needs:`, for the reason spelled out on `smoke` above.
     # The gateway half of the smokes: the WSGI and ASGI bridges, the mounts,
     # the pool and the --realtime rows. `smoke` above carries the server and
     # the Mojo layer and explains why there are two jobs at all.

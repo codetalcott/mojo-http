@@ -1232,7 +1232,7 @@ to catch a wedged server without cancelling a green one: the two jobs
 divide `main`'s own step times into 12.0 and 13.1 min on ubuntu, 13.2 and
 12.8 on macOS, against 30. `smoke` carries the server and the Mojo layer,
 `smoke-gateway` the WSGI and ASGI bridges, the mounts, the pool and
-`--realtime`. Two rules come with the shape:
+`--realtime`. Three rules come with the shape:
 
 - **Shards are separate JOBS, never one job with `if: matrix.shard`.**
   `scripts/spec_sheet.py` refuses a SPEC row whose cited step carries an
@@ -1240,11 +1240,25 @@ divide `main`'s own step times into 12.0 and 13.1 min on ubuntu, 13.2 and
   form would fail every cited row at once. Moving a step between the two
   jobs is free: the sheet reads step NAMES out of the file and does not
   care which job holds one.
-- **Neither job compiles the example apps.** `build-apps` builds each into
-  a mktemp dir and discards the binaries, so no smoke can consume it — it
-  is a compile gate, and `poe test-all` already runs it in the `unit-tests`
-  job both smoke jobs `needs:`. It cost 4 min a leg to re-answer a settled
-  question. If that `needs:` ever goes, the gate comes back.
+- **No job in `test.yml` `needs:` another, and the smokes used to.** That
+  gate put `unit-tests` — 18 min on `main`, 26 on a slow runner — on the
+  front of every run, and caught nothing: in the three most recent failing
+  `Tests` runs (35515503893, 35477118692, 35477093973) the failure was in
+  a smoke job every time and `unit-tests` was green every time. The
+  repository is PUBLIC, so the minutes are free (the macOS 10x multiplier
+  does not bill) and observed queueing is under 90 s, which makes the
+  serialization pure latency. What the gate really protected against — a
+  doc-fact drift, or a broken `build-all` lighting up every job at once —
+  is answered by `Docs`, the one required check on `main`.
+- **Neither smoke job compiles the example apps.** `build-apps` builds each
+  app into a mktemp dir and DISCARDS the binaries, so no smoke can consume
+  it — every row either `mojo run`s its app, `mojo build`s its own copy, or
+  serves through `bin/m0serve`. It is a compile gate, `poe test-all` runs
+  it in `unit-tests`, and it cost 4 min a leg twice over to re-answer a
+  settled question. The reason is the discarded output, NOT the `needs:`
+  that used to sit above it: the gate still runs on every pull request, it
+  just no longer runs before the smokes, and nothing there was waiting on
+  it.
 
 **`main` is protected by a ruleset**: pull request required (0 approvals),
 no force push, no deletion, no bypass actor — so branch first, or the push is
