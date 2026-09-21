@@ -11,7 +11,7 @@ Always `uv run m0 …` (the project's own venv; `uvx` is for `m0 new` alone).
 
 | command | what it does | time |
 |---|---|---|
-| `uv run m0 test` | runs `test/test_*.mojo`; no link, no server | 2–3 s |
+| `uv run m0 test` | runs `test/test_*.mojo`; no link, no server | 2–4 s |
 | `uv run m0 build` | compiles `src/server.mojo` to `bin/server` | 10–13 s after an edit |
 | `uv run m0 dev` | builds, serves, and rebuilds when `src/` or `pyproject.toml` changes; the old server keeps serving until a build SUCCEEDS, so a syntax error costs a compiler message and not the page; `-- --port 8080` goes to the binary | a build per save |
 | `uv run m0 doctor` | every toolchain check, then the binary's resolved configuration; `--json` for a machine | < 1 s |
@@ -19,7 +19,7 @@ Always `uv run m0 …` (the project's own venv; `uvx` is for `m0 new` alone).
 | `uv run m0 image` | `docker build -f deploy/Dockerfile`, then the image's own `about.json`; needs docker and a committed `uv.lock`, and no local toolchain | minutes the first time |
 | `./smoke.sh` | build, serve on its own port, probe the wire, stop | a build, plus a second |
 
-The test loop is four to five times faster than the build loop. **Put logic in
+The test loop is three to five times faster than the build loop. **Put logic in
 functions a test can reach** — a renderer that takes values, a state struct
 with methods — and keep views thin. A test is also the only thing that
 vouches for a function nothing calls yet: in an imported module the compiler
@@ -127,4 +127,5 @@ the probe, not from the last command of a pipe. `smoke.sh` does all four.
 ## Not built, on purpose
 
 No template engine, middleware, ORM, multipart parsing, session store or
-password hashing. Documentation: https://m0serve.dev (and its `/llms.txt`).
+password hashing. Documentation: https://m0serve.dev/mojo/ (the host, views
+and fragments, deploy), and https://m0serve.dev/llms.txt for an agent.

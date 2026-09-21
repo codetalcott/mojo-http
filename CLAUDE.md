@@ -28,7 +28,7 @@ per-row annotation:
   application outside `apps/` running on `Views`/`Fragment`, recorded in
   `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
   one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
-  (D1–D44, permanent ids, each with a retiring condition), which
+  (D1–D45, permanent ids, each with a retiring condition), which
   `check-docs` keeps resolvable.
 
 **Gating an ungated row keeps finding real defects** — so far an unbounded
@@ -988,6 +988,23 @@ one home; `0.x` until the layer soak). Rules:
   `pypi-m0`, `M0_WHEEL_LOCAL` unset and never through `poe
   build-m0-wheel`. `m0_release_problems` in `check_docs.py` holds its
   rules; docs/RELEASING.md has the order. Push no `m0-v*` tag casually.
+- **The Mojo stack's docs are six pages at permanent URLs** (`/mojo/…`,
+  D45, SPEC N33–N35; docs/notes/the-mojo-stack-pages.md). Rewrite a page
+  freely; never move one. `packaging/m0/QUICKSTART.md` is EXECUTED by
+  `smoke-quickstart-mojo` (the `scaffold-dev` job) and lives under
+  `packaging/` on purpose: `test.yml` ignores `docs/**` and root `*.md`,
+  so there an edit to the page alone still runs it. Its `uvx m0 new` and
+  bare `uv sync` lines are what `run_quickstart.py` re-points at the
+  tree's wheel — reword either and the runner refuses the page — and its
+  block counts are pinned in the task AND read by `check-docs`. The host
+  page's refusal and flag tables, the index's command table and the two
+  loop times are held to `host.mojo`, `flags.mojo`, `cli.py`, `checks.py`
+  and the scaffold's `AGENTS.md` by `mojo_pages_problems`: a new
+  `HostCheck`, host flag or `m0` subcommand fails `check-docs` until the
+  page has it. All six are FIGURE_PAGES: a figure sits in an
+  `observed:` block. A scaffold's first build must print no `warning:`
+  (N34) — `check-templates` cannot see one that only the SUBSTITUTED name
+  causes.
 - `poe build-m0-wheel` stamps `0.1.0+tree` (`M0_WHEEL_LOCAL`) so an exact
   pin on the smoke's wheel can never resolve to a published one. Run
   `poe sabotage-m0-wheel` after touching `packaging/m0/`: its anchors are

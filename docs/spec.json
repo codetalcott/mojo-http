@@ -1858,6 +1858,30 @@
       "evidence": "`Check machine-sourced doc facts` (every PR) \u2014 `m0_release_problems` in `scripts/check_docs.py`, a pure function of the two workflows' text with comments stripped: the single trigger, the unset and the direct build, the local-label refusal, the tag comparison, one identity token, the one environment, the shared pin, and `release.yml`'s patterns tried against `m0-v0.1.0`. Its selftest reverts ten rules against the committed files and counts an unchanged mutation as MISSED. What this cannot show is that the workflow RUNS: the first tag is the first execution, and docs/RELEASING.md orders it behind a local run of the build job's own checks"
     },
     {
+      "id": "N33",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "The Mojo stack's front door is a page CI executes: `packaging/m0/QUICKSTART.md` takes a reader from `uvx m0 new` through `uv sync`, `uv run m0 build`, the served application probed over a socket (a document, the bare fragment for an htmx 4 partial, a created item, a 422 that is still the fragment), `uv run m0 test`, `uv run m0 doctor`, and `uv run m0 dev` swapping in an edited string literal while the port keeps answering. The page's image step is display-only and is NOT run here \u2014 half of this gate's runners have no docker \u2014 and N31's gate builds that image from a scaffolded project. The page lives under `packaging/` because this workflow ignores `docs/**` and root-level Markdown, so a pull request that edits only the page still runs it",
+      "status": "verified",
+      "evidence": "`Execute the Mojo quickstart` (every PR) \u2014 `scripts/run_quickstart.py`, the mechanism M10 uses, given the tree's `0.1.0+tree` wheel: `uvx m0` is pointed at the wheel file, the page's `uv sync` refreshes m0 and is followed by the byte-equality check N27's gate uses (uv caches a version by name), and every block runs in a scratch directory on a stripped `PATH` \u2014 uv's directory and the system's \u2014 with this repository's venv unreachable, which the runner asks before the page's first line on every run (a `mojo`, an `m0` or a venv already reachable fails it; with the stripped environment reverted it fails naming the tree's own `mojo`), so the toolchain the page builds with is the one the page installed. The task pins the page's exact block counts, and a page on which neither substitution matched is refused rather than run against whatever the index serves. Both platforms. Sabotaged by hand before landing, recorded in the note: a wrong command, a wrong expected string on the wire, a lost fence tag, the edit step's old literal"
+    },
+    {
+      "id": "N34",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "A freshly scaffolded project's first build prints no compiler warning, for both templates. The templates compile UNSUBSTITUTED in N28's gate, where `__M0_APP__` opening a docstring passes the compiler's summary lint; substituted, a lowercase application name opened the summary and every new project's first build began with a warning. The name is backticked in both entry files",
+      "status": "verified",
+      "evidence": "`Smoke test the m0 scaffold` (every PR) \u2014 the output of the literal `uv run m0 build` in the written project is searched for `warning:`, per template; with the backticks removed from one template the gate fails naming the file and the lint. Found by N33's gate on its first run"
+    },
+    {
+      "id": "N35",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "The Mojo stack's six pages restate lists that live in source, and each is held to it: their six URLs are the ones D45 made permanent and the site's page table serves them there; the host page's refusal table is `host_checks`' names in the order the host applies them, its flag table the flags in the host's own help text, and its list of m0's checks `checks.py`'s in order; the index's command table is the parser's subcommands, and no code block on any of the pages runs a subcommand m0 lacks; the quickstart's two loop times are the figures the scaffold's `AGENTS.md` ships in every project; the quickstart's tagged block counts are the ones N33's task pins, so a fence that loses its tag fails on a doc-only pull request; and all six pages are under the bare-figure rule, every figure on them sitting in a block that says where it was observed",
+      "status": "verified",
+      "evidence": "`Check machine-sourced doc facts` (every PR) \u2014 `mojo_pages_problems` in `scripts/check_docs.py`, a pure function of the pages, the site's table and six source files; its selftest reverts thirteen rules against the committed texts, in the source or on the page as the rule runs, with two controls, and counts an unchanged mutation as MISSED. What it cannot show is that a sentence ABOUT a check or a flag is true"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",

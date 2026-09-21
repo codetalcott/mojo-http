@@ -833,6 +833,7 @@ python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs
 python3 scripts/emit.py --covers F15 --task check-docs
 python3 scripts/emit.py --covers N32 --task check-docs
+python3 scripts/emit.py --covers N35 --task check-docs
 """
 
 # Citation tracking: every `RFC nnnn` in the tree against
@@ -7141,6 +7142,7 @@ shell = """
 python3 scripts/m0_scaffold_smoke.py dist/m0 8951 || exit 1
 python3 scripts/emit.py --covers N27 --task smoke-scaffold
 python3 scripts/emit.py --covers N29 --task smoke-scaffold
+python3 scripts/emit.py --covers N34 --task smoke-scaffold
 """
 
 # SPEC N30. `uv run m0 dev` on a scaffolded app: build-then-swap, asked of a
@@ -7166,6 +7168,27 @@ deps = ["build-m0-wheel"]
 shell = """
 python3 scripts/m0_scaffold_image_smoke.py dist/m0 18361 || exit 1
 python3 scripts/emit.py --covers N31 --task smoke-scaffold-image
+"""
+
+# SPEC N33. packaging/m0/QUICKSTART.md, executed: run_quickstart.py's
+# mechanism (the page's tagged fences, one bash process, one scratch
+# directory) with `uvx m0` pointed at the tree's wheel and the blocks run on
+# a stripped PATH with no venv of this tree's reachable -- the script's
+# docstring says what the gate adds and why none of it is the reader's.
+# The page lives under packaging/ and not docs/ so that an edit to it alone
+# still runs `Tests`: test.yml ignores `*.md` at the root and `docs/**`.
+# Its image block is display-only; N31's gate builds that image.
+# Three builds (first, m0 dev's unchanged one, the one after the edit).
+[tool.poe.tasks.smoke-quickstart-mojo]
+help = "Execute packaging/m0/QUICKSTART.md against the tree's m0 wheel: m0 new, uv sync, build, the wire, m0 test, m0 doctor, m0 dev swapping in an edit"
+deps = ["build-m0-wheel"]
+shell = """
+whl=$(ls dist/m0/m0-*.whl 2>/dev/null | head -n 1)
+[ -n "$whl" ] || { echo "smoke-quickstart-mojo: no m0 wheel built"; exit 2; }
+M0_WHEEL="$whl" python3 scripts/run_quickstart.py \
+  --doc packaging/m0/QUICKSTART.md \
+  --expect setup=3,serve=2,verify=3 || exit 1
+python3 scripts/emit.py --covers N33 --task smoke-quickstart-mojo
 """
 
 [tool.poe.tasks.sabotage-scaffold]

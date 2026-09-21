@@ -1,4 +1,4 @@
-"""__M0_APP__ — one shared state, stepped on the server, pushed to every tab.
+"""`__M0_APP__` — one shared state, stepped on the server, pushed to every tab.
 
     GET  /         the document (Datastar opens /events from data-init)
     GET  /events   the stream: the newest frame at open, then one per step

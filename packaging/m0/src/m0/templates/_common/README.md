@@ -14,7 +14,7 @@ rebuilds on every save. The running server is replaced only by a build
 that succeeded.
 
 ```sh
-uv run m0 test               # test/test_*.mojo, 2–3 s: the fast loop
+uv run m0 test               # test/test_*.mojo, 2–4 s: the fast loop
 uv run m0 doctor             # toolchain checks + the binary's resolved configuration
 ./smoke.sh                   # build, serve, probe the wire, stop
 uv run m0 image              # the deploy image (docker), and what it measured of itself

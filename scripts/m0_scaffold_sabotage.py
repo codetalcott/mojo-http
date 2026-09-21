@@ -107,6 +107,18 @@ RULES = [
      '    print("    uv sync")\n',
      "",
      "did not print the next command 'uv sync'", NEW),
+    # N34. Only the WRITTEN project can show this: check-templates compiles
+    # the file unsubstituted, where `__M0_APP__` passes the summary lint.
+    ("new: the app's name opens the entry file's docstring bare [views]", "views",
+     T + "views/src/server.mojo",
+     '"""`__M0_APP__` — a server-rendered list',
+     '"""__M0_APP__ — a server-rendered list',
+     "the first build of a fresh views scaffold warns", NEW),
+    ("new: the app's name opens the entry file's docstring bare [live]", "live",
+     T + "live/src/server.mojo",
+     '"""`__M0_APP__` — one shared state',
+     '"""__M0_APP__ — one shared state',
+     "the first build of a fresh live scaffold warns", NEW),
 
     # --- views, on the wire ---------------------------------------------------
     ("views: a bad form is a 200", "views", T + "views/src/views.mojo",

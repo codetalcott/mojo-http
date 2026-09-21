@@ -14,7 +14,7 @@ runs on macOS arm64 and glibc Linux (x86-64, aarch64).
 uvx m0 new shop                   # writes ./shop; needs no toolchain and no network
 cd shop && uv sync                # the pair it pinned: m0, and the one exact mojo it is gated on
 uv run m0 build                   # src/server.mojo -> bin/server, about ten seconds
-uv run m0 test                    # mojo run over test/test_*.mojo, two or three seconds each
+uv run m0 test                    # mojo run over test/test_*.mojo, two to four seconds a file
 uv run m0 dev -- --port 8080      # build, serve, rebuild on save; the old server serves until a build succeeds
 uv run m0 doctor                  # the toolchain checks, then bin/server's own --doctor
 uv run m0 image                   # docker build of deploy/Dockerfile, then the image's about.json

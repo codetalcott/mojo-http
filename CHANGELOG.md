@@ -60,6 +60,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   tags through a trusted publisher and an environment of its own; it is
   written and held to its rules by `check-docs`, and has never run.
   Still unpublished.
+- **Documentation for the Mojo stack, and a quickstart CI executes** (SPEC
+  N33, N35, D45). Six pages under `/mojo/` on the site, their URLs
+  permanent: the section index (where "preview" is said, once), a
+  quickstart, the host, views and fragments, deploy, and the way from an
+  m0serve mount to a binary of its own. `packaging/m0/QUICKSTART.md` is
+  run on every pull request, both platforms, by `smoke-quickstart-mojo`:
+  `uvx m0 new` to a served page, `m0 test`, `m0 doctor`, and `m0 dev`
+  swapping in an edit, against the tree's wheel, in a scratch directory on
+  a stripped `PATH`. It lives under `packaging/` so that a pull request
+  editing only the page still runs it. `check-docs` holds the pages'
+  tables to `host_checks`, the host's help text, `m0`'s parser and its
+  checks list, holds the six URLs, and puts all six pages under the
+  bare-figure rule. `llms.txt` gains the stack's operating contract; the
+  pages ride in the existing `llms-full.txt`. The site deploys on a
+  release, so merging this publishes nothing.
 
 ### Changed
 
@@ -102,6 +117,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   reason phrase unless the caller passed one. `text` left alone is now the
   status's own RFC 9110 phrase (`reply.reason_phrase`); an explicit `text`
   still wins (SPEC N29).
+
+- **Every scaffolded project's first build began with a compiler warning.**
+  Both templates' entry files opened their docstring with the
+  application's name, and a lowercase name fails the compiler's summary
+  lint; `check-templates` compiles the files unsubstituted, where
+  `__M0_APP__` passes it. The name is backticked, and `smoke-scaffold`
+  refuses a first build that warns (SPEC N34). Found by the quickstart's
+  gate on its first run. The scaffold's `AGENTS.md` and `README.md` also
+  gave `m0 test` as 2–3 s where the `views` template measures 4; they say
+  2–4 s.
 
 - **`mojo build` needing a C compiler on Linux, and saying so only after
   the whole compile**, is retired as a known issue for an application built
