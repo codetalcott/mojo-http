@@ -8762,6 +8762,7 @@ python3 scripts/emit.py --covers N22 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N13 --task smoke-fragment-notes
 python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N18 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N37 --task smoke-fragment-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------

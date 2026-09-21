@@ -10,6 +10,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **`push=True`: a swap that moves the address bar** (SPEC N37, D46).
+  `Fragment.swap`, `Fragment.el` and `Html.swap[V]` take it, and
+  `Fragment[Htmx]` writes `hx-push-url="true"` beside the swap, so a view
+  reached by a swap — a filtered list, a detail — can be reloaded, linked to
+  and gone back to. `unotes` typed that attribute by hand on every link,
+  against the scaffold's own rule. Only a `get` is pushed (the layer
+  refuses the rest); `Vocabulary.push_url` is new with a default that
+  REFUSES, so an application's own conformance still compiles, and
+  `Fragment[Datastar]` raises — Datastar 1.0.3 has no history handling.
+  `apps/fragment_notes` pushes its two links and its smoke holds them.
 - **`Query`, a query-string builder beside `url_for`** (SPEC N36).
   `url_for` fills and encodes a path and nothing past it, and the encoder
   it uses was private, so an application with a GET filter form wrote a
