@@ -984,7 +984,8 @@ one home; `0.x` until the layer soak). Rules:
   the gate edit the Dockerfile; a change users need goes in the template.
   `about.json`'s `cpu` is read from the image because a cached layer
   prints nothing.
-- **`release-m0.yml` has never run** (N32) — tags `m0-v*`, environment
+- **`release-m0.yml` has run ONCE** (N32; `m0-v0.1.0`, 2026-09-21, green
+  first time — no gate exercises it, only a tag does) — tags `m0-v*`, environment
   `pypi-m0`, `M0_WHEEL_LOCAL` unset and never through `poe
   build-m0-wheel`. `m0_release_problems` in `check_docs.py` holds its
   rules; docs/RELEASING.md has the order. Push no `m0-v*` tag casually.

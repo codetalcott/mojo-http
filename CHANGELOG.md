@@ -10,7 +10,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
-- **The `m0` wheel and its CLI, in the tree and unpublished** (SPEC
+- **The `m0` wheel and its CLI; published as `m0 0.1.0` on 2026-09-21** (SPEC
   N23–N26, D39–D43). `packaging/m0/` builds a pure-Python wheel that
   carries the framework's SOURCE — the five trees an application compiles
   against, mapped file by file from `git ls-files` into
@@ -25,7 +25,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   runs the `mojo` in its own environment, never `PATH`'s. Exit codes are a
   closed set (0, 1, 2, 78). Versioned apart from the repository, `0.1.0`
   and `0.x` until the application-layer soak. `m0 new`, the templates,
-  `dev` and `image` are later pull requests; nothing is on PyPI.
+  `dev` and `image` came in the pull requests below.
   `smoke-m0-wheel` runs on every pull request, both legs.
 - **`m0 new` and the two templates it writes** (SPEC N27–N29, D44;
   docs/notes/the-scaffold.md). `m0 new NAME [--template views|live]` needs
@@ -39,9 +39,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Both are sessionless. The templates are real source files that compile
   unsubstituted — `poe check-templates`, inside `test-all` — so
   substitution is plain string replacement and there is no template
-  engine. `smoke-scaffold` runs on every pull request, both legs. Still
-  unpublished.
-- **`m0 dev`, `m0 image`, and the workflow that will publish `m0`** (SPEC
+  engine. `smoke-scaffold` runs on every pull request, both legs.
+- **`m0 dev`, `m0 image`, and the workflow that publishes `m0`** (SPEC
   N30–N32; docs/notes/dev-image-and-a-release.md). `m0 dev [-- HOST_ARGS]`
   is build-then-swap: the old server keeps answering while a build runs
   and after one fails, and only a build that succeeded ends it — SIGTERM
@@ -58,8 +57,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   written) run on every pull request, which retires the `deploy/` gap
   the scaffold shipped with. `release-m0.yml` publishes from `m0-v*`
   tags through a trusted publisher and an environment of its own; it is
-  written and held to its rules by `check-docs`, and has never run.
-  Still unpublished.
+  held to its rules by `check-docs`. Its first run was the `m0-v0.1.0`
+  tag on 2026-09-21: green in both jobs at the first attempt, and the
+  published wheel then passed docs/RELEASING.md's two after-upload runs
+  (a scaffold synced from the index, and the quickstart page verbatim).
 - **Documentation for the Mojo stack, and a quickstart CI executes** (SPEC
   N33, N35, D45). Six pages under `/mojo/` on the site, their URLs
   permanent: the section index (where "preview" is said, once), a
