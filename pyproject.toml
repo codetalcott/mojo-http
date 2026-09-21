@@ -960,10 +960,22 @@ help = "Run m0-sqlite's Mojo tests (prefer test-sqlite, which checks offsets fir
 shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
+# OS_ACTIVITY_MODE=disable is a macOS workaround, not a preference: Apple's
+# libsqlite3 instruments `openDatabase` with os_signpost, and in a process
+# that FORKS -- which test_file.mojo does, to prove two processes may open
+# one fresh database -- that path can fault. Both children of a round die
+# of SIGSEGV inside `_os_log_preferences_refresh`, reached from
+# `os_signpost_id_make_with_pointer` (the symbolised trace and the numbers
+# are docs/notes/a-signpost-in-a-forked-child.md). Measured on an M4:
+# 3 of 60 runs without the variable, 0 of 200 with it. The variable turns
+# off the subsystem that faults and nothing else -- with the WAL retry in
+# `open` removed the test still fails 12 of 12, and as `exit 1`, the lock
+# loss O1 is about -- so the gate keeps its meaning. A run by hand
+# (CLAUDE.md's `mojo build ... && /tmp/t`) wants the variable too.
 for f in packages/m0-sqlite/test/test_*.mojo; do
   name=$(basename "$f" .mojo)
   mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 "$f" -o "$out/$name" || exit 1
-  "$out/$name" || exit 1
+  OS_ACTIVITY_MODE=disable "$out/$name" || exit 1
 done
 """
 
