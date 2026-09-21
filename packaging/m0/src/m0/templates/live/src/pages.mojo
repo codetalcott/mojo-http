@@ -15,7 +15,7 @@ from m0_http import Datastar, Fragment, attr, el, text
 
 # Pinned: a floating version lets an upstream release break this app
 # without a commit here.
-comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.3/bundles/datastar.js"
+comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.4/bundles/datastar.js"
 
 comptime PAGE = "/"
 comptime EVENTS = "/events"

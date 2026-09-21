@@ -34,9 +34,12 @@ GETs on reload, from a bookmark and on a history restore. Pushing a
 htmx 4's `query` is refused with the writes: its parameters travel in the
 body, so its URL alone does not name the view.
 
-**`Datastar` refuses a push.** Datastar 1.0.3's bundle was read for it and
+**`Datastar` refuses a push.** Datastar's free bundle was read for it and
 names neither `pushState`, `replaceState` nor `popstate`: it has no history
-handling of any kind. The only spelling would be a `history.pushState(...)`
+handling of any kind. Re-read at v1.0.4 (2026-09-21) with the same result,
+and the reason is now visible: the two attributes that would spell one,
+`data-replace-url` and `data-query-string`, are **Pro** features. So the
+condition that would retire this is a pricing decision, not a release. The only spelling would be a `history.pushState(...)`
 appended to the action expression, and nothing would answer the back
 button — the address would change back and the page would not. The note on
 the one swap mode argues the same way from the other side: a parameter on

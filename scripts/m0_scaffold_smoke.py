@@ -71,7 +71,7 @@ TEST_FILE = {"views": "test/test_views.mojo", "live": "test/test_live.mojo"}
 
 HTMX_TAG = '<script src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"></script>'
 DATASTAR_TAG = ('<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/'
-                'datastar@v1.0.3/bundles/datastar.js"></script>')
+                'datastar@v1.0.4/bundles/datastar.js"></script>')
 VARY = "HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request, HX-Request-Type"
 PARTIAL = {"HX-Request-Type": "partial"}
 FORM = dict(PARTIAL, **{"Content-Type": "application/x-www-form-urlencoded"})
