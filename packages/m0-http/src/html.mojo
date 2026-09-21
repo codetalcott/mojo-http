@@ -181,12 +181,23 @@ def _verb_is_in(verb: String, verbs: String) -> Bool:
 
 def _swap[
     V: Vocabulary
-](mut h: Html, verb: String, url: String, target: String) raises:
+](mut h: Html, verb: String, url: String, target: String, push: Bool = False) raises:
     """Every swap goes through here: refuse a verb `V` does not take, then
     let `V` spell it. `hx-psot` is a silent attribute in htmx and
     `@psot(...)` a runtime error in Datastar, and a typo is the mistake
     this layer exists to catch — so the check is the layer's, and a
-    conformance that checks nothing still refuses one."""
+    conformance that checks nothing still refuses one.
+
+    `push` makes the swap move the address bar to `url`, and it has a
+    check of the layer's too: only a `get` is pushed. A pushed URL is one
+    the browser GETs on reload, from a bookmark and on a history restore,
+    so pushing a `post`'s is writing an address that answers 405, or
+    worse, one that answers."""
+    if push and verb != "get":
+        raise Error(
+            'swap("', verb, '", "', url, '", push=True): only a get is pushed — a '
+            "pushed URL is one the browser will GET on reload"
+        )
     var verbs = V.verbs()
     if not _verb_is_in(verb, verbs):
         raise Error(
@@ -194,6 +205,8 @@ def _swap[
             verbs.replace(" ", ", "),
         )
     V.swap(h, verb, url, target)
+    if push:
+        V.push_url(h)
 
 
 def _check_action_url(url: String) raises:
@@ -247,6 +260,16 @@ trait Vocabulary:
         sixth (`query`), and `Htmx` answers with all six."""
         return STANDARD_VERBS
 
+    @staticmethod
+    def push_url(mut h: Html) raises:
+        """Make the swap just written move the address bar to its URL, so a
+        view reached by a swap can be reloaded, linked to and gone back to.
+        Called after `swap`, on the same open element, and only for a
+        `get`. The default REFUSES: a library with no spelling for it
+        raises rather than rendering a swap that looks like it navigated
+        and did not."""
+        raise Error("swap(..., push=True): this vocabulary cannot push a URL")
+
 
 comptime HTMX_VERBS = "get post put patch delete query"
 """The `#verbs` of htmx 4, in its order: the five, and `query`."""
@@ -281,6 +304,14 @@ struct Htmx(Vocabulary):
     @staticmethod
     def verbs() -> String:
         return HTMX_VERBS
+
+    @staticmethod
+    def push_url(mut h: Html) raises:
+        """`hx-push-url="true"`: htmx pushes the request's URL and owns the
+        other half too — back and forward re-request the URL with
+        `HX-Request-Type: full`, which `page_or_fragment` answers as a
+        document (SPEC N22)."""
+        h.attr("hx-push-url", "true")
 
 
 struct Datastar(Vocabulary):
@@ -330,6 +361,20 @@ struct Datastar(Vocabulary):
             h.attr("data-on:click__prevent", String("@", verb, "('", url, "')"))
         else:
             h.attr("data-on:click", String("@", verb, "('", url, "')"))
+
+    @staticmethod
+    def push_url(mut h: Html) raises:
+        """Refused. Datastar 1.0.3 has no history handling at all — its
+        bundle names neither `pushState` nor `popstate` — so the only
+        spelling is a `history.pushState(...)` appended to the expression,
+        and nothing would answer the back button: the address would change
+        and the page would not. Half of a navigation is a dead address, so
+        this raises instead (DECISIONS D46)."""
+        raise Error(
+            "swap(..., push=True): Datastar has no history handling, so a pushed "
+            "URL could not be gone back to — use a plain link for a view that "
+            "needs an address"
+        )
 
 
 struct Html(Movable):
@@ -418,7 +463,7 @@ struct Html(Movable):
         self._buf.extend(rendered.as_bytes())
 
     def swap[V: Vocabulary](
-        mut self, verb: String, url: String, target: String
+        mut self, verb: String, url: String, target: String, push: Bool = False
     ) raises:
         """The attributes that make the open element fetch `url` with `verb`
         and replace the element `target` selects with the answer, in `V`'s
@@ -427,8 +472,9 @@ struct Html(Movable):
         `target` is a selector (`#notes`); `Fragment.swap` supplies its own,
         and this form is for an element rendered OUTSIDE the fragment it
         swaps — a page-level link — which takes `frag.selector()`.
+        `push=True` also moves the address bar to `url` (a `get` only).
         """
-        _swap[V](self, verb, url, target)
+        _swap[V](self, verb, url, target, push)
 
     def text(mut self, s: String):
         """`s` as text content, escaped."""
@@ -506,14 +552,18 @@ struct Fragment[V: Vocabulary](Movable):
         """`#id`: what an attribute that targets this fragment says."""
         return String("#", self.id)
 
-    def swap(mut self, verb: String, url: String) raises:
+    def swap(mut self, verb: String, url: String, push: Bool = False) raises:
         """Make the open element fetch `url` with `verb` and replace THIS
         fragment with the answer. Generated from the fragment's own id, in
-        `V`'s spelling."""
-        _swap[Self.V](self.html, verb, url, self.selector())
+        `V`'s spelling. `push=True` also moves the address bar to `url`, so
+        the view the swap arrives at can be reloaded and linked to: a `get`
+        only, and only in a vocabulary that can (`Htmx`; `Datastar`
+        refuses)."""
+        _swap[Self.V](self.html, verb, url, self.selector(), push)
 
     def el(
-        self, tag: String, verb: String, url: String, attrs: String, *children: String
+        self, tag: String, verb: String, url: String, attrs: String, *children: String,
+        push: Bool = False,
     ) raises -> String:
         """`swap` in the expression tier: a whole `<tag>` that fetches `url`
         with `verb` and replaces this fragment, as a string, with `attrs`
@@ -524,11 +574,11 @@ struct Fragment[V: Vocabulary](Movable):
         given here because the vocabulary reads it — a Datastar form
         submits where a button clicks — and giving it once, to the
         element that is being made, is what keeps it from being spelled
-        twice."""
+        twice. `push=True` is `swap`'s: the address bar follows the swap."""
         var h = Html(128)
         h.open(tag)
         h.raw_attrs(attrs)
-        _swap[Self.V](h, verb, url, self.selector())
+        _swap[Self.V](h, verb, url, self.selector(), push)
         for c in children:
             h.raw(c)
         h.close(tag)

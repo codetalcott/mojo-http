@@ -76,6 +76,15 @@ fragment; `f.swap(verb, url)` is the attributes alone, for the builder
 style. Application code never types an `hx-` or `data-on:` swap attribute,
 and never retypes the id as `#items`.
 
+`push=True` on either makes the swap move the address bar to its URL, so
+the view it arrives at — a filtered list, a detail — can be reloaded,
+bookmarked and gone back to: `f.el("a", "get", url, attr("href", url),
+text(title), push=True)`. Only a `get` is pushed, a pushed URL being one
+the browser GETs on reload. htmx asks for it again on back with
+`HX-Request-Type: full`, which `page_or_fragment` answers as a document.
+`Fragment[Datastar]` refuses a push: Datastar has no history handling, so
+a view that needs an address there is a plain link.
+
 Escaping is named at every hole:
 
 | call | for | escapes |

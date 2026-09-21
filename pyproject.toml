@@ -8615,6 +8615,23 @@ curl -s -b jar.txt -H 'HX-Request: true' "$B$href" | grep -q '<h1>Café au lait<
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/999)
 [ "$code" = "404" ] || fail "expected 404 for a missing note, got $code"
 
+# --- N37: a swap that arrives at a view moves the address bar ----------------
+# The link to a note and the link back both push their URL (one from the
+# expression tier, one from the builder), and no WRITE does. Then the other
+# half, which is what makes a pushed address a real one: the pushed URL asked
+# for as htmx 4 asks on reload and on back -- `full`, no HX-Request -- is the
+# note as a document.
+grep -q '<a href="'"$href"'" hx-get="'"$href"'" hx-target="#notes" hx-swap="outerHTML" hx-push-url="true">' frag.html \
+  || fail "the list's link to $href does not push its URL"
+curl -s -b jar.txt -H 'HX-Request: true' "$B$href" \
+  | grep -q '<a href="/notes" hx-get="/notes" hx-target="#notes" hx-swap="outerHTML" hx-push-url="true">' \
+  || fail 'the link back to the list does not push its URL'
+[ "$(grep -o 'hx-push-url' frag.html | wc -l | tr -d ' ')" = "$(grep -o '<a href="/notes/' frag.html | wc -l | tr -d ' ')" ] \
+  || fail 'something other than a link to a note pushes a URL'
+curl -s -b jar.txt -H 'HX-History-Restore-Request: true' -H 'HX-Request-Type: full' "$B$href" -o page.html
+head -c 15 page.html | grep -q '<!doctype html>' || fail "the pushed URL $href was not answered as a document on restore"
+grep -q '<h1>Café au lait</h1>' page.html || fail "the pushed URL $href did not rebuild the note"
+
 # A body whose content type is not the form's is refused, never parsed as
 # one. The bytes are deliberately form-SHAPED under a JSON content type:
 # a JSON document would fail the title check anyway, so only this shape

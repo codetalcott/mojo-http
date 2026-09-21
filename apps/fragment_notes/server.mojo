@@ -493,7 +493,9 @@ def render_list(store: NoteStore, subject: String, csrf: String) raises -> Strin
         for t in range(len(store.tags[i])):
             tags += " " + el("span", attr("class", "tag"), text(store.tags[i][t]))
         items += el("li", "",
-            f.el("a", "get", url, attr("href", url), text(store.titles[i])),
+            # push: the note is a VIEW, so the swap that arrives at it moves
+            # the address bar and the note can be reloaded and linked to.
+            f.el("a", "get", url, attr("href", url), text(store.titles[i]), push=True),
             tags, " ",
             f.el("form", "delete", url, attr("class", "delete") + _csrf_header(csrf),
                 el("button", "", "&times;"),
@@ -538,7 +540,7 @@ def render_note(store: NoteStore, i: Int) raises -> String:
     f.open("p")
     f.open("a")
     f.attr("href", NOTES)
-    f.swap("get", NOTES)
+    f.swap("get", NOTES, push=True)
     f.text("all notes")
     f.close("a")
     f.close("p")

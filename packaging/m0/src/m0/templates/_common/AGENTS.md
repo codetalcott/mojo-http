@@ -59,6 +59,10 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   and `f.swap(verb, url)` generate the attributes that target it. **Never
   type an `hx-*` or `data-on:*` swap attribute by hand**, and never retype
   the id as `#id`.
+- A swap that arrives at a VIEW — a filtered list, a detail — takes
+  `push=True`, so the address bar follows and the view can be reloaded and
+  linked to. A `get` only; `Fragment[Datastar]` refuses it (Datastar has no
+  history handling), so a view that needs an address there is a plain link.
 - Escaping is named at every hole: `text(x)` for data in an element,
   `attr(name, x)` for data in an attribute (it owns the quotes), `raw`/a
   bare string only for markup this code wrote. Request data in a bare

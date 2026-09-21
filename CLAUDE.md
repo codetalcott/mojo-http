@@ -1506,6 +1506,12 @@ pieces, and the language fact each rests on:
   from a directory outside the repo and reads its output with `hxlint` —
   `scripts/hxlint.py` and `hx_vocab.py` are hx-flask's, vendored byte for
   byte under a hash guard in `check-docs`: never edit them here.
+  **`push=True` on `swap`/`el` moves the address bar** (SPEC N37, D46;
+  docs/notes/a-swap-that-moves-the-address-bar.md): `Htmx` writes
+  `hx-push-url="true"` through `Vocabulary.push_url`, whose default
+  REFUSES, the layer refuses it for any verb but `get`, and `Datastar`
+  raises — its 1.0.3 bundle has no history code at all, so a push there is
+  an address the back button cannot rebuild. A refusal, never a no-op.
   One mode, on purpose: Datastar keeps a non-default mode on the
   RESPONSE (`datastar-mode`) and htmx on the element, so a `mode` on
   `swap` is a spelling one of them cannot honour; when an app appends,
