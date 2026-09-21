@@ -47,7 +47,9 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   pointer and a closure is not one. A guard is an early return of
   `Optional[HTTPResponse]` on the view's first lines.
 - Routes are `comptime` patterns given to the table AND to `url_for`, so a
-  misspelled route is a compile error. Never build a path by hand.
+  misspelled route is a compile error. Never build a path by hand, and
+  never a query string: `Query().add(name, value)` then `q.on(url_for(X))`
+  encodes both halves, request data included.
 - State that lives in one process answers `max_workers() -> 1`, and
   `M0_WORKERS=2` is then refused rather than served as two different
   copies. Move the state out (a database, the shared page) before raising it.

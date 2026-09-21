@@ -10,6 +10,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **`Query`, a query-string builder beside `url_for`** (SPEC N36).
+  `url_for` fills and encodes a path and nothing past it, and the encoder
+  it uses was private, so an application with a GET filter form wrote a
+  percent-encoder of its own — `unotes`, the layer's soak application, did.
+  `Query().add(name, value)` then `q.on(path)`: pairs in order, names and
+  values encoded byte by byte (`%20`, never `+`), an empty value skipped so
+  a filter's URL is only what is set, `add_empty` for the pair whose
+  presence is the meaning. Exported from `m0_http`.
 - **The `m0` wheel and its CLI; published as `m0 0.1.0` on 2026-09-21** (SPEC
   N23–N26, D39–D43). `packaging/m0/` builds a pure-Python wheel that
   carries the framework's SOURCE — the five trees an application compiles

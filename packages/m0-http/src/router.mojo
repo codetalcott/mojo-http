@@ -479,6 +479,63 @@ struct Mount(Copyable, ImplicitlyCopyable, Movable):
         return reverse(self.join(pattern), given)
 
 
+struct Query(Movable):
+    """A query string, built a pair at a time: `url_for`'s other half.
+
+        var q = Query()
+        q.add("q", want.q)
+        q.add("page", String(page))
+        var url = q.on(url_for(NOTES))      # /notes?q=a%20b&page=2
+
+    `url_for` fills a path and encodes nothing past it, so an application
+    with a GET filter form had to write a percent-encoder of its own to
+    link to one -- and the one that does not is building a URL out of
+    request data with the bytes as they came. Names and values are encoded
+    as `url_for` encodes a segment: RFC 3986 unreserved bytes are kept and
+    every other BYTE is `%XX`, a space included (`%20`, which a form
+    decoder and `URI.parse` both read; never `+`). Byte-wise, so a value
+    that is not UTF-8 is encoded rather than trapped on (SPEC G14), and so
+    the result carries no `'`, backslash, CR or LF -- what `Datastar.swap`
+    refuses in a URL.
+
+    `add` SKIPS an empty value, because the URL an application writes for a
+    filter is "only what is set, in one order": one view, one address.
+    `add_empty` is for the pair whose presence is the meaning (`?draft=`).
+    Pairs keep the order they were added in and a repeated name is kept.
+    """
+
+    var _pairs: String
+
+    def __init__(out self):
+        self._pairs = String()
+
+    def add(mut self, name: String, value: String):
+        """Append `name=value`, or nothing at all if `value` is empty."""
+        if value.byte_length() > 0:
+            self.add_empty(name, value)
+
+    def add_empty(mut self, name: String, value: String = ""):
+        """Append `name=value` whatever `value` is, `name=` for an empty one."""
+        if self._pairs.byte_length() > 0:
+            self._pairs += "&"
+        _percent_encode_into(self._pairs, name)
+        self._pairs += "="
+        _percent_encode_into(self._pairs, value)
+
+    def is_empty(self) -> Bool:
+        return self._pairs.byte_length() == 0
+
+    def encoded(self) -> String:
+        """The pairs alone, no `?`: `q=a%20b&page=2`, or the empty string."""
+        return self._pairs
+
+    def on(self, path: String) -> String:
+        """`path?pairs`, or `path` unchanged when nothing was added."""
+        if self._pairs.byte_length() == 0:
+            return path
+        return String(path, "?", self._pairs)
+
+
 def _percent_encode_into(mut out: String, s: String):
     """Append `s` with every byte outside RFC 3986's unreserved set as `%XX`."""
     comptime HEX = "0123456789ABCDEF"

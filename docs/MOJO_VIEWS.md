@@ -157,6 +157,20 @@ var url = url_for(ITEM, String(id))
 A misspelled constant is a compile error. `url_for` percent-encodes each
 value and raises when the count of values is not the pattern's.
 
+A query string is `Query`, which encodes names and values the same way:
+
+```mojo
+var q = Query()
+q.add("q", want.q)          # an empty value is skipped
+q.add("page", String(page))
+var url = q.on(url_for(ITEMS))   # /items?q=a%20b&page=2
+```
+
+`add` writes only what is set, so one filtered view has one address;
+`add_empty` writes the pair whose presence is the meaning. A value that
+came from a request is encoded byte by byte, so the URL is one
+`Datastar.swap` accepts whatever the value held.
+
 `Views[S](Mount("/shop"))` registers every pattern under a prefix, and
 `mount.url_for(ITEM, ...)` puts the prefix in front. One `Mount` value does
 both, so a table moved under a prefix keeps its links.

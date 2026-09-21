@@ -408,14 +408,38 @@ def _open_and_exit(db_path: String):
 
 
 def _wait_exit(pid: Int) -> Int:
-    """`waitpid` and the child's exit code (-1 if it died of a signal)."""
+    """`waitpid` and the child's exit code, or MINUS the signal that killed
+    it. The signal's number is the finding: the one time a pair failed on a
+    CI runner both children had died of a signal, which is not the lock
+    this test is about (a loser there exits 1), and a bare -1 could not say
+    which -- SIGTRAP from a runtime teardown, SIGKILL from the host and
+    SIGSEGV are three different bugs."""
     var status = stack_allocation[1, c_int]()
     status[unsafe_offset=0] = 0
     _ = external_call["waitpid", c_int](c_int(pid), status, c_int(0))
     var raw = Int(status[unsafe_offset=0])
     if raw & 0x7F != 0:
-        return -1
+        return -(raw & 0x7F)
     return (raw >> 8) & 0xFF
+
+
+def _describe_exit(code: Int) -> String:
+    if code < 0:
+        return String("killed by signal ", -code)
+    return String("exit ", code)
+
+
+def test_a_signalled_child_is_reported_by_its_signal() raises:
+    """The null case for `_wait_exit`: a child killed by SIGKILL reads as -9,
+    never as an exit code and never as a bare -1. Without this the helper's
+    signal branch is only ever exercised by the failure it exists to explain."""
+    var pid = Int(external_call["fork", c_int]())
+    if pid == 0:
+        _ = external_call["raise", c_int](c_int(9))
+        _ = external_call["_exit", c_int](c_int(0))
+    assert_equal(_wait_exit(pid), -9)
+    assert_equal(_describe_exit(-9), "killed by signal 9")
+    assert_equal(_describe_exit(1), "exit 1")
 
 
 def test_two_processes_open_one_fresh_database() raises:
@@ -446,7 +470,10 @@ def test_two_processes_open_one_fresh_database() raises:
         var rb = _wait_exit(b)
         assert_equal(
             ra + rb, 0,
-            String("round ", round, ": a concurrent open failed (exit codes ", ra, ", ", rb, ")"),
+            String(
+                "round ", round, ": a concurrent open failed (",
+                _describe_exit(ra), ", ", _describe_exit(rb), ")",
+            ),
         )
     _cleanup(p)
 
