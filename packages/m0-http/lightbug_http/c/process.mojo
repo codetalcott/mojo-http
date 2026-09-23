@@ -234,7 +234,7 @@ def install_signal_handler(sig: Int, handler_address: Int) -> Bool:
 # duration of the call.
 
 from std.sys.info import CompilationTarget
-from lightbug_http.c.kqueue import _fcntl
+from lightbug_http.c.fcntl import clear_cloexec, set_cloexec
 
 
 def _c_string(s: String) -> List[UInt8]:
@@ -321,11 +321,6 @@ comptime _PROT_READ_WRITE = 0x1 | 0x2
 comptime _MAP_SHARED = 0x01
 
 
-comptime _F_GETFD = 1
-comptime _F_SETFD = 2
-comptime _FD_CLOEXEC = 1
-
-
 def keep_across_exec(fd: Int) -> Bool:
     """Clear `FD_CLOEXEC` on `fd`, so an exec'd worker inherits it.
 
@@ -335,15 +330,7 @@ def keep_across_exec(fd: Int) -> Bool:
     would silently detach a worker from its listener. Every descriptor a
     spawned worker must inherit goes through this, whatever its origin.
     """
-    # `_fcntl` carries the macOS variadic ABI; a second `external_call` of
-    # the same symbol with a different signature does not compile.
-    var flags = _fcntl(c_int(fd), c_int(_F_GETFD), c_int(0))
-    if flags < 0:
-        return False
-    if (Int(flags) & _FD_CLOEXEC) == 0:
-        return True
-    var rc = _fcntl(c_int(fd), c_int(_F_SETFD), c_int(Int(flags) & ~_FD_CLOEXEC))
-    return rc == 0
+    return clear_cloexec(fd)
 
 
 def shared_file_fd(length: Int) raises -> Int:
