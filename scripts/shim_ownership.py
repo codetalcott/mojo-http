@@ -277,6 +277,19 @@ class Harness:
                             "more_body": False})
             asyncio.get_running_loop().create_task(late())
             return
+        if behaviour == "bodyfirst":
+            # A body before its start, the error caught, then a proper
+            # answer: only the proper answer may reach the client.
+            try:
+                await send({"type": "http.response.body", "body": b"stray",
+                            "more_body": False})
+            except RuntimeError:
+                pass
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"ok",
+                        "more_body": False})
+            return
         if behaviour in ("twice", "bgreceive", "bgclientdisc"):
             await send({"type": "http.response.start", "status": 200,
                         "headers": []})
@@ -1365,6 +1378,18 @@ def test_an_eager_task_factory_still_ends_its_stream(h):
     assert "stream_note" not in kinds and "err" not in kinds, kinds
 
 
+def test_a_body_before_its_start_leaves_no_stray_bytes(h):
+    """PR 1 review M5: a body sent before its start raises, and nothing of
+    it may survive into the response an application that caught the error
+    then sends properly. The chunk used to be appended before the check,
+    so the answer went out as b'strayok'."""
+    h.job(0, "bodyfirst")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1, h.kinds(0)
+    assert done[0][4] == b"ok", done[0][4]
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1465,6 +1490,7 @@ TESTS = [
     test_a_client_disconnect_after_the_response_is_not_logged,
     test_an_eager_task_factory_still_ends_its_stream,
     test_work_scheduled_at_import_is_refused_by_name,
+    test_a_body_before_its_start_leaves_no_stray_bytes,
 ]
 
 
@@ -1711,6 +1737,23 @@ SABOTAGES = [
         "a HEAD's application that never listens is never stopped",
         "                        _loop.call_later(_HEAD_GRACE, self._stop_unheard)",
         "                        pass",
+    ),
+    (
+        "a body before its start is kept before it is refused",
+        "            if self.status is None:\n"
+        "                raise RuntimeError(\n"
+        "                    'ASGI sent http.response.body before http.response.start'\n"
+        "                )\n"
+        "            if chunk:\n"
+        "                self.chunks.append(chunk)\n",
+        "            if chunk:\n"
+        "                self.chunks.append(chunk)\n"
+        "            if self.status is None:\n"
+        "                raise RuntimeError(\n"
+        "                    'ASGI sent http.response.body before http.response.start'\n"
+        "                )\n"
+        "            if False:\n"
+        "                self.chunks.append(chunk)\n",
     ),
     (
         "work scheduled at import is not named",

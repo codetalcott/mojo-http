@@ -1441,6 +1441,13 @@ class _Cycle:
                 if chunk:
                     await self._emit(chunk)
                 return
+            # Refused BEFORE the bytes are kept: an application that catches
+            # this and then answers properly must not find them at the front
+            # of its real body (PR 1 review M5).
+            if self.status is None:
+                raise RuntimeError(
+                    'ASGI sent http.response.body before http.response.start'
+                )
             if chunk:
                 self.chunks.append(chunk)
                 self.total += len(chunk)
@@ -1449,10 +1456,6 @@ class _Cycle:
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP
                     )
-            if self.status is None:
-                raise RuntimeError(
-                    'ASGI sent http.response.body before http.response.start'
-                )
             # The final body: answer NOW, not when the application returns.
             # Starlette runs background tasks after this send (the response
             # waited for them: 1.5 s against uvicorn's 0), and its
