@@ -4373,6 +4373,13 @@ if python3 -c 'import fasthtml' 2>/dev/null; then
   curl -s --max-time 8 $B3/live/ | grep -q 'hello from feed' \
     || fail 'a mid-stream disconnect on /live broke /live itself'
 
+  # A socket the SERVER ends on the second executor's mount (one message
+  # over the 64 KB outbox): its disconnect must still reach that executor,
+  # routed by the lane the socket's begin frame recorded -- the end erased
+  # the channel name the lane is otherwise read from (SPEC L21).
+  M0_PORT=8110 python3 apps/hybrid_mix/feed/ws_end_probe.py /live \
+    || fail 'a socket the server ended on /live never told its application'
+
   # ASGI's `path` includes root_path (the framework strips it), which is the
   # opposite of the WSGI half asserted above -- one seam, two conventions.
   live=$(curl -s --max-time 8 $B3/app/where)
