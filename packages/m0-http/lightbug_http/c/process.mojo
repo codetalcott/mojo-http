@@ -334,11 +334,13 @@ def keep_across_exec(fd: Int) -> Bool:
 
 
 def shared_file_fd(length: Int) raises -> Int:
-    """An fd backing `length` bytes of shared memory that survives `exec`.
+    """An fd backing `length` bytes of shared memory, by which a spawned
+    worker maps the same page.
 
     `shm_open` under a name derived from this pid, unlinked at once so the
-    fd is the only handle, sized with `ftruncate`. Not `FD_CLOEXEC`, on
-    purpose: a spawned worker maps the same fd number it inherits.
+    fd is the only handle, sized with `ftruncate`. Close-on-exec: the spawn
+    hand-off keeps it across the one exec that adopts it, and a child an
+    application starts with `pass_fds=m0pub.child_fds()` gets it that way.
     """
     var attempt = 0
     while True:
@@ -356,8 +358,11 @@ def shared_file_fd(length: Int) raises -> Int:
             var rc = external_call["ftruncate", c_int, c_int, Int](fd, length)
             if rc != 0:
                 raise Error("ftruncate on the shared page failed, errno: ", get_errno())
-            if not keep_across_exec(Int(fd)):
-                raise Error("could not clear FD_CLOEXEC on the shared page, errno: ", get_errno())
+            # Close-on-exec like every descriptor the server creates (SPEC
+            # G16): `shm_open` sets it on both platforms, and this says so
+            # rather than relying on it. The spawn hand-off
+            # (`_exec_if_spawning`) clears it for the one exec that needs it.
+            set_cloexec(Int(fd))
             return Int(fd)
         var errno = get_errno()
         _ = name
