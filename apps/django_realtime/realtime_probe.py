@@ -289,6 +289,41 @@ if EXPECT_WORKERS <= 1:
         fail("socket heard %r, wanted the published message" % got)
     expect_silence(sock_other)
 
+    # --- Phase 4: a message the pool's channel cannot carry -------------------
+    # Inbound messages reach a pool thread as datagrams of at most 65,546
+    # bytes. A larger one used to be parked and retried for ever: no reply,
+    # no close, no log. It is refused with a Close carrying 1009 (SPEC I26).
+    phase("phase 4: an inbound message the channel cannot carry")
+    sock_big, _ = open_socket("news")
+    send_frame(sock_big, 0x2, b"o" * 70000)
+    # Heartbeat pings are answered and the channel's own text skipped, for
+    # up to five seconds; anything else is the answer.
+    deadline = time.time() + 5.0
+    op = None
+    while time.time() < deadline:
+        sock_big.settimeout(max(0.1, deadline - time.time()))
+        try:
+            op, payload = read_frame(sock_big)
+        except socket.timeout:
+            op = None
+            break
+        if op == 0x9:
+            send_frame(sock_big, 0xA, payload)
+            op = None
+            continue
+        if op == 0x1:
+            op = None
+            continue
+        break
+    if op is None:
+        fail("no answer but heartbeats to a 70,000-byte message in 5 s: parked, not refused")
+    if op != 0x8:
+        fail("a 70,000-byte message was answered with op=%d, not a Close" % op)
+    code = struct.unpack(">H", payload[:2])[0] if len(payload) >= 2 else None
+    if code != 1009:
+        fail("the Close carried %r, want 1009" % code)
+    sock_big.close()
+
     close_all([sock_a, sock_b, sock_other])
     print("realtime_probe OK (single worker, worker %s)" % worker_a)
     sys.exit(0)
