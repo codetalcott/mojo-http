@@ -369,7 +369,14 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     `_Cycle.send` answers one at its first streamed body with its head
     alone and drops the rest (SPEC L27), because the loop frames none of
     them and wrote that body raw where a keep-alive connection's next
-    response begins (10,000 of 10,000 bytes, measured). The buffered escape hatch keeps its send()-side
+    response begins (10,000 of 10,000 bytes, measured). The loop sends no
+    disconnect for an answer, so the early answer tells the application
+    itself: it resolves the slot's disconnect future, which wakes a
+    receive() parked before the first body (Starlette's, Django's), and an
+    application that parked none is cancelled after `_HEAD_GRACE`.
+    Unstopped, an endless body ran for the life of the process. The
+    loop's `_finish_response` holds the same line for a hold or a native
+    stream opened on a HEAD. The buffered escape hatch keeps its send()-side
     watchdog — do not "fix" it by lengthening the
     grace (docs/notes/wsgi-vs-asgi-history.md §8). **The pump is batched in both directions**, because the
     hello-world deficit was wakeup-bound, not CPU-bound (0.72x uvicorn at

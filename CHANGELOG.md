@@ -287,10 +287,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   frames a HEAD, wrote the body raw after the head: all 10,000 bytes of a
   10,000-byte route, and an endless stream for ever. A keep-alive client
   then read those bytes as the start of its next response. A HEAD is now
-  answered at its first streamed body with its head alone; the
-  application's later sends are dropped, and `receive()` says
-  `http.disconnect`, which is what stops a `StreamingResponse`. A 1xx, 204
-  or 304 streamed the same way is answered the same way.
+  answered at its first streamed body with its head alone, and the
+  application's later sends are dropped. A `receive()` it parked before the
+  first body, as Starlette and Django do, is woken with `http.disconnect`,
+  which stops a `StreamingResponse` and still runs its background tasks;
+  an application that never listens is cancelled if it is still running a
+  second later. A 1xx, 204 or 304 streamed the same way is answered the
+  same way. And a HEAD to a hold, an `M0-Hold` view under `--realtime` or
+  a native SSE route, was held as the stream a GET opens, writing every
+  event and heartbeat after the head: it is answered with its head, and the
+  subscription it made is dropped.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and
