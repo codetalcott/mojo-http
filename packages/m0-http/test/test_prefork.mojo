@@ -18,6 +18,7 @@ from lightbug_http.accept_share import (
 )
 
 from lightbug_http.c.fcntl import clear_cloexec, is_cloexec
+from lightbug_http.c.process import fd_identity
 from src.multiworker import SharedAtomics, spawn_inherited_fds
 from src.prefork import (
     bind_accept_share,
@@ -115,6 +116,29 @@ def test_the_bus_is_exported_and_adopted() raises:
     for i in range(3):
         assert_equal(adopted.read_fds[i], bus.read_fds[i])
         assert_equal(adopted.write_fds[i], bus.write_fds[i])
+
+
+def test_the_bus_exports_each_write_ends_identity() raises:
+    """`M0_BUS_WRITE_IDS`: `st_dev:st_ino` of each write end, in the order
+    `M0_BUS_WRITE_FDS` names them. A child's m0pub compares it with
+    `os.fstat` before writing to a number it inherited: a number is only a
+    number after exec, and the bus is close-on-exec, so without the
+    identity a child's own socket on that number looked like the bus and
+    got its datagrams (SPEC G16, I23).
+
+    covers: E24
+    """
+    _forked()
+    var bus = prefork_bus(2)
+    var ids = getenv("M0_BUS_WRITE_IDS", "").split(",")
+    assert_equal(len(ids), 2)
+    for i in range(2):
+        var want = fd_identity(bus.write_fds[i])
+        assert_equal(String(ids[i]), String(want[0]) + ":" + String(want[1]))
+    assert_true(String(ids[0]) != String(ids[1]), "two write ends share an identity")
+    var read_end = fd_identity(bus.read_fds[0])
+    var write_end = fd_identity(bus.write_fds[0])
+    assert_true(read_end[1] != write_end[1], "a pair's two ends share an inode")
 
 
 def test_accept_sharing_is_made_only_above_one_worker() raises:

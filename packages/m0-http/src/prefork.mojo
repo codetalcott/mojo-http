@@ -15,9 +15,11 @@ descriptors and shared mappings and nothing made after it reaches a sibling:
 Each is also EXPORTED, by descriptor number, so a worker that `exec`s
 (`m0serve --spawn-workers`, SPEC E15) -- or a child process an application
 starts to publish from (`m0pub`) -- can reach it: `M0_SHARED_ID_FD` and
-`M0_SHARED_ID_ADDR`, `M0_BUS_READ_FDS`/`M0_BUS_WRITE_FDS`,
-`M0_ACCEPT_READ_FDS`/`M0_ACCEPT_WRITE_FDS`. Those names are m0pub's
-interface as much as the server's; they do not change here. Every one is
+`M0_SHARED_ID_ADDR`, `M0_BUS_READ_FDS`/`M0_BUS_WRITE_FDS` with
+`M0_BUS_WRITE_IDS` (each write end's `dev:ino`, which m0pub checks before
+writing to a number it inherited), `M0_ACCEPT_READ_FDS`/`M0_ACCEPT_WRITE_FDS`.
+Those names are m0pub's interface as much as the server's; they do not
+change here. Every one is
 close-on-exec, like every descriptor the server creates (SPEC G16): the
 spawn's own exec keeps exactly these (`spawn_inherited_env` in
 `multiworker.mojo`), a child an application starts gets them only through
@@ -52,6 +54,7 @@ from lightbug_http.accept_share import (
 )
 from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.c.fcntl import set_cloexec
+from lightbug_http.c.process import fd_identity
 
 from .multiworker import SharedAtomics, int_list_env
 
@@ -85,6 +88,17 @@ def _adopted(var fds: List[Int]) raises -> List[Int]:
     for fd in fds:
         set_cloexec(fd)
     return fds^
+
+
+def _identities_csv(fds: List[Int]) raises -> String:
+    """`dev:ino,dev:ino,...` for `fds`, in order (`fd_identity`)."""
+    var out = String("")
+    for i in range(len(fds)):
+        var id = fd_identity(fds[i])
+        if i > 0:
+            out += ","
+        out += String(id[0]) + ":" + String(id[1])
+    return out^
 
 
 def _csv(values: List[Int]) -> String:
@@ -153,6 +167,10 @@ def prefork_bus(channels: Int) raises -> BroadcastBus:
         )
     var bus = BroadcastBus(channels if channels > 0 else 1)
     _ = setenv("M0_BUS_WRITE_FDS", _csv(bus.write_fds), True)
+    # Which open socket each number is: a child's m0pub checks it with
+    # `os.fstat` before writing, because after an exec the number may name
+    # the child's own file or socket (SPEC G16, I23).
+    _ = setenv("M0_BUS_WRITE_IDS", _identities_csv(bus.write_fds), True)
     _ = setenv("M0_BUS_READ_FDS", _csv(bus.read_fds), True)
     return bus^
 

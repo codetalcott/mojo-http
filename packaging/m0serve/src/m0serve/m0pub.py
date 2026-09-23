@@ -88,7 +88,7 @@ import ctypes
 import json
 import mmap
 import os
-import socket
+import stat
 import struct
 import sys
 
@@ -128,6 +128,9 @@ than a database error at COMMIT far from the call.
 """
 
 BUS_FDS_ENV = "M0_BUS_WRITE_FDS"
+# `st_dev:st_ino` of each, in the same order: WHICH open socket each number
+# is (server.mojo's `prefork_bus`, SPEC G16).
+BUS_IDS_ENV = "M0_BUS_WRITE_IDS"
 ID_ADDR_ENV = "M0_SHARED_ID_ADDR"
 ID_FD_ENV = "M0_SHARED_ID_FD"
 CORE_LIB_ENV = "M0_CORE_LIB"
@@ -152,34 +155,61 @@ _page = None
 _bus_fds = None
 
 
-def _is_bus_socket(fd):
-    """Whether `fd` is an open Unix datagram socket here -- the bus -- rather
-    than a number the environment inherited from a process whose descriptors
-    this one does not have."""
-    try:
-        s = socket.socket(fileno=fd)
-    except OSError:
-        return False
-    try:
-        return s.family == socket.AF_UNIX and s.type == socket.SOCK_DGRAM
-    finally:
-        s.detach()
+def _ints(raw):
+    """The integers in a comma-separated value; anything else skipped."""
+    out = []
+    for part in raw.split(","):
+        try:
+            out.append(int(part))
+        except ValueError:
+            pass
+    return out
+
+
+def _identities(raw):
+    """`dev:ino` pairs, in order; a malformed entry keeps its place as None."""
+    out = []
+    for part in raw.split(","):
+        try:
+            dev, ino = part.split(":")
+            out.append((int(dev), int(ino)))
+        except ValueError:
+            out.append(None)
+    return out
 
 
 def bus_write_fds():
     """The bus write fds server.mojo announced, that ARE the bus here.
 
-    Checked once per process. A child started without `pass_fds` inherits
-    `M0_BUS_WRITE_FDS` but not the descriptors, which are close-on-exec, and
-    the numbers may name its own files: a datagram written there would land
-    in one of them. A child handed nothing publishes nothing.
+    Checked once per process, by identity. A child started without
+    `pass_fds` inherits `M0_BUS_WRITE_FDS` but not the descriptors, which
+    are close-on-exec, so the numbers may name its own files or sockets: a
+    datagram written there lands in one of them. Each number is kept only if
+    `os.fstat` finds the same device and inode `M0_BUS_WRITE_IDS` records
+    for it, so a child handed nothing publishes nothing, and the check
+    builds no socket object (one built over a child's own socket under a
+    default timeout switched it to non-blocking). A server that exports no
+    identities is older than this module; there a number is kept if it is
+    at least a socket, never a file.
     """
     global _bus_fds
     pid = os.getpid()
     if _bus_fds is None or _bus_fds[0] != pid:
-        raw = os.environ.get(BUS_FDS_ENV, "")
-        named = [int(part) for part in raw.split(",") if part]
-        _bus_fds = (pid, [fd for fd in named if _is_bus_socket(fd)])
+        named = _ints(os.environ.get(BUS_FDS_ENV, ""))
+        raw_ids = os.environ.get(BUS_IDS_ENV, "")
+        ids = _identities(raw_ids) if raw_ids else None
+        kept = []
+        for i, fd in enumerate(named):
+            try:
+                st = os.fstat(fd)
+            except (OSError, ValueError, OverflowError):
+                continue
+            if ids is None:
+                if stat.S_ISSOCK(st.st_mode):
+                    kept.append(fd)
+            elif i < len(ids) and ids[i] == (st.st_dev, st.st_ino):
+                kept.append(fd)
+        _bus_fds = (pid, kept)
     return list(_bus_fds[1])
 
 
@@ -199,7 +229,7 @@ def _page_fd():
     try:
         fd = int(os.environ.get(ID_FD_ENV, ""))
         os.fstat(fd)
-    except (ValueError, OSError):
+    except (ValueError, OSError, OverflowError):
         return None
     return fd
 

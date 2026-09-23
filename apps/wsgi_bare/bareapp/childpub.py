@@ -1,10 +1,11 @@
 """A view that publishes from a child process, for `poe smoke-child-publish` (#322).
 
 The pattern #310 pushed people to: work that must outlive the request runs
-in a child process, and the child publishes its progress onto the bus it
-inherited with `pass_fds`. The bus descriptors survive `exec`; the shared
-event-id page does not, because a mapping dies at exec and
-`M0_SHARED_ID_ADDR` is a number in the PARENT's address space. A child that
+in a child process, and the child publishes its progress onto the bus it was
+handed with `pass_fds`, the only way the bus reaches a child: every
+descriptor the server creates is close-on-exec (SPEC G16). The shared
+event-id page is a mapping, and a mapping dies at exec: `M0_SHARED_ID_ADDR`
+is a number in the PARENT's address space. A child that
 inherited the environment wholesale called `m0pub.next_event_id()` on that
 number and died with SIGSEGV, or, where the new image had something mapped
 there, incremented eight bytes of it.
@@ -24,6 +25,14 @@ answers all of it as JSON. The modes:
   file sits on the first `M0_BUS_WRITE_FDS` number in the child. The bus
   is close-on-exec (SPEC G16), so a child handed nothing has no bus, and
   it must write nothing into whatever file now has that number.
+- `stale_bus_socket`: the same, with the child's OWN Unix datagram socket
+  on that number (a syslog-shaped socket, connected to a path) and a
+  default socket timeout set. A check by kind passed it and wrote the bus
+  datagram into it, and building a socket object over it under that
+  timeout turned it non-blocking; nothing may reach it, and it must still
+  block.
+- `malformed_bus`: `M0_BUS_WRITE_FDS` names a negative and an overflowing
+  number. Publishing degrades to nothing written; it never raises.
 
 `/events?channel=C` holds an SSE stream, so a probe can see the child's frame
 arrive and whether it carried an `id:` line.
@@ -53,9 +62,31 @@ if os.environ.get("CHILDPUB_OCCUPY_FD"):
     n = int(os.environ["CHILDPUB_OCCUPY_FD"])
     f = open(os.environ["CHILDPUB_OCCUPY_PATH"], "r+b")
     os.dup2(f.fileno(), n)
+srv = None
+if os.environ.get("CHILDPUB_OCCUPY_SOCKET"):
+    # The child's own datagram socket, connected to a path, on a bus fd's
+    # number -- and a default timeout, under which a socket object built
+    # over a descriptor switches it to non-blocking.
+    import socket, tempfile
+    n = int(os.environ["CHILDPUB_OCCUPY_SOCKET"])
+    path = os.path.join(tempfile.mkdtemp(), "s")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    srv.bind(path)
+    cli = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    cli.connect(path)
+    os.dup2(cli.fileno(), n)
+    socket.setdefaulttimeout(5)
 from m0serve import m0pub
 written, event_id = m0pub.publish_with_id(sys.argv[1], "from-child")
-print(json.dumps({"id": event_id, "written": written}))
+out = {"id": event_id, "written": written}
+if srv is not None:
+    srv.setblocking(False)
+    try:
+        out["received"] = len(srv.recv(65536))
+    except BlockingIOError:
+        out["received"] = 0
+    out["still_blocking"] = os.get_blocking(n)
+print(json.dumps(out))
 """
 
 
@@ -91,6 +122,15 @@ def _spawn(mode, channel):
         occupy.close()
         env["CHILDPUB_OCCUPY_FD"] = str(bus[0])
         env["CHILDPUB_OCCUPY_PATH"] = occupy.name
+    elif mode == "stale_bus_socket":
+        bus = m0pub.bus_write_fds()
+        if not bus:
+            return {"error": "the server exports no M0_BUS_WRITE_FDS"}
+        fds = []  # the bus is NOT handed over
+        env["CHILDPUB_OCCUPY_SOCKET"] = str(bus[0])
+    elif mode == "malformed_bus":
+        fds = []
+        env["M0_BUS_WRITE_FDS"] = "-1,99999999999999999999"
     elif mode != "inherit":
         return {"error": "unknown mode " + mode}
     try:

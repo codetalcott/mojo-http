@@ -19,6 +19,11 @@ mode must produce:
 - `stale_bus`: nothing passed, and an unrelated file on a bus fd's number in
   the child. The child must exit 0, write NOTHING (the bus is close-on-exec,
   SPEC G16) and leave the file untouched. It publishes no frame to read.
+- `stale_bus_socket`: the same with the child's own path-connected datagram
+  socket on that number, under a default socket timeout: nothing written,
+  nothing received on it, and it still blocks.
+- `malformed_bus`: a negative and an overflowing bus fd number: exit 0,
+  nothing written.
 
 The child must be able to load libm0core, or every mode publishes unnumbered
 frames and the probe passes having reached nothing. The tree's macOS build
@@ -52,7 +57,7 @@ SHAPES = [
     ("workers-2", ["--workers", "2"]),
     ("spawn-workers", ["--workers", "2", "--spawn-workers"]),
 ]
-UNNUMBERED = ("inherit", "scrub", "stale_fd", "stale_bus")
+UNNUMBERED = ("inherit", "scrub", "stale_fd", "stale_bus", "stale_bus_socket", "malformed_bus")
 
 
 def phase(name):
@@ -180,6 +185,19 @@ def run_case(port, shape, mode, problems):
             if not child.get("occupied_file_untouched"):
                 problems.append("%s: the file on a bus fd's old number was written" % where)
             return  # nothing was published, so there is no frame to read
+        if mode == "stale_bus_socket":
+            if child.get("written") != 0 or child.get("received") != 0:
+                problems.append("%s: a child handed no bus wrote %s datagrams, %s bytes of which "
+                                "reached its OWN socket on a bus fd's number"
+                                % (where, child.get("written"), child.get("received")))
+            if child.get("still_blocking") is not True:
+                problems.append("%s: the child's own blocking socket was left non-blocking by "
+                                "m0pub looking at it" % where)
+            return
+        if mode == "malformed_bus":
+            if child.get("written") != 0:
+                problems.append("%s: malformed bus numbers were written to" % where)
+            return
         phase("%s/%s: reading the child's frame" % (shape, mode))
         on_wire = read_child_frame(resp)
         want = None if got == -1 else got
@@ -194,7 +212,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=os.path.join(REPO, "bin", "m0serve"))
     ap.add_argument("--port", type=int, default=8671)
-    ap.add_argument("--modes", default="inherit,scrub,stale_fd,stale_bus,handoff")
+    ap.add_argument("--modes", default="inherit,scrub,stale_fd,stale_bus,stale_bus_socket,malformed_bus,handoff")
     args = ap.parse_args()
 
     problems = []

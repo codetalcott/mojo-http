@@ -321,6 +321,36 @@ comptime _PROT_READ_WRITE = 0x1 | 0x2
 comptime _MAP_SHARED = 0x01
 
 
+def fd_identity(fd: Int) raises -> Tuple[Int, Int]:
+    """`(st_dev, st_ino)` of an open descriptor: WHICH open file it is.
+
+    A descriptor number means nothing across an `exec` -- in a child it may
+    name the child's own file or socket -- so a number handed down in the
+    environment travels with this, and m0pub compares it with `os.fstat`
+    before writing to it (SPEC G16, I23). `st_ino` is the 8 bytes at offset
+    8 of `struct stat` on every target this builds for (macOS arm64, Linux
+    x86-64 and aarch64). `st_dev` opens the struct: a signed 4-byte
+    `dev_t` on macOS, where every socket answers -1, and 8 bytes on Linux.
+    Python reads the same two fields the same way.
+    """
+    var buf = List[UInt8](capacity=256)
+    for _ in range(256):
+        buf.append(0)
+    var rc = external_call["fstat", c_int, c_int, type_of(buf.unsafe_ptr())](
+        c_int(fd), buf.unsafe_ptr()
+    )
+    if rc != 0:
+        raise Error("fstat failed, errno: ", get_errno())
+    var dev: Int
+    comptime if CompilationTarget.is_macos():
+        dev = Int(buf.unsafe_ptr().unsafe_bitcast[Int32]()[])
+    else:
+        dev = Int(buf.unsafe_ptr().unsafe_bitcast[Int64]()[])
+    var ino = Int(buf.unsafe_ptr().unsafe_bitcast[Int64]()[unsafe_offset=1])
+    _ = buf
+    return (dev, ino)
+
+
 def shared_file_fd(length: Int) raises -> Int:
     """An fd backing `length` bytes of shared memory, by which a spawned
     worker maps the same page.
