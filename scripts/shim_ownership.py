@@ -106,6 +106,7 @@ class Harness:
         self.head_receive = []   # what a receive() after a streamed HEAD got
         self.head_finished = False  # the streamed HEAD's app ran to its end
         self.head_task = None    # a HEAD application's own task
+        self.linger_cancels = 0  # cancels a lingering stream task saw
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -276,6 +277,27 @@ class Harness:
                 await send({"type": "http.response.body", "body": b"LATE",
                             "more_body": False})
             asyncio.get_running_loop().create_task(late())
+            return
+        if behaviour == "linger":
+            # A stream that outlives its disconnect: its cleanup swallows
+            # the first cancel (a finally doing slow work), and counts
+            # every cancel it is sent.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"x" * 64,
+                        "more_body": True})
+            while True:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.linger_cancels += 1
+                    if self.linger_cancels > 1:
+                        raise
+        if behaviour == "longpoll":
+            # Parked in receive() before answering: its disconnect arrives
+            # there, and nothing else of it is a stream.
+            await receive()
+            await receive()
             return
         if behaviour == "bodyfirst":
             # A body before its start, the error caught, then a proper
@@ -1390,6 +1412,39 @@ def test_a_body_before_its_start_leaves_no_stray_bytes(h):
     assert done[0][4] == b"ok", done[0][4]
 
 
+def _linger_then(h, successor):
+    """A stream on slot 0 lingers past its disconnect (one cancel, which it
+    swallows); `successor` is spawned on the recycled slot and then its own
+    connection leaves. Returns the cancels the lingering task saw."""
+    h.job(0, "linger")
+    h.settle()
+    assert h.kinds(0)[:1] == ["stream_start"], h.kinds(0)
+    h.disconnect(0)
+    h.settle()
+    assert h.linger_cancels == 1, h.linger_cancels
+    h.job(0, successor)
+    h.settle()
+    h.disconnect(0)
+    h.settle()
+    return h.linger_cancels
+
+
+def test_a_websocket_spawn_forgets_the_previous_connections_stream_task(h):
+    """PR 1 review M3: a socket spawned on a slot whose previous stream task
+    is still winding down must not cancel that task again when the socket's
+    own client leaves. The slot's stream-task entry named the old task, and
+    only its owner's cleanup removed it. The socket must still be open when
+    its client leaves: one that returns at once cleans the slot first."""
+    assert _linger_then(h, "wskeep") == 1, h.linger_cancels
+
+
+def test_an_http_spawn_forgets_the_previous_connections_stream_task(h):
+    """The HTTP twin of M3: a request parked in receive() on the recycled
+    slot leaves, and the previous connection's stream task is not cancelled
+    a second time."""
+    assert _linger_then(h, "longpoll") == 1, h.linger_cancels
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1491,6 +1546,8 @@ TESTS = [
     test_an_eager_task_factory_still_ends_its_stream,
     test_work_scheduled_at_import_is_refused_by_name,
     test_a_body_before_its_start_leaves_no_stray_bytes,
+    test_a_websocket_spawn_forgets_the_previous_connections_stream_task,
+    test_an_http_spawn_forgets_the_previous_connections_stream_task,
 ]
 
 
@@ -1754,6 +1811,18 @@ SABOTAGES = [
         "                )\n"
         "            if False:\n"
         "                self.chunks.append(chunk)\n",
+    ),
+    (
+        "an HTTP spawn keeps the previous connection's stream task",
+        "    # remove it, and the owner is now this task.\n"
+        "    _exec_stream_tasks.pop(slot, None)\n",
+        "    # remove it, and the owner is now this task.\n",
+    ),
+    (
+        "a WebSocket spawn keeps the previous connection's stream task",
+        "    # socket's to cancel when its client leaves (PR 1 review M3).\n"
+        "    _exec_stream_tasks.pop(slot, None)\n",
+        "    # socket's to cancel when its client leaves (PR 1 review M3).\n",
     ),
     (
         "work scheduled at import is not named",

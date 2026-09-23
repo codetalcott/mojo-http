@@ -1561,6 +1561,11 @@ def spawn(slot, scope, body):
     # A disconnect that reached the slot before this task existed was the
     # previous connection's (the tag precedes this job on the FIFO).
     _exec_disconnects.pop(slot, None)
+    # So is a stream task still named for the slot: its disconnect has been
+    # delivered already, and left here it was cancelled a second time by
+    # THIS connection's (PR 1 review M3). Only the owner's cleanup used to
+    # remove it, and the owner is now this task.
+    _exec_stream_tasks.pop(slot, None)
     task.add_done_callback(cycle.done)
 
 
@@ -1773,6 +1778,9 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
         'subprotocols': _ws_subprotocols(headers),
         'state': dict(_lifespan_state),
     }
+    # The previous connection's stream task, as in spawn: not this
+    # socket's to cancel when its client leaves (PR 1 review M3).
+    _exec_stream_tasks.pop(slot, None)
     task = _loop.create_task(_serve_one_ws(slot, scope))
     task._m0_streaming = True
     # A socket is told its client has gone through receive() -- the
