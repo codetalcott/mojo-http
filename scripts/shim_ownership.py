@@ -99,6 +99,8 @@ class Harness:
         self.http_sends = []    # every stored stream's send
         self.cleanups = []      # disconnect codes an app's cleanup saw
         self.second_receive = []  # what a receive() after the disconnect got
+        self.release = asyncio.Event()  # lets a background task finish
+        self.bg_done = False
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -217,6 +219,34 @@ class Harness:
         q = dict(p.split("=", 1) for p in
                  scope["query_string"].decode().split("&") if p)
         behaviour = q.get("b", "hold")
+        if behaviour in ("background", "plain", "failafter"):
+            status = 500 if behaviour == "failafter" else 200
+            await send({"type": "http.response.start", "status": status,
+                        "headers": []})
+            body = {"background": b"answered", "plain": b"plain",
+                    "failafter": b"app error page"}[behaviour]
+            await send({"type": "http.response.body", "body": body,
+                        "more_body": False})
+            if behaviour == "background":
+                # Starlette's shape: a response's background tasks run
+                # after its final body, inside the same call.
+                await self.release.wait()
+                self.bg_done = True
+            if behaviour == "failafter":
+                # ServerErrorMiddleware's shape: a finished 500, then the
+                # re-raise of the error it was for.
+                raise ValueError("kaboom after body")
+            return
+        if behaviour == "streambg":
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"x" * 64,
+                        "more_body": True})
+            await send({"type": "http.response.body", "body": b"",
+                        "more_body": False})
+            await self.release.wait()
+            self.bg_done = True
+            return
         await send({"type": "http.response.start", "status": 200,
                     "headers": []})
         if behaviour == "storehold":
@@ -747,6 +777,74 @@ def test_the_drain_ends_a_socket_blocked_outside_receive(h):
     assert task.cancelled(), "the drain stopped without ending the socket"
 
 
+def test_a_response_is_answered_at_its_final_body(h):
+    """Starlette runs a response's background tasks after its final body,
+    inside the same call, so answering when the application RETURNED held
+    every such response for as long as its background work took: 1.5 s for
+    a task that sleeps 1.5 s, where uvicorn answers at once."""
+    h.job(0, "background")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1 and done[0][4] == b"answered", (
+        "the response was not answered while its background work ran: %r"
+        % (h.kinds(0),))
+    first = h.ns["_exec_slot_task"][0]
+    assert not first.done(), "the background work is not still running"
+    # Keep-alive: the next request on the same connection is served while
+    # the first request's background work runs...
+    h.job(0, "plain")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert [d[4] for d in done] == [b"answered", b"plain"], (
+        "the second request was not answered: %r" % (h.kinds(0),))
+    # ...and the client leaving does not cancel that work.
+    h.disconnect(0)
+    h.settle()
+    assert not first.cancelled(), "the disconnect cancelled background work"
+    h.release.set()
+    h.settle()
+    assert h.bg_done, "the background work never finished"
+    assert h.kinds(0).count("done") == 2 and "err" not in h.kinds(0), (
+        "the late finish answered the slot again: %r" % (h.kinds(0),))
+
+
+def test_a_stream_ends_at_its_final_body(h):
+    """The streamed path had the same wait (its end frame was sent from
+    `run`'s finally), and it is the path every response takes under
+    Starlette's BaseHTTPMiddleware."""
+    h.job(0, "streambg")
+    h.settle()
+    assert "stream_end" in h.kinds(0), (
+        "the stream did not end while its background work ran: %r"
+        % (h.kinds(0),))
+    owner = h.ns["_exec_slot_task"][0]
+    h.disconnect(0)
+    h.settle()
+    assert not owner.cancelled(), (
+        "a disconnect after the stream ended cancelled its background work")
+    h.release.set()
+    h.settle()
+    assert h.bg_done
+    ends = [k for k in h.kinds(0) if k in ("stream_end", "stream_abort")]
+    assert ends == ["stream_end"], ends
+
+
+def test_an_error_after_the_final_body_keeps_the_apps_response(h):
+    """ServerErrorMiddleware sends a finished 500 and THEN re-raises. The
+    executor used to answer with its own "Failed to process request", so a
+    FastHTML developer never saw `debug=True`'s traceback page."""
+    h.job(0, "failafter")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1 and done[0][2] == 500 \
+        and done[0][4] == b"app error page", (
+            "the application's own 500 was not what answered: %r" % (done,))
+    assert "err" not in h.kinds(0), "the slot was answered twice"
+    logs = [e[2] for e in h.events if e[0] == "log" and e[1] == 0]
+    assert logs and "kaboom after body" in logs[0], (
+        "the late error never reached the log: %r" % (logs,))
+
+
 TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
@@ -764,6 +862,9 @@ TESTS = [
     test_a_socket_disconnect_reaches_the_app_through_receive,
     test_a_receive_after_the_disconnect_says_so_again,
     test_the_drain_ends_a_socket_blocked_outside_receive,
+    test_a_response_is_answered_at_its_final_body,
+    test_a_stream_ends_at_its_final_body,
+    test_an_error_after_the_final_body_keeps_the_apps_response,
 ]
 
 
@@ -844,6 +945,26 @@ SABOTAGES = [
         "the drain waits for every socket",
         "        if getattr(t, '_m0_ws', False):\n            t.cancel()\n",
         "        pass\n",
+    ),
+    (
+        "a response is answered when the application returns",
+        "            self.completed = True\n"
+        "            body, self.chunks = b''.join(self.chunks), []\n"
+        "            _exec_put(('done', self.slot, self.status, self.headers, body))",
+        "            return",
+    ),
+    (
+        "a stream is ended when the application returns",
+        "                    if not _task_gone(self.task):\n"
+        "                        _exec_put(('stream_end', self.slot))\n"
+        "                return",
+        "                    self.completed = False\n"
+        "                return",
+    ),
+    (
+        "an ended stream stays cancellable",
+        "                        _exec_stream_tasks.pop(self.slot, None)\n",
+        "                        pass\n",
     ),
     (
         "a drain ack is added rather than clamped to the window",

@@ -777,6 +777,11 @@ async def _dropped():
     await asyncio.sleep(0)
 
 
+def _describe(exc):
+    # What the log says about an application error.
+    return '%s: %s' % (type(exc).__name__, exc)
+
+
 def _exec_on_disconnect(slot):
     # The loop closed this slot (client vanished, or end-of-stream close
     # raced): resolve the pending receive() into http.disconnect (or
@@ -1187,6 +1192,7 @@ class _Cycle:
         'streaming',
         'aborted',
         'task',
+        'completed',
     )
 
     def __init__(self, slot, body):
@@ -1200,6 +1206,7 @@ class _Cycle:
         self.streaming = False
         self.aborted = False
         self.task = None
+        self.completed = False
 
     async def receive(self):
         if not self.delivered:
@@ -1269,9 +1276,24 @@ class _Cycle:
         elif t == 'http.response.body':
             chunk = bytes(message.get('body', b'') or b'')
             more = bool(message.get('more_body', False))
+            if self.completed:
+                # A body after the response ended: nothing to send it to.
+                return
             if self.streaming:
                 if chunk:
                     await self._emit(chunk)
+                if not more:
+                    # The final body: end the stream on the wire NOW.
+                    # Starlette runs a response's background tasks after
+                    # this send, inside the same call, and ending it from
+                    # `run`'s finally held the client until they were done.
+                    self.completed = True
+                    if _exec_stream_tasks.get(self.slot) is self.task:
+                        # Ended: a later disconnect must not cancel the
+                        # application's background work (uvicorn does not).
+                        _exec_stream_tasks.pop(self.slot, None)
+                    if not _task_gone(self.task):
+                        _exec_put(('stream_end', self.slot))
                 return
             if more:
                 # The switch: this response is a stream. Send the head
@@ -1324,6 +1346,19 @@ class _Cycle:
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP
                     )
+            if self.status is None:
+                raise RuntimeError(
+                    'ASGI sent http.response.body before http.response.start'
+                )
+            # The final body: answer NOW, not when the application returns.
+            # Starlette runs background tasks after this send (the response
+            # waited for them: 1.5 s against uvicorn's 0), and its
+            # ServerErrorMiddleware sends a finished 500 before re-raising
+            # (the executor replaced it with its own). Exactly one completion
+            # per job either way: `done` below skips `_on_task_done`.
+            self.completed = True
+            body, self.chunks = b''.join(self.chunks), []
+            _exec_put(('done', self.slot, self.status, self.headers, body))
 
     async def run(self, scope):
         slot = self.slot
@@ -1333,8 +1368,14 @@ class _Cycle:
             self.aborted = True
             raise
         finally:
-            if self.streaming and not _task_gone(self.task):
-                # End of stream. A normal completion ends with the chunked
+            if (
+                self.streaming
+                and not self.completed
+                and not _task_gone(self.task)
+            ):
+                # End of a stream the application never finished with a
+                # final body (a completed one ended at its final body, in
+                # `send`). A normal completion ends with the chunked
                 # terminator and the connection returns to keep-alive; an
                 # application error after the head -- or a cancellation that
                 # was not a disconnect -- aborts instead, and the loop closes
@@ -1342,7 +1383,7 @@ class _Cycle:
                 # rather than a short one under a clean ending.
                 _exec_put(('stream_abort' if self.aborted else 'stream_end', slot))
 
-        if self.streaming:
+        if self.streaming or self.completed:
             return None
         if self.status is None:
             raise RuntimeError(
@@ -1352,8 +1393,29 @@ class _Cycle:
 
     def done(self, t):
         # The done-callback: a bound method, where `_task_done` built a
-        # closure per request. The rule is `_on_task_done`'s.
-        _on_task_done(self.slot, t)
+        # closure per request.
+        if not self.completed:
+            # The rule is `_on_task_done`'s.
+            _on_task_done(self.slot, t)
+            return
+        # Answered at its final body (see send). What ran after it, a
+        # background task, is the application's own: clean up only as the
+        # owner, and report a late error to the log, never to the slot,
+        # which may belong to the connection's next request by now.
+        _exec_tasks.discard(t)
+        if _exec_slot_task.get(self.slot) is t:
+            _exec_slot_task.pop(self.slot, None)
+            _exec_cleanup_slot(self.slot)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None and not isinstance(exc, ClientDisconnected):
+                _exec_put(
+                    (
+                        'log',
+                        self.slot,
+                        'request raised after its response: ' + _describe(exc),
+                    )
+                )
 
 
 def spawn(slot, scope, body):
@@ -1398,14 +1460,14 @@ def _on_task_done(slot, t):
         if not t.cancelled():
             exc = t.exception()
             if exc is not None:
-                _exec_put(('stream_note', slot, '%s: %s' % (type(exc).__name__, exc)))
+                _exec_put(('stream_note', slot, _describe(exc)))
         return
     if t.cancelled():
         _exec_put(('err', slot, 'cancelled'))
         return
     exc = t.exception()
     if exc is not None:
-        _exec_put(('err', slot, '%s: %s' % (type(exc).__name__, exc)))
+        _exec_put(('err', slot, _describe(exc)))
         return
     status, headers, body_bytes = t.result()
     _exec_put(('done', slot, status, headers, body_bytes))
