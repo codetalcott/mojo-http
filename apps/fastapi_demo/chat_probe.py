@@ -148,9 +148,13 @@ def connect(path):
     return Conn(sock, rest)
 
 
+def get_json(path):
+    with urllib.request.urlopen("http://127.0.0.1:%d%s" % (PORT, path), timeout=5) as r:
+        return json.loads(r.read())
+
+
 def active():
-    with urllib.request.urlopen("http://127.0.0.1:%d/chat-count" % PORT, timeout=5) as r:
-        return json.loads(r.read())["active"]
+    return get_json("/chat-count")["active"]
 
 
 def main():
@@ -193,6 +197,25 @@ def main():
     if not closes or closes[0][1] != 1011:
         fail("the raising socket closed with %r, want 1011: 1000 tells the "
              "client all went well (SPEC L24)" % (closes,))
+
+    phase("a socket the server ends itself still tells its application")
+    # Its one message is over the 64 KB outbox cap, so the SERVER ends the
+    # socket. Nothing about that reached the executor -- the loop tagged a
+    # disconnect only for a slot still subscribed -- so the application's
+    # receive() waited for ever and its cleanup never ran (SPEC L21).
+    big = connect("/ws-big")
+    big.frames_within(3.0)
+    told = 0
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        told = get_json("/ws-big-told")["told"]
+        if told:
+            break
+        time.sleep(0.1)
+    if told != 1:
+        fail("the server ended a socket over its outbox cap and the "
+             "application never heard: /ws-big-told says %d (SPEC L21)" % told)
+    big.sock.close()
 
     phase("the room empties one client at a time")
     # One at a time: the example's own `except` broadcasts "left" to

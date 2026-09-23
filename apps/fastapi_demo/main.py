@@ -134,3 +134,28 @@ async def ws_boom(websocket: WebSocket):
     # traceback must reach the log (L23).
     await websocket.accept()
     raise RuntimeError("fastapi-demo ws kaboom")
+
+
+BIG_TOLD = []
+
+
+@app.websocket("/ws-big")
+async def ws_big(websocket: WebSocket):
+    # One message just over the server's 64 KB per-socket outbox (SPEC I17;
+    # 66 KB, as apps/asgi_bare sizes it): the SERVER ends this socket -- not
+    # the client, not the application. The application must still hear it
+    # through receive() (L21), or its own cleanup never runs, and a send it
+    # kept would reach the next client on the slot (L20). The loop used to
+    # tell the executor nothing about a socket it ended itself.
+    await websocket.accept()
+    await websocket.send_bytes(b"o" * (66 * 1024))
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        BIG_TOLD.append(True)
+
+
+@app.get("/ws-big-told")
+async def ws_big_told():
+    return {"told": len(BIG_TOLD)}

@@ -72,6 +72,10 @@ comptime NOT_POOL_HELD = -2
 Not -1: that is the unmounted pool's own lane, and a sentinel a real lane
 can equal would route an executor's socket into a pool."""
 
+comptime NOT_EXECUTOR_OWNED = -2
+"""`exec_lane` for a slot no executor opened: `-1` is a real lane (the
+unmounted executor), so the sentinel cannot be -1."""
+
 comptime WS_MESSAGE_PATH = "/ws/message"
 
 comptime STREAM_PIECE = 16 * 1024
@@ -244,6 +248,20 @@ struct WSGIHandler(ThreadHandler):
     whose view gated the upgrade — `hold_lane[slot]` names it, the frame
     that subscribed the socket carried it, and this is where it goes."""
 
+    var exec_lane: List[Int]
+    """The executor lane whose `b` or `B` begin frame opened this slot's
+    stream or socket, or `NOT_EXECUTOR_OWNED`; reset when the connection
+    closes.
+
+    It is what makes `sse_slot_disconnected` tell the executor about EVERY
+    connection it produced. The subscription is not enough: an application's
+    own `websocket.close` and the loop's `_end_socket` both unsubscribe
+    before the connection closes, so the disconnect path found nothing
+    subscribed, sent no tag, and the socket's task was never told -- its
+    `receive()` waited for ever, its cleanup never ran, and a `send` it kept
+    reached the next client the loop gave the slot (SPEC L20, L21). The lane
+    routes that tag, because the unsubscribe has erased the channel name the
+    lane is otherwise read from."""
     var hold_lane: List[Int]
     """Loop side: for a socket a POOL thread's view held, the lane it belongs
     to; `NOT_POOL_HELD` for every other slot.
@@ -371,6 +389,7 @@ struct WSGIHandler(ThreadHandler):
         self.streams = SSERegistry(slots)
         self.sockets = SSERegistry(slots)
         self.asgi_done = List[Bool](capacity=slots)
+        self.exec_lane = List[Int](capacity=slots)
         self.hold_lane = List[Int](capacity=slots)
         self.stream_gen = List[Int](capacity=slots)
         self.stream_lost = List[Bool](capacity=slots)
@@ -379,6 +398,7 @@ struct WSGIHandler(ThreadHandler):
         self.ws_parked = List[List[UInt8]](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
+            self.exec_lane.append(NOT_EXECUTOR_OWNED)
             self.hold_lane.append(NOT_POOL_HELD)
             self.stream_gen.append(STREAM_GEN_NONE)
             self.stream_lost.append(False)
@@ -689,7 +709,11 @@ struct WSGIHandler(ThreadHandler):
         The lane is the second number of the reserved channel name; absent
         (the unmounted server, or a frame from before lanes existed) means
         the one executor there is."""
-        var lane = _parse_stream_lane(url.as_bytes())
+        return self._notify_fd_for_lane(_parse_stream_lane(url.as_bytes()))
+
+    def _notify_fd_for_lane(self, lane: Int) -> Int:
+        """The submit fd of executor lane `lane`; the one executor there is
+        for `-1` or a lane with no fd of its own."""
         if (
             lane >= 0
             and lane < len(self.lane_notify_fds)
@@ -1098,11 +1122,18 @@ struct WSGIHandler(ThreadHandler):
 
     def sse_slot_disconnected(mut self, slot: Int):
         # Read before the unsubscribes erase it: was this an ASGI stream
-        # the executor still has a task for?
+        # the executor still has a task for? `exec_lane` answers it for a
+        # connection whose subscription is already gone -- a socket the
+        # application closed itself, or one `_end_socket` ended -- whose
+        # task is still waiting to be told.
+        var exec_lane = (
+            self.exec_lane[slot] if slot < len(self.exec_lane) else NOT_EXECUTOR_OWNED
+        )
         var was_asgi = self.asgi_notify_fd >= 0 and (
             self.streams.is_slot_streaming(slot)
             or self.sockets.is_slot_streaming(slot)
             or (slot < len(self.asgi_done) and self.asgi_done[slot])
+            or exec_lane != NOT_EXECUTOR_OWNED
         )
         # The slot's reserved channel name carries its producer's address
         # — an executor's lane, or a pool thread's own ack fd; read it
@@ -1119,6 +1150,8 @@ struct WSGIHandler(ThreadHandler):
             self.hold_lane[slot] = NOT_POOL_HELD
         if slot < len(self.asgi_done):
             self.asgi_done[slot] = False
+        if slot < len(self.exec_lane):
+            self.exec_lane[slot] = NOT_EXECUTOR_OWNED
         if slot < len(self.stream_gen):
             self.stream_gen[slot] = STREAM_GEN_NONE
         if slot < len(self.stream_lost):
@@ -1146,8 +1179,13 @@ struct WSGIHandler(ThreadHandler):
                     self.apps[0]._bridge.notify_disconnect(slot)
                 except e:
                     print("inverted executor: disconnect notify raised: " + String(e), flush=True)
-            else:
+            elif slot_url.byte_length() > 0:
                 _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
+            else:
+                # The subscription (and with it the channel name) is gone;
+                # the lane recorded at the begin frame still names the
+                # executor that owns the connection.
+                _send_disconnect_tag(self._notify_fd_for_lane(exec_lane), slot)
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open
@@ -1185,6 +1223,10 @@ struct WSGIHandler(ThreadHandler):
                 self.streams.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                if ub[1] == UInt8(ord("b")) and slot < len(self.exec_lane):
+                    # An executor's stream (a pool thread's `P` is told
+                    # through its own ack pair instead).
+                    self.exec_lane[slot] = _parse_stream_lane(ub)
                 self._clear_lost(slot)
                 self._set_stream_gen(slot, event_id)
             elif ub[1] == UInt8(ord("s")):
@@ -1251,6 +1293,8 @@ struct WSGIHandler(ThreadHandler):
                 self.sockets.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                if slot < len(self.exec_lane):
+                    self.exec_lane[slot] = _parse_stream_lane(ub)
                 self._clear_lost(slot)
                 self._set_stream_gen(slot, event_id)
                 if slot < len(self.ws_in_sent):
