@@ -64,6 +64,14 @@ def set_stream_capable(flag):
 
 
 def _stream_this(result, environ, status, headers):
+    # A lazily produced body streams, except a HEAD's: that is answered at
+    # its first item instead (`_lazily_produced`, below; SPEC K13).
+    return environ.get('REQUEST_METHOD') != 'HEAD' and _lazily_produced(
+        result, status, headers
+    )
+
+
+def _lazily_produced(result, status, headers):
     # What streams and what buffers, in order. Rule 1 is what keeps every
     # framework page byte-identical on the wire: Werkzeug computes a
     # Content-Length for every list body, Django's CommonMiddleware adds
@@ -78,8 +86,6 @@ def _stream_this(result, environ, status, headers):
     if isinstance(result, (bytes, bytearray, list, tuple)):
         return False
     if getattr(result, 'streaming', None) is False:
-        return False
-    if environ.get('REQUEST_METHOD') == 'HEAD':
         return False
     try:
         code = int(status[:3])
@@ -1412,8 +1418,8 @@ class _Cycle:
                     # next response begins (SPEC L27). Answer now with no
                     # body, as a final body would, and drop the rest:
                     # receive() then says http.disconnect, which is what
-                    # stops a StreamingResponse. `_stream_this` is the WSGI
-                    # side's same rule.
+                    # stops a StreamingResponse. `_run_wsgi` is the WSGI
+                    # side's same rule (SPEC K13).
                     self.completed = True
                     self.chunks = []
                     self.total = 0
@@ -1872,6 +1878,30 @@ def _run_wsgi(environ, body):
         return written.append
 
     result = _app(environ, start_response)
+    if (
+        captured
+        and environ.get('REQUEST_METHOD') == 'HEAD'
+        and _lazily_produced(result, captured['status'], captured['headers'])
+    ):
+        # A HEAD to what a GET would stream (SPEC K13, L27's WSGI twin): the
+        # head is all it gets, so the body is pulled to its first item --
+        # an application that raises before producing anything is still an
+        # ordinary 500, as for a GET -- and then closed, so a generator's
+        # `finally` runs and its pool thread comes straight back. Joined,
+        # as every HEAD used to be, a body that never ends never answered,
+        # and held its thread until shutdown. No length is invented: RFC
+        # 9110 §9.3.2 lets a HEAD omit a field known only by generating the
+        # content, and the GET's stream carries none either.
+        try:
+            for chunk in result:
+                if chunk:
+                    break
+        finally:
+            close = getattr(result, 'close', None)
+            if close is not None:
+                close()
+        _body = b''
+        return (captured['status'], captured['headers'], _body, False)
     if captured and _stream_this(
         result, environ, captured['status'], captured['headers']
     ):

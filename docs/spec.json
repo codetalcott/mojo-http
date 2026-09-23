@@ -1266,6 +1266,14 @@
       "evidence": "`Conformance test the WSGI bridge` (every PR) \u2014 `scripts/head_probe.py` reads the bare app's heads: a 200 and a 303 sent without a type, a bare 204 and one carrying a length and a body, a bare 304 and one naming the GET's length, and a HEAD answered with the GET's length and no body. Each must carry what the application sent plus the server's own framing and nothing else, and each is followed by a request on the same connection, which a leaked body would misparse. `Conformance test the ASGI bridge` runs the same cases through the executor and the buffered bridge. Before the fix every case failed: `application/octet-stream` on each head sent without a type, `content-length: 0` on the HEAD, the 204 and the 304s"
     },
     {
+      "id": "K13",
+      "section": "K",
+      "category": "K. WSGI (PEP 3333)",
+      "capability": "A HEAD to what a GET would stream is answered at the body's first item, with no length, and the body closed",
+      "status": "verified",
+      "evidence": "`Smoke test streamed WSGI bodies` (every PR) \u2014 a HEAD to a never-ending generator on a four-thread pool, then a request on the same connection, then five more HEADs and a fast request. HEAD used to take the buffered path, which joins the whole iterable, so the HEAD never answered and held its pool thread until shutdown; eight such requests are the whole zero-config pool. L27's WSGI twin. On the loop's own handler, which never streams, a HEAD still buffers and carries its measured length, as its GET does. `poe test-shim` pins that the body is pulled to one item and closed"
+    },
+    {
       "id": "L1",
       "section": "L",
       "category": "L. ASGI 3.0",

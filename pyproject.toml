@@ -5535,6 +5535,23 @@ ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
 [ "$ms" -lt 2000 ] || fail "after five abandoned streams a fast request took ${ms}ms: the threads did not return to the pool"
 echo "five abandoned never-ending streams; fast request answered in ${ms}ms"
 
+# --- a HEAD to a never-ending stream (K13) ---------------------------------------
+# Answered at the body's first item, with the headers a GET's stream carries
+# and no length, and the body closed, so its pool thread comes straight back.
+# HEAD used to take the buffered path, which joins the whole iterable -- for
+# this one, never -- so the request hung and held its thread until shutdown.
+# The probe proves the head and a whole connection after it; five HEADs on
+# the four-thread pool, then a fast request, prove the threads come back.
+python3 scripts/head_probe.py --port 8081 --hold /stream-forever --then / \
+  || fail 'a HEAD to a never-ending WSGI stream is not its head alone (K13)'
+for i in 1 2 3 4 5; do
+  code=$(curl -s -I -o /dev/null -w '%{http_code}' --max-time 5 $B/stream-forever)
+  [ "$code" = "200" ] || fail "HEAD /stream-forever number $i answered '$code' (K13)"
+done
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 10 $B/)
+ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
+[ "$ms" -lt 2000 ] || fail "after five HEADs to a never-ending stream a fast request took ${ms}ms: the HEADs held their threads (K13)"
+
 # --- shutdown -------------------------------------------------------------------
 # SIGTERM with a live stream: the farewell reaches the producer as a
 # disconnect, it comes back, and the process exits promptly -- no 5 s
@@ -5635,6 +5652,7 @@ echo "smoke-wsgi-stream OK"
 python3 scripts/emit.py --covers A9 --task smoke-wsgi-stream
 python3 scripts/emit.py --covers D3 --task smoke-wsgi-stream
 python3 scripts/emit.py --covers K9 --task smoke-wsgi-stream
+python3 scripts/emit.py --covers K13 --task smoke-wsgi-stream
 """
 
 # The Phase-2 benchmark gate (docs/WSGI_VS_ASGI.md section 8): the asyncio

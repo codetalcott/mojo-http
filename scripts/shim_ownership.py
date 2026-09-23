@@ -1495,6 +1495,43 @@ def test_an_error_is_described_once(h):
     assert any(l.startswith("Traceback") for l in lines), text
 
 
+def test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body(h):
+    """K13, L27's WSGI twin: a HEAD to a lazily produced body, on a pool
+    thread that would stream its GET, is answered at the body's first item
+    with no length, and the body is closed -- its `finally` runs. HEAD used
+    to take the buffered path and join the whole iterable: for a body that
+    never ends, never. Bounded here (1000 items) so the old path fails
+    rather than hangs."""
+    produced, closed = [0], []
+
+    def app(environ, start_response):
+        start_response("200 OK", [("Content-Type", "text/event-stream")])
+
+        def gen():
+            try:
+                for _ in range(1000):
+                    produced[0] += 1
+                    yield b"data: tick\n\n"
+            finally:
+                closed.append(True)
+        return gen()
+
+    saved = h.ns["_app"]
+    h.ns["_app"] = app
+    h.ns["set_stream_capable"](True)
+    try:
+        status, headers, body, streaming = h.ns["_run_wsgi"](
+            {"REQUEST_METHOD": "HEAD"}, b"")
+    finally:
+        h.ns["set_stream_capable"](False)
+        h.ns["_app"] = saved
+    assert produced[0] == 1, "the HEAD drained %d items" % produced[0]
+    assert closed == [True], "the body was not closed"
+    assert body == b"" and streaming is False, (body[:40], streaming)
+    assert status == "200 OK", status
+    assert not any(n.lower() == "content-length" for n, _ in headers), headers
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1600,6 +1637,7 @@ TESTS = [
     test_an_http_spawn_forgets_the_previous_connections_stream_task,
     test_the_drain_ends_an_http_task_that_never_ends,
     test_an_error_is_described_once,
+    test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body,
 ]
 
 
@@ -1888,6 +1926,13 @@ SABOTAGES = [
         "an error's summary is said twice",
         "    if lines and lines[-1] == head:\n",
         "    if False:\n",
+    ),
+    (
+        "a WSGI HEAD joins its whole body",
+        "        and environ.get('REQUEST_METHOD') == 'HEAD'\n"
+        "        and _lazily_produced(",
+        "        and False\n"
+        "        and _lazily_produced(",
     ),
     (
         "work scheduled at import is not named",

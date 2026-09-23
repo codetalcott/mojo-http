@@ -728,14 +728,16 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       that never accepted the connection (docs/notes/hold-on-a-pool-thread.md).
     - **A pool thread streams an unsized WSGI iterable, as a second
       producer on the executor's chunk channel.** The shim decides
-      (`_stream_this` in `shim/m0_shim.py`): an app-supplied `Content-Length`,
-      a list/tuple/bytes body, a Django `HttpResponse` (`streaming is
-      False`), HEAD, a bodiless status or an `M0-Hold` header all buffer
-      as before — which is what keeps every framework page byte-identical
-      on the wire; anything else streams, and only where
+      (`_lazily_produced` in `shim/m0_shim.py`): an app-supplied
+      `Content-Length`, a list/tuple/bytes body, a Django `HttpResponse`
+      (`streaming is False`), a bodiless status or an `M0-Hold` header all
+      buffer as before — which is what keeps every framework page
+      byte-identical on the wire; anything else streams, and only where
       `set_stream_capable` was set: pool threads with a chunk fd, never
-      the loop's own handler. The rules that make it safe, each pinned by
-      `smoke-wsgi-stream`:
+      the loop's own handler. A HEAD to what would stream is answered at
+      the body's first item and the body closed (SPEC K13): joined, a
+      body that never ends never answered and held its thread for good.
+      The rules that make it safe, each pinned by `smoke-wsgi-stream`:
       - The thread registers its OWN ack pair per slot
         (`OffloadPool.set_slot_ack_fd`, BEFORE its `P` begin frame, whose
         send publishes the write) and keeps the pair for the process's
