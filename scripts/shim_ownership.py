@@ -107,6 +107,8 @@ class Harness:
         self.head_finished = False  # the streamed HEAD's app ran to its end
         self.head_task = None    # a HEAD application's own task
         self.linger_cancels = 0  # cancels a lingering stream task saw
+        self.forever_ended = False  # the endless background task's finally ran
+        self.slowbg_done = False    # a short background task finished
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -278,6 +280,22 @@ class Harness:
                             "more_body": False})
             asyncio.get_running_loop().create_task(late())
             return
+        if behaviour in ("forever", "slowbg"):
+            # Answered, then background work: endless, or a short job that
+            # must be allowed to finish inside the drain's grace.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"ok",
+                        "more_body": False})
+            if behaviour == "slowbg":
+                await asyncio.sleep(0.02)
+                self.slowbg_done = True
+                return
+            try:
+                while True:
+                    await asyncio.sleep(0.01)
+            finally:
+                self.forever_ended = True
         if behaviour == "linger":
             # A stream that outlives its disconnect: its cleanup swallows
             # the first cancel (a finally doing slow work), and counts
@@ -1445,6 +1463,24 @@ def test_an_http_spawn_forgets_the_previous_connections_stream_task(h):
     assert _linger_then(h, "longpoll") == 1, h.linger_cancels
 
 
+def test_the_drain_ends_an_http_task_that_never_ends(h):
+    """PR 3 review: the post-pill gather bounded sockets only, so an HTTP
+    task that never ends -- background work after its response -- held
+    run_forever open until the thread join gave up, and lifespan shutdown
+    never ran. Past the grace every task is cancelled; work that finishes
+    inside it is left to finish."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.02
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.2
+    h.job(0, "forever")
+    h.job(1, "slowbg")
+    h.settle()
+    assert [e for e in h.events if e[0] == "done" and e[1] == 0], h.kinds(0)
+    h.run(asyncio.wait_for(h.ns["_gather_in_flight"](), 2.0))
+    assert h.forever_ended, "the endless task was not ended"
+    assert h.slowbg_done, "work inside the grace was cut short"
+    assert not h.ns["_exec_tasks"], h.ns["_exec_tasks"]
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1548,6 +1584,7 @@ TESTS = [
     test_a_body_before_its_start_leaves_no_stray_bytes,
     test_a_websocket_spawn_forgets_the_previous_connections_stream_task,
     test_an_http_spawn_forgets_the_previous_connections_stream_task,
+    test_the_drain_ends_an_http_task_that_never_ends,
 ]
 
 
@@ -1823,6 +1860,15 @@ SABOTAGES = [
         "    # socket's to cancel when its client leaves (PR 1 review M3).\n"
         "    _exec_stream_tasks.pop(slot, None)\n",
         "    # socket's to cancel when its client leaves (PR 1 review M3).\n",
+    ),
+    (
+        "the drain waits on an HTTP task for ever",
+        "        for t in pending:\n"
+        "            t.cancel()\n"
+        "        if pending:\n",
+        "        for t in pending:\n"
+        "            pass\n"
+        "        if pending:\n",
     ),
     (
         "work scheduled at import is not named",

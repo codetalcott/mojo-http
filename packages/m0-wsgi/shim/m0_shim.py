@@ -541,6 +541,12 @@ _exec_global_credit = [_ASGI_TOTAL_WINDOW]
 # than receive() -- forwarding from a queue, sleeping between pushes -- is
 # only ended here. Well inside the Mojo side's 5 s join bound.
 _WS_DRAIN_GRACE = 1.0
+# And how long it lets EVERY task finish -- background work after a response
+# is the common case -- before it cancels the rest. Not unbounded: a task
+# that never ends held run_forever open until the 5 s join gave up, so the
+# lifespan shutdown after it never ran. Three seconds leaves that shutdown
+# the rest of the join.
+_HTTP_DRAIN_GRACE = 3.0
 _exec_global_evt = None
 _exec_inflight = {}
 
@@ -1059,9 +1065,13 @@ def _flush():
 
 
 async def _gather_in_flight():
-    # Run the in-flight tasks to completion, bounded for sockets: every
-    # client is gone by the pill, and a socket task still running after the
-    # grace is waiting on something that will not come.
+    # Run the in-flight tasks to completion, bounded: every client is gone by
+    # the pill. A socket task still running after _WS_DRAIN_GRACE is waiting
+    # on something that will not come; any task still running after
+    # _HTTP_DRAIN_GRACE is background work that has had its time. Each is
+    # cancelled, the cancellations get half a second to land, and a task
+    # that swallows its cancellation is left behind and named rather than
+    # waited on (PR 3 review): past this the lifespan shutdown must run.
     import asyncio
 
     if not _exec_tasks:
@@ -1070,8 +1080,25 @@ async def _gather_in_flight():
     for t in pending:
         if getattr(t, '_m0_ws', False):
             t.cancel()
-    if _exec_tasks:
-        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    rest = [t for t in _exec_tasks if not t.done()]
+    if rest:
+        _, pending = await asyncio.wait(
+            rest, timeout=max(0.0, _HTTP_DRAIN_GRACE - _WS_DRAIN_GRACE)
+        )
+        for t in pending:
+            t.cancel()
+        if pending:
+            _, stuck = await asyncio.wait(pending, timeout=0.5)
+            if stuck:
+                _exec_put(
+                    (
+                        'log',
+                        -1,
+                        '%d task(s) still running after the drain grace and '
+                        'their cancellation; leaving them to the process exit'
+                        % len(stuck),
+                    )
+                )
 
 
 async def _finish_and_stop():

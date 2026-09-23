@@ -18,6 +18,10 @@ Routes:
     /status/NNN     answers with status NNN
     /slow?ms=N      awaits N milliseconds before answering
     /lifespan       reports whether lifespan startup ran (state flag)
+    /background-forever
+                    answers ``ok``, then keeps running for ever, as
+                    background work after a response can: the shutdown
+                    drain must end it and still run lifespan shutdown
     /stream-forever an infinite SSE-shaped stream: pins the buffered
                     bridge's watchdog error, and later a streaming
                     server's actual streaming
@@ -163,6 +167,10 @@ async def application(scope, receive, send):
         await send({"type": "http.response.body", "body": b"cookies"})
     elif path.startswith("/status/"):
         await _text(send, int(path.rsplit("/", 1)[1]), b"status as asked")
+    elif path == "/background-forever":
+        await _text(send, 200, b"ok")
+        while True:
+            await asyncio.sleep(0.05)
     elif path == "/slow":
         ms = 0
         for pair in scope["query_string"].decode("latin-1").split("&"):

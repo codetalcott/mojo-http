@@ -6329,6 +6329,23 @@ python3 scripts/emit.py asgi.drain_inflight_s "$elapsed" --unit s --limit 3.0 --
 [ -f "$out/drain2.marker" ] \
   || fail 'lifespan shutdown did not run after the answered-inside-the-drain phase'
 
+# Background work that never ends, after its response, must not hold the
+# shutdown: past the drain's grace it is cancelled, and the lifespan shutdown
+# behind it runs. The post-pill gather used to bound sockets only, so it
+# waited on this task until the 5 s thread join gave up, and the process
+# left without shutting the application down.
+M0_SHUTDOWN_MARKER="$out/bgforever.marker" "$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'restart for the background-forever phase did not answer'
+[ "$(curl -s --max-time 5 $B/background-forever)" = "ok" ] \
+  || fail 'the background-forever route did not answer ok'
+kill -TERM $pid
+wait_exit 'background-forever'
+[ "$rc" = "0" ] || fail "SIGTERM with endless background work: exit $rc, want 0"
+[ -f "$out/bgforever.marker" ] \
+  || fail 'lifespan shutdown did not run: an endless background task held the drain'
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.
