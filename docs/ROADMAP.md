@@ -102,17 +102,6 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — outside the server's own behaviour.
 
-- <!-- observed: FastHTML's `xtermjs` example under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**A process the application starts inherits the server's sockets.**
-  No socket the loop or its pools create is close-on-exec, so a child that
-  execs — `pty.fork` and `os.system`, or `subprocess` with
-  `close_fds=False` — inherits every client connection open at that moment
-  and the server's internal channels. A connection the server closes then
-  stays open in the child: FastHTML's terminal example took 10 s to close a
-  WebSocket, because the shell it had started held the socket. `subprocess`
-  with its default (`close_fds=True`) is unaffected.
-
-  **Closed by:** G16
-
 - **The gateway rewrites parts of an application's response head.** A
   response the application sent without a `Content-Type` goes out as
   `application/octet-stream` — a redirect, a 204, FastHTML's default 404
@@ -150,16 +139,10 @@ below.
 The pull is FastHTML's and FastAPI's own example applications, served side
 by side under m0serve and uvicorn on 2026-09-22; the pass and its method
 are in [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md). The defects it
-found in the executor shim are fixed and gated (L20–L24). These five are
-what remains, each with the gate that will verify it; none retires a
-decision.
+found in the executor shim are fixed and gated (L20–L24), and so is the
+close-on-exec one (G16). These four are what remains, each with the gate
+that will verify it; none retires a decision.
 
-- **G16, sockets that survive `exec`.** Every socket the loop and the pools
-  create becomes close-on-exec; the descriptors the spawned-worker mode
-  passes on purpose already go through `keep_across_exec`. Gate: a WSGI
-  view starts a child that keeps its inherited descriptors and lists the
-  sockets among them, which must be none, under prefork and spawned
-  workers alike.
 - **A21 and K12, the gateway's response head.** `_assemble` sends the
   application's head as sent: no `Content-Type` it did not set, its own
   `Content-Length` on a HEAD, and none on a 1xx or 204 (a 304 keeps only
@@ -222,6 +205,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- <!-- observed: FastHTML's `xtermjs` example under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**A process the application started inherited the server's sockets** (FastHTML's terminal example took 10 s to close a WebSocket, because the shell it had started held the connection) — resolved 2026-09-23 by G16: every descriptor the server creates is close-on-exec, atomically on Linux and by a second call straight after on macOS; the spawned-worker hand-off keeps exactly the descriptors the new image adopts across its own exec, where it used to keep them across every exec in every mode; and `m0pub` writes only to a bus it can see, never into a child's own file on an inherited number. `smoke-exec-inherit` requires a child started with `close_fds=False` to hold nothing of the server's in six shapes.
 - **`mojo build` needs a C compiler on Linux and nothing said so** (a `python:*-slim` image failed with `unable to find suitable c compiler for linking`, after the whole compile) — resolved 2026-09-20 for an application built with the `m0` CLI (N25): `m0 build` and `m0 doctor` check before running the compiler and name the fix, `apt-get install build-essential` or the platform's own. The check is not the one first planned, on two measured counts: mojo 1.1.0 looks for the literal name `cc` and nothing else, so a machine with `gcc` and no `cc` is refused by name, and a `cc` that exists and cannot link (gcc without `libc6-dev`) is caught by linking a one-line program. Inside this repository nothing changes — `mojo build` by hand still says what it said, and `deploy/mojo/Dockerfile` installs `build-essential`. The write-up is [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md).
 - **Mojo 1.0's `PythonObject` interop leaked a reference per call argument and per `__setitem__` value** — resolved 2026-09-18 by moving the pin to Mojo 1.1.0, which carries the upstream fix (modular/modular#6833). Measured in this tree against 1.0.0 as the null case: +1001 references per 1000 operations before, 0 after. The bridge keeps its raw C API environ build, which was always the faster path as well as the safe one, so nothing about the request path changes; what changes is that a per-request `PythonObject` argument is now a performance preference rather than a correctness constraint. The write-up is [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md).
 - **The Mojo host's drain and its producer join ran in sequence** — resolved 2026-09-17 with the pool lane (E26, D31): the loop stamps the producer's stop word as its drain begins and both joins count from that stamp, so a request in flight at SIGTERM beside a step past its bound leaves inside one bound. The premise as first recorded was wrong in one detail — the drain ends a HELD stream at once, so what stretches it is a request in flight, not a stream — and the gate holds a request of a few seconds instead. The write-up is [The ramp test: lanes in the host, one module on two hosts — 2026-09-17](notes/the-ramp-test.md).

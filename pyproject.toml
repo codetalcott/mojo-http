@@ -3766,6 +3766,7 @@ shell = """
 out=$(python3 scripts/exec_inherit_probe.py --port 8681 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 echo "smoke-exec-inherit OK"
+python3 scripts/emit.py --covers G16 --task smoke-exec-inherit
 """
 
 [tool.poe.tasks.smoke-blocking-threads]

@@ -190,6 +190,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   after the application returned, could answer the slot's next request
   with its response; a send once the response is over now answers nothing.
   Found by serving FastHTML's and FastAPI's own examples beside uvicorn.
+- **A process the application started inherited the server's connections
+  and channels** (SPEC G16). Nothing the server created was close-on-exec,
+  so a child that execs — `os.system`, `pty.fork`, `subprocess` with
+  `close_fds=False` — held every client connection open at that moment, the
+  listener, the channels between the loop and its pools, the bus and the
+  shutdown pipe: 8 to 46 descriptors, depending on the mode. A connection
+  the server closed stayed open in the child. FastHTML's terminal example
+  took 10 s to close a WebSocket, and a child that runs another user's
+  commands, like that terminal's shell, held every other client's
+  connection. Every descriptor is now close-on-exec, atomically on Linux.
+  `--spawn-workers` keeps exactly what its new image adopts across its own
+  exec, where the supervisor used to clear the flag for every exec in every
+  mode. And `m0pub` writes only to a bus it can see: a child handed no bus
+  used to write its datagram into whatever file had the bus's old
+  descriptor number.
 - **An ASGI WebSocket's disconnect cancelled the application's task**
   (SPEC L21). uvicorn delivers `websocket.disconnect` through `receive()`,
   and FastAPI's documentation is written against that: its cleanup is an

@@ -913,6 +913,14 @@ jobs:
       # counter, in three server shapes.
       - name: Smoke test publishing from a child process
         run: uv run poe smoke-child-publish
+      # G16: a child process the application starts with close_fds=False
+      # (os.system, pty.fork) holds none of the server's descriptors -- no
+      # client connection, listener, channel, shutdown pipe or shared page
+      # -- in six shapes: the pool, the loop, forked and spawned workers,
+      # --realtime and the ASGI executor. A connection the server closed
+      # used to stay open in such a child.
+      - name: Smoke test what a child process the application starts inherits
+        run: uv run poe smoke-exec-inherit
       # The Mojo handler pool, same claim without an interpreter: func on a
       # pool thread (the response names which), every thread dealt work, a
       # streaming response refused with 409, and SIGTERM a clean exit -- the
