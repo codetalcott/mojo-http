@@ -177,6 +177,25 @@ and the `FileResponse` HEAD `content-length: 0` where uvicorn sent 3145735.
 The streamed HEAD was found while fixing the rest, on `apps/asgi_bare`: all
 10,000 bytes of a 10,000-byte stream followed its head (L27).
 
+**Re-run of every scenario, 2026-09-23** (after L25 and L26; the same
+versions). Sixteen scenarios, the heads probe and `--workers 2`, m0serve
+beside uvicorn. A GET's scope and a sized POST's now carry exactly the
+headers uvicorn's do. Before, m0serve's GET added a `content-length: 0`.
+A chunked POST's scope differs by design, `content-length: 7` where
+uvicorn passes `transfer-encoding: chunked`, and so FastHTML's multipart
+check still accepts a chunked upload under m0serve that it refuses under
+uvicorn. `00_game_of_life`, unmodified, now exits 1 naming what its module
+did and the lifespan fix, where it printed only `no running event loop`.
+Every other difference is the harness's own:
+- file timestamps;
+- the order of a `Set` Starlette joins into `Allow`;
+- traceback paths;
+- `m0` in the lifespan state;
+- the `%2F` recorded above.
+
+FastHTML's own three failures are unchanged, and identical under both
+servers.
+
 ## In production — 2026-09-12, textshelf's streams on the hold mount (m0serve 1.2.0)
 
 Not a soak: a production record, the first use of the grant-verified hold
