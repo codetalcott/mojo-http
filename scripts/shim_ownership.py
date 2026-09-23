@@ -105,6 +105,7 @@ class Harness:
         self.bg_receive = []     # what a receive() after the response got
         self.head_receive = []   # what a receive() after a streamed HEAD got
         self.head_finished = False  # the streamed HEAD's app ran to its end
+        self.head_task = None    # a HEAD application's own task
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -321,6 +322,36 @@ class Harness:
                 # re-raise of the error it was for.
                 raise ValueError("kaboom after body")
             return
+        if behaviour == "headlisten":
+            # Starlette's StreamingResponse under ASGI 2.3: a listener parked
+            # in receive() from before the first body, beside a task that
+            # produces an endless body; the listener's disconnect cancels the
+            # body, and the response's background work would run after.
+            self.head_task = asyncio.current_task()
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+
+            async def body():
+                while True:
+                    await send({"type": "http.response.body",
+                                "body": b"x" * 64, "more_body": True})
+                    await asyncio.sleep(0.001)
+            producer = asyncio.get_running_loop().create_task(body())
+            await receive()  # the request's own body
+            self.head_receive.append((await receive())["type"])
+            producer.cancel()
+            self.head_finished = True
+            return
+        if behaviour == "headforever":
+            # asgi_bare's /stream-forever: an endless body and no receive()
+            # at all, so nothing can tell it that its response is over.
+            self.head_task = asyncio.current_task()
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            while True:
+                await send({"type": "http.response.body", "body": b"x" * 64,
+                            "more_body": True})
+                await asyncio.sleep(0.001)
         if behaviour in ("headstream", "stream204"):
             # A streaming application answering a HEAD as it answers a GET,
             # as Starlette's StreamingResponse does -- or streaming into a
@@ -1217,6 +1248,44 @@ def test_a_bodiless_status_is_answered_at_its_first_streamed_body(h):
     _assert_global_window_whole(h)
 
 
+def test_a_head_tells_a_listening_application_its_response_is_over(h):
+    """A HEAD answered at its first streamed body is over for the loop, which
+    saw an answer, not a stream, and so never sends a disconnect for it. A
+    receive() parked from before that body -- Starlette's
+    listen_for_disconnect under ASGI 2.3, Django's listener -- is what stops
+    an endless StreamingResponse, and nothing woke it: the application ran
+    for the life of the process, one task per HEAD, and held the shutdown
+    drain open. The early answer wakes it with http.disconnect."""
+    h.job(0, "headlisten")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1 and done[0][4] == b"", h.kinds(0)
+    assert h.head_receive == ["http.disconnect"], (
+        "the parked receive() was never told the response is over: %r"
+        % (h.head_receive,))
+    assert h.head_finished and h.head_task.done(), (
+        "the application is still running after its HEAD was answered")
+    assert not h.head_task.cancelled(), (
+        "the listening application was cancelled, not told: its background "
+        "work would not run")
+    _assert_global_window_whole(h)
+
+
+def test_a_head_stops_an_application_that_never_listens(h):
+    """An application that never calls receive() cannot be told its HEAD
+    was answered, and an endless body nobody reads ran for ever (asgi_bare's
+    /stream-forever). Before the early answer, the client's close cancelled
+    it as a stream; now it is cancelled once `_HEAD_GRACE` has passed."""
+    h.ns["_HEAD_GRACE"] = 0.02
+    h.job(0, "headforever")
+    h.settle(passes=120)
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1 and done[0][4] == b"", h.kinds(0)
+    assert h.head_task is not None and h.head_task.done(), (
+        "an application that never listens is still producing its HEAD's body")
+    _assert_global_window_whole(h)
+
+
 def test_a_body_after_the_final_body_answers_nothing(h):
     """I3: once a response is answered, a further body has nothing to
     answer."""
@@ -1333,6 +1402,8 @@ TESTS = [
     test_a_body_after_the_final_body_answers_nothing,
     test_a_head_is_answered_at_its_first_streamed_body_and_never_streams,
     test_a_bodiless_status_is_answered_at_its_first_streamed_body,
+    test_a_head_tells_a_listening_application_its_response_is_over,
+    test_a_head_stops_an_application_that_never_listens,
     test_a_tight_producer_into_a_gone_stream_still_yields,
     test_a_gone_requests_receive_says_so_at_once,
     test_a_client_disconnect_after_the_response_is_not_logged,
@@ -1569,6 +1640,20 @@ SABOTAGES = [
         "a status with no content streams",
         "                if self.head or self.status < 200 or self.status in (204, 304):",
         "                if self.head:",
+    ),
+    (
+        "a receive() parked before a HEAD's early answer is never woken",
+        "                    if fut is not None and not fut.done():\n"
+        "                        fut.set_result(True)\n"
+        "                    else:\n",
+        "                    if False:\n"
+        "                        pass\n"
+        "                    else:\n",
+    ),
+    (
+        "a HEAD's application that never listens is never stopped",
+        "                        _loop.call_later(_HEAD_GRACE, self._stop_unheard)",
+        "                        pass",
     ),
 ]
 

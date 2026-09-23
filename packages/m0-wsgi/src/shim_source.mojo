@@ -39,6 +39,11 @@ _lifespan_ok = False
 _ASGI_BUFFER_CAP = 16 * 1024 * 1024
 _ASGI_STREAM_GRACE = 10.0
 
+# How long an application whose HEAD was answered at its first streamed
+# body may keep running when nothing could tell it the response is over --
+# it never called receive() -- before it is cancelled (see _Cycle.send).
+_HEAD_GRACE = 1.0
+
 # --- streamed WSGI bodies ---------------------------------------------------
 # On a pool thread with a chunk channel, an iterable the application did not
 # size is streamed rather than joined: `run` returns the head and keeps the
@@ -1363,6 +1368,23 @@ class _Cycle:
                     self.chunks = []
                     self.total = 0
                     _exec_put(('done', self.slot, self.status, self.headers, b''))
+                    # Nothing else will tell the application: the loop saw
+                    # an answer, not a stream, and sends no disconnect for
+                    # it. A receive() parked from before this body --
+                    # Starlette's listen_for_disconnect, Django's listener --
+                    # waits on the slot's future, still this request's
+                    # because the loop has not read this `done`: resolve it,
+                    # as a departure would, but cancel nothing, so a
+                    # response's background work still runs. With nothing
+                    # parked, the application is cancelled if it is still
+                    # running when _HEAD_GRACE has passed. Unstopped, an
+                    # endless body ran for the life of the process, one task
+                    # per HEAD, and held the shutdown drain open.
+                    fut = _exec_disconnects.get(self.slot)
+                    if fut is not None and not fut.done():
+                        fut.set_result(True)
+                    else:
+                        _loop.call_later(_HEAD_GRACE, self._stop_unheard)
                     return
                 import asyncio
 
@@ -1419,6 +1441,12 @@ class _Cycle:
             self.completed = True
             body, self.chunks = b''.join(self.chunks), []
             _exec_put(('done', self.slot, self.status, self.headers, body))
+
+    def _stop_unheard(self):
+        # A HEAD answered early whose application nothing could tell (see
+        # send): still running now, it is producing a body nobody reads.
+        if not self.task.done():
+            self.task.cancel()
 
     async def run(self, scope):
         if self.task is None:
