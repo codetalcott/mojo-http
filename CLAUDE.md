@@ -287,8 +287,9 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     memory on macOS. `m0pub.child_fds()` is what a child is handed, as
     `pass_fds`: every descriptor the server creates is close-on-exec
     (SPEC G16), so nothing of the server's reaches an exec'd child any
-    other way, and m0pub writes only to a bus fd that is a Unix datagram
-    socket in its own process. The spawn's own exec keeps exactly the fds
+    other way, and m0pub writes only to a bus fd whose device and inode
+    match `M0_BUS_WRITE_IDS`, which `prefork_bus` exports beside the
+    numbers. The spawn's own exec keeps exactly the fds
     `spawn_inherited_env` names: `_exec_if_spawning` clears the flag in
     the forked child just before `execv`, and the new image sets it again
     on each one as it adopts it. A descriptor a future spawned worker must

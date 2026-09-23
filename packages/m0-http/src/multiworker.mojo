@@ -338,8 +338,10 @@ struct WorkerSupervisor:
         has touched no platform runtime, which is what makes the fork safe —
         but it `execv`s `path` with `args` at once, with `M0_WORKER_INDEX`
         and `M0_WORKER_SPAWNED=1` in its environment, and the caller's
-        `main` runs again from the top in a fresh image. Open descriptors
-        and the environment survive the exec; mappings and threads do not.
+        `main` runs again from the top in a fresh image. The environment
+        survives the exec, and of the open descriptors only those
+        `spawn_inherited_env` names, every other one being close-on-exec
+        (SPEC G16); mappings and threads do not.
 
         What it buys: a worker that may use Objective-C, CoreFoundation,
         libdispatch or anything else that refuses to run in a forked child
