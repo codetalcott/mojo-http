@@ -1492,6 +1492,15 @@ pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || { echo '=== counter.log ==='; cat counter.log; exit 1; }
+# A HEAD to the stream is its head (SPEC L27): the route is matched by path
+# alone, and the loop used to hold a HEAD as the stream a GET opens, writing
+# every frame and heartbeat after the head where a keep-alive client reads
+# its next response. The next request on the connection must be answered,
+# and the HEAD must leave no subscriber behind.
+python3 scripts/head_probe.py --port 8080 --hold /events --then /health \
+  || { echo 'a HEAD to /events did not end at its head (L27)'; cat counter.log; exit 1; }
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || { echo "a HEAD to /events left a subscriber (subscribers=$subs)"; exit 1; }
 curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > sse.txt &
 sse=$!
 sleep 2
@@ -1625,6 +1634,7 @@ kill $pid $worker_pids 2>/dev/null
 rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt counter2.log
 echo "smoke-counter OK"
 python3 scripts/emit.py --covers I9 --task smoke-counter
+python3 scripts/emit.py --covers L27 --task smoke-counter
 """
 
 # Periodic work with a real budget does not belong on the event loop, and
@@ -2121,6 +2131,16 @@ code=$(curl -s -o /dev/null -w '%{http_code}' 'http://localhost:8080/events?chan
 subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "0" ] || fail "a refused subscribe still registered (subscribers=$subs)"
 
+# A HEAD to the hold is its head (SPEC L27). The view approves a hold for any
+# method, and the loop used to subscribe the slot and write every event and
+# heartbeat after the head, where a keep-alive client reads its next
+# response. The next request on the connection must be answered, and the
+# HEAD must leave no subscription behind.
+python3 scripts/head_probe.py --port 8080 --hold '/events?channel=news&token=letmein' --then /health \
+  || fail 'a HEAD to a hold did not end at its head (L27)'
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || fail "a HEAD to a hold left a subscription (subscribers=$subs)"
+
 # Two subscribers on different channels: A hears news, B must not.
 curl -sN --max-time 8 -D "$out/hdr_a" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/sse_a" &
 sse_a=$!
@@ -2507,6 +2527,7 @@ rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log rt6.doctor
 echo "smoke-django-realtime OK"
 python3 scripts/emit.py --covers F6 --task smoke-django-realtime
 python3 scripts/emit.py --covers I11 --task smoke-django-realtime
+python3 scripts/emit.py --covers L27 --task smoke-django-realtime
 """
 
 # The WebSocket half of the realtime demo. Kept a separate task from

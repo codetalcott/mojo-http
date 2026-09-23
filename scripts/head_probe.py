@@ -18,6 +18,15 @@ the leaked bytes arrive after the head it reads.
 `--no-stream-case` drops the HEAD to a streaming route, the executor's case
 (L27): the buffered bridge joins a stream before answering, so there is
 nothing for it to leak. Prints one line per failing case, then the verdict.
+
+    python3 scripts/head_probe.py --port 8080 --hold /events --then /health
+
+`--hold` reads one route that answers GET with a held stream -- an `M0-Hold`
+view under `--realtime`, a native SSE route -- instead of the bare apps'
+cases. Its HEAD must end at its head, with no length (the GET's body is a
+stream) and no chunking, and the `--then` request that follows on the same
+connection must be answered 200: a HEAD the loop held as a stream wrote each
+event and heartbeat after the head, and never read the next request.
 """
 import argparse
 import socket
@@ -183,14 +192,56 @@ def check(port, app, case):
     return problems
 
 
+def check_hold(port, path, then):
+    """The problems with a HEAD to a held stream, as a list of strings."""
+    phase("HEAD %s" % path)
+    problems = []
+    c = None
+    try:
+        c = Conn(port)
+        c.request("HEAD", path)
+        status, headers, _ = c.response("HEAD")
+        if status != 200:
+            problems.append("status %d, want 200" % status)
+        for n, v in headers:
+            if n in ("content-length", "transfer-encoding"):
+                problems.append("%s: %s must not be on the wire" % (n, v))
+        phase("GET %s after HEAD %s" % (then, path))
+        c.request("GET", then)
+        status, _, body = c.response("GET")
+        if status != 200:
+            problems.append("the next response on the connection was %d %r"
+                            % (status, body[:60]))
+    except (OSError, EOFError, ValueError) as exc:
+        problems.append("%s: %r" % (PHASE, exc))
+    finally:
+        if c is not None:
+            c.close()
+    return problems
+
+
 def main():
     phase("arguments")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", type=int, required=True)
-    ap.add_argument("--app", choices=sorted(ROOT_TEXT), required=True)
+    ap.add_argument("--app", choices=sorted(ROOT_TEXT))
     ap.add_argument("--no-stream-case", action="store_true",
                     help="skip the HEAD to a streaming route (the executor's)")
+    ap.add_argument("--hold", metavar="PATH",
+                    help="HEAD this held-stream route instead of the bare-app cases")
+    ap.add_argument("--then", metavar="PATH", default="/",
+                    help="the request that follows the --hold HEAD on its connection")
     args = ap.parse_args()
+    if args.hold:
+        problems = check_hold(args.port, args.hold, args.then)
+        if problems:
+            print("head_probe FAIL: HEAD %s: %s" % (args.hold, "; ".join(problems)))
+            return 1
+        print("head_probe OK: HEAD %s ended at its head (port %d)"
+              % (args.hold, args.port))
+        return 0
+    if not args.app:
+        ap.error("--app is required without --hold")
     cases = list(CASES)
     if args.app == "asgi" and not args.no_stream_case:
         cases += ASGI_ONLY

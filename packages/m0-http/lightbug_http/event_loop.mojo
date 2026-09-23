@@ -3314,6 +3314,19 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     HEAD, Date, encode, eager send). Every response the server has ever sent
     went through this code; the pool path did not get a second copy of it.
     """
+    # A HEAD's response is its head (RFC 9110 §9.3.2), whatever a handler
+    # made of it: a hold approved on a HEAD -- an `M0-Hold` view that answers
+    # every method, a native SSE route matched by path alone -- subscribed
+    # the slot and wrote every event and heartbeat after the head, where a
+    # keep-alive client reads its next response (SPEC L27). The handler has
+    # already subscribed the slot; drop that through the hook a stream's
+    # close calls, and send the head as an ordinary answer, with no length,
+    # because the GET's body is a stream.
+    if response.sse_streaming and offload.is_head[slot]:
+        response.sse_streaming = False
+        response.headers.pop("content-length")
+        handler.sse_slot_disconnected(slot)
+
     if response.sse_streaming:
         slot_sse[slot] = True
         # The outbox sweep's gate: every site that sets a stream flag
