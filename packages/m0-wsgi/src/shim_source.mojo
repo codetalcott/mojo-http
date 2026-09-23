@@ -230,8 +230,8 @@ def _load_failure(e):
             'the module scheduled asyncio work at import, before any event '
             'loop runs (' + head + '). m0serve imports an application '
             'outside a running loop, as uvicorn does without --reload: start '
-            'that work from a lifespan startup handler instead (Starlette '
-            'and FastHTML: on_startup=[...] or lifespan=...; FastAPI: '
+            'that work from a lifespan startup handler instead (FastHTML: '
+            'on_startup=[...] or lifespan=...; Starlette and FastAPI: '
             'lifespan=...)'
         )
     # chr(10), not a backslash escape: this source is a Mojo string
