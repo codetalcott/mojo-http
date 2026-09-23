@@ -1166,7 +1166,12 @@ struct Server(Movable):
 
 
 def _send_error_response(mut conn: TCPConnection[NetworkType.tcp4], var response: HTTPResponse):
-    """Helper to send an error response, ignoring write errors."""
+    """Helper to send an error response, ignoring write errors.
+
+    Every caller closes the connection after it, so the response says
+    `Connection: close` -- the event loop's `_send_error_to_fd` rule.
+    """
+    response.set_connection_close()
     try:
         _ = conn.write(encode(response^))
     except:
