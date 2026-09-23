@@ -646,6 +646,22 @@ lightbug_http
         stream flag is cleared, the length popped, and the subscription the
         handler made dropped through `sse_slot_disconnected` (SPEC L27).
 
+      - http/request.mojo (2026-09-23): a parsed request carries the
+        headers its client sent (SPEC L25). `from_parsed` used to build
+        through the outgoing constructor, which invented a
+        `Content-Length` for every request, a `Connection` from the
+        protocol and a `Host` from the URI. That constructor now takes
+        `invent_headers` (default on, for clients), and `from_parsed`
+        turns it off. A body the loop de-chunked is described by its
+        length, and its final `chunked` coding is removed with any empty
+        list element, any other coding kept (`_drop_final_chunked`);
+        header.mojo refuses `chunked` anywhere but last, since a sender
+        must not apply it twice (RFC 9112 §6.1) and the loop decodes one
+        layer. `connection_close()` reads
+        the protocol for RFC 9112 §9.3's default, HTTP/1.0 closing
+        unless it sent `Connection: keep-alive`, since no request carries
+        an invented `Connection: close` any more.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

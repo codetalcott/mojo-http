@@ -5222,6 +5222,15 @@ echo "$env" | grep -qF "CONTENT_TYPE='text/x-test'" || fail 'CONTENT_TYPE missin
 echo "$env" | grep -qF "CONTENT_LENGTH='2'" || fail 'CONTENT_LENGTH missing or prefixed'
 echo "$env" | grep -qF "HTTP_X_CUSTOM='v'" || fail 'ordinary header lost its HTTP_ prefix'
 echo "$env" | grep -q '^HTTP_CONTENT_' && fail 'HTTP_CONTENT_* must not appear in the environ'
+# The environ as the client sent it (L25): a body the loop de-chunked has its
+# CONTENT_LENGTH and no HTTP_TRANSFER_ENCODING, the chunking being undone,
+# and a GET has no CONTENT_LENGTH at all -- PEP 3333 lets it be absent, and
+# a `0` there was the server's, not the client's.
+env=$(printf 'chunked' | curl -s -H 'Transfer-Encoding: chunked' --data-binary @- $B/environ)
+echo "$env" | grep -qF "CONTENT_LENGTH='7'" || fail "a de-chunked request's environ lacks its CONTENT_LENGTH (L25): $env"
+echo "$env" | grep -q '^HTTP_TRANSFER_ENCODING' && fail 'a de-chunked request still carries HTTP_TRANSFER_ENCODING (L25)'
+curl -s $B/environ | grep -q '^CONTENT_LENGTH' && fail "a GET's environ carries a CONTENT_LENGTH the client never sent (L25)"
+curl -s $B/environ | grep -q '^HTTP_CONNECTION' && fail "a GET's environ carries an HTTP_CONNECTION curl never sent (L25)"
 
 # --- response header injection -------------------------------------------------
 # `write_latin1_to` emits `name: value CRLF` with no inspection, so a value an
@@ -5356,6 +5365,7 @@ python3 scripts/emit.py --covers K6 --task smoke-wsgi
 python3 scripts/emit.py --covers K7 --task smoke-wsgi
 python3 scripts/emit.py --covers K12 --task smoke-wsgi
 python3 scripts/emit.py --covers A21 --task smoke-wsgi
+python3 scripts/emit.py --covers L25 --task smoke-wsgi
 """
 
 # Streamed WSGI bodies. A generator the application did not size streams
@@ -6084,6 +6094,18 @@ echo "$scope" | grep -qF '"query_string": "a=1&b=%20x"' || fail "query_string wr
 echo "$scope" | grep -qF '["x-custom", "yes"]' || fail "header pair missing: $scope"
 echo "$scope" | grep -qF '"asgi_version": "3.0"' || fail "asgi version missing: $scope"
 
+# The request headers as the client sent them (L25). A body the loop
+# de-chunked is described by its length, and the client's transfer-encoding
+# went with the chunking: both at once is a contradictory pair an
+# application proxying the request would forward. A bodiless request
+# carries no invented content-length.
+scope=$(printf 'chunked' | curl -s -H 'Transfer-Encoding: chunked' --data-binary @- "$B/scope")
+echo "$scope" | grep -qF '["content-length", "7"]' || fail "a de-chunked request's scope lacks its length (L25): $scope"
+echo "$scope" | grep -qiF 'transfer-encoding' && fail "a de-chunked request's scope still says transfer-encoding (L25): $scope"
+scope=$(curl -s "$B/scope")
+echo "$scope" | grep -qF '"content-length"' && fail "a GET's scope carries a content-length the client never sent (L25): $scope"
+echo "$scope" | grep -qF '"connection"' && fail "a GET's scope carries a connection header curl never sent (L25): $scope"
+
 # The request body arrives as ONE http.request message, byte for byte.
 python3 - <<'PYEOF'
 import http.client, sys
@@ -6308,6 +6330,14 @@ curl -s --fail $B/ > /dev/null || fail 'server died after the buffered watchdog 
 # before answering, so the executor's streaming HEAD (L27) has nothing to
 # leak here.
 python3 scripts/head_probe.py --port 8088 --app asgi --no-stream-case || fail 'the buffered bridge did not send the head the application sent (K12, A21)'
+# The buffered bridge builds its scope from the WSGI environ, not from the
+# request's headers directly: the same two cases through that path (L25).
+scope=$(printf 'chunked' | curl -s -H 'Transfer-Encoding: chunked' --data-binary @- "$B/scope")
+echo "$scope" | grep -qF '["content-length", "7"]' || fail "buffered: a de-chunked request's scope lacks its length (L25): $scope"
+echo "$scope" | grep -qiF 'transfer-encoding' && fail "buffered: a de-chunked request's scope still says transfer-encoding (L25): $scope"
+scope=$(curl -s "$B/scope")
+echo "$scope" | grep -qF '"content-length"' && fail "buffered: a GET's scope carries a content-length the client never sent (L25): $scope"
+echo "$scope" | grep -qF '"connection"' && fail "buffered: a GET's scope carries a connection header curl never sent (L25): $scope"
 kill -TERM $pid
 wait $pid 2>/dev/null
 
@@ -6346,6 +6376,24 @@ echo 'application = 42' > "$out/notcallable.py"
 grep -q 'app(environ, start_response)' asgi.log || fail 'the error does not name the WSGI signature'
 grep -q 'app(scope, receive, send)' asgi.log || fail 'the error does not name the ASGI signature'
 grep -q 'tried notcallable:application' asgi.log || fail 'the error does not list the specs tried'
+
+# Work scheduled at import (L26): FastHTML's first official example calls
+# asyncio.create_task at module level, and m0serve imports an application
+# outside any running loop, as uvicorn does without --reload. Refused by
+# name with the fix, exit 1, the traceback kept, nothing served -- and the
+# same from --doctor, and through discovery, which must not hide it.
+"$srv" import_task:app --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "import-time asyncio work: exit $rc, want 1 (L26)"
+grep -q 'scheduled asyncio work at import' asgi.log || fail 'import-time asyncio work is not refused by name (L26)'
+grep -q 'lifespan' asgi.log || fail 'the import-time refusal does not name the fix (L26)'
+grep -q 'Traceback (most recent call last)' asgi.log || fail 'the import-time refusal lost the traceback (L26)'
+grep -q 'Ready to accept' asgi.log && fail 'the refused application printed a ready banner (L26)'
+"$srv" --doctor import_task:app --app-dir apps/asgi_bare > "$out/doctor.json" 2>/dev/null; rc=$?
+[ "$rc" = "1" ] || fail "--doctor on import-time asyncio work: exit $rc, want 1 (L26)"
+grep -q 'scheduled asyncio work at import' "$out/doctor.json" || fail 'the doctor does not name the import-time refusal (L26)'
+"$srv" import_task --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "import-time asyncio work, bare MODULE: exit $rc, want 1 (L26)"
+grep -q 'scheduled asyncio work at import' asgi.log || fail 'discovery hid the import-time refusal (L26)'
 
 # ASGI and --realtime: refused before the bind when forced, at load when
 # detected — same sentence both ways.
@@ -6395,6 +6443,8 @@ python3 scripts/emit.py --covers M3 --task smoke-asgi
 python3 scripts/emit.py --covers K12 --task smoke-asgi
 python3 scripts/emit.py --covers A21 --task smoke-asgi
 python3 scripts/emit.py --covers L27 --task smoke-asgi
+python3 scripts/emit.py --covers L25 --task smoke-asgi
+python3 scripts/emit.py --covers L26 --task smoke-asgi
 """
 
 # The keep-alive request cap (`max_keepalive_requests`, 100) closes a

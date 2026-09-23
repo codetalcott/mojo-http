@@ -127,6 +127,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   change on the wire. A response with a body keeps both defaults.
   `HTTPResponse(..., invent_entity_headers=False)` adds neither for any
   status: it is how the gateway relays an application's head.
+- **A parsed request carries only the headers its client sent** (SPEC
+  L25). `HTTPRequest.from_parsed` no longer fills in a `Content-Length`, a
+  `Connection` or a `Host`, so a native handler reading `req.headers`, a
+  WSGI environ and an ASGI scope all see a GET without the
+  `content-length: 0` and `connection: keep-alive` they used to carry, and
+  a WSGI application gets no `CONTENT_LENGTH` for a request that sent
+  none, which PEP 3333 allows. `HTTPRequest(..., invent_headers=False)` is
+  new; the default still fills all three for a client.
+  `connection_close()` now answers HTTP/1.0's default from the protocol,
+  which moves two edges: an HTTP/1.0 request whose `Connection` is a list
+  (`Keep-Alive, foo`) now closes, the value being compared whole as `close`
+  always was; and HTTP/1.2 to 1.9, which the parser accepts, now persists
+  as 1.1 does (RFC 9110 §2.5) where an invented `close` used to end it.
+  And `Transfer-Encoding: chunked, chunked` is refused with a 400 beside
+  every other request whose `chunked` is not its final coding: RFC 9112
+  §6.1 forbids applying it twice, and the loop decodes one layer.
 - **Datastar is pinned at v1.0.4** (was v1.0.3; DECISIONS D20).
   `m0-datastar`'s `VERSION`, the three demo pages' CDN pins, the `live`
   scaffold template's, and the SDK conformance-case URL. **Not a protocol
@@ -297,6 +313,28 @@ in a minor release: `m0serve`'s flags and environment variables, the
   a native SSE route, was held as the stream a GET opens, writing every
   event and heartbeat after the head: it is answered with its head, and the
   subscription it made is dropped.
+- **A chunked request reached an application with `transfer-encoding:
+  chunked` and a `content-length` at once** (SPEC L25). The loop decodes a
+  chunked body before any application sees it, and the length it then
+  added sat beside the client's coding: a contradictory pair an
+  application proxying the request would forward. The body is now
+  described by its length and the `chunked` coding is gone, in the ASGI
+  scope on both bridges and in the WSGI environ. Any other coding, such as
+  the `gzip` of `gzip, chunked`, is kept.
+- **Every chunked upload reached a Flask application empty** (SPEC L25).
+  Werkzeug reads `HTTP_TRANSFER_ENCODING: chunked` as a streaming request
+  of unknown length and, without `wsgi.input_terminated`, hands the
+  application an empty input stream, so `request.data` was `b''` however
+  much was sent. The environ now describes the decoded body by its
+  `CONTENT_LENGTH` and carries no `HTTP_TRANSFER_ENCODING`.
+- **A module that calls `asyncio.create_task` at import failed to load
+  with a bare `RuntimeError: no running event loop`** (SPEC L26).
+  FastHTML's first official example does this. m0serve imports an
+  application before any event loop runs, as uvicorn does without
+  `--reload`, and now says what the module did and the fix: start that
+  work from a lifespan startup handler. The server, `--doctor` and
+  discovery all name it, with the traceback, and exit 1. Any other
+  import error keeps its own words.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and

@@ -1365,6 +1365,62 @@ def test_an_eager_task_factory_still_ends_its_stream(h):
     assert "stream_note" not in kinds and "err" not in kinds, kinds
 
 
+def test_work_scheduled_at_import_is_refused_by_name(h):
+    """L26: a module that calls asyncio.create_task at import cannot load --
+    m0serve imports an application outside any running loop, as uvicorn does
+    without --reload -- and the load failure names what the module did and
+    the fix. Any OTHER RuntimeError keeps its own words: the name is for
+    asyncio's "no loop" only."""
+    import importlib
+    import tempfile
+    import warnings
+
+    names = ("m0_probe_import_task", "m0_probe_import_other")
+    sources = (
+        "import asyncio\n"
+        "async def _tick():\n"
+        "    pass\n"
+        "_t = asyncio.create_task(_tick())\n"
+        "app = None\n",
+        "raise RuntimeError('database is locked')\n",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, text in zip(names, sources):
+            with open(os.path.join(tmp, name + ".py"), "w") as f:
+                f.write(text)
+        sys.path.insert(0, tmp)
+        importlib.invalidate_caches()
+        got = []
+        try:
+            # The coroutine create_task was handed is never awaited, which
+            # is the point; its RuntimeWarning is not this test's output --
+            # and the filter is scoped, so later tests keep their warnings.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                for name in names:
+                    try:
+                        h.ns["detect_spec"](name, "app")
+                    except RuntimeError as e:
+                        got.append(str(e))
+                    else:
+                        got.append(None)
+        finally:
+            sys.path.remove(tmp)
+            for name in names:
+                sys.modules.pop(name, None)
+    named, other = got
+    assert named is not None, "a module that create_task'd at import loaded"
+    assert "scheduled asyncio work at import" in named, named
+    # The fix named must exist in the framework it is named for: Starlette
+    # 1.x has no on_startup (only lifespan=); FastHTML still takes both.
+    assert "FastHTML: on_startup=[...] or lifespan=..." in named, named
+    assert "Starlette and FastAPI: lifespan=..." in named, named
+    assert "Starlette and FastHTML" not in named, named
+    assert "Traceback (most recent call last)" in named, named
+    assert other is not None and "database is locked" in other, other
+    assert "scheduled asyncio work" not in other, other
+
+
 TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
@@ -1408,6 +1464,7 @@ TESTS = [
     test_a_gone_requests_receive_says_so_at_once,
     test_a_client_disconnect_after_the_response_is_not_logged,
     test_an_eager_task_factory_still_ends_its_stream,
+    test_work_scheduled_at_import_is_refused_by_name,
 ]
 
 
@@ -1654,6 +1711,11 @@ SABOTAGES = [
         "a HEAD's application that never listens is never stopped",
         "                        _loop.call_later(_HEAD_GRACE, self._stop_unheard)",
         "                        pass",
+    ),
+    (
+        "work scheduled at import is not named",
+        "    if isinstance(e, RuntimeError) and str(e).startswith(_NO_LOOP):",
+        "    if False:",
     ),
 ]
 

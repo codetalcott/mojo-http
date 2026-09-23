@@ -181,7 +181,7 @@ def detect_spec(module_name, attribute):
     # database URL, a dependency that is not installed), and the one-line
     # str(e) that used to be all m0serve printed is not enough to find it:
     # the traceback travels with the message.
-    import importlib, traceback
+    import importlib
 
     try:
         module = importlib.import_module(module_name)
@@ -191,18 +191,39 @@ def detect_spec(module_name, attribute):
             missing == module_name or module_name.startswith(missing + '.')
         ):
             raise
-        # chr(10), not a backslash escape: this source is a Mojo string
-        # literal, and Mojo would turn the escape into a real newline.
-        raise RuntimeError(
-            '%s: %s' % (type(e).__name__, e) + chr(10) + traceback.format_exc()
-        ) from None
+        raise RuntimeError(_load_failure(e)) from None
     except Exception as e:
-        # chr(10), not a backslash escape: this source is a Mojo string
-        # literal, and Mojo would turn the escape into a real newline.
-        raise RuntimeError(
-            '%s: %s' % (type(e).__name__, e) + chr(10) + traceback.format_exc()
-        ) from None
+        raise RuntimeError(_load_failure(e)) from None
     return _detect(getattr(module, attribute))
+
+
+# asyncio's own words for "no loop is running here": get_running_loop() --
+# and so create_task -- on every version, and get_event_loop() once 3.14
+# stopped making a loop on demand.
+_NO_LOOP = ('no running event loop', 'There is no current event loop')
+
+
+def _load_failure(e):
+    # The application raised on import: its own words, then the traceback.
+    # Work scheduled at import is the one such failure with a known fix, so
+    # it is named (SPEC L26): m0serve imports an application before any
+    # event loop runs, as uvicorn does without --reload, and FastHTML's
+    # first official example calls asyncio.create_task at module level.
+    import traceback
+
+    head = '%s: %s' % (type(e).__name__, e)
+    if isinstance(e, RuntimeError) and str(e).startswith(_NO_LOOP):
+        head = (
+            'the module scheduled asyncio work at import, before any event '
+            'loop runs (' + head + '). m0serve imports an application '
+            'outside a running loop, as uvicorn does without --reload: start '
+            'that work from a lifespan startup handler instead (FastHTML: '
+            'on_startup=[...] or lifespan=...; Starlette and FastAPI: '
+            'lifespan=...)'
+        )
+    # chr(10), not a backslash escape: this source is a Mojo string
+    # literal, and Mojo would turn the escape into a real newline.
+    return head + chr(10) + traceback.format_exc()
 
 
 def _asgi_init(run_lifespan=True):
