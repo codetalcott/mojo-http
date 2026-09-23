@@ -1034,8 +1034,9 @@ struct PyBridge(Movable):
         # body's measured Content-Length, the constructor's Connection, and
         # on the loop the Date and a keep-alive rewrite -- about sixty bytes
         # and three entries. Nothing else: the head is otherwise the
-        # application's as sent (SPEC K12). An exact fit here left those to reallocate the blob on
-        # the event-loop thread, twice, for every response.
+        # application's as sent (SPEC K12). An exact fit here left those to
+        # reallocate the blob on the event-loop thread, twice, for every
+        # response.
         out.reserve(total + 96, count + 4)
         for i in range(count):
             var pair = cpy.PyList_GetItem(list_ptr, i)

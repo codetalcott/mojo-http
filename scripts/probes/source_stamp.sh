@@ -22,7 +22,7 @@ _hash() { if command -v sha256sum > /dev/null 2>&1; then sha256sum; else shasum 
 # The `._*` exclusion is not cosmetic: virtiofs materialises macOS extended
 # attributes as AppleDouble files inside the guest, so the container can see
 # a `._which_package.mojo` beside every source that the Mac cannot.
-find packages scripts apps -type f \
+find packages packaging scripts apps -type f \
      \( -name '*.mojo' -o -name '*.py' -o -name '*.sh' \) \
      ! -path '*/.venv/*' ! -name '._*' 2> /dev/null \
   | LC_ALL=C sort \

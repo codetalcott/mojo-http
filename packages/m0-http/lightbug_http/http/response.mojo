@@ -69,7 +69,8 @@ def enforce_bodiless_framing(mut response: HTTPResponse):
 
     RFC 9110 §8.6: a server MUST NOT send `Content-Length` in a 1xx or 204
     response, and in a 304 only as the length the GET would have had -- so
-    a 304 keeps a length its handler set and a 1xx or 204 loses one. None
+    a 304 keeps a length its handler set and a 1xx or 204 loses one, and
+    the same for `Transfer-Encoding` (RFC 9112 §6.1). None
     of the three carries content (§6.4.1), so a body a handler attached
     anyway is dropped and a file body's descriptor closed: written, its
     bytes would be where the connection's next response begins. Django's
@@ -86,7 +87,10 @@ def enforce_bodiless_framing(mut response: HTTPResponse):
     if not is_bodiless_status(code):
         return
     if code != 304:
+        # RFC 9112 §6.1 forbids Transfer-Encoding on a 1xx or 204 as §8.6
+        # forbids a length; a 304 keeps both, each describing the GET.
         response.headers.pop(HeaderKey.CONTENT_LENGTH)
+        response.headers.pop(HeaderKey.TRANSFER_ENCODING)
     response.body_raw = Bytes()
     if response.body_fd >= 0:
         close_fd(response.body_fd)

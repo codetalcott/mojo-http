@@ -452,13 +452,14 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     executor produced (`exec_lane`, recorded at the `b`/`B` begin frame,
     because an app's own close and `_end_socket` unsubscribe before the
     connection ends, and routed by that lane because the unsubscribe
-    erased the channel name); every "am I gone" check asks `_task_gone(owner)` about the
-    task that owns the connection a send ADDRESSES (stamped, or finished),
-    never the caller's — `send` and `receive` are closures an application
-    calls from any task, and judged by the caller a gone client's kept
-    `send` wrote into the next client on its recycled slot (FastAPI's
-    documented chat room delivered a departed client's messages to a
-    stranger) while a disconnect hook's sends to live sockets were refused
+    erased the channel name); every "am I gone" check asks
+    `_task_gone(owner)` about the task that owns the connection a send
+    ADDRESSES (stamped, or finished), never the caller's — `send` and
+    `receive` are closures an application calls from any task, and judged by
+    the caller a gone client's kept `send` wrote into the next client on its
+    recycled slot (FastAPI's documented chat room delivered a departed
+    client's messages to a stranger) while a disconnect hook's sends to live
+    sockets were refused
     (SPEC L20); a send to a gone socket raises `ClientDisconnected`, one to
     a gone stream is a yielding no-op; a WebSocket is told of its client's
     departure through `receive()` and never cancelled for it — FastAPI's
