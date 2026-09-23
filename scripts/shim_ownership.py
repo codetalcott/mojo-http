@@ -127,6 +127,7 @@ class Harness:
                         "wsnoanswer": "/ws/noanswer", "wschat": "/ws/chat",
                         "wskeep": "/ws/keep", "wsquick": "/ws/quick",
                         "wsexcept": "/ws/except", "wsblocked": "/ws/blocked",
+                        "wsboom": "/ws/boom", "wsescape": "/ws/escape",
                         }.get(behaviour, "/ws")
                 self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
@@ -206,6 +207,13 @@ class Harness:
                 # Forwards from somewhere else and never calls receive():
                 # nothing can tell it the client has gone until it sends.
                 await asyncio.Event().wait()
+            if scope["path"] == "/ws/boom":
+                raise RuntimeError("ws kaboom")
+            if scope["path"] == "/ws/escape":
+                # Push-only, and it lets the disconnect signal escape.
+                while True:
+                    await send({"type": "websocket.send", "text": "tick"})
+                    await asyncio.sleep(0.005)
             if scope["path"] == "/ws/hold":
                 # Stay inside the accepted socket until cancelled, so a
                 # recycle can land while this task is still alive.
@@ -219,6 +227,8 @@ class Harness:
         q = dict(p.split("=", 1) for p in
                  scope["query_string"].decode().split("&") if p)
         behaviour = q.get("b", "hold")
+        if behaviour == "failbefore":
+            raise KeyError("kaboom before")
         if behaviour in ("background", "plain", "failafter"):
             status = 500 if behaviour == "failafter" else 200
             await send({"type": "http.response.start", "status": status,
@@ -845,6 +855,54 @@ def test_an_error_after_the_final_body_keeps_the_apps_response(h):
         "the late error never reached the log: %r" % (logs,))
 
 
+def test_an_error_before_the_response_is_logged_with_its_traceback(h):
+    """The log line was `request raised: KeyError: 'kaboom before'`. The
+    file and line an application author needs were nowhere, where uvicorn
+    logs the traceback."""
+    h.job(0, "failbefore")
+    h.settle()
+    errs = [e[2] for e in h.events if e[0] == "err" and e[1] == 0]
+    assert errs, "no error was reported: %r" % (h.kinds(0),)
+    assert errs[0].splitlines()[0] == "KeyError: 'kaboom before'", errs[0]
+    assert "Traceback (most recent call last)" in errs[0], (
+        "the error was reported without its traceback: %r" % (errs[0],))
+
+
+def test_a_late_error_is_logged_with_its_traceback(h):
+    h.job(0, "failafter")
+    h.settle()
+    logs = [e[2] for e in h.events if e[0] == "log" and e[1] == 0]
+    assert logs and "Traceback (most recent call last)" in logs[0], logs
+
+
+def test_a_socket_whose_app_raises_closes_with_1011(h):
+    """RFC 6455 7.4.1: 1011 is "an unexpected condition". 1000 told the
+    client that all went well."""
+    h.job(0, "wsboom")
+    h.settle()
+    codes = [e[2] for e in h.events if e[0] == "ws_close" and e[1] == 0]
+    assert codes == [1011], "a raising app's socket closed with %r" % codes
+    notes = [e[2] for e in h.events if e[0] == "stream_note" and e[1] == 0]
+    assert notes and "ws kaboom" in notes[0] \
+        and "Traceback (most recent call last)" in notes[0], notes
+
+
+def test_a_disconnect_that_escapes_the_app_is_not_an_error(h):
+    """The client left and the app let ClientDisconnected escape: the
+    connection is over, which uvicorn does not log either. Nothing is
+    sent to it."""
+    h.job(0, "wsescape")
+    h.settle()
+    mark = len(h.events)
+    h.disconnect(0)
+    h.settle(passes=120)
+    after = [e[0] for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert "stream_note" not in after, (
+        "a client's departure was logged as an application error: %r"
+        % (after,))
+    assert "ws_close" not in after and "ws_send" not in after, after
+
+
 TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
@@ -865,6 +923,10 @@ TESTS = [
     test_a_response_is_answered_at_its_final_body,
     test_a_stream_ends_at_its_final_body,
     test_an_error_after_the_final_body_keeps_the_apps_response,
+    test_an_error_before_the_response_is_logged_with_its_traceback,
+    test_a_late_error_is_logged_with_its_traceback,
+    test_a_socket_whose_app_raises_closes_with_1011,
+    test_a_disconnect_that_escapes_the_app_is_not_an_error,
 ]
 
 
@@ -965,6 +1027,24 @@ SABOTAGES = [
         "an ended stream stays cancellable",
         "                        _exec_stream_tasks.pop(self.slot, None)\n",
         "                        pass\n",
+    ),
+    (
+        "the log gets the exception's name only",
+        "    return '%s: %s\\n%s' % (",
+        "    return '%s: %s' % (type(exc).__name__, exc)\n"
+        "    return '%s: %s\\n%s' % (",
+    ),
+    (
+        "an application error closes the socket with 1000",
+        "                _exec_put(('ws_close', slot, 1011 if failed else 1000))",
+        "                _exec_put(('ws_close', slot, 1000))",
+    ),
+    (
+        "a client's departure is logged as an application error",
+        "            if exc is not None and not isinstance(exc, ClientDisconnected):\n"
+        "                _exec_put(('stream_note', slot, _describe(exc)))",
+        "            if exc is not None:\n"
+        "                _exec_put(('stream_note', slot, _describe(exc)))",
     ),
     (
         "a drain ack is added rather than clamped to the window",

@@ -791,8 +791,18 @@ async def _dropped():
 
 
 def _describe(exc):
-    # What the log says about an application error.
-    return '%s: %s' % (type(exc).__name__, exc)
+    # What the log says about an application error: the one-line summary it
+    # has always carried (`ValueError: kaboom`), then the traceback, which
+    # is where the file and line an application author needs are. uvicorn
+    # logs the same traceback; without it this server said only that
+    # something raised.
+    import traceback
+
+    return '%s: %s\\n%s' % (
+        type(exc).__name__,
+        exc,
+        ''.join(traceback.format_exception(exc)).rstrip('\\n'),
+    )
 
 
 def _exec_on_disconnect(slot):
@@ -1469,10 +1479,12 @@ def _on_task_done(slot, t):
     if was_streaming:
         # The stream's own finally already signalled the loop; the
         # completion channel is off limits (the slot may be recycled).
-        # Surface an application error to the log only.
+        # Surface an application error to the log only -- and not the
+        # client's own departure escaping the app (ClientDisconnected from
+        # a send to a gone socket), which uvicorn does not log either.
         if not t.cancelled():
             exc = t.exception()
-            if exc is not None:
+            if exc is not None and not isinstance(exc, ClientDisconnected):
                 _exec_put(('stream_note', slot, _describe(exc)))
         return
     if t.cancelled():
@@ -1597,14 +1609,22 @@ async def _serve_one_ws(slot, scope):
                 resolved[0] = True
                 _exec_put(('ws_reject', slot))
 
+    failed = False
     try:
         await _app(scope, receive, send)
+    except BaseException as exc:
+        # An application error closes the socket with 1011 (RFC 6455
+        # 7.4.1: "an unexpected condition"), never 1000, which tells the
+        # client all went well. A cancellation (the drain) and the
+        # client's own departure are not errors.
+        failed = not isinstance(exc, (asyncio.CancelledError, ClientDisconnected))
+        raise
     finally:
         if not _task_gone(owner):
             if slot in _exec_ws_accepted:
                 # The app returned with the socket open: close it for it,
                 # uvicorn's contract.
-                _exec_put(('ws_close', slot, 1000))
+                _exec_put(('ws_close', slot, 1011 if failed else 1000))
             elif not resolved[0]:
                 # Returned (or raised) without ever answering the
                 # handshake: the held 101 must not leak its slot.
