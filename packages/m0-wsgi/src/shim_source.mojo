@@ -488,7 +488,6 @@ _exec_tasks = set()
 _exec_credits = {}
 _exec_credit_evts = {}
 _exec_disconnects = {}
-_exec_disconnected = set()
 _exec_stream_tasks = {}
 # slot -> the task that currently owns the slot's per-slot state (spawned
 # last). A slot is recycled the instant the loop closes its connection,
@@ -496,6 +495,15 @@ _exec_stream_tasks = {}
 # the OWNER may clean the slot up, and a disconnect is delivered to the
 # task, not left on the slot for its successor to trip over.
 _exec_slot_task = {}
+
+
+class ClientDisconnected(OSError):
+    '''A send on a connection whose client has gone.
+
+    uvicorn's name and base class (`uvicorn.protocols.utils`), so an
+    application written against uvicorn handles it unchanged: Starlette's
+    `WebSocket.send` turns an OSError into `WebSocketDisconnect(1006)`.
+    '''
 
 _ASGI_CREDIT_WINDOW = 64 * 1024
 _ASGI_CHUNK_SPLIT = 32 * 1024
@@ -513,6 +521,13 @@ _ASGI_CHUNK_SPLIT = 32 * 1024
 # not how much it may send.
 _ASGI_TOTAL_WINDOW = 128 * 1024
 _exec_global_credit = [_ASGI_TOTAL_WINDOW]
+
+# How long the shutdown drain lets in-flight tasks finish before it cancels
+# the WebSocket tasks still running. A socket is never cancelled for its
+# client's departure (see spawn_ws), so a handler blocked somewhere other
+# than receive() -- forwarding from a queue, sleeping between pushes -- is
+# only ended here. Well inside the Mojo side's 5 s join bound.
+_WS_DRAIN_GRACE = 1.0
 _exec_global_evt = None
 _exec_inflight = {}
 
@@ -676,10 +691,11 @@ def _m0_dispatch(event_id, url, frame):
 
 
 # WebSocket state, keyed by slot, owned by this thread: the inbound
-# message queue behind receive(), and the accepted-set that decides
-# whether a close means "reject the handshake" or "close the socket".
+# message queue behind receive(). Whether a socket was accepted, and
+# whether it closed itself, is each socket's own (`_serve_one_ws`), never
+# the slot's: a finished socket's record read by slot was the NEXT
+# client's.
 _exec_ws_inbox = {}
-_exec_ws_accepted = set()
 
 
 def _ws_frame_bytes(n):
@@ -700,7 +716,7 @@ def _ws_frame_bytes(n):
     return n + 10
 
 
-async def _ws_spend(slot, nbytes):
+async def _ws_spend(slot, owner, nbytes):
     '''Wait for room in BOTH windows, then charge them -- `_emit` for a socket.
 
     Until this existed `websocket.send` was not gated at all. An
@@ -717,9 +733,14 @@ async def _ws_spend(slot, nbytes):
     over-credits by the difference and the clamp in `_on_ack` absorbs it.
     (Such a message is refused by the outbox anyway -- `queue_frame` caps a
     single frame at `MAX_PENDING_BYTES` -- and now says so.)
-    '''
-    import asyncio
 
+    `owner` is the socket's own task. `send` asks whether it has gone
+    before calling here; this asks again after every wait and once more
+    before charging, because an ack and the disconnect can wake it in the
+    same pass -- the credit is there and the socket is not, and a charge
+    then would sit in flight on the slot, which the next client holds by
+    now, until that client's own cleanup.
+    '''
     evt = _exec_credit_evts.get(slot)
     if evt is None:
         # No window: a socket the loop is not acking (a `--realtime` hold
@@ -728,46 +749,75 @@ async def _ws_spend(slot, nbytes):
     if nbytes > _ASGI_CREDIT_WINDOW:
         nbytes = _ASGI_CREDIT_WINDOW
     while _exec_credits.get(slot, 0) < nbytes:
-        if _task_gone(slot):
-            raise asyncio.CancelledError()
+        if _task_gone(owner):
+            raise ClientDisconnected()
         evt.clear()
         await evt.wait()
     while _exec_global_credit[0] < nbytes:
-        if _task_gone(slot):
-            raise asyncio.CancelledError()
+        if _task_gone(owner):
+            raise ClientDisconnected()
         _exec_global_evt.clear()
         await _exec_global_evt.wait()
+    if _task_gone(owner):
+        raise ClientDisconnected()
     _exec_credits[slot] -= nbytes
     _exec_global_credit[0] -= nbytes
     _exec_inflight[slot] = _exec_inflight.get(slot, 0) + nbytes
 
 
-def _task_gone(slot):
-    # `import asyncio` here, not at module scope: this shim is a string
-    # exec'd into a fresh namespace and every function that needs the
-    # module imports it itself (a sys.modules hit). Without it this
-    # function raises NameError -- which surfaced as every ASGI stream
-    # truncating at its first credit window, since the raise happens
-    # after the head has gone out.
+def _task_gone(owner):
+    # Has the connection OWNER serves gone? `owner` is the task `spawn` or
+    # `spawn_ws` created for the connection a send ADDRESSES -- never the
+    # caller's. Applications send to one connection from another's task: a
+    # disconnect hook telling the room who left, a background task
+    # broadcasting, a request pushing to a held stream. Judged by
+    # asyncio.current_task(), those sends were refused when the CALLER had
+    # gone and let through when the TARGET had -- into whichever client the
+    # loop had given the slot to since. FastAPI's documented chat example
+    # delivered every message for a departed client to the next one.
+    #
+    # Gone: stamped by the loop's disconnect tag (never cleared, so a task
+    # that lingers past its slot's reuse cannot produce under the
+    # successor's generation, nor end the successor's stream in its
+    # finally), or finished -- its connection is over, and a task that
+    # finished before the tag was never stamped.
+    return getattr(owner, '_m0_disconnected', False) or owner.done()
+
+
+async def _dropped():
+    # A send to a stream whose client has gone: a no-op under ASGI spec 2.3
+    # (and uvicorn's), but a YIELDING one. A producer that loops on send
+    # with no other await would otherwise never let its own cancellation
+    # land.
     import asyncio
 
-    # Disconnected: the slot's mark (set by the loop's tag, cleared when a
-    # new task takes the slot), or THIS task's own (stamped on the owner at
-    # the time of the tag, and never cleared) -- a task that lingers past
-    # its slot's reuse must not keep producing under the successor's
-    # generation, nor end the successor's stream in its finally.
-    return slot in _exec_disconnected or getattr(
-        asyncio.current_task(), '_m0_disconnected', False
+    await asyncio.sleep(0)
+
+
+def _describe(exc):
+    # What the log says about an application error: the one-line summary it
+    # has always carried (`ValueError: kaboom`), then the traceback, which
+    # is where the file and line an application author needs are. uvicorn
+    # logs the same traceback; without it this server said only that
+    # something raised.
+    import traceback
+
+    return '%s: %s\\n%s' % (
+        type(exc).__name__,
+        exc,
+        ''.join(traceback.format_exception(exc)).rstrip('\\n'),
     )
 
 
 def _exec_on_disconnect(slot):
     # The loop closed this slot (client vanished, or end-of-stream close
     # raced): resolve the pending receive() into http.disconnect (or
-    # queue websocket.disconnect), wake any credit waiter, and cancel the
-    # task -- uvicorn's contract. The cancellation is what stops an
+    # queue websocket.disconnect), wake any credit waiter, and cancel a
+    # streaming response's task. The cancellation is what stops an
     # EventStream generator; frameworks handle CancelledError as cleanup.
-    _exec_disconnected.add(slot)
+    # A WebSocket's task is NOT cancelled: it hears websocket.disconnect
+    # from receive(), uvicorn's contract, so the application's own
+    # `except WebSocketDisconnect:` cleanup runs (see spawn_ws).
     owner = _exec_slot_task.get(slot)
     if owner is not None:
         owner._m0_disconnected = True
@@ -840,10 +890,8 @@ def _exec_cleanup_slot(slot):
     _exec_credits.pop(slot, None)
     _exec_credit_evts.pop(slot, None)
     _exec_disconnects.pop(slot, None)
-    _exec_disconnected.discard(slot)
     _exec_stream_tasks.pop(slot, None)
     _exec_ws_inbox.pop(slot, None)
-    _exec_ws_accepted.discard(slot)
 
 
 def asgi_executor_init(fd, ack_fd):
@@ -997,11 +1045,26 @@ def _flush():
     _port.flush()
 
 
+async def _gather_in_flight():
+    # Run the in-flight tasks to completion, bounded for sockets: every
+    # client is gone by the pill, and a socket task still running after the
+    # grace is waiting on something that will not come.
+    import asyncio
+
+    if not _exec_tasks:
+        return
+    _, pending = await asyncio.wait(list(_exec_tasks), timeout=_WS_DRAIN_GRACE)
+    for t in pending:
+        if getattr(t, '_m0_ws', False):
+            t.cancel()
+    if _exec_tasks:
+        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+
+
 async def _finish_and_stop():
     import asyncio
 
-    if _exec_tasks:
-        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    await _gather_in_flight()
     await asyncio.sleep(0)
     _loop.stop()
 
@@ -1026,8 +1089,7 @@ async def _drain_and_stop():
 
     while not _port.drain_step():
         await asyncio.sleep(0.001)
-    if _exec_tasks:
-        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    await _gather_in_flight()
     await asyncio.sleep(0)
     # The tail the blocking drain used to run inline: a farewell to any
     # stream that appeared during the drain, the last submit flush, the
@@ -1119,8 +1181,9 @@ class _Cycle:
     # streaming mark and the cancellable stream task go on the slot's
     # OWNER task (`_exec_slot_task[slot]`), never asyncio.current_task();
     # cleanup runs only if the finishing task is the owner; every "am I
-    # gone" check asks `_task_gone`, which consults both marks; the credit
-    # windows are per slot. `poe test-shim` sabotages each of them.
+    # gone" check asks `_task_gone(self.task)` about this request's own
+    # task; the credit windows are per slot. `poe test-shim` sabotages each
+    # of them.
     #
     # Buffered until the application proves it is streaming (its first
     # more_body=True chunk), then a credit-gated chunk producer. A
@@ -1139,8 +1202,12 @@ class _Cycle:
     # work.
     #
     # `asyncio` is imported on the rare branches that need it (a
-    # disconnect wait, the switch to streaming, a cancelled credit wait)
-    # rather than per call: the buffered request path touches it nowhere.
+    # disconnect wait, the switch to streaming) rather than per call: the
+    # buffered request path touches it nowhere.
+    #
+    # `task` is this request's OWN task, set by `spawn` the moment it is
+    # created: every "has this connection gone?" asks about it, never about
+    # whichever task happens to be calling `send` (see `_task_gone`).
     __slots__ = (
         'slot',
         'body',
@@ -1151,6 +1218,8 @@ class _Cycle:
         'total',
         'streaming',
         'aborted',
+        'task',
+        'completed',
     )
 
     def __init__(self, slot, body):
@@ -1163,11 +1232,21 @@ class _Cycle:
         self.total = 0
         self.streaming = False
         self.aborted = False
+        self.task = None
+        self.completed = False
 
     async def receive(self):
         if not self.delivered:
             self.delivered = True
             return {'type': 'http.request', 'body': self.body, 'more_body': False}
+        if self.completed or _task_gone(self.task):
+            # Answered, or gone: say so at once, uvicorn's behaviour. A
+            # buffered response gets no disconnect tag, so a background
+            # task that asked waited for the life of the process (and held
+            # the shutdown drain to its bound); and a gone request never
+            # waits on the slot's future, which belongs to the slot's next
+            # request once the loop has recycled it.
+            return {'type': 'http.disconnect'}
         # Unlike the buffered bridge, the executor CAN observe a
         # disconnect: the loop's close sends a tag that resolves this
         # future. Shielded so a task cancellation cancels the await, not
@@ -1191,31 +1270,50 @@ class _Cycle:
         # await, so the loop's GIL and this executor's other tasks both keep
         # running -- which is why the wait belongs here and not in the Mojo
         # send.
+        #
+        # A stream whose client has gone drops what it is given, and asks
+        # BEFORE touching the slot's state: the loop may already have given
+        # the slot to the next response, and a send kept by the application
+        # (a hub pushing to held streams) wrote into that response.
         slot = self.slot
+        owner = self.task
         view = memoryview(data)
         for start in range(0, len(view), _ASGI_CHUNK_SPLIT):
             piece = bytes(view[start : start + _ASGI_CHUNK_SPLIT])
+            if _task_gone(owner):
+                return await _dropped()
             evt = _exec_credit_evts[slot]
             while _exec_credits.get(slot, 0) < len(piece):
-                if _task_gone(slot):
-                    import asyncio
-
-                    raise asyncio.CancelledError()
+                if _task_gone(owner):
+                    return await _dropped()
                 evt.clear()
                 await evt.wait()
             while _exec_global_credit[0] < len(piece):
-                if _task_gone(slot):
-                    import asyncio
-
-                    raise asyncio.CancelledError()
+                if _task_gone(owner):
+                    return await _dropped()
                 _exec_global_evt.clear()
                 await _exec_global_evt.wait()
+            if _task_gone(owner):
+                # Woken by an ack and a disconnect in the same pass: the
+                # credit is there, but this stream is not -- charged, the
+                # bytes would sit in flight on the slot, which the next
+                # response holds by now, until its own cleanup.
+                return await _dropped()
             _exec_credits[slot] -= len(piece)
             _exec_global_credit[0] -= len(piece)
             _exec_inflight[slot] = _exec_inflight.get(slot, 0) + len(piece)
             _exec_put(('stream_chunk', slot, piece))
 
     async def send(self, message):
+        if self.completed or self.task.done():
+            # The response is over -- answered at its final body, or by the
+            # done-callback once the application returned. A send now has
+            # nothing to answer, and emitting one handed it to whichever
+            # request held the slot next: a task the application left
+            # behind answered ANOTHER client's request with its response.
+            # (uvicorn: a no-op after a disconnect, RuntimeError on a live
+            # connection.) Yielding, like every dropped send.
+            return await _dropped()
         t = message.get('type', '')
         if t == 'http.response.start':
             self.status = int(message.get('status', 500))
@@ -1226,6 +1324,18 @@ class _Cycle:
             if self.streaming:
                 if chunk:
                     await self._emit(chunk)
+                if not more:
+                    # The final body: end the stream on the wire NOW.
+                    # Starlette runs a response's background tasks after
+                    # this send, inside the same call, and ending it from
+                    # `run`'s finally held the client until they were done.
+                    self.completed = True
+                    if _exec_stream_tasks.get(self.slot) is self.task:
+                        # Ended: a later disconnect must not cancel the
+                        # application's background work (uvicorn does not).
+                        _exec_stream_tasks.pop(self.slot, None)
+                    if not _task_gone(self.task):
+                        _exec_put(('stream_end', self.slot))
                 return
             if more:
                 # The switch: this response is a stream. Send the head
@@ -1278,8 +1388,28 @@ class _Cycle:
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP
                     )
+            if self.status is None:
+                raise RuntimeError(
+                    'ASGI sent http.response.body before http.response.start'
+                )
+            # The final body: answer NOW, not when the application returns.
+            # Starlette runs background tasks after this send (the response
+            # waited for them: 1.5 s against uvicorn's 0), and its
+            # ServerErrorMiddleware sends a finished 500 before re-raising
+            # (the executor replaced it with its own). Exactly one completion
+            # per job either way: `done` below skips `_on_task_done`.
+            self.completed = True
+            body, self.chunks = b''.join(self.chunks), []
+            _exec_put(('done', self.slot, self.status, self.headers, body))
 
     async def run(self, scope):
+        if self.task is None:
+            # asyncio.eager_task_factory runs a task's first step INSIDE
+            # create_task, before `spawn` can record it; every "am I gone"
+            # would then ask about None and a stream would never end.
+            import asyncio
+
+            self.task = asyncio.current_task()
         slot = self.slot
         try:
             await _app(scope, self.receive, self.send)
@@ -1287,8 +1417,14 @@ class _Cycle:
             self.aborted = True
             raise
         finally:
-            if self.streaming and not _task_gone(slot):
-                # End of stream. A normal completion ends with the chunked
+            if (
+                self.streaming
+                and not self.completed
+                and not _task_gone(self.task)
+            ):
+                # End of a stream the application never finished with a
+                # final body (a completed one ended at its final body, in
+                # `send`). A normal completion ends with the chunked
                 # terminator and the connection returns to keep-alive; an
                 # application error after the head -- or a cancellation that
                 # was not a disconnect -- aborts instead, and the loop closes
@@ -1296,7 +1432,7 @@ class _Cycle:
                 # rather than a short one under a clean ending.
                 _exec_put(('stream_abort' if self.aborted else 'stream_end', slot))
 
-        if self.streaming:
+        if self.streaming or self.completed:
             return None
         if self.status is None:
             raise RuntimeError(
@@ -1306,8 +1442,29 @@ class _Cycle:
 
     def done(self, t):
         # The done-callback: a bound method, where `_task_done` built a
-        # closure per request. The rule is `_on_task_done`'s.
-        _on_task_done(self.slot, t)
+        # closure per request.
+        if not self.completed:
+            # The rule is `_on_task_done`'s.
+            _on_task_done(self.slot, t)
+            return
+        # Answered at its final body (see send). What ran after it, a
+        # background task, is the application's own: clean up only as the
+        # owner, and report a late error to the log, never to the slot,
+        # which may belong to the connection's next request by now.
+        _exec_tasks.discard(t)
+        if _exec_slot_task.get(self.slot) is t:
+            _exec_slot_task.pop(self.slot, None)
+            _exec_cleanup_slot(self.slot)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None and not isinstance(exc, ClientDisconnected):
+                _exec_put(
+                    (
+                        'log',
+                        self.slot,
+                        'request raised after its response: ' + _describe(exc),
+                    )
+                )
 
 
 def spawn(slot, scope, body):
@@ -1325,11 +1482,13 @@ def spawn(slot, scope, body):
     # stream_* events for streaming ones.
     cycle = _Cycle(slot, body)
     task = _loop.create_task(cycle.run(scope))
+    # Before the task first runs (it starts at the loop's next step), so
+    # every send it makes is judged by its own task from the first one.
+    cycle.task = task
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
     # A disconnect that reached the slot before this task existed was the
     # previous connection's (the tag precedes this job on the FIFO).
-    _exec_disconnected.discard(slot)
     _exec_disconnects.pop(slot, None)
     task.add_done_callback(cycle.done)
 
@@ -1346,18 +1505,20 @@ def _on_task_done(slot, t):
     if was_streaming:
         # The stream's own finally already signalled the loop; the
         # completion channel is off limits (the slot may be recycled).
-        # Surface an application error to the log only.
+        # Surface an application error to the log only -- and not the
+        # client's own departure escaping the app (ClientDisconnected from
+        # a send to a gone socket), which uvicorn does not log either.
         if not t.cancelled():
             exc = t.exception()
-            if exc is not None:
-                _exec_put(('stream_note', slot, '%s: %s' % (type(exc).__name__, exc)))
+            if exc is not None and not isinstance(exc, ClientDisconnected):
+                _exec_put(('stream_note', slot, _describe(exc)))
         return
     if t.cancelled():
         _exec_put(('err', slot, 'cancelled'))
         return
     exc = t.exception()
     if exc is not None:
-        _exec_put(('err', slot, '%s: %s' % (type(exc).__name__, exc)))
+        _exec_put(('err', slot, _describe(exc)))
         return
     status, headers, body_bytes = t.result()
     _exec_put(('done', slot, status, headers, body_bytes))
@@ -1381,18 +1542,40 @@ async def _serve_one_ws(slot, scope):
     # submit-channel datagrams the handler forwards from ws_message.
     import asyncio
 
+    # This socket's own task. `send` and `receive` are closures the
+    # application may call from ANY task -- a disconnect hook on another
+    # socket's task, a background broadcaster -- so whether this socket has
+    # gone is asked about this task, never about the caller (`_task_gone`).
+    owner = asyncio.current_task()
     inbox = asyncio.Queue()
     _exec_ws_inbox[slot] = inbox
     connected = [False]
     resolved = [False]  # accept or reject reached the pump
     consumed = [0]  # cumulative inbound bytes acked back to the loop
+    ended = [None]  # the disconnect, once delivered
+    # This socket's own record of its accept and its close, never the
+    # slot's: the loop recycles a slot the instant a connection closes, and
+    # it tells the executor nothing about a socket the APPLICATION closed
+    # (its close frame ends the subscription before the connection does).
+    # Kept by slot, a finished socket's send or finally acted on the NEXT
+    # client's accept -- a kept send delivered into it, a late finally
+    # closed it, a second close rejected its handshake.
+    accepted = [False]
+    closed = [False]
 
     async def receive():
         if not connected[0]:
             connected[0] = True
             return {'type': 'websocket.connect'}
+        if ended[0] is not None:
+            # The client has gone and the application was told: every
+            # later receive() says so again at once, uvicorn's behaviour,
+            # rather than waiting on a queue nothing will ever fill.
+            return ended[0]
         msg, cost = await inbox.get()
-        if cost and not _task_gone(slot):
+        if msg['type'] == 'websocket.disconnect':
+            ended[0] = msg
+        if cost and not _task_gone(owner):
             # The ack that reopens the loop's inbound window -- sent as
             # `receive()` CONSUMES, not as the message arrives, because
             # arrival is exactly what an app that stopped receiving does
@@ -1407,10 +1590,25 @@ async def _serve_one_ws(slot, scope):
 
     async def send(message):
         t = message.get('type', '')
-        if _task_gone(slot):
-            return
+        if _task_gone(owner):
+            if t == 'websocket.close':
+                # Closing a socket whose client has gone: already closed.
+                return
+            # uvicorn's answer, and the only safe one: this socket's slot
+            # may already be the next client's, and a send kept by the
+            # application for a client that left was delivered there.
+            raise ClientDisconnected()
+        if closed[0]:
+            # This socket's own close has gone out: nothing more may.
+            # (uvicorn raises RuntimeError here too; a second close is
+            # already done.)
+            if t == 'websocket.close':
+                return
+            raise RuntimeError(
+                'ASGI sent %r after its own websocket.close' % (t,)
+            )
         if t == 'websocket.accept':
-            _exec_ws_accepted.add(slot)
+            accepted[0] = True
             # The send window, seeded BEFORE the accept reaches the pump:
             # from that moment the loop can drain frames and ack them, and
             # an ack for a slot with no window is discarded. See
@@ -1420,7 +1618,7 @@ async def _serve_one_ws(slot, scope):
             resolved[0] = True
             _exec_put(('ws_accept', slot))
         elif t == 'websocket.send':
-            if slot not in _exec_ws_accepted:
+            if not accepted[0]:
                 raise RuntimeError('websocket.send before websocket.accept')
             data = message.get('bytes')
             if data is None:
@@ -1432,34 +1630,55 @@ async def _serve_one_ws(slot, scope):
             # Backpressure: this await is the whole point. An application
             # faster than its client waits here, exactly as a streaming
             # HTTP response waits in `_emit`.
-            await _ws_spend(slot, _ws_frame_bytes(len(payload)))
-            if _task_gone(slot):
-                return
+            await _ws_spend(slot, owner, _ws_frame_bytes(len(payload)))
+            if _task_gone(owner):
+                raise ClientDisconnected()
             _exec_put(('ws_send', slot, opcode, payload))
         elif t == 'websocket.close':
-            if slot in _exec_ws_accepted:
+            # Closed from here on, before any await, so nothing slips in
+            # behind the close frame. And the app's own receive() now says
+            # the socket is over: the loop will not say so for a close the
+            # application made, and an app waiting for the reply (a
+            # Channels consumer that closed itself) waited for ever.
+            closed[0] = True
+            if ended[0] is None:
+                ended[0] = {
+                    'type': 'websocket.disconnect',
+                    'code': int(message.get('code', 1000)),
+                }
+            if accepted[0]:
                 # The close frame rides the same outbox, so it is charged
                 # the same way. A peer that has genuinely gone is what
                 # `_task_gone` covers; a merely slow one is worth waiting
                 # for, because a close that overflows the outbox takes the
                 # connection down without its close frame.
-                await _ws_spend(slot, _ws_frame_bytes(2))
-                if _task_gone(slot):
+                try:
+                    await _ws_spend(slot, owner, _ws_frame_bytes(2))
+                except ClientDisconnected:
+                    return
+                if _task_gone(owner):
                     return
                 _exec_put(('ws_close', slot, int(message.get('code', 1000))))
-                _exec_ws_accepted.discard(slot)
             else:
                 resolved[0] = True
                 _exec_put(('ws_reject', slot))
 
+    failed = False
     try:
         await _app(scope, receive, send)
+    except BaseException as exc:
+        # An application error closes the socket with 1011 (RFC 6455
+        # 7.4.1: "an unexpected condition"), never 1000, which tells the
+        # client all went well. A cancellation (the drain) and the
+        # client's own departure are not errors.
+        failed = not isinstance(exc, (asyncio.CancelledError, ClientDisconnected))
+        raise
     finally:
-        if not _task_gone(slot):
-            if slot in _exec_ws_accepted:
+        if not _task_gone(owner):
+            if accepted[0] and not closed[0]:
                 # The app returned with the socket open: close it for it,
                 # uvicorn's contract.
-                _exec_put(('ws_close', slot, 1000))
+                _exec_put(('ws_close', slot, 1011 if failed else 1000))
             elif not resolved[0]:
                 # Returned (or raised) without ever answering the
                 # handshake: the held 101 must not leak its slot.
@@ -1485,20 +1704,17 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     }
     task = _loop.create_task(_serve_one_ws(slot, scope))
     task._m0_streaming = True
+    # A socket is told its client has gone through receive() -- the
+    # `websocket.disconnect` `_exec_on_disconnect` queues -- and is never
+    # cancelled for it, which is why it is not a stream task: FastAPI's
+    # documented `except WebSocketDisconnect:` cleanup runs only if the
+    # task survives to see it. A send to the gone socket raises
+    # ClientDisconnected; the drain cancels what is left
+    # (`_gather_in_flight`), and this mark is how it knows a socket.
+    task._m0_ws = True
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
-    # The previous connection's ACCEPT must not survive the recycle either:
-    # an accepted socket's task can still be winding down when the loop
-    # recycles its slot into a new handshake, and ownership (correctly)
-    # keeps its late done-callback from wiping this task's state -- so the
-    # stale membership is cleared here, like the disconnect mark below.
-    # Inherited, it makes the successor look pre-accepted: an app that
-    # returns without answering its handshake sends ws_close instead of
-    # ws_reject, and the held 101 is never released.
-    _exec_ws_accepted.discard(slot)
-    _exec_disconnected.discard(slot)
     _exec_disconnects.pop(slot, None)
-    _exec_stream_tasks[slot] = task
     task.add_done_callback(_task_done(slot))
 
 
