@@ -600,6 +600,19 @@ lightbug_http
         to one, event_loop.mojo -> `m0_http.log`
         (docs/notes/the-host-leaves-the-fork.md).
 
+      - event_loop.mojo / connection.mojo (2026-09-22): a request refused
+        before its body was read now LINGERS (RFC 9112 §9.6) instead of
+        closing at once. All three 413 sites go through
+        `_reject_and_linger`, which shuts the write side behind the
+        response, moves the slot to the new `ConnectionState.LINGERING`,
+        and sets a `REJECT_LINGER_NS` deadline the idle sweep reaps;
+        `_linger_discard` reads and discards until the client's EOF.
+        Closing with the body unread made the kernel send RST, which a
+        client that writes before it reads saw as EPIPE, never the 413.
+        `_send_error_to_fd`, and server.mojo's `_send_error_response`,
+        now send `Connection: close`: every error either sends ends its
+        connection, and each said `keep-alive`.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

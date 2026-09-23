@@ -154,6 +154,14 @@
       "evidence": "follows HTTP/2; there is no TLS layer to build it on"
     },
     {
+      "id": "A20",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A refusal sent mid-upload reaches the client: lingering close (RFC 9112 \u00a79.6)",
+      "status": "verified",
+      "evidence": "`Smoke test a 413 reaching a client still uploading` (every PR) \u2014 the whole body written before reading, `Content-Length` and chunked, through `http.client`, and eight at once; `Connection: close` and a FIN right behind the 413; the linger bounded against a client that keeps trickling past it, and a clean close at its deadline for a client that reads late"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

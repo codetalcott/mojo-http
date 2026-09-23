@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**253 capabilities: 229 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 229 verified, 221 are gated on every pull request, 3 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**254 capabilities: 230 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 230 verified, 222 are gated on every pull request, 3 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -66,6 +66,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | A17 | Control bytes in the request target rejected | verified | `test_parsing.mojo:test_a_control_byte_in_the_request_target_is_invalid` (every PR) |
 | A18 | HTTP/2 | out of scope | terminate at a proxy — gunicorn's answer, and the same one applies here |
 | A19 | HTTP/3 and QUIC | out of scope | follows HTTP/2; there is no TLS layer to build it on |
+| A20 | A refusal sent mid-upload reaches the client: lingering close (RFC 9112 §9.6) | verified | `Smoke test a 413 reaching a client still uploading` (every PR) — the whole body written before reading, `Content-Length` and chunked, through `http.client`, and eight at once; `Connection: close` and a FIN right behind the 413; the linger bounded against a client that keeps trickling past it, and a clean close at its deadline for a client that reads late |
 
 ## B. Request smuggling (CWE-444)
 

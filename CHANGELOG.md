@@ -164,6 +164,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A `413` for an oversized upload reached curl and browsers, but not
+  `http.client`** (SPEC A20). The server refuses a body over `--max-body`
+  as soon as it knows the size, while the client is still uploading, and
+  it closed the socket straight after. Closing with the rest of the body
+  unread makes the kernel send RST instead of FIN, so a client that writes
+  its whole body before reading — `http.client`, and therefore `urllib`
+  and `requests` — got `BrokenPipeError` instead of the status. Found by
+  a Flask application compared against Werkzeug. The refusal now shuts its
+  write side, reads and discards what is still coming for up to five
+  seconds (RFC 9112 §9.6's lingering close), then closes cleanly. And
+  every error the server answers on its own — 400, 408, 413, 414, 431 --
+  said `Connection: keep-alive` on a connection it was about to close; it
+  says `close`. `--max-body`'s help and `docs/RUNNING.md` now say that
+  the server answers over the cap before the application runs.
+
 - **The nightly canary could not alert, and one break hid the rest.**
   The 2026-09-02 fix created the missing `nightly-breakage` label, which was
   one of two causes: the job declares no `permissions`, so the repository's
