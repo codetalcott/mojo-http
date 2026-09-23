@@ -258,6 +258,27 @@ def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises
     )
 
 
+def test_chunked_applied_twice_is_rejected() raises:
+    """RFC 9112 §6.1: a sender MUST NOT apply `chunked` more than once, so
+    `chunked` anywhere but last is refused, not only a final coding that
+    is something else. The loop decodes ONE layer: accepted, `chunked,
+    chunked` reached an application as a still-chunked body described by a
+    length -- the contradictory pair SPEC L25 removes.
+
+    covers: B3
+    """
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked, chunked\r\n\r\n"
+        )
+    )
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED, gzip, chunked\r\n\r\n"
+        )
+    )
+
+
 def test_chunked_as_the_last_coding_is_still_accepted() raises:
     """The control: a legitimate `gzip, chunked` must keep working."""
     assert_true(

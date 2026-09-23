@@ -94,6 +94,24 @@ def test_a_dechunked_request_keeps_its_other_transfer_codings() raises:
     assert_equal(req.headers.get(HeaderKey.CONTENT_LENGTH).value(), "6")
 
 
+def test_empty_list_elements_leave_no_empty_transfer_encoding() raises:
+    """RFC 9110 §5.6.1: empty list elements are accepted and mean nothing, so
+    `, chunked` is a lone `chunked` -- no empty field beside the length --
+    and `gzip,,chunked` keeps `gzip`.
+
+    covers: L25
+    """
+    var bare = request_from(
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: , chunked\r\n\r\n", "abc"
+    )
+    assert_true(bare.headers.known_index(KH_TRANSFER_ENCODING) < 0)
+    assert_equal(bare.headers.get(HeaderKey.CONTENT_LENGTH).value(), "3")
+    var gz = request_from(
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip,,chunked\r\n\r\n", "abc"
+    )
+    assert_equal(gz.headers.get(HeaderKey.TRANSFER_ENCODING).value(), "gzip")
+
+
 def test_transfer_encoding_case_does_not_matter() raises:
     """RFC 9112 §7.1: coding names are case-insensitive, so `CHUNKED` goes too.
     """
