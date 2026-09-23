@@ -3434,11 +3434,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # wrong, but framing it turns "wrong" into "unparseable", and the
         # reader would hang waiting for a terminator on a message the
         # status says is already complete.
-        var bodiless = (
-            response.status_code == 204
-            or response.status_code == 304
-            or (response.status_code >= 100 and response.status_code < 200)
-        )
+        var bodiless = is_bodiless_status(response.status_code)
         var can_chunk = (
             asgi_stream
             and offload.http11[slot]

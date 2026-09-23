@@ -22,7 +22,9 @@ from std.ffi import c_int, external_call
 from std.testing import TestSuite, assert_equal, assert_false, assert_raises, assert_true
 
 from lightbug_http.c.fcntl import is_cloexec
-from lightbug_http.header import Header, Headers, HeaderKey, KH_CONTENT_LENGTH, KH_CONTENT_TYPE
+from lightbug_http.header import (
+    Header, Headers, HeaderKey, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_TRANSFER_ENCODING,
+)
 from lightbug_http.http import HTTPResponse, enforce_bodiless_framing, is_bodiless_status
 from lightbug_http.io.bytes import Bytes
 
@@ -117,6 +119,34 @@ def test_the_rule_keeps_a_304s_given_length_and_drops_its_body() raises:
     enforce_bodiless_framing(r)
     assert_equal(r.headers.get(HeaderKey.CONTENT_LENGTH).value(), "12345")
     assert_equal(len(r.body_raw), 0)
+
+
+def test_the_rule_drops_a_transfer_encoding_from_a_1xx_or_204() raises:
+    """A handler's own `Transfer-Encoding` never reaches a 1xx or a 204.
+
+    RFC 9112 §6.1: a server MUST NOT send it in either. A 304 keeps one,
+    as it keeps a length: §6.1 lets a 304 to a GET say what coding the GET
+    would have had.
+
+    covers: A21
+    """
+    for code in [100, 204]:
+        var r = HTTPResponse(
+            owned_body=Bytes(),
+            headers=Headers(Header(HeaderKey.TRANSFER_ENCODING, "chunked")),
+            status_code=code,
+            status_text="X",
+        )
+        enforce_bodiless_framing(r)
+        assert_equal(r.headers.known_index(KH_TRANSFER_ENCODING), -1)
+    var kept = HTTPResponse(
+        owned_body=Bytes(),
+        headers=Headers(Header(HeaderKey.TRANSFER_ENCODING, "chunked")),
+        status_code=304,
+        status_text="Not Modified",
+    )
+    enforce_bodiless_framing(kept)
+    assert_equal(kept.headers.get(HeaderKey.TRANSFER_ENCODING).value(), "chunked")
 
 
 def test_the_rule_closes_a_file_body_on_a_204() raises:
