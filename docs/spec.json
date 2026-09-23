@@ -1391,7 +1391,7 @@
       "category": "L. ASGI 3.0",
       "capability": "An app-initiated close ends in a FIN, not an RST (RFC 6455 \u00a75.5.1's order)",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server. One window no probe can force: an executor descheduled between the Close and the end marker that starts the wait had the peer's reply echoed as a second Close, on CI twice, so the executor sends the two as one datagram and `test_stream_frames.mojo` pins that shape"
     },
     {
       "id": "L16",
