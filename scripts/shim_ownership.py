@@ -101,6 +101,8 @@ class Harness:
         self.second_receive = []  # what a receive() after the disconnect got
         self.release = asyncio.Event()  # lets a background task finish
         self.bg_done = False
+        self.http_receives = []  # every stored stream's receive
+        self.bg_receive = []     # what a receive() after the response got
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -128,6 +130,10 @@ class Harness:
                         "wskeep": "/ws/keep", "wsquick": "/ws/quick",
                         "wsexcept": "/ws/except", "wsblocked": "/ws/blocked",
                         "wsboom": "/ws/boom", "wsescape": "/ws/escape",
+                        "wsclosehold": "/ws/closehold",
+                        "wsclosewait": "/ws/closewait",
+                        "wsclosetwice": "/ws/closetwice",
+                        "wscloserecv": "/ws/closerecv",
                         }.get(behaviour, "/ws")
                 self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
@@ -209,6 +215,32 @@ class Harness:
                 await asyncio.Event().wait()
             if scope["path"] == "/ws/boom":
                 raise RuntimeError("ws kaboom")
+            if scope["path"] == "/ws/closehold":
+                # Closes its own socket, keeps its send, and stays alive
+                # without receiving. The loop tells the executor nothing
+                # about a socket the APPLICATION closed: its close frame
+                # ends the subscription before the connection closes.
+                self.ws_sends.append(send)
+                await send({"type": "websocket.close", "code": 1000})
+                await asyncio.Event().wait()
+            if scope["path"] == "/ws/closewait":
+                await send({"type": "websocket.close", "code": 1000})
+                await asyncio.sleep(0.05)
+                return
+            if scope["path"] == "/ws/closetwice":
+                await send({"type": "websocket.close", "code": 1000})
+                await send({"type": "websocket.close", "code": 1000})
+                return
+            if scope["path"] == "/ws/closerecv":
+                # After its own close an app waits for the client's reply:
+                # uvicorn answers it with websocket.disconnect.
+                await send({"type": "websocket.close", "code": 1000})
+                msg = await receive()
+                if msg["type"] == "websocket.connect":
+                    # The handshake's own message, which these apps skip.
+                    msg = await receive()
+                self.second_receive.append(msg["type"])
+                return
             if scope["path"] == "/ws/escape":
                 # Push-only, and it lets the disconnect signal escape.
                 while True:
@@ -229,6 +261,45 @@ class Harness:
         behaviour = q.get("b", "hold")
         if behaviour == "failbefore":
             raise KeyError("kaboom before")
+        if behaviour == "leftover":
+            # Returns WITHOUT answering and leaves a task that answers
+            # later -- an ASGI violation whose late answer must reach
+            # nobody, the slot's next request least of all.
+            async def late():
+                await asyncio.sleep(0.02)
+                await send({"type": "http.response.start", "status": 200,
+                            "headers": []})
+                await send({"type": "http.response.body", "body": b"LATE",
+                            "more_body": False})
+            asyncio.get_running_loop().create_task(late())
+            return
+        if behaviour in ("twice", "bgreceive", "bgclientdisc"):
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"first",
+                        "more_body": False})
+            if behaviour == "twice":
+                await send({"type": "http.response.body", "body": b"second",
+                            "more_body": False})
+            if behaviour == "bgreceive":
+                await receive()             # the request's own body
+                msg = await receive()       # after the response is answered
+                self.bg_receive.append(msg["type"])
+            if behaviour == "bgclientdisc":
+                raise self.ns["ClientDisconnected"]()
+            return
+        if behaviour == "finallyend":
+            # Ends its stream from a finally: after a disconnect, that
+            # final body arrives on a task the loop has already let go of.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"x" * 64,
+                        "more_body": True})
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await send({"type": "http.response.body", "body": b"",
+                            "more_body": False})
         if behaviour in ("background", "plain", "failafter"):
             status = 500 if behaviour == "failafter" else 200
             await send({"type": "http.response.start", "status": status,
@@ -264,6 +335,7 @@ class Harness:
             await send({"type": "http.response.body", "body": b"hello",
                         "more_body": True})
             self.http_sends.append(send)
+            self.http_receives.append(receive)
             await asyncio.Event().wait()
         if behaviour.startswith("child"):
             # Starlette's shape: the body is produced by a task that is
@@ -903,6 +975,263 @@ def test_a_disconnect_that_escapes_the_app_is_not_an_error(h):
     assert "ws_close" not in after and "ws_send" not in after, after
 
 
+# --- the whole-branch review's findings (2026-09-23) -----------------------
+#
+# Each of these reproduces a finding the review made against the first cut
+# of L20-L24: C1 a socket that ends with NO disconnect tag (the loop tags only
+# what is still subscribed, and an app's own close unsubscribes first), C2 a
+# leftover task answering the slot's next request, I1 receive() after the
+# response, I2 credit charged to a socket that has gone, I3 rules the suite
+# did not pin, M4 the eager task factory. `Harness.disconnect()` always tags,
+# which is how the first cut passed: these recycle the slot WITHOUT one.
+
+
+def test_a_socket_the_app_closed_refuses_its_kept_send(h):
+    """C1: nothing stamps a socket the APPLICATION closed -- the loop sees
+    no subscription left when the connection ends -- so the socket's own
+    record of its close is what must refuse a kept send once the slot has
+    a new client. Modelled with no disconnect tag at all."""
+    h.job(0, "wsclosehold")
+    h.settle()
+    assert "ws_close" in h.kinds(0), h.kinds(0)
+    stale = h.ws_sends[0]
+    h.job(0, "wskeep")          # the next client, with no tag in between
+    h.settle()
+    mark = len(h.events)
+    result = h.run(h.foreign(stale, {"type": "websocket.send",
+                                     "text": "for the first client"}))
+    leaked = [e for e in h.events[mark:] if e[0] == "ws_send" and e[1] == 0]
+    assert not leaked, (
+        "a socket the app closed sent into the slot's next client: %r"
+        % (leaked,))
+    assert result != "returned", (
+        "a send after the app's own close returned as if it went out")
+
+
+def test_a_socket_the_app_closed_does_not_close_the_next_client(h):
+    """C1: a socket whose app closed it and returned later ran its finally
+    against the SLOT's accept -- the next client's -- and closed that
+    client (measured live: the next client closed at +1.00 s)."""
+    h.job(0, "wsclosewait")
+    h.settle(passes=5)
+    assert "ws_close" in h.kinds(0), h.kinds(0)
+    h.job(0, "wskeep")
+    h.settle(passes=120)
+    kinds = h.kinds(0)
+    assert kinds.count("ws_close") == 1 and "ws_reject" not in kinds, (
+        "a closed socket's finally reached the slot's next client: %r"
+        % (kinds,))
+
+
+def test_a_second_close_is_not_a_rejection(h):
+    """C1: a second close from an app used to fall through to `ws_reject`,
+    which the loop answers by refusing whatever handshake holds the slot
+    next with a 403."""
+    h.job(0, "wsclosetwice")
+    h.settle()
+    kinds = h.kinds(0)
+    assert kinds.count("ws_close") == 1 and "ws_reject" not in kinds, kinds
+
+
+def test_a_receive_after_the_apps_own_close_is_a_disconnect(h):
+    """C1: after its own close an app waits for the client's reply, which
+    uvicorn delivers as websocket.disconnect. Nothing told the executor, so
+    the wait was for ever: a Channels consumer that closes itself stayed in
+    its groups for good."""
+    h.job(0, "wscloserecv")
+    h.settle()
+    assert h.second_receive == ["websocket.disconnect"], (
+        "a receive() after the app's own close did not end: %r"
+        % (h.second_receive,))
+
+
+def test_a_leftover_task_never_answers_the_slots_next_request(h):
+    """C2: answering at the final body made `send` a completion site of its
+    own, and it did not know the done-callback had already answered the
+    job. A task the application left behind answered the SLOT'S NEXT
+    request with its response -- another client's, live."""
+    h.job(0, "leftover")
+    h.settle(passes=5)
+    h.job(0, "plain")
+    h.settle(passes=80)
+    answers = [e for e in h.events if e[0] in ("done", "err") and e[1] == 0]
+    assert not [e for e in answers if e[0] == "done" and e[4] == b"LATE"], (
+        "a leftover task's late answer reached the slot: %r" % (answers,))
+    assert [e[0] for e in answers] == ["err", "done"], answers
+
+
+def test_receive_after_the_response_is_a_disconnect(h):
+    """I1: uvicorn answers a receive() after the response with
+    http.disconnect at once. A buffered response gets no disconnect tag,
+    so the wait was for the life of the process -- and held the shutdown
+    drain to the join bound."""
+    h.job(0, "bgreceive")
+    h.settle()
+    assert h.bg_receive == ["http.disconnect"], (
+        "a receive() after the response did not answer: %r" % (h.bg_receive,))
+
+
+def test_a_gone_socket_is_not_charged_for_the_credit_it_woke_to(h):
+    """I2: an ack and the disconnect in one pass woke a waiting send with
+    enough credit, and it charged the window before asking whether its
+    socket had gone -- leaving those bytes in flight on the slot, which
+    the next client now holds, until that client's own cleanup."""
+    frame = h.ns["_ws_frame_bytes"](Harness.WS_FLOOD_SIZE)
+    h.job(0, "wsflood")
+    h.settle()
+    h.ack(0, frame)
+    h.disconnect(0)
+    h.job(0, "wshold")
+    h.settle()
+    assert h.ns["_exec_inflight"].get(0, 0) == 0, (
+        "%d bytes charged to a socket that had gone stay in flight on the "
+        "slot" % h.ns["_exec_inflight"].get(0, 0))
+    _assert_global_window_whole(h)
+
+
+def test_a_gone_stream_is_not_charged_for_the_credit_it_woke_to(h):
+    """I2, the stream half: a hub pushing to a held stream waits on the
+    stream's credit from a task that is not the stream's, so nothing
+    cancels it when the client goes."""
+    window = h.ns["_ASGI_CREDIT_WINDOW"]
+    h.job(0, "storehold")
+    h.settle()
+    stale = h.http_sends[0]
+    piece = b"z" * (window // 2)
+
+    async def push():
+        for _ in range(3):
+            await stale({"type": "http.response.body", "body": piece,
+                         "more_body": True})
+    pusher = h.loop.create_task(push())
+    h.settle()
+    assert not pusher.done(), "the pusher never had to wait for credit"
+    h.ack(0, window // 2)
+    h.disconnect(0)
+    h.job(0, "wshold")
+    h.settle()
+    pusher.cancel()
+    h.settle(passes=5)
+    assert h.ns["_exec_inflight"].get(0, 0) == 0, (
+        "%d bytes charged to a stream that had gone stay in flight on the "
+        "slot" % h.ns["_exec_inflight"].get(0, 0))
+    _assert_global_window_whole(h)
+
+
+def test_a_finished_background_task_leaves_the_next_stream_alone(h):
+    """I3: the completed branch of `_Cycle.done` cleans only as the slot's
+    owner. Unowned, a keep-alive request's late finish pulled the NEXT
+    request's credit window out from under its stream (KeyError: 0)."""
+    h.job(0, "background")
+    h.settle()
+    h.job(0, "slow")
+    h.settle(passes=2)
+    h.release.set()
+    h.settle()
+    kinds = h.kinds(0)
+    assert "stream_end" in kinds, kinds
+    for bad in ("stream_note", "stream_abort", "err"):
+        assert bad not in kinds, (
+            "the first request's late finish broke the next one's stream: %r"
+            % (kinds,))
+
+
+def test_a_gone_streams_final_body_does_not_end_the_next_stream(h):
+    """I3: a final body from a task whose client has gone -- here from a
+    finally, after the disconnect cancelled it -- must not send an end
+    frame: the slot may already be the next response's."""
+    h.job(0, "finallyend")
+    h.settle()
+    mark = len(h.events)
+    h.disconnect(0)
+    h.job(0, "hold")
+    h.settle()
+    after = [e[0] for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert "stream_start" in after, after
+    assert "stream_end" not in after, (
+        "a gone stream's final body ended the slot's next stream: %r"
+        % (after,))
+
+
+def test_a_body_after_the_final_body_answers_nothing(h):
+    """I3: once a response is answered, a further body has nothing to
+    answer."""
+    h.job(0, "twice")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1 and done[0][4] == b"first", done
+
+
+def test_a_tight_producer_into_a_gone_stream_still_yields(h):
+    """I3: a send into a gone stream is a no-op that YIELDS. A producer that
+    loops on send with no other await would otherwise spin the executor
+    thread, and its own cancellation could never land."""
+    h.job(0, "storehold")
+    h.settle()
+    stale = h.http_sends[0]
+    h.disconnect(0)
+    h.settle()
+    ran = [0]
+
+    async def canary():
+        while True:
+            ran[0] += 1
+            await asyncio.sleep(0)
+
+    async def tight():
+        c = asyncio.get_running_loop().create_task(canary())
+        await asyncio.sleep(0)
+        start = ran[0]
+        for _ in range(50):
+            await stale({"type": "http.response.body", "body": b"x",
+                         "more_body": True})
+        seen = ran[0] - start
+        c.cancel()
+        return seen
+    seen = h.run(tight())
+    assert seen > 0, (
+        "fifty sends into a gone stream never yielded: a producer that "
+        "loops on send would spin the executor")
+
+
+def test_a_gone_requests_receive_says_so_at_once(h):
+    """I3: a receive() on a request whose client has gone says so at once
+    -- and never waits on the slot's disconnect future, which belongs to
+    the slot's next request by then."""
+    h.job(0, "storehold")
+    h.settle()
+    stale_receive = h.http_receives[0]
+    h.disconnect(0)
+    h.job(0, "hold")
+    h.settle()
+
+    async def twice():
+        await stale_receive()       # the request body, never taken
+        msg = await asyncio.wait_for(stale_receive(), 0.2)
+        return msg["type"]
+    assert h.run(twice()) == "http.disconnect"
+
+
+def test_a_client_disconnect_after_the_response_is_not_logged(h):
+    """I3: the client's departure escaping the app after its response was
+    answered is not an application error."""
+    h.job(0, "bgclientdisc")
+    h.settle()
+    assert "log" not in h.kinds(0), h.kinds(0)
+
+
+def test_an_eager_task_factory_still_ends_its_stream(h):
+    """M4: under asyncio.eager_task_factory the task runs its first step
+    inside create_task, before `spawn` could record it; every "am I gone"
+    then asked about None, and a streamed response never ended."""
+    h.loop.set_task_factory(asyncio.eager_task_factory)
+    h.job(0, "finish")
+    h.settle()
+    kinds = h.kinds(0)
+    assert "stream_end" in kinds, kinds
+    assert "stream_note" not in kinds and "err" not in kinds, kinds
+
+
 TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
@@ -927,6 +1256,21 @@ TESTS = [
     test_a_late_error_is_logged_with_its_traceback,
     test_a_socket_whose_app_raises_closes_with_1011,
     test_a_disconnect_that_escapes_the_app_is_not_an_error,
+    test_a_socket_the_app_closed_refuses_its_kept_send,
+    test_a_socket_the_app_closed_does_not_close_the_next_client,
+    test_a_second_close_is_not_a_rejection,
+    test_a_receive_after_the_apps_own_close_is_a_disconnect,
+    test_a_leftover_task_never_answers_the_slots_next_request,
+    test_receive_after_the_response_is_a_disconnect,
+    test_a_gone_socket_is_not_charged_for_the_credit_it_woke_to,
+    test_a_gone_stream_is_not_charged_for_the_credit_it_woke_to,
+    test_a_finished_background_task_leaves_the_next_stream_alone,
+    test_a_gone_streams_final_body_does_not_end_the_next_stream,
+    test_a_body_after_the_final_body_answers_nothing,
+    test_a_tight_producer_into_a_gone_stream_still_yields,
+    test_a_gone_requests_receive_says_so_at_once,
+    test_a_client_disconnect_after_the_response_is_not_logged,
+    test_an_eager_task_factory_still_ends_its_stream,
 ]
 
 
@@ -956,9 +1300,9 @@ SABOTAGES = [
     (
         "a send to a gone socket returns quietly",
         "            raise ClientDisconnected()\n"
-        "        if t == 'websocket.accept':",
+        "        if closed[0]:",
         "            return\n"
-        "        if t == 'websocket.accept':",
+        "        if closed[0]:",
     ),
     (
         "a disconnect is not stamped on the owning task",
@@ -971,12 +1315,6 @@ SABOTAGES = [
         "_task_done cleans up whoever finishes",
         "    if _exec_slot_task.get(slot) is t:",
         "    if t is not None:",
-    ),
-    (
-        "spawn_ws does not clear the slot's stale accept",
-        "    _exec_ws_accepted.discard(slot)\n"
-        "    _exec_disconnects.pop(slot, None)\n",
-        "    _exec_disconnects.pop(slot, None)\n",
     ),
     (
         "websocket.send is not credit-gated",
@@ -1045,6 +1383,108 @@ SABOTAGES = [
         "                _exec_put(('stream_note', slot, _describe(exc)))",
         "            if exc is not None:\n"
         "                _exec_put(('stream_note', slot, _describe(exc)))",
+    ),
+    (
+        "a socket's own close does not end what it may send",
+        "        if closed[0]:\n"
+        "            # This socket's own close has gone out: nothing more may.",
+        "        if False:\n"
+        "            # This socket's own close has gone out: nothing more may.",
+    ),
+    (
+        "a socket's finally closes a socket it already closed",
+        "            if accepted[0] and not closed[0]:",
+        "            if accepted[0]:",
+    ),
+    (
+        "a socket's own close does not end its receive()",
+        "            if ended[0] is None:\n"
+        "                ended[0] = {\n"
+        "                    'type': 'websocket.disconnect',",
+        "            if False:\n"
+        "                ended[0] = {\n"
+        "                    'type': 'websocket.disconnect',",
+    ),
+    (
+        "a send after the response is over still answers",
+        "        if self.completed or self.task.done():\n"
+        "            # The response is over",
+        "        if self.completed:\n"
+        "            # The response is over",
+    ),
+    (
+        "a body after the final body answers again",
+        "        if self.completed or self.task.done():\n"
+        "            # The response is over",
+        "        if self.task.done():\n"
+        "            # The response is over",
+    ),
+    (
+        "a receive after the response waits",
+        "        if self.completed or _task_gone(self.task):\n"
+        "            # Answered, or gone",
+        "        if _task_gone(self.task):\n"
+        "            # Answered, or gone",
+    ),
+    (
+        "a gone request's receive waits on the slot's future",
+        "        if self.completed or _task_gone(self.task):\n"
+        "            # Answered, or gone",
+        "        if self.completed:\n"
+        "            # Answered, or gone",
+    ),
+    (
+        "a socket is charged for credit after it has gone",
+        "    if _task_gone(owner):\n"
+        "        raise ClientDisconnected()\n"
+        "    _exec_credits[slot] -= nbytes",
+        "    _exec_credits[slot] -= nbytes",
+    ),
+    (
+        "a stream is charged for credit after it has gone",
+        "            if _task_gone(owner):\n"
+        "                # Woken by an ack and a disconnect in the same pass",
+        "            if False:\n"
+        "                # Woken by an ack and a disconnect in the same pass",
+    ),
+    (
+        "a finished background task cleans whatever the slot holds",
+        "        if _exec_slot_task.get(self.slot) is t:",
+        "        if True:",
+    ),
+    (
+        "a gone stream's final body still ends the stream",
+        "                    if not _task_gone(self.task):\n"
+        "                        _exec_put(('stream_end', self.slot))",
+        "                    if True:\n"
+        "                        _exec_put(('stream_end', self.slot))",
+    ),
+    (
+        "a dropped send does not yield",
+        "    # land.\n"
+        "    import asyncio\n"
+        "\n"
+        "    await asyncio.sleep(0)",
+        "    # land.\n"
+        "    return",
+    ),
+    (
+        "a client's departure after the response is logged",
+        "            if exc is not None and not isinstance(exc, ClientDisconnected):\n"
+        "                _exec_put(\n"
+        "                    (\n"
+        "                        'log',",
+        "            if exc is not None:\n"
+        "                _exec_put(\n"
+        "                    (\n"
+        "                        'log',",
+    ),
+    (
+        "the task is recorded only by spawn",
+        "        if self.task is None:\n"
+        "            # asyncio.eager_task_factory",
+        "        if False:\n"
+        "            # asyncio.eager_task_factory",
     ),
     (
         "a drain ack is added rather than clamped to the window",
