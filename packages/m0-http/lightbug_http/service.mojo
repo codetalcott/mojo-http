@@ -112,6 +112,16 @@ trait HTTPService:
         self.ws_message(slot, opcode, payload)
         return True
 
+    def ws_close_code(mut self, slot: Int, code: Int):
+        """The code a WebSocket's close carried, just before the loop closes
+        `slot` (SPEC L28): the client's own, 1005 for a Close with no code,
+        or the one this side sent for a protocol failure. A socket that ends
+        any other way -- a reset, an idle or outbox limit -- never calls
+        this, which is RFC 6455's 1006. Handlers that tell nobody leave it
+        empty.
+        """
+        pass
+
     def take_ws_resumes(mut self) -> List[Int]:
         """Slots whose inbound flow may resume — parked messages all sent.
 

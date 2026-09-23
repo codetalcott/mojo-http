@@ -289,6 +289,35 @@ def test_close_is_echoed_with_code_then_closes() raises:
     assert_equal((Int(res.reply[2]) << 8) | Int(res.reply[3]), 1000)
 
 
+def test_a_close_reports_the_code_it_carried() raises:
+    """What the application is told its client closed with (SPEC L28): the
+    peer's own code, 1005 for a Close with no body, the code this side sent
+    for a protocol failure -- and nothing at all while no close happened.
+
+    covers: L28
+    """
+    var state = WSState(1 << 20)
+    var body = List[UInt8]()
+    body.append(0x03)
+    body.append(0xE9)  # 1001
+    var res = state.feed(Span(encode_ws_frame_masked(WS_OP_CLOSE, Span(body), _mask())))
+    assert_equal(res.close_code, 1001)
+    var bare = WSState(1 << 20)
+    var empty = List[UInt8]()
+    res = bare.feed(Span(encode_ws_frame_masked(WS_OP_CLOSE, Span(empty), _mask())))
+    assert_equal(res.close_code, 1005)
+    var bad = WSState(1 << 20)
+    var one = List[UInt8]()
+    one.append(0x03)
+    res = bad.feed(Span(encode_ws_frame_masked(WS_OP_CLOSE, Span(one), _mask())))
+    assert_equal(res.close_code, 1002)
+    var quiet = WSState(1 << 20)
+    var hi = List[UInt8]()
+    hi.append(0x68)
+    res = quiet.feed(Span(encode_ws_frame_masked(WS_OP_TEXT, Span(hi), _mask())))
+    assert_equal(res.close_code, -1)
+
+
 # --- Parser: refusals ---------------------------------------------------------
 
 

@@ -862,6 +862,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 var ws_res = slot_ws_state[slot].feed(
                     Span(provision_pool.provisions[slot].recv_staging)
                 )
+                # The close code, told to the handler the moment it is parsed
+                # (SPEC L28): before the echo, whose send fails when the
+                # client has already gone -- a Close then a hang-up, the
+                # ordinary shape -- and closes the slot on a path that never
+                # reaches `close_after_reply` below.
+                if ws_res.close_after_reply and ws_res.close_code >= 0:
+                    handler.ws_close_code(slot, ws_res.close_code)
                 if len(ws_res.reply) > 0 and slot_ws_state[slot].closing:
                     # This side already sent its Close; the parser's echo
                     # would be a SECOND one. Drop it and let

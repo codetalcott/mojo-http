@@ -432,7 +432,7 @@ struct PyBridge(Movable):
         drain has run and the in-flight tasks have finished."""
         _ = self._ns["run_forever_inverted"](PythonObject(backend_fd))
 
-    def notify_disconnect(mut self, slot: Int) raises:
+    def notify_disconnect(mut self, slot: Int, code: Int = 0) raises:
         """`M0_INVERTED`: tell the shim `slot`'s connection is gone, NOW.
 
         On the pump this is a `TAG_DISCONNECT` datagram on the submit
@@ -444,12 +444,14 @@ struct PyBridge(Movable):
         never arrived. A direct call keeps program order — the close runs
         in the pass before the accept that recycles the slot — and costs
         no syscall. One tuple through the C API, no `PythonObject`
-        argument, so nothing leaks per call."""
+        argument, so nothing leaks per call. `code` is a WebSocket's close
+        code (SPEC L28), 0 for none."""
         ref cpy = Python().cpython()
-        var args = cpy.PyTuple_New(1)
+        var args = cpy.PyTuple_New(2)
         if not args:
             raise cpy.get_error()
         _ = cpy.PyTuple_SetItem(args, 0, cpy.PyLong_FromSsize_t(slot))
+        _ = cpy.PyTuple_SetItem(args, 1, cpy.PyLong_FromSsize_t(code))
         var result = cpy.PyObject_CallObject(self._on_disconnect._obj_ptr, args)
         cpy.Py_DecRef(args)
         if not result:

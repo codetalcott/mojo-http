@@ -330,6 +330,11 @@ struct WSGIHandler(ThreadHandler):
     var ws_in_sent: List[Int]
     """Per slot: datagram bytes charged toward `WS_IN_WINDOW` since this
     socket's begin ('B' seeds it to zero)."""
+    var ws_closed_with: List[Int]
+    """Per slot: the close code the loop reported for this socket
+    (`ws_close_code`), carried in its disconnect tag to the executor so the
+    application hears it (SPEC L28); 0 when none was reported, which the
+    shim reads as 1006."""
     var ws_in_acked: List[Int]
     """Per slot: the shim's cumulative consumed counter, as of the last 'r'
     frame — monotonic, clamped to `ws_in_sent` so a stale ack cannot open
@@ -395,6 +400,7 @@ struct WSGIHandler(ThreadHandler):
         self.stream_lost = List[Bool](capacity=slots)
         self.ws_in_sent = List[Int](capacity=slots)
         self.ws_in_acked = List[Int](capacity=slots)
+        self.ws_closed_with = List[Int](capacity=slots)
         self.ws_parked = List[List[UInt8]](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
@@ -404,6 +410,7 @@ struct WSGIHandler(ThreadHandler):
             self.stream_lost.append(False)
             self.ws_in_sent.append(0)
             self.ws_in_acked.append(0)
+            self.ws_closed_with.append(0)
             self.ws_parked.append(List[UInt8]())
         self.ws_parked_count = 0
         self.ws_resume = List[Int]()
@@ -1144,6 +1151,12 @@ struct WSGIHandler(ThreadHandler):
         var pool_ack_fd = pool_stream_ack_fd(slot_url) if (
             self.streams.is_slot_streaming(slot)
         ) else -1
+        # And the code this socket closed with, if the loop reported one;
+        # the slot's next socket starts from none.
+        var close_code = 0
+        if slot < len(self.ws_closed_with):
+            close_code = self.ws_closed_with[slot]
+            self.ws_closed_with[slot] = 0
         self.streams.unsubscribe(slot)
         self.sockets.unsubscribe(slot)
         if slot < len(self.hold_lane):
@@ -1176,16 +1189,24 @@ struct WSGIHandler(ThreadHandler):
                 # would otherwise overtake a tag on the channel (see
                 # `PyBridge.notify_disconnect`).
                 try:
-                    self.apps[0]._bridge.notify_disconnect(slot)
+                    self.apps[0]._bridge.notify_disconnect(slot, close_code)
                 except e:
                     print("inverted executor: disconnect notify raised: " + String(e), flush=True)
             elif slot_url.byte_length() > 0:
-                _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
+                _send_disconnect_tag(self._notify_fd_for(slot_url), slot, close_code)
             else:
                 # The subscription (and with it the channel name) is gone;
                 # the lane recorded at the begin frame still names the
                 # executor that owns the connection.
-                _send_disconnect_tag(self._notify_fd_for_lane(exec_lane), slot)
+                _send_disconnect_tag(
+                    self._notify_fd_for_lane(exec_lane), slot, close_code
+                )
+
+    def ws_close_code(mut self, slot: Int, code: Int):
+        """The close code the loop parsed for `slot`, kept until its
+        disconnect goes to the executor (SPEC L28)."""
+        if slot >= 0 and slot < len(self.ws_closed_with):
+            self.ws_closed_with[slot] = code
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open
@@ -2083,8 +2104,9 @@ def _send_ws_message_tag(
     return False
 
 
-def _send_disconnect_tag(fd: Int, slot: Int):
-    """One `[tag=1 u8][slot i64 LE]` datagram on the submit channel.
+def _send_disconnect_tag(fd: Int, slot: Int, code: Int = 0):
+    """One `[tag=1 u8][slot i64 LE]` datagram on the submit channel, with a
+    `[code u16 LE]` after it when `code` is a WebSocket's close code.
 
     A raw libc `send` rather than the socket module's wrapper: this is
     nine bytes on a connected SOCK_DGRAM pair, and `sse_slot_disconnected`
@@ -2092,11 +2114,16 @@ def _send_disconnect_tag(fd: Int, slot: Int):
     disconnect is a leaked task holding state until shutdown — but
     bounded, because this runs on the event loop thread and must never
     park."""
-    var msg = List[UInt8](capacity=9)
+    var msg = List[UInt8](capacity=11)
     msg.append(1)
     var bits = UInt64(Int64(slot))
     for shift in range(0, 64, 8):
         msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    if code > 0:
+        # A WebSocket's close code (SPEC L28), u16 LE: eleven bytes where the
+        # bare tag is nine, which is how the shim tells them apart.
+        msg.append(UInt8(code & 0xFF))
+        msg.append(UInt8((code >> 8) & 0xFF))
     for _ in range(64):
         var rc = external_call["send", Int](
             c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)

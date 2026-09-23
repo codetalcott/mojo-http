@@ -14,7 +14,8 @@ Against apps/asgi_bare's `/ws/record`, which echoes and keeps the code its
   datagram, is refused with a Close carrying 1009, and the application
   hears 1009. It used to be parked and retried for ever: no reply, no close,
   no log -- a 70 KB chat message went silent;
-- a message at the cap (65,536 bytes) is still echoed whole;
+- a message at the cap (65,536 bytes) is still delivered whole (the socket
+  answers its length);
 - and the server answers afterwards.
 
 Stdlib only; exits 0 when every case holds.
@@ -193,20 +194,41 @@ def main():
     at_cap = os.urandom(65536)
     send_frame(sock, 0x2, at_cap)
     op, got = read_data_or_close(sock)
-    if op != 0x2 or got != at_cap:
-        fail("the 65,536-byte message came back as opcode %d, %d bytes" % (op, len(got)))
+    if (op, got) != (0x1, b"len:65536"):
+        fail("the 65,536-byte message was answered %r" % ((op, got[:40]),))
+    # A conforming client waits for the echo before closing TCP (RFC 6455
+    # §7.1.1). One that hangs up in the same instant loses its code: the
+    # loop closes a socket at EOF without reading what is buffered (tracked).
     send_frame(sock, 0x8, struct.pack(">H", 1000))
+    try:
+        read_data_or_close(sock)
+    except (EOFError, OSError):
+        pass
     sock.close()
     heard(1000)
 
     phase("a message the channel cannot carry")
     sock = connect()
-    sock.settimeout(5)
     send_frame(sock, 0x2, b"o" * 70000)
-    try:
-        op, got = read_data_or_close(sock)
-    except socket.timeout:
-        fail("no answer to a 70,000-byte message in 5 s: parked, not refused")
+    # A deadline, not a per-read timeout: heartbeat pings every 300 ms would
+    # keep a per-read timeout from ever firing, and a regression would hang
+    # the smoke instead of failing it.
+    deadline = time.time() + 5.0
+    op = None
+    while time.time() < deadline:
+        sock.settimeout(max(0.1, deadline - time.time()))
+        try:
+            op, got = read_frame(sock)
+        except socket.timeout:
+            op = None
+            break
+        if op == 0x9:
+            send_frame(sock, 0xA, got)
+            op = None
+            continue
+        break
+    if op is None:
+        fail("no answer but heartbeats to a 70,000-byte message in 5 s: parked, not refused")
     if op != 0x8:
         fail("a 70,000-byte message was answered with opcode %d, not a Close" % op)
     code = struct.unpack(">H", got[:2])[0] if len(got) >= 2 else None
@@ -219,7 +241,7 @@ def main():
     status, _ = http_get("/")
     if b" 200 " not in status:
         fail("GET / answered %r" % status)
-    print("ws_close_probe OK: 1001, 1005, 1006, at-cap echo, 1009 refusal")
+    print("ws_close_probe OK: 1001, 1005, 1006, at-cap delivery, 1009 refusal")
 
 
 if __name__ == "__main__":

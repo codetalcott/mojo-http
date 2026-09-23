@@ -487,10 +487,13 @@ class Harness:
         self.jobs.append(behaviour)
         self.submit_w.send(int(slot).to_bytes(8, "little", signed=True))
 
-    def disconnect(self, slot):
+    def disconnect(self, slot, code=0):
+        """The loop's disconnect tag; `code`, when given, is a WebSocket's
+        close code in the tag's 11-byte shape (SPEC L28)."""
         self.submit_w.send(
             bytes([_TAG_DISCONNECT])
-            + int(slot).to_bytes(8, "little", signed=True))
+            + int(slot).to_bytes(8, "little", signed=True)
+            + (int(code).to_bytes(2, "little") if code else b""))
 
     def ack(self, slot, nbytes):
         self.ack_w.send(int(slot).to_bytes(4, "little")
@@ -1532,6 +1535,18 @@ def test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body(h):
     assert not any(n.lower() == "content-length" for n, _ in headers), headers
 
 
+def test_a_socket_hears_its_clients_close_code(h):
+    """L28: the disconnect a socket's application hears carries the code its
+    client closed with, when the loop parsed one. It was 1006 for every
+    disconnect, where uvicorn passes the client's own (1001 for a tab closed,
+    1000 for a clean close)."""
+    h.job(0, "wsexcept")
+    h.settle()
+    h.disconnect(0, 1001)
+    h.settle()
+    assert h.cleanups == [1001], h.cleanups
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1638,6 +1653,7 @@ TESTS = [
     test_the_drain_ends_an_http_task_that_never_ends,
     test_an_error_is_described_once,
     test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body,
+    test_a_socket_hears_its_clients_close_code,
 ]
 
 
@@ -1933,6 +1949,11 @@ SABOTAGES = [
         "        and _lazily_produced(",
         "        and False\n"
         "        and _lazily_produced(",
+    ),
+    (
+        "a disconnect's close code is dropped",
+        "                    int.from_bytes(data[9:11], 'little') if len(data) == 11 else 0,\n",
+        "                    0,\n",
     ),
     (
         "work scheduled at import is not named",

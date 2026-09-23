@@ -88,6 +88,7 @@ def test_default_hooks_are_callable_and_inert() raises:
     s.sse_peer_frame(String("/events"), 1, List[UInt8]())
     s.tick(1000)
     s.ws_message(0, 1, List[UInt8]())
+    s.ws_close_code(0, 1001)
     assert_equal(s.calls, 0)
 
 

@@ -849,7 +849,7 @@ def _describe(exc):
     return head + '\\n' + '\\n'.join(lines)
 
 
-def _exec_on_disconnect(slot):
+def _exec_on_disconnect(slot, code=0):
     # The loop closed this slot (client vanished, or end-of-stream close
     # raced): resolve the pending receive() into http.disconnect (or
     # queue websocket.disconnect), wake any credit waiter, and cancel a
@@ -877,7 +877,11 @@ def _exec_on_disconnect(slot):
     if inbox is not None:
         # Cost 0: a disconnect consumes no inbound window, and there is
         # no loop-side charge to ack for it.
-        inbox.put_nowait(({'type': 'websocket.disconnect', 'code': 1006}, 0))
+        # The client's own close code when the loop parsed one (SPEC L28);
+        # 1006, RFC 6455's "no Close arrived", when it did not.
+        inbox.put_nowait(
+            ({'type': 'websocket.disconnect', 'code': code or 1006}, 0)
+        )
     evt = _exec_credit_evts.get(slot)
     if evt is not None:
         evt.set()
@@ -975,8 +979,13 @@ def asgi_executor_init(fd, ack_fd):
                             int.from_bytes(data[at : at + 8], 'little', signed=True),
                         )
                     )
-            elif len(data) == 9 and data[0] == _TAG_DISCONNECT:
-                _exec_on_disconnect(int.from_bytes(data[1:9], 'little', signed=True))
+            elif len(data) in (9, 11) and data[0] == _TAG_DISCONNECT:
+                # [tag u8][slot i64 LE], then a WebSocket's close code as a
+                # u16 LE when the loop parsed one (SPEC L28).
+                _exec_on_disconnect(
+                    int.from_bytes(data[1:9], 'little', signed=True),
+                    int.from_bytes(data[9:11], 'little') if len(data) == 11 else 0,
+                )
             elif len(data) >= 10 and data[0] == _TAG_WS_MESSAGE:
                 # [tag u8][slot i64 LE][opcode u8][payload...]
                 _exec_on_ws_message(

@@ -125,9 +125,11 @@ async def application(scope, receive, send):
             await send({"type": "websocket.close", "code": 1000})
             return
         if scope["path"] == "/ws/record":
-            # Echoes like /ws, and keeps the code its disconnect carried:
-            # `/ws-last-close` answers it, so a probe can read back what
-            # the application was told (SPEC L28, I26).
+            # Echoes text like /ws, answers a binary message with its length
+            # (an echo of a 64 KB message would exceed the executor's own
+            # outbound window), and keeps the code its disconnect carried:
+            # `/ws-last-close` answers it, so a probe can read back what the
+            # application was told (SPEC L28, I26).
             await send({"type": "websocket.accept"})
             while True:
                 message = await receive()
@@ -138,7 +140,8 @@ async def application(scope, receive, send):
                     continue  # websocket.connect comes first
                 data = message.get("bytes")
                 if data is not None:
-                    await send({"type": "websocket.send", "bytes": data})
+                    await send({"type": "websocket.send",
+                                "text": "len:%d" % len(data)})
                 else:
                     await send({"type": "websocket.send",
                                 "text": message.get("text") or ""})
