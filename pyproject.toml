@@ -5996,9 +5996,11 @@ docker start "$c" > /dev/null 2>&1 \
 # The tree goes in by tar (the container has no bind mount, so it can outlive
 # any one checkout), and the sync script rebuilds what the probes serve: the
 # packages, the binary, and the m0pub core lib the realtime app loads.
-# packaging/ carries m0pub, which the realtime app the reproducers serve
-# imports; without it m0lin ran an August m0pub until copied by hand. Its
-# macOS build output (the wheel's _bin, _lib and licenses) stays behind.
+# packaging/ goes in too, because linux_sync.sh re-tars it and the stamp
+# covers it: any recipe serving Python from the container's tree (the
+# realtime tasks copy packaging/'s m0pub) found an August copy there until it
+# was moved in by hand. Its macOS build output (the wheel's _bin, _lib and
+# licenses) stays behind. bench_linux_conclusions.py sends the same set.
 tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/*' --exclude='.claude' \
     --exclude='packaging/*/src/*/_bin' --exclude='packaging/*/src/*/_lib' --exclude='packaging/*/licenses' --exclude='packaging/*/src/*/licenses' --exclude='__pycache__' \
     -cf - packages packaging scripts apps pyproject.toml uv.lock bench \

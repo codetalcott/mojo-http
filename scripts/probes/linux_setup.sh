@@ -35,8 +35,8 @@ tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin
 # Mac tree holding ZERO of them on disk: a virtiofs bind mount materialises
 # macOS extended attributes as `._*` in the guest (213 under packages/),
 # and a whole-tree `tar -cf - .` from the Mac carries 816. The subset tar
-# `stress-pool` uses (packages, scripts, apps, pyproject, uv.lock, bench)
-# carries none, which is why that gate never hit this.
+# `stress-pool` uses (packages, packaging, scripts, apps, pyproject, uv.lock,
+# bench) carries none, which is why that gate never hit this.
 _ad=$(find /work -name '._*' 2> /dev/null | wc -l | tr -d " ")
 find /work -name '._*' -delete 2> /dev/null || true
 [ "$_ad" = 0 ] || echo "=== removed $_ad AppleDouble file(s) the copy carried in ==="
