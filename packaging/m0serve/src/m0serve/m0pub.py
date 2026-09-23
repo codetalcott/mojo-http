@@ -52,10 +52,13 @@ all. So `m0_shared_fetch_add` is exported from `m0-core`'s C ABI
 through `ctypes` — which never crosses the WSGI bridge, so the leak rule and
 the RSS guard are untouched.
 
-**Publishing from a child process.** The bus descriptors survive `exec`; the
-page does not, because a mapping dies at exec while `M0_SHARED_ID_ADDR` is
-only a number in the parent's address space. So a child a view starts
-publishes safely in either of two ways::
+**Publishing from a child process.** The bus descriptors do not survive
+`exec` by themselves: every descriptor the server creates is close-on-exec
+(SPEC G16), so a child the application starts inherits no connection or
+channel of the server's. The page does not either, because a mapping dies at
+exec while `M0_SHARED_ID_ADDR` is only a number in the parent's address
+space. So a child a view starts publishes only when it is handed them, in
+either of two ways::
 
     subprocess.Popen([...], pass_fds=m0pub.child_fds())
 
@@ -85,6 +88,7 @@ import ctypes
 import json
 import mmap
 import os
+import socket
 import struct
 import sys
 
@@ -144,11 +148,39 @@ _counter = None
 # address handed to the fetch-and-add points into it.
 _page = None
 
+# (pid, fds): the bus write fds `bus_write_fds` verified in that process.
+_bus_fds = None
+
+
+def _is_bus_socket(fd):
+    """Whether `fd` is an open Unix datagram socket here -- the bus -- rather
+    than a number the environment inherited from a process whose descriptors
+    this one does not have."""
+    try:
+        s = socket.socket(fileno=fd)
+    except OSError:
+        return False
+    try:
+        return s.family == socket.AF_UNIX and s.type == socket.SOCK_DGRAM
+    finally:
+        s.detach()
+
 
 def bus_write_fds():
-    """The inherited bus write fds, as announced by server.mojo."""
-    raw = os.environ.get(BUS_FDS_ENV, "")
-    return [int(part) for part in raw.split(",") if part]
+    """The bus write fds server.mojo announced, that ARE the bus here.
+
+    Checked once per process. A child started without `pass_fds` inherits
+    `M0_BUS_WRITE_FDS` but not the descriptors, which are close-on-exec, and
+    the numbers may name its own files: a datagram written there would land
+    in one of them. A child handed nothing publishes nothing.
+    """
+    global _bus_fds
+    pid = os.getpid()
+    if _bus_fds is None or _bus_fds[0] != pid:
+        raw = os.environ.get(BUS_FDS_ENV, "")
+        named = [int(part) for part in raw.split(",") if part]
+        _bus_fds = (pid, [fd for fd in named if _is_bus_socket(fd)])
+    return list(_bus_fds[1])
 
 
 def _core_lib_paths():

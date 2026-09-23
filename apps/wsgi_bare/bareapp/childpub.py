@@ -20,6 +20,10 @@ answers all of it as JSON. The modes:
 - `stale_fd`: `M0_SHARED_ID_FD` inherited but the page NOT passed, and an
   unrelated file sitting on that descriptor number in the child -- a fd
   number is as stale after exec as an address is, and must be refused.
+- `stale_bus`: the same for the bus. Nothing is passed, and an unrelated
+  file sits on the first `M0_BUS_WRITE_FDS` number in the child. The bus
+  is close-on-exec (SPEC G16), so a child handed nothing has no bus, and
+  it must write nothing into whatever file now has that number.
 
 `/events?channel=C` holds an SSE stream, so a probe can see the child's frame
 arrive and whether it carried an `id:` line.
@@ -76,6 +80,16 @@ def _spawn(mode, channel):
         occupy.write(b"\0" * 16384)
         occupy.close()
         env["CHILDPUB_OCCUPY_FD"] = page_fd
+        env["CHILDPUB_OCCUPY_PATH"] = occupy.name
+    elif mode == "stale_bus":
+        bus = m0pub.bus_write_fds()
+        if not bus:
+            return {"error": "the server exports no M0_BUS_WRITE_FDS"}
+        fds = []  # the bus is NOT handed over
+        occupy = tempfile.NamedTemporaryFile(delete=False)
+        occupy.write(b"\0" * 16384)
+        occupy.close()
+        env["CHILDPUB_OCCUPY_FD"] = str(bus[0])
         env["CHILDPUB_OCCUPY_PATH"] = occupy.name
     elif mode != "inherit":
         return {"error": "unknown mode " + mode}

@@ -16,6 +16,9 @@ mode must produce:
 - `handoff`: `m0pub.child_fds()` passed, and the child's id comes from the
   SAME counter: strictly between the ids the parent took just before and
   just after, and on the frame's `id:` line.
+- `stale_bus`: nothing passed, and an unrelated file on a bus fd's number in
+  the child. The child must exit 0, write NOTHING (the bus is close-on-exec,
+  SPEC G16) and leave the file untouched. It publishes no frame to read.
 
 The child must be able to load libm0core, or every mode publishes unnumbered
 frames and the probe passes having reached nothing. The tree's macOS build
@@ -49,7 +52,7 @@ SHAPES = [
     ("workers-2", ["--workers", "2"]),
     ("spawn-workers", ["--workers", "2", "--spawn-workers"]),
 ]
-UNNUMBERED = ("inherit", "scrub", "stale_fd")
+UNNUMBERED = ("inherit", "scrub", "stale_fd", "stale_bus")
 
 
 def phase(name):
@@ -170,6 +173,13 @@ def run_case(port, shape, mode, problems):
         if mode == "stale_fd" and not child.get("occupied_file_untouched"):
             problems.append("%s: the file on the page's old descriptor number was written"
                             % where)
+        if mode == "stale_bus":
+            if child.get("written") != 0:
+                problems.append("%s: a child handed no bus wrote %s datagrams -- into "
+                                "whatever now has a bus fd's number" % (where, child.get("written")))
+            if not child.get("occupied_file_untouched"):
+                problems.append("%s: the file on a bus fd's old number was written" % where)
+            return  # nothing was published, so there is no frame to read
         phase("%s/%s: reading the child's frame" % (shape, mode))
         on_wire = read_child_frame(resp)
         want = None if got == -1 else got
@@ -184,7 +194,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=os.path.join(REPO, "bin", "m0serve"))
     ap.add_argument("--port", type=int, default=8671)
-    ap.add_argument("--modes", default="inherit,scrub,stale_fd,handoff")
+    ap.add_argument("--modes", default="inherit,scrub,stale_fd,stale_bus,handoff")
     args = ap.parse_args()
 
     problems = []
