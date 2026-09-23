@@ -3760,8 +3760,9 @@ deps = ["build-serve"]
 shell = """
 # Every shape the server's descriptors come from: the pool, the loop, forked
 # and spawned workers, the realtime bus, the executor. The child is run with
-# close_fds=False and lists what it holds; a socket or a pipe there is the
-# server's, and a connection the server closes would stay open in it.
+# close_fds=False and lists what it holds above fd 2; the server started
+# with nothing there, so each is the server's, and a connection the server
+# closes would stay open in it.
 out=$(python3 scripts/exec_inherit_probe.py --port 8681 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 echo "smoke-exec-inherit OK"

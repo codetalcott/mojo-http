@@ -4,10 +4,11 @@
 Serves `bareapp.inherit` in each shape below and has a view start one child
 with `close_fds=False` -- what `os.system`, `pty.fork` and a `subprocess`
 that keeps its descriptors all do -- that lists every descriptor above 2 it
-holds. Any socket or pipe there is the server's: a client connection (the
-view's own, and an idle keep-alive one this probe holds open), the
-listener, the channels between the loop and its pools, the bus, the
-shutdown pipe. A connection the server closes then stays open in the child;
+holds. The server is started here with nothing above 2, so ANY descriptor
+above 2 in the child is the server's: a client connection (the view's own,
+and an idle keep-alive one this probe holds open), the listener, the
+channels between the loop and its pools, the bus, the shutdown pipe, the
+shared page. A connection the server closes then stays open in the child;
 FastHTML's terminal example took 10 s to close a WebSocket that way.
 
 The shapes are where the server's descriptors come from: the zero-config
@@ -41,7 +42,6 @@ SHAPES = [
     ("realtime", WSGI, ["--realtime"]),
     ("asgi", "bareapp.inherit:asgi", []),
 ]
-SERVERS_OWN = ("socket", "pipe")
 
 
 def phase(name):
@@ -91,14 +91,14 @@ def run_shape(port, shape, problems):
             problems.append("%s: the child failed: %s" % (shape, answer["error"]))
             return
         fds = answer["fds"]
-        leaked = [entry for entry in fds if entry[1] in SERVERS_OWN]
         print("CHILD shape=%s holds=%s" % (shape, fds))
-        if leaked:
+        if fds:
+            # Every one is the server's: it was started with nothing above 2.
             problems.append(
                 "%s: a child started with close_fds=False holds %d of the "
                 "server's descriptors %s -- sockets are its connections, "
-                "listener and channels, pipes its shutdown pipe; each must "
-                "be close-on-exec" % (shape, len(leaked), leaked))
+                "listener and channels, pipes its shutdown pipe, `other` its "
+                "shared page; each must be close-on-exec" % (shape, len(fds), fds))
     finally:
         idle.close()
 
