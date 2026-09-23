@@ -35,6 +35,8 @@ from std.python import PythonObject
 
 from lightbug_http import HTTPResponse, Headers, HeaderKey
 from lightbug_http.cookie import ResponseCookieJar
+from lightbug_http.header import KH_CONTENT_LENGTH
+from lightbug_http.http import is_bodiless_status
 
 from .bridge import PyBridge
 from .environ import span_has_control_bytes
@@ -236,6 +238,7 @@ def reason_for(code: Int) -> String:
 def build_response(
     bridge: PyBridge, status: String, headers: PythonObject, body: PythonObject,
     streaming: Bool = False,
+    is_head: Bool = False,
 ) raises -> HTTPResponse:
     """Assemble an `HTTPResponse` from what a WSGI application returned.
 
@@ -249,17 +252,22 @@ def build_response(
     `body_raw` verbatim after the headers, before any `size CRLF` framing,
     so a first chunk placed here would go out unframed on a chunked
     stream. The first chunk is the first `s` frame.
+
+    `is_head` says the request was a HEAD, whose answer keeps the
+    application's own `Content-Length`: it describes the body a GET
+    would carry (RFC 9110 §9.3.2), not the empty one this response has.
     """
     var code_and_text = split_status(status)
     return _assemble(
         bridge, code_and_text[0], code_and_text[1], headers, False, body,
-        streaming,
+        streaming, is_head,
     )
 
 
 def build_asgi_response(
     bridge: PyBridge, status: Int, headers: PythonObject, body: PythonObject,
     streaming: Bool = False,
+    is_head: Bool = False,
 ) raises -> HTTPResponse:
     """Assemble an `HTTPResponse` from an ASGI application's untouched head.
 
@@ -269,10 +277,12 @@ def build_asgi_response(
     so no `'%d %s'` is formatted and no name or value is decoded to `str`
     on the Python side — the reason phrase comes from `reason_for`, the
     bytes are read where they are. `streaming` is the executor's
-    `stream_start` head, with the same contract as `build_response`'s.
+    `stream_start` head and `is_head` a HEAD's answer, with the same
+    contracts as `build_response`'s.
     """
     return _assemble(
-        bridge, status, reason_for(status), headers, True, body, streaming
+        bridge, status, reason_for(status), headers, True, body, streaming,
+        is_head,
     )
 
 
@@ -284,6 +294,7 @@ def _assemble(
     bytes_pairs: Bool,
     body: PythonObject,
     streaming: Bool,
+    is_head: Bool,
 ) raises -> HTTPResponse:
     var out_headers = Headers()
     var cookies = ResponseCookieJar()
@@ -293,7 +304,10 @@ def _assemble(
     # body gets the measured Content-Length, a streamed one gets the event
     # loop's chunked framing (or close-delimiting on HTTP/1.0), and an
     # application's own `Transfer-Encoding` would frame a body the client
-    # cannot then parse.
+    # cannot then parse. The rest of the head is the application's as sent:
+    # both constructions pass `invent_entity_headers=False`, because the
+    # constructor's octet-stream default turned a redirect, a 204 and
+    # FastHTML's 404 page into downloads (SPEC K12).
     out_headers.pop(HeaderKey.TRANSFER_ENCODING)
     if streaming:
         out_headers.pop(HeaderKey.CONTENT_LENGTH)
@@ -303,14 +317,30 @@ def _assemble(
             cookies=cookies^,
             status_code=code,
             status_text=text,
+            invent_entity_headers=False,
         )
         head.sse_streaming = True
         return head^
 
     var body_bytes = bridge.body_bytes(body)
-    # Content-Length is authoritative here, not whatever the application
-    # guessed: a buffered response's real length is known.
-    out_headers.set_int(HeaderKey.CONTENT_LENGTH, len(body_bytes))
+    if is_bodiless_status(code):
+        # No content, and no length the server invents: a 304 keeps the
+        # application's (RFC 9110 §8.6), and the loop's framing rule drops
+        # a 1xx's or 204's, and any body (SPEC A21).
+        pass
+    elif is_head:
+        # The application's Content-Length describes the body a GET would
+        # send (RFC 9110 §9.3.2): keep it -- a FileResponse's HEAD went out
+        # as `content-length: 0`. With none, measure the body the
+        # application produced anyway (a WSGI app answering HEAD like GET,
+        # which `smoke-blocking-threads` pins); with no body either, invent
+        # none.
+        if out_headers.known_index(KH_CONTENT_LENGTH) < 0 and len(body_bytes) > 0:
+            out_headers.set_int(HeaderKey.CONTENT_LENGTH, len(body_bytes))
+    else:
+        # A real body: its measured length is authoritative, whatever the
+        # application guessed -- a wrong one would misframe the connection.
+        out_headers.set_int(HeaderKey.CONTENT_LENGTH, len(body_bytes))
 
     return HTTPResponse(
         owned_body=body_bytes^,
@@ -318,4 +348,5 @@ def _assemble(
         cookies=cookies^,
         status_code=code,
         status_text=text,
+        invent_entity_headers=False,
     )

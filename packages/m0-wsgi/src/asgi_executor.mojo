@@ -656,7 +656,8 @@ struct ExecutorPort(Movable, Writable):
             var raised = False
             try:
                 response = build_asgi_response(
-                    handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4]
+                    handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4],
+                    is_head=st.methods[slot] == "HEAD",
                 )
             except:
                 response = InternalError()
@@ -722,7 +723,7 @@ struct ExecutorPort(Movable, Writable):
             try:
                 response = build_asgi_response(
                     handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4],
-                    streaming=True,
+                    streaming=True, is_head=st.methods[slot] == "HEAD",
                 )
             except:
                 response = InternalError()
