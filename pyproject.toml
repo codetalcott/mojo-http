@@ -1492,6 +1492,15 @@ pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || { echo '=== counter.log ==='; cat counter.log; exit 1; }
+# A HEAD to the stream is its head (SPEC L27): the route is matched by path
+# alone, and the loop used to hold a HEAD as the stream a GET opens, writing
+# every frame and heartbeat after the head where a keep-alive client reads
+# its next response. The next request on the connection must be answered,
+# and the HEAD must leave no subscriber behind.
+python3 scripts/head_probe.py --port 8080 --hold /events --then /health \
+  || { echo 'a HEAD to /events did not end at its head (L27)'; cat counter.log; exit 1; }
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || { echo "a HEAD to /events left a subscriber (subscribers=$subs)"; exit 1; }
 curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > sse.txt &
 sse=$!
 sleep 2
@@ -1625,6 +1634,7 @@ kill $pid $worker_pids 2>/dev/null
 rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt counter2.log
 echo "smoke-counter OK"
 python3 scripts/emit.py --covers I9 --task smoke-counter
+python3 scripts/emit.py --covers L27 --task smoke-counter
 """
 
 # Periodic work with a real budget does not belong on the event loop, and
@@ -2121,6 +2131,16 @@ code=$(curl -s -o /dev/null -w '%{http_code}' 'http://localhost:8080/events?chan
 subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "0" ] || fail "a refused subscribe still registered (subscribers=$subs)"
 
+# A HEAD to the hold is its head (SPEC L27). The view approves a hold for any
+# method, and the loop used to subscribe the slot and write every event and
+# heartbeat after the head, where a keep-alive client reads its next
+# response. The next request on the connection must be answered, and the
+# HEAD must leave no subscription behind.
+python3 scripts/head_probe.py --port 8080 --hold '/events?channel=news&token=letmein' --then /health \
+  || fail 'a HEAD to a hold did not end at its head (L27)'
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || fail "a HEAD to a hold left a subscription (subscribers=$subs)"
+
 # Two subscribers on different channels: A hears news, B must not.
 curl -sN --max-time 8 -D "$out/hdr_a" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/sse_a" &
 sse_a=$!
@@ -2507,6 +2527,7 @@ rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log rt6.doctor
 echo "smoke-django-realtime OK"
 python3 scripts/emit.py --covers F6 --task smoke-django-realtime
 python3 scripts/emit.py --covers I11 --task smoke-django-realtime
+python3 scripts/emit.py --covers L27 --task smoke-django-realtime
 """
 
 # The WebSocket half of the realtime demo. Kept a separate task from
@@ -5219,6 +5240,15 @@ for bad in X-Injected X-Nul X-Evil; do
 done
 echo "$hdrs" | grep -qi '^HTTP/1.1 200' || fail 'the injecting route did not answer 200'
 
+# --- the response head as the application sent it (A21, K12) -----------------
+# Each route sends exactly the headers the probe names, so anything else on
+# the wire is the server's: a Content-Type nobody set, a HEAD's length
+# rewritten to 0, a length on a 204 or 304. Every case is followed by a request
+# on the same connection, so a body that leaked past a head misparses it. In
+# the UNVALIDATED pass because wsgiref.validate refuses a 303 with no
+# Content-Type.
+python3 scripts/head_probe.py --port 8086 --app wsgi || fail 'the response head is not the one the application sent (K12, A21)'
+
 # --- wsgi.input ---------------------------------------------------------------
 got=$(printf 'hello' | curl -s --data-binary @- $B/input/read)
 [ "$got" = "len=5 sum=532" ] || fail "wsgi.input read() wrong: got '$got'"
@@ -5324,6 +5354,8 @@ python3 scripts/emit.py --covers K4 --task smoke-wsgi
 python3 scripts/emit.py --covers K5 --task smoke-wsgi
 python3 scripts/emit.py --covers K6 --task smoke-wsgi
 python3 scripts/emit.py --covers K7 --task smoke-wsgi
+python3 scripts/emit.py --covers K12 --task smoke-wsgi
+python3 scripts/emit.py --covers A21 --task smoke-wsgi
 """
 
 # Streamed WSGI bodies. A generator the application did not size streams
@@ -6087,6 +6119,13 @@ short=$(awk '$1 != 237568' "$out/sizes" | wc -l | tr -d ' ')
 # And the server is still whole afterwards.
 curl -s --max-time 5 $B/ | grep -q 'hello from asgi_bare' || fail 'the server did not answer after 32 concurrent streams'
 
+# The response head as the application sent it (A21, K12), and a HEAD to a
+# streaming route answered with its head alone (L27). Each case is followed by
+# a request on the same connection, so a body that leaked past a head
+# misparses it: the executor used to write all 10,000 bytes of HEAD /stream
+# after the head.
+python3 scripts/head_probe.py --port 8088 --app asgi || fail 'the response head is not the one the application sent (K12, A21, L27)'
+
 # Lifespan ran at startup and its state reached the request scope.
 curl -s $B/lifespan | grep -qF '"started": true' || fail 'lifespan startup did not run'
 curl -s $B/lifespan | grep -qF '"state_flag": true' || fail 'lifespan state did not reach the scope'
@@ -6265,6 +6304,10 @@ grep -qi '^x-thread' "$out/hdr" || fail 'no x-thread: the explicit pool is not s
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/stream-forever)
 [ "$code" = "500" ] || fail "buffered-pool infinite stream expected the watchdog's 500, got $code"
 curl -s --fail $B/ > /dev/null || fail 'server died after the buffered watchdog fired'
+# The same heads through the buffered bridge (A21, K12). It joins a stream
+# before answering, so the executor's streaming HEAD (L27) has nothing to
+# leak here.
+python3 scripts/head_probe.py --port 8088 --app asgi --no-stream-case || fail 'the buffered bridge did not send the head the application sent (K12, A21)'
 kill -TERM $pid
 wait $pid 2>/dev/null
 
@@ -6349,6 +6392,9 @@ python3 scripts/emit.py --covers L6 --task smoke-asgi
 python3 scripts/emit.py --covers L8 --task smoke-asgi
 python3 scripts/emit.py --covers L15 --task smoke-asgi
 python3 scripts/emit.py --covers M3 --task smoke-asgi
+python3 scripts/emit.py --covers K12 --task smoke-asgi
+python3 scripts/emit.py --covers A21 --task smoke-asgi
+python3 scripts/emit.py --covers L27 --task smoke-asgi
 """
 
 # The keep-alive request cap (`max_keepalive_requests`, 100) closes a
@@ -8277,6 +8323,15 @@ trap 'kill $pid 2>/dev/null' EXIT
 
 fail() { echo "$1"; echo '=== notes.log ==='; cat notes.log; exit 1; }
 
+# A 1xx, 204 or 304 carries no Content-Length or Content-Type its handler did
+# not set (A21; RFC 9110 §8.6): the constructor used to invent both, a length
+# of 0 and application/octet-stream, on every bodiless answer.
+no_entity_headers() {
+  if grep -qi -E '^content-(length|type):' headers.txt; then
+    fail "$1 carries an entity header nobody set: $(grep -i '^content-' headers.txt | tr -d '\\r' | tr '\\n' ' ')"
+  fi
+}
+
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8091/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
 
@@ -8295,8 +8350,9 @@ etag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\\r\\n')
 [ -n "$etag" ] || fail 'GET /notes/:id answered no ETag'
 
 # 304: same resource, If-None-Match, no body.
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8091/notes/1)
 [ "$code" = "304" ] || fail "expected 304 for a matching If-None-Match, got $code"
+no_entity_headers 'the 304 for a matching If-None-Match'
 
 # Content negotiation: same note, HTML representation on request — and the
 # response says it varies, so a shared cache cannot replay HTML to a JSON
@@ -8327,8 +8383,10 @@ code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
 [ "$code" = "200" ] || fail "a 405 must leave the note intact, but GET answered $code"
 
 # CORS: preflight and ordinary responses both carry the headers.
-curl -s -D headers.txt -X OPTIONS http://localhost:8091/notes -o /dev/null
+code=$(curl -s -D headers.txt -w '%{http_code}' -X OPTIONS http://localhost:8091/notes -o /dev/null)
 grep -qi '^access-control-allow-origin' headers.txt || fail 'preflight carried no CORS headers'
+[ "$code" = "204" ] || fail "expected the preflight to answer 204, got $code"
+no_entity_headers 'the OPTIONS preflight, the Views table 204,'
 
 # Validation: a body without a title is a 400 problem, not a 500.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8091/notes -d '{"nope":1}')
@@ -8337,8 +8395,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8091/note
 # Update and delete round out the CRUD.
 curl -s -X PUT http://localhost:8091/notes/1 -d '{"title":"Renamed","body":"x"}' \
   | grep -q '"title":"Renamed"' || fail 'PUT did not update the note'
-code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -X DELETE http://localhost:8091/notes/1)
 [ "$code" = "204" ] || fail "expected 204 from delete, got $code"
+no_entity_headers 'the 204 from delete'
 code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
 
@@ -8349,8 +8408,9 @@ grep -q 'font-family' static.css || fail 'static css did not serve'
 grep -qi '^content-type: text/css' headers.txt || fail 'static css had the wrong content type'
 setag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\r\n')
 [ -n "$setag" ] || fail 'static file served without an ETag'
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8091/static/styles.css)
+code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8091/static/styles.css)
 [ "$code" = "304" ] || fail "static revalidation expected 304, got $code"
+no_entity_headers 'the static mount 304'
 
 # Byte ranges: a bounded range comes back 206 with the right slice and a
 # Content-Range naming the total; a range past the end is 416 with */total.
@@ -8395,6 +8455,7 @@ echo "smoke-notes OK"
 python3 scripts/emit.py --covers G10 --task smoke-notes
 python3 scripts/emit.py --covers J6 --task smoke-notes
 python3 scripts/emit.py --covers G14 --task smoke-notes
+python3 scripts/emit.py --covers A21 --task smoke-notes
 """
 
 # The notes resource as a server-rendered htmx app, gated on WIRE OUTPUT

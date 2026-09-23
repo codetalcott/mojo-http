@@ -629,6 +629,23 @@ lightbug_http
         `keep_across_exec` is gone: the spawn hand-off keeps its
         descriptors across its own exec only (m0_http's multiworker).
 
+      - http/response.mojo, event_loop.mojo, server.mojo (2026-09-23): a
+        1xx, 204 or 304 carries no invented entity headers, and a 1xx or
+        204 no Content-Length at all (SPEC A21; RFC 9110 §8.6). The two
+        server-side HTTPResponse constructors add their `Content-Type:
+        application/octet-stream` and `Content-Length` defaults only for
+        a status that has content, and neither when passed
+        `invent_entity_headers=False`, which the gateway uses to relay an
+        application's head as sent (SPEC K12). `is_bodiless_status` and
+        `enforce_bodiless_framing` are new beside them. The event loop and
+        the blocking server apply the rule to every such response before
+        its head is encoded: a 1xx's or 204's own length and any body are
+        dropped, a file body's descriptor closed, and a 304 keeps its
+        length. And `_finish_response` answers a HEAD whose handler opened
+        a stream (a hold, a native SSE route) with its head alone: the
+        stream flag is cleared, the length popped, and the subscription the
+        handler made dropped through `sse_slot_disconnected` (SPEC L27).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

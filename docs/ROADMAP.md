@@ -102,17 +102,6 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — outside the server's own behaviour.
 
-- **The gateway rewrites parts of an application's response head.** A
-  response the application sent without a `Content-Type` goes out as
-  `application/octet-stream` — a redirect, a 204, FastHTML's default 404
-  page, which a browser may then download rather than show. A HEAD the
-  application answered with its body's `Content-Length` and no body goes
-  out with `Content-Length: 0` (Starlette's `FileResponse`, WhiteNoise).
-  And a 204 or 304 carries `Content-Length: 0`, which RFC 9110 §8.6 forbids
-  on a 204.
-
-  **Closed by:** A21, K12
-
 - **Two ASGI loading and scope differences from uvicorn.** A request whose
   chunked body the loop decoded reaches the application with both
   `transfer-encoding: chunked` and a `content-length`, a contradictory pair
@@ -131,7 +120,7 @@ A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
 fails if it does not resolve. A row added here names the application that
 pulls it, the gate that will verify it, and the [decision](DECISIONS.md)
 it retires, before it is built. The application layer has no planned row
-left — its last, N13, shipped on 2026-09-12 — and the server has the five
+left — its last, N13, shipped on 2026-09-12 — and the server has the two
 below.
 
 ### Serving FastHTML's own examples as uvicorn serves them
@@ -140,14 +129,10 @@ The pull is FastHTML's and FastAPI's own example applications, served side
 by side under m0serve and uvicorn on 2026-09-22; the pass and its method
 are in [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md). The defects it
 found in the executor shim are fixed and gated (L20–L24), and so is the
-close-on-exec one (G16). These four are what remains, each with the gate
-that will verify it; none retires a decision.
+close-on-exec one (G16) and the response head (A21 and K12, with L27
+found beside them). These two are what remains, each with the gate that
+will verify it; neither retires a decision.
 
-- **A21 and K12, the gateway's response head.** `_assemble` sends the
-  application's head as sent: no `Content-Type` it did not set, its own
-  `Content-Length` on a HEAD, and none on a 1xx or 204 (a 304 keeps only
-  one the application set). Gate: the ASGI and WSGI conformance steps
-  compare each head with the application's own.
 - **L25, the chunked scope.** A request whose body the loop de-chunked
   reaches the application with `content-length` and without
   `transfer-encoding`, and a bodiless one with no invented
@@ -205,6 +190,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- <!-- observed: asgi_bare and wsgi_bare under m0serve at da6de53, raw sockets, 2026-09-23; FastHTML's examples under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**The gateway rewrote parts of an application's response head** (a redirect, a 204 and FastHTML's default 404 page went out as `application/octet-stream`, a `FileResponse` HEAD as `content-length: 0`, and every 204 and 304 with `content-length: 0`, a native one included) — resolved 2026-09-23 by A21 and K12: the gateway relays the head as sent, adding only the framing that is the server's — a buffered body's measured length, and on a HEAD the application's own — and the event loop drops a length and a body from every 1xx and 204, whoever set them, keeping only a 304's own length. Found beside them and fixed with them (L27): a HEAD to a streaming ASGI route was streamed like a GET, and the loop wrote the whole body after the head, 10,000 of 10,000 bytes, where a keep-alive client reads its next response; a HEAD to a hold or a native SSE route was held as the stream a GET opens, the same way. `scripts/head_probe.py` reads each head in both conformance steps, and a request after it on the same connection.
 - <!-- observed: FastHTML's `xtermjs` example under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**A process the application started inherited the server's sockets** (FastHTML's terminal example took 10 s to close a WebSocket, because the shell it had started held the connection) — resolved 2026-09-23 by G16: every descriptor the server creates is close-on-exec, atomically on Linux and by a second call straight after on macOS; the spawned-worker hand-off keeps exactly the descriptors the new image adopts across its own exec, where it used to keep them across every exec in every mode; and `m0pub` writes only to a bus it can see, never into a child's own file on an inherited number. `smoke-exec-inherit` requires a child started with `close_fds=False` to hold nothing of the server's in six shapes.
 - **`mojo build` needs a C compiler on Linux and nothing said so** (a `python:*-slim` image failed with `unable to find suitable c compiler for linking`, after the whole compile) — resolved 2026-09-20 for an application built with the `m0` CLI (N25): `m0 build` and `m0 doctor` check before running the compiler and name the fix, `apt-get install build-essential` or the platform's own. The check is not the one first planned, on two measured counts: mojo 1.1.0 looks for the literal name `cc` and nothing else, so a machine with `gcc` and no `cc` is refused by name, and a `cc` that exists and cannot link (gcc without `libc6-dev`) is caught by linking a one-line program. Inside this repository nothing changes — `mojo build` by hand still says what it said, and `deploy/mojo/Dockerfile` installs `build-essential`. The write-up is [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md).
 - **Mojo 1.0's `PythonObject` interop leaked a reference per call argument and per `__setitem__` value** — resolved 2026-09-18 by moving the pin to Mojo 1.1.0, which carries the upstream fix (modular/modular#6833). Measured in this tree against 1.0.0 as the null case: +1001 references per 1000 operations before, 0 after. The bridge keeps its raw C API environ build, which was always the faster path as well as the safe one, so nothing about the request path changes; what changes is that a per-request `PythonObject` argument is now a performance preference rather than a correctness constraint. The write-up is [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md).

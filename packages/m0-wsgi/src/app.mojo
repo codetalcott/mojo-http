@@ -182,7 +182,7 @@ struct WSGIApp(Movable):
         self._bridge.stream_pending = streaming
         return build_response(
             self._bridge, String(py=result[0]), result[1], result[2],
-            streaming=streaming,
+            streaming=streaming, is_head=req.method == "HEAD",
         )
 
     def set_stream_capable(mut self, flag: Bool) raises:

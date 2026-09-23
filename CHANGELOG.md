@@ -118,6 +118,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   way m0pub has always documented:
   `subprocess.Popen([...], pass_fds=m0pub.child_fds())`. That carries the
   event-id page as well, so the child's frames are numbered.
+- **A native 1xx, 204 or 304 no longer carries `Content-Type:
+  application/octet-stream` or `Content-Length: 0`** (SPEC A21).
+  `HTTPResponse`'s constructors add neither default for a status that has
+  no content, and the event loop drops a length and a body that a handler
+  set on a 1xx or 204 itself. `reply.empty(304)`, `reply.no_content()`, the
+  Views table's OPTIONS answer and the static mount's revalidation all
+  change on the wire. A response with a body keeps both defaults.
+  `HTTPResponse(..., invent_entity_headers=False)` adds neither for any
+  status: it is how the gateway relays an application's head.
 - **Datastar is pinned at v1.0.4** (was v1.0.3; DECISIONS D20).
   `m0-datastar`'s `VERSION`, the three demo pages' CDN pins, the `live`
   scaffold template's, and the SDK conformance-case URL. **Not a protocol
@@ -256,6 +265,38 @@ in a minor release: `m0serve`'s flags and environment variables, the
   which a strict client reports as a protocol error. CI saw it twice, once
   on each OS. The Close now rides inside the end marker, one datagram, so
   the loop never writes it without knowing the socket is ending.
+- **A response's head reached the client rewritten** (SPEC A21, K12). A
+  response the application sent without a `Content-Type` went out as
+  `application/octet-stream`: a redirect, a 204, FastHTML's default 404
+  page, which a browser may then download rather than show. A HEAD the
+  application answered with its body's `Content-Length` and no body went
+  out with `Content-Length: 0` (Starlette's `FileResponse`, WhiteNoise).
+  And every 204 and 304 carried `Content-Length: 0`, from the gateway and
+  from a native Mojo handler alike, which RFC 9110 §8.6 forbids on a 204. A
+  204 that brought its own length and a body (Django's `CommonMiddleware`
+  sets a length on every non-streaming response) sent both, and the body
+  began the connection's next response. The head now reaches the wire as
+  the application sent it, plus only the framing that is the server's: a
+  buffered body's measured length, and on a HEAD the application's own
+  length. No 1xx or 204 carries a length or a body, whoever set them, and a
+  304 keeps only a length its application gave.
+- **A HEAD to a streaming ASGI route received the whole body** (SPEC L27).
+  The executor switched a response to streaming at its first chunk
+  whatever the request, so a HEAD to a Starlette `StreamingResponse`, which
+  answers HEAD as it answers GET, was streamed, and the loop, which never
+  frames a HEAD, wrote the body raw after the head: all 10,000 bytes of a
+  10,000-byte route, and an endless stream for ever. A keep-alive client
+  then read those bytes as the start of its next response. A HEAD is now
+  answered at its first streamed body with its head alone, and the
+  application's later sends are dropped. A `receive()` it parked before the
+  first body, as Starlette and Django do, is woken with `http.disconnect`,
+  which stops a `StreamingResponse` and still runs its background tasks;
+  an application that never listens is cancelled if it is still running a
+  second later. A 1xx, 204 or 304 streamed the same way is answered the
+  same way. And a HEAD to a hold, an `M0-Hold` view under `--realtime` or
+  a native SSE route, was held as the stream a GET opens, writing every
+  event and heartbeat after the head: it is answered with its head, and the
+  subscription it made is dropped.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and

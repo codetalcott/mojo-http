@@ -39,6 +39,11 @@ _lifespan_ok = False
 _ASGI_BUFFER_CAP = 16 * 1024 * 1024
 _ASGI_STREAM_GRACE = 10.0
 
+# How long an application whose HEAD was answered at its first streamed
+# body may keep running when nothing could tell it the response is over --
+# it never called receive() -- before it is cancelled (see _Cycle.send).
+_HEAD_GRACE = 1.0
+
 # --- streamed WSGI bodies ---------------------------------------------------
 # On a pool thread with a chunk channel, an iterable the application did not
 # size is streamed rather than joined: `run` returns the head and keeps the
@@ -1220,6 +1225,7 @@ class _Cycle:
         'aborted',
         'task',
         'completed',
+        'head',
     )
 
     def __init__(self, slot, body):
@@ -1234,6 +1240,7 @@ class _Cycle:
         self.aborted = False
         self.task = None
         self.completed = False
+        self.head = False
 
     async def receive(self):
         if not self.delivered:
@@ -1346,6 +1353,39 @@ class _Cycle:
                     raise RuntimeError(
                         'ASGI streamed a body chunk before ' 'http.response.start'
                     )
+                if self.head or self.status < 200 or self.status in (204, 304):
+                    # Nothing here may stream: a HEAD's response is its head
+                    # (RFC 9110 §9.3.2) and a 1xx, 204 or 304 has no content
+                    # (§6.4.1). Streamed, the loop -- which frames none of
+                    # them -- wrote the body raw after the head, 10,000 of
+                    # 10,000 bytes measured, where a keep-alive connection's
+                    # next response begins (SPEC L27). Answer now with no
+                    # body, as a final body would, and drop the rest:
+                    # receive() then says http.disconnect, which is what
+                    # stops a StreamingResponse. `_stream_this` is the WSGI
+                    # side's same rule.
+                    self.completed = True
+                    self.chunks = []
+                    self.total = 0
+                    _exec_put(('done', self.slot, self.status, self.headers, b''))
+                    # Nothing else will tell the application: the loop saw
+                    # an answer, not a stream, and sends no disconnect for
+                    # it. A receive() parked from before this body --
+                    # Starlette's listen_for_disconnect, Django's listener --
+                    # waits on the slot's future, still this request's
+                    # because the loop has not read this `done`: resolve it,
+                    # as a departure would, but cancel nothing, so a
+                    # response's background work still runs. With nothing
+                    # parked, the application is cancelled if it is still
+                    # running when _HEAD_GRACE has passed. Unstopped, an
+                    # endless body ran for the life of the process, one task
+                    # per HEAD, and held the shutdown drain open.
+                    fut = _exec_disconnects.get(self.slot)
+                    if fut is not None and not fut.done():
+                        fut.set_result(True)
+                    else:
+                        _loop.call_later(_HEAD_GRACE, self._stop_unheard)
+                    return
                 import asyncio
 
                 slot = self.slot
@@ -1402,6 +1442,12 @@ class _Cycle:
             body, self.chunks = b''.join(self.chunks), []
             _exec_put(('done', self.slot, self.status, self.headers, body))
 
+    def _stop_unheard(self):
+        # A HEAD answered early whose application nothing could tell (see
+        # send): still running now, it is producing a body nobody reads.
+        if not self.task.done():
+            self.task.cancel()
+
     async def run(self, scope):
         if self.task is None:
             # asyncio.eager_task_factory runs a task's first step INSIDE
@@ -1410,6 +1456,7 @@ class _Cycle:
             import asyncio
 
             self.task = asyncio.current_task()
+        self.head = scope.get('method') == 'HEAD'
         slot = self.slot
         try:
             await _app(scope, self.receive, self.send)

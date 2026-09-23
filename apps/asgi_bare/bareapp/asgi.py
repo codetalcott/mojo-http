@@ -21,6 +21,11 @@ Routes:
     /stream-forever an infinite SSE-shaped stream: pins the buffered
                     bridge's watchdog error, and later a streaming
                     server's actual streaming
+    /redirect, /nocontent, /nocontent-cl, /notmodified, /notmodified-cl,
+    /sized, /no-content-type
+                    heads with exactly the headers named in each branch,
+                    so anything else on the wire is the server's
+                    (``scripts/head_probe.py``; SPEC A21, K12)
 
 Lifespan shutdown writes the file named by ``M0_SHUTDOWN_MARKER`` when that
 variable is set, so a smoke can assert the application was shut down (and
@@ -54,6 +59,9 @@ OVERSIZED_UNDER = 32 * 1024
 # outbox cap existing at all. 66 KB encodes to 67594, just past 65536.
 OVERSIZED_OVER = 66 * 1024
 OVERSIZED_MARKER = "after-the-oversized-message"
+
+# /sized's and /notmodified-cl's length: the body a GET of /sized carries.
+SIZED = 12345
 
 
 async def application(scope, receive, send):
@@ -226,6 +234,38 @@ async def application(scope, receive, send):
                     "body": b"nals\ndata: signals {\"n\": 2}\n\n",
                     "more_body": True})
         await send({"type": "http.response.body", "body": b""})
+    elif path == "/redirect":
+        # Starlette's RedirectResponse: a location and no content type.
+        await _send_start(send, 303, [(b"location", b"/")])
+        await send({"type": "http.response.body", "body": b""})
+    elif path == "/nocontent":
+        await _send_start(send, 204, [])
+        await send({"type": "http.response.body", "body": b""})
+    elif path == "/nocontent-cl":
+        # Django's CommonMiddleware shape: a length and a body on a 204,
+        # neither of which may reach the wire (RFC 9110 §8.6, §15.3.5).
+        await _send_start(send, 204, [(b"content-length", b"7")])
+        await send({"type": "http.response.body", "body": b"ignored"})
+    elif path == "/notmodified":
+        await _send_start(send, 304, [(b"etag", b'"v1"')])
+        await send({"type": "http.response.body", "body": b""})
+    elif path == "/notmodified-cl":
+        # The length the GET would have had, which a 304 may keep.
+        await _send_start(send, 304, [(b"etag", b'"v1"'),
+                                      (b"content-length", b"%d" % SIZED)])
+        await send({"type": "http.response.body", "body": b""})
+    elif path == "/sized":
+        # A HEAD answered as FileResponse answers one: the GET's length and
+        # no body.
+        await _send_start(send, 200, [
+            (b"content-type", b"application/octet-stream"),
+            (b"content-length", b"%d" % SIZED),
+        ])
+        body = b"" if scope["method"] == "HEAD" else b"s" * SIZED
+        await send({"type": "http.response.body", "body": body})
+    elif path == "/no-content-type":
+        await _send_start(send, 200, [])
+        await send({"type": "http.response.body", "body": b"canary"})
     else:
         await _text(send, 404, b"not found")
 
