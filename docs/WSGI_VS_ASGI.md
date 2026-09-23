@@ -78,10 +78,36 @@ surface runs unmodified. The Mojo loop still owns framing and flow control:
 every stream is credit-gated so a fast producer cannot overrun a slow client
 or the channel between the two threads.
 
+**What an application can count on**, each as uvicorn does it, and each a
+SPEC row with a gate:
+
+- A response is answered at its final `http.response.body`, not when the
+  application returns, so Starlette's background tasks run after the client
+  has its answer, and a client leaving does not cancel them (L22).
+- A send is judged by the connection it addresses, whichever task makes
+  it: a disconnect hook reaches the sockets still connected, and a `send`
+  kept for a client that has gone never reaches another client (L20). On a
+  WebSocket that has gone it raises `ClientDisconnected`, an `OSError`
+  (Starlette turns it into `WebSocketDisconnect`); on a stream it does
+  nothing, as ASGI 2.3 specifies.
+- A WebSocket hears its client leave as `websocket.disconnect` from
+  `receive()`, and is not cancelled for it, so an `except
+  WebSocketDisconnect:` cleanup runs (L21). A handler that never calls
+  `receive()` learns at its next send, or at shutdown, when the drain
+  cancels the sockets still running after a second's grace.
+- An application error keeps the application's own error response (so
+  `debug=True` pages arrive), the log gets its traceback (L23), and a
+  WebSocket whose application raises is closed with 1011 (L24).
+- `scope["path"]` keeps `%2F` encoded, a deliberate rule of the URI parser
+  so an encoded slash never becomes a path separator; a route parameter
+  that contains one arrives encoded, where uvicorn decodes it (and routes
+  the request elsewhere).
+
 **A buffered fallback.** `--blocking-threads N` with an ASGI app selects the
 older buffered path, one request at a time to completion on a pool thread. It
 exists as an escape hatch and refuses an infinite stream rather than hold a
-thread forever.
+thread forever. It also answers only when the application returns, so a
+response there still waits for its background tasks.
 
 **One limit, from the toolchain.** The executor is a Python type built
 in-process, and Mojo's Python bindings lay that type out for the

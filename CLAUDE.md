@@ -421,9 +421,23 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     cleanup runs only if the finishing task is the owner; a disconnect is
     stamped on the owning task (`_m0_disconnected`) and the old
     connection's in-flight bytes are refunded to the global window right
-    there; spawning a new task on the slot clears the slot's stale marks (the
-    disconnect, and for a WebSocket the previous socket's accept);
-    every "am I gone" check asks `_task_gone`, which consults both; and
+    there; spawning a WebSocket on the slot clears the previous socket's
+    accept; every "am I gone" check asks `_task_gone(owner)` about the
+    task that owns the connection a send ADDRESSES (stamped, or finished),
+    never the caller's — `send` and `receive` are closures an application
+    calls from any task, and judged by the caller a gone client's kept
+    `send` wrote into the next client on its recycled slot (FastAPI's
+    documented chat room delivered a departed client's messages to a
+    stranger) while a disconnect hook's sends to live sockets were refused
+    (SPEC L20); a send to a gone socket raises `ClientDisconnected`, one to
+    a gone stream is a yielding no-op; a WebSocket is told of its client's
+    departure through `receive()` and never cancelled for it — FastAPI's
+    `except WebSocketDisconnect:` cleanup runs only if the task survives —
+    so the drain gives in-flight tasks `_WS_DRAIN_GRACE` and then cancels
+    the sockets still running (L21); a response is answered at its FINAL
+    body, not when the application returns, because Starlette runs
+    background tasks after it inside the same call (L22), and a late
+    exception goes to the log alone; and
     the STREAMING mark and the cancellable stream task go on the slot's
     owner (`_exec_slot_task[slot]`), never `asyncio.current_task()` —
     Starlette (so FastAPI and FastHTML) produces a `StreamingResponse`
