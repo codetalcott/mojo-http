@@ -164,6 +164,64 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **Security: an ASGI application's message for a client that had left
+  could reach a different client** (SPEC L20). The executor decided whether
+  a connection was gone by asking about the task *making* a send, not the
+  connection the send addressed, and the loop reuses a slot the moment a
+  connection closes. So a `send` an application kept for a client that had
+  gone, called from any live task — a broadcast, another request, a
+  background task — was written into whichever client now held that slot.
+  FastAPI's documented multi-client chat room did it with no change: the
+  next client to connect received every message addressed to the one that
+  left, including its personal ones. A raw ASGI push hub's stale stream
+  `send` wrote into another client's response the same way. The same rule
+  also refused a disconnect hook's sends to the sockets still connected
+  ("someone left" reached none of them). A send is now judged by the task
+  that owns the connection it addresses: a send to a socket that has gone
+  raises `ClientDisconnected` (an `OSError`, uvicorn's name for it), and one
+  to a stream that has gone is a no-op, as ASGI 2.3 specifies. Two paths
+  never told the executor a socket had gone at all, and are closed too: a
+  socket its application closed (each socket now keeps its own record of
+  its accept and its close, where the slot's record was the next client's —
+  a late `finally` closed that client, a second close rejected its
+  handshake), and a socket the server ended itself after a message over
+  its outbox cap (the loop now tags every connection an executor produced,
+  routed to that executor). And a task an application left behind, sending
+  after the application returned, could answer the slot's next request
+  with its response; a send once the response is over now answers nothing.
+  Found by serving FastHTML's and FastAPI's own examples beside uvicorn.
+- **An ASGI WebSocket's disconnect cancelled the application's task**
+  (SPEC L21). uvicorn delivers `websocket.disconnect` through `receive()`,
+  and FastAPI's documentation is written against that: its cleanup is an
+  `except WebSocketDisconnect:` after the receive loop, which a cancellation
+  skips, so the departed client stayed in the application's list for ever.
+  The disconnect now arrives through `receive()` (and again on every later
+  call), and the task is not cancelled for it. A handler blocked outside
+  `receive()` learns at its next send, or at shutdown, where the drain gives
+  in-flight tasks a second and then cancels the sockets still running.
+- **An ASGI response waited for its background tasks** (SPEC L22).
+  Starlette runs a response's `BackgroundTask` after its final body, inside
+  the same call, and the executor answered only when the application
+  returned, so a response with background work was held for as long as the
+  work took, buffered or streamed. It is answered at its final body now,
+  and a client leaving afterwards does not cancel the work. Under the
+  escape hatch (`--blocking-threads N` with an ASGI application) each
+  request runs in its own event loop run, which cannot return early; the
+  response still waits there.
+- **An ASGI application's error replaced its own error page and lost the
+  traceback; a raising WebSocket closed with 1000** (SPEC L23, L24).
+  Starlette's `ServerErrorMiddleware` sends a finished 500 — with
+  FastHTML's `debug=True`, the traceback page — and then re-raises; the
+  executor answered its own `Failed to process request` instead and logged
+  one line with no file or line. The application's response now stands,
+  and every application error the executor logs carries its traceback. A
+  WebSocket whose application raises is closed with 1011 ("an unexpected
+  condition", RFC 6455 §7.4.1), not the 1000 that told the client all went
+  well. A `ClientDisconnected` escaping an application is not logged; a
+  Starlette `WebSocketDisconnect` that an application lets escape is, as
+  uvicorn logs it. And `receive()` after a response is answered says
+  `http.disconnect` at once, where it used to wait for the life of the
+  process.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and

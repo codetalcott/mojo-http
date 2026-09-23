@@ -162,6 +162,14 @@
       "evidence": "`Smoke test a 413 reaching a client still uploading` (every PR) \u2014 the whole body written before reading, `Content-Length` and chunked, through `http.client`, and eight at once; `Connection: close` and a FIN right behind the 413; the linger bounded against a client that keeps trickling past it, and a clean close at its deadline for a client that reads late"
     },
     {
+      "id": "A21",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "No `Content-Length` on a 1xx or 204 response, and none invented on a 304 (RFC 9110 \u00a78.6)",
+      "status": "planned",
+      "evidence": "ROADMAP: Serving FastHTML's own examples as uvicorn serves them"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
@@ -866,6 +874,14 @@
       "evidence": "`test_hmac.mojo:test_rfc_4231_case_7` (every PR) \u2014 the hash's own vectors are `test_sha256.mojo:test_fips_180_4_examples`; the first cryptographic primitive in the tree, and the one a signed grant and a signed session cookie (N13) rest on"
     },
     {
+      "id": "G16",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "Sockets the server creates are close-on-exec: a process the application starts inherits no client connection and no internal channel",
+      "status": "planned",
+      "evidence": "ROADMAP: Serving FastHTML's own examples as uvicorn serves them"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",
@@ -1242,6 +1258,14 @@
       "evidence": "`Execute the quickstart` (every PR) \u2014 the quickstart's Django file under gunicorn: `/events` answers 200 with the view's body and closes inside curl's deadline (held, it would not), the upgrade request answers 200 rather than 101, and `publish()` reports 0 workers without raising. The README's \"degrades, not breaks\" sentence, executed"
     },
     {
+      "id": "K12",
+      "section": "K",
+      "category": "K. WSGI (PEP 3333)",
+      "capability": "The gateway sends the application's response head as sent: no invented `Content-Type`, and the application's `Content-Length` kept on a HEAD",
+      "status": "planned",
+      "evidence": "ROADMAP: Serving FastHTML's own examples as uvicorn serves them"
+    },
+    {
       "id": "L1",
       "section": "L",
       "category": "L. ASGI 3.0",
@@ -1392,6 +1416,62 @@
       "capability": "Inbound `websocket.receive` is flow-controlled: a stalled client is throttled, never silently dropped",
       "status": "verified",
       "evidence": "`Inbound WebSocket messages survive a stalled client` (every PR) \u2014 the loop suspends the read rather than discarding what the executor cannot take; a concurrently-reading client loses nothing even on the broken build, so the gate stalls first and only then reads"
+    },
+    {
+      "id": "L20",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A send is judged by the connection it addresses, never the task making it: one connection's task reaches another's live socket, and a send kept for a client that has gone never reaches the client given its slot",
+      "status": "verified",
+      "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` recycles a slot under a kept WebSocket send and under a kept stream send, with and WITHOUT a disconnect tag (a socket its application closed, which the loop never tagged), sends from a gone socket's own task to the sockets still connected, answers after the application returned, and sabotages each rule; FastAPI's documented chat room checks the same on the wire in L21's gate"
+    },
+    {
+      "id": "L21",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A WebSocket's disconnect reaches the application through `receive()`, never as a cancellation, so its own cleanup runs; a send to a socket that has gone raises `ClientDisconnected` (an `OSError`)",
+      "status": "verified",
+      "evidence": "`Serve a FastAPI app through the ASGI bridge` (every PR) \u2014 FastAPI's documented chat room: its `except WebSocketDisconnect:` must tell the room and shrink the connection list, a new client must receive one copy of a broadcast, and a socket the SERVER ends (one message over the outbox cap) must still reach its application; the two-executor case, where that disconnect is routed by lane, is a phase of the mixed-mount smoke"
+    },
+    {
+      "id": "L22",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A response is answered at its final body; the application's background tasks run after it, and survive the client leaving",
+      "status": "verified",
+      "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR) \u2014 a `BackgroundTask` that sleeps 2 s under a response that must arrive in under 1"
+    },
+    {
+      "id": "L23",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An application error keeps the application's own error response, and its traceback reaches the log",
+      "status": "verified",
+      "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR) \u2014 the raising route must answer Starlette's own 500 body, and the log must carry the traceback"
+    },
+    {
+      "id": "L24",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A WebSocket application that raises is closed with 1011, not 1000 (RFC 6455 \u00a77.4.1)",
+      "status": "verified",
+      "evidence": "`Serve a FastAPI app through the ASGI bridge` (every PR) \u2014 the chat probe's raising-socket phase"
+    },
+    {
+      "id": "L25",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A de-chunked request's scope carries `content-length` and not `transfer-encoding`, and no header the client did not send",
+      "status": "planned",
+      "evidence": "ROADMAP: Serving FastHTML's own examples as uvicorn serves them"
+    },
+    {
+      "id": "L26",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An application that schedules asyncio work at import is refused by name, with the fix",
+      "status": "planned",
+      "evidence": "ROADMAP: Serving FastHTML's own examples as uvicorn serves them"
     },
     {
       "id": "M1",

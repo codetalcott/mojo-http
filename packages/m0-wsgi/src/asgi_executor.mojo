@@ -787,6 +787,12 @@ struct ExecutorPort(Movable, Writable):
                 + String(py=ev[2]),
                 flush=True,
             )
+        elif kind == "log":
+            # An application error the executor can only report: raised
+            # after its response was answered (ServerErrorMiddleware
+            # re-raises the error its 500 was for; a background task can
+            # fail), so the slot is not this event's to touch.
+            print("asgi-executor: " + String(py=ev[2]), flush=True)
         elif kind == "ws_accept":
             # Begin frame before the 101 — the same FIFO anchor as a
             # stream's head, for the sockets registry this time.

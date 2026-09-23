@@ -102,14 +102,79 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — outside the server's own behaviour.
 
+- <!-- observed: FastHTML's `xtermjs` example under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**A process the application starts inherits the server's sockets.**
+  No socket the loop or its pools create is close-on-exec, so a child that
+  execs — `pty.fork` and `os.system`, or `subprocess` with
+  `close_fds=False` — inherits every client connection open at that moment
+  and the server's internal channels. A connection the server closes then
+  stays open in the child: FastHTML's terminal example took 10 s to close a
+  WebSocket, because the shell it had started held the socket. `subprocess`
+  with its default (`close_fds=True`) is unaffected.
+
+  **Closed by:** G16
+
+- **The gateway rewrites parts of an application's response head.** A
+  response the application sent without a `Content-Type` goes out as
+  `application/octet-stream` — a redirect, a 204, FastHTML's default 404
+  page, which a browser may then download rather than show. A HEAD the
+  application answered with its body's `Content-Length` and no body goes
+  out with `Content-Length: 0` (Starlette's `FileResponse`, WhiteNoise).
+  And a 204 or 304 carries `Content-Length: 0`, which RFC 9110 §8.6 forbids
+  on a 204.
+
+  **Closed by:** A21, K12
+
+- **Two ASGI loading and scope differences from uvicorn.** A request whose
+  chunked body the loop decoded reaches the application with both
+  `transfer-encoding: chunked` and a `content-length`, a contradictory pair
+  a proxying application would forward, and a bodiless request carries a
+  `content-length: 0` the client never sent. And a module that calls
+  `asyncio.create_task` at import — FastHTML's first official example —
+  fails to load with `RuntimeError: no running event loop`; uvicorn loads
+  it under `--reload` and `--workers`, which is how FastHTML's own `serve()`
+  runs it.
+
+  **Closed by:** L25, L26
+
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
-fails if it does not resolve. **Nothing is planned**: the server had none,
-and the application layer's last row (N13, sessions and CSRF behind a
-login) shipped on 2026-09-12. A row added here names the application that
+fails if it does not resolve. A row added here names the application that
 pulls it, the gate that will verify it, and the [decision](DECISIONS.md)
-it retires, before it is built.
+it retires, before it is built. The application layer has no planned row
+left — its last, N13, shipped on 2026-09-12 — and the server has the five
+below.
+
+### Serving FastHTML's own examples as uvicorn serves them
+
+The pull is FastHTML's and FastAPI's own example applications, served side
+by side under m0serve and uvicorn on 2026-09-22; the pass and its method
+are in [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md). The defects it
+found in the executor shim are fixed and gated (L20–L24). These five are
+what remains, each with the gate that will verify it; none retires a
+decision.
+
+- **G16, sockets that survive `exec`.** Every socket the loop and the pools
+  create becomes close-on-exec; the descriptors the spawned-worker mode
+  passes on purpose already go through `keep_across_exec`. Gate: a WSGI
+  view starts a child that keeps its inherited descriptors and lists the
+  sockets among them, which must be none, under prefork and spawned
+  workers alike.
+- **A21 and K12, the gateway's response head.** `_assemble` sends the
+  application's head as sent: no `Content-Type` it did not set, its own
+  `Content-Length` on a HEAD, and none on a 1xx or 204 (a 304 keeps only
+  one the application set). Gate: the ASGI and WSGI conformance steps
+  compare each head with the application's own.
+- **L25, the chunked scope.** A request whose body the loop de-chunked
+  reaches the application with `content-length` and without
+  `transfer-encoding`, and a bodiless one with no invented
+  `content-length: 0`. Gate: the ASGI conformance step echoes the scope's
+  headers for a chunked request.
+- **L26, work scheduled at import.** A module that calls
+  `asyncio.create_task` at import is refused by name, with the fix — a
+  lifespan or `on_startup` hook — instead of `RuntimeError: no running
+  event loop`. uvicorn refuses the same module in its default mode. Gate: a
+  refusal smoke on the exit code and the message.
 
 What stands between the application layer and its milestone is no longer
 a row but the soak: an application outside `apps/` running on `Views` and

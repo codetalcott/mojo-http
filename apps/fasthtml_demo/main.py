@@ -10,11 +10,19 @@ installed, the same arrangement as the Flask row. `/` and `/plain` work under
 the buffered ASGI bridge today; `/sse` is an infinite EventStream, which the
 buffered bridge refuses with an explanatory 500 — it exists so the smoke can
 pin that refusal now and the streaming behavior later.
+
+`/bg` answers a page with a `BackgroundTask` that sleeps 2 s: the response
+must arrive at once and the task run after it (SPEC L22), where the
+executor used to hold the response for the whole 2 s. `/bg-log` says whether
+it has run. `/boom` raises: Starlette's own 500 is what the client must get,
+and the traceback is what the log must get (L23), where the executor used to
+answer "Failed to process request" and log one line.
 """
 
 from fasthtml.common import (
     H1, Div, EventStream, P, Titled, fast_app, sse_message,
 )
+from starlette.background import BackgroundTask
 import asyncio
 
 app, rt = fast_app()
@@ -47,6 +55,34 @@ async def _counter():
 @rt("/sse")
 async def sse():
     return EventStream(_counter())
+
+
+BG = []
+
+
+async def _slow_record(tag):
+    await asyncio.sleep(2.0)
+    BG.append(tag)
+
+
+@rt("/bg")
+def bg():
+    # A response with background work: answered at its final body, the
+    # work running after it (SPEC L22). It used to be held for the 2 s.
+    return P("queued"), BackgroundTask(_slow_record, "done")
+
+
+@rt("/bg-log")
+def bg_log():
+    return ",".join(BG) or "empty"
+
+
+@rt("/boom")
+def boom():
+    # Starlette's ServerErrorMiddleware answers a finished 500, then
+    # re-raises: that 500 is what the client gets, and the traceback is
+    # what the log gets (SPEC L23).
+    raise ValueError("fasthtml-demo kaboom")
 
 
 @app.ws("/ws")

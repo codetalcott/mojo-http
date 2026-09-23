@@ -102,7 +102,8 @@ connection; both apply `_on_task_done`'s rule). `asyncio` is imported on
 the rare branches that need it, so the buffered path touches it nowhere.
 The ownership rules did not move — the streaming mark and the cancellable
 stream task go on the slot's owner task, cleanup runs only if the
-finishing task is the owner, `_task_gone` consults both marks — and
+finishing task is the owner, `_task_gone` consults both marks (since
+2026-09-22 it asks about the connection's own task instead, SPEC L20) — and
 `test-shim`'s sabotage suite says so: the two patches whose guarded lines
 moved were updated in the same commit and all ten still bite. The item
 the handoff expected to be smaller than it looked was the largest single
