@@ -508,6 +508,13 @@ _ASGI_CHUNK_SPLIT = 32 * 1024
 # not how much it may send.
 _ASGI_TOTAL_WINDOW = 128 * 1024
 _exec_global_credit = [_ASGI_TOTAL_WINDOW]
+
+# How long the shutdown drain lets in-flight tasks finish before it cancels
+# the WebSocket tasks still running. A socket is never cancelled for its
+# client's departure (see spawn_ws), so a handler blocked somewhere other
+# than receive() -- forwarding from a queue, sleeping between pushes -- is
+# only ended here. Well inside the Mojo side's 5 s join bound.
+_WS_DRAIN_GRACE = 1.0
 _exec_global_evt = None
 _exec_inflight = {}
 
@@ -773,9 +780,12 @@ async def _dropped():
 def _exec_on_disconnect(slot):
     # The loop closed this slot (client vanished, or end-of-stream close
     # raced): resolve the pending receive() into http.disconnect (or
-    # queue websocket.disconnect), wake any credit waiter, and cancel the
-    # task -- uvicorn's contract. The cancellation is what stops an
+    # queue websocket.disconnect), wake any credit waiter, and cancel a
+    # streaming response's task. The cancellation is what stops an
     # EventStream generator; frameworks handle CancelledError as cleanup.
+    # A WebSocket's task is NOT cancelled: it hears websocket.disconnect
+    # from receive(), uvicorn's contract, so the application's own
+    # `except WebSocketDisconnect:` cleanup runs (see spawn_ws).
     owner = _exec_slot_task.get(slot)
     if owner is not None:
         owner._m0_disconnected = True
@@ -1004,11 +1014,26 @@ def _flush():
     _port.flush()
 
 
+async def _gather_in_flight():
+    # Run the in-flight tasks to completion, bounded for sockets: every
+    # client is gone by the pill, and a socket task still running after the
+    # grace is waiting on something that will not come.
+    import asyncio
+
+    if not _exec_tasks:
+        return
+    _, pending = await asyncio.wait(list(_exec_tasks), timeout=_WS_DRAIN_GRACE)
+    for t in pending:
+        if getattr(t, '_m0_ws', False):
+            t.cancel()
+    if _exec_tasks:
+        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+
+
 async def _finish_and_stop():
     import asyncio
 
-    if _exec_tasks:
-        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    await _gather_in_flight()
     await asyncio.sleep(0)
     _loop.stop()
 
@@ -1033,8 +1058,7 @@ async def _drain_and_stop():
 
     while not _port.drain_step():
         await asyncio.sleep(0.001)
-    if _exec_tasks:
-        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    await _gather_in_flight()
     await asyncio.sleep(0)
     # The tail the blocking drain used to run inline: a farewell to any
     # stream that appeared during the drain, the last submit flush, the
@@ -1415,12 +1439,20 @@ async def _serve_one_ws(slot, scope):
     connected = [False]
     resolved = [False]  # accept or reject reached the pump
     consumed = [0]  # cumulative inbound bytes acked back to the loop
+    ended = [None]  # the disconnect, once delivered
 
     async def receive():
         if not connected[0]:
             connected[0] = True
             return {'type': 'websocket.connect'}
+        if ended[0] is not None:
+            # The client has gone and the application was told: every
+            # later receive() says so again at once, uvicorn's behaviour,
+            # rather than waiting on a queue nothing will ever fill.
+            return ended[0]
         msg, cost = await inbox.get()
+        if msg['type'] == 'websocket.disconnect':
+            ended[0] = msg
         if cost and not _task_gone(owner):
             # The ack that reopens the loop's inbound window -- sent as
             # `receive()` CONSUMES, not as the message arrives, because
@@ -1523,6 +1555,14 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     }
     task = _loop.create_task(_serve_one_ws(slot, scope))
     task._m0_streaming = True
+    # A socket is told its client has gone through receive() -- the
+    # `websocket.disconnect` `_exec_on_disconnect` queues -- and is never
+    # cancelled for it, which is why it is not a stream task: FastAPI's
+    # documented `except WebSocketDisconnect:` cleanup runs only if the
+    # task survives to see it. A send to the gone socket raises
+    # ClientDisconnected; the drain cancels what is left
+    # (`_gather_in_flight`), and this mark is how it knows a socket.
+    task._m0_ws = True
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
     # The previous connection's ACCEPT must not survive the recycle either:
@@ -1535,7 +1575,6 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     # never released.
     _exec_ws_accepted.discard(slot)
     _exec_disconnects.pop(slot, None)
-    _exec_stream_tasks[slot] = task
     task.add_done_callback(_task_done(slot))
 
 

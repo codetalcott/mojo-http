@@ -97,6 +97,8 @@ class Harness:
         self.spawned = 0
         self.ws_sends = []      # every socket's send, in accept order
         self.http_sends = []    # every stored stream's send
+        self.cleanups = []      # disconnect codes an app's cleanup saw
+        self.second_receive = []  # what a receive() after the disconnect got
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -122,6 +124,7 @@ class Harness:
                 path = {"wsflood": "/ws/flood", "wshold": "/ws/hold",
                         "wsnoanswer": "/ws/noanswer", "wschat": "/ws/chat",
                         "wskeep": "/ws/keep", "wsquick": "/ws/quick",
+                        "wsexcept": "/ws/except", "wsblocked": "/ws/blocked",
                         }.get(behaviour, "/ws")
                 self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
@@ -185,6 +188,22 @@ class Harness:
             if scope["path"] == "/ws/quick":
                 self.ws_sends.append(send)
                 return
+            if scope["path"] == "/ws/except":
+                # FastAPI's documented shape: the cleanup is AFTER the
+                # receive loop (`except WebSocketDisconnect:`), not in a
+                # finally, so a cancellation skips it.
+                while True:
+                    msg = await receive()
+                    if msg["type"] == "websocket.disconnect":
+                        break
+                self.cleanups.append(msg.get("code"))
+                again = await receive()
+                self.second_receive.append(again["type"])
+                return
+            if scope["path"] == "/ws/blocked":
+                # Forwards from somewhere else and never calls receive():
+                # nothing can tell it the client has gone until it sends.
+                await asyncio.Event().wait()
             if scope["path"] == "/ws/hold":
                 # Stay inside the accepted socket until cancelled, so a
                 # recycle can land while this task is still alive.
@@ -271,6 +290,24 @@ class Harness:
     def run(self, coro):
         """Run one coroutine to completion on the harness loop."""
         return self.loop.run_until_complete(coro)
+
+    def pill(self):
+        """The loop's shutdown: an 8-byte job for slot -1."""
+        self.submit_w.send((-1).to_bytes(8, "little", signed=True))
+
+    def run_until_stopped(self, timeout):
+        """Run the loop until the shim stops it; False if `timeout` ran
+        out first."""
+        fired = []
+
+        def expire():
+            fired.append(True)
+            self.loop.stop()
+
+        handle = self.loop.call_later(timeout, expire)
+        self.loop.run_forever()
+        handle.cancel()
+        return not fired
 
     async def foreign(self, send, message):
         """Call a connection's `send` from a task that is NOT that
@@ -661,6 +698,55 @@ def test_a_stale_stream_send_never_reaches_the_slots_next_response(h):
     # 1024 bytes in flight, unacked, which is what a live stream does.)
 
 
+def test_a_socket_disconnect_reaches_the_app_through_receive(h):
+    """uvicorn's contract, and the one FastAPI's documentation is written
+    against: the disconnect is a `websocket.disconnect` from receive(), and
+    the task is NOT cancelled. Cancelled, the `except WebSocketDisconnect:`
+    cleanup never ran: the departed client stayed in the manager's list for
+    ever and every later broadcast walked into it."""
+    h.job(0, "wsexcept")
+    h.settle()
+    task = h.ns["_exec_slot_task"][0]
+    h.disconnect(0)
+    h.settle()
+    assert h.cleanups == [1006], (
+        "the app's own disconnect cleanup did not run: %r" % (h.cleanups,))
+    assert not task.cancelled(), "the socket's task was cancelled"
+
+
+def test_a_receive_after_the_disconnect_says_so_again(h):
+    """Nothing will ever fill the queue again, so a second receive() must
+    not wait on it. With the task no longer cancelled, that wait would hold
+    it for ever."""
+    h.job(0, "wsexcept")
+    h.settle()
+    h.disconnect(0)
+    h.settle()
+    assert h.second_receive == ["websocket.disconnect"], (
+        "a receive() after the disconnect did not return it again: %r"
+        % (h.second_receive,))
+
+
+def test_the_drain_ends_a_socket_blocked_outside_receive(h):
+    """A socket task is told through receive() and never cancelled for it,
+    so one that never calls receive() is still running at shutdown. The
+    drain gives every task the grace, then cancels the sockets still
+    running. Without that, shutdown waits for them until the Mojo join's
+    5 s bound, then `_exit`s."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.05
+    h.job(0, "wsblocked")
+    h.settle()
+    task = h.ns["_exec_slot_task"][0]
+    h.disconnect(0)
+    h.settle()
+    assert not task.done(), "the blocked socket's task was cancelled early"
+    h.pill()
+    assert h.run_until_stopped(timeout=3.0), (
+        "the executor never stopped: the drain waited on a socket task "
+        "blocked outside receive()")
+    assert task.cancelled(), "the drain stopped without ending the socket"
+
+
 TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
@@ -675,6 +761,9 @@ TESTS = [
     test_a_stale_socket_send_never_reaches_the_slots_next_client,
     test_a_send_from_a_finished_socket_is_refused,
     test_a_stale_stream_send_never_reaches_the_slots_next_response,
+    test_a_socket_disconnect_reaches_the_app_through_receive,
+    test_a_receive_after_the_disconnect_says_so_again,
+    test_the_drain_ends_a_socket_blocked_outside_receive,
 ]
 
 
@@ -740,6 +829,21 @@ SABOTAGES = [
         "            _exec_credit_evts[slot] = asyncio.Event()\n"
         "            resolved[0] = True",
         "            resolved[0] = True",
+    ),
+    (
+        "a disconnect cancels the socket's task",
+        "    task._m0_ws = True\n",
+        "    task._m0_ws = True\n    _exec_stream_tasks[slot] = task\n",
+    ),
+    (
+        "a receive after the disconnect waits",
+        "        if ended[0] is not None:\n",
+        "        if False:\n",
+    ),
+    (
+        "the drain waits for every socket",
+        "        if getattr(t, '_m0_ws', False):\n            t.cancel()\n",
+        "        pass\n",
     ),
     (
         "a drain ack is added rather than clamped to the window",
