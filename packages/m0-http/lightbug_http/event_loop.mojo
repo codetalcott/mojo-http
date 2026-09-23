@@ -25,7 +25,9 @@ from lightbug_http.connection import ConnectionState, default_buffer_size
 from lightbug_http.header import (
     HeaderKey, KH_DATE, ParsedRequestHeaders, find_header_end, parse_request_headers,
 )
-from lightbug_http.http import HTTPRequest, HTTPResponse, encode
+from lightbug_http.http import (
+    HTTPRequest, HTTPResponse, encode, enforce_bodiless_framing, is_bodiless_status,
+)
 from lightbug_http.http.date import http_date_from_unix, unix_now
 from lightbug_http.http.common_response import (
     BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge,
@@ -3350,6 +3352,14 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     ):
         if (provision_pool.provisions[slot].keepalive_count + 1) >= config.max_keepalive_requests:
             provision_pool.provisions[slot].should_close = True
+
+    # RFC 9110 §8.6 and §6.4.1, whoever set it: a 1xx or 204 carries no
+    # Content-Length, a 304 only one its handler set, and none of the three
+    # carries content (SPEC A21). A handler's own length on a 204 is
+    # Django's CommonMiddleware on every such response, and its bytes, if
+    # written, would begin the connection's next response.
+    if is_bodiless_status(response.status_code):
+        enforce_bodiless_framing(response)
 
     # RFC 9110 §9.3.2: HEAD response must not contain a body. The headers
     # stay as they are — including Content-Length, which must describe the
