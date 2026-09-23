@@ -5333,6 +5333,8 @@ python3 scripts/emit.py --covers K4 --task smoke-wsgi
 python3 scripts/emit.py --covers K5 --task smoke-wsgi
 python3 scripts/emit.py --covers K6 --task smoke-wsgi
 python3 scripts/emit.py --covers K7 --task smoke-wsgi
+python3 scripts/emit.py --covers K12 --task smoke-wsgi
+python3 scripts/emit.py --covers A21 --task smoke-wsgi
 """
 
 # Streamed WSGI bodies. A generator the application did not size streams
@@ -6369,6 +6371,9 @@ python3 scripts/emit.py --covers L6 --task smoke-asgi
 python3 scripts/emit.py --covers L8 --task smoke-asgi
 python3 scripts/emit.py --covers L15 --task smoke-asgi
 python3 scripts/emit.py --covers M3 --task smoke-asgi
+python3 scripts/emit.py --covers K12 --task smoke-asgi
+python3 scripts/emit.py --covers A21 --task smoke-asgi
+python3 scripts/emit.py --covers L27 --task smoke-asgi
 """
 
 # The keep-alive request cap (`max_keepalive_requests`, 100) closes a
@@ -8429,6 +8434,7 @@ echo "smoke-notes OK"
 python3 scripts/emit.py --covers G10 --task smoke-notes
 python3 scripts/emit.py --covers J6 --task smoke-notes
 python3 scripts/emit.py --covers G14 --task smoke-notes
+python3 scripts/emit.py --covers A21 --task smoke-notes
 """
 
 # The notes resource as a server-rendered htmx app, gated on WIRE OUTPUT

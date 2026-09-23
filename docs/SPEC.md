@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**264 capabilities: 236 verified, 0 implemented, 4 planned, 24 out of scope.** Of the 236 verified, 228 are gated on every pull request, 3 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**265 capabilities: 239 verified, 0 implemented, 2 planned, 24 out of scope.** Of the 239 verified, 231 are gated on every pull request, 3 weekly, 1 monthly, and 4 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -67,7 +67,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | A18 | HTTP/2 | out of scope | terminate at a proxy — gunicorn's answer, and the same one applies here |
 | A19 | HTTP/3 and QUIC | out of scope | follows HTTP/2; there is no TLS layer to build it on |
 | A20 | A refusal sent mid-upload reaches the client: lingering close (RFC 9112 §9.6) | verified | `Smoke test a 413 reaching a client still uploading` (every PR) — the whole body written before reading, `Content-Length` and chunked, through `http.client`, and eight at once; `Connection: close` and a FIN right behind the 413; the linger bounded against a client that keeps trickling past it, and a clean close at its deadline for a client that reads late |
-| A21 | No `Content-Length` on a 1xx or 204 response, and none invented on a 304 (RFC 9110 §8.6) | planned | ROADMAP: Serving FastHTML's own examples as uvicorn serves them |
+| A21 | No `Content-Length` on a 1xx or 204 response, and none invented on a 304 (RFC 9110 §8.6) | verified | `test_response_head.mojo:test_a_204_invents_no_content_length_or_type` (every PR) — with six more beside it: the constructors invent neither a length nor a type for a 1xx, 204 or 304, and a 304 keeps a length its handler gave; `enforce_bodiless_framing`, which the event loop applies to every such response on every path, drops a 1xx's or 204's own length and any body (Django's `CommonMiddleware` puts a length on every non-streaming response) and closes a file body. On the wire, `Smoke test the notes API` checks the native 304s, the OPTIONS preflight and a delete's 204 for an entity header nobody set, and both conformance steps send a 204 carrying a length and seven bytes followed by a request on the same connection: the only case that shows whether the loop calls the rule. Before the fix every native 204 and 304 carried `content-length: 0` and `application/octet-stream` |
 
 ## B. Request smuggling (CWE-444)
 
@@ -255,7 +255,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | K9 | Unsized iterables streamed from a pool thread, sized bodies buffered | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | K10 | Framework-neutral: one contract, two frameworks | verified | `Run the WSGI framework contract against Flask` (every PR) |
 | K11 | The hold headers degrade under another WSGI server: the same view answers a short plain response | verified | `Execute the quickstart` (every PR) — the quickstart's Django file under gunicorn: `/events` answers 200 with the view's body and closes inside curl's deadline (held, it would not), the upgrade request answers 200 rather than 101, and `publish()` reports 0 workers without raising. The README's "degrades, not breaks" sentence, executed |
-| K12 | The gateway sends the application's response head as sent: no invented `Content-Type`, and the application's `Content-Length` kept on a HEAD | planned | ROADMAP: Serving FastHTML's own examples as uvicorn serves them |
+| K12 | The gateway sends the application's response head as sent: no invented `Content-Type`, and the application's `Content-Length` kept on a HEAD | verified | `Conformance test the WSGI bridge` (every PR) — `scripts/head_probe.py` reads the bare app's heads: a 200 and a 303 sent without a type, a bare 204 and one carrying a length and a body, a bare 304 and one naming the GET's length, and a HEAD answered with the GET's length and no body. Each must carry what the application sent plus the server's own framing and nothing else, and each is followed by a request on the same connection, which a leaked body would misparse. `Conformance test the ASGI bridge` runs the same cases through the executor and the buffered bridge. Before the fix every case failed: `application/octet-stream` on each head sent without a type, `content-length: 0` on the HEAD, the 204 and the 304s |
 
 ## L. ASGI 3.0
 
@@ -287,6 +287,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | L24 | A WebSocket application that raises is closed with 1011, not 1000 (RFC 6455 §7.4.1) | verified | `Serve a FastAPI app through the ASGI bridge` (every PR) — the chat probe's raising-socket phase |
 | L25 | A de-chunked request's scope carries `content-length` and not `transfer-encoding`, and no header the client did not send | planned | ROADMAP: Serving FastHTML's own examples as uvicorn serves them |
 | L26 | An application that schedules asyncio work at import is refused by name, with the fix | planned | ROADMAP: Serving FastHTML's own examples as uvicorn serves them |
+| L27 | A HEAD answered by a streaming application is its head and nothing else: answered at its first streamed body, the rest dropped | verified | `Conformance test the ASGI bridge` (every PR) — a HEAD to a route that streams 10,000 bytes, then a request on the same connection, which must parse. Before the fix the executor streamed the HEAD like a GET, the loop wrote all 10,000 bytes raw after the head, and the next request found them where its response should begin. The application's later sends are dropped and its receive() says `http.disconnect`, which is what stops a StreamingResponse; a 1xx, 204 or 304 streamed the same way is answered the same way. `poe test-shim` holds both halves, each sabotage-proven |
 
 ## M. Deployment and operations
 
