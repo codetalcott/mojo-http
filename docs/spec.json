@@ -1423,7 +1423,7 @@
       "category": "L. ASGI 3.0",
       "capability": "A send is judged by the connection it addresses, never the task making it: one connection's task reaches another's live socket, and a send kept for a client that has gone never reaches the client given its slot",
       "status": "verified",
-      "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` recycles a slot under a kept WebSocket send and under a kept stream send, sends from a gone socket's own task to the sockets still connected, and sabotages each rule; FastAPI's documented chat room checks the same on the wire in L21's gate"
+      "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` recycles a slot under a kept WebSocket send and under a kept stream send, with and WITHOUT a disconnect tag (a socket its application closed, which the loop never tagged), sends from a gone socket's own task to the sockets still connected, answers after the application returned, and sabotages each rule; FastAPI's documented chat room checks the same on the wire in L21's gate"
     },
     {
       "id": "L21",
@@ -1431,7 +1431,7 @@
       "category": "L. ASGI 3.0",
       "capability": "A WebSocket's disconnect reaches the application through `receive()`, never as a cancellation, so its own cleanup runs; a send to a socket that has gone raises `ClientDisconnected` (an `OSError`)",
       "status": "verified",
-      "evidence": "`Serve a FastAPI app through the ASGI bridge` (every PR) \u2014 FastAPI's documented chat room: its `except WebSocketDisconnect:` must tell the room and shrink the connection list, and a new client must receive one copy of a broadcast"
+      "evidence": "`Serve a FastAPI app through the ASGI bridge` (every PR) \u2014 FastAPI's documented chat room: its `except WebSocketDisconnect:` must tell the room and shrink the connection list, a new client must receive one copy of a broadcast, and a socket the SERVER ends (one message over the outbox cap) must still reach its application; the two-executor case, where that disconnect is routed by lane, is a phase of the mixed-mount smoke"
     },
     {
       "id": "L22",

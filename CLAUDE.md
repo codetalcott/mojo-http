@@ -421,8 +421,14 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     cleanup runs only if the finishing task is the owner; a disconnect is
     stamped on the owning task (`_m0_disconnected`) and the old
     connection's in-flight bytes are refunded to the global window right
-    there; spawning a WebSocket on the slot clears the previous socket's
-    accept; every "am I gone" check asks `_task_gone(owner)` about the
+    there; a socket's accept and its own close are ITS OWN (closure state
+    in `_serve_one_ws`, never keyed by slot — read by slot they were the
+    next client's), and after its own close it may send nothing and
+    `receive()` answers the disconnect; the loop tags EVERY connection an
+    executor produced (`exec_lane`, recorded at the `b`/`B` begin frame,
+    because an app's own close and `_end_socket` unsubscribe before the
+    connection ends, and routed by that lane because the unsubscribe
+    erased the channel name); every "am I gone" check asks `_task_gone(owner)` about the
     task that owns the connection a send ADDRESSES (stamped, or finished),
     never the caller's — `send` and `receive` are closures an application
     calls from any task, and judged by the caller a gone client's kept
@@ -437,7 +443,9 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     the sockets still running (L21); a response is answered at its FINAL
     body, not when the application returns, because Starlette runs
     background tasks after it inside the same call (L22), and a late
-    exception goes to the log alone; and
+    exception goes to the log alone — and once it is over a send answers
+    nothing (a leftover task answered the slot's NEXT request) and
+    `receive()` says `http.disconnect` at once; and
     the STREAMING mark and the cancellable stream task go on the slot's
     owner (`_exec_slot_task[slot]`), never `asyncio.current_task()` —
     Starlette (so FastAPI and FastHTML) produces a `StreamingResponse`

@@ -92,9 +92,15 @@ SPEC row with a gate:
   nothing, as ASGI 2.3 specifies.
 - A WebSocket hears its client leave as `websocket.disconnect` from
   `receive()`, and is not cancelled for it, so an `except
-  WebSocketDisconnect:` cleanup runs (L21). A handler that never calls
-  `receive()` learns at its next send, or at shutdown, when the drain
-  cancels the sockets still running after a second's grace.
+  WebSocketDisconnect:` cleanup runs (L21) — also when the server ended the
+  socket itself (a message over its 64 KB outbox), and after the
+  application's own `websocket.close`, after which it may send nothing
+  more. A handler that never calls `receive()` learns at its next send, or
+  at shutdown, when the drain cancels the sockets still running after a
+  second's grace.
+- Once a response is answered, `receive()` says `http.disconnect` at once,
+  and a send answers nothing — so a task the application left behind can
+  never answer another request.
 - An application error keeps the application's own error response (so
   `debug=True` pages arrive), the log gets its traceback (L23), and a
   WebSocket whose application raises is closed with 1011 (L24).
@@ -107,7 +113,9 @@ SPEC row with a gate:
 older buffered path, one request at a time to completion on a pool thread. It
 exists as an escape hatch and refuses an infinite stream rather than hold a
 thread forever. It also answers only when the application returns, so a
-response there still waits for its background tasks.
+response there still waits for its background tasks, and an error the
+application answers and then re-raises (Starlette's error page) is replaced
+by the server's own 500.
 
 **One limit, from the toolchain.** The executor is a Python type built
 in-process, and Mojo's Python bindings lay that type out for the

@@ -179,8 +179,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   ("someone left" reached none of them). A send is now judged by the task
   that owns the connection it addresses: a send to a socket that has gone
   raises `ClientDisconnected` (an `OSError`, uvicorn's name for it), and one
-  to a stream that has gone is a no-op, as ASGI 2.3 specifies. Found by
-  serving FastHTML's and FastAPI's own examples beside uvicorn.
+  to a stream that has gone is a no-op, as ASGI 2.3 specifies. Two paths
+  never told the executor a socket had gone at all, and are closed too: a
+  socket its application closed (each socket now keeps its own record of
+  its accept and its close, where the slot's record was the next client's —
+  a late `finally` closed that client, a second close rejected its
+  handshake), and a socket the server ended itself after a message over
+  its outbox cap (the loop now tags every connection an executor produced,
+  routed to that executor). And a task an application left behind, sending
+  after the application returned, could answer the slot's next request
+  with its response; a send once the response is over now answers nothing.
+  Found by serving FastHTML's and FastAPI's own examples beside uvicorn.
 - **An ASGI WebSocket's disconnect cancelled the application's task**
   (SPEC L21). uvicorn delivers `websocket.disconnect` through `receive()`,
   and FastAPI's documentation is written against that: its cleanup is an
@@ -208,7 +217,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and every application error the executor logs carries its traceback. A
   WebSocket whose application raises is closed with 1011 ("an unexpected
   condition", RFC 6455 §7.4.1), not the 1000 that told the client all went
-  well, and a client leaving is not logged as an application error.
+  well. A `ClientDisconnected` escaping an application is not logged; a
+  Starlette `WebSocketDisconnect` that an application lets escape is, as
+  uvicorn logs it. And `receive()` after a response is answered says
+  `http.disconnect` at once, where it used to wait for the life of the
+  process.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and
