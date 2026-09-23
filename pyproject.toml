@@ -1355,6 +1355,26 @@ echo "smoke-half-close OK"
 python3 scripts/emit.py --covers A12 --task smoke-half-close
 """
 
+# RFC 9112 §9.6. The server refuses an oversized body while the client is
+# still uploading it, and closing at once left the rest unread -- which the
+# kernel answers with RST, so a client that writes its whole body before it
+# reads (http.client, urllib, requests) got BrokenPipeError instead of the
+# 413. Found by a Flask application compared against Werkzeug. The probe's
+# second and third arguments default to the hello server's cap (4 MB) and
+# the linger (5 s).
+[tool.poe.tasks.smoke-early-413]
+help = "A 413 sent mid-upload must reach a client that writes its whole body first"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > e413.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f e413.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
+  || { echo '=== e413.log ==='; cat e413.log; exit 1; }
+python3 scripts/early_413_probe.py 8080 || { echo '=== e413.log ==='; cat e413.log; exit 1; }
+echo "smoke-early-413 OK"
+python3 scripts/emit.py --covers A20 --task smoke-early-413
+"""
+
 [tool.poe.tasks.smoke-large-request]
 help = "A request bigger than one read must be answered, not stalled"
 shell = """

@@ -3860,7 +3860,11 @@ def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
         slot_read_armed[slot] = True
     # Discard what is already buffered now: on epoll the edge that brought
     # it is spent, and a client blocked on a full window sends nothing
-    # that would raise another.
+    # that would raise another. Belt and braces, deliberately: the SHUT_WR
+    # above is a state change, which wakes epoll and reports the buffered
+    # bytes again (measured), and kqueue's level trigger reports them
+    # anyway -- removing this changes nothing the probe can see on either.
+    # It stays so the linger does not rest on a side effect of shutdown.
     _linger_discard(
         backend, handler, slot, fd_val,
         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
@@ -3889,7 +3893,11 @@ def _linger_discard[T: HTTPService, B: EventLoopBackend](
     client's FIN may already be behind the data, and on epoll the event
     that announced both is this one. At most LINGER_READS_PER_EVENT reads:
     past that the socket is re-registered, which on epoll reports it again
-    if it is still readable (kqueue's level trigger does so anyway).
+    if it is still readable (kqueue's level trigger does so anyway) -- the
+    WebSocket read path's rule, for its reason: once the client stops
+    sending, nothing else will. Not reproducible on demand here (Linux
+    starts a loopback receive buffer below the budget, and a client still
+    sending raises an edge per segment), so no gate fails without it.
     """
     var cap = provision_pool.provisions[slot].recv_staging.capacity()
     for _ in range(LINGER_READS_PER_EVENT):

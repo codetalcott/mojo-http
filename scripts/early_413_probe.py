@@ -16,9 +16,16 @@ Werkzeug's own server answered 413.
 RFC 9112 §9.6 describes the cure, which nginx calls a lingering close:
 half-close the write side after the response, keep reading and discarding
 until the client closes or a bound expires, then close. This probe pins
-both halves -- the 413 is READABLE (phases 1-4), and the linger is
-BOUNDED (phase 5, which trickles past the bound so that a deadline
-re-armed per read would never expire).
+the refusal's shape (phase 0: `Connection: close`, and a FIN at once),
+that the 413 is READABLE (phases 1-4), that the linger is BOUNDED (phase
+5, which trickles past the bound so that a deadline re-armed per read
+would never expire), and that the deadline's close is clean for a client
+that reads late (phase 6).
+
+Everything it asserts holds on both kernels, so both CI legs run it. The
+two rules that exist for epoll's edge trigger -- drain at the refusal,
+re-register a spent budget -- cannot be made to fail on demand, and the
+code says why beside each (`_reject_and_linger`, `_linger_discard`).
 
 usage: early_413_probe.py PORT [LIMIT_BYTES] [LINGER_S]
 """
@@ -212,7 +219,46 @@ def main():
              % (closed_after, bound))
     print("early_413_probe: linger closed %.1f s after the 413" % closed_after)
 
-    phase("6: the server still answers")
+    phase("6: %d clients that stop sending and read after the linger ends"
+          % CONCURRENT)
+    # Headers and 32 KB of the body in one write, then nothing until the
+    # linger is over. The server closes at the deadline either way; what
+    # decides whether the 413 survives is whether it had read everything
+    # by then, because an unread byte turns the close into RST, and RST
+    # discards the 413 the client has not read yet. The only phase where
+    # the DEADLINE ends the linger with a response still unread: a linger
+    # that stops reading fails it 8 of 8 (sabotage-verified). What makes
+    # the buffered bytes readable again after the refusal read only the
+    # headers is covered twice -- the refusal drains at once, and on
+    # Linux its own SHUT_WR wakes epoll as well (measured) -- so removing
+    # either alone passes here.
+    errors = []
+    partial = (b"POST /health HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n"
+               % OVER) + b"p" * 32768
+
+    def slow():
+        try:
+            s = connect()
+            try:
+                s.sendall(partial)
+                time.sleep(LINGER_S + 2.5)
+                got = status_of(read_to_close(s))
+                if got != 413:
+                    errors.append("got %r" % got)
+            finally:
+                s.close()
+        except Exception as e:  # noqa: BLE001 - a reset IS the failure
+            errors.append(repr(e))
+
+    threads = [threading.Thread(target=slow) for _ in range(CONCURRENT)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        fail("%d of %d: %s" % (len(errors), CONCURRENT, errors[0]))
+
+    phase("7: the server still answers")
     s = connect()
     s.sendall(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
     got = status_of(read_to_close(s))
