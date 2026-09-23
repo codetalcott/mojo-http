@@ -70,7 +70,8 @@ from lightbug_http.accept_share import AcceptShare, accept_sharing_wanted
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType, TCPAddr, parse_address
 from lightbug_http.socket import Socket
-from lightbug_http.c.process import process_exit, executable_path, keep_across_exec
+from lightbug_http.c.process import process_exit, executable_path
+from lightbug_http.c.fcntl import set_cloexec
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.header import Header, Headers, HeaderKey
 from lightbug_http.c.platform import PlatformBackend
@@ -454,6 +455,9 @@ def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4
     except:
         _fail("spawned worker: M0_LISTEN_FD is not set", EXIT_STARTUP)
         raise Error("unreachable")
+    # Kept across this worker's own exec only (`_exec_if_spawning`); the
+    # application's children must not inherit it (SPEC G16).
+    set_cloexec(fd)
     var local = parse_address[NetworkType.tcp4](opts.address())
     var sock = Socket[TCPAddr[NetworkType.tcp4]](
         fd=FileDescriptor(fd),
@@ -485,8 +489,9 @@ def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4
         # Where a spawned worker finds it. Set unconditionally: it is one
         # variable, and the fd number is the same whether or not anyone
         # execs — a forked worker simply keeps using the listener itself.
+        # Close-on-exec like every socket here (SPEC G16); the spawn's own
+        # exec is the one that keeps it (`spawn_inherited_env`).
         _ = setenv("M0_LISTEN_FD", String(listener.socket.fd.value), True)
-        _ = keep_across_exec(Int(listener.socket.fd.value))
         return listener^
     except:
         _fail(

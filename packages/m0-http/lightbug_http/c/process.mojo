@@ -234,7 +234,7 @@ def install_signal_handler(sig: Int, handler_address: Int) -> Bool:
 # duration of the call.
 
 from std.sys.info import CompilationTarget
-from lightbug_http.c.fcntl import clear_cloexec, set_cloexec
+from lightbug_http.c.fcntl import set_cloexec
 
 
 def _c_string(s: String) -> List[UInt8]:
@@ -319,18 +319,6 @@ comptime _O_CREAT = 0x200 if CompilationTarget.is_macos() else 0x40
 comptime _O_EXCL = 0x800 if CompilationTarget.is_macos() else 0x80
 comptime _PROT_READ_WRITE = 0x1 | 0x2
 comptime _MAP_SHARED = 0x01
-
-
-def keep_across_exec(fd: Int) -> Bool:
-    """Clear `FD_CLOEXEC` on `fd`, so an exec'd worker inherits it.
-
-    Sockets and socketpairs are created without the flag here, but macOS's
-    `shm_open` sets it on the descriptor it returns (measured: the spawned
-    worker's `mmap` answered EBADF), and a future `SOCK_CLOEXEC` somewhere
-    would silently detach a worker from its listener. Every descriptor a
-    spawned worker must inherit goes through this, whatever its origin.
-    """
-    return clear_cloexec(fd)
 
 
 def shared_file_fd(length: Int) raises -> Int:

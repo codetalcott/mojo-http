@@ -20,7 +20,8 @@ from std.atomic import Atomic
 from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
-from std.os import setenv
+from std.os import getenv, setenv
+from lightbug_http.c.fcntl import clear_cloexec
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
     kill_process, was_signaled, term_signal, exit_code,
@@ -365,6 +366,13 @@ struct WorkerSupervisor:
             return
         _ = setenv("M0_WORKER_INDEX", String(index), True)
         _ = setenv("M0_WORKER_SPAWNED", String("1"), True)
+        # Close-on-exec everywhere else (SPEC G16), so the application's own
+        # children inherit none of it: the listener, the page, the bus and
+        # the accept-share channels survive THIS exec only, and only in this
+        # forked child. The supervisor's copies stay closed for every other
+        # exec, and the new image closes each again as it adopts it.
+        for fd in spawn_inherited_fds():
+            _ = clear_cloexec(fd)
         var errno = exec_process(self._spawn_path, self._spawn_args)
         print(
             "[worker " + String(index) + "] exec of " + self._spawn_path
@@ -745,3 +753,45 @@ struct WorkerSupervisor:
         for i in range(len(self.child_pids)):
             if self.child_pids[i] > 0:
                 _ = kill_process(self.child_pids[i], signal)
+
+
+def int_list_env(name: String) -> List[Int]:
+    """A comma-separated list of integers from the environment; bad parts skipped."""
+    var out = List[Int]()
+    var raw = getenv(name, "")
+    if raw.byte_length() == 0:
+        return out^
+    for part in raw.split(","):
+        try:
+            out.append(Int(String(part)))
+        except:
+            pass
+    return out^
+
+
+def spawn_inherited_env() -> List[String]:
+    """The variables naming every descriptor a spawned worker adopts.
+
+    `_exec_if_spawning` keeps exactly these across the spawn's exec, and the
+    new image adopts exactly these (`prefork`, `m0serve`'s `_adopt_listener`),
+    so what is kept and what is adopted are one list. A descriptor a future
+    spawned worker must inherit goes here, or its adoption fails loudly: it
+    is close-on-exec like everything else, and the exec closes it.
+    """
+    return [
+        String("M0_LISTEN_FD"),
+        String("M0_SHARED_ID_FD"),
+        String("M0_BUS_READ_FDS"),
+        String("M0_BUS_WRITE_FDS"),
+        String("M0_ACCEPT_READ_FDS"),
+        String("M0_ACCEPT_WRITE_FDS"),
+    ]
+
+
+def spawn_inherited_fds() -> List[Int]:
+    """Every descriptor `spawn_inherited_env` names, in this process."""
+    var fds = List[Int]()
+    for name in spawn_inherited_env():
+        for fd in int_list_env(name):
+            fds.append(fd)
+    return fds^

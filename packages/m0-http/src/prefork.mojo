@@ -17,9 +17,12 @@ Each is also EXPORTED, by descriptor number, so a worker that `exec`s
 starts to publish from (`m0pub`) -- can reach it: `M0_SHARED_ID_FD` and
 `M0_SHARED_ID_ADDR`, `M0_BUS_READ_FDS`/`M0_BUS_WRITE_FDS`,
 `M0_ACCEPT_READ_FDS`/`M0_ACCEPT_WRITE_FDS`. Those names are m0pub's
-interface as much as the server's; they do not change here. Every exported
-descriptor goes through `keep_across_exec`, because macOS's `shm_open` and
-some socket calls set `FD_CLOEXEC`.
+interface as much as the server's; they do not change here. Every one is
+close-on-exec, like every descriptor the server creates (SPEC G16): the
+spawn's own exec keeps exactly these (`spawn_inherited_env` in
+`multiworker.mojo`), a child an application starts gets them only through
+`pass_fds` (`m0pub.child_fds()`), and a spawned worker marks each it adopts
+close-on-exec again, so its own children inherit none of them.
 
 A spawned worker (`spawned_worker_index() >= 0`) creates nothing: each
 function ADOPTS what its parent exported, and the page is mapped again,
@@ -48,9 +51,9 @@ from lightbug_http.accept_share import (
     accept_sharing_wanted,
 )
 from lightbug_http.broadcast import BroadcastBus
-from lightbug_http.c.process import keep_across_exec
+from lightbug_http.c.fcntl import set_cloexec
 
-from .multiworker import SharedAtomics
+from .multiworker import SharedAtomics, int_list_env
 
 
 def spawned_worker_index() -> Int:
@@ -75,18 +78,13 @@ def spawned_worker_index() -> Int:
         return -1
 
 
-def int_list_env(name: String) -> List[Int]:
-    """A comma-separated list of integers from the environment; bad parts skipped."""
-    var out = List[Int]()
-    var raw = getenv(name, "")
-    if raw.byte_length() == 0:
-        return out^
-    for part in raw.split(","):
-        try:
-            out.append(Int(String(part)))
-        except:
-            pass
-    return out^
+def _adopted(var fds: List[Int]) raises -> List[Int]:
+    """`fds`, each marked close-on-exec: a spawned worker's adopted
+    descriptors were kept across its own exec only, and the application's
+    children must not inherit them (SPEC G16)."""
+    for fd in fds:
+        set_cloexec(fd)
+    return fds^
 
 
 def _csv(values: List[Int]) -> String:
@@ -122,6 +120,7 @@ def prefork_page(workers: Int, required: Bool = False) raises -> SharedAtomics:
         var fds = int_list_env("M0_SHARED_ID_FD")
         if len(fds) != 1:
             raise Error("spawned worker: M0_SHARED_ID_FD is not set")
+        set_cloexec(fds[0])
         var mapped = SharedAtomics(from_fd=fds[0], count=slots)
         _ = setenv("M0_SHARED_ID_ADDR", String(mapped.addr(0)), True)
         return mapped^
@@ -140,7 +139,7 @@ def prefork_page(workers: Int, required: Bool = False) raises -> SharedAtomics:
     page.store(SHARED_PAGE_MAGIC_SLOT, SHARED_PAGE_MAGIC)
     _ = setenv("M0_SHARED_ID_ADDR", String(page.addr(0)), True)
     if page.fd >= 0:
-        # `shared_file_fd` already cleared its FD_CLOEXEC.
+        # Close-on-exec (`shared_file_fd`); the spawn's exec keeps it.
         _ = setenv("M0_SHARED_ID_FD", String(page.fd), True)
     return page^
 
@@ -149,13 +148,10 @@ def prefork_bus(channels: Int) raises -> BroadcastBus:
     """One channel per worker (or per loop thread): created and exported, or adopted."""
     if spawned_worker_index() >= 0:
         return BroadcastBus(
-            read_fds=int_list_env("M0_BUS_READ_FDS"),
-            write_fds=int_list_env("M0_BUS_WRITE_FDS"),
+            read_fds=_adopted(int_list_env("M0_BUS_READ_FDS")),
+            write_fds=_adopted(int_list_env("M0_BUS_WRITE_FDS")),
         )
     var bus = BroadcastBus(channels if channels > 0 else 1)
-    for i in range(len(bus.write_fds)):
-        _ = keep_across_exec(bus.write_fds[i])
-        _ = keep_across_exec(bus.read_fds[i])
     _ = setenv("M0_BUS_WRITE_FDS", _csv(bus.write_fds), True)
     _ = setenv("M0_BUS_READ_FDS", _csv(bus.read_fds), True)
     return bus^
@@ -171,13 +167,10 @@ def prefork_accept_share(workers: Int) raises -> AcceptShare:
         return AcceptShare()
     if spawned_worker_index() >= 0:
         return AcceptShare(
-            read_fds=int_list_env("M0_ACCEPT_READ_FDS"),
-            write_fds=int_list_env("M0_ACCEPT_WRITE_FDS"),
+            read_fds=_adopted(int_list_env("M0_ACCEPT_READ_FDS")),
+            write_fds=_adopted(int_list_env("M0_ACCEPT_WRITE_FDS")),
         )
     var share = AcceptShare(workers)
-    for i in range(share.workers()):
-        _ = keep_across_exec(share.read_fds[i])
-        _ = keep_across_exec(share.write_fds[i])
     _ = setenv("M0_ACCEPT_READ_FDS", _csv(share.read_fds), True)
     _ = setenv("M0_ACCEPT_WRITE_FDS", _csv(share.write_fds), True)
     return share^

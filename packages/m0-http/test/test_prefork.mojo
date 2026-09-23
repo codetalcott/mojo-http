@@ -17,7 +17,8 @@ from lightbug_http.accept_share import (
     accept_share_slots,
 )
 
-from src.multiworker import SharedAtomics
+from lightbug_http.c.fcntl import clear_cloexec, is_cloexec
+from src.multiworker import SharedAtomics, spawn_inherited_fds
 from src.prefork import (
     bind_accept_share,
     int_list_env,
@@ -129,6 +130,37 @@ def test_accept_sharing_is_made_only_above_one_worker() raises:
     var adopted = prefork_accept_share(2)
     _forked()
     assert_equal(adopted.read_fds[1], share.read_fds[1])
+
+
+def test_adopted_descriptors_are_close_on_exec_again() raises:
+    """A spawned worker's inherited descriptors arrive with close-on-exec
+    cleared -- the spawn kept them across its own exec -- and adopting them
+    sets it again, or the worker's own children would inherit the page, the
+    bus and the accept-share channels (SPEC G16).
+
+    covers: E24
+    """
+    _forked()
+    var page = prefork_page(2, required=True)
+    var bus = prefork_bus(2)
+    var share = prefork_accept_share(2)
+    # What `_exec_if_spawning` does to exactly these before the exec.
+    var kept = spawn_inherited_fds()
+    for fd in kept:
+        _ = clear_cloexec(fd)
+    assert_false(is_cloexec(bus.read_fds[0]), "the setup did not clear the flag")
+    _spawned(1)
+    var adopted_page = prefork_page(2)
+    var adopted_bus = prefork_bus(2)
+    var adopted_share = prefork_accept_share(2)
+    _forked()
+    assert_true(is_cloexec(page.fd), "the adopted page is inheritable")
+    for i in range(2):
+        assert_true(is_cloexec(adopted_bus.read_fds[i]), "an adopted bus read end is inheritable")
+        assert_true(is_cloexec(adopted_bus.write_fds[i]), "an adopted bus write end is inheritable")
+        assert_true(is_cloexec(adopted_share.read_fds[i]), "an adopted accept-share end is inheritable")
+        assert_true(is_cloexec(adopted_share.write_fds[i]), "an adopted accept-share end is inheritable")
+    _ = adopted_page^
 
 
 def test_binding_an_inactive_share_is_harmless() raises:
