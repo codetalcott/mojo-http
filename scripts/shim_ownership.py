@@ -23,17 +23,23 @@ vanishing under every instrumentation that added a timer. It was verified
 only by an ad-hoc reproducer in a scratchpad; this file is the guard that
 was missing.
 
-Four rules, one test each:
+The rules, each with a test:
 
 * cleanup runs only if the finishing task still owns the slot
   (`_on_task_done`), and it *does* run when it does — the second half is what
   stops "never clean up" from passing as a fix;
 * a disconnect is stamped on the owning TASK (`_m0_disconnected`), so a
   lingering task cannot end its successor's stream;
-* spawning on a slot clears the slot's stale disconnect mark — and, for a
-  WebSocket, the previous socket's accept — so the successor neither
-  cancels itself nor answers a handshake it never accepted;
-* every "am I gone" check asks `_task_gone`, which consults both marks.
+* spawning a WebSocket on a slot clears the previous socket's accept, so the
+  successor does not answer a handshake it never accepted;
+* every "am I gone" check asks `_task_gone(owner)` about the task that owns
+  the connection a send ADDRESSES — stamped, or finished — never about the
+  caller. Judged by the caller (the rule until 2026-09-22), a disconnect
+  hook's sends to the sockets still connected were refused, and a send kept
+  for a client that had gone reached the next client on its recycled slot:
+  FastAPI's documented chat room delivered a departed client's messages to
+  a stranger (SPEC L20). A send to a gone socket raises
+  `ClientDisconnected`; one to a gone stream is a no-op (ASGI 2.3).
 
 Plus the ack clamp: a drain ack names a slot and no generation, so one for
 the stream that just ended can land after the next stream on that slot has
@@ -89,6 +95,8 @@ class Harness:
         self.events = []
         self.jobs = []          # behaviour per job datagram, in FIFO order
         self.spawned = 0
+        self.ws_sends = []      # every socket's send, in accept order
+        self.http_sends = []    # every stored stream's send
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -112,7 +120,9 @@ class Harness:
             behaviour = self.jobs.pop(0)
             if behaviour.startswith("ws"):
                 path = {"wsflood": "/ws/flood", "wshold": "/ws/hold",
-                        "wsnoanswer": "/ws/noanswer"}.get(behaviour, "/ws")
+                        "wsnoanswer": "/ws/noanswer", "wschat": "/ws/chat",
+                        "wskeep": "/ws/keep", "wsquick": "/ws/quick",
+                        }.get(behaviour, "/ws")
                 self.ns["spawn_ws"](slot, path, b"", "HTTP/1.1", [])
             else:
                 # The finished scope, as the bridge's `_build_scope` hands
@@ -144,6 +154,37 @@ class Harness:
                 # `finally` must resolve the held 101 as a reject.
                 return
             await send({"type": "websocket.accept"})
+            if scope["path"] == "/ws/chat":
+                # A chat room's disconnect hook: when this client leaves,
+                # tell every other socket. The hook runs on THIS task, whose
+                # client has gone, and in a `finally`, so it runs whether
+                # the server delivers the disconnect or cancels
+                # (FastHTML's `disconn` shape).
+                me = len(self.ws_sends)
+                self.ws_sends.append(send)
+                try:
+                    while (await receive())["type"] != "websocket.disconnect":
+                        pass
+                finally:
+                    self.ws_sends[me] = None
+                    for other in self.ws_sends:
+                        if other is not None:
+                            try:
+                                await other({"type": "websocket.send",
+                                             "bytes": b"left:%d" % me})
+                            except Exception:
+                                pass
+                return
+            if scope["path"] == "/ws/keep":
+                # An app that keeps every socket's send and never prunes:
+                # the shape that leaked another client's messages.
+                self.ws_sends.append(send)
+                while (await receive())["type"] != "websocket.disconnect":
+                    pass
+                return
+            if scope["path"] == "/ws/quick":
+                self.ws_sends.append(send)
+                return
             if scope["path"] == "/ws/hold":
                 # Stay inside the accepted socket until cancelled, so a
                 # recycle can land while this task is still alive.
@@ -159,6 +200,12 @@ class Harness:
         behaviour = q.get("b", "hold")
         await send({"type": "http.response.start", "status": 200,
                     "headers": []})
+        if behaviour == "storehold":
+            # A push hub: keep the stream's send for later, then hold.
+            await send({"type": "http.response.body", "body": b"hello",
+                        "more_body": True})
+            self.http_sends.append(send)
+            await asyncio.Event().wait()
         if behaviour.startswith("child"):
             # Starlette's shape: the body is produced by a task that is
             # not the request task (anyio task group there, a bare
@@ -220,6 +267,22 @@ class Harness:
             for _ in range(passes):
                 await asyncio.sleep(0.001)
         self.loop.run_until_complete(_spin())
+
+    def run(self, coro):
+        """Run one coroutine to completion on the harness loop."""
+        return self.loop.run_until_complete(coro)
+
+    async def foreign(self, send, message):
+        """Call a connection's `send` from a task that is NOT that
+        connection's: a background task, another request, a hub. Returns
+        "returned", or the name of what it raised."""
+        async def call():
+            try:
+                await send(message)
+                return "returned"
+            except BaseException as exc:  # noqa: BLE001 - it is the datum
+                return type(exc).__name__
+        return await asyncio.get_running_loop().create_task(call())
 
     def close(self):
         for t in list(self.ns["_exec_tasks"]):
@@ -504,6 +567,100 @@ def test_a_websocket_send_waits_for_its_window(h):
     assert h.ns["_exec_credits"][0] <= window
 
 
+def test_a_gone_sockets_hook_can_send_to_the_others(h):
+    """A send is judged by the connection it ADDRESSES, not by the task
+    making it. A chat room's disconnect hook runs on the task whose client
+    has gone and sends to the sockets still here. Judged by the caller, every
+    one of those sends was refused silently: "someone left" reached 0 of 3
+    clients where uvicorn delivered 3 of 3."""
+    h.job(0, "wschat")
+    h.job(1, "wschat")
+    h.settle()
+    assert "ws_accept" in h.kinds(0) and "ws_accept" in h.kinds(1), (
+        "both sockets were not accepted: %r / %r" % (h.kinds(0), h.kinds(1)))
+    mark = len(h.events)
+    h.disconnect(0)
+    h.settle()
+    told = [e[3] for e in h.events[mark:] if e[0] == "ws_send" and e[1] == 1]
+    assert told == [b"left:0"], (
+        "the socket still connected was not told who left: %r" % (told,))
+
+
+def test_a_stale_socket_send_never_reaches_the_slots_next_client(h):
+    """The security half. The loop recycles a slot the instant it closes a
+    connection, so a send kept by the application for a client that has
+    gone, called from any live task, addressed the NEXT client on that
+    slot. Measured on FastAPI's documented chat example: the new client
+    received every message meant for the one that left. It must raise, as
+    uvicorn's `ClientDisconnected` does, and emit nothing."""
+    h.job(0, "wskeep")
+    h.settle()
+    stale = h.ws_sends[0]
+    # One batch: the old client's disconnect, and a new client's handshake
+    # landing on the same slot.
+    h.disconnect(0)
+    h.job(0, "wskeep")
+    h.settle()
+    assert h.kinds(0).count("ws_accept") == 2, (
+        "the second client was not accepted on the slot: %r" % (h.kinds(0),))
+    mark = len(h.events)
+    result = h.run(h.foreign(stale, {"type": "websocket.send",
+                                     "text": "for the client who left"}))
+    leaked = [e for e in h.events[mark:] if e[0] == "ws_send" and e[1] == 0]
+    assert not leaked, (
+        "a message for the client who left was sent to the slot's new "
+        "client: %r" % (leaked,))
+    assert result == "ClientDisconnected", (
+        "a send to a gone socket must raise ClientDisconnected, got %r"
+        % (result,))
+
+
+def test_a_send_from_a_finished_socket_is_refused(h):
+    """A socket whose application returned is over. Its task finished and
+    released the slot BEFORE the loop's disconnect tag, so nothing stamped
+    it; being finished is what makes it gone."""
+    h.job(0, "wsquick")
+    h.settle()
+    stale = h.ws_sends[0]
+    h.disconnect(0)
+    h.job(0, "wskeep")
+    h.settle()
+    mark = len(h.events)
+    result = h.run(h.foreign(stale, {"type": "websocket.send",
+                                     "text": "late"}))
+    leaked = [e for e in h.events[mark:] if e[0] == "ws_send" and e[1] == 0]
+    assert not leaked, (
+        "a finished socket's send reached the slot's new client: %r"
+        % (leaked,))
+    assert result == "ClientDisconnected", result
+
+
+def test_a_stale_stream_send_never_reaches_the_slots_next_response(h):
+    """The same leak on a streamed HTTP response: a push hub's stale
+    `send` wrote "PRIVATE for xavier" into yara's stream. Under the spec
+    version this server advertises (2.3) a send after a disconnect is a
+    no-op, and uvicorn's is: it must return quietly and emit nothing."""
+    h.job(0, "storehold")
+    h.settle()
+    stale = h.http_sends[0]
+    h.disconnect(0)
+    h.job(0, "hold")
+    h.settle()
+    assert h.kinds(0).count("stream_start") == 2, (
+        "the second stream did not start on the slot: %r" % (h.kinds(0),))
+    mark = len(h.events)
+    result = h.run(h.foreign(stale, {"type": "http.response.body",
+                                     "body": b"STALE", "more_body": True}))
+    leaked = [e for e in h.events[mark:]
+              if e[0] == "stream_chunk" and e[1] == 0 and b"STALE" in e[2]]
+    assert not leaked, (
+        "a gone stream's bytes were written into the slot's next response")
+    assert result == "returned", (
+        "a send to a gone stream must be a quiet no-op, got %r" % (result,))
+    # (No whole-window check here: the successor is still holding its first
+    # 1024 bytes in flight, unacked, which is what a live stream does.)
+
+
 TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
@@ -514,6 +671,10 @@ TESTS = [
     test_a_websocket_recycle_forgets_the_predecessors_accept,
     test_a_websocket_send_waits_for_its_window,
     test_a_stream_sent_from_a_child_task_marks_the_owner,
+    test_a_gone_sockets_hook_can_send_to_the_others,
+    test_a_stale_socket_send_never_reaches_the_slots_next_client,
+    test_a_send_from_a_finished_socket_is_refused,
+    test_a_stale_stream_send_never_reaches_the_slots_next_response,
 ]
 
 
@@ -530,11 +691,22 @@ SABOTAGES = [
         "                task = asyncio.current_task()",
     ),
     (
-        "_task_gone consults only the slot",
-        "    return slot in _exec_disconnected or getattr(\n"
-        "        asyncio.current_task(), '_m0_disconnected', False\n"
-        "    )",
-        "    return slot in _exec_disconnected",
+        "a send is judged by the calling task, not the connection's",
+        "    return getattr(owner, '_m0_disconnected', False) or owner.done()",
+        "    import asyncio\n\n"
+        "    return getattr(asyncio.current_task(), '_m0_disconnected', False)",
+    ),
+    (
+        "a finished connection is not gone",
+        "    return getattr(owner, '_m0_disconnected', False) or owner.done()",
+        "    return getattr(owner, '_m0_disconnected', False)",
+    ),
+    (
+        "a send to a gone socket returns quietly",
+        "            raise ClientDisconnected()\n"
+        "        if t == 'websocket.accept':",
+        "            return\n"
+        "        if t == 'websocket.accept':",
     ),
     (
         "a disconnect is not stamped on the owning task",
@@ -549,36 +721,16 @@ SABOTAGES = [
         "    if t is not None:",
     ),
     (
-        "spawn does not clear the slot's stale disconnect",
-        "    _exec_disconnected.discard(slot)\n"
-        "    _exec_disconnects.pop(slot, None)\n"
-        "    task.add_done_callback(cycle.done)",
-        "    _exec_disconnects.pop(slot, None)\n"
-        "    task.add_done_callback(cycle.done)",
-    ),
-    (
-        "spawn_ws does not clear the slot's stale disconnect",
-        "    _exec_disconnected.discard(slot)\n"
-        "    _exec_disconnects.pop(slot, None)\n"
-        "    _exec_stream_tasks[slot] = task",
-        "    _exec_disconnects.pop(slot, None)\n"
-        "    _exec_stream_tasks[slot] = task",
-    ),
-    (
         "spawn_ws does not clear the slot's stale accept",
         "    _exec_ws_accepted.discard(slot)\n"
-        "    _exec_disconnected.discard(slot)\n"
-        "    _exec_disconnects.pop(slot, None)\n"
-        "    _exec_stream_tasks[slot] = task",
-        "    _exec_disconnected.discard(slot)\n"
-        "    _exec_disconnects.pop(slot, None)\n"
-        "    _exec_stream_tasks[slot] = task",
+        "    _exec_disconnects.pop(slot, None)\n",
+        "    _exec_disconnects.pop(slot, None)\n",
     ),
     (
         "websocket.send is not credit-gated",
-        "            await _ws_spend(slot, _ws_frame_bytes(len(payload)))\n"
-        "            if _task_gone(slot):\n"
-        "                return\n"
+        "            await _ws_spend(slot, owner, _ws_frame_bytes(len(payload)))\n"
+        "            if _task_gone(owner):\n"
+        "                raise ClientDisconnected()\n"
         "            _exec_put(('ws_send', slot, opcode, payload))",
         "            _exec_put(('ws_send', slot, opcode, payload))",
     ),
