@@ -3,18 +3,22 @@
 Same charter as `test_hold`: the pieces that operate on plain values — the
 `P` begin-frame name that carries a thread's ack fd, the parser that reads
 it back, and the disconnect ack the loop sends down that fd — are exercised
-here. What is NOT reachable without a `WSGIApp` is the handler's frame
-dispatch and the pump itself; `smoke-wsgi-stream` covers those end to end.
+here, with the executor's WebSocket close datagram. What is NOT reachable
+without a `WSGIApp` is the handler's frame dispatch and the pump itself;
+`smoke-wsgi-stream` covers those end to end, and `smoke-asgi` and
+`smoke-fastapi` the close.
 """
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
+from lightbug_http.broadcast import decode_bus_frame
 from lightbug_http.offload import make_stream_ack_pair, drain_ack_fd
 
 from src.handler import (
     pool_stream_url,
     pool_stream_ack_fd,
     asgi_stream_url,
+    ws_close_frame,
     _send_pool_disconnect,
     _read_ack,
     _poll_acks,
@@ -90,6 +94,29 @@ def test_poll_acks_accumulates_credit_and_stops_at_a_disconnect() raises:
     # After a drain, a fresh poll sees nothing and keeps its credit.
     drain_ack_fd(pair[0])
     assert_equal(_poll_acks(pair[0], 5, 7), 7)
+
+
+def test_a_websocket_close_is_one_datagram_that_ends_the_socket() raises:
+    """The executor's close of a socket is ONE `x` datagram carrying the
+    RFC 6455 Close frame, never a `w` holding it and a separate `x`.
+
+    With two, the loop wrote the close when the `w` arrived and learned the
+    socket was ending only at the `x`: an executor descheduled between the
+    sends had the peer's Close reply read first and answered with a second
+    Close (smoke-fastapi on macOS CI, 2026-09-23, and `ws_probe.py`'s close
+    order on Linux CI, 2026-09-11; a 2 ms sleep between the sends made it
+    24 closes of 24)."""
+    var raw = ws_close_frame(7, 2, 5, 1011)
+    var decoded = decode_bus_frame(Span(raw))
+    assert_true(Bool(decoded))
+    var f = decoded.take()
+    assert_equal(f.url, asgi_stream_url(String("x"), 7, 2))
+    assert_equal(f.event_id, 5)
+    # FIN + Close, a two-byte body, 1011 big-endian.
+    var want: List[UInt8] = [0x88, 0x02, 0x03, 0xF3]
+    assert_equal(len(f.frame), len(want))
+    for i in range(len(want)):
+        assert_equal(Int(f.frame[i]), Int(want[i]))
 
 
 def _send_bytes(fd: Int, msg: List[UInt8]) -> Bool:
