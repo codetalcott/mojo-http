@@ -61,7 +61,7 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from std.io import FileDescriptor
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame,
-    WS_OP_TEXT, WS_OP_BINARY, WS_OP_CLOSE,
+    WS_OP_TEXT, WS_OP_BINARY,
 )
 from lightbug_http.c.platform import PlatformBackend
 from m0_http import BLK_QOS, request_qos_class, QOS_CLASS_USER_INITIATED
@@ -77,7 +77,9 @@ from .app import WSGIApp
 from .blocking_pool import BLK_POOL
 from m0_http import BLK_LANE
 from .cli import ServeOptions
-from .handler import WSGIHandler, asgi_stream_url, _send_disconnect_tag
+from .handler import (
+    WSGIHandler, asgi_stream_url, ws_close_frame, _send_disconnect_tag,
+)
 from .response import build_asgi_response
 from .thread_handler import ThreadContext
 
@@ -868,32 +870,13 @@ struct ExecutorPort(Movable, Writable):
                 # channel that is not draining, and answers nothing.
                 return False
             _flush_completions(pool, st.pending_done)
-            # A close frame with the app's code, then the end marker that
-            # lets the loop close after it lands.
-            var code = Int(py=ev[2])
-            var close_body = List[UInt8]()
-            close_body.append(UInt8((code >> 8) & 0xFF))
-            close_body.append(UInt8(code & 0xFF))
-            var close_frame = encode_ws_frame(WS_OP_CLOSE, Span(close_body))
-            var f1 = encode_bus_frame(
-                asgi_stream_url(String("w"), slot, self.lane), st.gens[slot],
-                Span(close_frame),
-            )
-            if not self._place_frame(pool, Span(f1)):
+            # The Close frame with the app's code INSIDE the end marker, one
+            # datagram: the loop must not write the Close before it knows
+            # the socket is ending (`ws_close_frame` has the race).
+            var f = ws_close_frame(slot, self.lane, st.gens[slot], Int(py=ev[2]))
+            if not self._place_frame(pool, Span(f)):
                 st.lost[slot] = True
-                _report_lost(String("websocket close frame"), slot, len(f1))
-                _report_abort(pool, slot, st.gens[slot])
-                return False
-            var empty = List[UInt8]()
-            var f2 = encode_bus_frame(
-                asgi_stream_url(String("x"), slot, self.lane), st.gens[slot], Span(empty)
-            )
-            if not self._place_frame(pool, Span(f2)):
-                # The close frame is queued but the end marker that lets the
-                # loop close after it lands is not: without one the socket
-                # stays subscribed for ever.
-                st.lost[slot] = True
-                _report_lost(String("websocket end"), slot, len(f2))
+                _report_lost(String("websocket close"), slot, len(f))
                 _report_abort(pool, slot, st.gens[slot])
         elif kind == "ws_ack":
             # The inbound window refill: the shim's cumulative count of

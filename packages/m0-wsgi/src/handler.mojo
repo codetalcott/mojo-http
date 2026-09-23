@@ -36,7 +36,7 @@ from lightbug_http.c.process import getpid
 from lightbug_http.offload import OffloadPool, STREAM_GEN_NONE
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
-    websocket_upgrade, encode_ws_frame, WS_OP_TEXT,
+    websocket_upgrade, encode_ws_frame, WS_OP_TEXT, WS_OP_CLOSE,
 )
 from lightbug_http.c.platform import MSG_DONTWAIT
 
@@ -1321,10 +1321,20 @@ struct WSGIHandler(ThreadHandler):
                         if self._claim_lost(slot, String("websocket frame")):
                             self._end_socket(slot)
             elif ub[1] == UInt8(ord("x")):
-                # WebSocket end (the close frame is already queued ahead
-                # of this on the same channel).
+                # WebSocket end, carrying the Close frame that ends it
+                # (`ws_close_frame`): queued and marked done in one step,
+                # so the drain that hands the Close out is the drain that
+                # sees the socket end, and the loop is `closing` before it
+                # can read the peer's reply. Subscribed slots only, as `w`.
                 if not self._gen_matches(slot, event_id):
                     return
+                if len(frame) > 0 and self.sockets.is_slot_streaming(slot):
+                    if not self.sockets.queue_frame(slot, NO_EVENT_ID, frame):
+                        # A full outbox refuses the Close as it would any
+                        # frame (`w`, above): the connection ends without
+                        # one, after what is already queued.
+                        if self._claim_lost(slot, String("websocket close frame")):
+                            self._end_socket(slot)
                 if self.sockets.has_pending(slot):
                     if slot < len(self.asgi_done):
                         self.asgi_done[slot] = True
@@ -1735,6 +1745,27 @@ def asgi_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
     Mojo pool thread and this package spell one format from one function.
     """
     return reserved_stream_url(kind, slot, lane)
+
+
+def ws_close_frame(slot: Int, lane: Int, gen: Int, code: Int) -> List[UInt8]:
+    """An executor's close of a WebSocket, as ONE chunk-channel datagram: the
+    socket's end marker (`x`) carrying the RFC 6455 Close frame to send.
+
+    One, because the loop must not write this Close without also knowing the
+    socket is ending. It was two, a `w` holding the Close and then an empty
+    `x`, and the loop wrote the Close as the `w` arrived but marked the
+    socket `closing` only at the `x`. An executor descheduled between the
+    two sends let the peer's Close reply arrive first, and the loop, not
+    knowing it had closed, echoed the reply: a second Close after the
+    handshake (seen on macOS and Linux CI; a 2 ms sleep between the sends
+    made it every close). Now the drain that hands the Close out is the
+    drain that ends the socket, and `closing` is set in the same pass.
+    """
+    var body = List[UInt8]()
+    body.append(UInt8((code >> 8) & 0xFF))
+    body.append(UInt8(code & 0xFF))
+    var close = encode_ws_frame(WS_OP_CLOSE, Span(body))
+    return encode_bus_frame(asgi_stream_url(String("x"), slot, lane), gen, Span(close))
 
 
 def pool_stream_url(slot: Int, lane: Int, ack_fd: Int) -> String:

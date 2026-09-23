@@ -359,7 +359,12 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     101 is only released behind its begin frame, outbound frames ride
     the chunk channel, inbound ones are tagged submit-channel datagrams
     — and a handshake the app never answers must resolve as a 403, never
-    a leaked slot. The buffered escape hatch keeps its send()-side
+    a leaked slot. An app's close is ONE datagram, its Close frame inside
+    the `x` end marker (`ws_close_frame`): sent as a `w` and then an `x`,
+    the loop wrote the Close before it knew the socket was ending, and a
+    peer reply read in between was echoed as a second Close (CI, twice;
+    never under load, only when the executor lost its CPU between the
+    sends). The buffered escape hatch keeps its send()-side
     watchdog — do not "fix" it by lengthening the
     grace (docs/notes/wsgi-vs-asgi-history.md §8). **The pump is batched in both directions**, because the
     hello-world deficit was wakeup-bound, not CPU-bound (0.72x uvicorn at

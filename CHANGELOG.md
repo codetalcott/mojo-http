@@ -237,6 +237,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   uvicorn logs it. And `receive()` after a response is answered says
   `http.disconnect` at once, where it used to wait for the life of the
   process.
+- **An ASGI application's WebSocket close could be answered with a second
+  Close frame** (SPEC L15). The executor sent the close as two datagrams,
+  the Close frame and then the socket's end marker. The loop wrote the
+  Close at the first but began waiting for the client's reply only at the
+  second, so an executor descheduled between them had the client's reply
+  read in between and echoed back: a Close after the closing handshake,
+  which a strict client reports as a protocol error. CI saw it twice, once
+  on each OS. The Close now rides inside the end marker, one datagram, so
+  the loop never writes it without knowing the socket is ending.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and
