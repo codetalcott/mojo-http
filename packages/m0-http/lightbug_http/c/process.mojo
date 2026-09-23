@@ -234,7 +234,7 @@ def install_signal_handler(sig: Int, handler_address: Int) -> Bool:
 # duration of the call.
 
 from std.sys.info import CompilationTarget
-from lightbug_http.c.kqueue import _fcntl
+from lightbug_http.c.fcntl import set_cloexec
 
 
 def _c_string(s: String) -> List[UInt8]:
@@ -321,37 +321,44 @@ comptime _PROT_READ_WRITE = 0x1 | 0x2
 comptime _MAP_SHARED = 0x01
 
 
-comptime _F_GETFD = 1
-comptime _F_SETFD = 2
-comptime _FD_CLOEXEC = 1
+def fd_identity(fd: Int) raises -> Tuple[Int, Int]:
+    """`(st_dev, st_ino)` of an open descriptor: WHICH open file it is.
 
-
-def keep_across_exec(fd: Int) -> Bool:
-    """Clear `FD_CLOEXEC` on `fd`, so an exec'd worker inherits it.
-
-    Sockets and socketpairs are created without the flag here, but macOS's
-    `shm_open` sets it on the descriptor it returns (measured: the spawned
-    worker's `mmap` answered EBADF), and a future `SOCK_CLOEXEC` somewhere
-    would silently detach a worker from its listener. Every descriptor a
-    spawned worker must inherit goes through this, whatever its origin.
+    A descriptor number means nothing across an `exec` -- in a child it may
+    name the child's own file or socket -- so a number handed down in the
+    environment travels with this, and m0pub compares it with `os.fstat`
+    before writing to it (SPEC G16, I23). `st_ino` is the 8 bytes at offset
+    8 of `struct stat` on every target this builds for (macOS arm64, Linux
+    x86-64 and aarch64). `st_dev` opens the struct: a signed 4-byte
+    `dev_t` on macOS, where every socket answers -1, and 8 bytes on Linux.
+    Python reads the same two fields the same way.
     """
-    # `_fcntl` carries the macOS variadic ABI; a second `external_call` of
-    # the same symbol with a different signature does not compile.
-    var flags = _fcntl(c_int(fd), c_int(_F_GETFD), c_int(0))
-    if flags < 0:
-        return False
-    if (Int(flags) & _FD_CLOEXEC) == 0:
-        return True
-    var rc = _fcntl(c_int(fd), c_int(_F_SETFD), c_int(Int(flags) & ~_FD_CLOEXEC))
-    return rc == 0
+    var buf = List[UInt8](capacity=256)
+    for _ in range(256):
+        buf.append(0)
+    var rc = external_call["fstat", c_int, c_int, type_of(buf.unsafe_ptr())](
+        c_int(fd), buf.unsafe_ptr()
+    )
+    if rc != 0:
+        raise Error("fstat failed, errno: ", get_errno())
+    var dev: Int
+    comptime if CompilationTarget.is_macos():
+        dev = Int(buf.unsafe_ptr().unsafe_bitcast[Int32]()[])
+    else:
+        dev = Int(buf.unsafe_ptr().unsafe_bitcast[Int64]()[])
+    var ino = Int(buf.unsafe_ptr().unsafe_bitcast[Int64]()[unsafe_offset=1])
+    _ = buf
+    return (dev, ino)
 
 
 def shared_file_fd(length: Int) raises -> Int:
-    """An fd backing `length` bytes of shared memory that survives `exec`.
+    """An fd backing `length` bytes of shared memory, by which a spawned
+    worker maps the same page.
 
     `shm_open` under a name derived from this pid, unlinked at once so the
-    fd is the only handle, sized with `ftruncate`. Not `FD_CLOEXEC`, on
-    purpose: a spawned worker maps the same fd number it inherits.
+    fd is the only handle, sized with `ftruncate`. Close-on-exec: the spawn
+    hand-off keeps it across the one exec that adopts it, and a child an
+    application starts with `pass_fds=m0pub.child_fds()` gets it that way.
     """
     var attempt = 0
     while True:
@@ -369,8 +376,11 @@ def shared_file_fd(length: Int) raises -> Int:
             var rc = external_call["ftruncate", c_int, c_int, Int](fd, length)
             if rc != 0:
                 raise Error("ftruncate on the shared page failed, errno: ", get_errno())
-            if not keep_across_exec(Int(fd)):
-                raise Error("could not clear FD_CLOEXEC on the shared page, errno: ", get_errno())
+            # Close-on-exec like every descriptor the server creates (SPEC
+            # G16): `shm_open` sets it on both platforms, and this says so
+            # rather than relying on it. The spawn hand-off
+            # (`_exec_if_spawning`) clears it for the one exec that needs it.
+            set_cloexec(Int(fd))
             return Int(fd)
         var errno = get_errno()
         _ = name

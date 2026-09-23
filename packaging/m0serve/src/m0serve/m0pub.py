@@ -52,10 +52,13 @@ all. So `m0_shared_fetch_add` is exported from `m0-core`'s C ABI
 through `ctypes` — which never crosses the WSGI bridge, so the leak rule and
 the RSS guard are untouched.
 
-**Publishing from a child process.** The bus descriptors survive `exec`; the
-page does not, because a mapping dies at exec while `M0_SHARED_ID_ADDR` is
-only a number in the parent's address space. So a child a view starts
-publishes safely in either of two ways::
+**Publishing from a child process.** The bus descriptors do not survive
+`exec` by themselves: every descriptor the server creates is close-on-exec
+(SPEC G16), so a child the application starts inherits no connection or
+channel of the server's. The page does not either, because a mapping dies at
+exec while `M0_SHARED_ID_ADDR` is only a number in the parent's address
+space. So a child a view starts publishes only when it is handed them, in
+either of two ways::
 
     subprocess.Popen([...], pass_fds=m0pub.child_fds())
 
@@ -85,6 +88,7 @@ import ctypes
 import json
 import mmap
 import os
+import stat
 import struct
 import sys
 
@@ -124,6 +128,9 @@ than a database error at COMMIT far from the call.
 """
 
 BUS_FDS_ENV = "M0_BUS_WRITE_FDS"
+# `st_dev:st_ino` of each, in the same order: WHICH open socket each number
+# is (server.mojo's `prefork_bus`, SPEC G16).
+BUS_IDS_ENV = "M0_BUS_WRITE_IDS"
 ID_ADDR_ENV = "M0_SHARED_ID_ADDR"
 ID_FD_ENV = "M0_SHARED_ID_FD"
 CORE_LIB_ENV = "M0_CORE_LIB"
@@ -144,11 +151,66 @@ _counter = None
 # address handed to the fetch-and-add points into it.
 _page = None
 
+# (pid, fds): the bus write fds `bus_write_fds` verified in that process.
+_bus_fds = None
+
+
+def _ints(raw):
+    """The integers in a comma-separated value; anything else skipped."""
+    out = []
+    for part in raw.split(","):
+        try:
+            out.append(int(part))
+        except ValueError:
+            pass
+    return out
+
+
+def _identities(raw):
+    """`dev:ino` pairs, in order; a malformed entry keeps its place as None."""
+    out = []
+    for part in raw.split(","):
+        try:
+            dev, ino = part.split(":")
+            out.append((int(dev), int(ino)))
+        except ValueError:
+            out.append(None)
+    return out
+
 
 def bus_write_fds():
-    """The inherited bus write fds, as announced by server.mojo."""
-    raw = os.environ.get(BUS_FDS_ENV, "")
-    return [int(part) for part in raw.split(",") if part]
+    """The bus write fds server.mojo announced, that ARE the bus here.
+
+    Checked once per process, by identity. A child started without
+    `pass_fds` inherits `M0_BUS_WRITE_FDS` but not the descriptors, which
+    are close-on-exec, so the numbers may name its own files or sockets: a
+    datagram written there lands in one of them. Each number is kept only if
+    `os.fstat` finds the same device and inode `M0_BUS_WRITE_IDS` records
+    for it, so a child handed nothing publishes nothing, and the check
+    builds no socket object (one built over a child's own socket under a
+    default timeout switched it to non-blocking). A server that exports no
+    identities is older than this module; there a number is kept if it is
+    at least a socket, never a file.
+    """
+    global _bus_fds
+    pid = os.getpid()
+    if _bus_fds is None or _bus_fds[0] != pid:
+        named = _ints(os.environ.get(BUS_FDS_ENV, ""))
+        raw_ids = os.environ.get(BUS_IDS_ENV, "")
+        ids = _identities(raw_ids) if raw_ids else None
+        kept = []
+        for i, fd in enumerate(named):
+            try:
+                st = os.fstat(fd)
+            except (OSError, ValueError, OverflowError):
+                continue
+            if ids is None:
+                if stat.S_ISSOCK(st.st_mode):
+                    kept.append(fd)
+            elif i < len(ids) and ids[i] == (st.st_dev, st.st_ino):
+                kept.append(fd)
+        _bus_fds = (pid, kept)
+    return list(_bus_fds[1])
 
 
 def _core_lib_paths():
@@ -167,7 +229,7 @@ def _page_fd():
     try:
         fd = int(os.environ.get(ID_FD_ENV, ""))
         os.fstat(fd)
-    except (ValueError, OSError):
+    except (ValueError, OSError, OverflowError):
         return None
     return fd
 

@@ -4,6 +4,7 @@ from std.sys.info import CompilationTarget, size_of
 from lightbug_http.c.aliases import c_void
 from lightbug_http.c.network import SocketAddress, sockaddr, sockaddr_in, socklen_t
 from lightbug_http.c.socket_error import *
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
 from std.memory import stack_allocation
 
 
@@ -233,7 +234,18 @@ def socket(domain: c_int, type: c_int, protocol: c_int) raises SocketError -> c_
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/socket.3p.html .
     """
-    var fd = _socket(domain, type, protocol)
+    # Close-on-exec (SPEC G16): a child the application starts must not
+    # hold the listener or a client socket. Born that way on Linux; macOS
+    # refuses SOCK_CLOEXEC in a type (EPROTONOSUPPORT, measured), so there
+    # it is marked right after, below.
+    var sock_type = type
+    comptime if not CompilationTarget.is_macos():
+        sock_type = type | c_int(O_CLOEXEC)
+    var fd = _socket(domain, sock_type, protocol)
+    comptime if CompilationTarget.is_macos():
+        if fd != -1:
+            # F_SETFD fails only on EBADF, which a fresh descriptor is not.
+            _ = _fcntl(fd, c_int(F_SETFD), c_int(FD_CLOEXEC))
     if fd == -1:
         var errno = get_errno()
         if errno == errno.EACCES:
@@ -766,9 +778,25 @@ def _accept[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/accept.3p.html .
     """
-    return external_call["accept", c_int, type_of(socket), type_of(address), type_of(address_len)](  # FnName, RetType
-        socket, address, address_len
-    )
+    # Close-on-exec (SPEC G16): a child the application starts must not hold
+    # a client's connection, or the connection outlives the server's close
+    # of it -- FastHTML's terminal example took 10 s to close a WebSocket.
+    comptime if CompilationTarget.is_macos():
+        var fd = external_call["accept", c_int, type_of(socket), type_of(address), type_of(address_len)](  # FnName, RetType
+            socket, address, address_len
+        )
+        if fd >= 0:
+            # macOS has no accept4, so the fd is marked right after, and a
+            # fork and exec on another thread in the instant between the two
+            # calls would inherit it -- the window CPython has there too.
+            # F_SETFD fails only on EBADF, which a fresh descriptor is not.
+            _ = _fcntl(fd, c_int(F_SETFD), c_int(FD_CLOEXEC))
+        return fd
+    else:
+        # accept4(SOCK_CLOEXEC): born close-on-exec, with no window.
+        return external_call[
+            "accept4", c_int, type_of(socket), type_of(address), type_of(address_len), c_int
+        ](socket, address, address_len, c_int(O_CLOEXEC))
 
 
 def accept(socket: FileDescriptor) raises AcceptError -> FileDescriptor:

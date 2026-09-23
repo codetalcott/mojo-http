@@ -1,7 +1,8 @@
 """`kqueue` FFI wrappers for non-blocking IO multiplexing on macOS.
 
-Provides kqueue(), kevent(), and fcntl() wrappers following the same
-FFI pattern as socket.mojo. Used by event_loop.mojo to implement a
+Provides kqueue() and kevent() wrappers, and `set_nonblocking` over
+`fcntl.mojo`'s `_fcntl` (the program's one `fcntl` declaration), following
+the same FFI pattern as socket.mojo. Used by event_loop.mojo to implement a
 single-threaded, non-blocking HTTP server.
 """
 
@@ -12,6 +13,7 @@ from std.sys.info import CompilationTarget, size_of
 
 from lightbug_http.c.aliases import ExternalMutPointer
 from lightbug_http.c.socket import O_NONBLOCK, setsockopt
+from lightbug_http.c.fcntl import _fcntl
 
 
 # --- kqueue filter constants ---
@@ -159,37 +161,6 @@ def kevent_poll(
             return 0
         raise Error("kevent_poll failed, errno: ", errno)
     return Int(result)
-
-
-def _fcntl(fd: c_int, cmd: c_int, arg: c_int = 0) -> c_int:
-    """Raw fcntl(fd, cmd, arg) — single signature to avoid conflicting declarations.
-
-    fcntl is variadic (int fcntl(int, int, ...)), and the two major ABIs
-    disagree about what that means for the third argument:
-
-    - x86-64 SysV and AAPCS64-Linux pass leading variadic args in the same
-      registers as fixed args, so a plain three-argument declaration works.
-    - Darwin ARM64 passes ALL variadic arguments on the stack; fixed
-      arguments fill x0–x7 first. A three-argument call puts `arg` in x2,
-      the callee's va_list never sees it, and F_SETFL silently reads
-      whatever the stack happened to hold — historically making
-      `set_nonblocking` a no-op there.
-
-    The Darwin branch therefore declares NINE fixed arguments: fd and cmd
-    land in x0/x1, six zero dummies burn x2–x7, and the ninth — the real
-    arg — is forced onto the stack at sp+0, exactly where a variadic
-    callee's va_list points after two named parameters. The dummies are
-    never read by fcntl; only the stack slot is. `test_broadcast.mojo`
-    asserts F_GETFL reflects O_NONBLOCK after `set_nonblocking`, which is
-    what holds this ABI claim to account on the macOS CI runner.
-    """
-    comptime if CompilationTarget.is_macos():
-        return external_call[
-            "fcntl", c_int,
-            c_int, c_int, Int, Int, Int, Int, Int, Int, Int,
-        ](fd, cmd, 0, 0, 0, 0, 0, 0, Int(arg))
-    else:
-        return external_call["fcntl", c_int, c_int, c_int, c_int](fd, cmd, arg)
 
 
 def set_nonblocking(fd: FileDescriptor) raises:

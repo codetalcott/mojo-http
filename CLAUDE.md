@@ -284,8 +284,16 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     kernel reports readable (a pipe `write`, never `mincore`, which
     succeeds for unmapped addresses on macOS) -- because an inherited
     address was a SIGSEGV on Linux and a silent write into the child's own
-    memory on macOS. `m0pub.child_fds()` is what a child is handed. Every inherited fd goes through `keep_across_exec`:
-    macOS's `shm_open` sets `FD_CLOEXEC`, measured as EBADF in the worker.
+    memory on macOS. `m0pub.child_fds()` is what a child is handed, as
+    `pass_fds`: every descriptor the server creates is close-on-exec
+    (SPEC G16), so nothing of the server's reaches an exec'd child any
+    other way, and m0pub writes only to a bus fd whose device and inode
+    match `M0_BUS_WRITE_IDS`, which `prefork_bus` exports beside the
+    numbers. The spawn's own exec keeps exactly the fds
+    `spawn_inherited_env` names: `_exec_if_spawning` clears the flag in
+    the forked child just before `execv`, and the new image sets it again
+    on each one as it adopts it. A descriptor a future spawned worker must
+    inherit goes in that list, or its adoption fails loudly.
     Core ML cannot run in a forked child at all
     (docs/notes/coreml-embeddings.md), which is what this exists for.
   - **Threaded (`M0_THREADS`, free-threaded CPython only; `m0_wsgi.threaded`).**
@@ -1049,6 +1057,13 @@ send patches. Changes there are ordinary changes to this repo.
 - Record anything materially new in [NOTICE](NOTICE) — that file is a licensing
   record, not documentation.
 - Do not "fix" the `m0_http.log` back-edge by inverting it.
+- **`c/fcntl.mojo` holds the program's one `fcntl` declaration** (with
+  the Darwin arm64 variadic workaround), and it imports nothing from the
+  fork. The lowest layers (`socket`, `socketpair`, `pipe`, `fdpass`)
+  mark what they create close-on-exec through it (SPEC G16), and
+  `kqueue.mojo`, its old home, imports `socket.mojo`, so they could not
+  reach it there without a cycle. A second `external_call["fcntl"]` with
+  another signature does not compile.
 - **`poe check-fork-package` compiles it whole, and is in `test-all`.**
   `build-http` precompiles `src` only and Mojo checks method bodies lazily,
   so a body no app instantiates is never type-checked — ten errors had
