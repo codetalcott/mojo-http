@@ -12,7 +12,10 @@ them at any level of effort. Each route below exists because it pins one
 paragraph of the spec.
 
 Every response sets Content-Type except `/no-content-type`, which is
-deliberately non-conforming and is what proves `M0_WSGI_VALIDATE` is engaged.
+deliberately non-conforming and is what proves `M0_WSGI_VALIDATE` is engaged,
+and the response-head routes (`/redirect`, `/nocontent`, `/notmodified` and
+their kin), whose point is what the server adds to a head that has none --
+`scripts/head_probe.py` reads them in the unvalidated run.
 """
 
 import hashlib
@@ -476,6 +479,58 @@ def header_injection(environ, start_response):
     return [b"injected"]
 
 
+# --- the response head as the application sent it (SPEC A21, K12) -----------
+# Each route sends exactly the headers named and nothing else, so anything
+# else on the wire is the server's. `scripts/head_probe.py` reads them.
+
+SIZED = 12345
+
+
+def redirect(environ, start_response):
+    """A redirect with no Content-Type, as Starlette's RedirectResponse sends."""
+    start_response("303 See Other", [("Location", "/")])
+    return [b""]
+
+
+def nocontent(environ, start_response):
+    start_response("204 No Content", [])
+    return []
+
+
+def nocontent_cl(environ, start_response):
+    """A 204 carrying a length and seven bytes: what Django's CommonMiddleware
+    makes of any non-streaming response. RFC 9110 forbids both on a 204, so
+    neither may reach the wire -- and if the bytes did, the next response on
+    the connection would begin with them."""
+    start_response("204 No Content", [("Content-Length", "7")])
+    return [b"ignored"]
+
+
+def notmodified(environ, start_response):
+    start_response("304 Not Modified", [("ETag", '"v1"')])
+    return []
+
+
+def notmodified_cl(environ, start_response):
+    """A 304 naming the length the GET would have had, which it may keep."""
+    start_response(
+        "304 Not Modified", [("ETag", '"v1"'), ("Content-Length", str(SIZED))]
+    )
+    return []
+
+
+def sized(environ, start_response):
+    """A HEAD answered as FileResponse answers one: the GET's length, no body."""
+    start_response(
+        "200 OK",
+        [("Content-Type", "application/octet-stream"),
+         ("Content-Length", str(SIZED))],
+    )
+    if environ["REQUEST_METHOD"] == "HEAD":
+        return []
+    return [b"s" * SIZED]
+
+
 def not_found(environ, start_response):
     start_response("404 Not Found", list(TEXT))
     return [b"not found"]
@@ -514,6 +569,12 @@ ROUTES = {
     "/stream-cl": stream_cl,
     "/stream-hold": stream_hold,
     "/inject": header_injection,
+    "/redirect": redirect,
+    "/nocontent": nocontent,
+    "/nocontent-cl": nocontent_cl,
+    "/notmodified": notmodified,
+    "/notmodified-cl": notmodified_cl,
+    "/sized": sized,
 }
 
 
