@@ -164,6 +164,19 @@ Three more failures were FastHTML's own and identical under both servers:
 example's disconnect hook takes an argument FastHTML does not pass, and
 fastlite's `db.create` races across workers at import.
 
+**Re-run on the response heads, 2026-09-23** (A21, K12, L27; python-fasthtml
+0.14.13, Starlette 1.6.0, uvicorn 0.53.0). The probe application's heads,
+read beside uvicorn: FastHTML's default 404, a `RedirectResponse`, a 204, a
+304, `HEAD` of a `FileResponse` and of a 5 MB page, and `HEAD` of a sync and
+an async `StreamingResponse`, each HEAD followed by a second of listening
+for bytes after its head. All eight now match on status, `Content-Type`,
+`Content-Length` and `Transfer-Encoding`, and neither server sends a byte
+after a HEAD's head. Before, the 404, the redirect, the 204 and the 304 each
+carried `application/octet-stream`, the 204 and 304 a `content-length: 0`,
+and the `FileResponse` HEAD `content-length: 0` where uvicorn sent 3145735.
+The streamed HEAD was found while fixing the rest, on `apps/asgi_bare`: all
+10,000 bytes of a 10,000-byte stream followed its head (L27).
+
 ## In production — 2026-09-12, textshelf's streams on the hold mount (m0serve 1.2.0)
 
 Not a soak: a production record, the first use of the grant-verified hold
