@@ -5800,13 +5800,20 @@ for mode in $modes; do
     # recycled-slot shape the streamed half already covers, with a held 101
     # on the successor instead of another stream.
     for probe in scripts/chunked_keepalive.py apps/asgi_bare/ws_probe.py; do
-      if ! M0_PORT=$mport python3 $probe > /dev/null 2>&1; then
+      # The FAILING run's own output, kept: each probe names the phase it
+      # was proving when it failed, and that line is the whole diagnosis. A
+      # re-run printed in its place (what this did until 2026-09-23) is
+      # usually green -- the failure is a timing one -- and a green re-run
+      # proves nothing; one failure in round 1 went unclassified that way.
+      out=$(mktemp)
+      if ! M0_PORT=$mport python3 $probe > "$out" 2>&1; then
         echo "stress-asgi: FAILED in $mode mode on round $i of $iters, in $probe"
+        echo "=== the failing run's output ==="; cat "$out"; rm -f "$out"
         echo "stress-asgi: rerun that half alone with M0_STRESS_MODES=$mode uv run poe stress-asgi"
-        M0_PORT=$mport python3 $probe
         echo "=== $log ==="; cat $log
         exit 1
       fi
+      rm -f "$out"
     done
     i=$((i + 1))
   done
