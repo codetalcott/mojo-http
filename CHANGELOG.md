@@ -135,7 +135,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   a WSGI application gets no `CONTENT_LENGTH` for a request that sent
   none, which PEP 3333 allows. `HTTPRequest(..., invent_headers=False)` is
   new; the default still fills all three for a client.
-  `connection_close()` now answers HTTP/1.0's default from the protocol.
+  `connection_close()` now answers HTTP/1.0's default from the protocol,
+  which moves two edges: an HTTP/1.0 request whose `Connection` is a list
+  (`Keep-Alive, foo`) now closes, the value being compared whole as `close`
+  always was; and HTTP/1.2 to 1.9, which the parser accepts, now persists
+  as 1.1 does (RFC 9110 §2.5) where an invented `close` used to end it.
+  And `Transfer-Encoding: chunked, chunked` is refused with a 400 beside
+  every other request whose `chunked` is not its final coding: RFC 9112
+  §6.1 forbids applying it twice, and the loop decodes one layer.
 - **Datastar is pinned at v1.0.4** (was v1.0.3; DECISIONS D20).
   `m0-datastar`'s `VERSION`, the three demo pages' CDN pins, the `live`
   scaffold template's, and the SDK conformance-case URL. **Not a protocol
@@ -314,6 +321,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   described by its length and the `chunked` coding is gone, in the ASGI
   scope on both bridges and in the WSGI environ. Any other coding, such as
   the `gzip` of `gzip, chunked`, is kept.
+- **Every chunked upload reached a Flask application empty** (SPEC L25).
+  Werkzeug reads `HTTP_TRANSFER_ENCODING: chunked` as a streaming request
+  of unknown length and, without `wsgi.input_terminated`, hands the
+  application an empty input stream, so `request.data` was `b''` however
+  much was sent. The environ now describes the decoded body by its
+  `CONTENT_LENGTH` and carries no `HTTP_TRANSFER_ENCODING`.
 - **A module that calls `asyncio.create_task` at import failed to load
   with a bare `RuntimeError: no running event loop`** (SPEC L26).
   FastHTML's first official example does this. m0serve imports an
