@@ -4721,6 +4721,22 @@ n=$(curl -sN --max-time 3 $B/sse | grep -c 'tick')
 grep -q 'Exception in callback' fasthtml.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
 curl -s --fail $B/ > /dev/null || fail 'server died after the EventStream client vanished'
 
+# A BackgroundTask runs AFTER its response: the response is answered at its
+# final body, not when the work is done (L22).
+t=$(curl -s -o /dev/null -w '%{time_total}' --max-time 5 $B/bg)
+awk -v t="$t" 'BEGIN { exit !(t < 1.0) }' || fail "/bg took ${t}s: the response waited for its background task"
+curl -s $B/bg-log | grep -q 'empty' || fail 'the background task finished before its response was read'
+sleep 2.5
+curl -s $B/bg-log | grep -q 'done' || fail 'the background task never ran'
+# The application's own error response, and the traceback in the log (L23).
+boom=$(mktemp)
+code=$(curl -s -o "$boom" -w '%{http_code}' $B/boom)
+[ "$code" = "500" ] || fail "/boom answered $code, want 500"
+grep -q 'Internal Server Error' "$boom" || fail "/boom's body was not the application's own 500"
+rm -f "$boom"
+grep -q 'fasthtml-demo kaboom' fasthtml.log || fail "/boom's error never reached the log"
+grep -q 'Traceback (most recent call last)' fasthtml.log || fail "/boom's error was logged without its traceback"
+
 # And app.ws: FastHTML's WebSocket handler echoes through the executor.
 M0_PORT=8097 python3 apps/fasthtml_demo/ws_probe.py || fail 'the FastHTML WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
@@ -4731,6 +4747,8 @@ wait $pid 2>/dev/null; rc=$?
 rm -f fasthtml.log
 echo "smoke-fasthtml OK"
 python3 scripts/emit.py --covers L11 --task smoke-fasthtml
+python3 scripts/emit.py --covers L22 --task smoke-fasthtml
+python3 scripts/emit.py --covers L23 --task smoke-fasthtml
 """
 
 # FastAPI, the second Starlette-family row beside smoke-fasthtml (L11).
@@ -4778,11 +4796,23 @@ n=$(curl -sN --max-time 3 $B/stream | grep -c 'tick')
 # traceback per streamed response in the log with the body intact, which is
 # why this line exists and the tick count above is not enough.
 grep -q 'Exception in callback' fastapi.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
+# The client walking away is not an application error: nothing may be
+# logged as one (checked here, before the chat phases log a real one).
+grep -q 'raised' fastapi.log && fail 'a vanished streaming client was logged as an application error'
 curl -s --fail $B/ > /dev/null || fail 'server died after the streaming client vanished'
 
 # And the WebSocket: echo, then FastAPI's own close(1000) ending in a FIN.
 M0_PORT=8099 python3 apps/fastapi_demo/ws_probe.py || fail 'the FastAPI WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
+
+# FastAPI's documented chat room: a departed client's own cleanup runs and
+# can tell the room (L20, L21); a recycled slot never receives another
+# client's messages (L20); a raising socket closes with 1011 (L24) and its
+# traceback reaches the log (L23).
+M0_PORT=8099 python3 apps/fastapi_demo/chat_probe.py || fail 'the FastAPI chat probe failed'
+grep -q 'fastapi-demo ws kaboom' fastapi.log || fail "the raising socket's error never reached the log"
+grep -q 'Traceback (most recent call last)' fastapi.log || fail 'an application error was logged without its traceback'
+curl -s --fail $B/ > /dev/null || fail 'server died after the chat probe'
 
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
@@ -4790,6 +4820,8 @@ wait $pid 2>/dev/null; rc=$?
 rm -f fastapi.log
 echo "smoke-fastapi OK"
 python3 scripts/emit.py --covers L19 --task smoke-fastapi
+python3 scripts/emit.py --covers L21 --task smoke-fastapi
+python3 scripts/emit.py --covers L24 --task smoke-fastapi
 """
 
 # The documentation site: README, QUICKSTART, CHANGELOG, PROVENANCE and
