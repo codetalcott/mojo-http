@@ -1462,16 +1462,16 @@
       "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "A de-chunked request's scope carries `content-length` and not `transfer-encoding`, and no header the client did not send",
-      "status": "planned",
-      "evidence": "ROADMAP: Serving FastHTML's own examples as uvicorn serves them"
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a chunked POST and a GET, read back from the scope on the executor and on the buffered hatch: the de-chunked one must carry its length and no `transfer-encoding`, and the GET neither a `content-length` nor a `connection` curl never sent. Before the fix every parsed request went through the outgoing constructor, which filled in a length, a `Connection` and a `Host`, so a GET carried `content-length: 0` and `connection: keep-alive` and a chunked request both halves of a contradictory pair an application proxying it would forward. A `gzip, chunked` body keeps its `gzip`, and HTTP/1.0 still closes by default, now read from the protocol (`test_request_as_sent.mojo`). The WSGI environ follows, since it maps the same headers: `Conformance test the WSGI bridge` sends the same two requests to `/environ`"
     },
     {
       "id": "L26",
       "section": "L",
       "category": "L. ASGI 3.0",
       "capability": "An application that schedules asyncio work at import is refused by name, with the fix",
-      "status": "planned",
-      "evidence": "ROADMAP: Serving FastHTML's own examples as uvicorn serves them"
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a module calling `asyncio.create_task` at import must exit 1 naming what it did and the fix (a lifespan startup handler), keep its traceback and print no ready banner, and `--doctor` and a bare MODULE through discovery must say the same. uvicorn refuses the same module without `--reload`, as `RuntimeError: no running event loop`, which is all m0serve used to print. `poe test-shim` holds the other half: any OTHER `RuntimeError` keeps its own words"
     },
     {
       "id": "L27",

@@ -157,7 +157,7 @@ What did not match, most harmful first:
 | a WebSocket whose application raised was closed with 1000 | L24 | fixed |
 | sockets survive `exec`: a shell the application started held a client connection open | G16 | fixed |
 | `application/octet-stream` on responses sent without a type; a HEAD's `Content-Length` rewritten to 0; `Content-Length: 0` on 204 and 304 | A21, K12 | fixed |
-| a chunked request's scope carries both `transfer-encoding` and `content-length`; a module that calls `asyncio.create_task` at import cannot load | L25, L26 | planned |
+| a chunked request's scope carries both `transfer-encoding` and `content-length`; a module that calls `asyncio.create_task` at import cannot load | L25, L26 | fixed |
 
 Three more failures were FastHTML's own and identical under both servers:
 `setup_ws` reads `scope.client` as an attribute of a dict, the terminal
