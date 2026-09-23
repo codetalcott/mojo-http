@@ -1393,15 +1393,17 @@ def test_work_scheduled_at_import_is_refused_by_name(h):
         got = []
         try:
             # The coroutine create_task was handed is never awaited, which
-            # is the point; its RuntimeWarning is not this test's output.
-            warnings.simplefilter("ignore", RuntimeWarning)
-            for name in names:
-                try:
-                    h.ns["detect_spec"](name, "app")
-                except RuntimeError as e:
-                    got.append(str(e))
-                else:
-                    got.append(None)
+            # is the point; its RuntimeWarning is not this test's output --
+            # and the filter is scoped, so later tests keep their warnings.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                for name in names:
+                    try:
+                        h.ns["detect_spec"](name, "app")
+                    except RuntimeError as e:
+                        got.append(str(e))
+                    else:
+                        got.append(None)
         finally:
             sys.path.remove(tmp)
             for name in names:
@@ -1409,7 +1411,11 @@ def test_work_scheduled_at_import_is_refused_by_name(h):
     named, other = got
     assert named is not None, "a module that create_task'd at import loaded"
     assert "scheduled asyncio work at import" in named, named
-    assert "lifespan" in named, named
+    # The fix named must exist in the framework it is named for: Starlette
+    # 1.x has no on_startup (only lifespan=); FastHTML still takes both.
+    assert "FastHTML: on_startup=[...] or lifespan=..." in named, named
+    assert "Starlette and FastAPI: lifespan=..." in named, named
+    assert "Starlette and FastHTML" not in named, named
     assert "Traceback (most recent call last)" in named, named
     assert other is not None and "database is locked" in other, other
     assert "scheduled asyncio work" not in other, other

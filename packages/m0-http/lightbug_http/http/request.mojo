@@ -18,19 +18,43 @@ def _drop_final_chunked(mut headers: Headers):
     nothing else is left.
 
     The parser has already refused a request whose last coding is anything
-    else. A byte-span slice, never `[byte=a:b]`: a header value may hold
-    obs-text, which is not UTF-8.
+    else, or that applies `chunked` twice. Empty list elements mean nothing
+    (RFC 9110 §5.6.1) and are dropped with it, so `, chunked` leaves no
+    empty field beside the length. A byte walk, never `[byte=a:b]`: a
+    header value may hold obs-text, which is not UTF-8.
     """
     var te = headers.get(HeaderKey.TRANSFER_ENCODING)
     if not te:
         return
     var value = te.value()
-    var comma = value.rfind(",")
-    if comma < 0:
+    var raw = value.as_bytes()
+    var last_comma = -1
+    for i in range(len(raw)):
+        if raw[i] == 0x2C:  # ','
+            last_comma = i
+    var kept = List[UInt8]()
+    var start = 0
+    while start < last_comma:
+        var stop = start
+        while stop < last_comma and raw[stop] != 0x2C:
+            stop += 1
+        var a = start
+        var b = stop
+        while a < b and (raw[a] == 0x20 or raw[a] == 0x09):
+            a += 1
+        while b > a and (raw[b - 1] == 0x20 or raw[b - 1] == 0x09):
+            b -= 1
+        if b > a:
+            if len(kept) > 0:
+                kept.append(0x2C)
+                kept.append(0x20)
+            for k in range(a, b):
+                kept.append(raw[k])
+        start = stop + 1
+    if len(kept) == 0:
         headers.pop(HeaderKey.TRANSFER_ENCODING)
         return
-    var rest = String(unsafe_from_utf8=value.as_bytes()[:comma])
-    headers[HeaderKey.TRANSFER_ENCODING] = String(rest.strip())
+    headers[HeaderKey.TRANSFER_ENCODING] = String(unsafe_from_utf8=Span(kept))
 
 
 @fieldwise_init
