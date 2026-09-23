@@ -657,9 +657,9 @@ def test_a_lingering_task_does_not_end_its_successors_stream(h):
     _assert_global_window_whole(h)
 
 
-def test_a_spawn_clears_the_slots_stale_disconnect(h):
-    """The successor must not inherit the mark that closed the connection
-    before it. Inherited, its first credit wait raises CancelledError and
+def test_a_successor_does_not_inherit_its_predecessors_disconnect(h):
+    """The successor must not inherit the disconnect that closed the
+    connection before it. Inherited, its first credit wait raises CancelledError and
     its `finally` skips the end signal entirely — a subscribed stream with
     no producer, which is the stall from the other direction."""
     mark = _recycle(h)
@@ -697,15 +697,16 @@ def test_a_stale_ack_cannot_inflate_the_successors_window(h):
         % (h.ns["_exec_credits"][0], window))
 
 
-def test_a_websocket_spawn_clears_the_slots_stale_disconnect(h):
+def test_a_websocket_successor_does_not_inherit_its_predecessors_disconnect(h):
     """`spawn_ws` carries the same rule, and the same consequence: a held
     101 whose `websocket.accept` is swallowed as "already gone" is answered
     403 instead — a WebSocket that refuses itself."""
     h.job(0, "hold")
     h.settle()
     # One batch again: the disconnect and the upgrade job are read by a
-    # single `_on_submit` callback, so `spawn_ws` runs while the slot's
-    # mark is still set -- the only ordering in which the rule matters.
+    # single `_on_submit` callback, so `spawn_ws` runs while the previous
+    # connection's disconnect is still pending on the slot -- the only
+    # ordering in which the rule matters.
     h.disconnect(0)
     h.job(0, "ws")
     h.settle()
@@ -1481,6 +1482,19 @@ def test_the_drain_ends_an_http_task_that_never_ends(h):
     assert not h.ns["_exec_tasks"], h.ns["_exec_tasks"]
 
 
+def test_an_error_is_described_once(h):
+    """PR 1 review M6: the log's description led with the one-line summary
+    and then the traceback, whose last line is the same summary."""
+    try:
+        raise ValueError("kaboom")
+    except ValueError as exc:
+        text = h.ns["_describe"](exc)
+    lines = text.splitlines()
+    assert lines[0] == "ValueError: kaboom", lines[:1]
+    assert lines.count("ValueError: kaboom") == 1, text
+    assert any(l.startswith("Traceback") for l in lines), text
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1541,9 +1555,9 @@ TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
     test_a_lingering_task_does_not_end_its_successors_stream,
-    test_a_spawn_clears_the_slots_stale_disconnect,
+    test_a_successor_does_not_inherit_its_predecessors_disconnect,
     test_a_stale_ack_cannot_inflate_the_successors_window,
-    test_a_websocket_spawn_clears_the_slots_stale_disconnect,
+    test_a_websocket_successor_does_not_inherit_its_predecessors_disconnect,
     test_a_websocket_recycle_forgets_the_predecessors_accept,
     test_a_websocket_send_waits_for_its_window,
     test_a_stream_sent_from_a_child_task_marks_the_owner,
@@ -1585,6 +1599,7 @@ TESTS = [
     test_a_websocket_spawn_forgets_the_previous_connections_stream_task,
     test_an_http_spawn_forgets_the_previous_connections_stream_task,
     test_the_drain_ends_an_http_task_that_never_ends,
+    test_an_error_is_described_once,
 ]
 
 
@@ -1682,9 +1697,8 @@ SABOTAGES = [
     ),
     (
         "the log gets the exception's name only",
-        "    return '%s: %s\\n%s' % (",
-        "    return '%s: %s' % (type(exc).__name__, exc)\n"
-        "    return '%s: %s\\n%s' % (",
+        "    return head + '\\n' + '\\n'.join(lines)",
+        "    return head",
     ),
     (
         "an application error closes the socket with 1000",
@@ -1869,6 +1883,11 @@ SABOTAGES = [
         "        for t in pending:\n"
         "            pass\n"
         "        if pending:\n",
+    ),
+    (
+        "an error's summary is said twice",
+        "    if lines and lines[-1] == head:\n",
+        "    if False:\n",
     ),
     (
         "work scheduled at import is not named",

@@ -834,11 +834,13 @@ def _describe(exc):
     # something raised.
     import traceback
 
-    return '%s: %s\\n%s' % (
-        type(exc).__name__,
-        exc,
-        ''.join(traceback.format_exception(exc)).rstrip('\\n'),
-    )
+    head = '%s: %s' % (type(exc).__name__, exc)
+    lines = ''.join(traceback.format_exception(exc)).rstrip('\\n').split('\\n')
+    # The traceback ends with that same summary line: said once, at the top
+    # where a grep finds it (PR 1 review M6).
+    if lines and lines[-1] == head:
+        lines.pop()
+    return head + '\\n' + '\\n'.join(lines)
 
 
 def _exec_on_disconnect(slot):
