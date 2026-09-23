@@ -103,6 +103,8 @@ class Harness:
         self.bg_done = False
         self.http_receives = []  # every stored stream's receive
         self.bg_receive = []     # what a receive() after the response got
+        self.head_receive = []   # what a receive() after a streamed HEAD got
+        self.head_finished = False  # the streamed HEAD's app ran to its end
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -142,7 +144,8 @@ class Harness:
                 # per-request keys.
                 scope = dict(self.ns["_scope_base"])
                 scope.update({
-                    "method": "GET", "path": "/", "raw_path": b"/",
+                    "method": "HEAD" if behaviour.startswith("head") else "GET",
+                    "path": "/", "raw_path": b"/",
                     "query_string": ("b=%s" % behaviour).encode(),
                     "http_version": "1.1", "headers": [], "client": None,
                     "state": dict(self.ns["_lifespan_state"]),
@@ -317,6 +320,25 @@ class Harness:
                 # ServerErrorMiddleware's shape: a finished 500, then the
                 # re-raise of the error it was for.
                 raise ValueError("kaboom after body")
+            return
+        if behaviour in ("headstream", "stream204"):
+            # A streaming application answering a HEAD as it answers a GET,
+            # as Starlette's StreamingResponse does -- or streaming into a
+            # status that has no content: a head, three streamed pieces and
+            # a final body, then what receive() says afterwards.
+            status, head = 200, [(b"content-type", b"text/plain")]
+            if behaviour == "stream204":
+                status, head = 204, []
+            await send({"type": "http.response.start", "status": status,
+                        "headers": head})
+            for _ in range(3):
+                await send({"type": "http.response.body", "body": b"x" * 64,
+                            "more_body": True})
+            await send({"type": "http.response.body", "body": b"",
+                        "more_body": False})
+            await receive()  # the request's own body
+            self.head_receive.append((await receive())["type"])
+            self.head_finished = True
             return
         if behaviour == "streambg":
             await send({"type": "http.response.start", "status": 200,
@@ -1153,6 +1175,48 @@ def test_a_gone_streams_final_body_does_not_end_the_next_stream(h):
         % (after,))
 
 
+def test_a_head_is_answered_at_its_first_streamed_body_and_never_streams(h):
+    """L27: a HEAD's response is its head (RFC 9110 §9.3.2). A streaming
+    application answers one as it answers a GET -- Starlette's
+    StreamingResponse does -- and the executor switched it to streaming like
+    any GET. The loop will not chunk a HEAD, so the body went to the wire
+    raw after the head, 10,000 of 10,000 bytes measured, where a keep-alive
+    connection's next response begins. It is answered at its first streamed
+    body instead, with no body; the rest is dropped, and receive() then
+    says the client has gone, which is what stops a StreamingResponse."""
+    h.job(0, "headstream")
+    h.settle()
+    kinds = h.kinds(0)
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1 and done[0][2] == 200 and done[0][4] == b"", (
+        "a HEAD was not answered once, with its head and no body: %r"
+        % (kinds,))
+    assert done[0][3] == [(b"content-type", b"text/plain")], done[0][3]
+    assert not [k for k in kinds if k.startswith("stream")], (
+        "a HEAD streamed: %r" % (kinds,))
+    assert h.head_receive == ["http.disconnect"], h.head_receive
+    assert h.head_finished, "the application's later sends did not return"
+    _assert_global_window_whole(h)
+
+
+def test_a_bodiless_status_is_answered_at_its_first_streamed_body(h):
+    """A 1xx, 204 or 304 has no content at all (RFC 9110 §6.4.1), and the
+    loop frames none of them, so one streamed went to the wire raw exactly
+    as a HEAD's body did. The WSGI side has never streamed one
+    (`_stream_this`); the executor answers it at its first streamed body
+    too."""
+    h.job(0, "stream204")
+    h.settle()
+    kinds = h.kinds(0)
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1 and done[0][2] == 204 and done[0][4] == b"", (
+        "a streamed 204 was not answered once, with no body: %r" % (kinds,))
+    assert not [k for k in kinds if k.startswith("stream")], (
+        "a 204 streamed: %r" % (kinds,))
+    assert h.head_finished, "the application's later sends did not return"
+    _assert_global_window_whole(h)
+
+
 def test_a_body_after_the_final_body_answers_nothing(h):
     """I3: once a response is answered, a further body has nothing to
     answer."""
@@ -1267,6 +1331,8 @@ TESTS = [
     test_a_finished_background_task_leaves_the_next_stream_alone,
     test_a_gone_streams_final_body_does_not_end_the_next_stream,
     test_a_body_after_the_final_body_answers_nothing,
+    test_a_head_is_answered_at_its_first_streamed_body_and_never_streams,
+    test_a_bodiless_status_is_answered_at_its_first_streamed_body,
     test_a_tight_producer_into_a_gone_stream_still_yields,
     test_a_gone_requests_receive_says_so_at_once,
     test_a_client_disconnect_after_the_response_is_not_logged,
@@ -1493,6 +1559,16 @@ SABOTAGES = [
         "                    credited = _ASGI_CREDIT_WINDOW\n"
         "                _exec_credits[slot] = credited",
         "                _exec_credits[slot] += n",
+    ),
+    (
+        "a HEAD streams like a GET",
+        "                if self.head or self.status < 200 or self.status in (204, 304):",
+        "                if self.status < 200 or self.status in (204, 304):",
+    ),
+    (
+        "a status with no content streams",
+        "                if self.head or self.status < 200 or self.status in (204, 304):",
+        "                if self.head:",
     ),
 ]
 

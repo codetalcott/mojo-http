@@ -1207,6 +1207,7 @@ class _Cycle:
         'aborted',
         'task',
         'completed',
+        'head',
     )
 
     def __init__(self, slot, body):
@@ -1221,6 +1222,7 @@ class _Cycle:
         self.aborted = False
         self.task = None
         self.completed = False
+        self.head = False
 
     async def receive(self):
         if not self.delivered:
@@ -1333,6 +1335,22 @@ class _Cycle:
                     raise RuntimeError(
                         'ASGI streamed a body chunk before ' 'http.response.start'
                     )
+                if self.head or self.status < 200 or self.status in (204, 304):
+                    # Nothing here may stream: a HEAD's response is its head
+                    # (RFC 9110 §9.3.2) and a 1xx, 204 or 304 has no content
+                    # (§6.4.1). Streamed, the loop -- which frames none of
+                    # them -- wrote the body raw after the head, 10,000 of
+                    # 10,000 bytes measured, where a keep-alive connection's
+                    # next response begins (SPEC L27). Answer now with no
+                    # body, as a final body would, and drop the rest:
+                    # receive() then says http.disconnect, which is what
+                    # stops a StreamingResponse. `_stream_this` is the WSGI
+                    # side's same rule.
+                    self.completed = True
+                    self.chunks = []
+                    self.total = 0
+                    _exec_put(('done', self.slot, self.status, self.headers, b''))
+                    return
                 import asyncio
 
                 slot = self.slot
@@ -1397,6 +1415,7 @@ class _Cycle:
             import asyncio
 
             self.task = asyncio.current_task()
+        self.head = scope.get('method') == 'HEAD'
         slot = self.slot
         try:
             await _app(scope, self.receive, self.send)
