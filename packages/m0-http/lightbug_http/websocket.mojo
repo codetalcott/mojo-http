@@ -450,12 +450,17 @@ struct WSParseResult(Movable):
     """Encoded frames the loop must send back (pongs, the close echo)."""
     var close_after_reply: Bool
     """Send `reply`, then close the connection (close handshake or error)."""
+    var close_code: Int
+    """The code this close carries, for the application (SPEC L28): the
+    peer's own, 1005 when its Close had no body (RFC 6455 §7.1.5), or the
+    code THIS side sent for a protocol failure; -1 when nothing closed."""
 
     def __init__(out self):
         self.msg_opcodes = List[Int]()
         self.msg_payloads = List[List[UInt8]]()
         self.reply = List[UInt8]()
         self.close_after_reply = False
+        self.close_code = -1
 
 
 struct WSState(Movable):
@@ -507,6 +512,7 @@ struct WSState(Movable):
         var res = WSParseResult()
         res.reply = close_frame(code)
         res.close_after_reply = True
+        res.close_code = code
         self.buffer.clear()
         self.frag_opcode = -1
         self.frag_payload.clear()
@@ -622,6 +628,9 @@ struct WSState(Movable):
                     var echo = encode_ws_frame(WS_OP_CLOSE, Span(echo_body))
                     res.reply.extend(Span(echo))
                     res.close_after_reply = True
+                    res.close_code = 1005
+                    if len(payload) >= 2:
+                        res.close_code = (Int(payload[0]) << 8) | Int(payload[1])
                     self.buffer.clear()
                     return res^
                 else:

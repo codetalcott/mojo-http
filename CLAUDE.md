@@ -1401,7 +1401,12 @@ job; `WSGIHandler` answers static mounts and the health path this way),
 in non-streaming handlers) — `tick`, the application timer hook (fires
 every `app_tick_ms` when configured; runs ON the event loop thread, so keep
 it quick), and `ws_message`, which receives complete WebSocket messages
-(fragments assembled, control frames already answered by the loop). The
+(fragments assembled, control frames already answered by the loop), with
+`ws_close_code` beside it: the code a socket's close carried, called the
+moment the loop parses it (SPEC L28; the executor's disconnect tag carries
+it to the application, 1006 when none was parsed), and `take_ws_closes`,
+the sockets the handler closed itself with a Close already queued, which
+the loop then lingers on as after its own Close (SPEC I26). The
 `sse_*` names are historical: the outbox drain and the disconnect hook serve
 WebSocket slots identically — a WS handler queues `encode_ws_frame(...)`
 bytes and returns them from `sse_drain_slot`. A handler that streams
@@ -1996,10 +2001,12 @@ Properties of the design, not defects to fix in passing:
 - **`EV_EOF` on a read event means "no more request bytes", not "connection
   over".** A client may half-close (`shutdown(SHUT_WR)`) to say it has sent
   the whole request and still be waiting to read the answer, so the loop
-  finishes the buffered request and only turns off keep-alive; a stream
-  still closes, having no request left to answer, and a request that is
-  still INCOMPLETE closes at once (`peer_eof`) rather than waiting out the
-  header timeout. Closing there discarded a response already written, which
+  finishes the buffered request and only turns off keep-alive; an SSE
+  stream still closes, having no request left to answer; a WebSocket first
+  reads what its peer left buffered -- a last message, its Close with the
+  code the application is told (SPEC L28) -- and closes once nothing is
+  left; and a request that is still INCOMPLETE closes at once (`peer_eof`)
+  rather than waiting out the header timeout. Closing there discarded a response already written, which
   the client sees as an RST and a lost answer.
 
   **The two backends used to disagree here, and that is why this was

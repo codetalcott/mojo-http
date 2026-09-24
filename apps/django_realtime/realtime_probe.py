@@ -198,6 +198,46 @@ def handshake(channel, token=TOKEN):
     return sock, worker
 
 
+def expect_end(sock, within=5.0, skip_close=False):
+    """EOF from the server, with nothing before it but heartbeat pings (and,
+    when `skip_close`, the server's own Close, which this client leaves
+    unanswered)."""
+    deadline = time.time() + within
+    while time.time() < deadline:
+        sock.settimeout(max(0.1, deadline - time.time()))
+        try:
+            op, payload = read_frame_or_eof(sock)
+        except socket.timeout:
+            break
+        if op is None:
+            sock.close()
+            return
+        if op == 0x9 or op == 0x1 or (op == 0x8 and skip_close):
+            skip_close = False if op == 0x8 else skip_close
+            continue
+        fail("after the closing handshake the server sent op=%d" % op)
+    fail("the connection was still open %.0f s after the closing handshake" % within)
+
+
+def read_frame_or_eof(sock):
+    """`read_frame`, but (None, b'') at a clean EOF or a reset."""
+    try:
+        hdr = sock.recv(2)
+    except ConnectionResetError:
+        return None, b""
+    if len(hdr) == 0:
+        return None, b""
+    if len(hdr) == 1:
+        hdr += recv_exact(sock, 1)
+    b0, b1 = hdr[0], hdr[1]
+    ln = b1 & 0x7F
+    if ln == 126:
+        ln = struct.unpack(">H", recv_exact(sock, 2))[0]
+    elif ln == 127:
+        ln = struct.unpack(">Q", recv_exact(sock, 8))[0]
+    return b0 & 0x0F, recv_exact(sock, ln)
+
+
 def open_socket(channel):
     """`handshake` for a phase that expects the 101; a refusal names itself.
 
@@ -288,6 +328,56 @@ if EXPECT_WORKERS <= 1:
     if got != b"hello from publish":
         fail("socket heard %r, wanted the published message" % got)
     expect_silence(sock_other)
+
+    # --- Phase 4: a message the pool's channel cannot carry -------------------
+    # Inbound messages reach a pool thread as datagrams of at most 65,546
+    # bytes. A larger one used to be parked and retried for ever: no reply,
+    # no close, no log. It is refused with a Close carrying 1009 (SPEC I26).
+    phase("phase 4: an inbound message the channel cannot carry")
+    sock_listen, _ = open_socket("news")
+    sock_big, _ = open_socket("news")
+    # A message right behind the oversized one: RFC 6455 §7.1.7, nothing
+    # is processed after the connection is failed, so the channel's other
+    # socket must hear none of it.
+    send_frame(sock_big, 0x2, b"o" * 70000)
+    send_frame(sock_big, 0x1, b"after-the-refused-one")
+    # Heartbeat pings are answered and the channel's own text skipped, for
+    # up to five seconds; anything else is the answer.
+    deadline = time.time() + 5.0
+    op = None
+    while time.time() < deadline:
+        sock_big.settimeout(max(0.1, deadline - time.time()))
+        try:
+            op, payload = read_frame(sock_big)
+        except socket.timeout:
+            op = None
+            break
+        if op == 0x9:
+            send_frame(sock_big, 0xA, payload)
+            op = None
+            continue
+        if op == 0x1:
+            op = None
+            continue
+        break
+    if op is None:
+        fail("no answer but heartbeats to a 70,000-byte message in 5 s: parked, not refused")
+    if op != 0x8:
+        fail("a 70,000-byte message was answered with op=%d, not a Close" % op)
+    code = struct.unpack(">H", payload[:2])[0] if len(payload) >= 2 else None
+    if code != 1009:
+        fail("the Close carried %r, want 1009" % code)
+    # The client answers the Close, as a browser does: the server must end
+    # the connection, with no second Close -- which Chromium reports as a
+    # failed connection (1006), not the 1009 it was sent.
+    send_frame(sock_big, 0x8, struct.pack(">H", 1009))
+    expect_end(sock_big)
+    expect_silence(sock_listen)
+    # And a client that never answers is let go when the linger runs out.
+    sock_quiet, _ = open_socket("news")
+    send_frame(sock_quiet, 0x2, b"o" * 70000)
+    expect_end(sock_quiet, within=8.0, skip_close=True)
+    close_all([sock_listen])
 
     close_all([sock_a, sock_b, sock_other])
     print("realtime_probe OK (single worker, worker %s)" % worker_a)

@@ -2745,6 +2745,7 @@ fi
 rm -f ws1.log ws2.log ws3.log ws4.log
 echo "smoke-django-realtime-ws OK"
 python3 scripts/emit.py --covers I12 --task smoke-django-realtime-ws
+python3 scripts/emit.py --covers I26 --task smoke-django-realtime-ws
 """
 
 # The CLI itself, as a user meets it: what --help and --version say, which
@@ -6275,6 +6276,13 @@ M0_PORT=8088 python3 scripts/chunked_keepalive.py \
 # must cancel the app task and leave the server healthy.
 M0_PORT=8088 python3 apps/asgi_bare/ws_probe.py || fail 'the ASGI WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after an abrupt WebSocket disconnect'
+# What the application is told when its client leaves (L28): the client's
+# own close code, 1005 for a Close with none, 1006 only when no Close came --
+# it used to be 1006 for all three. And an inbound message larger than the
+# executor channel's datagram (I26) is refused with a Close carrying 1009,
+# named in the log, where it used to be parked for ever in silence.
+python3 scripts/ws_close_probe.py --port 8088 || fail 'the WebSocket disconnect code or the oversized-message refusal is wrong (L28, I26)'
+grep -q 'exceeds the channel' asgi.log || fail 'the oversized inbound message was refused without a log line (I26)'
 
 # Graceful stop with a live stream in flight: drains and exits 0.
 curl -sN --max-time 10 $B/stream-forever > /dev/null &
@@ -6501,6 +6509,8 @@ python3 scripts/emit.py --covers A21 --task smoke-asgi
 python3 scripts/emit.py --covers L27 --task smoke-asgi
 python3 scripts/emit.py --covers L25 --task smoke-asgi
 python3 scripts/emit.py --covers L26 --task smoke-asgi
+python3 scripts/emit.py --covers L28 --task smoke-asgi
+python3 scripts/emit.py --covers I26 --task smoke-asgi
 """
 
 # The keep-alive request cap (`max_keepalive_requests`, 100) closes a

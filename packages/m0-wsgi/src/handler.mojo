@@ -36,7 +36,8 @@ from lightbug_http.c.process import getpid
 from lightbug_http.offload import OffloadPool, STREAM_GEN_NONE
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
-    websocket_upgrade, encode_ws_frame, WS_OP_TEXT, WS_OP_CLOSE,
+    websocket_upgrade, encode_ws_frame, close_frame, WS_OP_TEXT, WS_OP_CLOSE,
+    WS_CLOSE_TOO_BIG,
 )
 from lightbug_http.c.platform import MSG_DONTWAIT
 
@@ -330,6 +331,16 @@ struct WSGIHandler(ThreadHandler):
     var ws_in_sent: List[Int]
     """Per slot: datagram bytes charged toward `WS_IN_WINDOW` since this
     socket's begin ('B' seeds it to zero)."""
+    var ws_refused: List[Bool]
+    """Per slot: an inbound message was refused and the socket is ending
+    (SPEC I26); nothing more it sends is delivered (RFC 6455 §7.1.7)."""
+    var ws_closes: List[Int]
+    """Held sockets whose refusal Close is queued, for `take_ws_closes`."""
+    var ws_closed_with: List[Int]
+    """Per slot: the close code the loop reported for this socket
+    (`ws_close_code`), carried in its disconnect tag to the executor so the
+    application hears it (SPEC L28); 0 when none was reported, which the
+    shim reads as 1006."""
     var ws_in_acked: List[Int]
     """Per slot: the shim's cumulative consumed counter, as of the last 'r'
     frame — monotonic, clamped to `ws_in_sent` so a stale ack cannot open
@@ -395,6 +406,9 @@ struct WSGIHandler(ThreadHandler):
         self.stream_lost = List[Bool](capacity=slots)
         self.ws_in_sent = List[Int](capacity=slots)
         self.ws_in_acked = List[Int](capacity=slots)
+        self.ws_closed_with = List[Int](capacity=slots)
+        self.ws_refused = List[Bool](capacity=slots)
+        self.ws_closes = List[Int]()
         self.ws_parked = List[List[UInt8]](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
@@ -404,6 +418,8 @@ struct WSGIHandler(ThreadHandler):
             self.stream_lost.append(False)
             self.ws_in_sent.append(0)
             self.ws_in_acked.append(0)
+            self.ws_closed_with.append(0)
+            self.ws_refused.append(False)
             self.ws_parked.append(List[UInt8]())
         self.ws_parked_count = 0
         self.ws_resume = List[Int]()
@@ -1144,6 +1160,13 @@ struct WSGIHandler(ThreadHandler):
         var pool_ack_fd = pool_stream_ack_fd(slot_url) if (
             self.streams.is_slot_streaming(slot)
         ) else -1
+        # And the code this socket closed with, if the loop reported one;
+        # the slot's next socket starts from none.
+        var close_code = 0
+        if slot < len(self.ws_closed_with):
+            close_code = self.ws_closed_with[slot]
+            self.ws_closed_with[slot] = 0
+            self.ws_refused[slot] = False
         self.streams.unsubscribe(slot)
         self.sockets.unsubscribe(slot)
         if slot < len(self.hold_lane):
@@ -1176,16 +1199,24 @@ struct WSGIHandler(ThreadHandler):
                 # would otherwise overtake a tag on the channel (see
                 # `PyBridge.notify_disconnect`).
                 try:
-                    self.apps[0]._bridge.notify_disconnect(slot)
+                    self.apps[0]._bridge.notify_disconnect(slot, close_code)
                 except e:
                     print("inverted executor: disconnect notify raised: " + String(e), flush=True)
             elif slot_url.byte_length() > 0:
-                _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
+                _send_disconnect_tag(self._notify_fd_for(slot_url), slot, close_code)
             else:
                 # The subscription (and with it the channel name) is gone;
                 # the lane recorded at the begin frame still names the
                 # executor that owns the connection.
-                _send_disconnect_tag(self._notify_fd_for_lane(exec_lane), slot)
+                _send_disconnect_tag(
+                    self._notify_fd_for_lane(exec_lane), slot, close_code
+                )
+
+    def ws_close_code(mut self, slot: Int, code: Int):
+        """The close code the loop parsed for `slot`, kept until its
+        disconnect goes to the executor (SPEC L28)."""
+        if slot >= 0 and slot < len(self.ws_closed_with):
+            self.ws_closed_with[slot] = code
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open
@@ -1468,7 +1499,19 @@ struct WSGIHandler(ThreadHandler):
     def _ws_forward(mut self, slot: Int, opcode: Int, payload: List[UInt8]) -> Bool:
         """One delivery attempt, shared by the live path and the parked
         drain so the two cannot route differently. True = delivered (or
-        served inline); False = the channel or the window refused."""
+        served inline, or refused for good); False = the channel or the
+        window refused, for now."""
+        # A message larger than the channel's datagram can never be
+        # delivered, however long it waits: parked, it was retried for ever
+        # -- no reply, no close, no log (a 70 KB chat message went silent).
+        # Refused with 1009 instead (SPEC I26), once per socket, and nothing
+        # the socket sends after it is processed (RFC 6455 §7.1.7).
+        if slot < len(self.ws_refused) and self.ws_refused[slot]:
+            return True
+        var limit = self._ws_datagram_room(slot)
+        if limit >= 0 and len(payload) > limit:
+            self._ws_refuse_too_big(slot, len(payload), limit)
+            return True
         # The POOL first: on a mixed mounted server `asgi_notify_fd` is set
         # for the ASGI mount, and asking that question first would hand
         # every socket's message to an executor that never accepted the
@@ -1547,6 +1590,61 @@ struct WSGIHandler(ThreadHandler):
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
         return True
+
+    def _ws_datagram_room(self, slot: Int) -> Int:
+        """The largest inbound payload `slot`'s channel can carry in one
+        datagram (`WS_CHANNEL_DATAGRAM_MAX` less its header), or -1 where no
+        datagram is involved (a GRIP socket served inline)."""
+        if slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD:
+            # `_send_ws_pool_message`'s header: tag, slot, opcode, the
+            # channel's length and the channel itself.
+            return WS_CHANNEL_DATAGRAM_MAX - 12 - self.sockets.filter_url(slot).byte_length()
+        if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
+            return WS_CHANNEL_DATAGRAM_MAX - 10  # `_send_ws_message_tag`'s
+        return -1
+
+    def _ws_refuse_too_big(mut self, slot: Int, size: Int, limit: Int):
+        """End `slot` with a Close carrying 1009, the message dropped: the
+        Close is queued and the socket marked done in one step, the `x`
+        frame's shape, so the loop is `closing` before the peer's reply can
+        arrive; an outbox too full for the Close ends it without one. The
+        application hears 1009 in its disconnect (SPEC L28).
+
+        A socket a pool thread holds is not a channel stream, so the loop
+        does not end it when its subscription does: it is named in
+        `take_ws_closes`, and the loop lingers for the peer's reply as it
+        does after its own Close. An application's own close already queued
+        (`asgi_done`) gets no second Close behind it."""
+        if slot < len(self.ws_refused):
+            self.ws_refused[slot] = True
+            self.ws_closed_with[slot] = WS_CLOSE_TOO_BIG
+        var held = slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD
+        if slot < len(self.asgi_done) and self.asgi_done[slot]:
+            return
+        var queued = self.sockets.queue_frame(
+            slot, NO_EVENT_ID, close_frame(WS_CLOSE_TOO_BIG)
+        )
+        print(
+            "ws_message: an inbound message of " + String(size)
+            + " bytes exceeds the channel's " + String(limit)
+            + "-byte limit; "
+            + (String("closing slot ") + String(slot) + " with 1009" if queued
+               else String("ending slot ") + String(slot)
+               + " without a Close, its outbox being full"),
+            flush=True,
+        )
+        if not queued:
+            self._end_socket(slot)
+        elif slot < len(self.asgi_done):
+            self.asgi_done[slot] = True
+        if held:
+            self.ws_closes.append(slot)
+
+    def take_ws_closes(mut self) -> List[Int]:
+        """The held sockets `_ws_refuse_too_big` closed this pass."""
+        var out = self.ws_closes^
+        self.ws_closes = List[Int]()
+        return out^
 
     def _ws_park(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         """Append one `[opcode u8][len u32 LE][payload]` record. Parked is
@@ -1729,8 +1827,10 @@ assembled messages underneath it, which is wrong by a factor of 64 --
 inbound frame between ~64 KB and the socket's send-buffer limit was handed
 to the application truncated and presented as complete.
 
-Refusing to send is the honest answer: an oversized message is dropped and
-logged, the same way one too big for the socket buffer already was. It is
+Refusing to send is the honest answer, and refusing it for good: an
+oversized message ends its socket with a Close carrying 1009, logged once
+(`_ws_forward`, SPEC I26) -- it used to be parked and retried for ever, a
+socket gone silent with nothing in any log. It is
 declared here rather than beside either buffer because both senders live in
 this file, and a bound that is not shared with the check is not a bound.
 """
@@ -2061,7 +2161,8 @@ def _send_ws_message_tag(
     The payload rides IN the datagram, so it is bounded by the channel's
     frame size — and by WS_CHANNEL_DATAGRAM_MAX, which is what the reader
     can actually take. Over that it is refused rather than truncated;
-    `ws_message` logs the drop. Retried like the disconnect tag — a lost
+    `_ws_forward` never sends one this large, ending the socket with 1009
+    instead (SPEC I26). Retried like the disconnect tag — a lost
     inbound message is an app-visible gap."""
     if 10 + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
         return False
@@ -2083,8 +2184,9 @@ def _send_ws_message_tag(
     return False
 
 
-def _send_disconnect_tag(fd: Int, slot: Int):
-    """One `[tag=1 u8][slot i64 LE]` datagram on the submit channel.
+def _send_disconnect_tag(fd: Int, slot: Int, code: Int = 0):
+    """One `[tag=1 u8][slot i64 LE]` datagram on the submit channel, with a
+    `[code u16 LE]` after it when `code` is a WebSocket's close code.
 
     A raw libc `send` rather than the socket module's wrapper: this is
     nine bytes on a connected SOCK_DGRAM pair, and `sse_slot_disconnected`
@@ -2092,11 +2194,16 @@ def _send_disconnect_tag(fd: Int, slot: Int):
     disconnect is a leaked task holding state until shutdown — but
     bounded, because this runs on the event loop thread and must never
     park."""
-    var msg = List[UInt8](capacity=9)
+    var msg = List[UInt8](capacity=11)
     msg.append(1)
     var bits = UInt64(Int64(slot))
     for shift in range(0, 64, 8):
         msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    if code > 0:
+        # A WebSocket's close code (SPEC L28), u16 LE: eleven bytes where the
+        # bare tag is nine, which is how the shim tells them apart.
+        msg.append(UInt8(code & 0xFF))
+        msg.append(UInt8((code >> 8) & 0xFF))
     for _ in range(64):
         var rc = external_call["send", Int](
             c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
