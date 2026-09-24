@@ -143,11 +143,11 @@ SABOTAGES = [
         SMOKE,
         SERVER,
         (
-            "from m0_http import AppConfig, Views, reply\n",
+            "from m0_http import Views, reply\n",
             "                ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers,\n",
         ),
         (
-            "from m0_http import AppConfig, Views, reply\n"
+            "from m0_http import Views, reply\n"
             "from m0_http.multiworker import SharedAtomics\n",
             "                ctx.capacity,\n"
             "                Board(\n"
