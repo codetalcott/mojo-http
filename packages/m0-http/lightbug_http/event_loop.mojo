@@ -790,6 +790,9 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     slot_read_armed[slot] = False
                 continue
 
+            # A WebSocket whose peer has sent its last byte: read what it
+            # left buffered, then close (see the EV_EOF branch below).
+            var ws_peer_eof = False
             if (backend.event_flags(i) & EV_EOF) != 0:
                 # The peer shut down its WRITE side. That is not the end
                 # of the connection: a client may half-close to say
@@ -814,18 +817,25 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 # path, which finishes the buffered request; keep-alive
                 # is off, because the peer cannot send another.
                 var _eof_state = provision_pool.provisions[slot].state.kind
-                if (
-                    _eof_state == ConnectionState.STREAMING_SSE
-                    or _eof_state == ConnectionState.STREAMING_WS
-                ):
+                if _eof_state == ConnectionState.STREAMING_SSE:
                     _close_slot(
                         backend, handler, slot, fd_val,
                         slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
                     continue
-                provision_pool.provisions[slot].should_close = True
-                provision_pool.provisions[slot].peer_eof = True
+                if _eof_state == ConnectionState.STREAMING_WS:
+                    # A socket is not an SSE stream: its peer may have sent
+                    # a last message, or its Close, in the same instant it
+                    # hung up, and closing here threw both away unread --
+                    # the application heard 1006 for a client that closed
+                    # with 1000, and lost the message (SPEC L28). The read
+                    # below takes what is buffered and closes once the
+                    # socket holds nothing more.
+                    ws_peer_eof = True
+                else:
+                    provision_pool.provisions[slot].should_close = True
+                    provision_pool.provisions[slot].peer_eof = True
 
             if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_WS:
                 # WebSocket frames from the client. The parser answers
@@ -960,6 +970,18 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # small-message socket pays no extra syscall.
                     backend.try_add_read(fd_val)
                     slot_read_armed[slot] = True
+                elif ws_peer_eof:
+                    # The peer has sent everything it will, and this read
+                    # took the rest of it: nothing more can arrive, so the
+                    # socket ends here, after its frames were delivered. A
+                    # full read re-armed above instead (more is buffered),
+                    # and a suspended one closes when its resumed read finds
+                    # the EOF again.
+                    _close_slot(
+                        backend, handler, slot, fd_val,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_sse, slot_ws, slot_ws_state,
+                    )
                 continue
 
             if provision_pool.provisions[slot].state.kind == ConnectionState.LINGERING:
@@ -1663,6 +1685,27 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     # still being THIS websocket: a stale resume for a closed slot names
     # either an UNUSED slot or a successor whose read is already armed,
     # so the worst case is an idempotent re-add.
+    # Sockets the handler closed itself (SPEC I26): its Close is queued, so
+    # the loop lingers as it does after its own -- the peer's reply ends the
+    # connection with no second Close, a peer that never replies is reaped
+    # by the sweep. With idle timeouts off nothing would bound that wait,
+    # so, as at the loop's own close sites, the socket closes at once.
+    var ws_closes = handler.take_ws_closes()
+    for ci in range(len(ws_closes)):
+        var cs = ws_closes[ci]
+        if cs < 0 or cs >= max_conns or slot_fds[cs] == UNUSED or not slot_ws[cs]:
+            continue
+        slot_ws_state[cs].closing = True
+        if config.idle_timeout > 0:
+            if slot_idle_deadline[cs] == 0:
+                slot_idle_deadline[cs] = perf_counter_ns() + WS_CLOSE_LINGER_NS
+        else:
+            _close_slot(
+                backend, handler, cs, slot_fds[cs],
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+
     var ws_resumes = handler.take_ws_resumes()
     for ri in range(len(ws_resumes)):
         var rs = ws_resumes[ri]

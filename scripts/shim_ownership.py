@@ -107,6 +107,7 @@ class Harness:
         self.head_finished = False  # the streamed HEAD's app ran to its end
         self.head_task = None    # a HEAD application's own task
         self.linger_cancels = 0  # cancels a lingering stream task saw
+        self.ws_log = []         # a /ws/log socket's messages and disconnect
         self.forever_ended = False  # the endless background task's finally ran
         self.slowbg_done = False    # a short background task finished
         self.latebg_done = False    # background work begun inside the drain
@@ -136,6 +137,7 @@ class Harness:
                         "wsnoanswer": "/ws/noanswer", "wschat": "/ws/chat",
                         "wskeep": "/ws/keep", "wsquick": "/ws/quick",
                         "wsexcept": "/ws/except", "wsblocked": "/ws/blocked",
+                        "wslog": "/ws/log",
                         "wsboom": "/ws/boom", "wsescape": "/ws/escape",
                         "wsclosehold": "/ws/closehold",
                         "wsclosewait": "/ws/closewait",
@@ -205,6 +207,15 @@ class Harness:
             if scope["path"] == "/ws/quick":
                 self.ws_sends.append(send)
                 return
+            if scope["path"] == "/ws/log":
+                # Records what it receives, in order, to its disconnect.
+                while True:
+                    msg = await receive()
+                    if msg["type"] == "websocket.disconnect":
+                        self.ws_log.append(("disc", msg.get("code")))
+                        return
+                    if msg["type"] == "websocket.receive":
+                        self.ws_log.append(("msg", msg.get("text")))
             if scope["path"] == "/ws/except":
                 # FastAPI's documented shape: the cleanup is AFTER the
                 # receive loop (`except WebSocketDisconnect:`), not in a
@@ -515,6 +526,12 @@ class Harness:
     def job(self, slot, behaviour="hold"):
         self.jobs.append(behaviour)
         self.submit_w.send(int(slot).to_bytes(8, "little", signed=True))
+
+    def ws_message(self, slot, text):
+        """An inbound text message, as the loop's handler tags it."""
+        self.submit_w.send(
+            bytes([2]) + int(slot).to_bytes(8, "little", signed=True)
+            + bytes([1]) + text.encode())
 
     def disconnect(self, slot, code=0):
         """The loop's disconnect tag; `code`, when given, is a WebSocket's
@@ -1703,6 +1720,19 @@ def test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write(h):
     assert body == b"written-body" and streaming is False, (body, streaming)
 
 
+def test_an_inverted_disconnect_follows_the_messages_before_it(h):
+    """M0_INVERTED tells the shim of a disconnect by a direct call, while the
+    connection's last message is still a datagram on the submit channel:
+    the direct call used to overtake it, and the application lost what its
+    client sent last. The channel is drained first."""
+    h.job(0, "wslog")
+    h.settle()
+    h.ws_message(0, "last-words")          # still in the socket: not settled
+    h.ns["_exec_on_disconnect_direct"](0, 1001)
+    h.settle()
+    assert h.ws_log == [("msg", "last-words"), ("disc", 1001)], h.ws_log
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1810,6 +1840,7 @@ TESTS = [
     test_an_error_is_described_once,
     test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body,
     test_a_socket_hears_its_clients_close_code,
+    test_an_inverted_disconnect_follows_the_messages_before_it,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
     test_a_task_left_behind_never_reaches_the_port,
@@ -2169,6 +2200,13 @@ SABOTAGES = [
         "a HEAD to a body that produced nothing drops write()",
         "        _body = b'' if produced else b''.join(written)\n",
         "        _body = b''\n",
+    ),
+    (
+        "an inverted disconnect overtakes the messages before it",
+        "    if reader is not None:\n"
+        "        reader()\n"
+        "    _exec_on_disconnect(slot, code)\n",
+        "    _exec_on_disconnect(slot, code)\n",
     ),
     (
         "work scheduled at import is not named",

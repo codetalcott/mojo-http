@@ -122,6 +122,19 @@ trait HTTPService:
         """
         pass
 
+    def take_ws_closes(mut self) -> List[Int]:
+        """Slots whose WebSocket the handler has closed itself, a Close
+        frame already queued in the outbox (SPEC I26).
+
+        Called once per loop pass, at the bottom. The loop treats each named
+        socket as it treats one after its OWN Close: `closing`, so the
+        peer's reply ends the connection with no second Close, and the
+        close linger, so a peer that never replies is let go. A handler that
+        never closes a socket itself names none; the default is that
+        handler.
+        """
+        return List[Int]()
+
     def take_ws_resumes(mut self) -> List[Int]:
         """Slots whose inbound flow may resume — parked messages all sent.
 

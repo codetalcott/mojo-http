@@ -264,7 +264,7 @@ struct PyBridge(Movable):
         self._spawn = self._ns["spawn"]
         self._spawn_ws = self._ns["spawn_ws"]
         self._run_forever = self._ns["run_forever"]
-        self._on_disconnect = self._ns["_exec_on_disconnect"]
+        self._on_disconnect = self._ns["_exec_on_disconnect_direct"]
         self._stream_next_fn = self._ns["wsgi_stream_next"]
         self._stream_close_fn = self._ns["wsgi_stream_close"]
         self.stream_pending = False

@@ -331,6 +331,11 @@ struct WSGIHandler(ThreadHandler):
     var ws_in_sent: List[Int]
     """Per slot: datagram bytes charged toward `WS_IN_WINDOW` since this
     socket's begin ('B' seeds it to zero)."""
+    var ws_refused: List[Bool]
+    """Per slot: an inbound message was refused and the socket is ending
+    (SPEC I26); nothing more it sends is delivered (RFC 6455 §7.1.7)."""
+    var ws_closes: List[Int]
+    """Held sockets whose refusal Close is queued, for `take_ws_closes`."""
     var ws_closed_with: List[Int]
     """Per slot: the close code the loop reported for this socket
     (`ws_close_code`), carried in its disconnect tag to the executor so the
@@ -402,6 +407,8 @@ struct WSGIHandler(ThreadHandler):
         self.ws_in_sent = List[Int](capacity=slots)
         self.ws_in_acked = List[Int](capacity=slots)
         self.ws_closed_with = List[Int](capacity=slots)
+        self.ws_refused = List[Bool](capacity=slots)
+        self.ws_closes = List[Int]()
         self.ws_parked = List[List[UInt8]](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
@@ -412,6 +419,7 @@ struct WSGIHandler(ThreadHandler):
             self.ws_in_sent.append(0)
             self.ws_in_acked.append(0)
             self.ws_closed_with.append(0)
+            self.ws_refused.append(False)
             self.ws_parked.append(List[UInt8]())
         self.ws_parked_count = 0
         self.ws_resume = List[Int]()
@@ -1158,6 +1166,7 @@ struct WSGIHandler(ThreadHandler):
         if slot < len(self.ws_closed_with):
             close_code = self.ws_closed_with[slot]
             self.ws_closed_with[slot] = 0
+            self.ws_refused[slot] = False
         self.streams.unsubscribe(slot)
         self.sockets.unsubscribe(slot)
         if slot < len(self.hold_lane):
@@ -1495,7 +1504,10 @@ struct WSGIHandler(ThreadHandler):
         # A message larger than the channel's datagram can never be
         # delivered, however long it waits: parked, it was retried for ever
         # -- no reply, no close, no log (a 70 KB chat message went silent).
-        # Refused with 1009 instead (SPEC I26), once per socket.
+        # Refused with 1009 instead (SPEC I26), once per socket, and nothing
+        # the socket sends after it is processed (RFC 6455 §7.1.7).
+        if slot < len(self.ws_refused) and self.ws_refused[slot]:
+            return True
         var limit = self._ws_datagram_room(slot)
         if limit >= 0 and len(payload) > limit:
             self._ws_refuse_too_big(slot, len(payload), limit)
@@ -1596,22 +1608,43 @@ struct WSGIHandler(ThreadHandler):
         Close is queued and the socket marked done in one step, the `x`
         frame's shape, so the loop is `closing` before the peer's reply can
         arrive; an outbox too full for the Close ends it without one. The
-        application hears 1009 in its disconnect (SPEC L28)."""
-        if slot < len(self.ws_closed_with):
-            if self.ws_closed_with[slot] == WS_CLOSE_TOO_BIG:
-                return  # refused already: the rest of the batch goes with it
+        application hears 1009 in its disconnect (SPEC L28).
+
+        A socket a pool thread holds is not a channel stream, so the loop
+        does not end it when its subscription does: it is named in
+        `take_ws_closes`, and the loop lingers for the peer's reply as it
+        does after its own Close. An application's own close already queued
+        (`asgi_done`) gets no second Close behind it."""
+        if slot < len(self.ws_refused):
+            self.ws_refused[slot] = True
             self.ws_closed_with[slot] = WS_CLOSE_TOO_BIG
+        var held = slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD
+        if slot < len(self.asgi_done) and self.asgi_done[slot]:
+            return
+        var queued = self.sockets.queue_frame(
+            slot, NO_EVENT_ID, close_frame(WS_CLOSE_TOO_BIG)
+        )
         print(
             "ws_message: an inbound message of " + String(size)
             + " bytes exceeds the channel's " + String(limit)
-            + "-byte limit; closing slot " + String(slot) + " with 1009",
+            + "-byte limit; "
+            + (String("closing slot ") + String(slot) + " with 1009" if queued
+               else String("ending slot ") + String(slot)
+               + " without a Close, its outbox being full"),
             flush=True,
         )
-        if not self.sockets.queue_frame(slot, NO_EVENT_ID, close_frame(WS_CLOSE_TOO_BIG)):
+        if not queued:
             self._end_socket(slot)
-            return
-        if slot < len(self.asgi_done):
+        elif slot < len(self.asgi_done):
             self.asgi_done[slot] = True
+        if held:
+            self.ws_closes.append(slot)
+
+    def take_ws_closes(mut self) -> List[Int]:
+        """The held sockets `_ws_refuse_too_big` closed this pass."""
+        var out = self.ws_closes^
+        self.ws_closes = List[Int]()
+        return out^
 
     def _ws_park(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         """Append one `[opcode u8][len u32 LE][payload]` record. Parked is
@@ -1794,8 +1827,10 @@ assembled messages underneath it, which is wrong by a factor of 64 --
 inbound frame between ~64 KB and the socket's send-buffer limit was handed
 to the application truncated and presented as complete.
 
-Refusing to send is the honest answer: an oversized message is dropped and
-logged, the same way one too big for the socket buffer already was. It is
+Refusing to send is the honest answer, and refusing it for good: an
+oversized message ends its socket with a Close carrying 1009, logged once
+(`_ws_forward`, SPEC I26) -- it used to be parked and retried for ever, a
+socket gone silent with nothing in any log. It is
 declared here rather than beside either buffer because both senders live in
 this file, and a bound that is not shared with the check is not a bound.
 """
@@ -2126,7 +2161,8 @@ def _send_ws_message_tag(
     The payload rides IN the datagram, so it is bounded by the channel's
     frame size — and by WS_CHANNEL_DATAGRAM_MAX, which is what the reader
     can actually take. Over that it is refused rather than truncated;
-    `ws_message` logs the drop. Retried like the disconnect tag — a lost
+    `_ws_forward` never sends one this large, ending the socket with 1009
+    instead (SPEC I26). Retried like the disconnect tag — a lost
     inbound message is an app-visible gap."""
     if 10 + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
         return False

@@ -10,6 +10,9 @@ Against apps/asgi_bare's `/ws/record`, which echoes and keeps the code its
 - a Close with 1001 is heard as 1001, one with no code as 1005, and a
   connection that ends without a Close as 1006 (RFC 6455 §7.1.5). The
   executor used to say 1006 for every one of them;
+- a Close, or a last message, followed at once by the hang-up still
+  reaches the application: the loop used to close a socket at EOF before
+  reading what it had buffered;
 - a 70,000-byte message, larger than the executor channel's 65,546-byte
   datagram, is refused with a Close carrying 1009, and the application
   hears 1009. It used to be parked and retried for ever: no reply, no close,
@@ -151,6 +154,25 @@ def heard(want, within=5.0):
     fail("the application heard %r, want %d" % (seen, want))
 
 
+def expect_end(sock, within=5.0):
+    """The server's end of a closing connection: EOF, and nothing before it
+    but heartbeat pings."""
+    deadline = time.time() + within
+    while time.time() < deadline:
+        sock.settimeout(max(0.1, deadline - time.time()))
+        try:
+            op, payload = read_frame(sock)
+        except (EOFError, ConnectionResetError):
+            sock.close()
+            return
+        except socket.timeout:
+            break
+        if op == 0x9:
+            continue
+        fail("after the closing handshake the server sent opcode %d" % op)
+    fail("the connection was still open %.0f s after the closing handshake" % within)
+
+
 def close_with(payload):
     sock = connect()
     send_frame(sock, 0x1, b"hi")
@@ -189,6 +211,28 @@ def main():
     sock.close()
     heard(1006)
 
+    phase("a Close and a hang-up in the same instant")
+    # The client's Close and its FIN arrive together, so the loop sees
+    # EV_EOF with the Close still unread: it used to close the socket
+    # before reading it, and the application heard 1006.
+    sock = connect()
+    send_frame(sock, 0x1, b"hi")
+    read_data_or_close(sock)
+    send_frame(sock, 0x8, struct.pack(">H", 4001))
+    sock.close()
+    heard(4001)
+
+    phase("a last message and a hang-up in the same instant")
+    sock = connect()
+    send_frame(sock, 0x1, b"hi")
+    read_data_or_close(sock)
+    send_frame(sock, 0x1, b"last-words-before-the-hang-up")
+    sock.close()
+    heard(1006)
+    _, texts = http_get("/ws-texts")
+    if "last-words-before-the-hang-up" not in texts:
+        fail("a message sent just before the hang-up never reached the application")
+
     phase("a message at the channel's cap")
     sock = connect()
     at_cap = os.urandom(65536)
@@ -209,7 +253,16 @@ def main():
 
     phase("a message the channel cannot carry")
     sock = connect()
-    send_frame(sock, 0x2, b"o" * 70000)
+    # A message right behind it, in the same write: RFC 6455 §7.1.7, no
+    # data is processed after the connection is failed.
+    mask = os.urandom(4)
+    behind = b"after-the-refused-one"
+    sock.sendall(
+        struct.pack(">BBQ", 0x82, 0x80 | 127, 70000) + mask
+        + bytes(b ^ mask[i % 4] for i, b in enumerate(b"o" * 70000))
+        + struct.pack(">BB", 0x81, 0x80 | len(behind)) + mask
+        + bytes(b ^ mask[i % 4] for i, b in enumerate(behind))
+    )
     # A deadline, not a per-read timeout: heartbeat pings every 300 ms would
     # keep a per-read timeout from ever firing, and a regression would hang
     # the smoke instead of failing it.
@@ -234,14 +287,21 @@ def main():
     code = struct.unpack(">H", got[:2])[0] if len(got) >= 2 else None
     if code != 1009:
         fail("the Close carried %r, want 1009" % code)
-    sock.close()
+    # The client answers the Close, as a browser does: the server must end
+    # the connection -- no second Close, which Chromium reports as a
+    # failed connection (1006) rather than the 1009 it was sent.
+    send_frame(sock, 0x8, struct.pack(">H", 1009))
+    expect_end(sock)
     heard(1009)
+    _, texts = http_get("/ws-texts")
+    if behind.decode() in texts:
+        fail("a message sent behind the refused one reached the application")
 
     phase("the server afterwards")
     status, _ = http_get("/")
     if b" 200 " not in status:
         fail("GET / answered %r" % status)
-    print("ws_close_probe OK: 1001, 1005, 1006, at-cap delivery, 1009 refusal")
+    print("ws_close_probe OK: 1001, 1005, 1006, Close+hang-up, last-message+hang-up, at-cap delivery, 1009 refusal")
 
 
 if __name__ == "__main__":

@@ -887,6 +887,19 @@ def _exec_on_disconnect(slot, code=0):
         task.cancel()
 
 
+def _exec_on_disconnect_direct(slot, code=0):
+    # M0_INVERTED's disconnect is a direct call from the loop's pass, and the
+    # connection's last messages may still be datagrams on the submit
+    # channel this same thread reads: drain them first, or the disconnect
+    # overtakes them and the application never sees what its client sent
+    # last -- a message and a hang-up in the same instant lost the message
+    # 3 of 3. On the pump both ride the channel, in order.
+    reader = _exec_submit_reader[0]
+    if reader is not None:
+        reader()
+    _exec_on_disconnect(slot, code)
+
+
 def _exec_on_ws_message(slot, opcode, payload):
     # An inbound frame the loop's parser assembled, forwarded by the
     # handler as a tagged datagram. Opcode 1 is text (the loop already
@@ -938,8 +951,10 @@ def _exec_cleanup_slot(slot):
 def asgi_executor_init(fd, ack_fd):
     # `fd` is the OffloadPool's submit_read end, `ack_fd` the streaming
     # channel's ack read end; both already non-blocking. Submit datagrams:
-    # 8 bytes = a little-endian job slot (-1 is the poison pill); 9 bytes
-    # = [tag u8][slot i64 LE], today only _TAG_DISCONNECT. Ack datagrams:
+    # 8 bytes = a little-endian job slot (-1 is the poison pill); 9 or 11
+    # bytes = _TAG_DISCONNECT's [tag u8][slot i64 LE], the 11-byte shape
+    # adding a WebSocket's close code as a u16 LE (SPEC L28); tagged WS
+    # messages, bus frames and job batches are longer. Ack datagrams:
     # (slot: i32, bytes: i32) LE -- drained bytes to re-credit.
     global _exec_queue, _exec_global_evt
     import asyncio, os
@@ -1000,6 +1015,8 @@ def asgi_executor_init(fd, ack_fd):
                 _loop.remove_reader(fd)
                 _exec_put(('job', -1))
                 return
+
+    _exec_submit_reader[0] = _on_submit
 
     def _on_ack():
         while True:
@@ -1066,6 +1083,9 @@ _flush_armed = [False]
 # together; with a bound, the later one's stop landed inside lifespan
 # shutdown and cut it short.
 _exec_draining = [False]
+# The submit channel's reader, kept for M0_INVERTED's direct disconnect
+# (`_exec_on_disconnect_direct`).
+_exec_submit_reader = [None]
 # And once the drain has stopped the loop, the port is gone: the Mojo side
 # frees its executor state as run_forever returns, and lifespan shutdown
 # steps this loop again, so a task left behind that finished then reached

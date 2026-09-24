@@ -673,7 +673,13 @@ lightbug_http
         for a protocol failure. `HTTPService.ws_close_code(slot, code)` is
         a new hook with a default, called the moment the close is parsed
         and before its echo, whose send fails when the client has already
-        hung up.
+        hung up. At EV_EOF a WebSocket slot now reads what its peer left
+        buffered (a last message, its Close) and closes once nothing is
+        left, where it used to close unread. And
+        `HTTPService.take_ws_closes()`, a defaulted hook beside
+        `take_ws_resumes`, names sockets the handler closed itself (a Close
+        already queued); the loop lingers for the peer's reply as after its
+        own Close (SPEC I26).
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

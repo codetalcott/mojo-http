@@ -19,7 +19,8 @@ Routes:
     /slow?ms=N      awaits N milliseconds before answering
     /lifespan       reports whether lifespan startup ran (state flag)
     /ws-last-close  the code the last /ws/record socket's disconnect
-                    carried (SPEC L28, I26)
+                    carried (SPEC L28, I26); /ws-texts, every text message
+                    those sockets received
     /background-forever
                     answers ``ok``, then keeps running for ever, as
                     background work after a response can: the shutdown
@@ -43,8 +44,10 @@ import json
 import os
 
 _LIFESPAN = {"started": False}
-# The disconnect codes /ws/record sockets were told, in order.
+# The disconnect codes /ws/record sockets were told, in order, and every
+# text message they received.
 _WS_CLOSES = []
+_WS_TEXTS = []
 
 # /ws/flood's shape. 400 x 4 KB is ~25 send windows' worth, so the
 # executor's backpressure is exercised many times over rather than
@@ -140,11 +143,17 @@ async def application(scope, receive, send):
                     continue  # websocket.connect comes first
                 data = message.get("bytes")
                 if data is not None:
-                    await send({"type": "websocket.send",
-                                "text": "len:%d" % len(data)})
+                    reply = "len:%d" % len(data)
                 else:
-                    await send({"type": "websocket.send",
-                                "text": message.get("text") or ""})
+                    reply = message.get("text") or ""
+                    _WS_TEXTS.append(reply)
+                try:
+                    await send({"type": "websocket.send", "text": reply})
+                except OSError:
+                    # Its client has gone (ClientDisconnected): keep
+                    # receiving, because the disconnect and its code are
+                    # what a probe reads back.
+                    pass
         if scope["path"] != "/ws":
             await send({"type": "websocket.close"})
             return
@@ -192,6 +201,8 @@ async def application(scope, receive, send):
         await send({"type": "http.response.body", "body": b"cookies"})
     elif path.startswith("/status/"):
         await _text(send, int(path.rsplit("/", 1)[1]), b"status as asked")
+    elif path == "/ws-texts":
+        await _text(send, 200, "\n".join(_WS_TEXTS).encode())
     elif path == "/ws-last-close":
         await _text(send, 200, str(_WS_CLOSES[-1] if _WS_CLOSES else "none").encode())
     elif path == "/background-forever":

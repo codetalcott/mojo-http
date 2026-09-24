@@ -1111,7 +1111,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "An inbound WebSocket message larger than the channel's datagram is refused with a Close carrying 1009, logged once, never parked",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a 70,000-byte message to an executor-held socket must be answered with a 1009 Close within 5 s and the application must hear 1009, while a 65,536-byte one is still delivered whole; `Smoke test the Django realtime example over WebSockets` sends the same to a pool-held socket. Before, the message was parked and retried for ever: no reply, no close, no log"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a 70,000-byte message to an executor-held socket must be answered with a 1009 Close within 5 s and the application must hear 1009, while a 65,536-byte one is still delivered whole; `Smoke test the Django realtime example over WebSockets` sends the same to a pool-held socket and requires the connection to END on the client's reply, with no second Close (Chromium reports a second one as a failed connection, 1006), and within the linger when the client never replies; a message sent right behind the refused one reaches no one (RFC 6455 \u00a77.1.7). Before, the message was parked and retried for ever: no reply, no close, no log"
     },
     {
       "id": "J1",
@@ -1511,7 +1511,7 @@
       "category": "L. ASGI 3.0",
       "capability": "A WebSocket's disconnect tells the application the code its client closed with: the client's own, 1005 for a Close with no code, 1006 only when no Close was parsed",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `scripts/ws_close_probe.py` closes with 1001, with no code, and with no Close at all, and reads back what the application heard, on the pump and inverted alike. It was 1006 for all three, where uvicorn passes the client's. A client that sends its Close and hangs up in the same instant still loses its code: the loop closes a socket at EOF before reading what is buffered (tracked)"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `scripts/ws_close_probe.py` closes with 1001, with no code, and with no Close at all, and reads back what the application heard, on the pump and inverted alike. It was 1006 for all three, where uvicorn passes the client's. A Close, or a last message, sent in the same instant as the hang-up reaches the application too: the loop used to close a socket at EOF before reading what it had buffered, and a raw client that closed that way was heard as 1006 and lost its last message. Under `M0_INVERTED=1` the direct disconnect call drains the submit channel first, or it overtook that message"
     },
     {
       "id": "M1",
