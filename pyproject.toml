@@ -5349,6 +5349,17 @@ got=$(curl -s --path-as-is "$B/reentrant?url=http://localhost:8086")
 [ "$got" = "reentrant: subview" ] \
   || fail "an unencoded url in the query is still misparsed: got '$got'"
 
+# The same bug's `@` half (SPEC A22): URI.parse skipped to the first `@`
+# ANYWHERE in the target as the end of a userinfo, so `/environ?x=a@b`
+# reached the application as `/` with no query -- a POST too, which then
+# ran the root's handler. Only an `@` inside the authority ends one.
+env=$(curl -s --path-as-is "$B/environ?x=a@b")
+case "$env" in *"PATH_INFO='/environ'"*"QUERY_STRING='x=a@b'"*) ;;
+  *) fail "a raw @ in the query lost the path or the query: got '$env'" ;; esac
+env=$(curl -s --path-as-is -X POST -d v=1 "$B/environ?x=a:b@c")
+case "$env" in *"PATH_INFO='/environ'"*"QUERY_STRING='x=a:b@c'"*"REQUEST_METHOD='POST'"*) ;;
+  *) fail "a POST with a raw @ in the query was misrouted: got '$env'" ;; esac
+
 kill $pid 2>/dev/null
 wait $pid 2>/dev/null
 

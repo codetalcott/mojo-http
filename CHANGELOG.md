@@ -231,6 +231,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A raw `@` in a request's query or path sent it to `/`, and a client
+  URL to another host** (SPEC A22). `URI.parse` read the first `@`
+  anywhere after the scheme as the end of a userinfo and discarded
+  everything before it, so `GET /contacts?q=a@b` reached the application
+  as `PATH_INFO='/'` with an empty `QUERY_STRING` on every server shape.
+  A POST to `/save?x=a@b` ran the root's POST handler, and so did
+  `/users/@alice?page=2`. The outbound client dials the parsed host, so
+  `http://api.test/lookup?email=x@evil.test` connected to `evil.test`.
+  Only an `@` inside the authority (before the first `/`, `?` or `#`,
+  RFC 3986 §3.2) now ends a userinfo; `userinfo_separator` is the rule, beside
+  `scheme_separator`, which fixed the same search for `://`. Browsers and
+  htmx encode `@`, so it took a typed or hand-built URL; a Flask app
+  compared against Werkzeug found it. `test_uri_userinfo.mojo` holds it,
+  and `smoke-wsgi` sends a GET and a POST with the raw byte.
+
 - **A Datastar replay too big for the connection is no longer served in
   part** (SPEC I30). `DatastarStream.open` replayed a reconnect's missed
   frames oldest first into a 64 KB outbox. When they did not fit, the

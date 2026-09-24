@@ -131,6 +131,13 @@ lightbug_http
         only when everything before it is a scheme as RFC 3986 §3.1 defines
         one (ALPHA, then ALPHA/DIGIT/`+`/`-`/`.`), which by construction
         excludes `/`, `?` and `#`. Tested in test_uri_scheme.mojo
+      - uri.mojo: `URI.parse` skipped a userinfo at the first `@` anywhere
+        after the scheme, so an unencoded `@` in a request's path or query
+        (`/echo?x=a@b`) discarded the path and query and the request
+        reached `/`, and a client URL was dialled at whatever followed an
+        `@` in its query. `userinfo_separator` accepts the `@` only inside
+        the authority, which RFC 3986 §3.2 ends at the first `/`, `?` or
+        `#`. Tested in test_uri_userinfo.mojo
       - uri.mojo: `unquote` decoded by slicing its input as a String
         (`[byte=a:b]`), which asserts a codepoint boundary, so a request
         target holding a byte that is not UTF-8 beside a percent-escape

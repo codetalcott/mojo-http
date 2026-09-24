@@ -170,6 +170,14 @@
       "evidence": "`test_response_head.mojo:test_a_204_invents_no_content_length_or_type` (every PR) \u2014 with six more beside it: the constructors invent neither a length nor a type for a 1xx, 204 or 304, and a 304 keeps a length its handler gave; `enforce_bodiless_framing`, which the event loop applies to every such response on every path, drops a 1xx's or 204's own length and any body (Django's `CommonMiddleware` puts a length on every non-streaming response) and closes a file body. On the wire, `Smoke test the notes API` checks the native 304s, the OPTIONS preflight and a delete's 204 for an entity header nobody set, and both conformance steps send a 204 carrying a length and seven bytes followed by a request on the same connection: the only case that shows whether the loop calls the rule. Before the fix every native 204 and 304 carried `content-length: 0` and `application/octet-stream`"
     },
     {
+      "id": "A22",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "An unencoded `@` in a request target's path or query is data: the request reaches its own route with its query, whatever its method, and only an `@` inside a URL's authority, before its first `/`, `?` or `#` (RFC 3986 \u00a73.2), ends a userinfo",
+      "status": "verified",
+      "evidence": "`test_uri_userinfo.mojo:test_an_at_in_a_request_query_keeps_the_path_and_query` (every PR) \u2014 `URI.parse` skipped to the first `@` anywhere after the scheme, so `GET /echo?x=a@b` reached the application as `/` with an empty query and a POST to `/save?x=a@b` ran the root's POST handler, on every server shape; the outbound client, which dials the parsed host, connected to whatever followed an `@` in a query. Browsers and htmx encode `@`, which kept it to typed and hand-built URLs; a Flask app compared against Werkzeug found it. Its neighbours hold the path form (`/users/@alice?page=2`), the client's host, and a real userinfo still skipped, and `Conformance test the WSGI bridge` sends a GET and a POST carrying the raw byte to a live server and requires the path, the query and the method back. The `://` half of the same search is `test_uri_scheme.mojo`"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
