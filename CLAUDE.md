@@ -1401,7 +1401,10 @@ job; `WSGIHandler` answers static mounts and the health path this way),
 in non-streaming handlers) — `tick`, the application timer hook (fires
 every `app_tick_ms` when configured; runs ON the event loop thread, so keep
 it quick), and `ws_message`, which receives complete WebSocket messages
-(fragments assembled, control frames already answered by the loop). The
+(fragments assembled, control frames already answered by the loop), with
+`ws_close_code` beside it: the code a socket's close carried, called the
+moment the loop parses it (SPEC L28; the executor's disconnect tag carries
+it to the application, 1006 when none was parsed). The
 `sse_*` names are historical: the outbox drain and the disconnect hook serve
 WebSocket slots identically — a WS handler queues `encode_ws_frame(...)`
 bytes and returns them from `sse_drain_slot`. A handler that streams

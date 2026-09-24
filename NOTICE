@@ -666,6 +666,15 @@ lightbug_http
         unless it sent `Connection: keep-alive`, since no request carries
         an invented `Connection: close` any more.
 
+      - websocket.mojo, service.mojo, event_loop.mojo (2026-09-23): a
+        WebSocket's close code reaches the handler (SPEC L28).
+        `WSParseResult.close_code` is the code a close carried: the
+        peer's, 1005 for a Close with no body, or the code this side sent
+        for a protocol failure. `HTTPService.ws_close_code(slot, code)` is
+        a new hook with a default, called the moment the close is parsed
+        and before its echo, whose send fails when the client has already
+        hung up.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

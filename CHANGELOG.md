@@ -354,6 +354,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   for and answered properly, reached the client at the front of the real
   body; and a stream still winding down on a recycled slot was cancelled a
   second time by the next connection's disconnect.
+- **An ASGI application heard 1006 for every WebSocket disconnect** (SPEC
+  L28). The code a client closed with now reaches it, as uvicorn passes it:
+  1000, 1001 for a closed tab, any other code the client sent, 1005 for a
+  Close with no code; 1006 means no Close arrived. A client that sends its
+  Close and hangs up in the same instant still loses it.
+- **An inbound WebSocket message over 64 KB went silent** (SPEC I26). A
+  message larger than the channel's datagram could never reach the
+  application or a pool thread, and was parked and retried for ever: no
+  reply, no close, no log. It is refused with a Close carrying 1009, the
+  application hears 1009, and the log names the size and the limit.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and
