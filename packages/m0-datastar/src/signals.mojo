@@ -25,8 +25,11 @@ comptime EMPTY_SIGNALS = "{}"
 def read_signals(req: HTTPRequest) -> String:
     """Return the client's signal JSON, or `{}` when the request carries none.
 
-    Per the Datastar protocol, signals travel in the `datastar` query parameter
-    on GET and in the request body on every other method.
+    Where the signals travel is the SDK's `ReadSignals` table (`sdk/ADR.md`)
+    and the client's own rule: in the `datastar` query parameter on GET and
+    DELETE -- the two methods the bundle sends without a body -- and in the
+    request body on every other method (POST, PUT, PATCH and QUERY). SPEC
+    I28.
 
     The query value arrives already percent-decoded (the URI parser applies
     `unquote` with `expand_plus`), so the JSON is returned verbatim. A literal
@@ -37,8 +40,14 @@ def read_signals(req: HTTPRequest) -> String:
     `m0_core.json_parse` (`parse_json_field`, `parse_json_int`, ...). This
     returns text rather than a parsed structure so the package stays free of a
     JSON model, and so callers pay only for the fields they actually read.
+
+    An action sent with `{contentType: 'form'}` carries NO signals: its body
+    is the form, URL-encoded (and on GET or DELETE its fields are the query
+    string), so what this returns for one is not JSON. Read such a request
+    with `m0_http.form`, as `apps/datastar_todo`'s form does.
     """
-    if req.method.upper() == "GET":
+    var method = req.method.upper()
+    if method == "GET" or method == "DELETE":
         var raw = req.uri.queries.get(SIGNALS_QUERY_PARAM)
         if raw:
             var value = raw.value()

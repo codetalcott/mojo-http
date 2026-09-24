@@ -65,7 +65,10 @@ an inventory, not the constraint: the constraint is the direction
 link line. `m0-datastar` splits deliberately: `consts.mojo` and
 `sse.mojo` import nothing outside themselves so the wire format is usable
 without the framework — do not add an `m0_http` import to either — while
-`stream.mojo` and `signals.mojo` are the server glue and may.
+`stream.mojo` and `signals.mojo` are the server glue and may. Where
+Datastar facts come from (the bundle and the SDK's vendored spec and cases,
+never memory), the wire rules and how to move the pin are
+`packages/m0-datastar/AGENTS.md`.
 
 `m0-wsgi` is the **only** package that embeds CPython. Keep it that way: a
 Python import in `m0-http` or `m0-core` would put libpython on the link line of

@@ -10,6 +10,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **The Datastar SDK's own conformance cases gate `m0-datastar`** (SPEC
+  I27). The SDK's specification (`sdk/ADR.md`), its 20 cases and the
+  `compare-sse.sh` that judges them are vendored from the pinned tag into
+  `packages/m0-datastar/test/sdk/`, each file hashed. `poe
+  check-datastar-sdk`, inside `test-all`, runs every case and refuses
+  fixtures from any tag but the pinned one; `poe sabotage-datastar-sdk`
+  reverts each rule and insists it is caught. The package passed 14 of the
+  19 get-cases before; the misses are under Fixed. `execute_script` takes
+  the SDK's `attributes` option (`name="value"` strings, written
+  verbatim), and `DatastarStream.execute_script` passes it and
+  `auto_remove` through. `packages/m0-datastar/AGENTS.md` records where
+  Datastar facts come from and how to move the pin.
+
 - **`push=True`: a swap that moves the address bar** (SPEC N37, D46).
   `Fragment.swap`, `Fragment.el` and `Html.swap[V]` take it, and
   `Fragment[Htmx]` writes `hx-push-url="true"` beside the swap, so a view
@@ -108,6 +121,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   release, so merging this publishes nothing.
 
 ### Changed
+
+- **`m0-datastar`'s frame builders raise on a line break in a one-line
+  field** (SPEC I29). `patch_elements`, `patch_signals`, `execute_script`,
+  `redirect` and the `DatastarStream` broadcasts refuse a selector, mode,
+  namespace, view-transition selector or event id carrying CR or LF: two
+  breaks ended the event, and a selector built from request data could
+  open an event of its own. Each is now `raises`, so a caller that cannot
+  raise catches -- `apps/datastar_counter`'s `tick` does.
 
 - **A child process reaches the bus only when it is handed it** (SPEC
   G16). The bus is close-on-exec now, like every descriptor the server
@@ -209,6 +230,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   unchanged.
 
 ### Fixed
+
+- **Security: `m0-datastar`'s `redirect` pasted its location between
+  single quotes** (SPEC I29), so a `'` ended the JavaScript string and the
+  rest ran as script, and `</script>` ended the element whatever the
+  quoting. The location is now a string literal with `"`, `\`, `<`, every
+  control byte and U+2028/U+2029 escaped.
+- **`m0-datastar` against the SDK's own cases** (SPEC I27, I28):
+  `read_signals` read a DELETE's signals from its body, where Datastar
+  sends none -- the bundle and the SDK's `ReadSignals` table put them in
+  `?datastar=`, as for GET -- and so returned `{}`; `patch_signals` wrote
+  multi-line JSON as one dataline, so the client received `{` and read
+  the other lines as fields of their own; and `remove` mode carried an
+  empty `elements` line.
 
 - **Security: an ASGI application's message for a client that had left
   could reach a different client** (SPEC L20). The executor decided whether

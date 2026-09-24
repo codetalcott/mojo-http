@@ -1114,6 +1114,30 @@
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a 70,000-byte message to an executor-held socket must be answered with a 1009 Close within 5 s and the application must hear 1009, while a 65,536-byte one is still delivered whole; `Smoke test the Django realtime example over WebSockets` sends the same to a pool-held socket and requires the connection to END on the client's reply, with no second Close (Chromium reports a second one as a failed connection, 1006), and within the linger when the client never replies; a message sent right behind the refused one reaches no one (RFC 6455 \u00a77.1.7). Before, the message was parked and retried for ever: no reply, no close, no log"
     },
     {
+      "id": "I27",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "Datastar frames are the SDK's own: every conformance case the Datastar SDK ships at the version `m0-datastar` pins \u2014 its get-cases and its post-case, vendored byte for byte with each file hashed \u2014 is produced by the package's builders and judged by the SDK's own `compare-sse.sh`, which lets datalines of different keys arrive in any order and nothing else: multi-line `signals` go out one dataline per line, `remove` mode carries no `elements` line, and `execute_script` writes its `attributes`",
+      "status": "verified",
+      "evidence": "`Run unit tests` (every PR) \u2014 `poe check-datastar-sdk`, inside `test-all`, refuses fixtures from any tag but the one `consts.VERSION` pins and any vendored file whose hash has changed, and fails by name on a fixture field it does not map; `poe sabotage-datastar-sdk`, inside `test-all` too, reverts each of the three rules in a copy of the package and each is caught by the case it breaks. Before the gate the package passed 14 of the 19 get-cases"
+    },
+    {
+      "id": "I28",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "`read_signals` reads the signals where the client sends them: the `datastar` query parameter on GET and DELETE \u2014 the two methods Datastar's bundle sends without a body, and the SDK's `ReadSignals` table \u2014 and the body on every other method; each SDK case's input comes back byte for byte as a GET, a DELETE and a POST",
+      "status": "verified",
+      "evidence": "`test_stream.mojo:test_read_signals_from_delete_query` (every PR) \u2014 a DELETE's query is read and its body ignored, and PUT, PATCH and QUERY read the body; `poe check-datastar-sdk` replays every case's input through all three methods, and its sabotage reverts DELETE to the body and loses 19 of 20. A DELETE's signals came back as `{}` before"
+    },
+    {
+      "id": "I29",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A Datastar frame cannot be split by what it carries: a selector, mode, namespace, view-transition selector or event id holding CR or LF is refused with an error rather than written \u2014 two breaks would end the event and open one of the sender's choosing \u2014 and `redirect` writes its location as a JavaScript string literal with the quote, the backslash, `<`, every control byte and U+2028/U+2029 escaped, so it can end neither the literal nor its `<script>`",
+      "status": "verified",
+      "evidence": "`test_frame_injection.mojo:test_a_line_break_in_a_single_line_field_is_refused` (every PR) \u2014 every field through every builder, the event-injection shape among them, with a control that a break-free selector still goes out; `test_redirect_location_cannot_leave_its_literal` requires exactly one `</script>` in a frame whose location carries two. `poe sabotage-datastar-sdk` reverts the refusal and three of the escapes, each caught"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",

@@ -908,6 +908,23 @@ shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-
 help = "Test m0-datastar"
 shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-datastar -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
 
+# The Datastar SDK's OWN conformance cases, vendored from the tag
+# consts.VERSION pins (packages/m0-datastar/test/sdk/, hashed in MANIFEST):
+# every frame judged by the SDK's compare-sse.sh, every input read back
+# through read_signals as GET, DELETE and POST. Re-vendor on a pin move with
+# `python3 scripts/datastar_conformance.py --fetch vX.Y.Z`; the gate refuses
+# fixtures from any tag but the pinned one.
+[tool.poe.tasks.check-datastar-sdk]
+help = "m0-datastar against the Datastar SDK's own conformance cases (SPEC I27, I28)"
+cmd = "python3 scripts/datastar_conformance.py"
+
+# Reverts each rule the gate above and test_sse.mojo hold, in a copy of the
+# package, by an EXACT source line; every one must be caught. An edit to one
+# of those lines fails here with ANCHOR MISSING -- re-point the anchor.
+[tool.poe.tasks.sabotage-datastar-sdk]
+help = "Revert each Datastar wire rule in a copy; every one must be caught"
+cmd = "python3 scripts/datastar_conformance.py --sabotage"
+
 # The one part of m0-sqlite the Mojo compiler cannot check. src/vtab.mojo
 # treats four SQLite C structs as flat word buffers, so every offset it uses is
 # invisible to the type system, and a wrong one corrupts rows in silence rather
@@ -1033,7 +1050,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

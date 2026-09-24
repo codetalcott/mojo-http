@@ -83,6 +83,7 @@ jobs:
           python3 scripts/emit.py --covers L7 --task step
           python3 scripts/emit.py --covers L20 --task step
           python3 scripts/emit.py --covers N28 --task step
+          python3 scripts/emit.py --covers I27 --task step
           set -o pipefail
           uv run poe test-all 2>&1 | tee -a compile.log
       # Holds the residual warning count at scripts/warning_baseline.json.

@@ -49,7 +49,11 @@ canned input -- including the null case, a paragraph that names the
 successor and must PASS. Scanned: every `git ls-files` text file except
 lockfiles, benchmark artifacts, generated `docs/spec.json` (its rows are
 SPEC.md's, already scanned, and as one line it would be one paragraph),
-the snapshot, and this file, whose fixtures cite obsolete RFCs on purpose.
+the snapshot, this file, whose fixtures cite obsolete RFCs on purpose,
+and the Datastar SDK tree vendored under `packages/m0-datastar/test/sdk/`
+-- upstream's words byte for byte, hashed by its own gate, so a citation
+there (its ADR's RFC 7386, which RFC 7396 obsoletes) is theirs to update
+and cannot be edited here.
 
 What it cannot do, and does not claim: verify that a SECTION number is
 right. `RFC 9112 §6.3` is checked to be a citation of a current document,
@@ -75,7 +79,7 @@ WORKFLOW = REPO / WORKFLOW_REL
 
 EXCLUDED_FILES = {SELF_REL, SNAPSHOT_REL, "docs/spec.json"}
 EXCLUDED_SUFFIXES = (".lock",)
-EXCLUDED_PREFIXES = ("bench/results/",)
+EXCLUDED_PREFIXES = ("bench/results/", "packages/m0-datastar/test/sdk/")
 
 # `RFC 9110`, `RFC9110`, `RFC-9110`, `rfc9110` (URLs and JSON ids). Three
 # to five digits: RFC 821 is a real document, RFC 100000 is not yet.

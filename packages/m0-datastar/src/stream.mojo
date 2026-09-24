@@ -58,11 +58,11 @@ struct DatastarStream:
       registry's redelivery filter keeps the *newer* id — fine for
       state-patch frames (the newer state already won), something to think
       about for increments.
-    - **Server-initiated pushes need the `tick` hook.** Broadcasts here fire
-      from whatever handler code calls them; with `app_tick_ms` configured,
-      that can be `HTTPService.tick` on the loop's own timer — a clock is
-      expressible now (the counter demo runs one). Without a tick, every
-      broadcast is caused by an inbound request.
+    - **A broadcast runs where it is called.** A request handler, the
+      `tick` hook on the loop's own timer (`app_tick_ms`; the counter demo
+      runs a clock), or — for work that must not stall the loop — a
+      producer thread that publishes over the `BroadcastBus`, whose frames
+      reach this stream through `deliver_peer` (`apps/blobs`).
 
     Two ways to meet a subscriber who arrives mid-stream, chosen at
     construction:
@@ -83,8 +83,8 @@ struct DatastarStream:
     var registry: SSERegistry
     var next_event_id: Int
     # The replay journal: the last `journal_cap` broadcast frames, verbatim,
-    # as parallel lists (the repo's SoA convention — List[Struct] fights
-    # ImplicitlyCopyable). A reconnecting client's `Last-Event-ID` is caught
+    # as parallel lists (the repo's SoA convention: cheap per-field scans).
+    # A reconnecting client's `Last-Event-ID` is caught
     # up from here in `open`. In-memory only; an app that wants replay to
     # survive a restart persists (id, url, frame) after each broadcast and
     # feeds rows back through `restore` at boot — see apps/datastar_todo.
@@ -344,6 +344,9 @@ struct DatastarStream:
         return List[UInt8]()
 
     # --- Broadcast: each returns the event id it assigned ------------------
+    #
+    # Each raises when a single-line field -- a selector, a mode -- carries
+    # CR or LF (SPEC I29); the frame is then not sent.
 
     def patch_elements(
         mut self,
@@ -351,7 +354,7 @@ struct DatastarStream:
         elements: String,
         selector: String = "",
         mode: String = DEFAULT_PATCH_MODE,
-    ) -> Int:
+    ) raises -> Int:
         """Patch HTML into every subscriber's DOM."""
         var eid = self._next_id()
         var frame = _frame_patch_elements(
@@ -365,7 +368,7 @@ struct DatastarStream:
 
     def patch_signals(
         mut self, url: String, signals: String, only_if_missing: Bool = False
-    ) -> Int:
+    ) raises -> Int:
         """Merge a signal JSON object into every subscriber's signal store."""
         var eid = self._next_id()
         var frame = _frame_patch_signals(
@@ -376,16 +379,29 @@ struct DatastarStream:
         self._dispatch(url, eid, frame)
         return eid
 
-    def execute_script(mut self, url: String, script: String) -> Int:
-        """Run a script in every subscriber's browser."""
+    def execute_script(
+        mut self,
+        url: String,
+        script: String,
+        auto_remove: Bool = True,
+        attributes: List[String] = List[String](),
+    ) raises -> Int:
+        """Run a script in every subscriber's browser.
+
+        `attributes` are written as `name="value"` and go out verbatim; see
+        `sse.execute_script`.
+        """
         var eid = self._next_id()
         var frame = _frame_execute_script(
-            script=script, event_id=String(eid)
+            script=script,
+            auto_remove=auto_remove,
+            attributes=attributes,
+            event_id=String(eid),
         )
         self._dispatch(url, eid, frame)
         return eid
 
-    def redirect_to(mut self, url: String, location: String) -> Int:
+    def redirect_to(mut self, url: String, location: String) raises -> Int:
         """Redirect every subscriber to `location`."""
         var eid = self._next_id()
         var frame = _frame_redirect(

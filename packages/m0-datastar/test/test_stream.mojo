@@ -547,5 +547,50 @@ def test_read_signals_preserves_plus_in_json() raises:
     assert_equal(read_signals(req), '{"s":"a+b"}')
 
 
+
+def test_read_signals_from_delete_query() raises:
+    """DELETE carries signals in the query, as GET does; the rest in the body.
+
+    The SDK's `ReadSignals` table says so, and so does the client: the
+    1.0.4 bundle sends a body only when the method is neither GET nor
+    DELETE. Read from the body, a DELETE's signals came back as `{}`.
+
+    covers: I28
+    """
+    var gone = HTTPRequest(
+        URI.parse("http://localhost:8080/todo/3?datastar=%7B%22x%22%3A1%7D"),
+        method="DELETE",
+    )
+    assert_equal(read_signals(gone), '{"x":1}')
+    var lower = HTTPRequest(
+        URI.parse("http://localhost:8080/todo/3?datastar=%7B%7D"), method="delete"
+    )
+    assert_equal(read_signals(lower), "{}")
+    # A DELETE's body is not where signals travel, even when one is sent.
+    var bodied = HTTPRequest(
+        URI.parse("http://localhost:8080/todo/3"),
+        body=Bytes(String('{"x":2}').as_bytes()),
+        method="DELETE",
+    )
+    assert_equal(read_signals(bodied), EMPTY_SIGNALS)
+    for method in [String("PUT"), String("PATCH"), String("QUERY")]:
+        var req = HTTPRequest(
+            URI.parse("http://localhost:8080/x?datastar=%7B%7D"),
+            body=Bytes(String('{"b":1}').as_bytes()),
+            method=method,
+        )
+        assert_equal(read_signals(req), '{"b":1}')
+
+
+def test_execute_script_passes_its_options_through() raises:
+    """`DatastarStream.execute_script` takes the builder's options."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    var attrs = List[String]()
+    attrs.append('type="module"')
+    _ = s.execute_script("/e", "go()", auto_remove=False, attributes=attrs)
+    assert_true(_text(s.drain(0)).find('<script type="module">go()</script>') >= 0)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

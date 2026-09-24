@@ -186,11 +186,17 @@ struct CounterHandler(AppHandler):
         # and a tab would show a stale count until the next click. Ticks
         # that reconcile full state heal any lost race within a second —
         # the recommended shape for increment-y signals under fan-out.
-        _ = self.stream.patch_signals(
-            STREAM_URL,
-            '{"uptime":' + String(up)
-            + ',"count":' + String(shared_load(self.count_addr)) + "}",
-        )
+        # `tick` cannot raise; a frame refused for a line break in a
+        # single-line field (none here) is logged, and the next tick
+        # carries the whole state again anyway.
+        try:
+            _ = self.stream.patch_signals(
+                STREAM_URL,
+                '{"uptime":' + String(up)
+                + ',"count":' + String(shared_load(self.count_addr)) + "}",
+            )
+        except e:
+            print("datastar_counter: tick broadcast refused:", e)
 
 
 def main() raises:
