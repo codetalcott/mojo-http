@@ -36,7 +36,8 @@ from lightbug_http.c.process import getpid
 from lightbug_http.offload import OffloadPool, STREAM_GEN_NONE
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
-    websocket_upgrade, encode_ws_frame, WS_OP_TEXT, WS_OP_CLOSE,
+    websocket_upgrade, encode_ws_frame, close_frame, WS_OP_TEXT, WS_OP_CLOSE,
+    WS_CLOSE_TOO_BIG,
 )
 from lightbug_http.c.platform import MSG_DONTWAIT
 
@@ -1489,7 +1490,16 @@ struct WSGIHandler(ThreadHandler):
     def _ws_forward(mut self, slot: Int, opcode: Int, payload: List[UInt8]) -> Bool:
         """One delivery attempt, shared by the live path and the parked
         drain so the two cannot route differently. True = delivered (or
-        served inline); False = the channel or the window refused."""
+        served inline, or refused for good); False = the channel or the
+        window refused, for now."""
+        # A message larger than the channel's datagram can never be
+        # delivered, however long it waits: parked, it was retried for ever
+        # -- no reply, no close, no log (a 70 KB chat message went silent).
+        # Refused with 1009 instead (SPEC I26), once per socket.
+        var limit = self._ws_datagram_room(slot)
+        if limit >= 0 and len(payload) > limit:
+            self._ws_refuse_too_big(slot, len(payload), limit)
+            return True
         # The POOL first: on a mixed mounted server `asgi_notify_fd` is set
         # for the ASGI mount, and asking that question first would hand
         # every socket's message to an executor that never accepted the
@@ -1568,6 +1578,40 @@ struct WSGIHandler(ThreadHandler):
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
         return True
+
+    def _ws_datagram_room(self, slot: Int) -> Int:
+        """The largest inbound payload `slot`'s channel can carry in one
+        datagram (`WS_CHANNEL_DATAGRAM_MAX` less its header), or -1 where no
+        datagram is involved (a GRIP socket served inline)."""
+        if slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD:
+            # `_send_ws_pool_message`'s header: tag, slot, opcode, the
+            # channel's length and the channel itself.
+            return WS_CHANNEL_DATAGRAM_MAX - 12 - self.sockets.filter_url(slot).byte_length()
+        if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
+            return WS_CHANNEL_DATAGRAM_MAX - 10  # `_send_ws_message_tag`'s
+        return -1
+
+    def _ws_refuse_too_big(mut self, slot: Int, size: Int, limit: Int):
+        """End `slot` with a Close carrying 1009, the message dropped: the
+        Close is queued and the socket marked done in one step, the `x`
+        frame's shape, so the loop is `closing` before the peer's reply can
+        arrive; an outbox too full for the Close ends it without one. The
+        application hears 1009 in its disconnect (SPEC L28)."""
+        if slot < len(self.ws_closed_with):
+            if self.ws_closed_with[slot] == WS_CLOSE_TOO_BIG:
+                return  # refused already: the rest of the batch goes with it
+            self.ws_closed_with[slot] = WS_CLOSE_TOO_BIG
+        print(
+            "ws_message: an inbound message of " + String(size)
+            + " bytes exceeds the channel's " + String(limit)
+            + "-byte limit; closing slot " + String(slot) + " with 1009",
+            flush=True,
+        )
+        if not self.sockets.queue_frame(slot, NO_EVENT_ID, close_frame(WS_CLOSE_TOO_BIG)):
+            self._end_socket(slot)
+            return
+        if slot < len(self.asgi_done):
+            self.asgi_done[slot] = True
 
     def _ws_park(mut self, slot: Int, opcode: Int, payload: List[UInt8]):
         """Append one `[opcode u8][len u32 LE][payload]` record. Parked is
