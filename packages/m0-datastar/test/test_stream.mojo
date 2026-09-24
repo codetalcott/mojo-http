@@ -11,6 +11,7 @@ from m0_http.multiworker import SharedAtomics
 
 from src.stream import DatastarStream
 from src.signals import read_signals, EMPTY_SIGNALS
+from src.sse import patch_elements
 
 
 def _text(buf: List[UInt8]) -> String:
@@ -252,6 +253,8 @@ def test_id_ahead_of_counter_is_clamped() raises:
     """
     var s = DatastarStream(4)
     _ = s.open(_reconnect("/e", "999"), "/e")
+    # Its history is not this process's: a gap, resynced by the view.
+    assert_false(s.caught_up(0))
     _ = s.patch_signals("/e", '{"live":1}')
     assert_true(_text(s.drain(0)).find('{"live":1}') >= 0)
 
@@ -285,7 +288,12 @@ def test_restore_seeds_the_journal_and_counter() raises:
 
 
 def test_journal_evicts_beyond_cap() raises:
-    """The journal keeps the newest `journal_entries` frames, no more."""
+    """The journal keeps the newest `journal_entries` frames, no more.
+
+    A client that had the evicted frame is caught up from what is left; one
+    that missed it is a gap, and gets nothing rather than b and c on top of
+    a state that lacks a -- which is what it got before SPEC I30.
+    """
     var s = DatastarStream(4, journal_entries=2)
     _ = s.open(_get("/e"), "/e")
     _ = s.patch_signals("/e", '{"a":1}')
@@ -293,15 +301,21 @@ def test_journal_evicts_beyond_cap() raises:
     _ = s.patch_signals("/e", '{"c":3}')
     _ = s.drain(0)
     s.closed(0)
-    _ = s.open(_reconnect("/e", "0"), "/e")
+    _ = s.open(_reconnect("/e", "1"), "/e")
     var out = _text(s.drain(0))
+    assert_true(s.caught_up(0))
     assert_false(out.find('{"a":1}') >= 0)
     assert_true(out.find('{"b":2}') >= 0)
     assert_true(out.find('{"c":3}') >= 0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "0"), "/e")
+    assert_equal(len(s.drain(0)), 0)
+    assert_false(s.caught_up(0))
 
 
 def test_zero_journal_disables_replay() raises:
-    """`journal_entries=0` records nothing; reconnections just resume live."""
+    """`journal_entries=0` records nothing; a reconnect that missed a frame
+    is a gap, one that missed none is current."""
     var s = DatastarStream(4, journal_entries=0)
     _ = s.open(_get("/e"), "/e")
     _ = s.patch_signals("/e", '{"a":1}')
@@ -309,7 +323,120 @@ def test_zero_journal_disables_replay() raises:
     s.closed(0)
     _ = s.open(_reconnect("/e", "0"), "/e")
     assert_equal(len(s.drain(0)), 0)
+    assert_false(s.caught_up(0))
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "1"), "/e")
+    assert_true(s.caught_up(0))
 
+
+
+# --- A catch-up the journal cannot give (SPEC I30) ----------------------------
+
+def _pad(n: Int) -> String:
+    var out = String("")
+    for _ in range(n):
+        out += "x"
+    return out^
+
+
+def test_a_replay_larger_than_the_outbox_is_not_served_in_part() raises:
+    """A catch-up that will not fit the outbox is not sent at all.
+
+    Thirty whole-list frames of 3 KB against a 64 KB outbox: replayed oldest
+    first, frames 1-21 went out and 22-30 were refused, and the client sat
+    on state 21 -- a list nine changes old, with a clean log. Now nothing
+    is queued, `caught_up` says so, and the view's resync through
+    `send_to` is what the client gets -- unnumbered, so it suppresses no
+    live frame, and the live feed goes on from the next broadcast.
+
+    covers: I30
+    """
+    var s = DatastarStream(4, journal_entries=64)
+    var pad = _pad(3000)
+    for i in range(30):
+        _ = s.patch_elements("/e", String('<ul id="l">', i, pad, "</ul>"))
+    _ = s.open(_reconnect("/e", "0"), "/e")
+    assert_equal(len(s.drain(0)), 0)
+    assert_false(s.caught_up(0))
+    assert_true(s.send_to(0, patch_elements('<ul id="l">now</ul>')))
+    var resync = _text(s.drain(0))
+    assert_true(resync.find("now") >= 0)
+    assert_false(resync.find("id: ") >= 0)
+    _ = s.patch_elements("/e", '<ul id="l">live</ul>')
+    var live = _text(s.drain(0))
+    assert_true(live.find("id: 31\n") >= 0)
+    assert_true(live.find("live") >= 0)
+
+
+def test_a_reconnect_the_journal_covers_is_caught_up() raises:
+    """The control: a replay that fits is whole, and says so."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    assert_true(s.caught_up(0))
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.patch_signals("/e", '{"b":2}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "1"), "/e")
+    assert_true(s.caught_up(0))
+    assert_true(_text(s.drain(0)).find('{"b":2}') >= 0)
+
+
+def test_restored_history_begins_at_its_first_frame() raises:
+    """An id older than the first restored frame missed frames nobody kept."""
+    var s = DatastarStream(4)
+    s.restore("/e", 41, List[UInt8](String("event: one\nid: 41\n\n").as_bytes()))
+    s.restore("/e", 42, List[UInt8](String("event: two\nid: 42\n\n").as_bytes()))
+    _ = s.open(_reconnect("/e", "40"), "/e")
+    assert_true(s.caught_up(0))
+    assert_true(_text(s.drain(0)).find("event: one") >= 0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", "30"), "/e")
+    assert_false(s.caught_up(0))
+    assert_equal(len(s.drain(0)), 0)
+
+
+def test_a_worker_that_joins_late_lacks_what_came_before() raises:
+    """A respawned worker never saw the frames its siblings sent before it."""
+    var bus = BroadcastBus(2)
+    var shm = SharedAtomics(1)
+    var a = DatastarStream(4)
+    a.enable_bus(bus, 0, shm.addr(0))
+    for _ in range(5):
+        _ = a.patch_signals("/e", "{}")
+    var b = DatastarStream(4)
+    b.enable_bus(bus, 1, shm.addr(0))
+    _ = b.open(_reconnect("/e", "3"), "/e")
+    assert_false(b.caught_up(0))
+    b.closed(0)
+    _ = b.open(_reconnect("/e", "5"), "/e")
+    assert_true(b.caught_up(0))
+
+
+def test_a_closed_slot_forgets_its_gap() raises:
+    var s = DatastarStream(4, journal_entries=0)
+    _ = s.patch_signals("/e", "{}")
+    _ = s.open(_reconnect("/e", "0"), "/e")
+    assert_false(s.caught_up(0))
+    s.closed(0)
+    assert_true(s.caught_up(0))
+    assert_false(s.send_to(0, "event: x\n\n"))
+
+
+def test_refused_counts_a_full_outbox() raises:
+    """A frame a due subscriber's full outbox refused is counted, once."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    var other = _get("/o")
+    other.slot_id = 1
+    _ = s.open(other, "/o")
+    var pad = _pad(20000)
+    for _ in range(4):
+        _ = s.patch_elements("/e", String('<p id="p">', pad, "</p>"))
+    assert_equal(s.refused(), 1)
+    _ = s.drain(0)
+    _ = s.patch_elements("/e", '<p id="p">small</p>')
+    assert_equal(s.refused(), 1)
 
 # --- A stream of states: the newest frame at open, never a replay ------------
 

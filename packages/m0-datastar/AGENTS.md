@@ -89,8 +89,19 @@ SDK option cannot be dropped silently. Map it in `event_call`.
   state at `open` and never replays (SPEC I24). Under `send_latest`, every
   frame on a URL must be a whole state: whatever went out last is what the
   next subscriber gets.
-- **The outbox holds 64 KB per slot** (`MAX_PENDING_BYTES` in m0-http). A
-  replay larger than that loses its newest frames.
+- **A catch-up is all or nothing** (SPEC I30). The outbox holds 64 KB per
+  slot (`MAX_PENDING_BYTES` in m0-http). A reconnect gets no replay at all
+  in any of these cases:
+  - the journal has evicted a frame it missed;
+  - its id predates this process's history (the `floor`: the first
+    restored frame, or the ids siblings used before a respawned worker
+    joined);
+  - its id is ahead of the counter;
+  - its missed frames will not fit the outbox.
+
+  In every case `caught_up(slot)` is False, and the view `send_to`s the
+  current state, unnumbered. Never "replay what fits": replayed oldest
+  first, the frames refused are the newest ones.
 - **Cross-worker streams take their ids from the shared atomic.**
   `enable_bus`, `deliver_peer` and the bus wiring are described in the
   struct docstring; `apps/datastar_counter` is the reference.
@@ -103,6 +114,7 @@ SDK option cannot be dropped silently. Map it in `event_call`.
 | `read_signals` reads GET and DELETE from the query | `test_stream.mojo`, and the same harness | I28 |
 | Line breaks refused; the redirect literal escaped | `test_frame_injection.mojo` | I29 |
 | The newest state sent at `open` | `test_stream.mojo` | I24 |
+| A catch-up the journal cannot give is reported, not sent in part | `test_stream.mojo`, `smoke-todo` | I30 |
 | Invalid UTF-8 after a line break does not trap | `test_sse.mojo` | G14 |
 | A fragment is one `elements` line | `test_fragment_frame.mojo` | N7 |
 

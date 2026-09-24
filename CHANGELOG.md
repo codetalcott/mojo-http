@@ -231,6 +231,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A Datastar replay too big for the connection is no longer served in
+  part** (SPEC I30). `DatastarStream.open` replayed a reconnect's missed
+  frames oldest first into a 64 KB outbox. When they did not fit, the
+  newest were the ones refused, and the client sat on a state from
+  several changes ago with nothing in the log: thirty 3 KB frames arrived
+  as 1-21. A reconnect behind an evicted frame got the frames after it
+  with a hole in the middle. Both are now gaps. Nothing is replayed,
+  `caught_up(slot)` answers False (as it does for an id older than the
+  process's own history, or ahead of it), and the new `send_to(slot,
+  frame)` queues the view's resync for that connection alone.
+  `apps/datastar_todo` sends its current list that way, and
+  `smoke-todo` reconnects thirteen 2 KB adds behind to hold it.
+  `refused()` counts the live frames a full outbox refused.
+
 - **Security: `m0-datastar`'s `redirect` pasted its location between
   single quotes** (SPEC I29), so a `'` ended the JavaScript string and the
   rest ran as script, and `</script>` ended the element whatever the

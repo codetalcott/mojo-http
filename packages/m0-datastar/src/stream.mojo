@@ -18,7 +18,7 @@ uses `notify_frame`, which queues bytes verbatim.
 from lightbug_http import Headers, Header, HeaderKey, HTTPRequest, HTTPResponse
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 
-from m0_http import SSERegistry, sse_response
+from m0_http import NO_EVENT_ID, SSERegistry, sse_response
 from m0_http.multiworker import shared_fetch_add, shared_load, shared_store
 
 from .consts import DEFAULT_PATCH_MODE
@@ -69,7 +69,11 @@ struct DatastarStream:
 
     - **Replay** (the default): a stream of changes, where a reconnecting
       client presents `Last-Event-ID` and is caught up from the journal
-      with what it missed. A new client starts from the live feed.
+      with what it missed. A new client starts from the live feed. A
+      catch-up is all or nothing: when the journal cannot supply every
+      frame the client missed, or they will not fit its outbox, none is
+      sent and `caught_up(slot)` says so, and the view that opened the
+      stream sends the current state with `send_to` (SPEC I30).
     - **Latest** (`send_latest=True`): a stream of STATES, where every frame
       is the whole state and an old one is wrong rather than merely late —
       a simulation, a dashboard, a scoreboard. Every subscriber, new or
@@ -108,6 +112,21 @@ struct DatastarStream:
     var latest_urls: List[String]
     var latest_ids: List[Int]
     var latest_frames: List[List[UInt8]]
+    # What a reconnect can be caught up from. `floor` is the newest id
+    # this stream's history does NOT cover: frames numbered before it were
+    # published before this process restored or joined anything. The
+    # evicted lists hold, per url, the newest id the journal has dropped.
+    # A client whose `Last-Event-ID` is below either missed a frame the
+    # journal cannot replay.
+    var floor: Int
+    var evicted_urls: List[String]
+    var evicted_ids: List[Int]
+    var recorded_any: Bool
+    # Per slot: whether its latest `open` could not catch it up.
+    var gapped: List[Bool]
+    # Frames a subscriber was due and its full outbox refused (#120's
+    # backpressure), counted per subscriber.
+    var refused_count: Int
 
     def __init__(
         out self,
@@ -141,6 +160,12 @@ struct DatastarStream:
         self.latest_urls = List[String]()
         self.latest_ids = List[Int]()
         self.latest_frames = List[List[UInt8]]()
+        self.floor = 0
+        self.evicted_urls = List[String]()
+        self.evicted_ids = List[Int]()
+        self.recorded_any = False
+        self.gapped = List[Bool](length=capacity, fill=False)
+        self.refused_count = 0
 
     # --- Lifecycle: drive these from the HTTPService SSE hooks -------------
 
@@ -159,11 +184,22 @@ struct DatastarStream:
         semantics, and what keeps a first-time visitor from replaying stale
         patches onto a freshly rendered page.
 
+        The catch-up is ALL OR NOTHING (SPEC I30). It is not attempted when
+        the journal cannot supply every frame the client missed — the id is
+        older than a frame the journal has evicted, or than this process's
+        history — and it is taken back when the frames will not fit the
+        slot's outbox: replayed oldest first, the newest frames were the
+        ones refused, and the client sat on a state from several changes
+        ago with nothing in the log. Either way `caught_up(slot)` answers
+        False, the slot follows the live feed, and the view sends the
+        current state with `send_to`.
+
         An id *ahead* of this process's counter is clamped to it: the id came
         from an incarnation whose history this process does not have, and
-        taking it literally would suppress every subsequent event. Processes
-        that restore a persisted journal at boot (`restore`) seed the counter
-        past this clamp, which is what makes replay work across restarts.
+        taking it literally would suppress every subsequent event. It is a
+        gap too. Processes that restore a persisted journal at boot
+        (`restore`) seed the counter past this clamp, which is what makes
+        replay work across restarts.
 
         Under `send_latest` none of that applies: the subscriber is sent the
         newest frame for `url`, whatever id it presents, and then the live
@@ -196,22 +232,80 @@ struct DatastarStream:
             return sse_response()
         var last_id = 0
         var reconnecting = False
+        var ahead = False
         var header = req.headers.get("last-event-id")
         if header:
             reconnecting = True
             last_id = _parse_event_id(header.value())
             if last_id > self._current_id():
                 last_id = self._current_id()
+                ahead = True
         self.registry.subscribe(req.slot_id, url, last_id)
-        if reconnecting:
-            for i in range(len(self.journal_ids)):
-                if self.journal_urls[i] == url and self.journal_ids[i] > last_id:
-                    _ = self.registry.queue_frame(
-                        req.slot_id,
-                        self.journal_ids[i],
-                        self.journal_frames[i].copy(),
-                    )
+        self._set_gapped(req.slot_id, False)
+        if reconnecting and (ahead or not self._replay(req.slot_id, url, last_id)):
+            self._set_gapped(req.slot_id, True)
         return sse_response()
+
+    def _replay(mut self, slot: Int, url: String, last_id: Int) -> Bool:
+        """Queue every journaled frame for `url` after `last_id`, or none.
+
+        False when the journal cannot catch the client up: it evicted a
+        frame the client missed, or the id predates this stream's history,
+        or the frames do not fit the slot's outbox -- in which case what was
+        queued is taken back, leaving the slot subscribed at `last_id`.
+        """
+        if last_id < self.floor or last_id < self._evicted_through(url):
+            return False
+        for i in range(len(self.journal_ids)):
+            if self.journal_urls[i] == url and self.journal_ids[i] > last_id:
+                if not self.registry.queue_frame(
+                    slot, self.journal_ids[i], self.journal_frames[i].copy()
+                ):
+                    self.registry.unsubscribe(slot)
+                    self.registry.subscribe(slot, url, last_id)
+                    return False
+        return True
+
+    def caught_up(self, slot: Int) -> Bool:
+        """Whether the latest `open` on `slot` left its client current.
+
+        True for a first visit, for a reconnect the journal caught up, and
+        under `send_latest`. False after a reconnect it could not (SPEC
+        I30): the client holds a state from before what it missed, and the
+        view that opened the stream should `send_to` it the current one.
+        """
+        if slot < 0 or slot >= len(self.gapped):
+            return True
+        return not self.gapped[slot]
+
+    def send_to(mut self, slot: Int, frame: String) -> Bool:
+        """Queue a complete frame for ONE slot -- the resync after a gap.
+
+        The frame goes unnumbered (`NO_EVENT_ID`) whatever `id:` it
+        carries for the registry: it never suppresses a numbered frame,
+        and it is not journaled, because it is this client's catch-up and
+        not a change. Build it without an event id, so the client's
+        `Last-Event-ID` stays where it was until the next broadcast; a
+        reconnect before then is a gap again and is resynced again.
+        Returns False for a slot that is not streaming or whose outbox is
+        full.
+        """
+        return self.registry.queue_frame(
+            slot, NO_EVENT_ID, List[UInt8](frame.as_bytes())
+        )
+
+    def refused(self) -> Int:
+        """Frames a subscriber was due that its full outbox refused.
+
+        Counted once per subscriber per frame. A client that is refused a
+        change of a replay stream holds a state that never existed until
+        its next reconnect, so a count that grows is worth logging.
+        """
+        return self.refused_count
+
+    def _set_gapped(mut self, slot: Int, value: Bool):
+        if slot >= 0 and slot < len(self.gapped):
+            self.gapped[slot] = value
 
     def drain(mut self, slot: Int) -> List[UInt8]:
         """Return and clear pending bytes for a slot. Wire to `sse_drain_slot`."""
@@ -224,6 +318,7 @@ struct DatastarStream:
     def closed(mut self, slot: Int):
         """Release a disconnected slot. Wire to `sse_slot_disconnected`."""
         self.registry.unsubscribe(slot)
+        self._set_gapped(slot, False)
 
     # --- Cross-worker fan-out ----------------------------------------------
 
@@ -243,8 +338,14 @@ struct DatastarStream:
         # A journal restored before this call seeds the shared counter, so a
         # pre-restart Last-Event-ID stays meaningful. Every worker restores
         # the same journal, so the racing stores all write the same value.
-        if self.next_event_id > shared_load(shared_id_addr):
+        var shared = shared_load(shared_id_addr)
+        if self.next_event_id > shared:
             shared_store(shared_id_addr, self.next_event_id)
+        elif shared > self.next_event_id:
+            # Siblings published before this worker joined -- a respawn --
+            # and it restored nothing that covers them: those frames are
+            # history this stream does not have.
+            self.floor = max(self.floor, shared)
 
     def deliver_peer(mut self, url: String, event_id: Int, frame: List[UInt8]):
         """Deliver a frame broadcast by another worker — wire `sse_peer_frame` here.
@@ -256,7 +357,7 @@ struct DatastarStream:
         self._record(url, event_id, frame)
         if event_id > self.next_event_id:
             self.next_event_id = event_id
-        _ = self.registry.notify_frame(url, event_id, frame)
+        self._notify(url, event_id, frame)
 
     def _next_id(mut self) -> Int:
         """Allocate the next event id — from the shared atomic when bus'd."""
@@ -279,16 +380,38 @@ struct DatastarStream:
         """Journal a broadcast frame, then queue it for every subscriber."""
         var bytes = List[UInt8](frame.as_bytes())
         self._record(url, event_id, bytes)
-        _ = self.registry.notify_frame(url, event_id, bytes)
+        self._notify(url, event_id, bytes)
         if self.bus_worker >= 0:
             _ = publish_to_channels(
                 self.bus_write_fds, self.bus_worker, url, event_id, Span(bytes)
             )
 
+    def _notify(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        """Queue a frame for `url`'s subscribers, counting refusals.
+
+        A subscriber is due the frame when its last-seen id is older; one
+        that is due and not reached was refused by its full outbox.
+        """
+        var due = 0
+        for slot in range(len(self.gapped)):
+            if (
+                self.registry.is_slot_streaming(slot)
+                and self.registry.filter_urls[slot] == url
+                and self.registry.last_event_ids[slot] < event_id
+            ):
+                due += 1
+        var reached = self.registry.notify_frame(url, event_id, frame)
+        self.refused_count += due - reached
+
     def _record(mut self, url: String, event_id: Int, frame: List[UInt8]):
         if self.send_latest:
             self._remember(url, event_id, frame)
+        if not self.recorded_any:
+            self.recorded_any = True
         if self.journal_cap <= 0:
+            # No journal: every frame is gone the moment it is sent, so a
+            # reconnect that missed one cannot be caught up.
+            self._note_evicted(url, event_id)
             return
         # Insert in id order. Local broadcasts always append; a frame from
         # another worker can arrive behind one this worker already recorded,
@@ -302,9 +425,27 @@ struct DatastarStream:
         self.journal_ids.insert(pos, event_id)
         self.journal_frames.insert(pos, frame.copy())
         while len(self.journal_ids) > self.journal_cap:
-            _ = self.journal_urls.pop(0)
-            _ = self.journal_ids.pop(0)
+            var gone_url = self.journal_urls.pop(0)
+            var gone_id = self.journal_ids.pop(0)
             _ = self.journal_frames.pop(0)
+            self._note_evicted(gone_url, gone_id)
+
+    def _note_evicted(mut self, url: String, event_id: Int):
+        """Remember that `url`'s frames up to `event_id` are unreplayable."""
+        for i in range(len(self.evicted_urls)):
+            if self.evicted_urls[i] == url:
+                if event_id > self.evicted_ids[i]:
+                    self.evicted_ids[i] = event_id
+                return
+        self.evicted_urls.append(url)
+        self.evicted_ids.append(event_id)
+
+    def _evicted_through(self, url: String) -> Int:
+        """The newest id of `url` the journal has dropped, 0 for none."""
+        for i in range(len(self.evicted_urls)):
+            if self.evicted_urls[i] == url:
+                return self.evicted_ids[i]
+        return 0
 
     def _remember(mut self, url: String, event_id: Int, frame: List[UInt8]):
         """Keep `frame` as `url`'s newest unless a newer one is already kept."""
@@ -326,7 +467,13 @@ struct DatastarStream:
         property that makes a client's pre-restart `Last-Event-ID` meaningful
         to this process. Without it the counter restarts at 0 and `open`'s
         clamp writes the reconnecting client's id off entirely.
+
+        The first frame restored is where this stream's history begins: a
+        client whose id is older missed frames nobody kept, and `open`
+        reports it as a gap rather than replaying from the middle.
         """
+        if not self.recorded_any:
+            self.floor = max(self.floor, event_id - 1)
         self._record(url, event_id, frame)
         if event_id > self.next_event_id:
             self.next_event_id = event_id
