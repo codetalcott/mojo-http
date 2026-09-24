@@ -8,7 +8,34 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-09-24
+
+The request an application sees is now the one its client sent, and the
+ASGI executor behaves as Starlette, FastAPI and FastHTML expect: FastHTML's
+and FastAPI's own examples, run beside uvicorn, found the ASGI and request
+fixes below. Descriptors no longer leak into a process the application
+starts, `m0-datastar` passes the Datastar SDK's own conformance cases, and
+the `m0` wheel ships as `m0 0.2.0`, carrying `Query` and `push=True`.
+
 ### Added
+
+- **`m0 0.2.0`: this release's framework, for applications built with
+  `m0`.** What changed since `m0 0.1.0` for someone writing an
+  application:
+  - New: `Query` (N36) and `push=True` (N37), both below.
+  - `m0-datastar`'s frame builders now `raise` on a line break in a
+    one-line field, so a call site must be in a `raises` function or catch
+    it. `patch_signals` splits multi-line JSON, remove mode writes no
+    `elements` line, `execute_script` takes `attributes`, `redirect`
+    escapes its location, and `read_signals` reads a DELETE's query.
+    `DatastarStream.caught_up` and `send_to` answer a reconnect the
+    journal cannot catch up (I27–I30).
+  - A request reaches a view as its client sent it: no invented
+    `Content-Length`, `Connection` or `Host` (L25), and a raw `@` in its
+    path or query no longer sends it to `/` (A22). A native 1xx, 204 or
+    304 carries no invented entity headers (A21).
+  - The scaffold's `AGENTS.md` covers a plain-form login, a cookie in a
+    test, and where `read_signals` looks.
 
 - **The Datastar SDK's own conformance cases gate `m0-datastar`** (SPEC
   I27). The SDK's specification (`sdk/ADR.md`), its 20 cases and the
@@ -105,7 +132,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the wheel: the page now gives its URL and says to read its renderer as
   well as its views. Reaches a scaffold with the next `m0` release.
 - **Documentation for the Mojo stack, and a quickstart CI executes** (SPEC
-  N33, N35, D45). Six pages under `/mojo/` on the site, their URLs
+  N33–N35, D45). Six pages under `/mojo/` on the site, their URLs
   permanent: the section index (where "preview" is said, once), a
   quickstart, the host, views and fragments, deploy, and the way from an
   m0serve mount to a binary of its own. `packaging/m0/QUICKSTART.md` is
@@ -119,6 +146,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   bare-figure rule. `llms.txt` gains the stack's operating contract; the
   pages ride in the existing `llms-full.txt`. The site deploys on a
   release, so merging this publishes nothing.
+  A scaffold's first build prints no compiler warning (N34):
+  `smoke-scaffold` refuses one that does.
+
+- **A command line and a doctor for Mojo host applications** (SPEC
+  E30–E31). `serve[H, P](AppConfig())` now reads the binary's flags —
+  `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`,
+  `--access-log`, `--sse-heartbeat-ms`, `--app-tick-ms`,
+  `--max-keepalive-requests`, `--qos` — with m0serve's precedence, flag
+  over `M0_` variable over default, and m0serve's strictness: an unknown
+  flag, an unreadable value or a positional is the usage and exit 2.
+  `--doctor` prints the configuration the binary would serve as one JSON
+  object (the last line of stdout, in m0serve's report shape, each failed
+  check carrying its `fix`) and exits with the code serving would exit
+  with, having bound nothing; `smoke-host-doctor` runs twenty
+  configurations both ways and requires the codes to agree. An
+  application that prints its own address takes `host_config()` so the
+  banner names the port a flag moved. Nothing changes for an application
+  that is passed no arguments.
 
 ### Changed
 
@@ -424,7 +469,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   to a WSGI SSE view hung and held its pool thread until shutdown; eight
   of them were the whole zero-config pool. It is answered at the body's
   first item, with no length, and the body is closed.
-- **Two executor edge cases from PR 1's review.** A body an ASGI
+- **Two ASGI executor edge cases.** A body an ASGI
   application sent before its `http.response.start`, then caught the error
   for and answered properly, reached the client at the front of the real
   body; and a stream still winding down on a recycled slot was cancelled a
@@ -480,38 +525,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   status's own RFC 9110 phrase (`reply.reason_phrase`); an explicit `text`
   still wins (SPEC N29).
 
-- **Every scaffolded project's first build began with a compiler warning.**
-  Both templates' entry files opened their docstring with the
-  application's name, and a lowercase name fails the compiler's summary
-  lint; `check-templates` compiles the files unsubstituted, where
-  `__M0_APP__` passes it. The name is backticked, and `smoke-scaffold`
-  refuses a first build that warns (SPEC N34). Found by the quickstart's
-  gate on its first run. The scaffold's `AGENTS.md` and `README.md` also
-  gave `m0 test` as 2–3 s where the `views` template measures 4; they say
-  2–4 s.
-
 - **`mojo build` needing a C compiler on Linux, and saying so only after
   the whole compile**, is retired as a known issue for an application built
   with `m0`: the check runs first and names the fix. Measured on the way:
   mojo 1.1.0 looks for the literal name `cc` and nothing else, so `gcc`
   without `cc` is refused by name, and a `cc` that cannot link is caught by
   linking one line of C.
-
-- **A command line and a doctor for Mojo host applications** (SPEC
-  E30–E31). `serve[H, P](AppConfig())` now reads the binary's flags —
-  `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`,
-  `--access-log`, `--sse-heartbeat-ms`, `--app-tick-ms`,
-  `--max-keepalive-requests`, `--qos` — with m0serve's precedence, flag
-  over `M0_` variable over default, and m0serve's strictness: an unknown
-  flag, an unreadable value or a positional is the usage and exit 2.
-  `--doctor` prints the configuration the binary would serve as one JSON
-  object (the last line of stdout, in m0serve's report shape, each failed
-  check carrying its `fix`) and exits with the code serving would exit
-  with, having bound nothing; `smoke-host-doctor` runs twenty
-  configurations both ways and requires the codes to agree. An
-  application that prints its own address takes `host_config()` so the
-  banner names the port a flag moved. Nothing changes for an application
-  that is passed no arguments.
 
 - **The blobs demo's shapes twisted and popped** (`apps/blobs`, SPEC N16).
   Measured on 1.5.0's live stream over 45 s: 64 of 1,758 slot steps
@@ -5405,6 +5424,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.6.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.6.0
 [1.5.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.5.0
 [1.4.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.4.0
 [1.3.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.3.0
