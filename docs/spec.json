@@ -1138,6 +1138,14 @@
       "evidence": "`test_frame_injection.mojo:test_a_line_break_in_a_single_line_field_is_refused` (every PR) \u2014 every field through every builder, the event-injection shape among them, with a control that a break-free selector still goes out; `test_redirect_location_cannot_leave_its_literal` requires exactly one `</script>` in a frame whose location carries two. `poe sabotage-datastar-sdk` reverts the refusal and three of the escapes, each caught"
     },
     {
+      "id": "I30",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A reconnect the replay journal cannot fully catch up is told so, never served in part: when the client's `Last-Event-ID` is older than a frame the journal evicted or than the process's own history \u2014 its first restored frame, or what siblings sent before a respawned worker joined \u2014 or is ahead of every id the process knows, or when the frames it missed will not fit the connection's 64 KB outbox, `DatastarStream.open` queues none of them and `caught_up(slot)` answers false; `send_to(slot, frame)` queues one unnumbered frame for that connection alone, and `apps/datastar_todo` sends its current list that way. Live frames a full outbox refuses are counted (`refused()`)",
+      "status": "verified",
+      "evidence": "`test_stream.mojo:test_a_replay_larger_than_the_outbox_is_not_served_in_part` (every PR) \u2014 thirty 3 KB frames used to arrive as frames 1\u201321 with 22\u201330 refused, leaving the client nine changes behind with a clean log; now nothing is queued, the resync arrives, and the live feed resumes at 31. Beside it, one test per source of a gap and a control that a replay which fits is whole; `poe sabotage-datastar-sdk` reverts the rollback, the eviction and history checks, the ahead check, the late worker's floor and the refusal count, each caught. On the wire, `Smoke test the Datastar todo demo` reconnects thirteen 2 KB adds behind and requires the newest todo and no replayed id; with the rollback reverted it fails there"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",

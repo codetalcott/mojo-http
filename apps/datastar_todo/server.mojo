@@ -70,6 +70,7 @@ from m0_http import Router, form, url_for
 
 from m0_datastar.stream import DatastarStream
 from m0_datastar.signals import read_signals
+from m0_datastar.sse import patch_elements
 
 from m0_sqlite import Connection, open
 
@@ -81,8 +82,9 @@ comptime STREAM_URL = EVENTS
 
 # How many broadcast frames survive for replay — both the DatastarStream
 # journal and the SQLite `events` table are pruned to this depth. A client
-# further behind than this reconnects past the gap: it resumes live and its
-# next mutation (or refresh) re-renders the full list anyway.
+# further behind than this, or whose missed frames outweigh its outbox, is
+# not caught up by replay: the stream view sends it the current list
+# instead (SPEC I30).
 comptime JOURNAL_ENTRIES = 64
 
 comptime H_ADD = 0
@@ -239,6 +241,15 @@ struct TodoHandler(AppHandler):
 
         if path == STREAM_URL:
             var resp = self.stream.open(req, STREAM_URL)
+            if not self.stream.caught_up(req.slot_id):
+                # Replay could not catch this client up (SPEC I30). Every
+                # frame here is the whole list, so the current list IS the
+                # catch-up -- sent unnumbered, so it hides no live frame.
+                var rows = self._load()
+                _ = self.stream.send_to(
+                    req.slot_id,
+                    patch_elements(render_todos(rows[0], rows[1], rows[2])),
+                )
             resp.headers["x-worker"] = String(self.worker)
             return resp^
 

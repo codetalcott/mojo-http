@@ -922,7 +922,7 @@ cmd = "python3 scripts/datastar_conformance.py"
 # package, by an EXACT source line; every one must be caught. An edit to one
 # of those lines fails here with ANCHOR MISSING -- re-point the anchor.
 [tool.poe.tasks.sabotage-datastar-sdk]
-help = "Revert each Datastar wire rule in a copy; every one must be caught"
+help = "Revert each m0-datastar wire and replay rule in a copy; every one must be caught"
 cmd = "python3 scripts/datastar_conformance.py --sabotage"
 
 # The one part of m0-sqlite the Mojo compiler cannot check. src/vtab.mojo
@@ -8338,6 +8338,28 @@ LC_ALL=C grep -q 'tail' todo_hostile_page.txt \
   || { echo 'the hostile todo never reached the list, so nothing exercised the splitter'; cat todo_hostile_page.txt; exit 1; }
 rm -f todo_hostile_page.txt
 rm -f todo_hostile.txt
+
+# SPEC I30 on the wire: a reconnect whose missed frames outweigh its 64 KB
+# outbox. Every frame here is the whole list, so twelve adds of a 2 KB todo
+# make the frames since id 1 far heavier than that. Replayed oldest first,
+# the newest were the frames refused, and the tab sat on a list from
+# several adds ago with a clean log. Now nothing is replayed -- no `id:`
+# line, the catch-up is not served in part -- and the view sends the
+# current list, which must carry the LAST add. LC_ALL=C for the reason the
+# G14 phase above gives: the list is one dataline, and it holds that
+# phase's 0x80.
+pad=$(printf '%2000s' '' | tr ' ' x)
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  curl -s -X POST http://localhost:8080/add -d '{"draft":"bulk-'"$i-$pad"'"}' -o /dev/null
+done
+curl -s -X POST http://localhost:8080/add -d '{"draft":"zz-newest"}' -o /dev/null
+curl -sN --max-time 4 -H 'Accept: text/event-stream' -H 'Last-Event-ID: 1' \
+  http://localhost:8080/events > todo_behind.txt || true
+LC_ALL=C grep -q 'zz-newest' todo_behind.txt \
+  || { echo 'a reconnect too far behind for its outbox never got the current list (I30)'; head -c 400 todo_behind.txt; exit 1; }
+LC_ALL=C grep -q '^id: ' todo_behind.txt \
+  && { echo 'a catch-up too big for the outbox was served in part (I30)'; grep '^id: ' todo_behind.txt; exit 1; }
+rm -f todo_behind.txt
 
 # Two workers over one database (the Mojo host). Streams must land on both
 # workers or the phase is vacuous; adds from a connection on each worker at

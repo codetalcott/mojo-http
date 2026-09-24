@@ -343,6 +343,25 @@ SABOTAGES = [
     ("U+2028 is not escaped in the literal", "sse.mojo",
      "            c == UInt8(0xE2)\n",
      "            False\n", "test_frame_injection.mojo"),
+    # SPEC I30: a catch-up is all or nothing.
+    ("a replay that does not fit is served in part", "stream.mojo",
+     "                    self.registry.unsubscribe(slot)\n"
+     "                    self.registry.subscribe(slot, url, last_id)\n"
+     "                    return False\n",
+     "                    continue\n", "test_stream.mojo"),
+    ("a frame the journal evicted is not a gap", "stream.mojo",
+     "        if last_id < self.floor or last_id < self._evicted_through(url):\n"
+     "            return False\n",
+     "        pass\n", "test_stream.mojo"),
+    ("an id ahead of the counter is not a gap", "stream.mojo",
+     "                ahead = True\n",
+     "                pass\n", "test_stream.mojo"),
+    ("a worker that joins late keeps no floor", "stream.mojo",
+     "            self.floor = max(self.floor, shared)\n",
+     "            pass\n", "test_stream.mojo"),
+    ("a refused frame is not counted", "stream.mojo",
+     "        self.refused_count += due - reached\n",
+     "        pass\n", "test_stream.mojo"),
 ]
 
 
