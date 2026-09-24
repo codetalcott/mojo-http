@@ -429,10 +429,19 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     element types — `HTTPResponse`'s cookie jar holds a `Dict`, which is
     not `Writable`, so no container of responses can be a field); and
     the pill only sets `stopping` — the shim then runs the
-    in-flight tasks to completion (their events dispatch as they finish)
-    and stops the loop, so the executor's final flush and lifespan
-    shutdown run after `run_forever` returns. `smoke-asgi`'s
-    outlive-the-drain phase and its 10k-request RSS guard pin the shape.
+    in-flight tasks (their events dispatch as they finish), bounded:
+    sockets are cancelled after `_WS_DRAIN_GRACE`, everything else after
+    `_HTTP_DRAIN_GRACE` (3 s), and a task that swallows its cancellation
+    is named and left behind (SPEC D11) — then it stops the loop, so the
+    executor's final flush and lifespan shutdown run after `run_forever`
+    returns. Two rules: the drain starts ONCE (`_exec_draining`; a second
+    pill, or the inverted tick, must not start another whose stop lands
+    inside lifespan shutdown), and once it has stopped the loop nothing
+    reaches the port (`_exec_closed`) — the Mojo side frees its executor
+    state as `run_forever` returns, and lifespan shutdown steps the loop
+    again, so a task left behind that answered then was a segmentation
+    fault. `smoke-asgi`'s outlive-the-drain and background-forever phases
+    and its 10k-request RSS guard pin the shape.
     **A slot's per-slot state in the shim belongs to the slot's CURRENT
     task** (`_exec_slot_task`), never to the slot: the loop recycles a
     slot the instant it closes a connection, and the previous task is

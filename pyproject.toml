@@ -6504,6 +6504,7 @@ python3 scripts/emit.py --covers L8 --task smoke-asgi
 python3 scripts/emit.py --covers L15 --task smoke-asgi
 python3 scripts/emit.py --covers M3 --task smoke-asgi
 python3 scripts/emit.py --covers K12 --task smoke-asgi
+python3 scripts/emit.py --covers D11 --task smoke-asgi
 python3 scripts/emit.py --covers A21 --task smoke-asgi
 python3 scripts/emit.py --covers L27 --task smoke-asgi
 python3 scripts/emit.py --covers L25 --task smoke-asgi

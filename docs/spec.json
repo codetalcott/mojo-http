@@ -354,6 +354,14 @@
       "evidence": "`test_respawn.mojo:test_a_worker_that_fails_while_stopping_is_not_respawned` (every PR) \u2014 a supervisor signalled alone forwards SIGTERM, its worker exits 9 from the drain, and the test requires exit 1 and no second incarnation; with the guard reverted the worker is respawned and the supervisor exits 0. Found by `sabotage-host`: a host worker returning from `main` crashed on its way out, was respawned, and its supervisor outlived the smoke holding the port (the note: [the-mojo-host](notes/the-mojo-host.md)). The stop is recorded by the signal handler in a data-segment word beside the child PIDs (`src/global_slot.mojo`)"
     },
     {
+      "id": "D11",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "An ASGI application's work still running at shutdown is bounded: background work gets the drain's 3 s grace, is then cancelled and named, and lifespan shutdown still runs",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a response whose background task never ends, then SIGTERM: the process must exit and write the lifespan shutdown marker. Before, the post-pill gather waited on every HTTP task, the 5 s thread join gave up, and the process left without shutting the application down (exit 0, no marker). `poe test-shim` holds the rest: work inside the grace finishes, a task that swallows its cancellation is left behind after half a second and never reaches the executor again, and the drain starts once"
+    },
+    {
       "id": "D6",
       "section": "D",
       "category": "D. Graceful shutdown and restart",

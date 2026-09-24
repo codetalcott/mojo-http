@@ -109,6 +109,7 @@ class Harness:
         self.linger_cancels = 0  # cancels a lingering stream task saw
         self.forever_ended = False  # the endless background task's finally ran
         self.slowbg_done = False    # a short background task finished
+        self.latebg_done = False    # background work begun inside the drain
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -279,6 +280,34 @@ class Harness:
                 await send({"type": "http.response.body", "body": b"LATE",
                             "more_body": False})
             asyncio.get_running_loop().create_task(late())
+            return
+        if behaviour in ("swallow", "swallowlate", "latebg"):
+            # Background work after an answered response: `latebg` waits
+            # for the test's release, then works 50 ms; `swallow` swallows
+            # ONE cancellation and keeps going for a second; `swallowlate`
+            # has not answered yet, swallows its cancellation, and answers
+            # 0.8 s later -- a task the drain leaves behind that finishes
+            # afterwards.
+            if behaviour != "swallowlate":
+                await send({"type": "http.response.start", "status": 200,
+                            "headers": []})
+                await send({"type": "http.response.body", "body": b"ok",
+                            "more_body": False})
+            if behaviour == "latebg":
+                await self.release.wait()
+                await asyncio.sleep(0.05)
+                self.latebg_done = True
+                return
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(0.8 if behaviour == "swallowlate" else 1.0)
+            if behaviour == "swallowlate":
+                await send({"type": "http.response.start", "status": 200,
+                            "headers": []})
+                await send({"type": "http.response.body", "body": b"late",
+                            "more_body": False})
             return
         if behaviour in ("forever", "slowbg"):
             # Answered, then background work: endless, or a short job that
@@ -1507,17 +1536,22 @@ def test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body(h):
     rather than hangs."""
     produced, closed = [0], []
 
+    class Endless:
+        # An iterable with its own close(), held by the test: generator
+        # finalization cannot stand in for the call PEP 3333 requires.
+        def __iter__(self):
+            for _ in range(1000):
+                produced[0] += 1
+                yield b"data: tick\n\n"
+
+        def close(self):
+            closed.append(True)
+
+    body_obj = Endless()
+
     def app(environ, start_response):
         start_response("200 OK", [("Content-Type", "text/event-stream")])
-
-        def gen():
-            try:
-                for _ in range(1000):
-                    produced[0] += 1
-                    yield b"data: tick\n\n"
-            finally:
-                closed.append(True)
-        return gen()
+        return body_obj
 
     saved = h.ns["_app"]
     h.ns["_app"] = app
@@ -1545,6 +1579,125 @@ def test_a_socket_hears_its_clients_close_code(h):
     h.disconnect(0, 1001)
     h.settle()
     assert h.cleanups == [1001], h.cleanups
+
+
+def _logs(h, text):
+    return [e for e in h.events if e[0] == "log" and text in e[2]]
+
+
+def test_background_work_inside_the_grace_finishes(h):
+    """Review focus 1: background work still running when the drain begins,
+    and finishing inside its grace, is left to finish -- neither cancelled
+    with the sockets at _WS_DRAIN_GRACE nor at the pill."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.02
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.6
+    h.job(0, "latebg")
+    h.settle()
+    gather = h.loop.create_task(h.ns["_gather_in_flight"]())
+    h.loop.call_later(0.1, h.release.set)
+    h.run(asyncio.wait_for(gather, 3.0))
+    assert h.latebg_done, "background work inside the grace was cut short"
+    assert not _logs(h, "cancelled"), _logs(h, "cancelled")
+
+
+def test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain(h):
+    """Review focus 2: a task that catches its CancelledError and keeps going
+    is waited on for half a second after its cancellation, then left behind
+    and named -- never waited on for as long as it runs."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.01
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.job(0, "swallow")
+    h.settle()
+    h.run(asyncio.wait_for(h.ns["_gather_in_flight"](), 3.0))
+    assert len(_logs(h, "cancelled 1 task")) == 1, h.events[-3:]
+    assert len(_logs(h, "still running after their cancellation")) == 1, h.events[-3:]
+
+
+def test_a_task_left_behind_never_reaches_the_port(h):
+    """PR 6 review C1: once the drain has stopped the loop the Mojo side frees
+    its executor state, and lifespan shutdown steps this loop again -- so a
+    task the drain left behind that answered then wrote into freed memory
+    (a segmentation fault, 3 of 3). Nothing reaches the port after the stop."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.01
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.job(0, "swallowlate")
+    h.settle()
+    h.pill()
+    assert h.run_until_stopped(3.0), "the drain never stopped the loop"
+    mark = len(h.events)
+    h.settle(passes=1200)   # lifespan shutdown's turn: the task answers now
+    late = [e for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert not late, "a task left behind reached the port: %r" % (late,)
+
+
+def test_the_drain_runs_once(h):
+    """PR 6 review I2: a pill can arrive twice -- macOS reports the lane's
+    close after it as a second -- and two drains, each ending on its own
+    timer, let the later one stop the loop inside lifespan shutdown."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.01
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.job(0, "swallow")
+    h.settle()
+    h.pill()
+    h.submit_w.close()
+    assert h.run_until_stopped(3.0), "the drain never stopped the loop"
+    assert len(_logs(h, "cancelled 1 task")) == 1, [e for e in h.events if e[0] == "log"]
+
+
+def test_an_eager_stream_is_still_cancelled_at_its_disconnect(h):
+    """PR 6 review I3: under an eager task factory the task's first step --
+    which registers its stream -- runs inside create_task, so a pop of the
+    slot's stream-task entry AFTER create_task took the live stream's own
+    entry, and its disconnect cancelled nothing."""
+    h.loop.set_task_factory(asyncio.eager_task_factory)
+    h.job(0, "bytes1024")
+    h.settle()
+    assert h.kinds(0)[:1] == ["stream_start"], h.kinds(0)
+    task = h.ns["_exec_slot_task"][0]
+    h.disconnect(0)
+    h.settle()
+    assert task.done(), "the stream's task was not cancelled at its disconnect"
+
+
+def test_an_application_error_is_described_once(h):
+    """PR 6 review M6: an application's exception class is qualified by its
+    module in the traceback's last line, and a note follows it; neither is
+    said twice."""
+    cls = type("PaymentFailed", (Exception,), {"__module__": "myapp.errors"})
+    # Built at run time: the traceback quotes this file's source lines, and
+    # a literal there would be counted too.
+    msg, note = "card " + "declined", "while " + "charging"
+    try:
+        raise cls(msg)
+    except Exception as exc:
+        exc.add_note(note)
+        text = h.ns["_describe"](exc)
+    assert text.count("card declined") == 1, text
+    assert text.count("while charging") == 1, text
+
+
+def test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write(h):
+    """PR 6 review M7: a lazy body that yields only empty chunks is the GET's
+    buffered case, with a measured length of what write() produced; its
+    HEAD returns the same bytes for the gateway to measure."""
+    def app(environ, start_response):
+        write = start_response("200 OK", [("Content-Type", "text/plain")])
+        write(b"written-body")
+
+        def gen():
+            yield b""
+            yield b""
+        return gen()
+
+    saved = h.ns["_app"]
+    h.ns["_app"] = app
+    h.ns["set_stream_capable"](True)
+    try:
+        _, _, body, streaming = h.ns["_run_wsgi"]({"REQUEST_METHOD": "HEAD"}, b"")
+    finally:
+        h.ns["set_stream_capable"](False)
+        h.ns["_app"] = saved
+    assert body == b"written-body" and streaming is False, (body, streaming)
 
 
 def test_work_scheduled_at_import_is_refused_by_name(h):
@@ -1654,6 +1807,13 @@ TESTS = [
     test_an_error_is_described_once,
     test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body,
     test_a_socket_hears_its_clients_close_code,
+    test_background_work_inside_the_grace_finishes,
+    test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
+    test_a_task_left_behind_never_reaches_the_port,
+    test_the_drain_runs_once,
+    test_an_eager_stream_is_still_cancelled_at_its_disconnect,
+    test_an_application_error_is_described_once,
+    test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write,
 ]
 
 
@@ -1919,9 +2079,9 @@ SABOTAGES = [
     ),
     (
         "an HTTP spawn keeps the previous connection's stream task",
-        "    # remove it, and the owner is now this task.\n"
-        "    _exec_stream_tasks.pop(slot, None)\n",
-        "    # remove it, and the owner is now this task.\n",
+        "    _exec_stream_tasks.pop(slot, None)\n"
+        "    cycle = _Cycle(slot, body)\n",
+        "    cycle = _Cycle(slot, body)\n",
     ),
     (
         "a WebSocket spawn keeps the previous connection's stream task",
@@ -1940,7 +2100,7 @@ SABOTAGES = [
     ),
     (
         "an error's summary is said twice",
-        "    if lines and lines[-1] == head:\n",
+        "    if end >= len(summary) and lines[end - len(summary):end] == summary:\n",
         "    if False:\n",
     ),
     (
@@ -1954,6 +2114,58 @@ SABOTAGES = [
         "a disconnect's close code is dropped",
         "                    int.from_bytes(data[9:11], 'little') if len(data) == 11 else 0,\n",
         "                    0,\n",
+    ),
+    (
+        "the drain starts twice",
+        "    if stopping and not _exec_draining[0]:\n",
+        "    if stopping:\n",
+    ),
+    (
+        "a task left behind reaches the port",
+        "    if _exec_closed[0]:\n"
+        "        return\n"
+        "    stopping = _port.dispatch(ev)\n",
+        "    stopping = _port.dispatch(ev)\n",
+    ),
+    (
+        "background work is cancelled at the pill",
+        "            rest, timeout=max(0.0, _HTTP_DRAIN_GRACE - _WS_DRAIN_GRACE)\n",
+        "            rest, timeout=0\n",
+    ),
+    (
+        "background work is cancelled with the sockets",
+        "        if getattr(t, '_m0_ws', False):\n"
+        "            t.cancel()\n"
+        "    rest = ",
+        "        t.cancel()\n"
+        "    rest = ",
+    ),
+    (
+        "a cancelled task is waited on for as long as it runs",
+        "            _, stuck = await asyncio.wait(pending, timeout=0.5)\n",
+        "            await asyncio.gather(*pending, return_exceptions=True)\n"
+        "            stuck = ()\n",
+    ),
+    (
+        "an eager stream's own entry is dropped at its spawn",
+        "    _exec_stream_tasks.pop(slot, None)\n"
+        "    cycle = _Cycle(slot, body)\n"
+        "    task = _loop.create_task(cycle.run(scope))\n",
+        "    cycle = _Cycle(slot, body)\n"
+        "    task = _loop.create_task(cycle.run(scope))\n"
+        "    _exec_stream_tasks.pop(slot, None)\n",
+    ),
+    (
+        "a WSGI HEAD's body is never closed",
+        "                close()\n"
+        "        # A body that produced nothing",
+        "                pass\n"
+        "        # A body that produced nothing",
+    ),
+    (
+        "a HEAD to a body that produced nothing drops write()",
+        "        _body = b'' if produced else b''.join(written)\n",
+        "        _body = b''\n",
     ),
     (
         "work scheduled at import is not named",

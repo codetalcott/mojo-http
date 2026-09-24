@@ -550,8 +550,9 @@ _WS_DRAIN_GRACE = 1.0
 # And how long it lets EVERY task finish -- background work after a response
 # is the common case -- before it cancels the rest. Not unbounded: a task
 # that never ends held run_forever open until the 5 s join gave up, so the
-# lifespan shutdown after it never ran. Three seconds leaves that shutdown
-# the rest of the join.
+# lifespan shutdown after it never ran. Three seconds leaves lifespan
+# shutdown about 2 s of the 5 s join (1.5 s after a task that outlives its
+# cancellation), against its own 5 s wait: a slower shutdown is still cut.
 _HTTP_DRAIN_GRACE = 3.0
 _exec_global_evt = None
 _exec_inflight = {}
@@ -829,10 +830,16 @@ def _describe(exc):
 
     head = '%s: %s' % (type(exc).__name__, exc)
     lines = ''.join(traceback.format_exception(exc)).rstrip('\n').split('\n')
-    # The traceback ends with that same summary line: said once, at the top
-    # where a grep finds it (PR 1 review M6).
-    if lines and lines[-1] == head:
-        lines.pop()
+    # The traceback ends with the exception's own summary -- its type
+    # qualified by module for an application's class -- then any notes: the
+    # summary is said once, at the top where a grep finds it (PR 1 review
+    # M6), and the notes stay where they are.
+    only = traceback.format_exception_only(exc)
+    summary = only[0].rstrip('\n').split('\n')
+    notes = sum(len(item.rstrip('\n').split('\n')) for item in only[1:])
+    end = len(lines) - notes
+    if end >= len(summary) and lines[end - len(summary):end] == summary:
+        del lines[end - len(summary):end]
     return head + '\n' + '\n'.join(lines)
 
 
@@ -1050,6 +1057,17 @@ def asgi_executor_init(fd, ack_fd):
 # its life (run_forever below), not a run_until_complete per pass.
 _port = None
 _flush_armed = [False]
+# The drain starts ONCE: a pill can reach the pump twice (macOS reports the
+# lane's close after the pill as a second one) and the inverted mode's tick
+# sees the same stop its backend callback did. Two drains used to end
+# together; with a bound, the later one's stop landed inside lifespan
+# shutdown and cut it short.
+_exec_draining = [False]
+# And once the drain has stopped the loop, the port is gone: the Mojo side
+# frees its executor state as run_forever returns, and lifespan shutdown
+# steps this loop again, so a task left behind that finished then reached
+# freed memory (a segmentation fault, 3 of 3). Its events are dropped.
+_exec_closed = [False]
 
 
 def set_port(port):
@@ -1064,11 +1082,14 @@ def _exec_put(ev):
     # in the same datagram, batching without a batch buffer. The port's
     # own ordering rules (begin frame before head, flush before any
     # non-begin chunk frame) are inside dispatch and unchanged.
+    if _exec_closed[0]:
+        return
     stopping = _port.dispatch(ev)
     if not _flush_armed[0]:
         _flush_armed[0] = True
         _loop.call_soon(_flush)
-    if stopping:
+    if stopping and not _exec_draining[0]:
+        _exec_draining[0] = True
         # The pill: the submit channel is quiet behind it. Run the
         # in-flight tasks to completion -- their events dispatch here as
         # they finish -- then stop the loop, which returns run_forever to
@@ -1078,7 +1099,8 @@ def _exec_put(ev):
 
 def _flush():
     _flush_armed[0] = False
-    _port.flush()
+    if not _exec_closed[0]:
+        _port.flush()
 
 
 async def _gather_in_flight():
@@ -1105,15 +1127,24 @@ async def _gather_in_flight():
         for t in pending:
             t.cancel()
         if pending:
+            # Named, as uvicorn names the tasks it cancels at shutdown: work
+            # cut short is the application's to know about.
+            _exec_put(
+                (
+                    'log',
+                    -1,
+                    'cancelled %d task(s) still running %.1f s into the drain'
+                    % (len(pending), _HTTP_DRAIN_GRACE),
+                )
+            )
             _, stuck = await asyncio.wait(pending, timeout=0.5)
             if stuck:
                 _exec_put(
                     (
                         'log',
                         -1,
-                        '%d task(s) still running after the drain grace and '
-                        'their cancellation; leaving them to the process exit'
-                        % len(stuck),
+                        '%d task(s) still running after their cancellation; '
+                        'leaving them to the process exit' % len(stuck),
                     )
                 )
 
@@ -1123,6 +1154,7 @@ async def _finish_and_stop():
 
     await _gather_in_flight()
     await asyncio.sleep(0)
+    _exec_closed[0] = True
     _loop.stop()
 
 
@@ -1154,6 +1186,7 @@ async def _drain_and_stop():
     # a loop with nothing owed, and after it the Mojo side runs the
     # application's lifespan shutdown.
     _port.drain_finish()
+    _exec_closed[0] = True
     _loop.stop()
 
 
@@ -1175,24 +1208,38 @@ def run_forever_inverted(backend_fd):
     # which in this mode runs a pass first (see the port). A 1 Hz tick
     # runs a pass for the sweeps and caches that assume one wake a second.
 
-    def _on_backend():
-        if _port.pass_():
-            _loop.remove_reader(backend_fd)
+    tick = [None]
+
+    def _start_drain():
+        # Once, from whichever callback saw the stop first; the tick is
+        # cancelled so it runs no pass into a drain already under way.
+        _loop.remove_reader(backend_fd)
+        if tick[0] is not None:
+            tick[0].cancel()
+        if not _exec_draining[0]:
+            _exec_draining[0] = True
             _loop.create_task(_drain_and_stop())
+
+    def _on_backend():
+        if _exec_draining[0]:
+            return
+        if _port.pass_():
+            _start_drain()
             return
         if not _flush_armed[0]:
             _flush_armed[0] = True
             _loop.call_soon(_flush)
 
     def _tick():
-        if _port.pass_():
-            _loop.remove_reader(backend_fd)
-            _loop.create_task(_drain_and_stop())
+        if _exec_draining[0]:
             return
-        _loop.call_later(1.0, _tick)
+        if _port.pass_():
+            _start_drain()
+            return
+        tick[0] = _loop.call_later(1.0, _tick)
 
     _loop.add_reader(backend_fd, _on_backend)
-    _loop.call_later(1.0, _tick)
+    tick[0] = _loop.call_later(1.0, _tick)
     _loop.run_forever()
 
 
@@ -1582,6 +1629,16 @@ def spawn(slot, scope, body):
     # Mojo (there is no such thing): ('done', slot, status, headers,
     # body_bytes) or ('err', slot, message) for buffered responses;
     # stream_* events for streaming ones.
+    # A disconnect that reached the slot before this task existed was the
+    # previous connection's (the tag precedes this job on the FIFO). So is a
+    # stream task still named for the slot: its disconnect has been
+    # delivered already, and left here it was cancelled a second time by
+    # THIS connection's (PR 1 review M3). Both are dropped BEFORE the task
+    # exists: under an eager task factory its first step runs inside
+    # create_task and may register its own stream, which a pop after it
+    # would take away.
+    _exec_disconnects.pop(slot, None)
+    _exec_stream_tasks.pop(slot, None)
     cycle = _Cycle(slot, body)
     task = _loop.create_task(cycle.run(scope))
     # Before the task first runs (it starts at the loop's next step), so
@@ -1589,14 +1646,6 @@ def spawn(slot, scope, body):
     cycle.task = task
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
-    # A disconnect that reached the slot before this task existed was the
-    # previous connection's (the tag precedes this job on the FIFO).
-    _exec_disconnects.pop(slot, None)
-    # So is a stream task still named for the slot: its disconnect has been
-    # delivered already, and left here it was cancelled a second time by
-    # THIS connection's (PR 1 review M3). Only the owner's cleanup used to
-    # remove it, and the owner is now this task.
-    _exec_stream_tasks.pop(slot, None)
     task.add_done_callback(cycle.done)
 
 
@@ -1888,15 +1937,20 @@ def _run_wsgi(environ, body):
         # and held its thread until shutdown. No length is invented: RFC
         # 9110 §9.3.2 lets a HEAD omit a field known only by generating the
         # content, and the GET's stream carries none either.
+        produced = False
         try:
             for chunk in result:
                 if chunk:
+                    produced = True
                     break
         finally:
             close = getattr(result, 'close', None)
             if close is not None:
                 close()
-        _body = b''
+        # A body that produced nothing is the GET's buffered case, whose
+        # measured length is what write() produced: the same bytes here,
+        # which the gateway measures for the head and the loop never sends.
+        _body = b'' if produced else b''.join(written)
         return (captured['status'], captured['headers'], _body, False)
     if captured and _stream_this(
         result, environ, captured['status'], captured['headers']
