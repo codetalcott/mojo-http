@@ -36,7 +36,7 @@ from lightbug_http.c.process import getpid
 from lightbug_http.offload import OffloadPool, STREAM_GEN_NONE
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
-    websocket_upgrade, encode_ws_frame, WS_OP_TEXT,
+    websocket_upgrade, encode_ws_frame, WS_OP_TEXT, WS_OP_CLOSE,
 )
 from lightbug_http.c.platform import MSG_DONTWAIT
 
@@ -71,6 +71,10 @@ comptime NOT_POOL_HELD = -2
 
 Not -1: that is the unmounted pool's own lane, and a sentinel a real lane
 can equal would route an executor's socket into a pool."""
+
+comptime NOT_EXECUTOR_OWNED = -2
+"""`exec_lane` for a slot no executor opened: `-1` is a real lane (the
+unmounted executor), so the sentinel cannot be -1."""
 
 comptime WS_MESSAGE_PATH = "/ws/message"
 
@@ -244,6 +248,20 @@ struct WSGIHandler(ThreadHandler):
     whose view gated the upgrade — `hold_lane[slot]` names it, the frame
     that subscribed the socket carried it, and this is where it goes."""
 
+    var exec_lane: List[Int]
+    """The executor lane whose `b` or `B` begin frame opened this slot's
+    stream or socket, or `NOT_EXECUTOR_OWNED`; reset when the connection
+    closes.
+
+    It is what makes `sse_slot_disconnected` tell the executor about EVERY
+    connection it produced. The subscription is not enough: an application's
+    own `websocket.close` and the loop's `_end_socket` both unsubscribe
+    before the connection closes, so the disconnect path found nothing
+    subscribed, sent no tag, and the socket's task was never told -- its
+    `receive()` waited for ever, its cleanup never ran, and a `send` it kept
+    reached the next client the loop gave the slot (SPEC L20, L21). The lane
+    routes that tag, because the unsubscribe has erased the channel name the
+    lane is otherwise read from."""
     var hold_lane: List[Int]
     """Loop side: for a socket a POOL thread's view held, the lane it belongs
     to; `NOT_POOL_HELD` for every other slot.
@@ -371,6 +389,7 @@ struct WSGIHandler(ThreadHandler):
         self.streams = SSERegistry(slots)
         self.sockets = SSERegistry(slots)
         self.asgi_done = List[Bool](capacity=slots)
+        self.exec_lane = List[Int](capacity=slots)
         self.hold_lane = List[Int](capacity=slots)
         self.stream_gen = List[Int](capacity=slots)
         self.stream_lost = List[Bool](capacity=slots)
@@ -379,6 +398,7 @@ struct WSGIHandler(ThreadHandler):
         self.ws_parked = List[List[UInt8]](capacity=slots)
         for _ in range(slots):
             self.asgi_done.append(False)
+            self.exec_lane.append(NOT_EXECUTOR_OWNED)
             self.hold_lane.append(NOT_POOL_HELD)
             self.stream_gen.append(STREAM_GEN_NONE)
             self.stream_lost.append(False)
@@ -689,7 +709,11 @@ struct WSGIHandler(ThreadHandler):
         The lane is the second number of the reserved channel name; absent
         (the unmounted server, or a frame from before lanes existed) means
         the one executor there is."""
-        var lane = _parse_stream_lane(url.as_bytes())
+        return self._notify_fd_for_lane(_parse_stream_lane(url.as_bytes()))
+
+    def _notify_fd_for_lane(self, lane: Int) -> Int:
+        """The submit fd of executor lane `lane`; the one executor there is
+        for `-1` or a lane with no fd of its own."""
         if (
             lane >= 0
             and lane < len(self.lane_notify_fds)
@@ -1098,11 +1122,18 @@ struct WSGIHandler(ThreadHandler):
 
     def sse_slot_disconnected(mut self, slot: Int):
         # Read before the unsubscribes erase it: was this an ASGI stream
-        # the executor still has a task for?
+        # the executor still has a task for? `exec_lane` answers it for a
+        # connection whose subscription is already gone -- a socket the
+        # application closed itself, or one `_end_socket` ended -- whose
+        # task is still waiting to be told.
+        var exec_lane = (
+            self.exec_lane[slot] if slot < len(self.exec_lane) else NOT_EXECUTOR_OWNED
+        )
         var was_asgi = self.asgi_notify_fd >= 0 and (
             self.streams.is_slot_streaming(slot)
             or self.sockets.is_slot_streaming(slot)
             or (slot < len(self.asgi_done) and self.asgi_done[slot])
+            or exec_lane != NOT_EXECUTOR_OWNED
         )
         # The slot's reserved channel name carries its producer's address
         # — an executor's lane, or a pool thread's own ack fd; read it
@@ -1119,6 +1150,8 @@ struct WSGIHandler(ThreadHandler):
             self.hold_lane[slot] = NOT_POOL_HELD
         if slot < len(self.asgi_done):
             self.asgi_done[slot] = False
+        if slot < len(self.exec_lane):
+            self.exec_lane[slot] = NOT_EXECUTOR_OWNED
         if slot < len(self.stream_gen):
             self.stream_gen[slot] = STREAM_GEN_NONE
         if slot < len(self.stream_lost):
@@ -1146,8 +1179,13 @@ struct WSGIHandler(ThreadHandler):
                     self.apps[0]._bridge.notify_disconnect(slot)
                 except e:
                     print("inverted executor: disconnect notify raised: " + String(e), flush=True)
-            else:
+            elif slot_url.byte_length() > 0:
                 _send_disconnect_tag(self._notify_fd_for(slot_url), slot)
+            else:
+                # The subscription (and with it the channel name) is gone;
+                # the lane recorded at the begin frame still names the
+                # executor that owns the connection.
+                _send_disconnect_tag(self._notify_fd_for_lane(exec_lane), slot)
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
         # The executor's ASGI stream frames first: their channel names open
@@ -1185,6 +1223,10 @@ struct WSGIHandler(ThreadHandler):
                 self.streams.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                if ub[1] == UInt8(ord("b")) and slot < len(self.exec_lane):
+                    # An executor's stream (a pool thread's `P` is told
+                    # through its own ack pair instead).
+                    self.exec_lane[slot] = _parse_stream_lane(ub)
                 self._clear_lost(slot)
                 self._set_stream_gen(slot, event_id)
             elif ub[1] == UInt8(ord("s")):
@@ -1251,6 +1293,8 @@ struct WSGIHandler(ThreadHandler):
                 self.sockets.subscribe(slot, url, NO_EVENT_ID)
                 if slot < len(self.asgi_done):
                     self.asgi_done[slot] = False
+                if slot < len(self.exec_lane):
+                    self.exec_lane[slot] = _parse_stream_lane(ub)
                 self._clear_lost(slot)
                 self._set_stream_gen(slot, event_id)
                 if slot < len(self.ws_in_sent):
@@ -1277,10 +1321,20 @@ struct WSGIHandler(ThreadHandler):
                         if self._claim_lost(slot, String("websocket frame")):
                             self._end_socket(slot)
             elif ub[1] == UInt8(ord("x")):
-                # WebSocket end (the close frame is already queued ahead
-                # of this on the same channel).
+                # WebSocket end, carrying the Close frame that ends it
+                # (`ws_close_frame`): queued and marked done in one step,
+                # so the drain that hands the Close out is the drain that
+                # sees the socket end, and the loop is `closing` before it
+                # can read the peer's reply. Subscribed slots only, as `w`.
                 if not self._gen_matches(slot, event_id):
                     return
+                if len(frame) > 0 and self.sockets.is_slot_streaming(slot):
+                    if not self.sockets.queue_frame(slot, NO_EVENT_ID, frame):
+                        # A full outbox refuses the Close as it would any
+                        # frame (`w`, above): the connection ends without
+                        # one, after what is already queued.
+                        if self._claim_lost(slot, String("websocket close frame")):
+                            self._end_socket(slot)
                 if self.sockets.has_pending(slot):
                     if slot < len(self.asgi_done):
                         self.asgi_done[slot] = True
@@ -1691,6 +1745,27 @@ def asgi_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
     Mojo pool thread and this package spell one format from one function.
     """
     return reserved_stream_url(kind, slot, lane)
+
+
+def ws_close_frame(slot: Int, lane: Int, gen: Int, code: Int) -> List[UInt8]:
+    """An executor's close of a WebSocket, as ONE chunk-channel datagram: the
+    socket's end marker (`x`) carrying the RFC 6455 Close frame to send.
+
+    One, because the loop must not write this Close without also knowing the
+    socket is ending. It was two, a `w` holding the Close and then an empty
+    `x`, and the loop wrote the Close as the `w` arrived but marked the
+    socket `closing` only at the `x`. An executor descheduled between the
+    two sends let the peer's Close reply arrive first, and the loop, not
+    knowing it had closed, echoed the reply: a second Close after the
+    handshake (seen on macOS and Linux CI; a 2 ms sleep between the sends
+    made it every close). Now the drain that hands the Close out is the
+    drain that ends the socket, and `closing` is set in the same pass.
+    """
+    var body = List[UInt8]()
+    body.append(UInt8((code >> 8) & 0xFF))
+    body.append(UInt8(code & 0xFF))
+    var close = encode_ws_frame(WS_OP_CLOSE, Span(body))
+    return encode_bus_frame(asgi_stream_url(String("x"), slot, lane), gen, Span(close))
 
 
 def pool_stream_url(slot: Int, lane: Int, ack_fd: Int) -> String:

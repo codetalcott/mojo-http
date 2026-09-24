@@ -19,11 +19,20 @@ one, and a WebSocket the app closes itself.
 and the smoke reads live ticks off it; the buffered escape hatch refuses it
 with the 10 s watchdog (docs/notes/wsgi-vs-asgi-history.md §8), which is the
 distinction the row is claiming.
+
+`/chat/{client_id}` is FastAPI's own documented multi-client chat room,
+verbatim, because it is what a FastAPI author writes first and it leans on
+three contracts at once: a departed client's `except WebSocketDisconnect:`
+cleanup runs (SPEC L21), its broadcast from that dead client's task reaches
+the sockets still connected (L20), and a message for a client that has gone
+never reaches the next one on its slot (L20). `/ws-boom` raises after its
+accept, which must close the socket with 1011 (L24). `chat_probe.py` drives
+all four.
 """
 
 import asyncio
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 app = FastAPI(docs_url=None, redoc_url=None)
@@ -70,3 +79,83 @@ async def ws(websocket: WebSocket):
             await websocket.close(code=1000)
             return
         await websocket.send_text("ws-echo:%s" % msg)
+
+
+class ConnectionManager:
+    # FastAPI's documented multi-client chat ("WebSockets", "Handling
+    # disconnections and multiple clients"), verbatim. Its cleanup is the
+    # `except WebSocketDisconnect:` below, which a server that cancels the
+    # task on disconnect never runs (SPEC L21); and the broadcast from that
+    # except runs on the departed client's task, which a server that judges
+    # a send by its caller refuses (L20).
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+
+manager = ConnectionManager()
+
+
+@app.websocket("/chat/{client_id}")
+async def chat(websocket: WebSocket, client_id: int):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await manager.send_personal_message(f"You wrote: {data}", websocket)
+            await manager.broadcast(f"Client #{client_id} says: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        await manager.broadcast(f"Client #{client_id} left the chat")
+
+
+@app.get("/chat-count")
+async def chat_count():
+    return {"active": len(manager.active_connections)}
+
+
+@app.websocket("/ws-boom")
+async def ws_boom(websocket: WebSocket):
+    # Raises after its accept: the socket must close with 1011, never the
+    # 1000 that tells the client all went well (SPEC L24), and the
+    # traceback must reach the log (L23).
+    await websocket.accept()
+    raise RuntimeError("fastapi-demo ws kaboom")
+
+
+BIG_TOLD = []
+
+
+@app.websocket("/ws-big")
+async def ws_big(websocket: WebSocket):
+    # One message just over the server's 64 KB per-socket outbox (SPEC I17;
+    # 66 KB, as apps/asgi_bare sizes it): the SERVER ends this socket -- not
+    # the client, not the application. The application must still hear it
+    # through receive() (L21), or its own cleanup never runs, and a send it
+    # kept would reach the next client on the slot (L20). The loop used to
+    # tell the executor nothing about a socket it ended itself.
+    await websocket.accept()
+    await websocket.send_bytes(b"o" * (66 * 1024))
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        BIG_TOLD.append(True)
+
+
+@app.get("/ws-big-told")
+async def ws_big_told():
+    return {"told": len(BIG_TOLD)}

@@ -383,7 +383,7 @@ def test_a_vocabulary_with_no_spelling_for_a_push_refuses_one() raises:
 
 
 def test_datastar_refuses_a_pushed_url() raises:
-    """Datastar 1.0.3 has no history handling, so a push there would change
+    """Datastar 1.0.4's free bundle has no history handling, so a push there would change
     the address and leave the back button with nothing to rebuild. The
     swap is refused rather than written without its push: a filter that
     silently stopped being linkable is the failure this exists to stop.

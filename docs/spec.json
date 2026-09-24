@@ -154,6 +154,22 @@
       "evidence": "follows HTTP/2; there is no TLS layer to build it on"
     },
     {
+      "id": "A20",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A refusal sent mid-upload reaches the client: lingering close (RFC 9112 \u00a79.6)",
+      "status": "verified",
+      "evidence": "`Smoke test a 413 reaching a client still uploading` (every PR) \u2014 the whole body written before reading, `Content-Length` and chunked, through `http.client`, and eight at once; `Connection: close` and a FIN right behind the 413; the linger bounded against a client that keeps trickling past it, and a clean close at its deadline for a client that reads late"
+    },
+    {
+      "id": "A21",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "No `Content-Length` on a 1xx or 204 response, and none invented on a 304 (RFC 9110 \u00a78.6)",
+      "status": "verified",
+      "evidence": "`test_response_head.mojo:test_a_204_invents_no_content_length_or_type` (every PR) \u2014 with six more beside it: the constructors invent neither a length nor a type for a 1xx, 204 or 304, and a 304 keeps a length its handler gave; `enforce_bodiless_framing`, which the event loop applies to every such response on every path, drops a 1xx's or 204's own length and any body (Django's `CommonMiddleware` puts a length on every non-streaming response) and closes a file body. On the wire, `Smoke test the notes API` checks the native 304s, the OPTIONS preflight and a delete's 204 for an entity header nobody set, and both conformance steps send a 204 carrying a length and seven bytes followed by a request on the same connection: the only case that shows whether the loop calls the rule. Before the fix every native 204 and 304 carried `content-length: 0` and `application/octet-stream`"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
@@ -336,6 +352,14 @@
       "capability": "A worker that fails its drain \u2014 exits non-zero, or dies of a signal other than the one forwarded \u2014 after the supervisor was told to stop is not respawned; the supervisor exits 1 once the rest are gone, rather than serving a replacement nothing will ever signal",
       "status": "verified",
       "evidence": "`test_respawn.mojo:test_a_worker_that_fails_while_stopping_is_not_respawned` (every PR) \u2014 a supervisor signalled alone forwards SIGTERM, its worker exits 9 from the drain, and the test requires exit 1 and no second incarnation; with the guard reverted the worker is respawned and the supervisor exits 0. Found by `sabotage-host`: a host worker returning from `main` crashed on its way out, was respawned, and its supervisor outlived the smoke holding the port (the note: [the-mojo-host](notes/the-mojo-host.md)). The stop is recorded by the signal handler in a data-segment word beside the child PIDs (`src/global_slot.mojo`)"
+    },
+    {
+      "id": "D11",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "An ASGI application's work still running at shutdown is bounded: background work gets the drain's 3 s grace, is then cancelled and named, and lifespan shutdown still runs",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a response whose background task never ends, then SIGTERM: the process must exit and write the lifespan shutdown marker. Before, the post-pill gather waited on every HTTP task, the 5 s thread join gave up, and the process left without shutting the application down (exit 0, no marker). `poe test-shim` holds the rest: work inside the grace finishes, a task that swallows its cancellation is left behind after half a second and never reaches the executor again, and the drain starts once"
     },
     {
       "id": "D6",
@@ -858,6 +882,14 @@
       "evidence": "`test_hmac.mojo:test_rfc_4231_case_7` (every PR) \u2014 the hash's own vectors are `test_sha256.mojo:test_fips_180_4_examples`; the first cryptographic primitive in the tree, and the one a signed grant and a signed session cookie (N13) rest on"
     },
     {
+      "id": "G16",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "Sockets the server creates are close-on-exec: a process the application starts with exec inherits no client connection and no internal channel",
+      "status": "verified",
+      "evidence": "`Smoke test what a child process the application starts inherits` (every PR) \u2014 a view starts a child with close_fds=False in six shapes (the pool, the loop, forked and spawned workers, `--realtime`, the ASGI executor) and requires it to hold no descriptor above 2: the server started with none there, so each would be its own. Before the fix every shape failed, the child holding 8 to 46 of them: connections, the listener, every channel, the shutdown pipe, the shared page. `test_cloexec.mojo` holds each creation helper, including those no shape reaches (the per-loop listener dups and fan-out pipes of `--threads`), and `test_respawn.mojo` that the spawn's own exec keeps exactly what the new image adopts. On macOS each creation call (`accept`, `socket`, `socketpair`, `pipe`, `recvmsg`) is followed by a second that marks the descriptor, so a fork and exec on another thread in the instant between can still inherit that one, as under CPython there; Linux creates each close-on-exec atomically. A child that forks WITHOUT exec (`os.fork`, multiprocessing's fork start method) inherits everything, which no descriptor flag can prevent"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",
@@ -1055,7 +1087,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A child process a view starts can publish onto the bus: `m0pub.child_fds()` passed as `pass_fds` hands it the bus and the event-id page by descriptor, and its frames are numbered from the shared counter; a child that inherited the environment without the page, or with an unrelated file on the page's old descriptor number, publishes unnumbered frames and never takes an id from memory that is not the page",
       "status": "verified",
-      "evidence": "`Smoke test publishing from a child process` (every PR) \u2014 `bareapp.childpub` under `--realtime` with one worker, `--workers 2` and `--spawn-workers`: a child given `child_fds()` must take an id strictly between two the parent takes around it and carry it on the SSE frame; children that inherited everything, had `M0_SHARED_ID_ADDR` removed, or found a file of the page's size on `M0_SHARED_ID_FD` must exit 0 and publish unnumbered, the last with that file unwritten. Before the fix the inheriting child died with SIGSEGV (one worker) or published an id taken from its own memory (the other two shapes), measured on macOS; #322 reported the SIGSEGV on Linux. Reverting the magic check at the address, the kernel readability check, the magic check on the descriptor, the page in `child_fds()`, the server's magic word or the file-backed page each fails it"
+      "evidence": "`Smoke test publishing from a child process` (every PR) \u2014 `bareapp.childpub` under `--realtime` with one worker, `--workers 2` and `--spawn-workers`: a child given `child_fds()` must take an id strictly between two the parent takes around it and carry it on the SSE frame; children that inherited everything, had `M0_SHARED_ID_ADDR` removed, or found a file of the page's size on `M0_SHARED_ID_FD` must exit 0 and publish unnumbered, the last with that file unwritten; a child handed no bus must write nothing into whatever sits on a `M0_BUS_WRITE_FDS` number -- an unrelated file, left unwritten, or its own datagram socket, which receives nothing and still blocks -- and malformed numbers degrade to nothing written. m0pub keeps a number only when `os.fstat` finds the device and inode `M0_BUS_WRITE_IDS` records for it: the bus is close-on-exec since G16, and before this m0pub wrote into the file, and a check by kind wrote into the socket and made it non-blocking. Before the fix the inheriting child died with SIGSEGV (one worker) or published an id taken from its own memory (the other two shapes), measured on macOS; #322 reported the SIGSEGV on Linux. Reverting the magic check at the address, the kernel readability check, the magic check on the descriptor, the page in `child_fds()`, the server's magic word or the file-backed page each fails it"
     },
     {
       "id": "I24",
@@ -1234,6 +1266,22 @@
       "evidence": "`Execute the quickstart` (every PR) \u2014 the quickstart's Django file under gunicorn: `/events` answers 200 with the view's body and closes inside curl's deadline (held, it would not), the upgrade request answers 200 rather than 101, and `publish()` reports 0 workers without raising. The README's \"degrades, not breaks\" sentence, executed"
     },
     {
+      "id": "K12",
+      "section": "K",
+      "category": "K. WSGI (PEP 3333)",
+      "capability": "The gateway sends the application's response head as sent: no invented `Content-Type`, and the application's `Content-Length` kept on a HEAD",
+      "status": "verified",
+      "evidence": "`Conformance test the WSGI bridge` (every PR) \u2014 `scripts/head_probe.py` reads the bare app's heads: a 200 and a 303 sent without a type, a bare 204 and one carrying a length and a body, a bare 304 and one naming the GET's length, and a HEAD answered with the GET's length and no body. Each must carry what the application sent plus the server's own framing and nothing else, and each is followed by a request on the same connection, which a leaked body would misparse. `Conformance test the ASGI bridge` runs the same cases through the executor and the buffered bridge. Before the fix every case failed: `application/octet-stream` on each head sent without a type, `content-length: 0` on the HEAD, the 204 and the 304s"
+    },
+    {
+      "id": "K13",
+      "section": "K",
+      "category": "K. WSGI (PEP 3333)",
+      "capability": "A HEAD to what a GET would stream is answered at the body's first item, with no length, and the body closed",
+      "status": "verified",
+      "evidence": "`Smoke test streamed WSGI bodies` (every PR) \u2014 a HEAD to a never-ending generator on a four-thread pool, then a request on the same connection, then five more HEADs and a fast request. HEAD used to take the buffered path, which joins the whole iterable, so the HEAD never answered and held its pool thread until shutdown; eight such requests are the whole zero-config pool. L27's WSGI twin. On the loop's own handler, which never streams, a HEAD still buffers and carries its measured length, as its GET does. `poe test-shim` pins that the body is pulled to one item and closed"
+    },
+    {
       "id": "L1",
       "section": "L",
       "category": "L. ASGI 3.0",
@@ -1359,7 +1407,7 @@
       "category": "L. ASGI 3.0",
       "capability": "An app-initiated close ends in a FIN, not an RST (RFC 6455 \u00a75.5.1's order)",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` runs 64 concurrent app-initiated closes and requires every one to end in a clean FIN; concurrency is what widens the window, so one close at a time would pass on the broken server. One window no probe can force: an executor descheduled between the Close and the end marker that starts the wait had the peer's reply echoed as a second Close, on CI twice, so the executor sends the two as one datagram and `test_stream_frames.mojo` pins that shape"
     },
     {
       "id": "L16",
@@ -1384,6 +1432,70 @@
       "capability": "Inbound `websocket.receive` is flow-controlled: a stalled client is throttled, never silently dropped",
       "status": "verified",
       "evidence": "`Inbound WebSocket messages survive a stalled client` (every PR) \u2014 the loop suspends the read rather than discarding what the executor cannot take; a concurrently-reading client loses nothing even on the broken build, so the gate stalls first and only then reads"
+    },
+    {
+      "id": "L20",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A send is judged by the connection it addresses, never the task making it: one connection's task reaches another's live socket, and a send kept for a client that has gone never reaches the client given its slot",
+      "status": "verified",
+      "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` recycles a slot under a kept WebSocket send and under a kept stream send, with and WITHOUT a disconnect tag (a socket its application closed, which the loop never tagged), sends from a gone socket's own task to the sockets still connected, answers after the application returned, and sabotages each rule; FastAPI's documented chat room checks the same on the wire in L21's gate"
+    },
+    {
+      "id": "L21",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A WebSocket's disconnect reaches the application through `receive()`, never as a cancellation, so its own cleanup runs; a send to a socket that has gone raises `ClientDisconnected` (an `OSError`)",
+      "status": "verified",
+      "evidence": "`Serve a FastAPI app through the ASGI bridge` (every PR) \u2014 FastAPI's documented chat room: its `except WebSocketDisconnect:` must tell the room and shrink the connection list, a new client must receive one copy of a broadcast, and a socket the SERVER ends (one message over the outbox cap) must still reach its application; the two-executor case, where that disconnect is routed by lane, is a phase of the mixed-mount smoke"
+    },
+    {
+      "id": "L22",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A response is answered at its final body; the application's background tasks run after it, and survive the client leaving",
+      "status": "verified",
+      "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR) \u2014 a `BackgroundTask` that sleeps 2 s under a response that must arrive in under 1"
+    },
+    {
+      "id": "L23",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An application error keeps the application's own error response, and its traceback reaches the log",
+      "status": "verified",
+      "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR) \u2014 the raising route must answer Starlette's own 500 body, and the log must carry the traceback"
+    },
+    {
+      "id": "L24",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A WebSocket application that raises is closed with 1011, not 1000 (RFC 6455 \u00a77.4.1)",
+      "status": "verified",
+      "evidence": "`Serve a FastAPI app through the ASGI bridge` (every PR) \u2014 the chat probe's raising-socket phase"
+    },
+    {
+      "id": "L25",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A de-chunked request's scope carries `content-length` and not the `chunked` coding the loop removed, and no header the client did not send",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a chunked POST and a GET, read back from the scope on the executor and on the buffered hatch: the de-chunked one must carry its length and no `transfer-encoding`, and the GET neither a `content-length` nor a `connection` curl never sent. Before the fix every parsed request went through the outgoing constructor, which filled in a length, a `Connection` and a `Host`, so a GET carried `content-length: 0` and `connection: keep-alive` and a chunked request both halves of a contradictory pair an application proxying it would forward. A `gzip, chunked` body keeps its `gzip`, and HTTP/1.0 still closes by default, now read from the protocol (`test_request_as_sent.mojo`). The WSGI environ follows, since it maps the same headers: `Conformance test the WSGI bridge` sends the same two requests to `/environ`"
+    },
+    {
+      "id": "L26",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An application that schedules asyncio work at import is refused by name, with the fix",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a module calling `asyncio.create_task` at import must exit 1 naming what it did and the fix (a lifespan startup handler), keep its traceback and print no ready banner, and `--doctor` and a bare MODULE through discovery must say the same. uvicorn refuses the same module without `--reload`, as `RuntimeError: no running event loop`, which is all m0serve used to print. `poe test-shim` holds the other half: any OTHER `RuntimeError` keeps its own words"
+    },
+    {
+      "id": "L27",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A HEAD answered by a streaming application is its head and nothing else: answered at its first streamed body, the rest dropped",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a HEAD to a route that streams 10,000 bytes, then a request on the same connection, which must parse. Before the fix the executor streamed the HEAD like a GET, the loop wrote all 10,000 bytes raw after the head, and the next request found them where its response should begin. The application's later sends are dropped, and it is told its response is over: a receive() parked from before the first body (Starlette's, Django's) is woken with `http.disconnect`, which stops a StreamingResponse without cancelling its background work, and an application that parked none is cancelled if it is still running a second later. A 1xx, 204 or 304 streamed the same way is answered the same way. `poe test-shim` holds each of those rules, sabotage-proven. The loop holds the same line for a hold approved on a HEAD and for a native SSE route: `Smoke test the Django realtime example` and `Smoke test the Datastar counter` each send a HEAD to their stream, then a request on the same connection that must be answered, and require a subscriber count of zero after it. Under the buffered escape hatch a HEAD's stream is buffered like its GET's: a finite one is answered with its measured length and no body, an endless one with the watchdog's 500 after 10 s"
     },
     {
       "id": "M1",
@@ -1893,7 +2005,7 @@
       "id": "N37",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "A swap that arrives at a view can move the address bar: `push=True` on `Fragment.swap`, `Fragment.el` and `Html.swap[V]` writes the swap and then `Vocabulary.push_url` on the same element \u2014 `hx-push-url=\"true\"` for `Htmx` \u2014 so a filtered list or a detail reached by a swap can be reloaded, bookmarked and gone back to, the restore being the `HX-Request-Type: full` request N22 already answers as a document. Two refusals, never a no-op: the LAYER refuses a push on any verb but `get`, a pushed URL being one the browser GETs on reload (htmx 4's `query` included, its parameters being in the body); and the trait's default refuses, which is `Datastar`'s answer by name, Datastar 1.0.3 having no history handling for a back button to meet (D46)",
+      "capability": "A swap that arrives at a view can move the address bar: `push=True` on `Fragment.swap`, `Fragment.el` and `Html.swap[V]` writes the swap and then `Vocabulary.push_url` on the same element \u2014 `hx-push-url=\"true\"` for `Htmx` \u2014 so a filtered list or a detail reached by a swap can be reloaded, bookmarked and gone back to, the restore being the `HX-Request-Type: full` request N22 already answers as a document. Two refusals, never a no-op: the LAYER refuses a push on any verb but `get`, a pushed URL being one the browser GETs on reload (htmx 4's `query` included, its parameters being in the body); and the trait's default refuses, which is `Datastar`'s answer by name, Datastar 1.0.4's free bundle having no history handling for a back button to meet (D46)",
       "status": "verified",
       "evidence": "`Smoke test the fragment notes app` (every PR) \u2014 the list's link to a note (expression tier) and the detail's link back (builder) each carry `hx-push-url=\"true\"`, nothing else in the list does, and the pushed URL asked for as an htmx 4 restore is the note inside a document; each push reverted alone fails the gate at its own line. `test_html.mojo` holds the bytes in both tiers and the three refusals"
     },

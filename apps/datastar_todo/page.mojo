@@ -26,8 +26,8 @@ from datastar_todo.routes import ADD, DELETE, EDIT, EVENTS, TOGGLE
 
 # Pinned deliberately: a floating CDN version would let an upstream release
 # break this example without a commit here. Matches the protocol version
-# m0-datastar implements (v1.0.3).
-comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.3/bundles/datastar.js"
+# m0-datastar implements (v1.0.4).
+comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.4/bundles/datastar.js"
 
 
 # The vocabulary, named once. This app's fragment speaks Datastar; the

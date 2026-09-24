@@ -600,6 +600,72 @@ lightbug_http
         to one, event_loop.mojo -> `m0_http.log`
         (docs/notes/the-host-leaves-the-fork.md).
 
+      - event_loop.mojo / connection.mojo (2026-09-22): a request refused
+        before its body was read now LINGERS (RFC 9112 §9.6) instead of
+        closing at once. All three 413 sites go through
+        `_reject_and_linger`, which shuts the write side behind the
+        response, moves the slot to the new `ConnectionState.LINGERING`,
+        and sets a `REJECT_LINGER_NS` deadline the idle sweep reaps;
+        `_linger_discard` reads and discards until the client's EOF.
+        Closing with the body unread made the kernel send RST, which a
+        client that writes before it reads saw as EPIPE, never the 413.
+        `_send_error_to_fd`, and server.mojo's `_send_error_response`,
+        now send `Connection: close`: every error either sends ends its
+        connection, and each said `keep-alive`.
+
+      - c/fcntl.mojo (new), c/socket.mojo, c/socketpair.mojo, c/pipe.mojo,
+        c/fdpass.mojo, c/process.mojo, c/kqueue.mojo (2026-09-23): every
+        descriptor the fork creates is close-on-exec (SPEC G16), so a
+        process an application starts with exec inherits none of the
+        server's connections or channels. Linux creates each so
+        atomically (`SOCK_CLOEXEC`, `accept4`, `pipe2`,
+        `MSG_CMSG_CLOEXEC`); macOS marks each with `F_SETFD` straight
+        after, because it refuses `SOCK_CLOEXEC` in a socket type and has
+        no `accept4`. `_fcntl` moved unchanged out of kqueue.mojo into the
+        new c/fcntl.mojo, which imports nothing from the fork, so the
+        lowest layers can use it without an import cycle through kqueue.
+        It is still the program's one `fcntl` declaration. `set_cloexec`,
+        `is_cloexec`, `clear_cloexec` and `dup_cloexec` sit beside it.
+        `keep_across_exec` is gone: the spawn hand-off keeps its
+        descriptors across its own exec only (m0_http's multiworker).
+
+      - http/response.mojo, event_loop.mojo, server.mojo (2026-09-23): a
+        1xx, 204 or 304 carries no invented entity headers, and a 1xx or
+        204 no Content-Length at all (SPEC A21; RFC 9110 §8.6). The two
+        server-side HTTPResponse constructors add their `Content-Type:
+        application/octet-stream` and `Content-Length` defaults only for
+        a status that has content, and neither when passed
+        `invent_entity_headers=False`, which the gateway uses to relay an
+        application's head as sent (SPEC K12). `is_bodiless_status` and
+        `enforce_bodiless_framing` are new beside them. The event loop and
+        the blocking server apply the rule to every such response before
+        its head is encoded: a 1xx's or 204's own length and any body are
+        dropped, a file body's descriptor closed, and a 304 keeps its
+        length. And `_finish_response` answers a HEAD whose handler opened
+        a stream (a hold, a native SSE route) with its head alone: the
+        stream flag is cleared, the length popped, and the subscription the
+        handler made dropped through `sse_slot_disconnected` (SPEC L27).
+        The rule drops a handler's own `Transfer-Encoding` from a 1xx or
+        204 too (RFC 9112 §6.1), a 304 keeping it as it keeps a length, and
+        the loop's stream branch asks `is_bodiless_status` rather than
+        spelling the three statuses itself.
+
+      - http/request.mojo (2026-09-23): a parsed request carries the
+        headers its client sent (SPEC L25). `from_parsed` used to build
+        through the outgoing constructor, which invented a
+        `Content-Length` for every request, a `Connection` from the
+        protocol and a `Host` from the URI. That constructor now takes
+        `invent_headers` (default on, for clients), and `from_parsed`
+        turns it off. A body the loop de-chunked is described by its
+        length, and its final `chunked` coding is removed with any empty
+        list element, any other coding kept (`_drop_final_chunked`);
+        header.mojo refuses `chunked` anywhere but last, since a sender
+        must not apply it twice (RFC 9112 §6.1) and the loop decodes one
+        layer. `connection_close()` reads
+        the protocol for RFC 9112 §9.3's default, HTTP/1.0 closing
+        unless it sent `Connection: keep-alive`, since no request carries
+        an invented `Connection: close` any more.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

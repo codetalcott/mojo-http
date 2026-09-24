@@ -138,9 +138,18 @@ has the Flask version of the whole thing, and CI drives that exact file.
 ## Limits and lifecycle
 
 - `--max-body SIZE` caps request bodies (default 4m; `512k`, `64m`, `1g`).
-  A chunked body is bounded on the wire as well as decoded.
+  A chunked body is bounded on the wire as well as decoded. Over the cap
+  the server answers `413` itself, as plain text, before the application
+  runs, so an application that formats its own errors (Flask's
+  `MAX_CONTENT_LENGTH` with a JSON error handler, say) keeps that shape
+  only with its own limit set below this one. The refusal goes out while
+  the client is still uploading; the server then reads and discards the
+  rest for up to five seconds, so a client that writes its whole body
+  before it reads, as `http.client` and `requests` do, still gets the
+  `413`.
 - `--idle-timeout SECONDS` closes idle keep-alive connections (default 60,
-  0 = never). It also bounds a WebSocket's wait for the peer's close reply.
+  0 = never). It also bounds a WebSocket's wait for the peer's close reply
+  and a refused upload's linger; at 0 both close at once.
 - `--max-keepalive-requests N` (or `M0_MAX_KEEPALIVE_REQUESTS`) closes a
   keep-alive connection after N requests (0 = never). Every close is a
   reconnect for the client, and one reconnect per N requests is the

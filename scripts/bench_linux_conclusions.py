@@ -110,15 +110,21 @@ def push_tree():
     reporting itself Up (scripts/probes/linux_setup.sh's header)."""
     tar = subprocess.Popen(
         ["tar", "--exclude=.venv", "--exclude=.git", "--exclude=packages/*/*.mojoc",
-         "--exclude=bin/*", "--exclude=.claude", "-cf", "-",
+         "--exclude=bin/*", "--exclude=.claude",
+         # The wheel's macOS build output under packaging/, as stress-pool
+         # and linux_sync.sh leave it behind.
+         "--exclude=packaging/*/src/*/_bin", "--exclude=packaging/*/src/*/_lib",
+         "--exclude=packaging/*/licenses", "--exclude=packaging/*/src/*/licenses",
+         "--exclude=__pycache__", "-cf", "-",
          # The SAME set `linux_sync.sh` re-tars from /src. It listed `bench`
          # and this did not, so on a remote host that tar hit a missing path,
-         # exited 2, and its `2>/dev/null` made the failure silent.
-         "packages", "scripts", "apps", "pyproject.toml", "uv.lock", "bench"],
+         # exited 2, and its `2>/dev/null` made the failure silent -- and
+         # `packaging` the same way, once linux_sync.sh gained it.
+         "packages", "packaging", "scripts", "apps", "pyproject.toml", "uv.lock", "bench"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     # `rm -rf` first: a tar carries no deletion, and a file the Mac moved or
     # removed would otherwise linger in /src and fail the stamp (2026-09-12).
-    unpack = ("mkdir -p /src && cd /src && rm -rf packages scripts apps bench"
+    unpack = ("mkdir -p /src && cd /src && rm -rf packages packaging scripts apps bench"
               " && tar -xf - && find /src -name '._*' -delete")
     if REMOTE:
         sink = subprocess.Popen(["ssh"] + SSH + [REMOTE, f"bash -c {_shq(unpack)}"],

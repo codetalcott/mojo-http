@@ -25,17 +25,19 @@ The OK marker exists if and only if the respawned worker made it back to the
 caller.
 """
 
-from std.os import path, remove
+from std.os import path, remove, setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from std.time import sleep
 
 from src.multiworker import WorkerSupervisor
 from src.signal import install_shutdown_signals
 from src.threads import read_one_byte_blocking
+from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, was_signaled, exit_code,
     kill_process, SIGTERM,
 )
+from lightbug_http.c.socketpair import socketpair_dgram
 
 
 def _scenario(crash_marker: String, ok_marker: String):
@@ -374,6 +376,42 @@ def test_a_crashed_spawned_worker_is_respawned_through_exec() raises:
     assert_true(path.exists(again), "the respawned worker was not a fresh exec image")
     remove(first)
     remove(again)
+
+
+def test_a_spawned_worker_inherits_exactly_the_exported_descriptors() raises:
+    """The spawn keeps what the new image adopts, and nothing else (SPEC G16).
+
+    Every descriptor is close-on-exec from birth, so a child the application
+    starts inherits none of the server's. The spawn's own exec is the one
+    that must keep some: those the environment names -- here the bus's two
+    ends -- and only those. The worker is the shell, and it exits 0 only if
+    both exported ends are open in it and an unexported one is not.
+
+    covers: E15
+    """
+    var exported = socketpair_dgram()
+    var hidden = socketpair_dgram()
+    _ = setenv("M0_BUS_READ_FDS", String(exported[0]), True)
+    _ = setenv("M0_BUS_WRITE_FDS", String(exported[1]), True)
+    var script = (
+        String("[ -e /dev/fd/") + String(exported[0]) + " ] && [ -e /dev/fd/"
+        + String(exported[1]) + " ] && ! [ -e /dev/fd/" + String(hidden[0])
+        + " ] || exit 9; exit 0"
+    )
+    var pid = fork()
+    if pid == 0:
+        _spawn_scenario(script, 1, String("/bin/sh"))
+        process_exit(99)
+    var result = waitpid_blocking(pid)
+    _ = setenv("M0_BUS_READ_FDS", String(""), True)
+    _ = setenv("M0_BUS_WRITE_FDS", String(""), True)
+    for fd in [exported[0], exported[1], hidden[0], hidden[1]]:
+        close_fd(fd)
+    assert_false(was_signaled(result[1]), "supervisor died on a signal")
+    assert_equal(
+        exit_code(result[1]), 0,
+        "the spawned image did not hold exactly the exported descriptors",
+    )
 
 
 def test_a_spawn_that_cannot_exec_is_a_refusal_not_a_crash_loop() raises:

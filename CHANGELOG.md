@@ -18,7 +18,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   against the scaffold's own rule. Only a `get` is pushed (the layer
   refuses the rest); `Vocabulary.push_url` is new with a default that
   REFUSES, so an application's own conformance still compiles, and
-  `Fragment[Datastar]` raises — Datastar 1.0.3 has no history handling.
+  `Fragment[Datastar]` raises — Datastar's free bundle has no history
+  handling.
   `apps/fragment_notes` pushes its two links and its smoke holds them.
 - **`Query`, a query-string builder beside `url_for`** (SPEC N36).
   `url_for` fills and encodes a path and nothing past it, and the encoder
@@ -108,6 +109,60 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **A child process reaches the bus only when it is handed it** (SPEC
+  G16). The bus is close-on-exec now, like every descriptor the server
+  creates. A child started with `os.system`, with `pty.fork` and exec, or
+  with `subprocess` and `close_fds=False` used to inherit it by accident,
+  and `m0pub.publish()` there reached the real bus. Now it publishes
+  nothing, and `publish` returns 0. Hand the child the bus instead, the
+  way m0pub has always documented:
+  `subprocess.Popen([...], pass_fds=m0pub.child_fds())`. That carries the
+  event-id page as well, so the child's frames are numbered.
+- **A native 1xx, 204 or 304 no longer carries `Content-Type:
+  application/octet-stream` or `Content-Length: 0`** (SPEC A21).
+  `HTTPResponse`'s constructors add neither default for a status that has
+  no content, and the event loop drops a length and a body that a handler
+  set on a 1xx or 204 itself. `reply.empty(304)`, `reply.no_content()`, the
+  Views table's OPTIONS answer and the static mount's revalidation all
+  change on the wire. A response with a body keeps both defaults.
+  `HTTPResponse(..., invent_entity_headers=False)` adds neither for any
+  status: it is how the gateway relays an application's head.
+- **A parsed request carries only the headers its client sent** (SPEC
+  L25). `HTTPRequest.from_parsed` no longer fills in a `Content-Length`, a
+  `Connection` or a `Host`, so a native handler reading `req.headers`, a
+  WSGI environ and an ASGI scope all see a GET without the
+  `content-length: 0` and `connection: keep-alive` they used to carry, and
+  a WSGI application gets no `CONTENT_LENGTH` for a request that sent
+  none, which PEP 3333 allows. `HTTPRequest(..., invent_headers=False)` is
+  new; the default still fills all three for a client.
+  `connection_close()` now answers HTTP/1.0's default from the protocol,
+  which moves two edges: an HTTP/1.0 request whose `Connection` is a list
+  (`Keep-Alive, foo`) now closes, the value being compared whole as `close`
+  always was; and HTTP/1.2 to 1.9, which the parser accepts, now persists
+  as 1.1 does (RFC 9110 §2.5) where an invented `close` used to end it.
+  And `Transfer-Encoding: chunked, chunked` is refused with a 400 beside
+  every other request whose `chunked` is not its final coding: RFC 9112
+  §6.1 forbids applying it twice, and the loop decodes one layer.
+- **Datastar is pinned at v1.0.4** (was v1.0.3; DECISIONS D20).
+  `m0-datastar`'s `VERSION`, the three demo pages' CDN pins, the `live`
+  scaffold template's, and the SDK conformance-case URL. **Not a protocol
+  change**: the v1.0.3...v1.0.4 compare is 74 files with **none under
+  `sdk/`**, and every string this tree's behaviour rests on is in both
+  bundles in the same count — `Datastar-Request`, the three accepted
+  content types, the key parser `split(/:(.+)/)`, `datastar-patch-elements`
+  and `-signals`, `retry`, `contentType`, `FetchFormNotFound`. The two
+  source files that touch this contract were read: `patchElements.ts`
+  removes committed merge-conflict markers and adds two casts, and
+  `fetch.ts` registers `@query()` (as the `QUERY` method, not yet in
+  `Datastar.verbs()`) and stops a `requestCancellation: 'cleanup'` fetch
+  dispatching events for an element that has since been removed. Rocket,
+  the new `datastar-rocket.js` web-component bundle, is **not** adopted:
+  it is client-side only, in beta, and orthogonal to `Vocabulary`.
+- **D46's retiring condition now names a price, not a release.** Datastar's
+  free bundle still names neither `pushState`, `replaceState` nor
+  `popstate` at 1.0.4, and the two attributes that would spell a push,
+  `data-replace-url` and `data-query-string`, are **Pro**. So
+  `Fragment[Datastar]` refusing `push=True` is not waiting on a version.
 - **`apps/blobs` keeps sending a picture, and now says why** (DECISIONS
   D47; docs/notes/the-picture-on-the-wire.md). An investigation into
   Datastar 1.0.4's Rocket component bundle asked whether the demo could
@@ -154,6 +209,177 @@ in a minor release: `m0serve`'s flags and environment variables, the
   unchanged.
 
 ### Fixed
+
+- **Security: an ASGI application's message for a client that had left
+  could reach a different client** (SPEC L20). The executor decided whether
+  a connection was gone by asking about the task *making* a send, not the
+  connection the send addressed, and the loop reuses a slot the moment a
+  connection closes. So a `send` an application kept for a client that had
+  gone, called from any live task — a broadcast, another request, a
+  background task — was written into whichever client now held that slot.
+  FastAPI's documented multi-client chat room did it with no change: the
+  next client to connect received every message addressed to the one that
+  left, including its personal ones. A raw ASGI push hub's stale stream
+  `send` wrote into another client's response the same way. The same rule
+  also refused a disconnect hook's sends to the sockets still connected
+  ("someone left" reached none of them). A send is now judged by the task
+  that owns the connection it addresses: a send to a socket that has gone
+  raises `ClientDisconnected` (an `OSError`, uvicorn's name for it), and one
+  to a stream that has gone is a no-op, as ASGI 2.3 specifies. Two paths
+  never told the executor a socket had gone at all, and are closed too: a
+  socket its application closed (each socket now keeps its own record of
+  its accept and its close, where the slot's record was the next client's —
+  a late `finally` closed that client, a second close rejected its
+  handshake), and a socket the server ended itself after a message over
+  its outbox cap (the loop now tags every connection an executor produced,
+  routed to that executor). And a task an application left behind, sending
+  after the application returned, could answer the slot's next request
+  with its response; a send once the response is over now answers nothing.
+  Found by serving FastHTML's and FastAPI's own examples beside uvicorn.
+- **A process the application started inherited the server's connections
+  and channels** (SPEC G16). Nothing the server created was close-on-exec,
+  so a child that execs — `os.system`, `pty.fork`, `subprocess` with
+  `close_fds=False` — held every client connection open at that moment, the
+  listener, the channels between the loop and its pools, the bus and the
+  shutdown pipe: 8 to 46 descriptors, depending on the mode. A connection
+  the server closed stayed open in the child. FastHTML's terminal example
+  took 10 s to close a WebSocket, and a child that runs another user's
+  commands, like that terminal's shell, held every other client's
+  connection. Every descriptor is now close-on-exec, atomically on Linux.
+  `--spawn-workers` keeps exactly what its new image adopts across its own
+  exec, where the supervisor used to clear the flag for every exec in every
+  mode. And `m0pub` writes only to its own bus, which it recognises by
+  device and inode (`M0_BUS_WRITE_IDS`, exported beside the numbers). A
+  child handed no bus used to write its datagram into whatever file or
+  socket had the bus's old descriptor number.
+- **An ASGI WebSocket's disconnect cancelled the application's task**
+  (SPEC L21). uvicorn delivers `websocket.disconnect` through `receive()`,
+  and FastAPI's documentation is written against that: its cleanup is an
+  `except WebSocketDisconnect:` after the receive loop, which a cancellation
+  skips, so the departed client stayed in the application's list for ever.
+  The disconnect now arrives through `receive()` (and again on every later
+  call), and the task is not cancelled for it. A handler blocked outside
+  `receive()` learns at its next send, or at shutdown, where the drain gives
+  in-flight tasks a second and then cancels the sockets still running.
+- **An ASGI response waited for its background tasks** (SPEC L22).
+  Starlette runs a response's `BackgroundTask` after its final body, inside
+  the same call, and the executor answered only when the application
+  returned, so a response with background work was held for as long as the
+  work took, buffered or streamed. It is answered at its final body now,
+  and a client leaving afterwards does not cancel the work. Under the
+  escape hatch (`--blocking-threads N` with an ASGI application) each
+  request runs in its own event loop run, which cannot return early; the
+  response still waits there.
+- **An ASGI application's error replaced its own error page and lost the
+  traceback; a raising WebSocket closed with 1000** (SPEC L23, L24).
+  Starlette's `ServerErrorMiddleware` sends a finished 500 — with
+  FastHTML's `debug=True`, the traceback page — and then re-raises; the
+  executor answered its own `Failed to process request` instead and logged
+  one line with no file or line. The application's response now stands,
+  and every application error the executor logs carries its traceback. A
+  WebSocket whose application raises is closed with 1011 ("an unexpected
+  condition", RFC 6455 §7.4.1), not the 1000 that told the client all went
+  well. A `ClientDisconnected` escaping an application is not logged; a
+  Starlette `WebSocketDisconnect` that an application lets escape is, as
+  uvicorn logs it. And `receive()` after a response is answered says
+  `http.disconnect` at once, where it used to wait for the life of the
+  process.
+- **An ASGI application's WebSocket close could be answered with a second
+  Close frame** (SPEC L15). The executor sent the close as two datagrams,
+  the Close frame and then the socket's end marker. The loop wrote the
+  Close at the first but began waiting for the client's reply only at the
+  second, so an executor descheduled between them had the client's reply
+  read in between and echoed back: a Close after the closing handshake,
+  which a strict client reports as a protocol error. CI saw it twice, once
+  on each OS. The Close now rides inside the end marker, one datagram, so
+  the loop never writes it without knowing the socket is ending.
+- **A response's head reached the client rewritten** (SPEC A21, K12). A
+  response the application sent without a `Content-Type` went out as
+  `application/octet-stream`: a redirect, a 204, FastHTML's default 404
+  page, which a browser may then download rather than show. A HEAD the
+  application answered with its body's `Content-Length` and no body went
+  out with `Content-Length: 0` (Starlette's `FileResponse`, WhiteNoise).
+  And every 204 and 304 carried `Content-Length: 0`, from the gateway and
+  from a native Mojo handler alike, which RFC 9110 §8.6 forbids on a 204. A
+  204 that brought its own length and a body (Django's `CommonMiddleware`
+  sets a length on every non-streaming response) sent both, and the body
+  began the connection's next response. The head now reaches the wire as
+  the application sent it, plus only the framing that is the server's: a
+  buffered body's measured length, and on a HEAD the application's own
+  length. No 1xx or 204 carries a length or a body, whoever set them, and a
+  304 keeps only a length its application gave.
+- **A HEAD to a streaming ASGI route received the whole body** (SPEC L27).
+  The executor switched a response to streaming at its first chunk
+  whatever the request, so a HEAD to a Starlette `StreamingResponse`, which
+  answers HEAD as it answers GET, was streamed, and the loop, which never
+  frames a HEAD, wrote the body raw after the head: all 10,000 bytes of a
+  10,000-byte route, and an endless stream for ever. A keep-alive client
+  then read those bytes as the start of its next response. A HEAD is now
+  answered at its first streamed body with its head alone, and the
+  application's later sends are dropped. A `receive()` it parked before the
+  first body, as Starlette and Django do, is woken with `http.disconnect`,
+  which stops a `StreamingResponse` and still runs its background tasks;
+  an application that never listens is cancelled if it is still running a
+  second later. A 1xx, 204 or 304 streamed the same way is answered the
+  same way. And a HEAD to a hold, an `M0-Hold` view under `--realtime` or
+  a native SSE route, was held as the stream a GET opens, writing every
+  event and heartbeat after the head: it is answered with its head, and the
+  subscription it made is dropped.
+- **A chunked request reached an application with `transfer-encoding:
+  chunked` and a `content-length` at once** (SPEC L25). The loop decodes a
+  chunked body before any application sees it, and the length it then
+  added sat beside the client's coding: a contradictory pair an
+  application proxying the request would forward. The body is now
+  described by its length and the `chunked` coding is gone, in the ASGI
+  scope on both bridges and in the WSGI environ. Any other coding, such as
+  the `gzip` of `gzip, chunked`, is kept.
+- **Every chunked upload reached a Flask application empty** (SPEC L25).
+  Werkzeug reads `HTTP_TRANSFER_ENCODING: chunked` as a streaming request
+  of unknown length and, without `wsgi.input_terminated`, hands the
+  application an empty input stream, so `request.data` was `b''` however
+  much was sent. The environ now describes the decoded body by its
+  `CONTENT_LENGTH` and carries no `HTTP_TRANSFER_ENCODING`.
+- **A module that calls `asyncio.create_task` at import failed to load
+  with a bare `RuntimeError: no running event loop`** (SPEC L26).
+  FastHTML's first official example does this. m0serve imports an
+  application before any event loop runs, as uvicorn does without
+  `--reload`, and now says what the module did and the fix: start that
+  work from a lifespan startup handler. The server, `--doctor` and
+  discovery all name it, with the traceback, and exit 1. Any other
+  import error keeps its own words.
+- **An ASGI application's lifespan shutdown was skipped when background
+  work outlived the drain.** After the drain, the executor gave WebSocket
+  tasks a second and then waited on every HTTP task without bound, so work
+  that never ends -- a response's background task, a poller -- held it until
+  the 5 s thread join gave up and the process left without shutting the
+  application down. Every task now gets 3 s in all, is then cancelled and
+  counted in the log, and a task that swallows its cancellation is named and
+  left behind, never to reach the server again; lifespan shutdown runs
+  after. Work that finishes inside the 3 s finishes (SPEC D11).
+- **A HEAD to a WSGI view that streams for ever never answered** (SPEC
+  K13). A HEAD took the buffered path, which joins the whole body, so a HEAD
+  to a WSGI SSE view hung and held its pool thread until shutdown; eight
+  of them were the whole zero-config pool. It is answered at the body's
+  first item, with no length, and the body is closed.
+- **Two executor edge cases from PR 1's review.** A body an ASGI
+  application sent before its `http.response.start`, then caught the error
+  for and answered properly, reached the client at the front of the real
+  body; and a stream still winding down on a recycled slot was cancelled a
+  second time by the next connection's disconnect.
+- **A `413` for an oversized upload reached curl and browsers, but not
+  `http.client`** (SPEC A20). The server refuses a body over `--max-body`
+  as soon as it knows the size, while the client is still uploading, and
+  it closed the socket straight after. Closing with the rest of the body
+  unread makes the kernel send RST instead of FIN, so a client that writes
+  its whole body before reading — `http.client`, and therefore `urllib`
+  and `requests` — got `BrokenPipeError` instead of the status. Found by
+  a Flask application compared against Werkzeug. The refusal now shuts its
+  write side, reads and discards what is still coming for up to five
+  seconds (RFC 9112 §9.6's lingering close), then closes cleanly. And
+  every error the server answers on its own — 400, 408, 413, 414, 431 --
+  said `Connection: keep-alive` on a connection it was about to close; it
+  says `close`. `--max-body`'s help and `docs/RUNNING.md` now say that
+  the server answers over the cap before the application runs.
 
 - **The nightly canary could not alert, and one break hid the rest.**
   The 2026-09-02 fix created the missing `nightly-breakage` label, which was

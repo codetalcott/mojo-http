@@ -14,7 +14,9 @@ from lightbug_http.c.kqueue import (
 from lightbug_http.accept_share import AcceptShare
 from lightbug_http.broadcast import drain_bus_channel
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import accept_with_peer, recv, send, close
+from lightbug_http.c.socket import (
+    accept_with_peer, recv, send, close, shutdown, ShutdownOption,
+)
 from lightbug_http.c.socket_error import (
     AcceptEAGAINError, AcceptECONNABORTEDError, AcceptEINTRError,
     RecvEAGAINError, SendEAGAINError,
@@ -23,7 +25,9 @@ from lightbug_http.connection import ConnectionState, default_buffer_size
 from lightbug_http.header import (
     HeaderKey, KH_DATE, ParsedRequestHeaders, find_header_end, parse_request_headers,
 )
-from lightbug_http.http import HTTPRequest, HTTPResponse, encode
+from lightbug_http.http import (
+    HTTPRequest, HTTPResponse, encode, enforce_bodiless_framing, is_bodiless_status,
+)
 from lightbug_http.http.date import http_date_from_unix, unix_now
 from lightbug_http.http.common_response import (
     BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge,
@@ -71,6 +75,15 @@ comptime MAX_EVENTS = 64
 # replies must not hold the slot; two seconds is far past any real round
 # trip, and a peer that replies promptly frees the slot in one.
 comptime WS_CLOSE_LINGER_NS: Int = 2_000_000_000
+# How long a connection refused before its request was read keeps reading,
+# and discarding, what the client is still sending (`_reject_and_linger`).
+# Long enough for an upload a few megabytes over the cap to finish on an
+# ordinary link; bounded because a client that never stops must not hold
+# the slot.
+comptime REJECT_LINGER_NS: Int = 5_000_000_000
+# Reads per readiness event while lingering -- 64 of the 4 KB staging
+# buffer -- so one fast uploader cannot hold the loop for a whole upload.
+comptime LINGER_READS_PER_EVENT = 64
 comptime UNUSED: Int = -1
 
 
@@ -942,6 +955,16 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     slot_read_armed[slot] = True
                 continue
 
+            if provision_pool.provisions[slot].state.kind == ConnectionState.LINGERING:
+                # Refused before its request was read; discard until the
+                # client closes (`_reject_and_linger`).
+                _linger_discard(
+                    backend, handler, slot, fd_val,
+                    slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                    slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+                )
+                continue
+
             if provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_SSE:
                 # SSE client disconnect: recv→0 means client closed
                 # connection. _close_slot notifies the handler.
@@ -1046,8 +1069,12 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         or provision_pool.provisions[slot].chunk_decoder._total_read
                         > 2 * config.max_request_body_size
                     ):
-                        _send_error_to_fd(fd_val, PayloadTooLarge())
-                        _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
+                        _reject_and_linger(
+                            backend, handler, slot, fd_val, PayloadTooLarge(),
+                            config, slot_fds, fd_to_slot, provision_pool,
+                            active_count, metrics, slot_sse, slot_ws,
+                            slot_ws_state, slot_read_armed, slot_idle_deadline,
+                        )
                         continue
                     if buf_len > tail_start:
                         var ret: Int
@@ -1678,7 +1705,9 @@ def _close_between_requests[T: HTTPService, B: EventLoopBackend](
     loop under any circumstance — that loop dispatches EVFILT_WRITE only,
     so a request arriving during the drain is not read there. Closing it
     drops nothing that waiting would have delivered, and leaves the whole
-    budget to connections genuinely mid-request or mid-response.
+    budget to connections genuinely mid-request or mid-response. A
+    LINGERING slot is closed for the same reason: its refusal went out
+    when it began, and what it is still reading is discarded.
 
     Called once before the drain clock starts AND after every completion
     pass inside it. The second call is the fix for the drain's other
@@ -1697,11 +1726,11 @@ def _close_between_requests[T: HTTPService, B: EventLoopBackend](
     for s in range(max_conns):
         if slot_fds[s] == UNUSED or offload.offloaded[s]:
             continue
+        var kind = provision_pool.provisions[s].state.kind
         if (
-            provision_pool.provisions[s].state.kind
-            == ConnectionState.READING_HEADERS
+            kind == ConnectionState.READING_HEADERS
             and len(provision_pool.provisions[s].recv_buffer) == 0
-        ):
+        ) or kind == ConnectionState.LINGERING:
             _close_slot(
                 backend, handler, s, slot_fds[s],
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
@@ -2322,11 +2351,11 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         var is_chunked = parsed.is_chunked_body()
 
         if not is_chunked and content_length > config.max_request_body_size:
-            _send_error_to_fd(fd_val, PayloadTooLarge())
-            _close_slot(
-                backend, handler, slot, fd_val,
-                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                slot_sse, slot_ws, slot_ws_state,
+            _reject_and_linger(
+                backend, handler, slot, fd_val, PayloadTooLarge(),
+                config, slot_fds, fd_to_slot, provision_pool,
+                active_count, metrics, slot_sse, slot_ws,
+                slot_ws_state, slot_read_armed, slot_idle_deadline,
             )
             return
 
@@ -2421,8 +2450,12 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     or provision_pool.provisions[slot].chunk_decoder._total_read
                     > 2 * config.max_request_body_size
                 ):
-                    _send_error_to_fd(fd_val, PayloadTooLarge())
-                    _close_slot(backend, handler, slot, fd_val, slot_fds, fd_to_slot, provision_pool, active_count, metrics, slot_sse, slot_ws, slot_ws_state)
+                    _reject_and_linger(
+                        backend, handler, slot, fd_val, PayloadTooLarge(),
+                        config, slot_fds, fd_to_slot, provision_pool,
+                        active_count, metrics, slot_sse, slot_ws,
+                        slot_ws_state, slot_read_armed, slot_idle_deadline,
+                    )
                     return
                 if ret >= 0:
                     # `pending_bytes` bytes remain past the chunked data —
@@ -3281,6 +3314,19 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     HEAD, Date, encode, eager send). Every response the server has ever sent
     went through this code; the pool path did not get a second copy of it.
     """
+    # A HEAD's response is its head (RFC 9110 §9.3.2), whatever a handler
+    # made of it: a hold approved on a HEAD -- an `M0-Hold` view that answers
+    # every method, a native SSE route matched by path alone -- subscribed
+    # the slot and wrote every event and heartbeat after the head, where a
+    # keep-alive client reads its next response (SPEC L27). The handler has
+    # already subscribed the slot; drop that through the hook a stream's
+    # close calls, and send the head as an ordinary answer, with no length,
+    # because the GET's body is a stream.
+    if response.sse_streaming and offload.is_head[slot]:
+        response.sse_streaming = False
+        response.headers.pop("content-length")
+        handler.sse_slot_disconnected(slot)
+
     if response.sse_streaming:
         slot_sse[slot] = True
         # The outbox sweep's gate: every site that sets a stream flag
@@ -3319,6 +3365,14 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     ):
         if (provision_pool.provisions[slot].keepalive_count + 1) >= config.max_keepalive_requests:
             provision_pool.provisions[slot].should_close = True
+
+    # RFC 9110 §8.6 and §6.4.1, whoever set it: a 1xx or 204 carries no
+    # Content-Length, a 304 only one its handler set, and none of the three
+    # carries content (SPEC A21). A handler's own length on a 204 is
+    # Django's CommonMiddleware on every such response, and its bytes, if
+    # written, would begin the connection's next response.
+    if is_bodiless_status(response.status_code):
+        enforce_bodiless_framing(response)
 
     # RFC 9110 §9.3.2: HEAD response must not contain a body. The headers
     # stay as they are — including Content-Length, which must describe the
@@ -3380,11 +3434,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # wrong, but framing it turns "wrong" into "unparseable", and the
         # reader would hang waiting for a terminator on a message the
         # status says is already complete.
-        var bodiless = (
-            response.status_code == 204
-            or response.status_code == 304
-            or (response.status_code >= 100 and response.status_code < 200)
-        )
+        var bodiless = is_bodiless_status(response.status_code)
         var can_chunk = (
             asgi_stream
             and offload.http11[slot]
@@ -3762,8 +3812,147 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     metrics.closes_total += 1
 
 
+def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut handler: T,
+    slot: Int,
+    fd_val: Int,
+    var response: HTTPResponse,
+    config: ServerConfig,
+    mut slot_fds: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: List[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+):
+    """Refuse a request whose body is still arriving, then linger.
+
+    A 413 goes out as soon as the size is known -- at the headers for a
+    `Content-Length`, partway through for a chunked body -- so the client
+    is still uploading, and most clients read nothing until they have
+    written everything (`http.client`, so `urllib` and `requests`).
+    Closing then, with the rest of the body unread in the receive buffer,
+    makes the kernel send RST instead of FIN: the client's next write
+    fails with EPIPE, and the 413 already in its receive buffer is
+    discarded with the connection. m0serve answered `http.client` with a
+    `BrokenPipeError` where Werkzeug answered 413.
+
+    RFC 9112 §9.6 is the cure, and nginx's lingering close is the shape:
+    half-close the write side behind the response, read and discard until
+    the client closes, then close -- a FIN, and the 413 intact. The slot
+    becomes LINGERING and `_linger_discard` does the reading. The bound is
+    REJECT_LINGER_NS from here, armed ONCE because this is the transition
+    (nothing re-enters it: the read path's LINGERING branch is all a
+    lingering slot ever reaches), and the idle sweep reaps it -- a client
+    that never stops is reset at the deadline, which is what it got at
+    once before. Gated on `idle_timeout > 0` for the reason the WebSocket
+    close linger is: that sweep is what bounds the wait, and with idle
+    timeouts off the old immediate close is better than a held slot.
+    """
+    _send_error_to_fd(fd_val, response^)
+    var linger = config.idle_timeout > 0
+    if linger:
+        try:
+            shutdown(FileDescriptor(fd_val), ShutdownOption.SHUT_WR)
+        except:
+            linger = False
+    if not linger:
+        _close_slot(
+            backend, handler, slot, fd_val,
+            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+            slot_sse, slot_ws, slot_ws_state,
+        )
+        return
+    # A chunked body was being read under the body timer, which would
+    # otherwise fire mid-linger and close the slot early.
+    backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
+    provision_pool.provisions[slot].prepare_for_new_request()
+    provision_pool.provisions[slot].state = ConnectionState.lingering()
+    slot_idle_deadline[slot] = perf_counter_ns() + REJECT_LINGER_NS
+    if not slot_read_armed[slot]:
+        backend.try_add_read(fd_val)
+        slot_read_armed[slot] = True
+    # Discard what is already buffered now: on epoll the edge that brought
+    # it is spent, and a client blocked on a full window sends nothing
+    # that would raise another. Belt and braces, deliberately: the SHUT_WR
+    # above is a state change, which wakes epoll and reports the buffered
+    # bytes again (measured), and kqueue's level trigger reports them
+    # anyway -- removing this changes nothing the probe can see on either.
+    # It stays so the linger does not rest on a side effect of shutdown.
+    _linger_discard(
+        backend, handler, slot, fd_val,
+        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+        slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+    )
+
+
+def _linger_discard[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    mut handler: T,
+    slot: Int,
+    fd_val: Int,
+    mut slot_fds: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: List[WSState],
+    mut slot_read_armed: List[Bool],
+):
+    """Read and discard what a LINGERING client sends; close at its EOF.
+
+    Reads until EAGAIN rather than stopping at a short read, because the
+    client's FIN may already be behind the data, and on epoll the event
+    that announced both is this one. At most LINGER_READS_PER_EVENT reads:
+    past that the socket is re-registered, which on epoll reports it again
+    if it is still readable (kqueue's level trigger does so anyway) -- the
+    WebSocket read path's rule, for its reason: once the client stops
+    sending, nothing else will. Not reproducible on demand here (Linux
+    starts a loopback receive buffer below the budget, and a client still
+    sending raises an edge per segment), so no gate fails without it.
+    """
+    var cap = provision_pool.provisions[slot].recv_staging.capacity()
+    for _ in range(LINGER_READS_PER_EVENT):
+        provision_pool.provisions[slot].recv_staging.clear()
+        var n: UInt
+        try:
+            n = recv(
+                FileDescriptor(fd_val),
+                Span(provision_pool.provisions[slot].recv_staging),
+                UInt(cap),
+                0,
+            )
+        except linger_err:
+            if linger_err.isa[RecvEAGAINError]():
+                return
+            n = 0
+        if n == 0:
+            _close_slot(
+                backend, handler, slot, fd_val,
+                slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+            )
+            return
+    backend.try_add_read(fd_val)
+    slot_read_armed[slot] = True
+
+
 def _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
-    """Best-effort send an error response on a raw fd."""
+    """Best-effort send an error response on a raw fd.
+
+    Every caller ends the connection after it, so the response says so:
+    `Connection: close` (RFC 9112 §9.6, the server's final response on a
+    connection). Left to the encoder's default it said `keep-alive`, an
+    invitation to send the next request down a socket that is closing.
+    """
+    response.set_connection_close()
     var encoded = encode(response^)
     try:
         _ = send(

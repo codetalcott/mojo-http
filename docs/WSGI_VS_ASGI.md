@@ -78,10 +78,46 @@ surface runs unmodified. The Mojo loop still owns framing and flow control:
 every stream is credit-gated so a fast producer cannot overrun a slow client
 or the channel between the two threads.
 
+**What an application can count on**, each as uvicorn does it, and each a
+SPEC row with a gate:
+
+- A response is answered at its final `http.response.body`, not when the
+  application returns, so Starlette's background tasks run after the client
+  has its answer, and a client leaving does not cancel them (L22).
+- A send is judged by the connection it addresses, whichever task makes
+  it: a disconnect hook reaches the sockets still connected, and a `send`
+  kept for a client that has gone never reaches another client (L20). On a
+  WebSocket that has gone it raises `ClientDisconnected`, an `OSError`
+  (Starlette turns it into `WebSocketDisconnect`); on a stream it does
+  nothing, as ASGI 2.3 specifies.
+- A WebSocket hears its client leave as `websocket.disconnect` from
+  `receive()`, and is not cancelled for it, so an `except
+  WebSocketDisconnect:` cleanup runs (L21) — also when the server ended the
+  socket itself (a message over its 64 KB outbox), and after the
+  application's own `websocket.close`, after which it may send nothing
+  more. A handler that never calls `receive()` learns at its next send, or
+  at shutdown, when the drain cancels the sockets still running after a
+  second's grace. Background work after a response gets three seconds of
+  the drain in all, and is then cancelled, so lifespan shutdown still runs
+  (SPEC D11).
+- Once a response is answered, `receive()` says `http.disconnect` at once,
+  and a send answers nothing — so a task the application left behind can
+  never answer another request.
+- An application error keeps the application's own error response (so
+  `debug=True` pages arrive), the log gets its traceback (L23), and a
+  WebSocket whose application raises is closed with 1011 (L24).
+- `scope["path"]` keeps `%2F` encoded, a deliberate rule of the URI parser
+  so an encoded slash never becomes a path separator; a route parameter
+  that contains one arrives encoded, where uvicorn decodes it (and routes
+  the request elsewhere).
+
 **A buffered fallback.** `--blocking-threads N` with an ASGI app selects the
 older buffered path, one request at a time to completion on a pool thread. It
 exists as an escape hatch and refuses an infinite stream rather than hold a
-thread forever.
+thread forever. It also answers only when the application returns, so a
+response there still waits for its background tasks, and an error the
+application answers and then re-raises (Starlette's error page) is replaced
+by the server's own 500.
 
 **One limit, from the toolchain.** The executor is a Python type built
 in-process, and Mojo's Python bindings lay that type out for the

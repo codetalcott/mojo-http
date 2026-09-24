@@ -124,6 +124,78 @@ not run: none of the four dependency trees builds on free-threaded CPython
   record of each application's shape, including every substitution and
   the reason for it.
 
+## FastHTML's and FastAPI's own examples, beside uvicorn — 2026-09-22
+
+A separate pass, not the soak above. FastHTML's official examples — the
+`examples/` of AnswerDotAI's `fasthtml` repository and the
+`fasthtml-example` repository, 37 applications — and FastAPI's documented
+chat room, served side by side under `bin/m0serve` from `main` at
+`ef2811e` and under uvicorn 0.53.0: python-fasthtml 0.14.14, Starlette
+1.6.0, CPython 3.13.6, macOS 27 on an M4. Each application ran from its own
+copy per server, so no SQLite file or session key was shared; the same
+scripted scenario went to both; the responses were compared with only the
+port normalised, and both logs were read. The gates below are what the pass
+left in the tree.
+
+Most of what the FastHTML tutorial teaches matched: sessions and
+`Beforeware` logins, fastlite writes, HTMX out-of-band swaps, toasts,
+cookies, multipart uploads, `FileResponse` with ranges, gzip, streamed and
+SSE responses under 40 concurrent clients, disconnect detection, lifespan,
+WebSockets, and `live=True` under `--reload`. Under `--workers 2` both
+servers lost a worker to fastlite's schema race at import; m0serve's
+supervisor respawned it, and uvicorn carried on with one.
+
+What did not match, most harmful first:
+
+| found | SPEC | now |
+|---|---|---|
+| a `send` kept for a client that had left reached the next client on its recycled slot: FastAPI's documented chat room delivered a departed client's messages to a stranger | L20 | fixed |
+| a disconnect hook's sends to the sockets still connected were refused | L20 | fixed |
+| a WebSocket disconnect cancelled the task, so an `except WebSocketDisconnect:` cleanup never ran | L21 | fixed |
+| a response waited for its `BackgroundTask` | L22 | fixed |
+| an application error's own 500 — the `debug=True` page included — was replaced, and the traceback lost | L23 | fixed |
+| a WebSocket whose application raised was closed with 1000 | L24 | fixed |
+| sockets survive `exec`: a shell the application started held a client connection open | G16 | fixed |
+| `application/octet-stream` on responses sent without a type; a HEAD's `Content-Length` rewritten to 0; `Content-Length: 0` on 204 and 304 | A21, K12 | fixed |
+| a chunked request's scope carries both `transfer-encoding` and `content-length`; a module that calls `asyncio.create_task` at import cannot load | L25, L26 | fixed |
+
+Three more failures were FastHTML's own and identical under both servers:
+`setup_ws` reads `scope.client` as an attribute of a dict, the terminal
+example's disconnect hook takes an argument FastHTML does not pass, and
+fastlite's `db.create` races across workers at import.
+
+**Re-run on the response heads, 2026-09-23** (A21, K12, L27; python-fasthtml
+0.14.13, Starlette 1.6.0, uvicorn 0.53.0). The probe application's heads,
+read beside uvicorn: FastHTML's default 404, a `RedirectResponse`, a 204, a
+304, `HEAD` of a `FileResponse` and of a 5 MB page, and `HEAD` of a sync and
+an async `StreamingResponse`, each HEAD followed by a second of listening
+for bytes after its head. All eight now match on status, `Content-Type`,
+`Content-Length` and `Transfer-Encoding`, and neither server sends a byte
+after a HEAD's head. Before, the 404, the redirect, the 204 and the 304 each
+carried `application/octet-stream`, the 204 and 304 a `content-length: 0`,
+and the `FileResponse` HEAD `content-length: 0` where uvicorn sent 3145735.
+The streamed HEAD was found while fixing the rest, on `apps/asgi_bare`: all
+10,000 bytes of a 10,000-byte stream followed its head (L27).
+
+**Re-run of every scenario, 2026-09-23** (after L25 and L26; the same
+versions). Sixteen scenarios, the heads probe and `--workers 2`, m0serve
+beside uvicorn. A GET's scope and a sized POST's now carry exactly the
+headers uvicorn's do. Before, m0serve's GET added a `content-length: 0`.
+A chunked POST's scope differs by design, `content-length: 7` where
+uvicorn passes `transfer-encoding: chunked`, and so FastHTML's multipart
+check still accepts a chunked upload under m0serve that it refuses under
+uvicorn. `00_game_of_life`, unmodified, now exits 1 naming what its module
+did and the lifespan fix, where it printed only `no running event loop`.
+Every other difference is the harness's own:
+- file timestamps;
+- the order of a `Set` Starlette joins into `Allow`;
+- traceback paths;
+- `m0` in the lifespan state;
+- the `%2F` recorded above.
+
+FastHTML's own three failures are unchanged, and identical under both
+servers.
+
 ## In production — 2026-09-12, textshelf's streams on the hold mount (m0serve 1.2.0)
 
 Not a soak: a production record, the first use of the grant-verified hold

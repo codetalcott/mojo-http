@@ -284,8 +284,16 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     kernel reports readable (a pipe `write`, never `mincore`, which
     succeeds for unmapped addresses on macOS) -- because an inherited
     address was a SIGSEGV on Linux and a silent write into the child's own
-    memory on macOS. `m0pub.child_fds()` is what a child is handed. Every inherited fd goes through `keep_across_exec`:
-    macOS's `shm_open` sets `FD_CLOEXEC`, measured as EBADF in the worker.
+    memory on macOS. `m0pub.child_fds()` is what a child is handed, as
+    `pass_fds`: every descriptor the server creates is close-on-exec
+    (SPEC G16), so nothing of the server's reaches an exec'd child any
+    other way, and m0pub writes only to a bus fd whose device and inode
+    match `M0_BUS_WRITE_IDS`, which `prefork_bus` exports beside the
+    numbers. The spawn's own exec keeps exactly the fds
+    `spawn_inherited_env` names: `_exec_if_spawning` clears the flag in
+    the forked child just before `execv`, and the new image sets it again
+    on each one as it adopts it. A descriptor a future spawned worker must
+    inherit goes in that list, or its adoption fails loudly.
     Core ML cannot run in a forked child at all
     (docs/notes/coreml-embeddings.md), which is what this exists for.
   - **Threaded (`M0_THREADS`, free-threaded CPython only; `m0_wsgi.threaded`).**
@@ -352,7 +360,23 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     101 is only released behind its begin frame, outbound frames ride
     the chunk channel, inbound ones are tagged submit-channel datagrams
     — and a handshake the app never answers must resolve as a 403, never
-    a leaked slot. The buffered escape hatch keeps its send()-side
+    a leaked slot. An app's close is ONE datagram, its Close frame inside
+    the `x` end marker (`ws_close_frame`): sent as a `w` and then an `x`,
+    the loop wrote the Close before it knew the socket was ending, and a
+    peer reply read in between was echoed as a second Close (CI, twice;
+    never under load, only when the executor lost its CPU between the
+    sends). A HEAD never streams, and neither does a 1xx, 204 or 304:
+    `_Cycle.send` answers one at its first streamed body with its head
+    alone and drops the rest (SPEC L27), because the loop frames none of
+    them and wrote that body raw where a keep-alive connection's next
+    response begins (10,000 of 10,000 bytes, measured). The loop sends no
+    disconnect for an answer, so the early answer tells the application
+    itself: it resolves the slot's disconnect future, which wakes a
+    receive() parked before the first body (Starlette's, Django's), and an
+    application that parked none is cancelled after `_HEAD_GRACE`.
+    Unstopped, an endless body ran for the life of the process. The
+    loop's `_finish_response` holds the same line for a hold or a native
+    stream opened on a HEAD. The buffered escape hatch keeps its send()-side
     watchdog — do not "fix" it by lengthening the
     grace (docs/notes/wsgi-vs-asgi-history.md §8). **The pump is batched in both directions**, because the
     hello-world deficit was wakeup-bound, not CPU-bound (0.72x uvicorn at
@@ -405,10 +429,19 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     element types — `HTTPResponse`'s cookie jar holds a `Dict`, which is
     not `Writable`, so no container of responses can be a field); and
     the pill only sets `stopping` — the shim then runs the
-    in-flight tasks to completion (their events dispatch as they finish)
-    and stops the loop, so the executor's final flush and lifespan
-    shutdown run after `run_forever` returns. `smoke-asgi`'s
-    outlive-the-drain phase and its 10k-request RSS guard pin the shape.
+    in-flight tasks (their events dispatch as they finish), bounded:
+    sockets are cancelled after `_WS_DRAIN_GRACE`, everything else after
+    `_HTTP_DRAIN_GRACE` (3 s), and a task that swallows its cancellation
+    is named and left behind (SPEC D11) — then it stops the loop, so the
+    executor's final flush and lifespan shutdown run after `run_forever`
+    returns. Two rules: the drain starts ONCE (`_exec_draining`; a second
+    pill, or the inverted tick, must not start another whose stop lands
+    inside lifespan shutdown), and once it has stopped the loop nothing
+    reaches the port (`_exec_closed`) — the Mojo side frees its executor
+    state as `run_forever` returns, and lifespan shutdown steps the loop
+    again, so a task left behind that answered then was a segmentation
+    fault. `smoke-asgi`'s outlive-the-drain and background-forever phases
+    and its 10k-request RSS guard pin the shape.
     **A slot's per-slot state in the shim belongs to the slot's CURRENT
     task** (`_exec_slot_task`), never to the slot: the loop recycles a
     slot the instant it closes a connection, and the previous task is
@@ -421,9 +454,32 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     cleanup runs only if the finishing task is the owner; a disconnect is
     stamped on the owning task (`_m0_disconnected`) and the old
     connection's in-flight bytes are refunded to the global window right
-    there; spawning a new task on the slot clears the slot's stale marks (the
-    disconnect, and for a WebSocket the previous socket's accept);
-    every "am I gone" check asks `_task_gone`, which consults both; and
+    there; a socket's accept and its own close are ITS OWN (closure state
+    in `_serve_one_ws`, never keyed by slot — read by slot they were the
+    next client's), and after its own close it may send nothing and
+    `receive()` answers the disconnect; the loop tags EVERY connection an
+    executor produced (`exec_lane`, recorded at the `b`/`B` begin frame,
+    because an app's own close and `_end_socket` unsubscribe before the
+    connection ends, and routed by that lane because the unsubscribe
+    erased the channel name); every "am I gone" check asks
+    `_task_gone(owner)` about the task that owns the connection a send
+    ADDRESSES (stamped, or finished), never the caller's — `send` and
+    `receive` are closures an application calls from any task, and judged by
+    the caller a gone client's kept `send` wrote into the next client on its
+    recycled slot (FastAPI's documented chat room delivered a departed
+    client's messages to a stranger) while a disconnect hook's sends to live
+    sockets were refused
+    (SPEC L20); a send to a gone socket raises `ClientDisconnected`, one to
+    a gone stream is a yielding no-op; a WebSocket is told of its client's
+    departure through `receive()` and never cancelled for it — FastAPI's
+    `except WebSocketDisconnect:` cleanup runs only if the task survives —
+    so the drain gives in-flight tasks `_WS_DRAIN_GRACE` and then cancels
+    the sockets still running (L21); a response is answered at its FINAL
+    body, not when the application returns, because Starlette runs
+    background tasks after it inside the same call (L22), and a late
+    exception goes to the log alone — and once it is over a send answers
+    nothing (a leftover task answered the slot's NEXT request) and
+    `receive()` says `http.disconnect` at once; and
     the STREAMING mark and the cancellable stream task go on the slot's
     owner (`_exec_slot_task[slot]`), never `asyncio.current_task()` —
     Starlette (so FastAPI and FastHTML) produces a `StreamingResponse`
@@ -681,14 +737,16 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       that never accepted the connection (docs/notes/hold-on-a-pool-thread.md).
     - **A pool thread streams an unsized WSGI iterable, as a second
       producer on the executor's chunk channel.** The shim decides
-      (`_stream_this` in `bridge.mojo`): an app-supplied `Content-Length`,
-      a list/tuple/bytes body, a Django `HttpResponse` (`streaming is
-      False`), HEAD, a bodiless status or an `M0-Hold` header all buffer
-      as before — which is what keeps every framework page byte-identical
-      on the wire; anything else streams, and only where
+      (`_lazily_produced` in `shim/m0_shim.py`): an app-supplied
+      `Content-Length`, a list/tuple/bytes body, a Django `HttpResponse`
+      (`streaming is False`), a bodiless status or an `M0-Hold` header all
+      buffer as before — which is what keeps every framework page
+      byte-identical on the wire; anything else streams, and only where
       `set_stream_capable` was set: pool threads with a chunk fd, never
-      the loop's own handler. The rules that make it safe, each pinned by
-      `smoke-wsgi-stream`:
+      the loop's own handler. A HEAD to what would stream is answered at
+      the body's first item and the body closed (SPEC K13): joined, a
+      body that never ends never answered and held its thread for good.
+      The rules that make it safe, each pinned by `smoke-wsgi-stream`:
       - The thread registers its OWN ack pair per slot
         (`OffloadPool.set_slot_ack_fd`, BEFORE its `P` begin frame, whose
         send publishes the write) and keeps the pair for the process's
@@ -1022,6 +1080,13 @@ send patches. Changes there are ordinary changes to this repo.
 - Record anything materially new in [NOTICE](NOTICE) — that file is a licensing
   record, not documentation.
 - Do not "fix" the `m0_http.log` back-edge by inverting it.
+- **`c/fcntl.mojo` holds the program's one `fcntl` declaration** (with
+  the Darwin arm64 variadic workaround), and it imports nothing from the
+  fork. The lowest layers (`socket`, `socketpair`, `pipe`, `fdpass`)
+  mark what they create close-on-exec through it (SPEC G16), and
+  `kqueue.mojo`, its old home, imports `socket.mojo`, so they could not
+  reach it there without a cycle. A second `external_call["fcntl"]` with
+  another signature does not compile.
 - **`poe check-fork-package` compiles it whole, and is in `test-all`.**
   `build-http` precompiles `src` only and Mojo checks method bodies lazily,
   so a body no app instantiates is never type-checked — ten errors had
@@ -1510,7 +1575,8 @@ pieces, and the language fact each rests on:
   docs/notes/a-swap-that-moves-the-address-bar.md): `Htmx` writes
   `hx-push-url="true"` through `Vocabulary.push_url`, whose default
   REFUSES, the layer refuses it for any verb but `get`, and `Datastar`
-  raises — its 1.0.3 bundle has no history code at all, so a push there is
+  raises — its free bundle has no history code at all (re-read at 1.0.4;
+  `data-replace-url` and `data-query-string` are Pro), so a push there is
   an address the back button cannot rebuild. A refusal, never a no-op.
   One mode, on purpose: Datastar keeps a non-default mode on the
   RESPONSE (`datastar-mode`) and htmx on the element, so a `mode` on

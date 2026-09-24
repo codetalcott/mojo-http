@@ -81,6 +81,7 @@ jobs:
         shell: bash
         run: |
           python3 scripts/emit.py --covers L7 --task step
+          python3 scripts/emit.py --covers L20 --task step
           python3 scripts/emit.py --covers N28 --task step
           set -o pipefail
           uv run poe test-all 2>&1 | tee -a compile.log
@@ -552,6 +553,15 @@ jobs:
       # a prompt close (Linux used to sit out the header timeout).
       - name: Smoke test a half-closed client
         run: uv run poe smoke-half-close
+      # The same reset from the server's side. A 413 goes out while the
+      # client is still uploading, and closing at once left the rest of the
+      # body unread, which the kernel answers with RST -- so a client that
+      # writes everything before it reads (http.client, so urllib and
+      # requests) got BrokenPipeError and never the 413. The refusal now
+      # lingers (RFC 9112 §9.6); this pins that the 413 is readable and
+      # that the linger is bounded.
+      - name: Smoke test a 413 reaching a client still uploading
+        run: uv run poe smoke-early-413
       # The mirror image: connection reads are level triggered on kqueue and
       # edge triggered on epoll, so a request bigger than one read stalled on
       # Linux at exactly 8192 bytes while macOS served any size.
@@ -903,6 +913,14 @@ jobs:
       # counter, in three server shapes.
       - name: Smoke test publishing from a child process
         run: uv run poe smoke-child-publish
+      # G16: a child process the application starts with close_fds=False
+      # (os.system, pty.fork) holds none of the server's descriptors -- no
+      # client connection, listener, channel, shutdown pipe or shared page
+      # -- in six shapes: the pool, the loop, forked and spawned workers,
+      # --realtime and the ASGI executor. A connection the server closed
+      # used to stay open in such a child.
+      - name: Smoke test what a child process the application starts inherits
+        run: uv run poe smoke-exec-inherit
       # The Mojo handler pool, same claim without an interpreter: func on a
       # pool thread (the response names which), every thread dealt work, a
       # streaming response refused with 409, and SIGTERM a clean exit -- the

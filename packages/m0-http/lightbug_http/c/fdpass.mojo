@@ -28,6 +28,9 @@ from std.ffi import c_int, c_ssize_t, external_call, get_errno
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.platform import MSG_DONTWAIT
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
+
+comptime _MSG_CMSG_CLOEXEC_LINUX = 0x40000000
 from lightbug_http.c.socket import iovec_t
 
 
@@ -146,7 +149,13 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
         0, 0, UInt64(Pointer(to=iov_ptr).unsafe_bitcast[Int]()[]), 1,
         UInt64(Int(control.unsafe_ptr())), UInt64(_CMSG_SPACE_INT), 0,
     )
-    var rc = _recvmsg(c_int(channel), Pointer(to=hdr), MSG_DONTWAIT)
+    # Close-on-exec (SPEC G16): a handed-over connection is a client's like
+    # any other. Born that way on Linux; macOS has no MSG_CMSG_CLOEXEC and
+    # marks it right after, below.
+    var recv_flags = MSG_DONTWAIT
+    comptime if not CompilationTarget.is_macos():
+        recv_flags = MSG_DONTWAIT | c_int(_MSG_CMSG_CLOEXEC_LINUX)
+    var rc = _recvmsg(c_int(channel), Pointer(to=hdr), recv_flags)
     var got = -1
     if Int(rc) > 0:
         for i in range(Int(rc)):
@@ -164,6 +173,10 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
                 kind = Int(_load_u32(control, 12))
             if level == _SOL_SOCKET and kind == _SCM_RIGHTS:
                 got = Int(_load_u32(control, _CMSG_HDR))
+    comptime if CompilationTarget.is_macos():
+        if got >= 0:
+            # F_SETFD fails only on EBADF, which a received descriptor is not.
+            _ = _fcntl(c_int(got), c_int(F_SETFD), c_int(FD_CLOEXEC))
     _ = iov
     _ = data
     _ = control

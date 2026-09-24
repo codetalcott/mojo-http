@@ -1138,6 +1138,13 @@ def parse_request_headers(
         # block, and the one member of the family left open.
         if last_te != "chunked":
             raise RequestParseError(InvalidHTTPRequestError())
+        # And ONLY last: a sender MUST NOT apply `chunked` more than once
+        # (RFC 9112 §6.1). The loop decodes one layer, so `chunked, chunked`
+        # reached the application as a still-chunked body described by a
+        # length -- the contradictory pair SPEC L25 removes.
+        for i in range(len(te_parts) - 1):
+            if String(String(te_parts[i]).strip()) == "chunked":
+                raise RequestParseError(InvalidHTTPRequestError())
 
     # The two versions this server speaks are literals; formatting an Int
     # into a String on every request was the only other way to spell them.

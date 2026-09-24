@@ -829,6 +829,60 @@ def check_root_has_no_build_system():
         fail(problem)
 
 
+def _tracked_texts():
+    """Every tracked file that decodes as UTF-8, as `(path, text)` pairs.
+
+    Binaries and anything else that does not decode are skipped: a conflict
+    marker is a line of text, and git writes it only into files it merged
+    as text.
+    """
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"],
+                       capture_output=True, check=True)
+    out = []
+    for name in r.stdout.decode().split("\0"):
+        if not name:
+            continue
+        try:
+            out.append((name, (REPO / name).read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return out
+
+
+def conflict_markers(files):
+    """The merge-conflict markers in `(path, text)` pairs, one problem a file.
+
+    A pure function, so the selftest can hand it a file with a block added.
+    Only the two LABELLED markers are matched -- a line opening `<<<<<<< `
+    or `>>>>>>> ` -- because a conflict always has both, and `=======` alone
+    is markdown's setext underline.
+    """
+    problems = []
+    for path, text in files:
+        for n, line in enumerate(text.splitlines(), 1):
+            if line.startswith(("<<<<<<< ", ">>>>>>> ")):
+                problems.append(
+                    f"{path}:{n} carries a merge-conflict marker "
+                    f"(`{line[:40]}`). Resolve the conflict and delete the "
+                    "markers: every other check reads the file as though "
+                    "they were prose"
+                )
+                break
+    return problems
+
+
+def check_conflict_markers():
+    """No tracked text file carries a merge-conflict marker.
+
+    README.md carried `<<<<<<< HEAD` blocks on main for four days
+    (8acc441, 2026-09-19, until a later merge resolved them), and nothing
+    failed: each check that reads README found the first of the two
+    conflicting figures and was satisfied by it.
+    """
+    for problem in conflict_markers(_tracked_texts()):
+        fail(problem)
+
+
 def check_test_counts():
     """README's "What's in the box" table quotes a test count per package and a
     total, and the commands block quotes the total again; all of them are
@@ -2353,6 +2407,25 @@ def selftest():
         good = bool(root_build_system(text)) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}")
         ok &= good
+    # Committed conflict markers: a labelled marker at either end fires, and
+    # prose quoting one mid-line or markdown's setext underline (a line of
+    # `=`) does not. The live tree is main's to check, where a real conflict
+    # is reported by file and line rather than as a selftest failure.
+    readme = (REPO / "README.md").read_text()
+    marker_cases = [
+        ("(control: a marker's text mid-line, as prose quotes it)",
+         [("docs/x.md", "git writes `<<<<<<< HEAD` at the top of a conflict\n")], False),
+        ("an <<<<<<< HEAD block left in README.md",
+         [("README.md", readme + "\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n")], True),
+        ("a lone >>>>>>> branch line",
+         [("docs/x.md", "text\n>>>>>>> feature-branch\nmore\n")], True),
+        ("(control: a setext underline of =======)",
+         [("docs/x.md", "Title\n=======\n\nbody\n")], False),
+    ]
+    for label, files, must_fire in marker_cases:
+        good = bool(conflict_markers(files)) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}")
+        ok &= good
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -2387,6 +2460,7 @@ def main():
     check_pyproject_parses_for_consumers()
     check_no_jobs_in_substitution()
     check_root_has_no_build_system()
+    check_conflict_markers()
     check_test_counts()
     check_backend_seam()
     check_spec_sheet()

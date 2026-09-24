@@ -1355,6 +1355,26 @@ echo "smoke-half-close OK"
 python3 scripts/emit.py --covers A12 --task smoke-half-close
 """
 
+# RFC 9112 §9.6. The server refuses an oversized body while the client is
+# still uploading it, and closing at once left the rest unread -- which the
+# kernel answers with RST, so a client that writes its whole body before it
+# reads (http.client, urllib, requests) got BrokenPipeError instead of the
+# 413. Found by a Flask application compared against Werkzeug. The probe's
+# second and third arguments default to the hello server's cap (4 MB) and
+# the linger (5 s).
+[tool.poe.tasks.smoke-early-413]
+help = "A 413 sent mid-upload must reach a client that writes its whole body first"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > e413.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f e413.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
+  || { echo '=== e413.log ==='; cat e413.log; exit 1; }
+python3 scripts/early_413_probe.py 8080 || { echo '=== e413.log ==='; cat e413.log; exit 1; }
+echo "smoke-early-413 OK"
+python3 scripts/emit.py --covers A20 --task smoke-early-413
+"""
+
 [tool.poe.tasks.smoke-large-request]
 help = "A request bigger than one read must be answered, not stalled"
 shell = """
@@ -1472,6 +1492,15 @@ pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
   || { echo '=== counter.log ==='; cat counter.log; exit 1; }
+# A HEAD to the stream is its head (SPEC L27): the route is matched by path
+# alone, and the loop used to hold a HEAD as the stream a GET opens, writing
+# every frame and heartbeat after the head where a keep-alive client reads
+# its next response. The next request on the connection must be answered,
+# and the HEAD must leave no subscriber behind.
+python3 scripts/head_probe.py --port 8080 --hold /events --then /health \
+  || { echo 'a HEAD to /events did not end at its head (L27)'; cat counter.log; exit 1; }
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || { echo "a HEAD to /events left a subscriber (subscribers=$subs)"; exit 1; }
 curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > sse.txt &
 sse=$!
 sleep 2
@@ -1605,6 +1634,7 @@ kill $pid $worker_pids 2>/dev/null
 rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt counter2.log
 echo "smoke-counter OK"
 python3 scripts/emit.py --covers I9 --task smoke-counter
+python3 scripts/emit.py --covers L27 --task smoke-counter
 """
 
 # Periodic work with a real budget does not belong on the event loop, and
@@ -2101,6 +2131,16 @@ code=$(curl -s -o /dev/null -w '%{http_code}' 'http://localhost:8080/events?chan
 subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "0" ] || fail "a refused subscribe still registered (subscribers=$subs)"
 
+# A HEAD to the hold is its head (SPEC L27). The view approves a hold for any
+# method, and the loop used to subscribe the slot and write every event and
+# heartbeat after the head, where a keep-alive client reads its next
+# response. The next request on the connection must be answered, and the
+# HEAD must leave no subscription behind.
+python3 scripts/head_probe.py --port 8080 --hold '/events?channel=news&token=letmein' --then /health \
+  || fail 'a HEAD to a hold did not end at its head (L27)'
+subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || fail "a HEAD to a hold left a subscription (subscribers=$subs)"
+
 # Two subscribers on different channels: A hears news, B must not.
 curl -sN --max-time 8 -D "$out/hdr_a" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/sse_a" &
 sse_a=$!
@@ -2487,6 +2527,7 @@ rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log rt6.doctor
 echo "smoke-django-realtime OK"
 python3 scripts/emit.py --covers F6 --task smoke-django-realtime
 python3 scripts/emit.py --covers I11 --task smoke-django-realtime
+python3 scripts/emit.py --covers L27 --task smoke-django-realtime
 """
 
 # The WebSocket half of the realtime demo. Kept a separate task from
@@ -2822,6 +2863,21 @@ with ThreadPoolExecutor(16) as ex:
     print(len(set(ex.map(one, range(64)))))
 PY
 }
+# The pids answering, counted until they number $2, at most ten times (about
+# twelve seconds: each count is 64 requests). One worker answering says
+# nothing about the other's readiness -- accept sharing skips a sibling that
+# has not yet announced itself or is inside a long pass -- so counting once,
+# the moment the FIRST worker answered, saw one pid in 11 of 60 failed CI
+# runs. Bounded, so a worker that never serves still fails, with its count.
+wait_for_pids() {  # $1 = port, $2 = the count wanted; sets $seen
+  seen=0
+  for i in $(seq 1 10); do
+    seen=$(distinct_pids "$1")
+    [ "$seen" -eq "$2" ] && return 0
+    sleep 0.25
+  done
+  return 1
+}
 
 # 1. The doctor reports the mode from both spellings.
 "$srv" --doctor $SPEC --workers 2 --spawn-workers > sw-doctor.json 2>/dev/null || fail "the doctor refused --spawn-workers"
@@ -2839,8 +2895,9 @@ spid=$!
 for i in $(seq 1 100); do curl -sf -o /dev/null http://127.0.0.1:8481/ && break; sleep 0.1; done
 curl -sf http://127.0.0.1:8481/ | grep -q "bare wsgi app" || fail "a spawned server did not answer /"
 grep -q "workers=2) spawn" sw-spawn.log || fail "the banner does not say spawn"
-n=$(distinct_pids 8481)
-[ "$n" -eq 2 ] || fail "expected 2 worker pids answering /pid, saw $n"
+# Both images must have started before the pids are counted: one banner each.
+for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 2 ] && break; sleep 0.1; done
+wait_for_pids 8481 2 || fail "expected 2 worker pids answering /pid, saw $seen"
 echo "smoke-spawn-workers: two exec'd workers serve"
 
 # 3. A killed worker is replaced by a fresh exec image that serves. The
@@ -2850,9 +2907,7 @@ kill -KILL "$victim"
 for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 3 ] && break; sleep 0.1; done
 grep -q "respawned worker" sw-spawn.log || fail "the killed worker was not respawned"
 [ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 3 ] || fail "the respawned worker never printed a banner: not a fresh image?"
-sleep 0.3
-n=$(distinct_pids 8481)
-[ "$n" -eq 2 ] || fail "after a respawn expected 2 worker pids, saw $n"
+wait_for_pids 8481 2 || fail "after a respawn expected 2 worker pids, saw $seen"
 echo "smoke-spawn-workers: a killed worker is re-exec'd"
 
 # 4. The platform-runtime view. On macOS urllib's proxy lookup enters
@@ -3719,19 +3774,36 @@ python3 scripts/emit.py --covers E20 --task smoke-app-threads
 help = "A child process a view starts publishes onto the bus without crashing, numbered when handed the page (SPEC I23)"
 deps = ["build-serve"]
 shell = """
-# #322: the bus descriptors survive exec and the event-id page did not, so a
-# child that inherited M0_SHARED_ID_ADDR took an id at an address in its
-# parent's memory -- SIGSEGV on Linux, and on macOS eight bytes of its own
-# memory incremented and published as an event id. The probe serves
+# #322: a child that inherited M0_SHARED_ID_ADDR took an id at an address in
+# its parent's memory -- SIGSEGV on Linux, and on macOS eight bytes of its
+# own memory incremented and published as an event id. The probe serves
 # bareapp.childpub in three shapes; each non-handoff child must exit 0 and
-# publish unnumbered, and a child given m0pub.child_fds() must number from
-# the shared counter. It needs a libm0core a plain Python child can load.
+# publish unnumbered, a child given m0pub.child_fds() must number from the
+# shared counter, and a child handed no bus -- the bus is close-on-exec
+# (G16), so pass_fds is the only way it reaches one -- must write nothing,
+# even into its own file or socket on a bus fd's number. It needs a
+# libm0core a plain Python child can load.
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 [ -f "packages/m0-core/libm0core.$ext" ] || uv run poe build-ffi || exit 1
 out=$(python3 scripts/child_publish_probe.py --port 8671 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 echo "smoke-child-publish OK"
 python3 scripts/emit.py --covers I23 --task smoke-child-publish
+"""
+
+[tool.poe.tasks.smoke-exec-inherit]
+help = "A child process the application starts inherits no connection, listener or channel of the server's (SPEC G16)"
+deps = ["build-serve"]
+shell = """
+# Every shape the server's descriptors come from: the pool, the loop, forked
+# and spawned workers, the realtime bus, the executor. The child is run with
+# close_fds=False and lists what it holds above fd 2; the server started
+# with nothing there, so each is the server's, and a connection the server
+# closes would stay open in it.
+out=$(python3 scripts/exec_inherit_probe.py --port 8681 2>&1) || { echo "$out"; exit 1; }
+echo "$out"
+echo "smoke-exec-inherit OK"
+python3 scripts/emit.py --covers G16 --task smoke-exec-inherit
 """
 
 [tool.poe.tasks.smoke-blocking-threads]
@@ -4353,6 +4425,13 @@ if python3 -c 'import fasthtml' 2>/dev/null; then
   curl -s --max-time 8 $B3/live/ | grep -q 'hello from feed' \
     || fail 'a mid-stream disconnect on /live broke /live itself'
 
+  # A socket the SERVER ends on the second executor's mount (one message
+  # over the 64 KB outbox): its disconnect must still reach that executor,
+  # routed by the lane the socket's begin frame recorded -- the end erased
+  # the channel name the lane is otherwise read from (SPEC L21).
+  M0_PORT=8110 python3 apps/hybrid_mix/feed/ws_end_probe.py /live \
+    || fail 'a socket the server ended on /live never told its application'
+
   # ASGI's `path` includes root_path (the framework strips it), which is the
   # opposite of the WSGI half asserted above -- one seam, two conventions.
   live=$(curl -s --max-time 8 $B3/app/where)
@@ -4701,6 +4780,22 @@ n=$(curl -sN --max-time 3 $B/sse | grep -c 'tick')
 grep -q 'Exception in callback' fasthtml.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
 curl -s --fail $B/ > /dev/null || fail 'server died after the EventStream client vanished'
 
+# A BackgroundTask runs AFTER its response: the response is answered at its
+# final body, not when the work is done (L22).
+t=$(curl -s -o /dev/null -w '%{time_total}' --max-time 5 $B/bg)
+awk -v t="$t" 'BEGIN { exit !(t < 1.0) }' || fail "/bg took ${t}s: the response waited for its background task"
+curl -s $B/bg-log | grep -q 'empty' || fail 'the background task finished before its response was read'
+sleep 2.5
+curl -s $B/bg-log | grep -q 'done' || fail 'the background task never ran'
+# The application's own error response, and the traceback in the log (L23).
+boom=$(mktemp)
+code=$(curl -s -o "$boom" -w '%{http_code}' $B/boom)
+[ "$code" = "500" ] || fail "/boom answered $code, want 500"
+grep -q 'Internal Server Error' "$boom" || fail "/boom's body was not the application's own 500"
+rm -f "$boom"
+grep -q 'fasthtml-demo kaboom' fasthtml.log || fail "/boom's error never reached the log"
+grep -q 'Traceback (most recent call last)' fasthtml.log || fail "/boom's error was logged without its traceback"
+
 # And app.ws: FastHTML's WebSocket handler echoes through the executor.
 M0_PORT=8097 python3 apps/fasthtml_demo/ws_probe.py || fail 'the FastHTML WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
@@ -4711,6 +4806,8 @@ wait $pid 2>/dev/null; rc=$?
 rm -f fasthtml.log
 echo "smoke-fasthtml OK"
 python3 scripts/emit.py --covers L11 --task smoke-fasthtml
+python3 scripts/emit.py --covers L22 --task smoke-fasthtml
+python3 scripts/emit.py --covers L23 --task smoke-fasthtml
 """
 
 # FastAPI, the second Starlette-family row beside smoke-fasthtml (L11).
@@ -4758,11 +4855,23 @@ n=$(curl -sN --max-time 3 $B/stream | grep -c 'tick')
 # traceback per streamed response in the log with the body intact, which is
 # why this line exists and the tick count above is not enough.
 grep -q 'Exception in callback' fastapi.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
+# The client walking away is not an application error: nothing may be
+# logged as one (checked here, before the chat phases log a real one).
+grep -q 'raised' fastapi.log && fail 'a vanished streaming client was logged as an application error'
 curl -s --fail $B/ > /dev/null || fail 'server died after the streaming client vanished'
 
 # And the WebSocket: echo, then FastAPI's own close(1000) ending in a FIN.
 M0_PORT=8099 python3 apps/fastapi_demo/ws_probe.py || fail 'the FastAPI WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
+
+# FastAPI's documented chat room: a departed client's own cleanup runs and
+# can tell the room (L20, L21); a recycled slot never receives another
+# client's messages (L20); a raising socket closes with 1011 (L24) and its
+# traceback reaches the log (L23).
+M0_PORT=8099 python3 apps/fastapi_demo/chat_probe.py || fail 'the FastAPI chat probe failed'
+grep -q 'fastapi-demo ws kaboom' fastapi.log || fail "the raising socket's error never reached the log"
+grep -q 'Traceback (most recent call last)' fastapi.log || fail 'an application error was logged without its traceback'
+curl -s --fail $B/ > /dev/null || fail 'server died after the chat probe'
 
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
@@ -4770,6 +4879,8 @@ wait $pid 2>/dev/null; rc=$?
 rm -f fastapi.log
 echo "smoke-fastapi OK"
 python3 scripts/emit.py --covers L19 --task smoke-fastapi
+python3 scripts/emit.py --covers L21 --task smoke-fastapi
+python3 scripts/emit.py --covers L24 --task smoke-fastapi
 """
 
 # The documentation site: README, QUICKSTART, CHANGELOG, PROVENANCE and
@@ -5125,6 +5236,15 @@ echo "$env" | grep -qF "CONTENT_TYPE='text/x-test'" || fail 'CONTENT_TYPE missin
 echo "$env" | grep -qF "CONTENT_LENGTH='2'" || fail 'CONTENT_LENGTH missing or prefixed'
 echo "$env" | grep -qF "HTTP_X_CUSTOM='v'" || fail 'ordinary header lost its HTTP_ prefix'
 echo "$env" | grep -q '^HTTP_CONTENT_' && fail 'HTTP_CONTENT_* must not appear in the environ'
+# The environ as the client sent it (L25): a body the loop de-chunked has its
+# CONTENT_LENGTH and no HTTP_TRANSFER_ENCODING, the chunking being undone,
+# and a GET has no CONTENT_LENGTH at all -- PEP 3333 lets it be absent, and
+# a `0` there was the server's, not the client's.
+env=$(printf 'chunked' | curl -s -H 'Transfer-Encoding: chunked' --data-binary @- $B/environ)
+echo "$env" | grep -qF "CONTENT_LENGTH='7'" || fail "a de-chunked request's environ lacks its CONTENT_LENGTH (L25): $env"
+echo "$env" | grep -q '^HTTP_TRANSFER_ENCODING' && fail 'a de-chunked request still carries HTTP_TRANSFER_ENCODING (L25)'
+curl -s $B/environ | grep -q '^CONTENT_LENGTH' && fail "a GET's environ carries a CONTENT_LENGTH the client never sent (L25)"
+curl -s $B/environ | grep -q '^HTTP_CONNECTION' && fail "a GET's environ carries an HTTP_CONNECTION curl never sent (L25)"
 
 # --- response header injection -------------------------------------------------
 # `write_latin1_to` emits `name: value CRLF` with no inspection, so a value an
@@ -5142,6 +5262,15 @@ for bad in X-Injected X-Nul X-Evil; do
   echo "$hdrs" | grep -qi "^$bad" && fail "response splitting: $bad reached the wire"
 done
 echo "$hdrs" | grep -qi '^HTTP/1.1 200' || fail 'the injecting route did not answer 200'
+
+# --- the response head as the application sent it (A21, K12) -----------------
+# Each route sends exactly the headers the probe names, so anything else on
+# the wire is the server's: a Content-Type nobody set, a HEAD's length
+# rewritten to 0, a length on a 204 or 304. Every case is followed by a request
+# on the same connection, so a body that leaked past a head misparses it. In
+# the UNVALIDATED pass because wsgiref.validate refuses a 303 with no
+# Content-Type.
+python3 scripts/head_probe.py --port 8086 --app wsgi || fail 'the response head is not the one the application sent (K12, A21)'
 
 # --- wsgi.input ---------------------------------------------------------------
 got=$(printf 'hello' | curl -s --data-binary @- $B/input/read)
@@ -5248,6 +5377,9 @@ python3 scripts/emit.py --covers K4 --task smoke-wsgi
 python3 scripts/emit.py --covers K5 --task smoke-wsgi
 python3 scripts/emit.py --covers K6 --task smoke-wsgi
 python3 scripts/emit.py --covers K7 --task smoke-wsgi
+python3 scripts/emit.py --covers K12 --task smoke-wsgi
+python3 scripts/emit.py --covers A21 --task smoke-wsgi
+python3 scripts/emit.py --covers L25 --task smoke-wsgi
 """
 
 # Streamed WSGI bodies. A generator the application did not size streams
@@ -5403,6 +5535,23 @@ ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
 [ "$ms" -lt 2000 ] || fail "after five abandoned streams a fast request took ${ms}ms: the threads did not return to the pool"
 echo "five abandoned never-ending streams; fast request answered in ${ms}ms"
 
+# --- a HEAD to a never-ending stream (K13) ---------------------------------------
+# Answered at the body's first item, with the headers a GET's stream carries
+# and no length, and the body closed, so its pool thread comes straight back.
+# HEAD used to take the buffered path, which joins the whole iterable -- for
+# this one, never -- so the request hung and held its thread until shutdown.
+# The probe proves the head and a whole connection after it; five HEADs on
+# the four-thread pool, then a fast request, prove the threads come back.
+python3 scripts/head_probe.py --port 8081 --hold /stream-forever --then / \
+  || fail 'a HEAD to a never-ending WSGI stream is not its head alone (K13)'
+for i in 1 2 3 4 5; do
+  code=$(curl -s -I -o /dev/null -w '%{http_code}' --max-time 5 $B/stream-forever)
+  [ "$code" = "200" ] || fail "HEAD /stream-forever number $i answered '$code' (K13)"
+done
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 10 $B/)
+ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
+[ "$ms" -lt 2000 ] || fail "after five HEADs to a never-ending stream a fast request took ${ms}ms: the HEADs held their threads (K13)"
+
 # --- shutdown -------------------------------------------------------------------
 # SIGTERM with a live stream: the farewell reaches the producer as a
 # disconnect, it comes back, and the process exits promptly -- no 5 s
@@ -5503,6 +5652,7 @@ echo "smoke-wsgi-stream OK"
 python3 scripts/emit.py --covers A9 --task smoke-wsgi-stream
 python3 scripts/emit.py --covers D3 --task smoke-wsgi-stream
 python3 scripts/emit.py --covers K9 --task smoke-wsgi-stream
+python3 scripts/emit.py --covers K13 --task smoke-wsgi-stream
 """
 
 # The Phase-2 benchmark gate (docs/WSGI_VS_ASGI.md section 8): the asyncio
@@ -5748,13 +5898,20 @@ for mode in $modes; do
     # recycled-slot shape the streamed half already covers, with a held 101
     # on the successor instead of another stream.
     for probe in scripts/chunked_keepalive.py apps/asgi_bare/ws_probe.py; do
-      if ! M0_PORT=$mport python3 $probe > /dev/null 2>&1; then
+      # The FAILING run's own output, kept: each probe names the phase it
+      # was proving when it failed, and that line is the whole diagnosis. A
+      # re-run printed in its place (what this did until 2026-09-23) is
+      # usually green -- the failure is a timing one -- and a green re-run
+      # proves nothing; one failure in round 1 went unclassified that way.
+      out=$(mktemp)
+      if ! M0_PORT=$mport python3 $probe > "$out" 2>&1; then
         echo "stress-asgi: FAILED in $mode mode on round $i of $iters, in $probe"
+        echo "=== the failing run's output ==="; cat "$out"; rm -f "$out"
         echo "stress-asgi: rerun that half alone with M0_STRESS_MODES=$mode uv run poe stress-asgi"
-        M0_PORT=$mport python3 $probe
         echo "=== $log ==="; cat $log
         exit 1
       fi
+      rm -f "$out"
     done
     i=$((i + 1))
   done
@@ -5857,9 +6014,15 @@ docker start "$c" > /dev/null 2>&1 \
 # The tree goes in by tar (the container has no bind mount, so it can outlive
 # any one checkout), and the sync script rebuilds what the probes serve: the
 # packages, the binary, and the m0pub core lib the realtime app loads.
+# packaging/ goes in too, because linux_sync.sh re-tars it and the stamp
+# covers it: any recipe serving Python from the container's tree (the
+# realtime tasks copy packaging/'s m0pub) found an August copy there until it
+# was moved in by hand. Its macOS build output (the wheel's _bin, _lib and
+# licenses) stays behind. bench_linux_conclusions.py sends the same set.
 tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/*' --exclude='.claude' \
-    -cf - packages scripts apps pyproject.toml uv.lock bench \
-  | docker exec -i "$c" bash -c 'mkdir -p /src && cd /src && rm -rf packages scripts apps bench && tar -xf -' || exit 1
+    --exclude='packaging/*/src/*/_bin' --exclude='packaging/*/src/*/_lib' --exclude='packaging/*/licenses' --exclude='packaging/*/src/*/licenses' --exclude='__pycache__' \
+    -cf - packages packaging scripts apps pyproject.toml uv.lock bench \
+  | docker exec -i "$c" bash -c 'mkdir -p /src && cd /src && rm -rf packages packaging scripts apps bench && tar -xf -' || exit 1
 # /src is cleared first because a tar carries no deletion: a file the Mac
 # moved or removed would otherwise linger there, and in /work after the
 # sync, and change the stamp (measured 2026-09-12, hold.mojo's move into
@@ -5969,6 +6132,18 @@ echo "$scope" | grep -qF '"query_string": "a=1&b=%20x"' || fail "query_string wr
 echo "$scope" | grep -qF '["x-custom", "yes"]' || fail "header pair missing: $scope"
 echo "$scope" | grep -qF '"asgi_version": "3.0"' || fail "asgi version missing: $scope"
 
+# The request headers as the client sent them (L25). A body the loop
+# de-chunked is described by its length, and the client's transfer-encoding
+# went with the chunking: both at once is a contradictory pair an
+# application proxying the request would forward. A bodiless request
+# carries no invented content-length.
+scope=$(printf 'chunked' | curl -s -H 'Transfer-Encoding: chunked' --data-binary @- "$B/scope")
+echo "$scope" | grep -qF '["content-length", "7"]' || fail "a de-chunked request's scope lacks its length (L25): $scope"
+echo "$scope" | grep -qiF 'transfer-encoding' && fail "a de-chunked request's scope still says transfer-encoding (L25): $scope"
+scope=$(curl -s "$B/scope")
+echo "$scope" | grep -qF '"content-length"' && fail "a GET's scope carries a content-length the client never sent (L25): $scope"
+echo "$scope" | grep -qF '"connection"' && fail "a GET's scope carries a connection header curl never sent (L25): $scope"
+
 # The request body arrives as ONE http.request message, byte for byte.
 python3 - <<'PYEOF'
 import http.client, sys
@@ -6003,6 +6178,13 @@ short=$(awk '$1 != 237568' "$out/sizes" | wc -l | tr -d ' ')
 [ "$short" = "0" ] || fail "$short of 32 concurrent streams arrived short or not at all: $(sort "$out/sizes" | uniq -c | tr '\n' ' ')"
 # And the server is still whole afterwards.
 curl -s --max-time 5 $B/ | grep -q 'hello from asgi_bare' || fail 'the server did not answer after 32 concurrent streams'
+
+# The response head as the application sent it (A21, K12), and a HEAD to a
+# streaming route answered with its head alone (L27). Each case is followed by
+# a request on the same connection, so a body that leaked past a head
+# misparses it: the executor used to write all 10,000 bytes of HEAD /stream
+# after the head.
+python3 scripts/head_probe.py --port 8088 --app asgi || fail 'the response head is not the one the application sent (K12, A21, L27)'
 
 # Lifespan ran at startup and its state reached the request scope.
 curl -s $B/lifespan | grep -qF '"started": true' || fail 'lifespan startup did not run'
@@ -6165,6 +6347,23 @@ python3 scripts/emit.py asgi.drain_inflight_s "$elapsed" --unit s --limit 3.0 --
 [ -f "$out/drain2.marker" ] \
   || fail 'lifespan shutdown did not run after the answered-inside-the-drain phase'
 
+# Background work that never ends, after its response, must not hold the
+# shutdown: past the drain's grace it is cancelled, and the lifespan shutdown
+# behind it runs. The post-pill gather used to bound sockets only, so it
+# waited on this task until the 5 s thread join gave up, and the process
+# left without shutting the application down.
+M0_SHUTDOWN_MARKER="$out/bgforever.marker" "$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'restart for the background-forever phase did not answer'
+[ "$(curl -s --max-time 5 $B/background-forever)" = "ok" ] \
+  || fail 'the background-forever route did not answer ok'
+kill -TERM $pid
+wait_exit 'background-forever'
+[ "$rc" = "0" ] || fail "SIGTERM with endless background work: exit $rc, want 0"
+[ -f "$out/bgforever.marker" ] \
+  || fail 'lifespan shutdown did not run: an endless background task held the drain'
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.
@@ -6182,6 +6381,18 @@ grep -qi '^x-thread' "$out/hdr" || fail 'no x-thread: the explicit pool is not s
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/stream-forever)
 [ "$code" = "500" ] || fail "buffered-pool infinite stream expected the watchdog's 500, got $code"
 curl -s --fail $B/ > /dev/null || fail 'server died after the buffered watchdog fired'
+# The same heads through the buffered bridge (A21, K12). It joins a stream
+# before answering, so the executor's streaming HEAD (L27) has nothing to
+# leak here.
+python3 scripts/head_probe.py --port 8088 --app asgi --no-stream-case || fail 'the buffered bridge did not send the head the application sent (K12, A21)'
+# The buffered bridge builds its scope from the WSGI environ, not from the
+# request's headers directly: the same two cases through that path (L25).
+scope=$(printf 'chunked' | curl -s -H 'Transfer-Encoding: chunked' --data-binary @- "$B/scope")
+echo "$scope" | grep -qF '["content-length", "7"]' || fail "buffered: a de-chunked request's scope lacks its length (L25): $scope"
+echo "$scope" | grep -qiF 'transfer-encoding' && fail "buffered: a de-chunked request's scope still says transfer-encoding (L25): $scope"
+scope=$(curl -s "$B/scope")
+echo "$scope" | grep -qF '"content-length"' && fail "buffered: a GET's scope carries a content-length the client never sent (L25): $scope"
+echo "$scope" | grep -qF '"connection"' && fail "buffered: a GET's scope carries a connection header curl never sent (L25): $scope"
 kill -TERM $pid
 wait $pid 2>/dev/null
 
@@ -6220,6 +6431,24 @@ echo 'application = 42' > "$out/notcallable.py"
 grep -q 'app(environ, start_response)' asgi.log || fail 'the error does not name the WSGI signature'
 grep -q 'app(scope, receive, send)' asgi.log || fail 'the error does not name the ASGI signature'
 grep -q 'tried notcallable:application' asgi.log || fail 'the error does not list the specs tried'
+
+# Work scheduled at import (L26): FastHTML's first official example calls
+# asyncio.create_task at module level, and m0serve imports an application
+# outside any running loop, as uvicorn does without --reload. Refused by
+# name with the fix, exit 1, the traceback kept, nothing served -- and the
+# same from --doctor, and through discovery, which must not hide it.
+"$srv" import_task:app --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "import-time asyncio work: exit $rc, want 1 (L26)"
+grep -q 'scheduled asyncio work at import' asgi.log || fail 'import-time asyncio work is not refused by name (L26)'
+grep -q 'lifespan' asgi.log || fail 'the import-time refusal does not name the fix (L26)'
+grep -q 'Traceback (most recent call last)' asgi.log || fail 'the import-time refusal lost the traceback (L26)'
+grep -q 'Ready to accept' asgi.log && fail 'the refused application printed a ready banner (L26)'
+"$srv" --doctor import_task:app --app-dir apps/asgi_bare > "$out/doctor.json" 2>/dev/null; rc=$?
+[ "$rc" = "1" ] || fail "--doctor on import-time asyncio work: exit $rc, want 1 (L26)"
+grep -q 'scheduled asyncio work at import' "$out/doctor.json" || fail 'the doctor does not name the import-time refusal (L26)'
+"$srv" import_task --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "import-time asyncio work, bare MODULE: exit $rc, want 1 (L26)"
+grep -q 'scheduled asyncio work at import' asgi.log || fail 'discovery hid the import-time refusal (L26)'
 
 # ASGI and --realtime: refused before the bind when forced, at load when
 # detected — same sentence both ways.
@@ -6266,6 +6495,12 @@ python3 scripts/emit.py --covers L6 --task smoke-asgi
 python3 scripts/emit.py --covers L8 --task smoke-asgi
 python3 scripts/emit.py --covers L15 --task smoke-asgi
 python3 scripts/emit.py --covers M3 --task smoke-asgi
+python3 scripts/emit.py --covers K12 --task smoke-asgi
+python3 scripts/emit.py --covers D11 --task smoke-asgi
+python3 scripts/emit.py --covers A21 --task smoke-asgi
+python3 scripts/emit.py --covers L27 --task smoke-asgi
+python3 scripts/emit.py --covers L25 --task smoke-asgi
+python3 scripts/emit.py --covers L26 --task smoke-asgi
 """
 
 # The keep-alive request cap (`max_keepalive_requests`, 100) closes a
@@ -8194,6 +8429,15 @@ trap 'kill $pid 2>/dev/null' EXIT
 
 fail() { echo "$1"; echo '=== notes.log ==='; cat notes.log; exit 1; }
 
+# A 1xx, 204 or 304 carries no Content-Length or Content-Type its handler did
+# not set (A21; RFC 9110 §8.6): the constructor used to invent both, a length
+# of 0 and application/octet-stream, on every bodiless answer.
+no_entity_headers() {
+  if grep -qi -E '^content-(length|type):' headers.txt; then
+    fail "$1 carries an entity header nobody set: $(grep -i '^content-' headers.txt | tr -d '\\r' | tr '\\n' ' ')"
+  fi
+}
+
 curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8091/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
 
@@ -8212,8 +8456,9 @@ etag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\\r\\n')
 [ -n "$etag" ] || fail 'GET /notes/:id answered no ETag'
 
 # 304: same resource, If-None-Match, no body.
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8091/notes/1)
 [ "$code" = "304" ] || fail "expected 304 for a matching If-None-Match, got $code"
+no_entity_headers 'the 304 for a matching If-None-Match'
 
 # Content negotiation: same note, HTML representation on request — and the
 # response says it varies, so a shared cache cannot replay HTML to a JSON
@@ -8244,8 +8489,10 @@ code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
 [ "$code" = "200" ] || fail "a 405 must leave the note intact, but GET answered $code"
 
 # CORS: preflight and ordinary responses both carry the headers.
-curl -s -D headers.txt -X OPTIONS http://localhost:8091/notes -o /dev/null
+code=$(curl -s -D headers.txt -w '%{http_code}' -X OPTIONS http://localhost:8091/notes -o /dev/null)
 grep -qi '^access-control-allow-origin' headers.txt || fail 'preflight carried no CORS headers'
+[ "$code" = "204" ] || fail "expected the preflight to answer 204, got $code"
+no_entity_headers 'the OPTIONS preflight, the Views table 204,'
 
 # Validation: a body without a title is a 400 problem, not a 500.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8091/notes -d '{"nope":1}')
@@ -8254,8 +8501,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8091/note
 # Update and delete round out the CRUD.
 curl -s -X PUT http://localhost:8091/notes/1 -d '{"title":"Renamed","body":"x"}' \
   | grep -q '"title":"Renamed"' || fail 'PUT did not update the note'
-code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -X DELETE http://localhost:8091/notes/1)
 [ "$code" = "204" ] || fail "expected 204 from delete, got $code"
+no_entity_headers 'the 204 from delete'
 code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
 
@@ -8266,8 +8514,9 @@ grep -q 'font-family' static.css || fail 'static css did not serve'
 grep -qi '^content-type: text/css' headers.txt || fail 'static css had the wrong content type'
 setag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\r\n')
 [ -n "$setag" ] || fail 'static file served without an ETag'
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8091/static/styles.css)
+code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8091/static/styles.css)
 [ "$code" = "304" ] || fail "static revalidation expected 304, got $code"
+no_entity_headers 'the static mount 304'
 
 # Byte ranges: a bounded range comes back 206 with the right slice and a
 # Content-Range naming the total; a range past the end is 416 with */total.
@@ -8312,6 +8561,7 @@ echo "smoke-notes OK"
 python3 scripts/emit.py --covers G10 --task smoke-notes
 python3 scripts/emit.py --covers J6 --task smoke-notes
 python3 scripts/emit.py --covers G14 --task smoke-notes
+python3 scripts/emit.py --covers A21 --task smoke-notes
 """
 
 # The notes resource as a server-rendered htmx app, gated on WIRE OUTPUT

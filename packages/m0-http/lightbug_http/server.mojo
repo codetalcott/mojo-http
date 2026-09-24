@@ -27,7 +27,9 @@ from lightbug_http.utils.error import CustomError
 from std.time import perf_counter_ns
 from std.utils import Variant
 
-from lightbug_http.http import HTTPRequest, HTTPResponse, encode
+from lightbug_http.http import (
+    HTTPRequest, HTTPResponse, encode, enforce_bodiless_framing, is_bodiless_status,
+)
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.c.platform import PlatformBackend
@@ -833,6 +835,12 @@ def handle_connection[
                 if (provision.keepalive_count + 1) >= config.max_keepalive_requests:
                     provision.should_close = True
 
+            # A 1xx, 204 or 304 carries no content and a 1xx or 204 no
+            # Content-Length (RFC 9110 §8.6) -- the event loop's rule, the
+            # same function (SPEC A21).
+            if is_bodiless_status(response.status_code):
+                enforce_bodiless_framing(response)
+
             # RFC 9110 §9.3.2: HEAD response must not contain a body. An
             # fd-backed body is dropped by closing the file; the headers,
             # Content-Length included, still describe what a GET returns.
@@ -1166,7 +1174,12 @@ struct Server(Movable):
 
 
 def _send_error_response(mut conn: TCPConnection[NetworkType.tcp4], var response: HTTPResponse):
-    """Helper to send an error response, ignoring write errors."""
+    """Helper to send an error response, ignoring write errors.
+
+    Every caller closes the connection after it, so the response says
+    `Connection: close` -- the event loop's `_send_error_to_fd` rule.
+    """
+    response.set_connection_close()
     try:
         _ = conn.write(encode(response^))
     except:

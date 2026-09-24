@@ -1,4 +1,4 @@
-"""Datastar SSE event generation (v1.0.3).
+"""Datastar SSE event generation (v1.0.4).
 
 Functions for generating Server-Sent Events following the Datastar protocol.
 Each function returns a formatted SSE string ready for wire transmission.

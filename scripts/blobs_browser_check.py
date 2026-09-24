@@ -13,7 +13,7 @@ until someone watches it for a while:
    signal creates one. The run clicks the stage and reads the body the
    bundle actually sent: exactly `{"x", "y"}`, at the point clicked. A
    second tab gains the blob.
-3. **A tab comes back after the server restarts.** Datastar 1.0.3's
+3. **A tab comes back after the server restarts.** Datastar 1.0.4's
    default retry gives up on a clean close, which is what a draining
    server produces; the page asks for `retry: 'always'`. The run SIGTERMs
    the server, starts a new one on the same port, and requires both tabs

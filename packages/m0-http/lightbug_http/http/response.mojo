@@ -1,3 +1,4 @@
+from lightbug_http.c.pipe import close_fd
 from lightbug_http.connection import TCPConnection, default_buffer_size
 from lightbug_http.cookie import ResponseCookieJar
 from lightbug_http.header import (
@@ -48,6 +49,54 @@ comptime ResponseParseError = Variant[
     ResponseBodyReadError,
     ChunkedEncodingError,
 ]
+
+
+def is_bodiless_status(code: Int) -> Bool:
+    """Whether a response with this status carries no content: every 1xx, a
+    204 and a 304 (RFC 9110 §6.4.1).
+
+    Args:
+        code: The response's status code.
+
+    Returns:
+        True for 100-199, 204 and 304.
+    """
+    return (code >= 100 and code < 200) or code == 204 or code == 304
+
+
+def enforce_bodiless_framing(mut response: HTTPResponse):
+    """Strip what a 1xx, 204 or 304 may not carry, whoever set it (SPEC A21).
+
+    RFC 9110 §8.6: a server MUST NOT send `Content-Length` in a 1xx or 204
+    response, and in a 304 only as the length the GET would have had -- so
+    a 304 keeps a length its handler set and a 1xx or 204 loses one, and
+    the same for `Transfer-Encoding` (RFC 9112 §6.1). None
+    of the three carries content (§6.4.1), so a body a handler attached
+    anyway is dropped and a file body's descriptor closed: written, its
+    bytes would be where the connection's next response begins. Django's
+    `CommonMiddleware` puts a length on every non-streaming response, a 204
+    included, so this is not hypothetical.
+
+    The event loop applies it to every response with such a status before
+    the head is encoded; any other status is left as it is.
+
+    Args:
+        response: The response about to be written.
+    """
+    var code = response.status_code
+    if not is_bodiless_status(code):
+        return
+    if code != 304:
+        # RFC 9112 §6.1 forbids Transfer-Encoding on a 1xx or 204 as §8.6
+        # forbids a length; a 304 keeps both, each describing the GET.
+        response.headers.pop(HeaderKey.CONTENT_LENGTH)
+        response.headers.pop(HeaderKey.TRANSFER_ENCODING)
+    response.body_raw = Bytes()
+    if response.body_fd >= 0:
+        close_fd(response.body_fd)
+        response.body_fd = -1
+        response.body_fd_offset = 0
+        response.body_fd_len = 0
 
 
 struct StatusCode:
@@ -321,6 +370,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         status_code: Int = 200,
         status_text: String = "OK",
         protocol: String = strHttp11,
+        invent_entity_headers: Bool = True,
     ):
         # Move, not copy: the arguments are almost always temporaries built
         # inline at the call site (`Headers(Header(...))`), and copying the
@@ -330,7 +380,12 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         # again afterwards.
         self.headers = headers^
         self.cookies = cookies^
-        if self.headers.known_index(KH_CONTENT_TYPE) < 0:
+        # The two entity defaults are for a native handler's body: never
+        # for a status that has none (a 1xx, 204 or 304 went out as
+        # `content-length: 0` and octet-stream), and never for a head a
+        # caller relays as sent -- the gateway passes False (SPEC A21, K12).
+        var invent = invent_entity_headers and not is_bodiless_status(status_code)
+        if invent and self.headers.known_index(KH_CONTENT_TYPE) < 0:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
         self.status_text = status_text
@@ -343,7 +398,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.stream_gen = 0
         if self.headers.known_index(KH_CONNECTION) < 0:
             self.set_connection_keep_alive()
-        if self.headers.known_index(KH_CONTENT_LENGTH) < 0:
+        if invent and self.headers.known_index(KH_CONTENT_LENGTH) < 0:
             self.set_content_length(len(body_bytes))
         # No Date header here: encode() adds one at wire-write time if the
         # response still lacks it (and the event loop injects a per-second
@@ -358,11 +413,14 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         status_code: Int = 200,
         status_text: String = "OK",
         protocol: String = strHttp11,
+        invent_entity_headers: Bool = True,
     ):
         """Initialize with an owned body buffer (zero-copy move)."""
         self.headers = headers^
         self.cookies = cookies^
-        if self.headers.known_index(KH_CONTENT_TYPE) < 0:
+        # The defaults' rule is the `body_bytes` constructor's, above.
+        var invent = invent_entity_headers and not is_bodiless_status(status_code)
+        if invent and self.headers.known_index(KH_CONTENT_TYPE) < 0:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
         self.status_code = status_code
         self.status_text = status_text
@@ -376,7 +434,7 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.stream_gen = 0
         if self.headers.known_index(KH_CONNECTION) < 0:
             self.set_connection_keep_alive()
-        if self.headers.known_index(KH_CONTENT_LENGTH) < 0:
+        if invent and self.headers.known_index(KH_CONTENT_LENGTH) < 0:
             self.set_content_length(body_len)
         # No Date header here: encode() adds one at wire-write time if the
         # response still lacks it (and the event loop injects a per-second

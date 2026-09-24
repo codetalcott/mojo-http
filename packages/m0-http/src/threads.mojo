@@ -28,6 +28,7 @@ from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 
 from lightbug_http.c.pipe import create_shutdown_pipe, ShutdownHandle
+from lightbug_http.c.fcntl import dup_cloexec
 
 
 comptime BLK_INDEX = 0
@@ -204,12 +205,12 @@ def dup_fd(fd: Int) raises -> Int:
     Each serving thread registers its own dup of the listener with its own
     kqueue/epoll, and closes its own on shutdown — so one thread's close is
     not every thread's. O_NONBLOCK lives on the description, so the dup is
-    non-blocking if the original was.
+    non-blocking if the original was. Close-on-exec is a DESCRIPTOR flag,
+    which `dup` never copies, so this is `F_DUPFD_CLOEXEC` (SPEC G16): a
+    child the application starts holds neither the listener nor a static
+    file's body.
     """
-    var rc = external_call["dup", c_int, c_int](c_int(fd))
-    if rc < c_int(0):
-        raise Error("dup() failed, errno: ", get_errno())
-    return Int(rc)
+    return dup_cloexec(fd)
 
 
 def read_one_byte_blocking(fd: Int) -> Int:

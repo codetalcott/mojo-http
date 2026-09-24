@@ -30,7 +30,9 @@
 # all -- measured against a remote host whose /src lacked `bench`.
 set -euo pipefail
 cd /src
-tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/m0serve*' --exclude='bin/*.dylib' --exclude='.claude' -cf - packages scripts apps pyproject.toml bench | (cd /work && tar -xf -)
+tar --exclude=.venv --exclude=.git --exclude='packages/*/*.mojoc' --exclude='bin/m0serve*' --exclude='bin/*.dylib' --exclude='.claude' \
+    --exclude='packaging/*/src/*/_bin' --exclude='packaging/*/src/*/_lib' --exclude='packaging/*/licenses' --exclude='packaging/*/src/*/licenses' --exclude='__pycache__' \
+    -cf - packages packaging scripts apps pyproject.toml bench | (cd /work && tar -xf -)
 # A tar copy carries no deletion: a file moved or removed on the Mac
 # survives here and changes the stamp. Measured 2026-09-12: hold.mojo and
 # its test, moved into the fork the day before, failed every container
@@ -42,7 +44,7 @@ _gone=0
 while IFS= read -r f; do
   [ -e "/src/$f" ] && continue
   rm -f "/work/$f" && _gone=$((_gone + 1))
-done < <(cd /work && find packages scripts apps bench -type f \
+done < <(cd /work && find packages packaging scripts apps bench -type f \
            ! -name '*.mojoc' ! -name '*.so' ! -name '*.dylib' ! -name '*.pyc' \
            ! -path '*/__pycache__/*' ! -path '*/.venv/*' ! -path 'bench/results/*' 2> /dev/null)
 [ "$_gone" = 0 ] || echo "=== removed $_gone file(s) /src no longer has ==="

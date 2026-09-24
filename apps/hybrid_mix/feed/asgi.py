@@ -15,6 +15,10 @@ streams to completion rather than just opening them).
 
 import asyncio
 
+# Sockets whose application heard websocket.disconnect after the SERVER ended
+# them (see the websocket branch below); `/told` reports the count.
+_TOLD = []
+
 
 async def application(scope, receive, send):
     if scope["type"] == "lifespan":
@@ -25,9 +29,34 @@ async def application(scope, receive, send):
             elif message["type"] == "lifespan.shutdown":
                 await send({"type": "lifespan.shutdown.complete"})
                 return
+    if scope["type"] == "websocket":
+        # The server ENDS this socket: its one message is just over the
+        # per-socket 64 KB outbox (66 KB, apps/asgi_bare's SPEC I17 sizing).
+        # This mount's executor is the SECOND of two, and the end erased
+        # the channel name the lane is otherwise read from, so the
+        # disconnect reaches this application only if the loop routes it by
+        # the lane the socket's begin frame recorded (SPEC L21).
+        await receive()  # websocket.connect
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.send", "bytes": b"o" * (66 * 1024)})
+        while (await receive())["type"] != "websocket.disconnect":
+            pass
+        _TOLD.append(True)
+        return
     assert scope["type"] == "http"
     path = scope.get("path", "/")
     root = scope.get("root_path", "")
+    if path == root + "/told" or path == "/told":
+        body = str(len(_TOLD)).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+        return
     if path == root + "/stream" or path == "/stream":
         await send(
             {

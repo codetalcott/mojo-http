@@ -9,8 +9,12 @@ Usage:
 
 from std.ffi import c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
+from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import ExternalMutPointer
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
+
+comptime _O_CLOEXEC_LINUX = 0x80000
 
 
 def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
@@ -120,8 +124,15 @@ def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
         Error: If the pipe() syscall fails (e.g. file-descriptor limit reached).
     """
     # Freed below; `unsafe_alloc` is the non-Layout allocator (std.memory.alloc).
+    # Close-on-exec, both ends (SPEC G16): a child the application starts
+    # must not hold the server's shutdown pipe.
     var fds = unsafe_alloc[c_int](count=2)
-    var ret = _pipe(fds)
+    var ret: c_int
+    comptime if CompilationTarget.is_macos():
+        ret = _pipe(fds)
+    else:
+        # pipe2(O_CLOEXEC): born close-on-exec, with no window.
+        ret = external_call["pipe2", c_int](fds, c_int(_O_CLOEXEC_LINUX))
     if ret == -1:
         var errno = get_errno()
         fds.unsafe_free()
@@ -129,4 +140,8 @@ def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
     var read_fd = Int(fds[unsafe_offset=0])
     var write_fd = Int(fds[unsafe_offset=1])
     fds.unsafe_free()
+    comptime if CompilationTarget.is_macos():
+        # Marked right after; F_SETFD fails only on EBADF, which these are not.
+        _ = _fcntl(c_int(read_fd), c_int(F_SETFD), c_int(FD_CLOEXEC))
+        _ = _fcntl(c_int(write_fd), c_int(F_SETFD), c_int(FD_CLOEXEC))
     return (read_fd, ShutdownHandle(write_fd))

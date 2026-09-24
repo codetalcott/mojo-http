@@ -15,7 +15,7 @@ with `_`; the slots are underscored, and `filterSignals` keeps the body to
 `x` and `y` regardless.
 
 `retry: 'always'` on the stream is what brings a tab back after a
-deploy: Datastar 1.0.3's default retries only network and stream errors,
+deploy: Datastar 1.0.4's default retries only network and stream errors,
 and a draining server closes cleanly.
 
 The footer is `about.mojo`'s, rendered from the image's own facts, and
@@ -29,7 +29,7 @@ from blobs.kernel import SLOTS
 from blobs.routes import DROP, EVENTS
 
 # Pinned deliberately, as in apps/datastar_todo (D20).
-comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.3/bundles/datastar.js"
+comptime DATASTAR_CDN = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.4/bundles/datastar.js"
 
 comptime CLICK = (
     "$x = Math.round((evt.clientX - el.getBoundingClientRect().left)"

@@ -52,7 +52,7 @@ Five things, each now built and gated:
    client presents, because a producer's ids restart with its process: a
    tab that saw step 5000 from the last process would otherwise be sent
    nothing until this process's steps passed 5000.
-3. **A reconnect after the server closes cleanly.** Datastar 1.0.3's
+3. **A reconnect after the server closes cleanly.** Datastar 1.0.4's
    default retry does not reconnect after a clean close, which is what a
    draining server produces. The page asks for `retry: 'always'`, and
    `poe browser-blobs` restarts the server under two open tabs and

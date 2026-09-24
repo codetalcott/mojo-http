@@ -355,6 +355,9 @@ struct ConnectionState(Copyable):
     - closed: Connection finished
     - streaming_sse: SSE stream idle, waiting for events to push
     - streaming_ws: WebSocket connection, exchanging frames
+    - lingering: an error was sent before the request was read; the
+      write side is shut and what the client still sends is discarded
+      until it closes or the linger's deadline passes (RFC 9112 §9.6)
     """
 
     comptime READING_HEADERS = 0
@@ -364,6 +367,7 @@ struct ConnectionState(Copyable):
     comptime CLOSED = 4
     comptime STREAMING_SSE = 5
     comptime STREAMING_WS = 6
+    comptime LINGERING = 7
 
     var kind: Int
     var body_state: RequestBodyState
@@ -395,6 +399,10 @@ struct ConnectionState(Copyable):
     @staticmethod
     def streaming_ws() -> Self:
         return ConnectionState(Self.STREAMING_WS, RequestBodyState(0, 0))
+
+    @staticmethod
+    def lingering() -> Self:
+        return ConnectionState(Self.LINGERING, RequestBodyState(0, 0))
 
 
 struct TCPConnection[network: NetworkType = NetworkType.tcp4]:

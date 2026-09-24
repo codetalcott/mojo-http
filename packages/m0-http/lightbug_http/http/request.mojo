@@ -5,11 +5,56 @@ from lightbug_http.header import (
 from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
 from lightbug_http.io.sync import Duration
-from lightbug_http.strings import lineBreak, strHttp11, whitespace
+from lightbug_http.strings import lineBreak, strHttp10, strHttp11, whitespace
 from lightbug_http.uri import URI, QueryMap
 from std.utils import Variant
 
 from lightbug_http.cookie import RequestCookieJar
+
+
+def _drop_final_chunked(mut headers: Headers):
+    """Remove `chunked`, the final transfer coding (RFC 9112 §6.1), from a
+    de-chunked request's `Transfer-Encoding`, and the header itself when
+    nothing else is left.
+
+    The parser has already refused a request whose last coding is anything
+    else, or that applies `chunked` twice. Empty list elements mean nothing
+    (RFC 9110 §5.6.1) and are dropped with it, so `, chunked` leaves no
+    empty field beside the length. A byte walk, never `[byte=a:b]`: a
+    header value may hold obs-text, which is not UTF-8.
+    """
+    var te = headers.get(HeaderKey.TRANSFER_ENCODING)
+    if not te:
+        return
+    var value = te.value()
+    var raw = value.as_bytes()
+    var last_comma = -1
+    for i in range(len(raw)):
+        if raw[i] == 0x2C:  # ','
+            last_comma = i
+    var kept = List[UInt8]()
+    var start = 0
+    while start < last_comma:
+        var stop = start
+        while stop < last_comma and raw[stop] != 0x2C:
+            stop += 1
+        var a = start
+        var b = stop
+        while a < b and (raw[a] == 0x20 or raw[a] == 0x09):
+            a += 1
+        while b > a and (raw[b - 1] == 0x20 or raw[b - 1] == 0x09):
+            b -= 1
+        if b > a:
+            if len(kept) > 0:
+                kept.append(0x2C)
+                kept.append(0x20)
+            for k in range(a, b):
+                kept.append(raw[k])
+        start = stop + 1
+    if len(kept) == 0:
+        headers.pop(HeaderKey.TRANSFER_ENCODING)
+        return
+    headers[HeaderKey.TRANSFER_ENCODING] = String(unsafe_from_utf8=Span(kept))
 
 
 @fieldwise_init
@@ -168,6 +213,9 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             except uri_err:
                 raise RequestBuildError(URIParseError())
 
+        # Asked before the headers move into the request below.
+        var dechunked = parsed.is_chunked_body()
+
         # Take the parsed headers by swap rather than copying them —
         # `parsed` is owned here, but Mojo cannot destroy a struct with one
         # field moved out, so swap an empty collection into its place.
@@ -181,9 +229,19 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             protocol=parsed.protocol,
             cookies=cookies^,
             body=body^,
+            invent_headers=False,
         )
 
-        request.set_content_length(len(request.body_raw))
+        # The headers as the client sent them (SPEC L25). A body the loop
+        # de-chunked is now a sized body: it is described by its length, and
+        # the `chunked` coding it arrived in is gone, so an application --
+        # or a proxy forwarding the headers on -- never sees the
+        # contradictory pair. Any other coding stays, the body being still
+        # in it. A request that carried no length gets none invented: a
+        # GET's `content-length: 0` was ours, not the client's.
+        if dechunked:
+            _drop_final_chunked(request.headers)
+            request.set_content_length(len(request.body_raw))
 
         return request^
 
@@ -197,11 +255,17 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         var body: Bytes = Bytes(),
         server_is_tls: Bool = False,
         timeout: Duration = Duration(),
+        invent_headers: Bool = True,
     ):
         """Initialize a new HTTP request.
 
         This constructor is for building outgoing requests. For parsing incoming
         requests, use from_parsed() instead.
+
+        `invent_headers` fills in what a client must send -- `Content-Length`,
+        `Connection` from the protocol and `Host` from the URI -- and is how
+        `from_parsed` turns it off: on the server side each was a header the
+        client never sent (SPEC L25).
         """
         self.headers = headers^
         self.cookies = cookies^
@@ -214,6 +278,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         self.slot_id = -1
         self.remote_addr = String("")
         self.remote_port = 0
+        if not invent_headers:
+            return
         self.set_content_length(len(self.body_raw))
 
         if self.headers.known_index(KH_CONNECTION) < 0:
@@ -247,14 +313,26 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         )
 
     def connection_close(self) -> Bool:
-        """Check if the Connection header is set to 'close'.
+        """Whether the connection closes after this request (RFC 9112 §9.3).
+
+        `Connection: close` closes; otherwise HTTP/1.1 persists and HTTP/1.0
+        persists only when it asked with `Connection: keep-alive`. The
+        protocol is read here because a parsed request no longer carries the
+        `Connection: close` the outgoing constructor used to write into every
+        HTTP/1.0 request that sent none (SPEC L25).
 
         RFC 9110 §7.6.1: Connection option tokens are case-insensitive.
 
         Answered against the header bytes directly — the `get(...).lower()`
         form built two Strings per request just to compare four characters.
         """
-        return self.headers.value_equals_ignore_case(HeaderKey.CONNECTION, "close")
+        if self.headers.value_equals_ignore_case(HeaderKey.CONNECTION, "close"):
+            return True
+        if self.protocol != strHttp10:
+            return False
+        return not self.headers.value_equals_ignore_case(
+            HeaderKey.CONNECTION, "keep-alive"
+        )
 
     def write_to[T: Writer, //](self, mut writer: T):
         """Write the request in HTTP format to a writer."""
