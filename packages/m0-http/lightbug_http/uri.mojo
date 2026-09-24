@@ -153,6 +153,34 @@ def scheme_separator(uri: StringSpan) -> Int:
     return sep
 
 
+def userinfo_separator(uri: StringSpan, authority_start: Int) -> Int:
+    """Index of the `@` that ends a userinfo, or -1 if there is none.
+
+    `URI.parse` skipped a userinfo whenever an `@` appeared ANYWHERE after
+    the scheme, so an unencoded one in the path or the query -- both allow
+    it (RFC 3986 §3.3, §3.4) -- was read as the end of a userinfo, and
+    everything before it thrown away: `/echo?x=a@b` reached the application
+    as `/` with no query, whatever its method, and a client URL
+    `http://a.test/p?x=a@b` was dialled at host `b`. Browsers and htmx
+    encode `@` in what they build, which is what kept it rare; a typed or
+    hand-built URL does not.
+
+    RFC 3986 §3.2 ends the authority at the first `/`, `?` or `#`, and a
+    userinfo lives inside the authority, so the `@` only counts before all
+    three. The first one found is the separator: a userinfo cannot contain
+    `@`, so a second one leaves a host that fails to resolve rather than
+    one chosen from what follows it.
+    """
+    var bytes = uri.as_bytes()
+    for i in range(authority_start, len(bytes)):
+        var c = bytes[i]
+        if c == UInt8(ord("@")):
+            return i
+        if c == UInt8(ord("/")) or c == UInt8(ord("?")) or c == UInt8(ord("#")):
+            return -1
+    return -1
+
+
 struct URIDelimiters:
     comptime SCHEMA = "://"
     comptime PATH = "/"
@@ -234,6 +262,7 @@ struct URI(Copyable, Writable):
         # Computed before the reader borrows `uri`: taking a second interior
         # reference while the reader holds one invalidates it.
         var scheme_sep = scheme_separator(uri)
+        var userinfo_at = userinfo_separator(uri, scheme_sep + 3 if scheme_sep >= 0 else 0)
         var reader = ByteReader(uri.as_bytes())
 
         # Parse the scheme, if exists.
@@ -262,11 +291,11 @@ struct URI(Copyable, Writable):
                     )
                 )
 
-        # Parse the user info, if exists.
+        # Parse the user info, if exists: only an `@` inside the authority
+        # ends one (`userinfo_separator`).
         # TODO (@thatstoasty): Store the user information (username and password) if it exists.
-        if UInt8(ord(URIDelimiters.AUTHORITY)) in reader:
-            _ = reader.read_until(UInt8(ord(URIDelimiters.AUTHORITY)))
-            reader.increment(1)
+        if userinfo_at >= 0:
+            reader.increment(userinfo_at + 1 - reader.read_pos)
 
         # TODOs (@thatstoasty)
         # Handle ipv4 and ipv6 literal
