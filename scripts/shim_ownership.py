@@ -1658,8 +1658,11 @@ def test_the_drain_runs_once(h):
     h.ns["_CANCEL_GRACE"] = 0.05
     h.job(0, "swallow")
     h.settle()
+    # Two pills, explicitly: a lane's close reads as one on macOS and not on
+    # Linux (datagram sockets there report no EOF), so relying on the close
+    # left the rule untested on Linux CI.
     h.pill()
-    h.submit_w.close()
+    h.pill()
     assert h.run_until_stopped(3.0), "the drain never stopped the loop"
     assert len(_logs(h, "cancelled 1 task")) == 1, [e for e in h.events if e[0] == "log"]
 
