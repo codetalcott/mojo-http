@@ -554,6 +554,9 @@ _WS_DRAIN_GRACE = 1.0
 # shutdown about 2 s of the 5 s join (1.5 s after a task that outlives its
 # cancellation), against its own 5 s wait: a slower shutdown is still cut.
 _HTTP_DRAIN_GRACE = 3.0
+# How long cancelled tasks get for their cancellation to land before one
+# that swallowed it is named and left behind.
+_CANCEL_GRACE = 0.5
 _exec_global_evt = None
 _exec_inflight = {}
 
@@ -1099,7 +1102,7 @@ async def _gather_in_flight():
     # the pill. A socket task still running after _WS_DRAIN_GRACE is waiting
     # on something that will not come; any task still running after
     # _HTTP_DRAIN_GRACE is background work that has had its time. Each is
-    # cancelled, the cancellations get half a second to land, and a task
+    # cancelled, the cancellations get _CANCEL_GRACE to land, and a task
     # that swallows its cancellation is left behind and named rather than
     # waited on (PR 3 review): past this the lifespan shutdown must run.
     import asyncio
@@ -1128,7 +1131,7 @@ async def _gather_in_flight():
                     % (len(pending), _HTTP_DRAIN_GRACE),
                 )
             )
-            _, stuck = await asyncio.wait(pending, timeout=0.5)
+            _, stuck = await asyncio.wait(pending, timeout=_CANCEL_GRACE)
             if stuck:
                 _exec_put(
                     (

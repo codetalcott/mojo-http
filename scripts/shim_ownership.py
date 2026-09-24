@@ -284,10 +284,10 @@ class Harness:
         if behaviour in ("swallow", "swallowlate", "latebg"):
             # Background work after an answered response: `latebg` waits
             # for the test's release, then works 50 ms; `swallow` swallows
-            # ONE cancellation and keeps going for a second; `swallowlate`
+            # ONE cancellation and keeps going for 0.3 s; `swallowlate`
             # has not answered yet, swallows its cancellation, and answers
-            # 0.8 s later -- a task the drain leaves behind that finishes
-            # afterwards.
+            # 0.2 s later -- a task the drain leaves behind that finishes
+            # afterwards (the tests shrink _CANCEL_GRACE below that).
             if behaviour != "swallowlate":
                 await send({"type": "http.response.start", "status": 200,
                             "headers": []})
@@ -302,7 +302,7 @@ class Harness:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 pass
-            await asyncio.sleep(0.8 if behaviour == "swallowlate" else 1.0)
+            await asyncio.sleep(0.2 if behaviour == "swallowlate" else 0.3)
             if behaviour == "swallowlate":
                 await send({"type": "http.response.start", "status": 200,
                             "headers": []})
@@ -1587,10 +1587,11 @@ def test_background_work_inside_the_grace_finishes(h):
 
 def test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain(h):
     """Review focus 2: a task that catches its CancelledError and keeps going
-    is waited on for half a second after its cancellation, then left behind
+    is waited on for _CANCEL_GRACE after its cancellation, then left behind
     and named -- never waited on for as long as it runs."""
     h.ns["_WS_DRAIN_GRACE"] = 0.01
     h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.ns["_CANCEL_GRACE"] = 0.05
     h.job(0, "swallow")
     h.settle()
     h.run(asyncio.wait_for(h.ns["_gather_in_flight"](), 3.0))
@@ -1605,12 +1606,13 @@ def test_a_task_left_behind_never_reaches_the_port(h):
     (a segmentation fault, 3 of 3). Nothing reaches the port after the stop."""
     h.ns["_WS_DRAIN_GRACE"] = 0.01
     h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.ns["_CANCEL_GRACE"] = 0.05
     h.job(0, "swallowlate")
     h.settle()
     h.pill()
     assert h.run_until_stopped(3.0), "the drain never stopped the loop"
     mark = len(h.events)
-    h.settle(passes=1200)   # lifespan shutdown's turn: the task answers now
+    h.settle(passes=400)    # lifespan shutdown's turn: the task answers now
     late = [e for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
     assert not late, "a task left behind reached the port: %r" % (late,)
 
@@ -1621,6 +1623,7 @@ def test_the_drain_runs_once(h):
     timer, let the later one stop the loop inside lifespan shutdown."""
     h.ns["_WS_DRAIN_GRACE"] = 0.01
     h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.ns["_CANCEL_GRACE"] = 0.05
     h.job(0, "swallow")
     h.settle()
     h.pill()
@@ -2121,7 +2124,7 @@ SABOTAGES = [
     ),
     (
         "a cancelled task is waited on for as long as it runs",
-        "            _, stuck = await asyncio.wait(pending, timeout=0.5)\n",
+        "            _, stuck = await asyncio.wait(pending, timeout=_CANCEL_GRACE)\n",
         "            await asyncio.gather(*pending, return_exceptions=True)\n"
         "            stuck = ()\n",
     ),
