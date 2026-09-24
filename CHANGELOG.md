@@ -163,6 +163,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `popstate` at 1.0.4, and the two attributes that would spell a push,
   `data-replace-url` and `data-query-string`, are **Pro**. So
   `Fragment[Datastar]` refusing `push=True` is not waiting on a version.
+- **`apps/blobs` keeps sending a picture, and now says why** (DECISIONS
+  D47; docs/notes/the-picture-on-the-wire.md). An investigation into
+  Datastar 1.0.4's Rocket component bundle asked whether the demo could
+  send blob state and let the client draw it. Measured over 40 consecutive
+  frames instead of argued: 2,544 B of signals per frame at the median —
+  not the 11 KB the 16-blob worst case implies — 5 of 16 slots filled, 4
+  of those 5 changing every frame, 92.7 % of the bytes vertex text. So
+  delta frames would save a fifth, and the only real cut is to stop
+  sending vertices, which moves the kernel with it: `match` is what makes
+  CSS interpolation coherent, so a client drawing state must reproduce the
+  whole contouring pipeline. No code changed; the note and the row record
+  the measurement and what would retire the decision.
 
 - **The built-in htmx vocabulary is htmx 4** (SPEC N22, DECISIONS D6
   retired; docs/notes/the-layer-moves-to-htmx-4.md). `Fragment[Htmx]`,
