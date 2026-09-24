@@ -1,6 +1,11 @@
 """Tests for Datastar SSE event generation."""
 
-from std.testing import assert_equal, assert_true, assert_false, TestSuite
+from std.testing import (
+    assert_equal,
+    assert_true,
+    assert_false,
+    TestSuite,
+)
 
 from src.sse import (
     patch_elements,
@@ -134,7 +139,7 @@ def test_execute_script_targets_body() raises:
 def test_redirect() raises:
     """`redirect` should generate a script with window.location."""
     var s = redirect("/new-page")
-    assert_true(s.find("window.location = '/new-page'") >= 0)
+    assert_true(s.find('window.location = "/new-page"') >= 0)
     assert_true(s.find("setTimeout") >= 0)
 
 
@@ -334,6 +339,51 @@ def test_invalid_utf8_after_a_line_break_does_not_trap() raises:
     # And through the frame an application actually broadcasts.
     var frame = patch_elements(_raw_text(0x78, 0x0A, 0x80, 0x79))
     assert_true(frame.find("data: elements x\n") >= 0)
+
+
+# --- The SDK's own shapes the first five cases did not reach ----------------
+# `poe check-datastar-sdk` runs every vendored case (SPEC I27); these pin the
+# three rules that case set found missing, by name, next to the code.
+
+
+def test_patch_signals_splits_multiline_json() raises:
+    """Every line of a pretty-printed object is its own `signals` dataline.
+
+    One dataline holding the whole value ended at the first line break,
+    and the client read `"one": 1,` as a field named `"one"` and dropped
+    it -- the object arrived as `{`.
+    """
+    assert_equal(
+        patch_signals('{\n"one": 1,\n"two": 2}'),
+        "event: datastar-patch-signals\n"
+        "data: signals {\n"
+        'data: signals "one": 1,\n'
+        'data: signals "two": 2}\n'
+        "\n",
+    )
+    assert_false(patch_signals('{\r\n"a": 1\r\n}').find("\r") >= 0)
+
+
+def test_remove_mode_emits_no_elements_line() raises:
+    """`remove` takes a selector and no elements, and no empty dataline."""
+    assert_equal(
+        patch_elements("", selector="#t", mode="remove"),
+        "event: datastar-patch-elements\ndata: selector #t\ndata: mode remove\n\n",
+    )
+
+
+def test_execute_script_writes_its_attributes() raises:
+    """Attributes go out verbatim, in order, before `data-effect`."""
+    var attrs = List[String]()
+    attrs.append('type="module"')
+    attrs.append('nonce="n0"')
+    var s = execute_script("go()", attributes=attrs)
+    assert_true(
+        s.find('<script type="module" nonce="n0" data-effect="el.remove()">go()</script>')
+        >= 0
+    )
+    var kept = execute_script("go()", auto_remove=False, attributes=attrs)
+    assert_true(kept.find('<script type="module" nonce="n0">go()</script>') >= 0)
 
 
 def main() raises:

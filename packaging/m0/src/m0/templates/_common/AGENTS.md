@@ -54,6 +54,10 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   `M0_WORKERS=2` is then refused rather than served as two different
   copies. Move the state out (a database, the shared page) before raising it.
 - `form(req)` is `None` unless the body is a urlencoded form. Check it.
+- `read_signals(req)` is Datastar's signal store as JSON text: the query on
+  GET and DELETE, the body otherwise. An action sent with `{contentType:
+  'form'}` carries no signals: read it with `form(req)`. The Datastar frame
+  builders raise on a line break in a selector, mode or event id.
 
 ## Rendering
 

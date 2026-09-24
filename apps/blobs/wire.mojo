@@ -84,7 +84,7 @@ def state_frame(
     viewers: Int,
     blobs: Int,
     period_ms: Int,
-) -> String:
+) raises -> String:
     """The whole SSE frame for one step, its id the step number."""
     return patch_signals(
         signals=signals_json(shapes, step_us, viewers, blobs, period_ms),
