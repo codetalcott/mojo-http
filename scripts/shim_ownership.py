@@ -106,6 +106,10 @@ class Harness:
         self.head_receive = []   # what a receive() after a streamed HEAD got
         self.head_finished = False  # the streamed HEAD's app ran to its end
         self.head_task = None    # a HEAD application's own task
+        self.linger_cancels = 0  # cancels a lingering stream task saw
+        self.forever_ended = False  # the endless background task's finally ran
+        self.slowbg_done = False    # a short background task finished
+        self.latebg_done = False    # background work begun inside the drain
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -276,6 +280,84 @@ class Harness:
                 await send({"type": "http.response.body", "body": b"LATE",
                             "more_body": False})
             asyncio.get_running_loop().create_task(late())
+            return
+        if behaviour in ("swallow", "swallowlate", "latebg"):
+            # Background work after an answered response: `latebg` waits
+            # for the test's release, then works 50 ms; `swallow` swallows
+            # ONE cancellation and keeps going for 0.3 s; `swallowlate`
+            # has not answered yet, swallows its cancellation, and answers
+            # 0.2 s later -- a task the drain leaves behind that finishes
+            # afterwards (the tests shrink _CANCEL_GRACE below that).
+            if behaviour != "swallowlate":
+                await send({"type": "http.response.start", "status": 200,
+                            "headers": []})
+                await send({"type": "http.response.body", "body": b"ok",
+                            "more_body": False})
+            if behaviour == "latebg":
+                await self.release.wait()
+                await asyncio.sleep(0.05)
+                self.latebg_done = True
+                return
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(0.2 if behaviour == "swallowlate" else 0.3)
+            if behaviour == "swallowlate":
+                await send({"type": "http.response.start", "status": 200,
+                            "headers": []})
+                await send({"type": "http.response.body", "body": b"late",
+                            "more_body": False})
+            return
+        if behaviour in ("forever", "slowbg"):
+            # Answered, then background work: endless, or a short job that
+            # must be allowed to finish inside the drain's grace.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"ok",
+                        "more_body": False})
+            if behaviour == "slowbg":
+                await asyncio.sleep(0.02)
+                self.slowbg_done = True
+                return
+            try:
+                while True:
+                    await asyncio.sleep(0.01)
+            finally:
+                self.forever_ended = True
+        if behaviour == "linger":
+            # A stream that outlives its disconnect: its cleanup swallows
+            # the first cancel (a finally doing slow work), and counts
+            # every cancel it is sent.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"x" * 64,
+                        "more_body": True})
+            while True:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.linger_cancels += 1
+                    if self.linger_cancels > 1:
+                        raise
+        if behaviour == "longpoll":
+            # Parked in receive() before answering: its disconnect arrives
+            # there, and nothing else of it is a stream.
+            await receive()
+            await receive()
+            return
+        if behaviour == "bodyfirst":
+            # A body before its start, the error caught, then a proper
+            # answer: only the proper answer may reach the client.
+            try:
+                await send({"type": "http.response.body", "body": b"stray",
+                            "more_body": False})
+            except RuntimeError:
+                pass
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"ok",
+                        "more_body": False})
             return
         if behaviour in ("twice", "bgreceive", "bgclientdisc"):
             await send({"type": "http.response.start", "status": 200,
@@ -604,9 +686,9 @@ def test_a_lingering_task_does_not_end_its_successors_stream(h):
     _assert_global_window_whole(h)
 
 
-def test_a_spawn_clears_the_slots_stale_disconnect(h):
-    """The successor must not inherit the mark that closed the connection
-    before it. Inherited, its first credit wait raises CancelledError and
+def test_a_successor_does_not_inherit_its_predecessors_disconnect(h):
+    """The successor must not inherit the disconnect that closed the
+    connection before it. Inherited, its first credit wait raises CancelledError and
     its `finally` skips the end signal entirely — a subscribed stream with
     no producer, which is the stall from the other direction."""
     mark = _recycle(h)
@@ -644,15 +726,16 @@ def test_a_stale_ack_cannot_inflate_the_successors_window(h):
         % (h.ns["_exec_credits"][0], window))
 
 
-def test_a_websocket_spawn_clears_the_slots_stale_disconnect(h):
+def test_a_websocket_successor_does_not_inherit_its_predecessors_disconnect(h):
     """`spawn_ws` carries the same rule, and the same consequence: a held
     101 whose `websocket.accept` is swallowed as "already gone" is answered
     403 instead — a WebSocket that refuses itself."""
     h.job(0, "hold")
     h.settle()
     # One batch again: the disconnect and the upgrade job are read by a
-    # single `_on_submit` callback, so `spawn_ws` runs while the slot's
-    # mark is still set -- the only ordering in which the rule matters.
+    # single `_on_submit` callback, so `spawn_ws` runs while the previous
+    # connection's disconnect is still pending on the slot -- the only
+    # ordering in which the rule matters.
     h.disconnect(0)
     h.job(0, "ws")
     h.settle()
@@ -1365,6 +1448,249 @@ def test_an_eager_task_factory_still_ends_its_stream(h):
     assert "stream_note" not in kinds and "err" not in kinds, kinds
 
 
+def test_a_body_before_its_start_leaves_no_stray_bytes(h):
+    """PR 1 review M5: a body sent before its start raises, and nothing of
+    it may survive into the response an application that caught the error
+    then sends properly. The chunk used to be appended before the check,
+    so the answer went out as b'strayok'."""
+    h.job(0, "bodyfirst")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert len(done) == 1, h.kinds(0)
+    assert done[0][4] == b"ok", done[0][4]
+
+
+def _linger_then(h, successor):
+    """A stream on slot 0 lingers past its disconnect (one cancel, which it
+    swallows); `successor` is spawned on the recycled slot and then its own
+    connection leaves. Returns the cancels the lingering task saw."""
+    h.job(0, "linger")
+    h.settle()
+    assert h.kinds(0)[:1] == ["stream_start"], h.kinds(0)
+    h.disconnect(0)
+    h.settle()
+    assert h.linger_cancels == 1, h.linger_cancels
+    h.job(0, successor)
+    h.settle()
+    h.disconnect(0)
+    h.settle()
+    return h.linger_cancels
+
+
+def test_a_websocket_spawn_forgets_the_previous_connections_stream_task(h):
+    """PR 1 review M3: a socket spawned on a slot whose previous stream task
+    is still winding down must not cancel that task again when the socket's
+    own client leaves. The slot's stream-task entry named the old task, and
+    only its owner's cleanup removed it. The socket must still be open when
+    its client leaves: one that returns at once cleans the slot first."""
+    assert _linger_then(h, "wskeep") == 1, h.linger_cancels
+
+
+def test_an_http_spawn_forgets_the_previous_connections_stream_task(h):
+    """The HTTP twin of M3: a request parked in receive() on the recycled
+    slot leaves, and the previous connection's stream task is not cancelled
+    a second time."""
+    assert _linger_then(h, "longpoll") == 1, h.linger_cancels
+
+
+def test_the_drain_ends_an_http_task_that_never_ends(h):
+    """PR 3 review: the post-pill gather bounded sockets only, so an HTTP
+    task that never ends -- background work after its response -- held
+    run_forever open until the thread join gave up, and lifespan shutdown
+    never ran. Past the grace every task is cancelled; work that finishes
+    inside it is left to finish."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.02
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.2
+    h.job(0, "forever")
+    h.job(1, "slowbg")
+    h.settle()
+    assert [e for e in h.events if e[0] == "done" and e[1] == 0], h.kinds(0)
+    h.run(asyncio.wait_for(h.ns["_gather_in_flight"](), 2.0))
+    assert h.forever_ended, "the endless task was not ended"
+    assert h.slowbg_done, "work inside the grace was cut short"
+    assert not h.ns["_exec_tasks"], h.ns["_exec_tasks"]
+
+
+def test_an_error_is_described_once(h):
+    """PR 1 review M6: the log's description led with the one-line summary
+    and then the traceback, whose last line is the same summary."""
+    try:
+        raise ValueError("kaboom")
+    except ValueError as exc:
+        text = h.ns["_describe"](exc)
+    lines = text.splitlines()
+    assert lines[0] == "ValueError: kaboom", lines[:1]
+    assert lines.count("ValueError: kaboom") == 1, text
+    assert any(l.startswith("Traceback") for l in lines), text
+
+
+def test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body(h):
+    """K13, L27's WSGI twin: a HEAD to a lazily produced body, on a pool
+    thread that would stream its GET, is answered at the body's first item
+    with no length, and the body is closed -- its `finally` runs. HEAD used
+    to take the buffered path and join the whole iterable: for a body that
+    never ends, never. Bounded here (1000 items) so the old path fails
+    rather than hangs."""
+    produced, closed = [0], []
+
+    class Endless:
+        # An iterable with its own close(), held by the test: generator
+        # finalization cannot stand in for the call PEP 3333 requires.
+        def __iter__(self):
+            for _ in range(1000):
+                produced[0] += 1
+                yield b"data: tick\n\n"
+
+        def close(self):
+            closed.append(True)
+
+    body_obj = Endless()
+
+    def app(environ, start_response):
+        start_response("200 OK", [("Content-Type", "text/event-stream")])
+        return body_obj
+
+    saved = h.ns["_app"]
+    h.ns["_app"] = app
+    h.ns["set_stream_capable"](True)
+    try:
+        status, headers, body, streaming = h.ns["_run_wsgi"](
+            {"REQUEST_METHOD": "HEAD"}, b"")
+    finally:
+        h.ns["set_stream_capable"](False)
+        h.ns["_app"] = saved
+    assert produced[0] == 1, "the HEAD drained %d items" % produced[0]
+    assert closed == [True], "the body was not closed"
+    assert body == b"" and streaming is False, (body[:40], streaming)
+    assert status == "200 OK", status
+    assert not any(n.lower() == "content-length" for n, _ in headers), headers
+
+
+def _logs(h, text):
+    return [e for e in h.events if e[0] == "log" and text in e[2]]
+
+
+def test_background_work_inside_the_grace_finishes(h):
+    """Review focus 1: background work still running when the drain begins,
+    and finishing inside its grace, is left to finish -- neither cancelled
+    with the sockets at _WS_DRAIN_GRACE nor at the pill."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.02
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.6
+    h.job(0, "latebg")
+    h.settle()
+    gather = h.loop.create_task(h.ns["_gather_in_flight"]())
+    h.loop.call_later(0.1, h.release.set)
+    h.run(asyncio.wait_for(gather, 3.0))
+    assert h.latebg_done, "background work inside the grace was cut short"
+    assert not _logs(h, "cancelled"), _logs(h, "cancelled")
+
+
+def test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain(h):
+    """Review focus 2: a task that catches its CancelledError and keeps going
+    is waited on for _CANCEL_GRACE after its cancellation, then left behind
+    and named -- never waited on for as long as it runs."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.01
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.ns["_CANCEL_GRACE"] = 0.05
+    h.job(0, "swallow")
+    h.settle()
+    h.run(asyncio.wait_for(h.ns["_gather_in_flight"](), 3.0))
+    assert len(_logs(h, "cancelled 1 task")) == 1, h.events[-3:]
+    assert len(_logs(h, "still running after their cancellation")) == 1, h.events[-3:]
+
+
+def test_a_task_left_behind_never_reaches_the_port(h):
+    """PR 6 review C1: once the drain has stopped the loop the Mojo side frees
+    its executor state, and lifespan shutdown steps this loop again -- so a
+    task the drain left behind that answered then wrote into freed memory
+    (a segmentation fault, 3 of 3). Nothing reaches the port after the stop."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.01
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.ns["_CANCEL_GRACE"] = 0.05
+    h.job(0, "swallowlate")
+    h.settle()
+    h.pill()
+    assert h.run_until_stopped(3.0), "the drain never stopped the loop"
+    mark = len(h.events)
+    h.settle(passes=400)    # lifespan shutdown's turn: the task answers now
+    late = [e for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert not late, "a task left behind reached the port: %r" % (late,)
+
+
+def test_the_drain_runs_once(h):
+    """PR 6 review I2: a pill can arrive twice -- macOS reports the lane's
+    close after it as a second -- and two drains, each ending on its own
+    timer, let the later one stop the loop inside lifespan shutdown."""
+    h.ns["_WS_DRAIN_GRACE"] = 0.01
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.ns["_CANCEL_GRACE"] = 0.05
+    h.job(0, "swallow")
+    h.settle()
+    # Two pills, explicitly: a lane's close reads as one on macOS and not on
+    # Linux (datagram sockets there report no EOF), so relying on the close
+    # left the rule untested on Linux CI.
+    h.pill()
+    h.pill()
+    assert h.run_until_stopped(3.0), "the drain never stopped the loop"
+    assert len(_logs(h, "cancelled 1 task")) == 1, [e for e in h.events if e[0] == "log"]
+
+
+def test_an_eager_stream_is_still_cancelled_at_its_disconnect(h):
+    """PR 6 review I3: under an eager task factory the task's first step --
+    which registers its stream -- runs inside create_task, so a pop of the
+    slot's stream-task entry AFTER create_task took the live stream's own
+    entry, and its disconnect cancelled nothing."""
+    h.loop.set_task_factory(asyncio.eager_task_factory)
+    h.job(0, "bytes1024")
+    h.settle()
+    assert h.kinds(0)[:1] == ["stream_start"], h.kinds(0)
+    task = h.ns["_exec_slot_task"][0]
+    h.disconnect(0)
+    h.settle()
+    assert task.done(), "the stream's task was not cancelled at its disconnect"
+
+
+def test_an_application_error_is_described_once(h):
+    """PR 6 review M6: an application's exception class is qualified by its
+    module in the traceback's last line, and a note follows it; neither is
+    said twice."""
+    cls = type("PaymentFailed", (Exception,), {"__module__": "myapp.errors"})
+    # Built at run time: the traceback quotes this file's source lines, and
+    # a literal there would be counted too.
+    msg, note = "card " + "declined", "while " + "charging"
+    try:
+        raise cls(msg)
+    except Exception as exc:
+        exc.add_note(note)
+        text = h.ns["_describe"](exc)
+    assert text.count("card declined") == 1, text
+    assert text.count("while charging") == 1, text
+
+
+def test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write(h):
+    """PR 6 review M7: a lazy body that yields only empty chunks is the GET's
+    buffered case, with a measured length of what write() produced; its
+    HEAD returns the same bytes for the gateway to measure."""
+    def app(environ, start_response):
+        write = start_response("200 OK", [("Content-Type", "text/plain")])
+        write(b"written-body")
+
+        def gen():
+            yield b""
+            yield b""
+        return gen()
+
+    saved = h.ns["_app"]
+    h.ns["_app"] = app
+    h.ns["set_stream_capable"](True)
+    try:
+        _, _, body, streaming = h.ns["_run_wsgi"]({"REQUEST_METHOD": "HEAD"}, b"")
+    finally:
+        h.ns["set_stream_capable"](False)
+        h.ns["_app"] = saved
+    assert body == b"written-body" and streaming is False, (body, streaming)
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1425,9 +1751,9 @@ TESTS = [
     test_a_stale_task_does_not_wipe_its_successors_slot_state,
     test_a_finished_owner_does_clean_its_slot,
     test_a_lingering_task_does_not_end_its_successors_stream,
-    test_a_spawn_clears_the_slots_stale_disconnect,
+    test_a_successor_does_not_inherit_its_predecessors_disconnect,
     test_a_stale_ack_cannot_inflate_the_successors_window,
-    test_a_websocket_spawn_clears_the_slots_stale_disconnect,
+    test_a_websocket_successor_does_not_inherit_its_predecessors_disconnect,
     test_a_websocket_recycle_forgets_the_predecessors_accept,
     test_a_websocket_send_waits_for_its_window,
     test_a_stream_sent_from_a_child_task_marks_the_owner,
@@ -1465,6 +1791,19 @@ TESTS = [
     test_a_client_disconnect_after_the_response_is_not_logged,
     test_an_eager_task_factory_still_ends_its_stream,
     test_work_scheduled_at_import_is_refused_by_name,
+    test_a_body_before_its_start_leaves_no_stray_bytes,
+    test_a_websocket_spawn_forgets_the_previous_connections_stream_task,
+    test_an_http_spawn_forgets_the_previous_connections_stream_task,
+    test_the_drain_ends_an_http_task_that_never_ends,
+    test_an_error_is_described_once,
+    test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body,
+    test_background_work_inside_the_grace_finishes,
+    test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
+    test_a_task_left_behind_never_reaches_the_port,
+    test_the_drain_runs_once,
+    test_an_eager_stream_is_still_cancelled_at_its_disconnect,
+    test_an_application_error_is_described_once,
+    test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write,
 ]
 
 
@@ -1562,9 +1901,8 @@ SABOTAGES = [
     ),
     (
         "the log gets the exception's name only",
-        "    return '%s: %s\\n%s' % (",
-        "    return '%s: %s' % (type(exc).__name__, exc)\n"
-        "    return '%s: %s\\n%s' % (",
+        "    return head + '\\n' + '\\n'.join(lines)",
+        "    return head",
     ),
     (
         "an application error closes the socket with 1000",
@@ -1711,6 +2049,108 @@ SABOTAGES = [
         "a HEAD's application that never listens is never stopped",
         "                        _loop.call_later(_HEAD_GRACE, self._stop_unheard)",
         "                        pass",
+    ),
+    (
+        "a body before its start is kept before it is refused",
+        "            if self.status is None:\n"
+        "                raise RuntimeError(\n"
+        "                    'ASGI sent http.response.body before http.response.start'\n"
+        "                )\n"
+        "            if chunk:\n"
+        "                self.chunks.append(chunk)\n",
+        "            if chunk:\n"
+        "                self.chunks.append(chunk)\n"
+        "            if self.status is None:\n"
+        "                raise RuntimeError(\n"
+        "                    'ASGI sent http.response.body before http.response.start'\n"
+        "                )\n"
+        "            if False:\n"
+        "                self.chunks.append(chunk)\n",
+    ),
+    (
+        "an HTTP spawn keeps the previous connection's stream task",
+        "    _exec_stream_tasks.pop(slot, None)\n"
+        "    cycle = _Cycle(slot, body)\n",
+        "    cycle = _Cycle(slot, body)\n",
+    ),
+    (
+        "a WebSocket spawn keeps the previous connection's stream task",
+        "    # socket's to cancel when its client leaves (PR 1 review M3).\n"
+        "    _exec_stream_tasks.pop(slot, None)\n",
+        "    # socket's to cancel when its client leaves (PR 1 review M3).\n",
+    ),
+    (
+        "the drain waits on an HTTP task for ever",
+        "        for t in pending:\n"
+        "            t.cancel()\n"
+        "        if pending:\n",
+        "        for t in pending:\n"
+        "            pass\n"
+        "        if pending:\n",
+    ),
+    (
+        "an error's summary is said twice",
+        "    if end >= len(summary) and lines[end - len(summary):end] == summary:\n",
+        "    if False:\n",
+    ),
+    (
+        "a WSGI HEAD joins its whole body",
+        "        and environ.get('REQUEST_METHOD') == 'HEAD'\n"
+        "        and _lazily_produced(",
+        "        and False\n"
+        "        and _lazily_produced(",
+    ),
+    (
+        "the drain starts twice",
+        "    if stopping and not _exec_draining[0]:\n",
+        "    if stopping:\n",
+    ),
+    (
+        "a task left behind reaches the port",
+        "    if _exec_closed[0]:\n"
+        "        return\n"
+        "    stopping = _port.dispatch(ev)\n",
+        "    stopping = _port.dispatch(ev)\n",
+    ),
+    (
+        "background work is cancelled at the pill",
+        "            rest, timeout=max(0.0, _HTTP_DRAIN_GRACE - _WS_DRAIN_GRACE)\n",
+        "            rest, timeout=0\n",
+    ),
+    (
+        "background work is cancelled with the sockets",
+        "        if getattr(t, '_m0_ws', False):\n"
+        "            t.cancel()\n"
+        "    rest = ",
+        "        t.cancel()\n"
+        "    rest = ",
+    ),
+    (
+        "a cancelled task is waited on for as long as it runs",
+        "            _, stuck = await asyncio.wait(pending, timeout=_CANCEL_GRACE)\n",
+        "            await asyncio.gather(*pending, return_exceptions=True)\n"
+        "            stuck = ()\n",
+    ),
+    (
+        "an eager stream's own entry is dropped at its spawn",
+        "    _exec_stream_tasks.pop(slot, None)\n"
+        "    cycle = _Cycle(slot, body)\n"
+        "    task = _loop.create_task(cycle.run(scope))\n",
+        "    cycle = _Cycle(slot, body)\n"
+        "    task = _loop.create_task(cycle.run(scope))\n"
+        "    _exec_stream_tasks.pop(slot, None)\n",
+    ),
+    (
+        "a WSGI HEAD's body is never closed",
+        "                close()\n"
+        "        # A body that produced nothing",
+        "                pass\n"
+        "        # A body that produced nothing",
+    ),
+    (
+        "a HEAD to a body that produced nothing drops write()",
+        "        _body = b'' if produced else b''.join(written)\n",
+        "        _body = b''\n",
     ),
     (
         "work scheduled at import is not named",

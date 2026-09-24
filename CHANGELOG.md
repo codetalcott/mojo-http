@@ -335,6 +335,25 @@ in a minor release: `m0serve`'s flags and environment variables, the
   work from a lifespan startup handler. The server, `--doctor` and
   discovery all name it, with the traceback, and exit 1. Any other
   import error keeps its own words.
+- **An ASGI application's lifespan shutdown was skipped when background
+  work outlived the drain.** After the drain, the executor gave WebSocket
+  tasks a second and then waited on every HTTP task without bound, so work
+  that never ends -- a response's background task, a poller -- held it until
+  the 5 s thread join gave up and the process left without shutting the
+  application down. Every task now gets 3 s in all, is then cancelled and
+  counted in the log, and a task that swallows its cancellation is named and
+  left behind, never to reach the server again; lifespan shutdown runs
+  after. Work that finishes inside the 3 s finishes (SPEC D11).
+- **A HEAD to a WSGI view that streams for ever never answered** (SPEC
+  K13). A HEAD took the buffered path, which joins the whole body, so a HEAD
+  to a WSGI SSE view hung and held its pool thread until shutdown; eight
+  of them were the whole zero-config pool. It is answered at the body's
+  first item, with no length, and the body is closed.
+- **Two executor edge cases from PR 1's review.** A body an ASGI
+  application sent before its `http.response.start`, then caught the error
+  for and answered properly, reached the client at the front of the real
+  body; and a stream still winding down on a recycled slot was cancelled a
+  second time by the next connection's disconnect.
 - **A `413` for an oversized upload reached curl and browsers, but not
   `http.client`** (SPEC A20). The server refuses a body over `--max-body`
   as soon as it knows the size, while the client is still uploading, and

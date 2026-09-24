@@ -354,6 +354,14 @@
       "evidence": "`test_respawn.mojo:test_a_worker_that_fails_while_stopping_is_not_respawned` (every PR) \u2014 a supervisor signalled alone forwards SIGTERM, its worker exits 9 from the drain, and the test requires exit 1 and no second incarnation; with the guard reverted the worker is respawned and the supervisor exits 0. Found by `sabotage-host`: a host worker returning from `main` crashed on its way out, was respawned, and its supervisor outlived the smoke holding the port (the note: [the-mojo-host](notes/the-mojo-host.md)). The stop is recorded by the signal handler in a data-segment word beside the child PIDs (`src/global_slot.mojo`)"
     },
     {
+      "id": "D11",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "An ASGI application's work still running at shutdown is bounded: background work gets the drain's 3 s grace, is then cancelled and named, and lifespan shutdown still runs",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a response whose background task never ends, then SIGTERM: the process must exit and write the lifespan shutdown marker. Before, the post-pill gather waited on every HTTP task, the 5 s thread join gave up, and the process left without shutting the application down (exit 0, no marker). `poe test-shim` holds the rest: work inside the grace finishes, a task that swallows its cancellation is left behind after half a second and never reaches the executor again, and the drain starts once"
+    },
+    {
       "id": "D6",
       "section": "D",
       "category": "D. Graceful shutdown and restart",
@@ -1264,6 +1272,14 @@
       "capability": "The gateway sends the application's response head as sent: no invented `Content-Type`, and the application's `Content-Length` kept on a HEAD",
       "status": "verified",
       "evidence": "`Conformance test the WSGI bridge` (every PR) \u2014 `scripts/head_probe.py` reads the bare app's heads: a 200 and a 303 sent without a type, a bare 204 and one carrying a length and a body, a bare 304 and one naming the GET's length, and a HEAD answered with the GET's length and no body. Each must carry what the application sent plus the server's own framing and nothing else, and each is followed by a request on the same connection, which a leaked body would misparse. `Conformance test the ASGI bridge` runs the same cases through the executor and the buffered bridge. Before the fix every case failed: `application/octet-stream` on each head sent without a type, `content-length: 0` on the HEAD, the 204 and the 304s"
+    },
+    {
+      "id": "K13",
+      "section": "K",
+      "category": "K. WSGI (PEP 3333)",
+      "capability": "A HEAD to what a GET would stream is answered at the body's first item, with no length, and the body closed",
+      "status": "verified",
+      "evidence": "`Smoke test streamed WSGI bodies` (every PR) \u2014 a HEAD to a never-ending generator on a four-thread pool, then a request on the same connection, then five more HEADs and a fast request. HEAD used to take the buffered path, which joins the whole iterable, so the HEAD never answered and held its pool thread until shutdown; eight such requests are the whole zero-config pool. L27's WSGI twin. On the loop's own handler, which never streams, a HEAD still buffers and carries its measured length, as its GET does. `poe test-shim` pins that the body is pulled to one item and closed"
     },
     {
       "id": "L1",

@@ -51,6 +51,14 @@ def set_stream_capable(flag):
 
 
 def _stream_this(result, environ, status, headers):
+    # A lazily produced body streams, except a HEAD's: that is answered at
+    # its first item instead (`_lazily_produced`, below; SPEC K13).
+    return environ.get('REQUEST_METHOD') != 'HEAD' and _lazily_produced(
+        result, status, headers
+    )
+
+
+def _lazily_produced(result, status, headers):
     # What streams and what buffers, in order. Rule 1 is what keeps every
     # framework page byte-identical on the wire: Werkzeug computes a
     # Content-Length for every list body, Django's CommonMiddleware adds
@@ -65,8 +73,6 @@ def _stream_this(result, environ, status, headers):
     if isinstance(result, (bytes, bytearray, list, tuple)):
         return False
     if getattr(result, 'streaming', None) is False:
-        return False
-    if environ.get('REQUEST_METHOD') == 'HEAD':
         return False
     try:
         code = int(status[:3])
@@ -541,6 +547,16 @@ _exec_global_credit = [_ASGI_TOTAL_WINDOW]
 # than receive() -- forwarding from a queue, sleeping between pushes -- is
 # only ended here. Well inside the Mojo side's 5 s join bound.
 _WS_DRAIN_GRACE = 1.0
+# And how long it lets EVERY task finish -- background work after a response
+# is the common case -- before it cancels the rest. Not unbounded: a task
+# that never ends held run_forever open until the 5 s join gave up, so the
+# lifespan shutdown after it never ran. Three seconds leaves lifespan
+# shutdown about 2 s of the 5 s join (1.5 s after a task that outlives its
+# cancellation), against its own 5 s wait: a slower shutdown is still cut.
+_HTTP_DRAIN_GRACE = 3.0
+# How long cancelled tasks get for their cancellation to land before one
+# that swallowed it is named and left behind.
+_CANCEL_GRACE = 0.5
 _exec_global_evt = None
 _exec_inflight = {}
 
@@ -815,11 +831,19 @@ def _describe(exc):
     # something raised.
     import traceback
 
-    return '%s: %s\n%s' % (
-        type(exc).__name__,
-        exc,
-        ''.join(traceback.format_exception(exc)).rstrip('\n'),
-    )
+    head = '%s: %s' % (type(exc).__name__, exc)
+    lines = ''.join(traceback.format_exception(exc)).rstrip('\n').split('\n')
+    # The traceback ends with the exception's own summary -- its type
+    # qualified by module for an application's class -- then any notes: the
+    # summary is said once, at the top where a grep finds it (PR 1 review
+    # M6), and the notes stay where they are.
+    only = traceback.format_exception_only(exc)
+    summary = only[0].rstrip('\n').split('\n')
+    notes = sum(len(item.rstrip('\n').split('\n')) for item in only[1:])
+    end = len(lines) - notes
+    if end >= len(summary) and lines[end - len(summary):end] == summary:
+        del lines[end - len(summary):end]
+    return head + '\n' + '\n'.join(lines)
 
 
 def _exec_on_disconnect(slot):
@@ -1027,6 +1051,17 @@ def asgi_executor_init(fd, ack_fd):
 # its life (run_forever below), not a run_until_complete per pass.
 _port = None
 _flush_armed = [False]
+# The drain starts ONCE: a pill can reach the pump twice (macOS reports the
+# lane's close after the pill as a second one) and the inverted mode's tick
+# sees the same stop its backend callback did. Two drains used to end
+# together; with a bound, the later one's stop landed inside lifespan
+# shutdown and cut it short.
+_exec_draining = [False]
+# And once the drain has stopped the loop, the port is gone: the Mojo side
+# frees its executor state as run_forever returns, and lifespan shutdown
+# steps this loop again, so a task left behind that finished then reached
+# freed memory (a segmentation fault, 3 of 3). Its events are dropped.
+_exec_closed = [False]
 
 
 def set_port(port):
@@ -1041,11 +1076,14 @@ def _exec_put(ev):
     # in the same datagram, batching without a batch buffer. The port's
     # own ordering rules (begin frame before head, flush before any
     # non-begin chunk frame) are inside dispatch and unchanged.
+    if _exec_closed[0]:
+        return
     stopping = _port.dispatch(ev)
     if not _flush_armed[0]:
         _flush_armed[0] = True
         _loop.call_soon(_flush)
-    if stopping:
+    if stopping and not _exec_draining[0]:
+        _exec_draining[0] = True
         # The pill: the submit channel is quiet behind it. Run the
         # in-flight tasks to completion -- their events dispatch here as
         # they finish -- then stop the loop, which returns run_forever to
@@ -1055,13 +1093,18 @@ def _exec_put(ev):
 
 def _flush():
     _flush_armed[0] = False
-    _port.flush()
+    if not _exec_closed[0]:
+        _port.flush()
 
 
 async def _gather_in_flight():
-    # Run the in-flight tasks to completion, bounded for sockets: every
-    # client is gone by the pill, and a socket task still running after the
-    # grace is waiting on something that will not come.
+    # Run the in-flight tasks to completion, bounded: every client is gone by
+    # the pill. A socket task still running after _WS_DRAIN_GRACE is waiting
+    # on something that will not come; any task still running after
+    # _HTTP_DRAIN_GRACE is background work that has had its time. Each is
+    # cancelled, the cancellations get _CANCEL_GRACE to land, and a task
+    # that swallows its cancellation is left behind and named rather than
+    # waited on (PR 3 review): past this the lifespan shutdown must run.
     import asyncio
 
     if not _exec_tasks:
@@ -1070,8 +1113,34 @@ async def _gather_in_flight():
     for t in pending:
         if getattr(t, '_m0_ws', False):
             t.cancel()
-    if _exec_tasks:
-        await asyncio.gather(*list(_exec_tasks), return_exceptions=True)
+    rest = [t for t in _exec_tasks if not t.done()]
+    if rest:
+        _, pending = await asyncio.wait(
+            rest, timeout=max(0.0, _HTTP_DRAIN_GRACE - _WS_DRAIN_GRACE)
+        )
+        for t in pending:
+            t.cancel()
+        if pending:
+            # Named, as uvicorn names the tasks it cancels at shutdown: work
+            # cut short is the application's to know about.
+            _exec_put(
+                (
+                    'log',
+                    -1,
+                    'cancelled %d task(s) still running %.1f s into the drain'
+                    % (len(pending), _HTTP_DRAIN_GRACE),
+                )
+            )
+            _, stuck = await asyncio.wait(pending, timeout=_CANCEL_GRACE)
+            if stuck:
+                _exec_put(
+                    (
+                        'log',
+                        -1,
+                        '%d task(s) still running after their cancellation; '
+                        'leaving them to the process exit' % len(stuck),
+                    )
+                )
 
 
 async def _finish_and_stop():
@@ -1079,6 +1148,7 @@ async def _finish_and_stop():
 
     await _gather_in_flight()
     await asyncio.sleep(0)
+    _exec_closed[0] = True
     _loop.stop()
 
 
@@ -1110,6 +1180,7 @@ async def _drain_and_stop():
     # a loop with nothing owed, and after it the Mojo side runs the
     # application's lifespan shutdown.
     _port.drain_finish()
+    _exec_closed[0] = True
     _loop.stop()
 
 
@@ -1131,24 +1202,38 @@ def run_forever_inverted(backend_fd):
     # which in this mode runs a pass first (see the port). A 1 Hz tick
     # runs a pass for the sweeps and caches that assume one wake a second.
 
-    def _on_backend():
-        if _port.pass_():
-            _loop.remove_reader(backend_fd)
+    tick = [None]
+
+    def _start_drain():
+        # Once, from whichever callback saw the stop first; the tick is
+        # cancelled so it runs no pass into a drain already under way.
+        _loop.remove_reader(backend_fd)
+        if tick[0] is not None:
+            tick[0].cancel()
+        if not _exec_draining[0]:
+            _exec_draining[0] = True
             _loop.create_task(_drain_and_stop())
+
+    def _on_backend():
+        if _exec_draining[0]:
+            return
+        if _port.pass_():
+            _start_drain()
             return
         if not _flush_armed[0]:
             _flush_armed[0] = True
             _loop.call_soon(_flush)
 
     def _tick():
-        if _port.pass_():
-            _loop.remove_reader(backend_fd)
-            _loop.create_task(_drain_and_stop())
+        if _exec_draining[0]:
             return
-        _loop.call_later(1.0, _tick)
+        if _port.pass_():
+            _start_drain()
+            return
+        tick[0] = _loop.call_later(1.0, _tick)
 
     _loop.add_reader(backend_fd, _on_backend)
-    _loop.call_later(1.0, _tick)
+    tick[0] = _loop.call_later(1.0, _tick)
     _loop.run_forever()
 
 
@@ -1370,8 +1455,8 @@ class _Cycle:
                     # next response begins (SPEC L27). Answer now with no
                     # body, as a final body would, and drop the rest:
                     # receive() then says http.disconnect, which is what
-                    # stops a StreamingResponse. `_stream_this` is the WSGI
-                    # side's same rule.
+                    # stops a StreamingResponse. `_run_wsgi` is the WSGI
+                    # side's same rule (SPEC K13).
                     self.completed = True
                     self.chunks = []
                     self.total = 0
@@ -1428,6 +1513,13 @@ class _Cycle:
                 if chunk:
                     await self._emit(chunk)
                 return
+            # Refused BEFORE the bytes are kept: an application that catches
+            # this and then answers properly must not find them at the front
+            # of its real body (PR 1 review M5).
+            if self.status is None:
+                raise RuntimeError(
+                    'ASGI sent http.response.body before http.response.start'
+                )
             if chunk:
                 self.chunks.append(chunk)
                 self.total += len(chunk)
@@ -1436,10 +1528,6 @@ class _Cycle:
                         'ASGI response body exceeded the buffered '
                         'bridge cap (%d bytes)' % _ASGI_BUFFER_CAP
                     )
-            if self.status is None:
-                raise RuntimeError(
-                    'ASGI sent http.response.body before http.response.start'
-                )
             # The final body: answer NOW, not when the application returns.
             # Starlette runs background tasks after this send (the response
             # waited for them: 1.5 s against uvicorn's 0), and its
@@ -1535,6 +1623,16 @@ def spawn(slot, scope, body):
     # Mojo (there is no such thing): ('done', slot, status, headers,
     # body_bytes) or ('err', slot, message) for buffered responses;
     # stream_* events for streaming ones.
+    # A disconnect that reached the slot before this task existed was the
+    # previous connection's (the tag precedes this job on the FIFO). So is a
+    # stream task still named for the slot: its disconnect has been
+    # delivered already, and left here it was cancelled a second time by
+    # THIS connection's (PR 1 review M3). Both are dropped BEFORE the task
+    # exists: under an eager task factory its first step runs inside
+    # create_task and may register its own stream, which a pop after it
+    # would take away.
+    _exec_disconnects.pop(slot, None)
+    _exec_stream_tasks.pop(slot, None)
     cycle = _Cycle(slot, body)
     task = _loop.create_task(cycle.run(scope))
     # Before the task first runs (it starts at the loop's next step), so
@@ -1542,9 +1640,6 @@ def spawn(slot, scope, body):
     cycle.task = task
     _exec_tasks.add(task)
     _exec_slot_task[slot] = task
-    # A disconnect that reached the slot before this task existed was the
-    # previous connection's (the tag precedes this job on the FIFO).
-    _exec_disconnects.pop(slot, None)
     task.add_done_callback(cycle.done)
 
 
@@ -1757,6 +1852,9 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
         'subprotocols': _ws_subprotocols(headers),
         'state': dict(_lifespan_state),
     }
+    # The previous connection's stream task, as in spawn: not this
+    # socket's to cancel when its client leaves (PR 1 review M3).
+    _exec_stream_tasks.pop(slot, None)
     task = _loop.create_task(_serve_one_ws(slot, scope))
     task._m0_streaming = True
     # A socket is told its client has gone through receive() -- the
@@ -1819,6 +1917,35 @@ def _run_wsgi(environ, body):
         return written.append
 
     result = _app(environ, start_response)
+    if (
+        captured
+        and environ.get('REQUEST_METHOD') == 'HEAD'
+        and _lazily_produced(result, captured['status'], captured['headers'])
+    ):
+        # A HEAD to what a GET would stream (SPEC K13, L27's WSGI twin): the
+        # head is all it gets, so the body is pulled to its first item --
+        # an application that raises before producing anything is still an
+        # ordinary 500, as for a GET -- and then closed, so a generator's
+        # `finally` runs and its pool thread comes straight back. Joined,
+        # as every HEAD used to be, a body that never ends never answered,
+        # and held its thread until shutdown. No length is invented: RFC
+        # 9110 §9.3.2 lets a HEAD omit a field known only by generating the
+        # content, and the GET's stream carries none either.
+        produced = False
+        try:
+            for chunk in result:
+                if chunk:
+                    produced = True
+                    break
+        finally:
+            close = getattr(result, 'close', None)
+            if close is not None:
+                close()
+        # A body that produced nothing is the GET's buffered case, whose
+        # measured length is what write() produced: the same bytes here,
+        # which the gateway measures for the head and the loop never sends.
+        _body = b'' if produced else b''.join(written)
+        return (captured['status'], captured['headers'], _body, False)
     if captured and _stream_this(
         result, environ, captured['status'], captured['headers']
     ):

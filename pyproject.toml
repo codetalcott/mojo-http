@@ -5535,6 +5535,23 @@ ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
 [ "$ms" -lt 2000 ] || fail "after five abandoned streams a fast request took ${ms}ms: the threads did not return to the pool"
 echo "five abandoned never-ending streams; fast request answered in ${ms}ms"
 
+# --- a HEAD to a never-ending stream (K13) ---------------------------------------
+# Answered at the body's first item, with the headers a GET's stream carries
+# and no length, and the body closed, so its pool thread comes straight back.
+# HEAD used to take the buffered path, which joins the whole iterable -- for
+# this one, never -- so the request hung and held its thread until shutdown.
+# The probe proves the head and a whole connection after it; five HEADs on
+# the four-thread pool, then a fast request, prove the threads come back.
+python3 scripts/head_probe.py --port 8081 --hold /stream-forever --then / \
+  || fail 'a HEAD to a never-ending WSGI stream is not its head alone (K13)'
+for i in 1 2 3 4 5; do
+  code=$(curl -s -I -o /dev/null -w '%{http_code}' --max-time 5 $B/stream-forever)
+  [ "$code" = "200" ] || fail "HEAD /stream-forever number $i answered '$code' (K13)"
+done
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 10 $B/)
+ms=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 1000))" "$took")
+[ "$ms" -lt 2000 ] || fail "after five HEADs to a never-ending stream a fast request took ${ms}ms: the HEADs held their threads (K13)"
+
 # --- shutdown -------------------------------------------------------------------
 # SIGTERM with a live stream: the farewell reaches the producer as a
 # disconnect, it comes back, and the process exits promptly -- no 5 s
@@ -5635,6 +5652,7 @@ echo "smoke-wsgi-stream OK"
 python3 scripts/emit.py --covers A9 --task smoke-wsgi-stream
 python3 scripts/emit.py --covers D3 --task smoke-wsgi-stream
 python3 scripts/emit.py --covers K9 --task smoke-wsgi-stream
+python3 scripts/emit.py --covers K13 --task smoke-wsgi-stream
 """
 
 # The Phase-2 benchmark gate (docs/WSGI_VS_ASGI.md section 8): the asyncio
@@ -6329,6 +6347,23 @@ python3 scripts/emit.py asgi.drain_inflight_s "$elapsed" --unit s --limit 3.0 --
 [ -f "$out/drain2.marker" ] \
   || fail 'lifespan shutdown did not run after the answered-inside-the-drain phase'
 
+# Background work that never ends, after its response, must not hold the
+# shutdown: past the drain's grace it is cancelled, and the lifespan shutdown
+# behind it runs. The post-pill gather used to bound sockets only, so it
+# waited on this task until the 5 s thread join gave up, and the process
+# left without shutting the application down.
+M0_SHUTDOWN_MARKER="$out/bgforever.marker" "$srv" $SPEC > asgi.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'restart for the background-forever phase did not answer'
+[ "$(curl -s --max-time 5 $B/background-forever)" = "ok" ] \
+  || fail 'the background-forever route did not answer ok'
+kill -TERM $pid
+wait_exit 'background-forever'
+[ "$rc" = "0" ] || fail "SIGTERM with endless background work: exit $rc, want 0"
+[ -f "$out/bgforever.marker" ] \
+  || fail 'lifespan shutdown did not run: an endless background task held the drain'
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.
@@ -6461,6 +6496,7 @@ python3 scripts/emit.py --covers L8 --task smoke-asgi
 python3 scripts/emit.py --covers L15 --task smoke-asgi
 python3 scripts/emit.py --covers M3 --task smoke-asgi
 python3 scripts/emit.py --covers K12 --task smoke-asgi
+python3 scripts/emit.py --covers D11 --task smoke-asgi
 python3 scripts/emit.py --covers A21 --task smoke-asgi
 python3 scripts/emit.py --covers L27 --task smoke-asgi
 python3 scripts/emit.py --covers L25 --task smoke-asgi

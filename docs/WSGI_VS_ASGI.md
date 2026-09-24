@@ -97,7 +97,9 @@ SPEC row with a gate:
   application's own `websocket.close`, after which it may send nothing
   more. A handler that never calls `receive()` learns at its next send, or
   at shutdown, when the drain cancels the sockets still running after a
-  second's grace.
+  second's grace. Background work after a response gets three seconds of
+  the drain in all, and is then cancelled, so lifespan shutdown still runs
+  (SPEC D11).
 - Once a response is answered, `receive()` says `http.disconnect` at once,
   and a send answers nothing — so a task the application left behind can
   never answer another request.
