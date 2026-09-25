@@ -62,6 +62,7 @@ from .sse import (
     SSE_CONTENT_TYPE,
 )
 from .multiworker import WorkerSupervisor, exit_worker, shared_fetch_add, shared_load
+from .parallel_runtime import PARALLEL_RUNTIME_IMAGE, parallel_runtime_linked
 from .prefork import (
     bind_accept_share, int_list_env, prefork_accept_share, prefork_bus,
     prefork_page, shared_id_addr, spawned_worker_index,

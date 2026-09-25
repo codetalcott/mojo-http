@@ -81,6 +81,7 @@ from m0_http import (
     threads_conflict,
 )
 from m0_http.config import AppConfig
+from m0_http.parallel_runtime import parallel_runtime_linked
 from m0_http.prefork import (
     bind_accept_share,
     prefork_accept_share,
@@ -390,6 +391,18 @@ def _wsgi_lanes_unserved_message(unserved: Int, blocking_threads: Int) -> String
     )
 
 
+comptime _PARALLEL_RUNTIME_FORKED = (
+    "a forked worker cannot serve MAX's parallel runtime: --workers N forks"
+    " one, and so does --reload, which supervises even a single worker, and"
+    " this binary links libAsyncRTMojoBindings -- what"
+    " max.algorithm.parallelize needs -- whose worker threads a fork() does"
+    " not copy, so a parallelize in a forked worker never returns. Use"
+    " --spawn-workers (the worker forks, then execs this binary, and the"
+    " runtime starts fresh in it), or --workers 1 without --reload"
+)
+comptime _PARALLEL_RUNTIME_FIX = (
+    "--spawn-workers, or --workers 1 without --reload"
+)
 comptime _PG_LISTEN_NEEDS_REALTIME = (
     "--pg-listen needs --realtime: the flag is what creates the broadcast bus"
     " and the subscriber registries, and a listener with nothing to publish"
@@ -689,6 +702,26 @@ def _pg_listen_forked_on_macos(opts: ServeOptions) -> Bool:
     )
 
 
+def _parallel_runtime_forked(opts: ServeOptions, linked: Bool) -> Bool:
+    """Whether this configuration would run MAX's parallel runtime in a
+    forked child, which never returns from a `parallelize` (SPEC E33).
+
+    One predicate for `main` and `--doctor`, in `_pg_listen_forked_on_macos`'s
+    shape and for its reason: "forked" is `main`'s own `supervised` --
+    `--workers N` above 1, or `--reload`, which supervises even one worker
+    -- and `--spawn-workers` is the escape, because the worker execs and
+    the runtime starts fresh in the new image (measured in
+    docs/notes/threads-first-for-m0-apps.md: `parallelize` hangs in any
+    forked child and works after fork-then-exec). `linked` arrives from the
+    caller so both gather the fact once, through
+    `m0_http.parallel_runtime_linked`, the function the Mojo host reads.
+
+    Both platforms: the fork rule this rests on is the runtime's, not the
+    kernel's.
+    """
+    return linked and (opts.workers > 1 or opts.reload) and not opts.spawn_workers
+
+
 comptime _DOCTOR_PROBE = """
 import sys, platform
 
@@ -798,6 +831,28 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
         report.pass_check(
             String("hold-mount"),
             String("--realtime is on and M0_GRANT_KEY is set"),
+        )
+    # The same predicate `main` refuses by, at the same point in its order
+    # (SPEC E33). The fact is the binary's, so a doctor run on the shipped
+    # m0serve -- which links no MAX -- always passes this one.
+    var linked = parallel_runtime_linked()
+    report.add_bool(String("topology"), String("parallel_runtime"), linked)
+    if _parallel_runtime_forked(opts, linked):
+        report.fail_check(
+            String("workers-vs-parallel-runtime"),
+            String(_PARALLEL_RUNTIME_FORKED),
+            String(_PARALLEL_RUNTIME_FIX),
+            EXIT_USAGE,
+        )
+    else:
+        report.pass_check(
+            String("workers-vs-parallel-runtime"),
+            String("MAX's parallel runtime is linked; ")
+            + (String("spawned workers exec and start it fresh")
+               if opts.spawn_workers and (opts.workers > 1 or opts.reload)
+               else String("one process serves it"))
+            if linked
+            else String("MAX's parallel runtime is not linked"),
         )
 
 
@@ -1245,6 +1300,13 @@ def main() raises:
     var mount_refusal = _mount_refusal(opts)
     if mount_refusal:
         _fail(mount_refusal.value().message, EXIT_USAGE)
+        return
+
+    # A Mojo mount that links MAX's parallel runtime cannot be served from
+    # a forked worker (SPEC E33): refused here, before the bind and the
+    # fork, by the same predicate `--doctor` asks at the same point.
+    if _parallel_runtime_forked(opts, parallel_runtime_linked()):
+        _fail(_PARALLEL_RUNTIME_FORKED, EXIT_USAGE)
         return
 
     # Bind before forking; every worker accepts from this one socket.

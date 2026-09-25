@@ -299,6 +299,20 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     inherit goes in that list, or its adoption fails loudly.
     Core ML cannot run in a forked child at all
     (docs/notes/coreml-embeddings.md), which is what this exists for.
+    Neither can MAX's parallel runtime, and that one is refused rather
+    than crashed: a Mojo mount that calls `parallelize` links
+    `libAsyncRTMojoBindings`, and `--workers N` above 1 or `--reload`
+    (a supervisor over even one worker, forked) exits 2 before the bind
+    naming `--spawn-workers`, `--doctor` failing the same check
+    (`workers-vs-parallel-runtime`; `_parallel_runtime_forked` is the one
+    predicate both read, in `_pg_listen_forked_on_macos`'s shape; SPEC
+    E33, D51, `smoke-serve-parallel-runtime`). The fact is
+    `m0_http.parallel_runtime_linked`, the function the Mojo host reads
+    for E32, so the shipped `bin/m0serve` passes the check unlinked.
+    Measured with the refusal removed: `/par/ser` answered from the
+    forked worker, `/par/par` never, and the pool thread it took was
+    abandoned at the drain's 5 s bound
+    (docs/notes/m0serve-and-the-runtime-a-fork-cannot-carry.md).
   - **Threaded (`M0_THREADS`, free-threaded CPython only; `m0_wsgi.threaded`).**
     N event loops on N pthreads, one interpreter. The main thread initializes
     the interpreter and imports the app BEFORE spawning, then
@@ -1522,7 +1536,9 @@ pieces, and the language fact each rests on:
   is refused with 78 (`workers-vs-parallel-runtime`, the last entry of
   `host_checks`, SPEC E32, `smoke-parallel-runtime`; the fact is read
   off the loaded images, `RTLD_NOLOAD` on Linux and dyld's list on
-  macOS), since a `parallelize` in a forked worker never returns — the
+  macOS, by `m0_http.parallel_runtime_linked`, which m0serve reads for
+  the same refusal on a Mojo mount — SPEC E33), since a `parallelize`
+  in a forked worker never returns — the
   request hung, its loop with it, and SIGTERM did not end the process;
   docs/notes/threads-first-for-m0-apps.md), and refuses `M0_SPAWN_WORKERS`,
   and `M0_WORKERS>1` beside `M0_THREADS>1`, with 78. **It has a command

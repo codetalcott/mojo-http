@@ -10,6 +10,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **m0serve refuses a forked worker when MAX's parallel runtime is
+  linked** (SPEC E33, DECISIONS D51). A Mojo mount that imports
+  `max.algorithm.parallelize` puts `libAsyncRTMojoBindings` in the image;
+  `--workers N` above 1 and `--reload` (which supervises even one worker,
+  forked) then exit 2 before the bind, naming `--spawn-workers`, whose
+  worker execs the binary and starts the runtime fresh, and `--doctor`
+  reports the check (`workers-vs-parallel-runtime`) and
+  `topology.parallel_runtime`. The fact moved to
+  `m0_http.parallel_runtime`, the one function the Mojo host and m0serve
+  both read, so the shipped `bin/m0serve`, which links no MAX, passes the
+  check at two workers. Measured with the refusal removed: a forked worker
+  answered `/par/ser` in 23 ms and `/par/par` never, and the pool thread
+  it took was abandoned at the drain's 5 s bound.
+  `smoke-serve-parallel-runtime` gates it on every pull request under the
+  same `max` group, with two exec'd workers each answering a
+  `parallelize` (`apps/serve_parallel`, over the job `apps/host_parallel`
+  now keeps in `compute.mojo`).
 - **The Mojo host refuses forked workers when MAX's parallel runtime is
   linked** (SPEC E32, DECISIONS D48). `M0_WORKERS` above 1 in a binary that
   carries `libAsyncRTMojoBindings` — what `max.algorithm.parallelize`
