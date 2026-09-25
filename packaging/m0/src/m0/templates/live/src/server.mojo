@@ -6,6 +6,10 @@
     GET  /stats    the producer's counters, as JSON
     GET  /health   {"status":"ok"}, answered on the loop
 
+The kick count survives a restart: the producer keeps it in SQLite
+(`store.mojo`; `M0_DB`, else `__M0_APP__.db`), opened on its own thread at
+its first step and written whenever the count changes.
+
 Two pieces the host runs for you (`uv run m0 doctor` prints the topology):
 
 - `Ticker`, a `Producer`: work on a cadence, on a thread of its own, on
@@ -26,6 +30,7 @@ from m0_http import Views
 
 from board import B_KICKS, B_PAUSED, B_REFUSED, B_STEPS, Board, board_slots
 from pages import BARS, EVENTS, state_frame
+from store import KickStore, db_path
 from views import LiveState, live_urls
 from wave import Wave
 
@@ -43,18 +48,43 @@ struct Ticker(Producer):
     var workers: Int
     var wave: Wave
     var kicks_seen: Int
+    var store: Optional[KickStore]
+    var saved: Int
 
     def __init__(out self, board: Board, workers: Int):
         self.board = board
         self.workers = workers
         self.wave = Wave()
         self.kicks_seen = board.load(B_KICKS)
+        # Opened at the first step, on this producer's own thread: `make`
+        # runs before the fork, and a connection must not cross one.
+        self.store = None
+        self.saved = 0
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
         return Ticker(Board(ctx.page), ctx.workers)
 
+    def _persist(mut self) raises:
+        """Open the store on first use, seed the board from it, and write the
+        count back whenever it moved. Before the pause below, so a kick
+        posted while nobody watches is still kept."""
+        if not self.store:
+            var store = KickStore.open_file(db_path())
+            var kept = store.kicks()
+            # Kicks from earlier runs count, but do not kick the wave now.
+            self.board.add(B_KICKS, kept)
+            self.kicks_seen += kept
+            self.saved = self.board.load(B_KICKS)
+            store.save_kicks(self.saved)
+            self.store = store^
+        var kicks = self.board.load(B_KICKS)
+        if kicks != self.saved:
+            self.store.value().save_kicks(kicks)
+            self.saved = kicks
+
     def step(mut self, mut out: Publisher) raises -> Int:
+        self._persist()
         var viewers = self.board.viewers(self.workers)
         if viewers == 0:
             # Nobody to draw for: no step, no frame, no cost.

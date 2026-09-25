@@ -65,7 +65,8 @@ WRITES = {
     "views": COMMON + ["src/pages.mojo", "src/server.mojo", "src/views.mojo",
                        "test/test_views.mojo"],
     "live": COMMON + ["src/board.mojo", "src/pages.mojo", "src/server.mojo",
-                      "src/views.mojo", "src/wave.mojo", "test/test_live.mojo"],
+                      "src/store.mojo", "src/views.mojo", "src/wave.mojo",
+                      "test/test_live.mojo"],
 }
 TEST_FILE = {"views": "test/test_views.mojo", "live": "test/test_live.mojo"}
 

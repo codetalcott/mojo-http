@@ -21,7 +21,12 @@ fail() {
 
 uv run m0 build || fail "m0 build"
 
-bin/server --port "$PORT" >smoke.log 2>&1 &
+# A database of this run's own, so the restart below proves the count came
+# back from the FILE and not from a previous run.
+DB="smoke-$$.db"
+rm -f "$DB" "$DB-wal" "$DB-shm"
+
+M0_DB="$DB" bin/server --port "$PORT" >smoke.log 2>&1 &
 PID=$!
 
 ready=""
@@ -52,7 +57,22 @@ curl -s --max-time 5 "$BASE/stats" >smoke.body
 grep -q '"kicks":1,' smoke.body || fail "the kick was not counted: $(cat smoke.body)"
 grep -q '"refused":0,' smoke.body || fail "the bus refused a frame: $(cat smoke.body)"
 
+# The kick survives a restart: the producer keeps the count in SQLite and
+# seeds the board from it at its first step.
 kill "$PID"
 wait "$PID" 2>/dev/null
-rm -f smoke.log smoke.body
+PID=""
+M0_DB="$DB" bin/server --port "$PORT" >smoke.log 2>&1 &
+PID=$!
+kept=""
+for _ in $(seq 1 50); do
+    kill -0 "$PID" 2>/dev/null || fail "the restarted server exited: $(cat smoke.log)"
+    if curl -sf --max-time 2 "$BASE/stats" 2>/dev/null | grep -q '"kicks":1,'; then kept=1; break; fi
+    sleep 0.1
+done
+[ -n "$kept" ] || fail "after a restart /stats does not carry the kick: $(curl -s "$BASE/stats")"
+
+kill "$PID"
+wait "$PID" 2>/dev/null
+rm -f smoke.log smoke.body "$DB" "$DB-wal" "$DB-shm"
 echo "smoke: ok ($BASE)"

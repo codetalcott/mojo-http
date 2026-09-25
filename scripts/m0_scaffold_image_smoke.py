@@ -31,12 +31,14 @@ every layer after `FROM`, and `builder` below does not take that on trust.
             refuses is exit 1 with docker's own words; `native` is exit 2
   image     `uv run m0 image --tag T -- --build-context ...`: exit 0, the
             LAST stdout line is about.json: this app, this version,
-            `"python":false`, the daemon's architecture, and `cpu` -- what the
+            `"python":false`, the daemon's architecture, `libs` (the runtime
+            libraries the storage packages open), and `cpu` -- what the
             builder's release build said it compiled for -- the BASELINE
   builder   the builder stage's installed m0 is byte-equal to the wheel
   serve     run with a published port: /health, PID 1 is /app/server, the
             file in the image is the line `m0 image` printed, no interpreter
-            anywhere (asked as root), and `smoke-scaffold`'s whole views wire
+            anywhere (asked as root), libsqlite3 present for m0_sqlite to
+            open, and `smoke-scaffold`'s whole views wire
             -- the 422 fragment included -- through the published port
   stop      `docker stop` is exit 0 inside the drain's bound
   cpu       `m0 image --target-cpu CPU` compiles for CPU (built, not run)
@@ -159,6 +161,12 @@ def serve(tag, port, printed, arch):
                        "-name 'libpython*' \\) \\( -type f -o -type l \\)", check=False).stdout.strip()
         if found:
             fail("about.json says \"python\":false and the image holds:\n" + found)
+        # The library m0_sqlite opens at run time rides in the runtime stage
+        # (the storage packages link nothing, so nothing else would miss it).
+        libs = docker("exec", name, "sh", "-c", "ls /usr/lib/*/libsqlite3.so.0 2>/dev/null",
+                      check=False).stdout.strip()
+        if not libs:
+            fail("the runtime image carries no libsqlite3.so.0, which m0_sqlite opens at run time")
         wire_views(port)
 
         phase("stop")
@@ -225,7 +233,7 @@ def run(work, whl, port, tags):
     # carried into the image -- read there and not from docker's output, which
     # a cached layer does not repeat.
     want = {"app": name, "version": "0.1.0", "arch": arch, "cpu": BASELINE[arch],
-            "base": "debian:12-slim", "python": False}
+            "base": "debian:12-slim", "libs": "libsqlite3-0", "python": False}
     got = {k: about.get(k) for k in want}
     if got != want or not about.get("app_bytes") or not about.get("image_bytes"):
         fail("about.json is %s\nwant %s and both sizes" % (printed, want))

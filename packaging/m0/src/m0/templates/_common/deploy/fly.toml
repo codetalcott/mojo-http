@@ -21,6 +21,14 @@ primary_region = "iad"
   # A comment frame every 25 s keeps a quiet stream open through the proxy.
   M0_SSE_HEARTBEAT_MS = "25000"
 
+# The database (the image sets M0_DB under /app/data) survives a deploy only
+# on a volume. Create it first -- `fly volumes create data --size 1 -a
+# __M0_APP__ -r iad` -- then uncomment; a deploy naming a volume that does
+# not exist fails.
+# [mounts]
+#   source = "data"
+#   destination = "/app/data"
+
 [http_service]
   internal_port = 8080
   force_https = true

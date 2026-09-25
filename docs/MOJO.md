@@ -5,9 +5,12 @@ run on it in production; its version is separate from m0serve's.
 
 The framework m0serve is built from, for writing the application itself in
 Mojo: an HTTP/1.1 server, a router and views, HTML fragments for htmx 4 and
-Datastar, Server-Sent Events and WebSockets, and a host that runs them as
-one compiled binary. The `m0` package on PyPI carries the framework's
-source and a command line that builds against it.
+Datastar, Server-Sent Events and WebSockets, SQLite and PostgreSQL bindings
+that open their library at run time, and a host that runs them as one
+compiled binary. The `m0` package on PyPI carries the framework's source
+and a command line that builds against it. MAX is optional beside it,
+pinned to the version the host was gated with, for a step that needs
+every core.
 
 ```bash
 uvx m0 new shop

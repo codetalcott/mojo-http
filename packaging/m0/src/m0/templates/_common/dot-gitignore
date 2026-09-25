@@ -5,3 +5,6 @@ __pycache__/
 .vscode/
 smoke.log
 smoke.body
+*.db
+*.db-wal
+*.db-shm

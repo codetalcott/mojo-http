@@ -1004,7 +1004,7 @@ versioned apart from the repo (`__version__` in `src/m0/__init__.py`, its
 one home; `0.x` until the layer soak). Rules:
 
 - **Nothing is staged.** `hatch_build.py` force-includes `git ls-files` of
-  the five source trees into `m0/_mojo/<import name>/`, and the three
+  the seven source trees into `m0/_mojo/<import name>/`, and the three
   `scripts/` a release build runs into `m0/_tools/`, unedited. A new
   framework file ships by being tracked; a new TREE goes in the hook's
   table AND in `scripts/m0_wheel_smoke.py`'s second spelling of it, which
@@ -1013,9 +1013,15 @@ one home; `0.x` until the layer soak). Rules:
   `./.venv`, which is where `uv run m0 build` has it.
 - **`gated_mojo` is read from the root pin**, never written: bumping
   `mojo==X` in the root moves the wheel's table with it, and the hook
-  refuses anything but one exact `==`.
+  refuses anything but one exact `==`. **`gated_max` is read the same way
+  from the root's `max` dependency group** (the one `smoke-parallel-runtime`
+  syncs), and `max-gated` holds an installed `max-core` to it — absent is
+  a pass, since MAX is optional (D50, SPEC N41). The two storage trees ride
+  because they link nothing (N39); the scaffold's `pyproject.toml` carries
+  the `uv add` line for MAX with `__M0_MAX_VERSION__` substituted, the
+  fourth token and `pyproject.toml`-only like the other two versions.
 - **`checks.py` holds the ONE list** (`platform`, `mojo-installed`,
-  `mojo-gated`, `c-compiler`, `project`) that every command reads to its
+  `mojo-gated`, `max-gated`, `c-compiler`, `project`) that every command reads to its
   first failure and `m0 doctor` reads whole — `host_checks`' rule. Add a
   refusal THERE. Every one is 78 and one `m0: detail (fix)` line, and
   `smoke-m0-wheel` asserts the sentences WHOLE, so rewording one means
@@ -1029,7 +1035,9 @@ one home; `0.x` until the layer soak). Rules:
   `-o` onto a binary that may be running.
 - **`m0 new` writes from REAL files** (`src/m0/templates/`, SPEC N27–N29,
   D44; docs/notes/the-scaffold.md): two sessionless templates, `views`
-  (htmx 4) and `live` (a producer and Datastar frames), behind a closed
+  (htmx 4) and `live` (a producer and Datastar frames, its kick count kept
+  in SQLite by a store the producer opens on its OWN thread at its first
+  step, never in `make`, which runs before the fork — N40), behind a closed
   `--template`. A template compiles UNSUBSTITUTED — the app's name only
   inside string literals, TOML and Markdown, as `__M0_APP__` — which is
   what lets substitution be `str.replace`; `poe check-templates` (in

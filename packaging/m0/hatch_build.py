@@ -1,10 +1,14 @@
 """Map the framework's source into the wheel, straight from git's manifest.
 
-Nothing is staged or copied on disk. For each of the five source trees an
+Nothing is staged or copied on disk. For each of the seven source trees an
 application compiles against, `git ls-files` names the files and each one is
 force-included under `m0/_mojo/<import name>/` -- the tree's root renamed to
 the name Mojo imports it by, so ONE `-I <site-packages>/m0/_mojo` resolves
-all five from source, with no `.mojoc` anywhere (docs/DECISIONS.md D39).
+all seven from source, with no `.mojoc` anywhere (docs/DECISIONS.md D39).
+The two storage packages ride because both open their C library at run time
+(SPEC O17 for libsqlite3, libpq likewise): `m0 build` takes no link flag and
+`m0 test`'s `mojo run` resolves nothing from its own image, so a package
+that LINKED its library could not ship here (D49).
 
 Why `git ls-files` and not a directory walk with an exclude list: the
 manifest is the tree's own. A `__pycache__`, a stray `.mojoc`, an untracked
@@ -16,6 +20,10 @@ The hook also writes `m0/_build_info.json`. `gated_mojo` is READ from the
 root pyproject's `mojo==X` -- the pin CI ran every gate on -- and anything
 but one exact `==` is refused: the CLI compares the installed toolchain to
 this by string equality, so a range here would be a table nobody gated.
+`gated_max` is read the same way from the root's `max` dependency group,
+the one `smoke-parallel-runtime` syncs (SPEC E32): MAX is optional beside
+an application, and when it is present it must be the version the host
+was gated beside, because `max-core` pins its own `mojo-compiler` exactly.
 """
 
 import json
@@ -37,6 +45,8 @@ TREES = {
     "packages/m0-http/lightbug_http": "lightbug_http",
     "packages/m0-http/m0_host": "m0_host",
     "packages/m0-datastar/src": "m0_datastar",
+    "packages/m0-sqlite/src": "m0_sqlite",
+    "packages/m0-postgres/src": "m0_postgres",
 }
 
 # Three, not two: relocate.py and bundle_artifact.py both import binfmt.
@@ -85,6 +95,27 @@ def gated_mojo(pyproject_text):
     return [match.group(1)]
 
 
+def gated_max(pyproject_text):
+    """The root's `max` dependency group, as the one-entry list the CLI
+    compares an installed `max-core` against. Exactly one exact pin, for
+    `gated_mojo`'s reason."""
+    groups = tomllib.loads(pyproject_text).get("dependency-groups", {})
+    pins = [d for d in groups.get("max", []) if isinstance(d, str)]
+    if len(pins) != 1:
+        raise RuntimeError(
+            f"the root pyproject's [dependency-groups] max names {len(pins)} "
+            "entries; the m0 wheel is gated beside exactly one max-core pin"
+        )
+    match = re.fullmatch(r"max-core==(\d+(?:\.\d+)*)", pins[0].strip())
+    if match is None:
+        raise RuntimeError(
+            f"the root pyproject's max group pins {pins[0]!r}; the m0 wheel "
+            "records the MAX it was gated beside, which needs an exact "
+            "`max-core==X`"
+        )
+    return [match.group(1)]
+
+
 class CustomBuildHook(BuildHookInterface):
     PLUGIN_NAME = "custom"
 
@@ -114,6 +145,7 @@ class CustomBuildHook(BuildHookInterface):
             "format": 1,
             "m0": self.metadata.version,
             "gated_mojo": gated_mojo(root_text),
+            "gated_max": gated_max(root_text),
             "framework": tomllib.loads(root_text)["project"]["version"],
             "commit": _git("rev-parse", "HEAD").strip(),
             "dirty": bool(_git("status", "--porcelain").strip()),
