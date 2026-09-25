@@ -5,8 +5,8 @@
 
 `BIN` is m0serve built with `apps/serve_parallel/mount` in place of the
 demo mount, so it links MAX's parallel runtime (`libAsyncRTMojoBindings`);
-`PLAIN` is the shipped `bin/m0serve`, which links no MAX, and is the
-control. Every run mounts the bare WSGI app at the root and the Mojo
+`PLAIN` is the shipped `bin/m0serve`, which imports nothing from MAX, and
+is the control. Every run mounts the bare WSGI app at the root and the Mojo
 mount at `/par` (`--mount /=bareapp.wsgi --mount /par=mojo`). Seven
 phases:
 
@@ -22,9 +22,15 @@ phases:
   doctor passes spawn       `--doctor --workers 2 --spawn-workers` and
                             `--doctor --reload --spawn-workers` exit 0,
                             the check passing and saying the workers exec
-  the unlinked binary       PLAIN `--doctor --workers 2` exits 0: the fact
-  passes prefork            is the image's, and the shipped m0serve reads
-                            `parallel_runtime` false and passes the check
+  the shipped binary's      PLAIN `--doctor --workers 2` passes where the
+  verdict follows its       file's own load commands lack the runtime
+  image                     (Linux) and is refused where they name it --
+                            on macOS `mojo build` links the runtime into
+                            every binary made beside an installed
+                            `max-core`, source or no source -- the doctor's
+                            `parallel_runtime` agreeing either way: the
+                            refusal is a fact about the image, not a rule
+                            about the flag
   spawned workers serve     `--workers 2 --spawn-workers`: /par/ser and
   parallelize               /par/par agree, 16 /par/par at once all answer,
                             BOTH exec'd images answer one (by `x-pid`), and
@@ -58,6 +64,7 @@ import traceback
 
 TIMEOUT = 15.0
 CHECK = "workers-vs-parallel-runtime"
+RUNTIME = "libAsyncRTMojoBindings"
 
 # Which phase is running, for failures and for the crash handler: the phases
 # share every helper here, and a traceback names the helper, never what was
@@ -129,6 +136,26 @@ def check_named(report: dict, name: str) -> dict:
         if c.get("name") == name:
             return c
     fail("the report has no check named %r: %s" % (name, [c.get("name") for c in report.get("checks", [])]))
+
+
+def names_runtime(binary: str) -> bool:
+    """Whether `binary`'s own load commands name MAX's parallel runtime.
+
+    The fact `parallel_runtime_linked` reads off the loaded images, taken
+    here from the file instead (`otool -L`, `readelf -d`; the runtime is a
+    direct dependency wherever it is linked), so the doctor can be held to
+    it. Without the tool, the bundle beside the binary is the closure
+    `build-serve` found, and answers the same question.
+    """
+    argv = ["otool", "-L", binary] if sys.platform == "darwin" else ["readelf", "-d", binary]
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    if out:
+        return RUNTIME in out
+    beside = os.path.dirname(os.path.abspath(binary))
+    return any(n.startswith(RUNTIME) for n in os.listdir(beside))
 
 
 def doctor(binary: str, args: list) -> tuple:
@@ -286,12 +313,31 @@ def main() -> int:
         if report.get("topology", {}).get("worker_mode") != "spawn":
             fail("the report under %s does not say worker_mode=spawn: %r" % (shape, report.get("topology")))
 
-    phase("the unlinked binary passes prefork")
-    report = passed(plain, [*mounts(port), "--workers", "2"], "the shipped m0serve links no MAX")
-    if report.get("topology", {}).get("parallel_runtime") is not False:
-        fail("the shipped m0serve reports the runtime as linked: %r" % report.get("topology"))
-    if "not linked" not in check_named(report, CHECK).get("detail", ""):
-        fail("the shipped m0serve's check should say the runtime is not linked: %r" % check_named(report, CHECK))
+    phase("the shipped binary's verdict follows its image")
+    # bin/m0serve imports nothing from MAX. Whether its image carries the
+    # runtime anyway is the toolchain's to decide, and it decides
+    # differently per platform: on Linux it does not; on macOS a build
+    # made beside an installed max-core links libAsyncRTMojoBindings
+    # whether or not the source names it (CI, 2026-09-25: the same
+    # demo-mount binary bundled three runtime files in the MAX-free
+    # apple-silicon job and four after `uv sync --group max`). So the
+    # control reads the file's own load commands and holds the doctor to
+    # them both ways -- what it proves is that the refusal is a fact about
+    # the image, not a rule about the flag.
+    if not names_runtime(binary):
+        fail("the MAX mount's binary does not name %s; the gate's premise is gone" % RUNTIME)
+    if names_runtime(plain):
+        report = refused(plain, [*mounts(port), "--workers", "2"], "the shipped binary carries the runtime here")
+        if report.get("topology", {}).get("parallel_runtime") is not True:
+            fail("the shipped m0serve names %s but the doctor reports it unlinked: %r" % (RUNTIME, report.get("topology")))
+        print("shipped binary: names %s (built beside an installed MAX on %s); refused at two workers, as its image says" % (RUNTIME, sys.platform))
+    else:
+        report = passed(plain, [*mounts(port), "--workers", "2"], "the shipped m0serve links no MAX")
+        if report.get("topology", {}).get("parallel_runtime") is not False:
+            fail("the shipped m0serve reports the runtime as linked: %r" % report.get("topology"))
+        if "not linked" not in check_named(report, CHECK).get("detail", ""):
+            fail("the shipped m0serve's check should say the runtime is not linked: %r" % check_named(report, CHECK))
+        print("shipped binary: does not name %s; passes at two workers, as its image says" % RUNTIME)
 
     phase("spawned workers serve parallelize")
     port += 1
@@ -334,7 +380,7 @@ def main() -> int:
 
     print("par_us %d" % par_us)
     print("ser_us %d" % ser_us)
-    print("serve_parallel_probe OK: refused at two forked workers and under --reload, served by two exec'd workers and by one process, the shipped binary unlinked and passing; /par/par %d us against /par/ser %d us" % (par_us, ser_us))
+    print("serve_parallel_probe OK: refused at two forked workers and under --reload, served by two exec'd workers and by one process, the shipped binary's verdict held to its own load commands; /par/par %d us against /par/ser %d us" % (par_us, ser_us))
     return 0
 
 

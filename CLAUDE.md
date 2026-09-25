@@ -313,7 +313,14 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     Measured with the refusal removed: `/par/ser` answered from the
     forked worker, `/par/par` never, and the pool thread it took was
     abandoned at the drain's 5 s bound
-    (docs/notes/m0serve-and-the-runtime-a-fork-cannot-carry.md).
+    (docs/notes/m0serve-and-the-runtime-a-fork-cannot-carry.md). On
+    macOS the toolchain links that library into EVERY build made beside
+    an installed `max-core`, source or no source (CI, 2026-09-25: the
+    demo-mount `bin/m0serve` bundled three runtime files without MAX and
+    four with it; Linux three either way), so there every binary reads
+    as linked and both refusals fire for a MAX-free one — a ROADMAP
+    Known issue; the gate's control reads the file's load commands and
+    holds the doctor to them rather than assuming.
   - **Threaded (`M0_THREADS`, free-threaded CPython only; `m0_wsgi.threaded`).**
     N event loops on N pthreads, one interpreter. The main thread initializes
     the interpreter and imports the app BEFORE spawning, then

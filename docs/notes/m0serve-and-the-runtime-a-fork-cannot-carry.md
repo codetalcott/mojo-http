@@ -55,6 +55,33 @@ and the worker is forked; `--reload --spawn-workers` passes the doctor.
 `--workers 2` passes the check with `topology.parallel_runtime` false.
 The refusal is a fact about the image, not a rule about the flag.
 
+## What CI found: macOS links it for everyone beside MAX
+
+The first CI run failed the control phase on macOS, and the failure was a
+finding. The control assumed the shipped `bin/m0serve`, which imports
+nothing from MAX, links no runtime. On Linux it does not: `readelf -d`
+names `libKGENCompilerRTShared` alone, with or without `max-core` in the
+venv. On the macOS runner the same demo-mount binary bundled three runtime
+files in the `apple-silicon` job, whose venv has no MAX, and four after
+the `smoke` job's `uv sync --group max` — `libAsyncRTMojoBindings` among
+them — so its doctor read `parallel_runtime: true`, refused two workers,
+and the probe called that a failure.
+
+The toolchain, not the tree: `mojo build` on macOS links the runtime into
+every binary once MAX's Mojo packages sit beside the compiler, whether or
+not a source names `parallelize`; on Linux it links it only where named.
+Two consequences. The control now reads the binary's own load commands
+(`otool -L`, `readelf -d`) and holds the doctor to them both ways — passed
+at two workers where the file lacks the runtime, refused where it names it
+— which is the property it was there to prove: the refusal is a fact about
+the image. And on a Mac with `max-core` installed every binary is
+"linked", so E32's and E33's refusals fire for an application that never
+calls `parallelize`; `M0_THREADS` and `--spawn-workers` serve it, the
+shipped `m0serve` wheel is built without MAX and is unaffected, and the
+ROADMAP records it as a known issue with what would retire it: a
+toolchain that links the runtime only where it is named, or a fact that
+can tell a loaded runtime from a used one.
+
 ## The decision
 
 Refuse and name the flag; do not switch to spawning when the image links

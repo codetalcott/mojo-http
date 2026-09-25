@@ -26,7 +26,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `smoke-serve-parallel-runtime` gates it on every pull request under the
   same `max` group, with two exec'd workers each answering a
   `parallelize` (`apps/serve_parallel`, over the job `apps/host_parallel`
-  now keeps in `compute.mojo`).
+  now keeps in `compute.mojo`). CI's macOS leg found the toolchain's part:
+  a build made beside an installed `max-core` links
+  `libAsyncRTMojoBindings` whether or not the source imports MAX (the
+  demo-mount `bin/m0serve` bundled three runtime files without MAX and
+  four with it; Linux, three either way), so on such a machine every
+  binary reads as linked and E32's and E33's refusals fire for a MAX-free
+  one — a Known issue now, `M0_THREADS` and `--spawn-workers` serving it;
+  the gate's control reads the binary's own load commands and holds the
+  doctor to them rather than assuming.
 - **The Mojo host refuses forked workers when MAX's parallel runtime is
   linked** (SPEC E32, DECISIONS D48). `M0_WORKERS` above 1 in a binary that
   carries `libAsyncRTMojoBindings` — what `max.algorithm.parallelize`

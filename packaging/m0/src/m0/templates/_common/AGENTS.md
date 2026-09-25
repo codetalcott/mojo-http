@@ -192,7 +192,10 @@ the probe, not from the last command of a pipe. `smoke.sh` does all four.
 - A binary that links it is served as loops on threads (`M0_THREADS`), and
   `M0_WORKERS` above 1 is refused (78): a forked worker never returns from
   `parallelize`, because `fork()` copies one thread and the runtime's
-  workers were started before `main`.
+  workers were started before `main`. On macOS this holds for every
+  binary built while `max-core` is installed, whether or not it imports
+  MAX -- the toolchain links the runtime regardless -- so there
+  `M0_THREADS` is the way to N cores for any app in a MAX venv.
 - `uv run m0 build --release` bundles its runtime library
   (`libAsyncRTMojoBindings`) beside the binary with the rest, so the image
   needs nothing more.

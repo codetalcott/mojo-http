@@ -102,6 +102,25 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — outside the server's own behaviour.
 
+- **On macOS, a build made beside an installed MAX carries the parallel
+  runtime.** `mojo build` there links `libAsyncRTMojoBindings` into every
+  binary once `max-core` sits beside the compiler, whether or not the
+  source imports `max.algorithm`; on Linux it links it only where named.
+  Measured on CI (2026-09-25): the same demo-mount `bin/m0serve` bundled
+  three runtime files in the MAX-free `apple-silicon` job and four after
+  `uv sync --group max`. The refusals of E32 (the Mojo host, `M0_WORKERS`
+  above 1) and E33 (m0serve, `--workers N` and `--reload`) read the loaded
+  images, so on such a machine they fire for a binary that never calls
+  `parallelize`. `M0_THREADS` serves the host's case and `--spawn-workers`
+  m0serve's; the shipped `m0serve` wheel is built without MAX and is not
+  affected.
+
+  **Closed by:** none — a toolchain that links the runtime only where it
+  is named, or a fact that can tell a loaded runtime from a used one,
+  retires it. `smoke-serve-parallel-runtime`'s control phase reads the
+  binary's own load commands, so the day the link disappears its macOS
+  line changes from "refused at two workers" to "passes".
+
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
