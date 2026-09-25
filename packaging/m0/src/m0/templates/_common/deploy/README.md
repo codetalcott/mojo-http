@@ -20,6 +20,17 @@ compiles for something newer than the baseline, and whatever follows a bare
 `--` goes to `docker build` as it is (`-- --platform linux/amd64`). `m0
 image` needs docker and nothing else: the compiler runs in the builder.
 
+The runtime stage carries `libsqlite3-0`, which `m0_sqlite` opens at run
+time; an application on Postgres adds libpq the same way:
+
+```sh
+uv run m0 image -- --build-arg RUNTIME_LIBS="libsqlite3-0 libpq5"
+```
+
+`about.json`'s `libs` says which were installed. The image sets `M0_DB` to
+`/app/data/__M0_APP__.db`, the one directory the application may write;
+without a volume mounted there, a redeploy starts from an empty database.
+
 ## Fly.io
 
 ```sh
@@ -36,3 +47,10 @@ fly scale count 1 -a __M0_APP__
 - One loop. On one shared vCPU a second worker or thread cannot run beside
   the first, so `M0_WORKERS`/`M0_THREADS` stay unset. On more than one
   vCPU, set `M0_THREADS` to the count.
+- Data that must outlive a deploy needs a volume at `/app/data`, created
+  once and named in `fly.toml`'s `[mounts]` (commented out there until it
+  exists -- a deploy naming a volume that does not exist fails):
+
+  ```sh
+  fly volumes create data --size 1 -a __M0_APP__ -r iad
+  ```

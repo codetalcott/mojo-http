@@ -6,6 +6,12 @@
     GET  /stats    the producer's counters, as JSON
     GET  /health   {"status":"ok"}, answered on the loop
 
+The kick count survives a restart: the kick view counts it in SQLite
+(`store.mojo`; `M0_DB`, else `__M0_APP__.db`) inside its own request, so
+the count is a committed row when the 204 is answered, and `/stats` reads
+it back from the file. `LiveHandler.make` opens the connection -- once per
+worker, loop or pool thread, after the fork.
+
 Two pieces the host runs for you (`uv run m0 doctor` prints the topology):
 
 - `Ticker`, a `Producer`: work on a cadence, on a thread of its own, on
@@ -26,6 +32,7 @@ from m0_http import Views
 
 from board import B_KICKS, B_PAUSED, B_REFUSED, B_STEPS, Board, board_slots
 from pages import BARS, EVENTS, state_frame
+from store import KickStore, db_path
 from views import LiveState, live_urls
 from wave import Wave
 
@@ -48,6 +55,10 @@ struct Ticker(Producer):
         self.board = board
         self.workers = workers
         self.wave = Wave()
+        # The board's word counts kicks since this process started; the
+        # database keeps the total (store.mojo). The producer reads only the
+        # word: a producer polling the count is a producer that can miss the
+        # last kick before a stop.
         self.kicks_seen = board.load(B_KICKS)
 
     @staticmethod
@@ -89,9 +100,14 @@ struct LiveHandler(AppHandler):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
+        # `make` runs once per worker, loop or pool thread, after the fork:
+        # the one place a connection may be opened (store.mojo).
         return LiveHandler(
             live_urls(),
-            LiveState(ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers),
+            LiveState(
+                ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers,
+                KickStore.open_file(db_path()),
+            ),
         )
 
     @staticmethod

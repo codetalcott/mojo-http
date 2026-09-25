@@ -122,6 +122,32 @@ its views.
 - What workers and the producer share crosses a process boundary: it lives
   on the `page_slots` shared page, never in `malloc`'d memory.
 
+## Storage
+
+- `m0_sqlite` and `m0_postgres` ship with the framework and link NOTHING:
+  each opens its C library at run time (`libsqlite3`, `libpq`), so `m0
+  build` takes no flag and `m0 test` can open a database. The library
+  must be on the machine: `libsqlite3-0` is in the image already and
+  `libpq5` is one build argument away (`deploy/README.md`);
+  `M0_LIBSQLITE3` and `M0_LIBPQ` name a file outright.
+- **A connection belongs to one thread, opened where that thread runs**:
+  a handler's `make` (once per worker, loop or pool thread), a producer's
+  first `step`. Never before the fork, never shared across threads.
+  `open(path)` puts the file in WAL mode and refuses a target that cannot
+  be (`:memory:`); `open_memory()` is for tests.
+- **A value that must survive a restart is written in the request that
+  changes it**, so the answer the client sees is a committed row. A
+  producer that writes state back on its poll loses whatever landed
+  between its last poll and SIGTERM; `live` lost a kick that way on CI.
+- Two workers over one file are fine under WAL. A mutation that then
+  BROADCASTS holds the write lock (`db.begin_immediate()` … `db.commit()`)
+  from its change until its frame is numbered, or a stale render can take
+  the newer id and every tab shows the older list.
+- `M0_DB` names the file; the image points it at `/app/data`, the one
+  directory the container may write, and a deploy keeps it only on a
+  volume mounted there. The `live` template's `store.mojo` is the worked
+  example.
+
 ## Mojo traps this framework has paid for
 
 - A `String` that came from a request may not be UTF-8. **Never slice one
@@ -151,6 +177,25 @@ fork does not copy.
 One port per run, never a shared one; wait for `/health` before the first
 probe; stop the server **by pid**, never by name; take the exit status from
 the probe, not from the last command of a pipe. `smoke.sh` does all four.
+
+## MAX, if a step needs every core
+
+- Optional, and pinned beside mojo: `uv add --dev 'max-core==X'` with the
+  X `m0 doctor`'s `max-gated` line names (`pyproject.toml` has it in a
+  comment). Any other version is refused: `max-core` pins its own
+  `mojo-compiler` exactly, so a second version is a second toolchain.
+- `parallelize` is `from max.algorithm import parallelize`, and its
+  closure needs a capture list: `def work(i: Int) {var out} -> None:`.
+- Where it belongs: a producer's `step`, or a heavy view that is rarely
+  busy twice at once. Never a hot route: under load it adds nothing (the
+  cores are already busy with other requests) and alone it pays the spread.
+- A binary that links it is served as loops on threads (`M0_THREADS`), and
+  `M0_WORKERS` above 1 is refused (78): a forked worker never returns from
+  `parallelize`, because `fork()` copies one thread and the runtime's
+  workers were started before `main`.
+- `uv run m0 build --release` bundles its runtime library
+  (`libAsyncRTMojoBindings`) beside the binary with the rest, so the image
+  needs nothing more.
 
 ## Not built, on purpose
 

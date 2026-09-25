@@ -118,6 +118,8 @@ def run(args):
                 "m0": checks.m0_version(),
                 "gated_mojo": info["gated_mojo"],
                 "mojo": checks.installed_mojo(),
+                "gated_max": info["gated_max"],
+                "max": checks.installed_max(),
                 "framework": info["framework"],
                 "commit": info["commit"],
                 "python": platform.python_version(),

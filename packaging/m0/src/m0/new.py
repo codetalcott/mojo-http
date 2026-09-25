@@ -2,7 +2,7 @@
 
 Needs no toolchain and no network, which is what lets it run as `uvx m0 new`
 before anything is installed: it copies files this wheel carries and
-replaces three tokens.
+replaces four tokens.
 
 The templates are REAL files (`templates/`), compiled in place against the
 tree by `poe check-templates`, so none of them can be broken without a gate
@@ -58,6 +58,7 @@ MANIFEST = {
         "src/board.mojo",
         "src/pages.mojo",
         "src/server.mojo",
+        "src/store.mojo",
         "src/views.mojo",
         "src/wave.mojo",
         "test/test_live.mojo",
@@ -84,11 +85,12 @@ def written_paths(template):
     return sorted(str(target_path(n)) for n in names)
 
 
-def render(text, app, m0_version, mojo_version):
+def render(text, app, m0_version, mojo_version, max_version):
     return (
         text.replace("__M0_APP__", app)
         .replace("__M0_VERSION__", m0_version)
         .replace("__MOJO_VERSION__", mojo_version)
+        .replace("__M0_MAX_VERSION__", max_version)
     )
 
 
@@ -123,12 +125,13 @@ def run(args):
         return 1
 
     m0_version = checks.m0_version()
-    mojo_version = paths.build_info()["gated_mojo"][0]
+    info = paths.build_info()
+    mojo_version, max_version = info["gated_mojo"][0], info["gated_max"][0]
     for src, name in sources:
         out = target / target_path(name)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
-            render(src.read_text(encoding="utf-8"), app, m0_version, mojo_version),
+            render(src.read_text(encoding="utf-8"), app, m0_version, mojo_version, max_version),
             encoding="utf-8",
         )
         if name in EXECUTABLE:

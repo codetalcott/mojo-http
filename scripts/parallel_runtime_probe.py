@@ -19,6 +19,12 @@ each one shape of the host:
   pool serves parallelize   `--blocking-threads 2`: /par answers from a
                             pool thread (`x-thread` >= 0)
   one loop serves it        no flags: /par answers on the loop (-1)
+  the release bundle        `relocate.py` then `bundle_artifact.py` on a
+  carries the runtime       copy, the recipe `m0 build --release` runs
+                            unedited: `libAsyncRTMojoBindings` lands beside
+                            the binary, which then answers `--doctor` and
+                            serves /par from that directory with the build
+                            venv unreachable
 
 What is never done here: a request to /par under two forked workers. Before
 the refusal that request never answered, the worker's loop stayed wedged
@@ -36,9 +42,11 @@ import http.client
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -267,9 +275,51 @@ def main() -> int:
     if code != 0:
         fail("one loop drained with exit %d" % code)
 
+    phase("the release bundle carries the runtime")
+    # The recipe as `m0 build --release` runs it, from the repository's own
+    # scripts (the wheel ships them unedited): relocate the copy, bundle the
+    # closure the binary names, and run what landed from elsewhere.
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    work = tempfile.mkdtemp(prefix="m0-parallel-bundle-")
+    try:
+        copy = os.path.join(work, "host_parallel")
+        shutil.copy2(binary, copy)
+        dist = os.path.join(work, "dist")
+        for argv in (
+            [sys.executable, os.path.join(root, "scripts/relocate.py"),
+             "--no-id", "--rpath", "@loader_path", copy],
+            [sys.executable, os.path.join(root, "scripts/bundle_artifact.py"),
+             "--layout", "flat", copy, dist],
+        ):
+            done = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=120)
+            if done.returncode != 0:
+                fail("%s exited %d:\n%s%s" % (os.path.basename(argv[1]), done.returncode,
+                                               done.stdout[-1500:], done.stderr[-1500:]))
+        names = sorted(os.listdir(dist))
+        if not any(n.startswith("libAsyncRTMojoBindings") for n in names):
+            fail("the bundle lacks libAsyncRTMojoBindings, which the binary links: %r" % names)
+        shipped = os.path.join(dist, "host_parallel")
+        # From elsewhere, with nothing in the environment pointing back at
+        # the venv: the search path is the bundle's own directory or nothing.
+        away = subprocess.run([shipped, "--doctor", "--threads", "2"], cwd=work,
+                              env={"PATH": "/usr/bin:/bin"}, capture_output=True,
+                              text=True, timeout=30)
+        if away.returncode != 0 or '"m0_host":"1"' not in away.stdout:
+            fail("the bundled binary does not run from its own directory (exit %d):\n%s"
+                 % (away.returncode, away.stderr[-1500:]))
+        port += 1
+        p = start(shipped, ["--port", str(port), "--threads", "2"], port,
+                  os.path.join(logs, "bundle.log"))
+        expect_route(port, "/par", "par=", None)
+        code = stop(p, "the bundled server")
+        if code != 0:
+            fail("the bundled server drained with exit %d" % code)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
     print("par_us %d" % par_us)
     print("ser_us %d" % ser_us)
-    print("parallel_runtime_probe OK: refused at two workers, served alone, at two loops and from a pool; /par %d us against /ser %d us" % (par_us, ser_us))
+    print("parallel_runtime_probe OK: refused at two workers, served alone, at two loops and from a pool, and from the release bundle; /par %d us against /ser %d us" % (par_us, ser_us))
     return 0
 
 

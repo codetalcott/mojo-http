@@ -15,7 +15,11 @@ the build, rewrites the binary's library search path to its own directory,
 and bundles the runtime into `dist/`. `dist/` is relocatable: copy it
 anywhere on the same platform and run `dist/server`. `--target-cpu CPU`
 compiles for something newer; `native` is refused, because the machine
-that builds is rarely the machine that runs.
+that builds is rarely the machine that runs. The bundle is the closure the
+binary names, discovered rather than listed, so an application that links
+MAX's parallel runtime (`parallelize`) ships `libAsyncRTMojoBindings`
+beside it with the rest — CI runs the bundled binary from its own
+directory to hold that (E32 in [Capabilities](SPEC.md)).
 
 A build needs a C compiler reachable as `cc`: `mojo build` links through
 that name and takes no other. `m0 build` checks for it first, with a link
@@ -38,19 +42,28 @@ is the project directory's name), `--target-cpu CPU` reaches the release
 build, and everything after a bare `--` goes to `docker build`, for example
 `-- --platform linux/amd64`.
 
+The storage packages link nothing and open their C library at run time, so
+the runtime stage installs it: `libsqlite3-0` by default, and an
+application on Postgres adds libpq with `-- --build-arg
+RUNTIME_LIBS="libsqlite3-0 libpq5"`. `about.json`'s `libs` records what
+went in. The image sets `M0_DB` to a file under `/app/data`, the one
+directory the container may write; a deploy keeps that data only on a
+volume mounted there (the Fly.io section below).
+
 ### What `about.json` proves
 
 The image's last layer measures the image from inside and writes
 `/app/about.json`; `m0 image` prints it as its last line.
 
 ```json
-{"app":"shop","version":"0.1.0","arch":"x86_64","cpu":"x86-64-v2","base":"debian:12-slim","python":false,"app_bytes":2953336,"image_bytes":102047098}
+{"app":"shop","version":"0.1.0","arch":"x86_64","cpu":"x86-64-v2","base":"debian:12-slim","libs":"libsqlite3-0","python":false,"app_bytes":2953336,"image_bytes":102047098}
 ```
 
 | key | source |
 |---|---|
 | `python` | always `false`: the layer searches the filesystem for an interpreter and fails the build if it finds one |
 | `cpu` | what the builder's release build said it compiled for, not what was asked |
+| `libs` | the `RUNTIME_LIBS` build argument the runtime stage installed |
 | `app_bytes`, `image_bytes` | `du` over `/app` and over the whole filesystem, unpacked |
 | `version` | the project's `pyproject.toml` |
 
@@ -60,9 +73,9 @@ unpacked, nearly all of it the Debian base. A cold build spends about 10 s
 on apt, 5 s on the frozen sync and 13 s compiling.
 
 CI builds this image from a freshly scaffolded project on x86-64 Linux on
-every pull request, reads `about.json`, checks PID 1, probes the
-application through a published port and requires `docker stop` to exit 0
-(N31 in [Capabilities](SPEC.md)).
+every pull request, reads `about.json`, checks PID 1 and that libsqlite3
+is present, probes the application through a published port and requires
+`docker stop` to exit 0 (N31 in [Capabilities](SPEC.md)).
 
 ## Fly.io
 
@@ -85,6 +98,11 @@ fly scale count 1 -a NAME
   stops the machine, and sets a 25-second SSE heartbeat: a held stream is
   one connection for its whole life, and a quiet one needs traffic to stay
   open through the proxy.
+- **A volume for the database.** `fly volumes create data --size 1 -a NAME
+  -r iad`, then the `[mounts]` block the scaffold's `fly.toml` carries
+  commented out: it names the volume, and a deploy naming one that does
+  not exist fails. Without it the `live` scaffold's kick count, and
+  anything else under `/app/data`, starts empty on every deploy.
 
 The health check is `GET /health`, which both scaffolds answer on the event
 loop.

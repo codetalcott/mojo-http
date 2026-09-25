@@ -99,8 +99,29 @@ class TheList(unittest.TestCase):
     def test_order(self):
         self.assertEqual(
             [name for name, _ in checks.CHECKS],
-            ["platform", "mojo-installed", "mojo-gated", "c-compiler", "project"],
+            ["platform", "mojo-installed", "mojo-gated", "max-gated", "c-compiler", "project"],
         )
+
+
+class MaxPair(unittest.TestCase):
+    def test_absent_is_optional_and_names_the_way_in(self):
+        got = checks.max_verdict("0.3.0", None, ["26.6.0"])
+        self.assertTrue(got.ok)
+        self.assertIn("not installed", got.detail)
+        self.assertIn("uv add --dev 'max-core==26.6.0'", got.detail)
+
+    def test_another_version_is_refused_with_the_sentence(self):
+        got = checks.max_verdict("0.3.0", "26.7.0", ["26.6.0"])
+        self.assertEqual(
+            got.sentence(),
+            "m0: m0 0.3.0 is gated beside max-core 26.6.0 and this environment has "
+            "max-core 26.7.0 (uv add --dev 'max-core==26.6.0')",
+        )
+        self.assertEqual(got.exit, 78)
+
+    def test_the_gated_version_passes_by_string_equality(self):
+        self.assertTrue(checks.max_verdict("0.3.0", "26.6.0", ["26.6.0"]).ok)
+        self.assertFalse(checks.max_verdict("0.3.0", "26.6.0.post1", ["26.6.0"]).ok)
 
 
 class Doctor(unittest.TestCase):

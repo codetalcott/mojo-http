@@ -10,6 +10,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **The Mojo host refuses forked workers when MAX's parallel runtime is
+  linked** (SPEC E32, DECISIONS D48). `M0_WORKERS` above 1 in a binary that
+  carries `libAsyncRTMojoBindings` — what `max.algorithm.parallelize`
+  needs — exits 78 before the bind, naming `--threads (M0_THREADS)`, and
+  `--doctor` reports the check (`workers-vs-parallel-runtime`). Measured
+  before: a `parallelize` in a forked worker never returned, and the
+  request that hung took its worker's loop and the shutdown with it, because
+  `fork()` copies the calling thread alone and the runtime's workers are
+  started before `main`. `smoke-parallel-runtime` gates it on every pull
+  request, both platforms, against `max-core` synced by the new `max`
+  dependency group in that step alone; `sabotage-host --only parallel`
+  removes the check and must be caught on the served prefork.
 - **`m0-sqlite` opens libsqlite3 at run time** (SPEC O17, O18; D49). The
   package reached SQLite through `external_call`, which put the library on
   the link line of every binary that used it: `-Xlinker -lsqlite3` and
@@ -26,18 +38,25 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `build-apps` fails if `datastar_todo`'s binary names it — and six of the
   package's seven test files run under `mojo run`. `test_lib.mojo` is the
   gate; docs/notes/sqlite-at-run-time.md records the round.
-- **The Mojo host refuses forked workers when MAX's parallel runtime is
-  linked** (SPEC E32, DECISIONS D48). `M0_WORKERS` above 1 in a binary that
-  carries `libAsyncRTMojoBindings` — what `max.algorithm.parallelize`
-  needs — exits 78 before the bind, naming `--threads (M0_THREADS)`, and
-  `--doctor` reports the check (`workers-vs-parallel-runtime`). Measured
-  before: a `parallelize` in a forked worker never returned, and the
-  request that hung took its worker's loop and the shutdown with it, because
-  `fork()` copies the calling thread alone and the runtime's workers are
-  started before `main`. `smoke-parallel-runtime` gates it on every pull
-  request, both platforms, against `max-core` synced by the new `max`
-  dependency group in that step alone; `sabotage-host --only parallel`
-  removes the check and must be caught on the served prefork.
+- **`m0 0.3.0`: the storage packages ride in the wheel, the `live` scaffold
+  keeps its kick count in SQLite, and MAX is a pinned companion** (SPEC
+  N39–N41; D50; docs/notes/storage-and-max-in-the-wheel.md). `m0_sqlite`
+  and `m0_postgres` are two more source trees under `m0/_mojo/`, usable
+  with no link flag because both open their library at run time; the
+  wheel smoke opens SQLite through the installed tree under `m0 test`.
+  `live`'s handler opens a `store.mojo` in `make` (once per worker, loop
+  or pool thread, after the fork) and the kick view counts in it inside
+  its own request, so `smoke.sh` restarts the server and finds the kick;
+  the scaffold's image installs
+  `libsqlite3-0` (`RUNTIME_LIBS`, `libpq5` by one build argument), records
+  it in `about.json`, and points `M0_DB` under `/app/data` for a volume.
+  `gated_max` is read from the root's `max` group beside `gated_mojo`, and
+  `max-gated` joins the ONE list of checks: absent passes naming the `uv
+  add`, another version is refused with its sentence, the gated one
+  passes; the scaffold's `pyproject.toml` carries that line substituted
+  and its `AGENTS.md` the rules. `smoke-parallel-runtime` now also runs
+  the release recipe on the MAX-linked probe and serves from the bundle,
+  `libAsyncRTMojoBindings` beside it.
 
 ### Changed
 

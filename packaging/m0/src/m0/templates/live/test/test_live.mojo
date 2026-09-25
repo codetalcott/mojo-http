@@ -9,6 +9,7 @@ from m0_http.multiworker import SharedAtomics
 
 from board import B_KICKS, Board, board_slots
 from pages import BARS, render_live, render_page, state_frame
+from store import DB_DEFAULT, KickStore, db_path
 from wave import Wave
 
 
@@ -64,6 +65,22 @@ def test_the_document_opens_the_stream() raises:
     assert_true(page.startswith("<!doctype html>"))
     # `attr` escaped the quotes for the HTML context; a browser undoes it.
     assert_true("data-init=\"@get(&#x27;/events&#x27;" in page)
+
+
+def test_the_kick_count_is_kept_in_the_store() raises:
+    """The store opens libsqlite3 at run time, so this runs under
+    `uv run m0 test` with nothing linked; in memory, since `open()` wants
+    a file it can put in WAL mode."""
+    var store = KickStore.in_memory()
+    assert_equal(store.kicks(), 0)
+    store.add_kick()
+    assert_equal(store.kicks(), 1)
+    store.add_kick()
+    store.add_kick()
+    assert_equal(store.kicks(), 3)
+    # The default is a file beside the binary, named for the app.
+    assert_true(db_path().endswith(".db"))
+    assert_true(DB_DEFAULT.endswith(".db"))
 
 
 def test_viewers_sum_across_workers() raises:

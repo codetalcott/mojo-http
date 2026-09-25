@@ -7407,7 +7407,7 @@ python3 scripts/emit.py --covers I22 --task smoke-wheel
 # ---------------------------------------------------------------------------
 
 [tool.poe.tasks.build-m0-wheel]
-help = "Build the m0 wheel (dist/m0): the five source trees mapped from git ls-files, the CLI, the three tools"
+help = "Build the m0 wheel (dist/m0): the seven source trees mapped from git ls-files, the CLI, the three tools"
 shell = """
 rm -rf dist/m0
 M0_WHEEL_LOCAL="${M0_WHEEL_LOCAL-tree}" uv build --wheel packaging/m0 -o dist/m0 || exit 1
@@ -7420,7 +7420,7 @@ ls -1 dist/m0/*.whl
 # wrong toolchain is a stub `mojo` 9.9.9 distribution zipped on the spot.
 # `poe sabotage-m0-wheel` reverts each rule and insists this fails.
 [tool.poe.tasks.smoke-m0-wheel]
-help = "The m0 wheel outside the tree: contents equal git's manifest, m0 build/test/doctor on a copied app, every refusal's sentence, mojo from its own prefix"
+help = "The m0 wheel outside the tree: contents equal git's manifest (the storage trees among them), m0 build/test/doctor on a copied app, SQLite opened through the wheel under m0 test, every refusal's sentence (the MAX pair's included), mojo from its own prefix"
 deps = ["build-m0-wheel"]
 shell = """
 python3 scripts/m0_wheel_smoke.py dist/m0 8931 || exit 1
@@ -7428,6 +7428,8 @@ python3 scripts/emit.py --covers N23 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N24 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N25 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N26 --task smoke-m0-wheel
+python3 scripts/emit.py --covers N39 --task smoke-m0-wheel
+python3 scripts/emit.py --covers N41 --task smoke-m0-wheel
 """
 
 [tool.poe.tasks.sabotage-m0-wheel]
@@ -7442,7 +7444,7 @@ cmd = "python3 scripts/m0_wheel_sabotage.py"
 [tool.poe.tasks.check-templates]
 help = "The m0 scaffold's templates compile in place against the tree, their tests pass, and every file is in new.py's manifest (SPEC N28)"
 cmd = "python3 scripts/check_templates.py"
-deps = ["build-core", "build-http", "build-datastar"]
+deps = ["build-core", "build-http", "build-datastar", "build-sqlite"]
 
 # SPEC N27, N29. `m0 new` through `uvx --offline` with no toolchain on PATH,
 # then the user's literal `uv run m0 build` against the tree's wheel, per
@@ -7450,13 +7452,14 @@ deps = ["build-core", "build-http", "build-datastar"]
 # (a scaffold's sync cannot resolve offline from a locked sync's cache,
 # measured); `m0` itself is `0.1.0+tree`, which no index can serve.
 [tool.poe.tasks.smoke-scaffold]
-help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor, the wire (a 422 fragment; two differing Datastar frames), the scaffold's own smoke.sh"
+help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor, the wire (a 422 fragment; two differing Datastar frames), the scaffold's own smoke.sh (live: the kick count back after a restart)"
 deps = ["build-m0-wheel"]
 shell = """
 python3 scripts/m0_scaffold_smoke.py dist/m0 8951 || exit 1
 python3 scripts/emit.py --covers N27 --task smoke-scaffold
 python3 scripts/emit.py --covers N29 --task smoke-scaffold
 python3 scripts/emit.py --covers N34 --task smoke-scaffold
+python3 scripts/emit.py --covers N40 --task smoke-scaffold
 """
 
 # SPEC N30. `uv run m0 dev` on a scaffolded app: build-then-swap, asked of a

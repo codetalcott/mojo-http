@@ -3,7 +3,8 @@
 **Preview.** Write a web application in [Mojo](https://www.modular.com/mojo)
 on the [mojo-http](https://github.com/codetalcott/mojo-http) framework: an
 HTTP/1.1 server, a router and views, HTML fragments for htmx and Datastar,
-Server-Sent Events, and a host that runs the lot as one binary with no
+Server-Sent Events, SQLite and PostgreSQL bindings that open their library
+at run time, and a host that runs the lot as one binary with no
 interpreter in it.
 
 This wheel carries the framework's **source** and a small CLI that builds
@@ -38,6 +39,8 @@ line cannot be accepted; `78` m0 refused before running anything, with one
 m0 runs the `mojo` installed in **its own environment** — never the one on
 `PATH` — and refuses a version it was not gated on, naming the pin to add.
 There is no override: every gate in the repository ran on that one compiler.
+MAX is optional and held the same way: `max-core`, if installed, must be
+the version the host was gated beside (`m0 doctor`'s `max-gated`).
 
 `m0` is versioned apart from the repository it is cut from, and stays `0.x`
 until an application outside that repository has soaked on it.

@@ -152,7 +152,7 @@ never printed. It exits with the code serving would exit with for the same
 arguments, because `serve` and the doctor read the same list of checks.
 
 `uv run m0 doctor` runs the toolchain's checks first (`platform`,
-`mojo-installed`, `mojo-gated`, `c-compiler`, `project`), then this one.
+`mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `project`), then this one.
 
 ## Shutdown
 

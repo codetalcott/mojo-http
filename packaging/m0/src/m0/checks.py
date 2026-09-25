@@ -1,7 +1,8 @@
 """The ONE list of checks, read by every command that refuses.
 
 `preflight()` stops at the first failure, before any command that runs the
-toolchain; `m0 doctor` runs all of them. Both read `CHECKS`, in its order,
+toolchain; `m0 doctor` runs all of them. Six checks: `platform`,
+`mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `project`. Both read `CHECKS`, in its order,
 which is the host's `host_checks` rule for the host's reason: a doctor that
 keeps a list of its own reports "fine" where the build refuses, and that is
 worse than no doctor. Add a refusal HERE, never beside a command.
@@ -67,6 +68,19 @@ def installed_mojo():
 
 def _pin_fix(gated):
     return f"uv add --dev 'mojo=={gated[0]}'"
+
+
+def installed_max():
+    """The `max-core` distribution in m0's OWN environment, or None. MAX is
+    optional beside an application (docs/DECISIONS.md D50)."""
+    try:
+        return importlib.metadata.version("max-core")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _max_fix(gated):
+    return f"uv add --dev 'max-core=={gated[0]}'"
 
 
 # --- platform ---------------------------------------------------------------
@@ -175,6 +189,40 @@ def check_mojo_gated(project):
     return gated_verdict(
         m0_version(), installed_mojo(), paths.build_info()["gated_mojo"]
     )
+
+
+# --- max-gated --------------------------------------------------------------
+#
+# MAX is optional: an application that never calls `parallelize` installs
+# no `max-core`, and this check passes saying so. One that does must hold
+# the version the host was gated beside -- `max-core` pins its own
+# `mojo-compiler` exactly, so any other version is a second toolchain in
+# the same venv, and the binary it builds links a parallel runtime nothing
+# here measured (SPEC E32). Read after `mojo-gated`, since a wrong mojo is
+# the earlier and larger mistake.
+
+
+def max_verdict(m0, installed, gated):
+    if installed is None:
+        return Result(
+            "max-gated", True,
+            f"max-core is not installed (optional; {_max_fix(gated)} for parallelize)",
+        )
+    # The singleton by equality, spelled apart from mojo-gated's line so a
+    # sabotage that reverts one cannot match the other.
+    if installed != gated[0]:
+        return Result(
+            "max-gated",
+            False,
+            f"m0 {m0} is gated beside max-core {gated[0]} and this environment "
+            f"has max-core {installed}",
+            _max_fix(gated),
+        )
+    return Result("max-gated", True, f"max-core {installed}")
+
+
+def check_max_gated(project):
+    return max_verdict(m0_version(), installed_max(), paths.build_info()["gated_max"])
 
 
 # --- c-compiler -------------------------------------------------------------
@@ -298,6 +346,7 @@ CHECKS = [
     ("platform", check_platform),
     ("mojo-installed", check_mojo_installed),
     ("mojo-gated", check_mojo_gated),
+    ("max-gated", check_max_gated),
     ("c-compiler", check_c_compiler),
     ("project", check_project),
 ]

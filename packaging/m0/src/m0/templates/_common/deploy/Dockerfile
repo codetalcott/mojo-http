@@ -50,9 +50,19 @@ RUN { uv run --frozen m0 build --release ${TARGET_CPU:+--target-cpu "$TARGET_CPU
 FROM ${BASE}
 
 ARG BASE
+# The C libraries the storage packages open at RUN time (nothing links
+# them): libsqlite3 for m0_sqlite, and `libpq5` beside it for m0_postgres --
+# `uv run m0 image -- --build-arg RUNTIME_LIBS="libsqlite3-0 libpq5"`.
+ARG RUNTIME_LIBS="libsqlite3-0"
+RUN apt-get update && apt-get install -y --no-install-recommends ${RUNTIME_LIBS} \
+    && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --create-home --uid 10001 app
 COPY --from=build /src/dist/ /app/
 COPY --from=build /tmp/facts/ /tmp/facts/
+# What the application writes lives here, and only here: /app is the
+# image's. Mount a volume at /app/data to keep it across deploys
+# (deploy/README.md).
+RUN mkdir /app/data && chown app:app /app/data
 
 # What the image is, measured from inside it as its last layer. The build
 # FAILS if an interpreter is present rather than writing a false line.
@@ -66,14 +76,15 @@ RUN set -e; \
     [ -n "$version" ] && [ -n "$cpu" ] || { echo "the builder recorded no version or no CPU" >&2; exit 1; }; \
     app_bytes=$(du -sb /app | cut -f1); \
     image_bytes=$(du -sxb / | cut -f1); \
-    printf '{"app":"%s","version":"%s","arch":"%s","cpu":"%s","base":"%s","python":false,"app_bytes":%s,"image_bytes":%s}\n' \
-      "__M0_APP__" "$version" "$(uname -m)" "$cpu" "$BASE" "$app_bytes" "$image_bytes" > /app/about.json; \
+    printf '{"app":"%s","version":"%s","arch":"%s","cpu":"%s","base":"%s","libs":"%s","python":false,"app_bytes":%s,"image_bytes":%s}\n' \
+      "__M0_APP__" "$version" "$(uname -m)" "$cpu" "$BASE" "$RUNTIME_LIBS" "$app_bytes" "$image_bytes" > /app/about.json; \
     cat /app/about.json
 
 USER app
 WORKDIR /app
 
 ENV M0_HOST=0.0.0.0 \
-    M0_PORT=8080
+    M0_PORT=8080 \
+    M0_DB=/app/data/__M0_APP__.db
 EXPOSE 8080
 ENTRYPOINT ["/app/server"]

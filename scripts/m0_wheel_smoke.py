@@ -22,11 +22,15 @@ The phases, each of which names the rule it holds (SPEC N23-N26):
   build      m0 build; serve; a changed literal rebuilt WHILE the old
              binary serves (it survives, its inode untouched), timed; a build that fails
              leaves the old binary byte-identical
-  test       m0 test green, red with a failing file, 78 with none
+  test       m0 test green -- a file that opens SQLite through the
+             wheel's m0_sqlite among them, since the storage packages
+             ride and link nothing -- red with a failing file, 78 with none
   doctor     --json green with the host's report inside; stale reported and
              not failed; `-- --workers 0` is 78 THROUGH the binary
   refusals   no network: a stub `mojo` 9.9.9 distribution whose `mojo`
              drops a marker -- the pair sentence verbatim and no marker;
+             a stub `max-core` 9.9.9 beside the REAL mojo -- the MAX pair's
+             sentence, from `max-gated` alone;
              that venv's m0 run from the real project -- the prefix
              sentence; no mojo at all; no project; PATH stripped to the
              venv -- the c-compiler sentence, while `m0 test` still passes
@@ -63,8 +67,31 @@ TREES = {
     "packages/m0-http/lightbug_http": "lightbug_http",
     "packages/m0-http/m0_host": "m0_host",
     "packages/m0-datastar/src": "m0_datastar",
+    "packages/m0-sqlite/src": "m0_sqlite",
+    "packages/m0-postgres/src": "m0_postgres",
 }
 TOOLS = ("relocate.py", "bundle_artifact.py", "binfmt.py")
+
+# A test the smoke's project runs through `m0 test`: the storage tree is in
+# the wheel AND its library opens at run time under `mojo run`, which is the
+# whole reason it can ride (SPEC O17, D49).
+STORE_TEST = """from std.testing import TestSuite, assert_equal, assert_true
+
+from m0_sqlite import open_memory
+
+
+def test_the_storage_package_rides_and_opens_its_library() raises:
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    db.execute("INSERT INTO t VALUES (41), (1)")
+    var q = db.prepare("SELECT sum(v) FROM t")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 42)
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()
+"""
 APP_ENV = {"M0_NOTES_KEY": "0123456789abcdef0123456789abcdef", "M0_NOTES_PASSWORD": "pw"}
 
 
@@ -82,6 +109,15 @@ def git(*args):
                           capture_output=True, text=True).stdout
 
 
+def root_max_pin():
+    """The root's `max` dependency group: one exact `max-core==X`."""
+    text = (ROOT / "pyproject.toml").read_text()
+    m = re.search(r'^max = \[\s*"max-core==([0-9.]+)",?\s*\]', text, re.M)
+    if not m:
+        fail("the root pyproject's [dependency-groups] max does not pin max-core exactly")
+    return m.group(1)
+
+
 def root_pin():
     text = (ROOT / "pyproject.toml").read_text()
     m = re.search(r'^\s*"mojo==([0-9.]+)",\s*$', text, re.M)
@@ -97,7 +133,7 @@ def emit(*args):
 
 # --- the wheel ---------------------------------------------------------------
 
-def check_wheel(whl, pin):
+def check_wheel(whl, pin, max_pin):
     z = zipfile.ZipFile(whl)
     names = set(z.namelist())
 
@@ -140,7 +176,7 @@ def check_wheel(whl, pin):
     version = re.match(r"m0-([^-]+)-py3-none-any\.whl$", whl.name)
     if not version:
         fail("the wheel is not py3-none-any: " + whl.name)
-    if list(info) != ["format", "m0", "gated_mojo", "framework", "commit", "dirty"]:
+    if list(info) != ["format", "m0", "gated_mojo", "gated_max", "framework", "commit", "dirty"]:
         fail("_build_info.json's keys are %r" % list(info))
     if "+" not in version.group(1):
         fail("the smoke's wheel carries no local label (M0_WHEEL_LOCAL): an exact pin on "
@@ -149,14 +185,16 @@ def check_wheel(whl, pin):
         fail("_build_info.json says %r for wheel %s" % (info, whl.name))
     if info["gated_mojo"] != [pin]:
         fail("gated_mojo is %r and the root pins %s" % (info["gated_mojo"], pin))
+    if info["gated_max"] != [max_pin]:
+        fail("gated_max is %r and the root's max group pins %s" % (info["gated_max"], max_pin))
     if info["commit"] != git("rev-parse", "HEAD").strip():
         fail("_build_info.json names another commit")
 
     meta = z.read([n for n in names if n.endswith(".dist-info/METADATA")][0]).decode()
     if "Requires-Dist" in meta:
         fail("the wheel declares a dependency; mojo is a checked pair, not a Requires-Dist (D39)")
-    print("wheel: %d source files, exactly git's; tools and licences byte-identical; gated on mojo %s"
-          % (len(got), pin))
+    print("wheel: %d source files, exactly git's; tools and licences byte-identical; gated on mojo %s beside max-core %s"
+          % (len(got), pin, max_pin))
     return info
 
 
@@ -199,6 +237,25 @@ def uv_venv(path, *install):
     if install:
         subprocess.run(["uv", "pip", "install", "--quiet", "--python",
                         str(path / "bin" / "python"), *install], check=True)
+
+
+def stub_dist_wheel(out, dist, version):
+    """A bare distribution of any name, zipped on the spot: metadata and
+    nothing else, so `importlib.metadata` sees a version and no code runs."""
+    whl = out / ("%s-%s-py3-none-any.whl" % (dist.replace("-", "_"), version))
+    info = "%s-%s.dist-info" % (dist.replace("-", "_"), version)
+    files = {
+        info + "/METADATA": "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" % (dist, version),
+        info + "/WHEEL": "Wheel-Version: 1.0\nGenerator: smoke\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    with zipfile.ZipFile(whl, "w") as z:
+        record = []
+        for name, text in files.items():
+            z.writestr(name, text)
+            record.append(name + ",,")
+        record.append(info + "/RECORD,,")
+        z.writestr(info + "/RECORD", "\n".join(record) + "\n")
+    return whl
 
 
 def stub_mojo_wheel(out, marker_var):
@@ -254,15 +311,16 @@ def main():
         fail("want exactly one wheel in %s, found %d" % (sys.argv[1], len(wheels)))
     whl = wheels[0].resolve()
     pin = root_pin()
+    max_pin = root_max_pin()
 
     phase("wheel")
-    info = check_wheel(whl, pin)
+    info = check_wheel(whl, pin, max_pin)
     m0v = info["m0"]
 
     work = Path(tempfile.mkdtemp(prefix="m0-wheel-smoke-")).resolve()
     servers = []
     try:
-        run(work, whl, pin, m0v, port, servers)
+        run(work, whl, pin, max_pin, m0v, port, servers)
     finally:
         for p in servers:
             if p.poll() is None:
@@ -295,7 +353,7 @@ def check_untracked_cannot_ship(work):
     print("wheel: an untracked file planted in m0-http/src did not ship")
 
 
-def run(work, whl, pin, m0v, port, servers):
+def run(work, whl, pin, max_pin, m0v, port, servers):
     check_untracked_cannot_ship(work)
     marker = work / "stub-mojo-ran"
     os.environ["M0_STUB_MARKER"] = str(marker)
@@ -318,6 +376,7 @@ def run(work, whl, pin, m0v, port, servers):
     shutil.copytree(ROOT / "apps/blobs", proj / "src/blobs",
                     ignore=shutil.ignore_patterns("test", "server.mojo"))
     shutil.copy2(ROOT / "apps/blobs/test/test_board.mojo", proj / "test/test_board.mojo")
+    (proj / "test/test_store.mojo").write_text(STORE_TEST)
     uv_venv(proj / ".venv", str(whl), "mojo==" + pin)
     real = Project(proj, proj / ".venv", stub_bin)
 
@@ -420,8 +479,10 @@ def run(work, whl, pin, m0v, port, servers):
     done = real.m0("test")
     expect(done, 0, "m0 test")
     took = time.time() - t0
-    if "m0 test: 1 of 1 files passed" not in done.stdout:
+    if "m0 test: 2 of 2 files passed" not in done.stdout:
         fail("m0 test's summary is missing:\n" + done.stdout[-1000:])
+    if "test_the_storage_package_rides_and_opens_its_library" not in done.stdout:
+        fail("the storage test did not run:\n" + done.stdout[-1000:])
     (proj / "test/test_zfails.mojo").write_text(
         "from std.testing import assert_equal, TestSuite\n\n\n"
         "def test_no() raises:\n    assert_equal(1, 2)\n\n\n"
@@ -429,7 +490,7 @@ def run(work, whl, pin, m0v, port, servers):
         "    TestSuite.discover_tests[__functions_in_module()]().run()\n")
     done = real.m0("test")
     expect(done, 1, "m0 test with a failing file")
-    if "m0 test: 1 of 2 files failed: test/test_zfails.mojo" not in done.stdout:
+    if "m0 test: 1 of 3 files failed: test/test_zfails.mojo" not in done.stdout:
         fail("a failing file is not named:\n" + done.stdout[-1000:])
     expect(real.m0("test", "test/test_board.mojo"), 0, "m0 test FILE")
     expect(real.m0("test", "test/nope.mojo"), 2, "m0 test of a missing file")
@@ -439,7 +500,7 @@ def run(work, whl, pin, m0v, port, servers):
                    "m0: no test/test_*.mojo here (a run that tested nothing is not a pass)",
                    "m0 test with no tests")
     shutil.move(proj / "test.away", proj / "test")
-    print("test: green in %.1f s, red names the file, none is 78" % took)
+    print("test: green in %.1f s (SQLite opened through the wheel), red names the file, none is 78" % took)
     emit("m0.test_s", "%.1f" % took, "--unit", "s")
 
     phase("doctor")
@@ -457,14 +518,19 @@ def run(work, whl, pin, m0v, port, servers):
     doc = json.loads(done.stdout.strip().splitlines()[-1])
     if not doc["ok"] or doc["exit"] != 0 or doc["app"]["stale"]:
         fail("a good project is not green: %r" % doc)
-    if [c["name"] for c in doc["checks"]] != ["platform", "mojo-installed", "mojo-gated", "c-compiler", "project"]:
+    if [c["name"] for c in doc["checks"]] != ["platform", "mojo-installed", "mojo-gated", "max-gated", "c-compiler", "project"]:
         fail("the checks are %r" % [c["name"] for c in doc["checks"]])
+    maxc = doc["checks"][3]
+    if not maxc["ok"] or "not installed" not in maxc["detail"] or max_pin not in maxc["detail"]:
+        fail("max-gated with no max-core is not the optional pass naming the pin: %r" % maxc)
     report = doc["app"]["report"]
     if next(iter(report)) != "m0_host" or report["m0_host"] != "1" or "topology" not in report:
         fail("the host's report is not inside the doctor's: %r" % report)
     v = doc["versions"]
     if v["m0"] != m0v or v["mojo"] != pin or v["gated_mojo"] != [pin]:
         fail("versions: %r" % v)
+    if v["gated_max"] != [max_pin] or v["max"] is not None:
+        fail("versions (max): %r" % v)
     if doc["paths"]["mojo"] != str(proj / ".venv/bin/mojo"):
         fail("paths.mojo is %r" % doc["paths"]["mojo"])
 
@@ -485,6 +551,8 @@ def run(work, whl, pin, m0v, port, servers):
     expect(text, 0, "m0 doctor")
     if "ok   app: " not in text.stdout or "ok   c-compiler" not in text.stdout:
         fail("the plain doctor:\n" + text.stdout)
+    if "ok   max-gated: max-core is not installed" not in text.stdout:
+        fail("the plain doctor does not say MAX is optional:\n" + text.stdout)
     print("doctor: green with the host's report inside; stale reported; --workers 0 is 78 through the binary")
 
     phase("refusals")
@@ -502,6 +570,26 @@ def run(work, whl, pin, m0v, port, servers):
     bad = [c for c in doc["checks"] if not c["ok"]]
     if [c["name"] for c in bad] != ["mojo-gated"] or bad[0]["fix"] != fix or bad[0]["exit"] != 78:
         fail("the doctor beside mojo 9.9.9 failed %r" % bad)
+
+    # MAX at another version, beside the REAL toolchain so that mojo-gated
+    # passes and max-gated is the check that speaks (D50). A stub
+    # distribution: nothing of MAX runs here, the pair is read from metadata.
+    max_venv = work / "maxvenv"
+    uv_venv(max_venv, str(whl), "mojo==" + pin, str(stub_dist_wheel(work, "max-core", "9.9.9")))
+    max_fix = "uv add --dev 'max-core==%s'" % max_pin
+    max_pair = ("m0: m0 %s is gated beside max-core %s and this environment has max-core 9.9.9 (%s)"
+                % (m0v, max_pin, max_fix))
+    beside_max = Project(bare, max_venv)
+    expect_refusal(beside_max.m0("build"), max_pair, "m0 build beside max-core 9.9.9")
+    expect_refusal(beside_max.m0("test"), max_pair, "m0 test beside max-core 9.9.9")
+    done = beside_max.m0("doctor", "--json")
+    expect(done, 78, "m0 doctor beside max-core 9.9.9")
+    doc = json.loads(done.stdout.strip().splitlines()[-1])
+    bad = [c for c in doc["checks"] if not c["ok"]]
+    if [c["name"] for c in bad] != ["max-gated"] or bad[0]["fix"] != max_fix or bad[0]["exit"] != 78:
+        fail("the doctor beside max-core 9.9.9 failed %r" % bad)
+    if doc["versions"]["max"] != "9.9.9":
+        fail("the doctor does not report the installed max-core: %r" % doc["versions"])
 
     # The `uvx m0 build` mistake: a foreign m0 in a project with a toolchain.
     foreign = Project(proj, stub_venv)
@@ -562,7 +650,7 @@ def run(work, whl, pin, m0v, port, servers):
     expect(real.m0("test", path=stripped), 0, "m0 test with no cc on PATH")
     if marker.exists():
         fail("a refused command ran mojo")
-    print("refusals: the pair, the foreign prefix, no mojo, no project, no cc -- each its sentence, 78, and nothing run")
+    print("refusals: the pair, the MAX pair, the foreign prefix, no mojo, no project, no cc -- each its sentence, 78, and nothing run")
 
     phase("own prefix")
     if marker.exists():
