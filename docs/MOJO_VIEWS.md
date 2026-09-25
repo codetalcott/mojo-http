@@ -38,7 +38,8 @@ def item_urls() raises -> Views[Items]:
 state and must run on the loop, which is where a stream is opened.
 `params` holds the route's `:name` captures in order. A method the path
 does not take is answered 405 with an `Allow` header, and `OPTIONS` on a
-registered path 204.
+registered path 204. A GET route answers HEAD too, the body dropped and its
+`Content-Length` kept; a route registered for HEAD itself wins.
 
 There is no middleware and no decorator. A stored view is a plain function
 pointer, and a closure is not one. A guard is a function returning

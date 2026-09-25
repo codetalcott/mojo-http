@@ -162,7 +162,40 @@ def test_wrong_method_is_405_with_allow() raises:
     var allow = resp.headers.get(HeaderKey.ALLOW)
     assert_true(allow)
     # `Router.allow_header` adds OPTIONS itself — every path answers it.
-    assert_equal(allow.value(), "GET, POST, OPTIONS")
+    assert_equal(allow.value(), "GET, HEAD, POST, OPTIONS")
+
+
+def test_head_reaches_the_get_view_in_either_table() raises:
+    """A server that answers GET answers HEAD (RFC 9110 §9.1): a HEAD with no
+    route of its own reaches the view its GET would, in the main table, on
+    the loop, and on the loop with the state; the server drops the body. It
+    never reaches another method's view, and a path with no GET is still a
+    405 for it.
+
+    covers: N38
+    """
+    var v = _table()
+    v.add_loop(String("GET"), String("/health"), _health)
+    v.add_read(String("GET"), String("/stats"), _index, on_loop=True)
+    v.add_write(String("POST"), String("/drop"), _bump)
+    var st = Counter()
+    var head = v.dispatch(_req(String("HEAD"), String("/notes/42")), st)
+    assert_equal(head.status_code, 200)
+    # The GET's view ran: its body is what the server measures, then drops.
+    assert_equal(_body(head), "<p>id 42</p>")
+    # `/notes` takes GET and POST; the HEAD is the GET's, never the write.
+    assert_equal(_body(v.dispatch(_req(String("HEAD"), String("/notes")), st)), "<p>index 0</p>")
+    assert_equal(st.hits, 0)
+    assert_true(v.answer_on_loop(_req(String("HEAD"), String("/health"))))
+    var stats = v.answer_on_loop(_req(String("HEAD"), String("/stats")), st)
+    assert_true(stats, "a HEAD to an on-loop GET was not answered on the loop")
+    assert_equal(_body(stats.value()), "<p>index 0</p>")
+    # A loop route that reaches dispatch is answered there, HEAD as GET.
+    assert_equal(v.dispatch(_req(String("HEAD"), String("/health")), st).status_code, 200)
+    var refused = v.dispatch(_req(String("HEAD"), String("/drop")), st)
+    assert_equal(refused.status_code, 405)
+    assert_equal(refused.headers[HeaderKey.ALLOW], "POST, OPTIONS")
+    assert_equal(st.hits, 0)
 
 
 def test_view_service_needs_no_handler_struct() raises:
@@ -224,21 +257,21 @@ def test_a_loop_route_in_the_wrong_method_is_405_with_allow() raises:
     var st = Counter()
     var resp = v.dispatch(_req(String("POST"), String("/health")), st)
     assert_equal(resp.status_code, 405)
-    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, OPTIONS")
+    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, HEAD, OPTIONS")
 
 
 def test_allow_merges_both_tables_for_one_path() raises:
     var v = _table()
     v.add_loop(String("GET"), String("/x"), _health)
     v.add_write(String("POST"), String("/x"), _bump)
-    assert_equal(v.allow_header(String("/x")), "POST, GET, OPTIONS")
+    assert_equal(v.allow_header(String("/x")), "POST, GET, HEAD, OPTIONS")
     var st = Counter()
     var resp = v.dispatch(_req(String("PUT"), String("/x")), st)
     assert_equal(resp.status_code, 405)
-    assert_equal(resp.headers[HeaderKey.ALLOW], "POST, GET, OPTIONS")
+    assert_equal(resp.headers[HeaderKey.ALLOW], "POST, GET, HEAD, OPTIONS")
     # A path only one table knows keeps that table's list.
     assert_equal(v.allow_header(String("/health")), "OPTIONS")
-    assert_equal(v.allow_header(String("/notes")), "GET, POST, OPTIONS")
+    assert_equal(v.allow_header(String("/notes")), "GET, HEAD, POST, OPTIONS")
 
 
 def test_options_on_a_registered_path_is_204_with_allow() raises:
@@ -250,10 +283,10 @@ def test_options_on_a_registered_path_is_204_with_allow() raises:
     var st = Counter()
     var resp = v.dispatch(_req(String("OPTIONS"), String("/notes")), st)
     assert_equal(resp.status_code, 204)
-    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, POST, OPTIONS")
+    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, HEAD, POST, OPTIONS")
     resp = v.dispatch(_req(String("OPTIONS"), String("/health")), st)
     assert_equal(resp.status_code, 204)
-    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, OPTIONS")
+    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, HEAD, OPTIONS")
     # On a path nothing serves it is a 404, like any other method.
     resp = v.dispatch(_req(String("OPTIONS"), String("/nope")), st)
     assert_equal(resp.status_code, 404)
@@ -321,7 +354,7 @@ def test_an_on_loop_route_is_answered_with_its_state_before_dispatch() raises:
     # it, and names it in `Allow` exactly once.
     assert_equal(v.route_count(), 5)
     assert_equal(_body(v.dispatch(_req(String("GET"), String("/stats")), st)), "<p>index 1</p>")
-    assert_equal(v.allow_header(String("/stats")), "GET, OPTIONS")
+    assert_equal(v.allow_header(String("/stats")), "GET, HEAD, OPTIONS")
     assert_equal(v.allow_header(String("/events")), "POST, OPTIONS")
     # A route not flagged is not answered on the loop, and the wrong method
     # on a flagged one falls through to dispatch's 405.
