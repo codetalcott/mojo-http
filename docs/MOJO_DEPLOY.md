@@ -79,7 +79,8 @@ fly scale count 1 -a NAME
   whose state lives in the process has one machine's state on each.
 - **One loop.** On one shared vCPU a second worker or loop has no core to
   run on, so the scaffold's `fly.toml` leaves `M0_WORKERS` and `M0_THREADS`
-  unset.
+  unset. On a machine with more than one vCPU, set `M0_THREADS` to the
+  count ([the host](MOJO_HOST.md)).
 - The scaffold's `fly.toml` counts connections rather than requests, never
   stops the machine, and sets a 25-second SSE heartbeat: a held stream is
   one connection for its whole life, and a quiet one needs traffic to stay

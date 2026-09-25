@@ -50,6 +50,9 @@ tell, so it is not claimed as a guarded rule.
     uv run poe sabotage-host --only threads        the loops-on-threads rules (SPEC E27-E29)
     uv run poe sabotage-host --only doctor         the command line on the wire (SPEC E30, E31)
     uv run poe sabotage-host --only flags          the parser's rules
+    uv run poe sabotage-host --only parallel       the refusal of prefork beside
+                                                   MAX's parallel runtime (SPEC E32;
+                                                   needs `uv sync --group max`)
 """
 
 from __future__ import annotations
@@ -77,6 +80,7 @@ VIEWS = "views"
 THREADS = "threads"
 DOCTOR = "doctor"
 FLAGS = "flags"
+PARALLEL = "parallel"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
 EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
@@ -533,6 +537,13 @@ SABOTAGES = [
         '        config.threads = _parse_int(value, "--threads")\n',
         '        config.threads = _parse_int(value, "--threads")\n        if config.threads < 1:\n            raise Error("--threads must be at least 1")\n',
     ),
+    (
+        "prefork is refused when MAX's parallel runtime is linked",
+        PARALLEL,
+        HOST,
+        "    if config.workers > 1 and linked:\n",
+        "    if False and config.workers > 1 and linked:\n",
+    ),
 ]
 
 
@@ -608,6 +619,17 @@ def run_doctor() -> tuple[bool, str]:
     return (p.returncode == 0 and "smoke-host-doctor OK" in out), out
 
 
+def run_parallel() -> tuple[bool, str]:
+    """`smoke-parallel-runtime` (SPEC E32). Needs MAX's Mojo packages in the
+    venv (`uv sync --group max`); without them the baseline fails at the
+    build, which the report shows as a baseline failure, never as a catch."""
+    p = subprocess.run(
+        [POE, "smoke-parallel-runtime"], capture_output=True, text=True, timeout=900
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and "smoke-parallel-runtime OK" in out), out
+
+
 def run_flags() -> tuple[bool, str]:
     p = subprocess.run(
         [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
@@ -621,7 +643,7 @@ def run_flags() -> tuple[bool, str]:
 GATES = {
     SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork,
     RESPAWN: run_respawn, VIEWS: run_views, THREADS: run_threads,
-    DOCTOR: run_doctor, FLAGS: run_flags,
+    DOCTOR: run_doctor, FLAGS: run_flags, PARALLEL: run_parallel,
 }
 
 
