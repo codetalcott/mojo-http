@@ -24,7 +24,7 @@ from src import (
     error_code,
     SQLITE_RANGE,
 )
-from src.ffi import libversion_number
+from src.lib import libversion_number
 
 
 def _db() raises -> Connection:

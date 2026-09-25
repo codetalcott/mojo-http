@@ -33,14 +33,27 @@ above those methods in `stmt.mojo`.
 
 Depends on nothing else in this repo — it is a sibling of `m0-core` and
 `m0-http`, not a layer on top of them.
+
+**libsqlite3 is opened at run time, not linked.** No binary that uses this
+package carries a libsqlite3 dependency on its link line, so `mojo run`
+works on Linux as it does on macOS and `m0 build` needs no flag for it. An
+absent library is one raised error naming every path tried; `M0_LIBSQLITE3`
+names the file outright. See `lib.mojo`, whose three rules — the handle
+lives with its pointers, a pointer is called only beside them, the library
+is never unloaded — are what let a `Statement` outlive its `Connection`.
 """
 
-from .ffi import (
+from .lib import (
+    SqliteLib,
+    open_library,
+    default_search_path,
     libversion,
     libversion_number,
     errstr,
+    MIN_SQLITE_VERSION,
+)
+from .ffi import (
     error_code,
-    db_errmsg,
     c_string,
     # Result codes. `error_code` hands back one of these, so the set worth
     # exporting is the set worth branching on — which is why SQLITE_CONSTRAINT

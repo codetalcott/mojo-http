@@ -1,14 +1,12 @@
-"""Raw SQLite C-API surface: constants, string marshalling, version probe.
+"""SQLite constants, string marshalling and error text — the pure half.
 
-Everything that touches `external_call` directly lives here so `conn.mojo` and
-`stmt.mojo` read as ordinary Mojo. Seeded from a benchmark binding written
-against Mojo 1.0.0 / SQLite 3.51.0.
+Nothing here calls C. The C surface is `lib.mojo`'s tables, opened at run
+time; what lives here is what `conn.mojo`, `stmt.mojo` and `vtab.mojo`
+share that needs no library: the result codes, the C-string helpers, and
+the one shape every error message takes. Seeded from a benchmark binding
+written against Mojo 1.0.0 / SQLite 3.51.0.
 
-Three facts that shape this whole package:
-
-  - **libsqlite3 needs no link flags on macOS**, because libsqlite3.dylib lives
-    in the dyld shared cache and `external_call` resolves against it. On Linux
-    the library must be present at link time; see the README.
+Two facts that shape this whole package:
 
   - **Mojo 1.0 pointers are non-null by design**, so a NULL argument cannot be
     written `Pointer[T]()`. `sqlite3*` and `sqlite3_stmt*` are carried as
@@ -19,7 +17,6 @@ Three facts that shape this whole package:
 """
 
 from std.collections.span import Span
-from std.ffi import external_call, c_int
 from std.memory import Pointer
 
 # --- Result codes ---
@@ -153,105 +150,30 @@ def c_string(s: String) -> List[UInt8]:
     return out^
 
 
-def libversion() -> String:
-    """SQLite library version, e.g. "3.51.0".
-
-    Doubles as the cheapest possible link check: if libsqlite3 is not resolvable
-    this is where it fails, before any database is touched.
-    """
-    var p = external_call["sqlite3_libversion", CharPtr]()
-    return cstr_to_string(p, cstr_len(p))
-
-
-def libversion_number() -> Int:
-    """SQLite library version as an integer, e.g. 3045001 for "3.45.1".
-
-    Encoded by SQLite as major*1000000 + minor*1000 + patch, which is what
-    makes it comparable — the string form is not.
-    """
-    return Int(external_call["sqlite3_libversion_number", c_int]())
-
-
-def errstr(code: Int) -> String:
-    """English text for a primary result code, independent of any connection."""
-    var p = external_call["sqlite3_errstr", CharPtr](c_int(code))
-    return cstr_to_string(p, cstr_len(p))
-
-
-def db_errmsg(db_handle: Int) -> String:
-    """Text of the most recent error on a connection handle.
-
-    Far more specific than `errstr`, which only knows the result code:
-    "UNIQUE constraint failed: users.name" versus "constraint failed".
-    """
-    if db_handle == 0:
-        return String("")
-    var p = external_call["sqlite3_errmsg", CharPtr](db_handle)
-    return cstr_to_string(p, cstr_len(p))
-
-
-def db_errcode(db_handle: Int) -> Int:
-    """Result code of the most recent failed API call on a connection."""
-    if db_handle == 0:
-        return SQLITE_OK
-    return Int(external_call["sqlite3_errcode", c_int](db_handle))
-
-
-def stmt_errmsg(stmt_handle: Int, rc: Int) -> String:
-    """Message for `rc` from the connection owning a statement, or "" if unsure.
-
-    `sqlite3_db_handle` recovers the owning `sqlite3*` from the statement, so
-    `Statement` gets SQLite's real message without storing a connection handle
-    and without any question about which of the two owns the other.
-
-    The corroboration check is not paranoia. Mojo destroys a value at its last
-    use, so a `Connection` whose last mention was `prepare()` is already closed
-    by the time the statement fails — the statement keeps working (close_v2
-    leaves the connection alive until its statements finalize) but the closed
-    connection answers SQLITE_MISUSE to every question. Reporting that would
-    turn a true "UNIQUE constraint failed: u.name" into a false "bad parameter
-    or other API misuse". So the message is used only when the connection's own
-    error code agrees with the code being described; otherwise the caller falls
-    back to `errstr`, which is less specific but always true.
-
-    That comparison assumes **primary** result codes on both sides, which holds
-    only because nothing here calls `sqlite3_extended_result_codes`. Turn those
-    on and `sqlite3_step` starts returning 2067 where `sqlite3_errcode` still
-    answers 19, the corroboration fails every time, and every message silently
-    degrades to `errstr`. If extended codes are ever wanted, this must compare
-    against `sqlite3_extended_errcode` instead — and `error_code`'s callers
-    would need to stop comparing against primary constants.
-    """
-    if stmt_handle == 0:
-        return String("")
-    var db = external_call["sqlite3_db_handle", Int](stmt_handle)
-    if db_errcode(db) != rc:
-        return String("")
-    return db_errmsg(db)
-
-
-def _best_message(rc: Int, detail: String) -> String:
+def _best_message(detail: String, fallback: String) -> String:
     """SQLite's own message when it has one, else the text for the code.
 
     `sqlite3_errmsg` reports "not an error" when nothing failed on the
     connection, which is worse than useless in an error message, so that case
-    falls back to `errstr` too.
+    falls back too. The fallback is `errstr(rc)`, handed in by the caller —
+    the one with a library table to ask — so this file stays free of C.
     """
     if len(detail.as_bytes()) == 0 or detail == "not an error":
-        return errstr(rc)
+        return fallback
     return detail
 
 
-def describe(what: String, rc: Int, detail: String) -> String:
-    """Uniform error text ending in the result code."""
+def describe(what: String, rc: Int, detail: String, fallback: String) -> String:
+    """Uniform error text ending in the result code. `fallback` is the text
+    for `rc` alone (`errstr`), used when `detail` says nothing."""
     return (
-        "sqlite3_" + what + " failed: " + _best_message(rc, detail)
+        "sqlite3_" + what + " failed: " + _best_message(detail, fallback)
         + " (rc=" + String(rc) + ")"
     )
 
 
 def describe_in(
-    what: String, rc: Int, detail: String, context: String
+    what: String, rc: Int, detail: String, context: String, fallback: String
 ) -> String:
     """`describe`, plus the SQL or path the failing call was made against.
 
@@ -262,7 +184,7 @@ def describe_in(
     keeps that from drifting apart again.
     """
     return (
-        "sqlite3_" + what + " failed: " + _best_message(rc, detail)
+        "sqlite3_" + what + " failed: " + _best_message(detail, fallback)
         + " [" + context + "] (rc=" + String(rc) + ")"
     )
 

@@ -18,6 +18,7 @@ from src.ffi import check_c_int_length, MAX_C_INT, describe
 from src import (
     Connection,
     Statement,
+    open_library,
     open_memory,
     open_readonly,
     libversion,
@@ -731,12 +732,14 @@ def test_describe_falls_back_when_the_connection_has_no_message() raises:
     """`sqlite3_errmsg` says "not an error" when nothing failed on the
     connection, which is worse than useless inside an error message.
     """
-    assert_true("not an error" not in describe("step", 1, "not an error"))
-    assert_true("(rc=1)" in describe("step", 1, "not an error"))
-    assert_true("(rc=1)" in describe("step", 1, ""))
+    var fallback = errstr(1)
+    assert_true("not an error" not in describe("step", 1, "not an error", fallback))
+    assert_true(fallback in describe("step", 1, "not an error", fallback))
+    assert_true("(rc=1)" in describe("step", 1, "not an error", fallback))
+    assert_true("(rc=1)" in describe("step", 1, "", fallback))
     assert_true(
         "UNIQUE constraint failed: u.name"
-        in describe("step", 19, "UNIQUE constraint failed: u.name")
+        in describe("step", 19, "UNIQUE constraint failed: u.name", errstr(19))
     )
 
 
@@ -801,7 +804,7 @@ def test_a_null_statement_handle_is_refused() raises:
     but the constructor is public and takes a bare Int.
     """
     with assert_raises():
-        var _s = Statement(0)
+        var _s = Statement(0, open_library().stmt_lib())
 
 
 def test_query_scalar_reads_one_cell() raises:

@@ -851,10 +851,22 @@ CI runs the server half in a Linux-only job with a service container, because
 GitHub's service containers require a Linux runner; `docs/RELEASING.md` names
 the macOS arm. Those tests FAIL without a server and never skip.
 
-`m0-sqlite` imports nothing else here and links the system libsqlite3 — no link
-flags on macOS, present-at-link on Linux. `Connection` and `Statement` are
-`Movable` but not `Copyable` on purpose: copying would duplicate a handle and
-the second destructor would double-free. Do not add `Copyable`.
+`m0-sqlite` imports nothing else here and, since 2026-09-25, links
+**nothing**: libsqlite3 is opened with `dlopen` at run time (`src/lib.mojo`,
+in `m0-postgres`'s shape and under its three rules — handle and pointers in
+one struct, every entry point behind a method, the image pinned
+`RTLD_NODELETE` so a `Statement`'s copy of the table outlives the
+`Connection` that loaded it), from `M0_LIBSQLITE3` or a search path, and
+refused below 3.20.0, built without threads, or missing a symbol. So every
+test in the package runs under `mojo run` on both platforms, `build-apps`
+fails if `datastar_todo`'s binary names the library, and a `-Xlinker
+-lsqlite3` anywhere in the tree is a regression (SPEC O17–O18, D49;
+docs/notes/sqlite-at-run-time.md). The virtual-table callbacks reach the
+table through words stored after the `sqlite3_module` in the buffer SQLite
+hands back as `pAux` (`A_LIB`, `V_AUX`; `verify-vtab-layout` holds them).
+`Connection` and `Statement` are `Movable` but not `Copyable` on purpose:
+copying would duplicate a handle and the second destructor would
+double-free. Do not add `Copyable`.
 
 Three m0-sqlite invariants that look like bugs and are not:
 
@@ -1112,7 +1124,7 @@ uv run poe smoke-hello      # start hello, assert /health, stop
 uv run poe smoke-counter    # assert an SSE broadcast reaches a live client
 uv run poe smoke-shutdown   # SIGTERM drains; signalling the supervisor reaps workers
 uv run poe smoke-blocking-threads  # a slow view must not stall what is behind it
-uv run poe test-sqlite      # needs libsqlite3 on the system
+uv run poe test-sqlite      # needs the runtime libsqlite3 on the system (opened, not linked)
 uv run poe check-keepalive-barrier # the `_ = x` at an FFI site still pins the buffer
 uv run poe sabotage-keepalive      # revert each of the probe's rules; all must be caught
 uv run poe canary           # full suite against the Mojo nightly, then restore
@@ -1237,9 +1249,8 @@ dependencies. `mojo` lives in `.venv`, so every invocation needs `uv run`
 uv run mojo run -I packages/m0-http -I packages/m0-core \
   packages/m0-http/test/test_router.mojo
 
-# m0-sqlite is the exception: build, then run. Never `mojo run` — see below.
-uv run mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 \
-  packages/m0-sqlite/test/test_sqlite.mojo -o /tmp/t && /tmp/t
+# m0-sqlite too: libsqlite3 is opened at run time, so nothing links it.
+uv run mojo run -I packages/m0-sqlite packages/m0-sqlite/test/test_sqlite.mojo
 ```
 
 Tests are `std.testing`: `test_*` functions in a `test_*.mojo`, dispatched by

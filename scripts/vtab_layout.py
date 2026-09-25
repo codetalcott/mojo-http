@@ -53,6 +53,11 @@ MOJO_OWN = {
     "C_COUNT", "C_KIND", "C_INDEX", "C_WORDS",
     "KIND_INT", "KIND_FLOAT",
     "SQLITE_MIN_VTAB_VERSION",
+    # The library entry points stored past the module (A_LIB, A_WORDS) and
+    # the pAux word in our vtab allocation (V_AUX): Mojo's layout, past or
+    # beside what SQLite reads. V_AUX must stay below V_WORDS, which the C
+    # file holds to sizeof(sqlite3_vtab).
+    "A_LIB", "A_WORDS", "V_AUX",
 }
 
 _CONST = re.compile(r"^comptime ([A-Z][A-Z0-9_]*): Int = (\d[\d_]*)\s*$", re.M)
