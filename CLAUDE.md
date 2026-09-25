@@ -1036,8 +1036,11 @@ one home; `0.x` until the layer soak). Rules:
 - **`m0 new` writes from REAL files** (`src/m0/templates/`, SPEC N27–N29,
   D44; docs/notes/the-scaffold.md): two sessionless templates, `views`
   (htmx 4) and `live` (a producer and Datastar frames, its kick count kept
-  in SQLite by a store the producer opens on its OWN thread at its first
-  step, never in `make`, which runs before the fork — N40), behind a closed
+  in SQLite by a store the handler opens in `make` — once per worker, loop
+  or pool thread, after the fork — and counted inside the kick's own
+  request, so it is a committed row when the 204 is answered; a producer
+  writing it back on its poll lost the kick posted just before SIGTERM,
+  on CI — N40), behind a closed
   `--template`. A template compiles UNSUBSTITUTED — the app's name only
   inside string literals, TOML and Markdown, as `__M0_APP__` — which is
   what lets substitution be `str.replace`; `poe check-templates` (in

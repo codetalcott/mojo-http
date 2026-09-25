@@ -131,10 +131,14 @@ its views.
   `libpq5` is one build argument away (`deploy/README.md`);
   `M0_LIBSQLITE3` and `M0_LIBPQ` name a file outright.
 - **A connection belongs to one thread, opened where that thread runs**:
-  a handler's `make` (once per worker or loop), a producer's first `step`.
-  Never before the fork, never shared across threads. `open(path)` puts
-  the file in WAL mode and refuses a target that cannot be (`:memory:`);
-  `open_memory()` is for tests.
+  a handler's `make` (once per worker, loop or pool thread), a producer's
+  first `step`. Never before the fork, never shared across threads.
+  `open(path)` puts the file in WAL mode and refuses a target that cannot
+  be (`:memory:`); `open_memory()` is for tests.
+- **A value that must survive a restart is written in the request that
+  changes it**, so the answer the client sees is a committed row. A
+  producer that writes state back on its poll loses whatever landed
+  between its last poll and SIGTERM; `live` lost a kick that way on CI.
 - Two workers over one file are fine under WAL. A mutation that then
   BROADCASTS holds the write lock (`db.begin_immediate()` … `db.commit()`)
   from its change until its frame is numbered, or a stale render can take

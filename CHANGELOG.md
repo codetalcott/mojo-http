@@ -44,9 +44,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and `m0_postgres` are two more source trees under `m0/_mojo/`, usable
   with no link flag because both open their library at run time; the
   wheel smoke opens SQLite through the installed tree under `m0 test`.
-  `live`'s producer owns a `store.mojo` opened on its own thread at its
-  first step and written whenever the count moves, so `smoke.sh` restarts
-  the server and finds the kick; the scaffold's image installs
+  `live`'s handler opens a `store.mojo` in `make` (once per worker, loop
+  or pool thread, after the fork) and the kick view counts in it inside
+  its own request, so `smoke.sh` restarts the server and finds the kick;
+  the scaffold's image installs
   `libsqlite3-0` (`RUNTIME_LIBS`, `libpq5` by one build argument), records
   it in `about.json`, and points `M0_DB` under `/app/data` for a volume.
   `gated_max` is read from the root's `max` group beside `gated_mojo`, and

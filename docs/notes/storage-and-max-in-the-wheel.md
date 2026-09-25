@@ -36,18 +36,29 @@ wheel" and "the image can open a database" are two claims.
 
 A template with a database in it is what shows an application author the
 rules. `store.mojo` is one row in SQLite — `counters(name, value)` — and
-the producer owns it: opened on the producer's own thread at its FIRST
-step, never in `make`, because `make` runs before the host forks and a
-SQLite connection carried across `fork()` is the one thing SQLite's own
-documentation says not to do. At that first step the stored count seeds
-the shared board (added, since kicks may already have landed) and the wave
-is told not to react to history; after that the count is written whenever
-it moved, before the pause branch, so a kick posted while nobody watches is
-kept too.
+the HANDLER owns it: `LiveHandler.make` opens the connection, and the host
+runs `make` once per worker, per loop and per handler-pool thread, always
+after it forks — a SQLite connection carried across `fork()` is the one
+thing SQLite's own documentation says not to do. The kick view counts in
+the database inside its own request (`UPDATE … value = value + 1`, so two
+workers kicking at once both count) before it touches the board's word,
+and `/stats` reads the total back from the file; the board's word keeps
+kicks since start, for the wave alone. The schema is created inside an
+IMMEDIATE transaction, for the reason `datastar_todo` found at two workers.
+
+That is the second shape. The first had the PRODUCER own the store —
+opened at its first step, the board seeded from it, the count written back
+whenever it moved — and CI's ubuntu leg found it in one run: after
+`smoke.sh`'s restart, `/stats` said `{"steps":0,"kicks":0}`. The producer
+polls, every 50 ms while nobody watches, and the smoke's kick landed inside
+one poll and its SIGTERM before the next, so the write never ran; locally
+the same race had simply not fired. A count that must survive a restart is
+written in the request that changes it, where the 204 the client sees is a
+committed row, and a producer that polls is the wrong owner for it.
 
 `smoke.sh` restarts the server on the same file and polls `/stats` for the
 kick; `smoke-scaffold` runs that script, and `sabotage-scaffold` reverts
-the write and expects the restart to come back empty. The template's own
+the view's write and expects the restart to come back empty. The template's own
 test opens the store in memory (`open()` wants a file it can put in WAL
 mode) and runs under `uv run m0 test` with nothing linked, on both
 platforms, which is the first thing this round wanted.

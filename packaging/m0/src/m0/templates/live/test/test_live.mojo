@@ -73,10 +73,11 @@ def test_the_kick_count_is_kept_in_the_store() raises:
     a file it can put in WAL mode."""
     var store = KickStore.in_memory()
     assert_equal(store.kicks(), 0)
-    store.save_kicks(3)
+    store.add_kick()
+    assert_equal(store.kicks(), 1)
+    store.add_kick()
+    store.add_kick()
     assert_equal(store.kicks(), 3)
-    store.save_kicks(7)
-    assert_equal(store.kicks(), 7)
     # The default is a file beside the binary, named for the app.
     assert_true(db_path().endswith(".db"))
     assert_true(DB_DEFAULT.endswith(".db"))

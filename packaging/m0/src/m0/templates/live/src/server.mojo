@@ -6,9 +6,11 @@
     GET  /stats    the producer's counters, as JSON
     GET  /health   {"status":"ok"}, answered on the loop
 
-The kick count survives a restart: the producer keeps it in SQLite
-(`store.mojo`; `M0_DB`, else `__M0_APP__.db`), opened on its own thread at
-its first step and written whenever the count changes.
+The kick count survives a restart: the kick view counts it in SQLite
+(`store.mojo`; `M0_DB`, else `__M0_APP__.db`) inside its own request, so
+the count is a committed row when the 204 is answered, and `/stats` reads
+it back from the file. `LiveHandler.make` opens the connection -- once per
+worker, loop or pool thread, after the fork.
 
 Two pieces the host runs for you (`uv run m0 doctor` prints the topology):
 
@@ -48,43 +50,22 @@ struct Ticker(Producer):
     var workers: Int
     var wave: Wave
     var kicks_seen: Int
-    var store: Optional[KickStore]
-    var saved: Int
 
     def __init__(out self, board: Board, workers: Int):
         self.board = board
         self.workers = workers
         self.wave = Wave()
+        # The board's word counts kicks since this process started; the
+        # database keeps the total (store.mojo). The producer reads only the
+        # word: a producer polling the count is a producer that can miss the
+        # last kick before a stop.
         self.kicks_seen = board.load(B_KICKS)
-        # Opened at the first step, on this producer's own thread: `make`
-        # runs before the fork, and a connection must not cross one.
-        self.store = None
-        self.saved = 0
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
         return Ticker(Board(ctx.page), ctx.workers)
 
-    def _persist(mut self) raises:
-        """Open the store on first use, seed the board from it, and write the
-        count back whenever it moved. Before the pause below, so a kick
-        posted while nobody watches is still kept."""
-        if not self.store:
-            var store = KickStore.open_file(db_path())
-            var kept = store.kicks()
-            # Kicks from earlier runs count, but do not kick the wave now.
-            self.board.add(B_KICKS, kept)
-            self.kicks_seen += kept
-            self.saved = self.board.load(B_KICKS)
-            store.save_kicks(self.saved)
-            self.store = store^
-        var kicks = self.board.load(B_KICKS)
-        if kicks != self.saved:
-            self.store.value().save_kicks(kicks)
-            self.saved = kicks
-
     def step(mut self, mut out: Publisher) raises -> Int:
-        self._persist()
         var viewers = self.board.viewers(self.workers)
         if viewers == 0:
             # Nobody to draw for: no step, no frame, no cost.
@@ -119,9 +100,14 @@ struct LiveHandler(AppHandler):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
+        # `make` runs once per worker, loop or pool thread, after the fork:
+        # the one place a connection may be opened (store.mojo).
         return LiveHandler(
             live_urls(),
-            LiveState(ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers),
+            LiveState(
+                ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers,
+                KickStore.open_file(db_path()),
+            ),
         )
 
     @staticmethod
